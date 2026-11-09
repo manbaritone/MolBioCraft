@@ -609,64 +609,10 @@ pub struct VcfConsequenceSummaryReport {
     pub annotated_variants: Vec<AnnotatedVcfConsequence>,
 }
 
-/// Translate a 3-base DNA codon under NCBI Standard (1) or Bacterial/Plastid (11) genetic code.
+/// Translates one codon with the NCBI table the caller resolved (`resolve_genetic_code`): the same
+/// tables `translate_sequence` reads, so every NCBI code gives the same amino acids here (BG-01M6SC3D).
 fn translate_dna_triplet(codon: &[u8], genetic_code_id: u8) -> u8 {
-    if codon.len() < 3 {
-        return b'X';
-    }
-    let c0 = match codon[0].to_ascii_uppercase() {
-        b'U' => b'T',
-        b => b,
-    };
-    let c1 = match codon[1].to_ascii_uppercase() {
-        b'U' => b'T',
-        b => b,
-    };
-    let c2 = match codon[2].to_ascii_uppercase() {
-        b'U' => b'T',
-        b => b,
-    };
-    match [c0, c1, c2] {
-        [b'T', b'T', b'T'] | [b'T', b'T', b'C'] => b'F',
-        [b'T', b'T', b'A'] | [b'T', b'T', b'G'] => b'L',
-        [b'C', b'T', _] => b'L',
-        [b'A', b'T', b'T'] | [b'A', b'T', b'C'] => b'I',
-        [b'A', b'T', b'A'] => {
-            if genetic_code_id == 2 {
-                b'M'
-            } else {
-                b'I'
-            }
-        }
-        [b'A', b'T', b'G'] => b'M',
-        [b'G', b'T', _] => b'V',
-        [b'T', b'C', _] => b'S',
-        [b'C', b'C', _] => b'P',
-        [b'A', b'C', _] => b'T',
-        [b'G', b'C', _] => b'A',
-        [b'T', b'A', b'T'] | [b'T', b'A', b'C'] => b'Y',
-        [b'T', b'A', b'A'] | [b'T', b'A', b'G'] => b'*',
-        [b'C', b'A', b'T'] | [b'C', b'A', b'C'] => b'H',
-        [b'C', b'A', b'A'] | [b'C', b'A', b'G'] => b'Q',
-        [b'A', b'A', b'T'] | [b'A', b'A', b'C'] => b'N',
-        [b'A', b'A', b'A'] | [b'A', b'A', b'G'] => b'K',
-        [b'G', b'A', b'T'] | [b'G', b'A', b'C'] => b'D',
-        [b'G', b'A', b'A'] | [b'G', b'A', b'G'] => b'E',
-        [b'T', b'G', b'T'] | [b'T', b'G', b'C'] => b'C',
-        [b'T', b'G', b'A'] => {
-            if genetic_code_id == 2 || genetic_code_id == 4 {
-                b'W'
-            } else {
-                b'*'
-            }
-        }
-        [b'T', b'G', b'G'] => b'W',
-        [b'C', b'G', _] => b'R',
-        [b'A', b'G', b'T'] | [b'A', b'G', b'C'] => b'S',
-        [b'A', b'G', b'A'] | [b'A', b'G', b'G'] => b'R',
-        [b'G', b'G', _] => b'G',
-        _ => b'X',
-    }
+    molbiocraft_core::genetic_codes::translate_codon(codon, genetic_code_id)
 }
 
 /// Grantham (1974) amino-acid physicochemical properties `(composition c, polarity p, volume v)`.
@@ -1442,6 +1388,68 @@ chr1\t19\t.\tG\tGA\t99\tPASS\t.
         assert_eq!(rep.high_impact_count, 2);
         assert_eq!(rep.moderate_impact_count, 1);
         assert_eq!(rep.low_impact_count, 1);
+    }
+
+    /// BG-01M6SC3D: the annotator kept its own codon table, which knew TGA = Trp only for codes 2
+    /// and 4, ATA = Met only for 2 and AGA/AGG = Arg always, so codes 3, 5, 9, 13 and others were
+    /// read as the Standard code with no warning. Every NCBI table must now give the consequence
+    /// its own translation implies.
+    #[test]
+    fn vcf_consequences_use_each_ncbi_table() {
+        use molbiocraft_core::genetic_codes::{translate_codon, NCBI_GENETIC_CODES};
+        // CDS at 1..21: ATG TGG AGA ATA CTG AAA TAA
+        let ref_seq = "ATGTGGAGAATACTGAAATAA";
+        let feats = vec![SequenceFeature {
+            id: "cds-1".into(),
+            name: "probe".into(),
+            feature_type: "CDS".into(),
+            start: 1,
+            end: 21,
+            strand: 1,
+            color: "#10b981".into(),
+            notes: None,
+            qualifiers: None,
+            segments: None,
+            cleavage_site: None,
+        }];
+        // (1-based position, ref, alt, ref codon, alt codon)
+        let snvs: [(usize, char, char, &[u8; 3], &[u8; 3]); 5] = [
+            (6, 'G', 'A', b"TGG", b"TGA"),  // Trp -> Ter (1) / Trp (2, 3, 4, 5, 9, 13, ...)
+            (9, 'A', 'C', b"AGA", b"AGC"),  // Arg -> Ser (1) / Ser = (5, 9) / Ter -> Ser (2) / Gly -> Ser (13)
+            (12, 'A', 'T', b"ATA", b"ATT"), // Ile = (1) / Met -> Ile (2, 3, 5, 13)
+            (13, 'C', 'T', b"CTG", b"TTG"), // Leu = (1) / Thr -> Leu (3)
+            (20, 'A', 'G', b"TAA", b"TGA"), // Ter = (1) / Ter -> Trp (2, 3, 4, 5, ...)
+        ];
+        let mut vcf = String::from("##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n");
+        for (pos, r, a, ..) in snvs {
+            vcf.push_str(&format!("chr1\t{pos}\t.\t{r}\t{a}\t99\tPASS\t.\n"));
+        }
+        let implied = |table: u8, rc: &[u8; 3], ac: &[u8; 3]| {
+            let (r, a) = (translate_codon(rc, table), translate_codon(ac, table));
+            if r == a {
+                "synonymous_variant"
+            } else if a == b'*' {
+                "stop_gained"
+            } else if r == b'*' {
+                "stop_lost"
+            } else {
+                "missense_variant"
+            }
+        };
+        for &(table, ..) in NCBI_GENETIC_CODES {
+            let rep = annotate_vcf_coding_consequences_noodles(ref_seq, &feats, &vcf, table);
+            let got: Vec<&str> = rep.annotated_variants.iter().map(|v| v.consequence_term.as_str()).collect();
+            let want: Vec<&str> = snvs.iter().map(|(_, _, _, rc, ac)| implied(table, rc, ac)).collect();
+            assert_eq!(got, want, "table {table}");
+        }
+        // the cases the bug was filed on, pinned by name
+        let term = |table: u8, i: usize| annotate_vcf_coding_consequences_noodles(ref_seq, &feats, &vcf, table).annotated_variants[i].consequence_term.clone();
+        assert_eq!(term(1, 0), "stop_gained");
+        for table in [2, 3, 4, 5, 9, 13] {
+            assert_eq!(term(table, 0), "synonymous_variant", "TGG>TGA under table {table}");
+        }
+        assert_eq!((term(5, 1), term(9, 1), term(13, 1), term(2, 1)), ("synonymous_variant".into(), "synonymous_variant".into(), "missense_variant".into(), "stop_lost".into()));
+        assert_eq!((term(3, 2), term(3, 3)), ("missense_variant".into(), "missense_variant".into()));
     }
 
     #[test]

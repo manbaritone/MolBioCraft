@@ -6,7 +6,8 @@ pub mod backbone;
 pub mod codon_usage;
 pub mod biophysics_3d;
 pub mod disorder_aggregation_epitopes;
-pub mod genetic_codes;
+// The NCBI tables live in molbiocraft-core so molbiocraft-formats (VCF annotation) reads the same ones.
+pub use molbiocraft_core::genetic_codes;
 pub mod motifs_domains;
 pub mod proteomics_mass_spec;
 pub mod structure_align;

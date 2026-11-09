@@ -67,7 +67,7 @@ pub fn genetic_code(table_id: u8) -> &'static (u8, &'static [u8; 64], &'static [
 /// request names no NCBI table. The id is taken whole, as requested: 300 is not clamped to 255, and
 /// 258 does not wrap to table 2.
 /// - An id that names an NCBI table reads as that table, with no warning.
-/// - 0 is the unset id: [`crate::translation_orf`] has always read it as the Standard code
+/// - 0 is the unset id: `molbiocraft_protein::translation_orf` has always read it as the Standard code
 ///   (table 1), and it reads so here, with no warning.
 /// - Any other id (one NCBI skips inside its numbering, 7, 8 and 17-20, or one past 33) reads as
 ///   table 1, and [`unknown_genetic_code_warning`] names the id.
@@ -176,14 +176,14 @@ mod tests {
         // the tables they wrap to, where TGA is Trp (table 2) or the starts differ (table 11)
         assert_eq!((258u64 as u8, 267u64 as u8, 300u64.min(255)), (2, 11, 255), "fixture");
         assert!(!reads_as(2, 1) && !reads_as(11, 1), "fixture");
-        assert_eq!(crate::translation_orf::translate_sequence("ATGTGATAA", 0, 2), "MW*", "fixture");
-        assert_eq!(crate::translation_orf::translate_sequence("ATGTGATAA", 0, resolve_genetic_code(258).0), "M**");
+        assert_eq!([b"ATG", b"TGA", b"TAA"].map(|c| translate_codon(c, 2)), *b"MW*", "fixture");
+        assert_eq!([b"ATG", b"TGA", b"TAA"].map(|c| translate_codon(c, resolve_genetic_code(258).0)), *b"M**");
         assert_eq!(unknown_genetic_code_warning("\"2\""), "Unknown genetic code \"2\": translated with the Standard code (table 1).");
 
         // 0 is unset: it reads as table 1, as translation_orf reads it, and warns of nothing
         assert_eq!(resolve_genetic_code(0), (1, None));
         assert!(reads_as(0, 1));
-        assert_eq!(crate::translation_orf::translate_sequence("ATGTGATAA", 0, 0), "M**");
+        assert_eq!([b"ATG", b"TGA", b"TAA"].map(|c| translate_codon(c, 0)), *b"M**");
 
         // the fallback is table 1 and no other: every other NCBI table reads some codon or start
         // codon above differently (table 11 only by its extra starts), and none of them warns

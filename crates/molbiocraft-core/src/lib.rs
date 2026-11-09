@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 pub mod epigenetics_codon_kmer;
+pub mod genetic_codes;
 pub mod genome_index;
 pub mod hmm_pssm_motifs;
 pub mod iupac;
