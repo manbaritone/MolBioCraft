@@ -1138,10 +1138,12 @@ it('names the three runners and four artifacts in AGENTS.md and the TRD', () => 
     expect(rows.filter((l) => /Setup\.exe|\bnsis\b|rpm|appimage/i.test(l)), 'TRD rows that still name NSIS, rpm or AppImage packages').toEqual([]);
   }
 
-  // CHANGELOG.md: an Unreleased entry for this change naming the four downloads.
+  // CHANGELOG.md: an entry for this change naming the four downloads, in a section newer than
+  // 0.2.0 - under Unreleased until a release, then under that release's heading (BG-01M6ZGN1).
   const changelog = text(repo('CHANGELOG.md'));
-  const unreleased = changelog.slice(changelog.indexOf('## [Unreleased]'), changelog.indexOf('\n## [', changelog.indexOf('## [Unreleased]') + 1));
-  const entry = unreleased.split('\n').find((l) => l.startsWith('- ') && l.includes('US-01M6TK7V')) ?? '';
-  expect(entry, 'the CHANGELOG Unreleased entry for US-01M6TK7V').not.toBe('');
+  const before020 = changelog.indexOf('\n## [0.2.0]');
+  expect(before020, 'CHANGELOG.md has a [0.2.0] section').toBeGreaterThan(0);
+  const entry = changelog.slice(0, before020).split('\n').find((l) => l.startsWith('- ') && l.includes('US-01M6TK7V')) ?? '';
+  expect(entry, 'the CHANGELOG entry for US-01M6TK7V, newer than 0.2.0').not.toBe('');
   for (const a of INSTALLERS('<version>')) expect(entry, `the CHANGELOG entry names ${a}`).toContain(a);
 });

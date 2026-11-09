@@ -1639,7 +1639,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     for (const markup of [splashHtml, indexHtmlText]) {
       expect(markup).toContain('MolBioCraft');
       expect(markup).toContain('Workbench');
-      expect(markup).toMatch(/Molecular &amp;\s*<br\s*\/?>\s*Evolutionary Biology Workbench/);
+      expect(markup).toMatch(/Molecular &amp; Evolutionary Biology\s*<br\s*\/?>\s*Workbench/);
       expect(markup).not.toContain(
         'Cross-Platform Desktop Application (macOS, Windows &amp; Linux)'
       );
