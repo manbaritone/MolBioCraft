@@ -32,7 +32,7 @@ import { designDegeneratePrimers, DEGENERATE_DEFAULTS, type DegenerateOptions, t
 import { annotateFromDocuments, featureCover, sameCoveredSite } from './annotateFromDocuments';
 import { rotateToReference } from './circularAlignment';
 import { computeTimetree, timetreeConfidence, TIMETREE_METHODS, type Calibration, type TimetreeMethod, type TimetreeResult } from './timetree';
-import { fromTreeNode, fullMatrix, labelRootedSupport, resampledSupport, rng, searchTree, supportFor, type Resampling } from './treeSearch';
+import { fromTreeNode, fullMatrix, hasUndefinedDistance, labelRootedSupport, resampledSupport, rng, searchTree, supportFor, type Resampling } from './treeSearch';
 import { midpointRoot } from './treeLayout';
 import { translateCodon } from './alignmentViewModel';
 import { invokeRustBioSync } from '../lib/rustBioEngine';
@@ -333,11 +333,19 @@ export async function runBuildTree(inputs: SequenceDocument[], v: OptionValues, 
       seen.set(base, k);
       return k === 1 ? base : `${base}_${k}`;
     });
+    let filledReplicates = 0;
     const searchOpts = {
       labels,
       seqs,
       protein: inputs[0]?.moleculeType === 'Protein',
-      distances: (s: string[]) => fullMatrix(computeEvolutionaryDistances(names, s, model).pairwiseMatrix, names.length),
+      // fullMatrix fills a pair the model cannot compute with twice the largest real distance. The
+      // input's own distances are checked before a search (ME/MP below, the engine for NJ/UPGMA),
+      // so a fill here is a resampled replicate's, and it is counted to be named in the warnings.
+      distances: (s: string[]) => {
+        const lower = computeEvolutionaryDistances(names, s, model).pairwiseMatrix;
+        if (hasUndefinedDistance(lower, names.length)) filledReplicates++;
+        return fullMatrix(lower, names.length);
+      },
       randomAdditions: Math.max(0, Math.min(100, num(v.randomAdditions ?? 10))),
       resampling,
       replicates: reps,
@@ -371,6 +379,11 @@ export async function runBuildTree(inputs: SequenceDocument[], v: OptionValues, 
     } else if (method === 'Minimum-Evolution (ME)' || method === 'Maximum Parsimony (MP)') {
       const mp = method === 'Maximum Parsimony (MP)';
       if (mp && resampling === 'interior') throw new Error('The interior-branch test needs a distance method (Neighbor-Joining or Minimum Evolution).');
+      // Both searches need every pairwise distance (ME for its score, MP for branch lengths). When
+      // one is undefined, refuse with the engine's sentence naming the pair, as NJ and UPGMA do,
+      // rather than search on a stand-in distance saved under the model's name (BG-01M6SB24).
+      const check = constructPhylogeneticTree(names, seqs, 'Neighbor-Joining (NJ)', model, 0, 0);
+      if (check.newick.replace(/\s/g, '') === '();' && check.warnings.length) throw new Error(check.warnings.join(' '));
       const r = await searchTree({ ...searchOpts, method: mp ? 'MP' : 'ME', randomAdditions: mp ? searchOpts.randomAdditions : 0 });
       newick = toNewick(r.tree);
       methodLabel = mp
@@ -414,6 +427,12 @@ export async function runBuildTree(inputs: SequenceDocument[], v: OptionValues, 
           if (sup.warning) warnings.push(sup.warning);
         }
       }
+    }
+    if (filledReplicates > 0) {
+      warnings.push(
+        `${filledReplicates} of ${reps} resampled replicate${reps === 1 ? '' : 's'} had a pair whose ${model} distance is undefined; ` +
+        'each used twice the largest distance in its replicate for that pair, so branch support may be off. Use p-distance or remove the sequence.'
+      );
     }
   }
   if (ctx.signal?.aborted) throw new Error('Cancelled.');

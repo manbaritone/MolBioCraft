@@ -510,7 +510,17 @@ export function toRootedTree(t: UTree, labels: string[], lengths: Map<number, nu
   return { name: '', length: null, children: [build(rv, ru, fromU), build(ru, rv, edgeLen - fromU)] };
 }
 
-/** Full symmetric matrix from a lower-triangular report (null = not computable). */
+/** Whether a lower-triangular report has a pair that is not computable (null or not finite). */
+export function hasUndefinedDistance(lower: (number | null)[][], n: number): boolean {
+  for (let i = 0; i < n; i++) for (let j = 0; j < i; j++) { const v = lower[i]?.[j]; if (!(typeof v === 'number' && Number.isFinite(v))) return true; }
+  return false;
+}
+
+/**
+ * Full symmetric matrix from a lower-triangular report (null = not computable). A pair that is not
+ * computable gets twice the largest finite distance: callers must refuse or warn when
+ * hasUndefinedDistance is true (BG-01M6SB24).
+ */
 export function fullMatrix(lower: (number | null)[][], n: number): Matrix {
   const finite: number[] = [];
   for (let i = 0; i < n; i++) for (let j = 0; j < i; j++) { const v = lower[i]?.[j]; if (typeof v === 'number' && Number.isFinite(v)) finite.push(v); }
