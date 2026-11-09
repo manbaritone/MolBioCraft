@@ -1147,3 +1147,55 @@ it('names the three runners and four artifacts in AGENTS.md and the TRD', () => 
   expect(entry, 'the CHANGELOG entry for US-01M6TK7V, newer than 0.2.0').not.toBe('');
   for (const a of INSTALLERS('<version>')) expect(entry, `the CHANGELOG entry names ${a}`).toContain(a);
 });
+
+it('writes the release notes from the version\'s CHANGELOG section and publishes them (CR-01M704A6)', () => {
+  const notes = (version: string, changelog?: string): SpawnResult =>
+    cp.spawnSync('node', [repo('scripts/release_notes.mjs'), version, ...(changelog ? [changelog] : [])], { encoding: 'utf8' });
+
+  // The real CHANGELOG: the checked version has notes, without its heading or the older sections.
+  const own = notes(VERSION);
+  expect(own.status, own.stderr).toBe(0);
+  expect(own.stdout.trim(), `the CHANGELOG [${VERSION}] notes`).not.toBe('');
+  expect(own.stdout).not.toMatch(/^## \[/m);
+
+  inTemp('mbc-notes-', (dir) => {
+    const file = path.join(dir, 'CHANGELOG.md');
+    put(file, [
+      '# Changelog', '', 'Intro.', '',
+      '## [Unreleased]', '', '- pending', '',
+      '## [1.2.0] - 2026-12-01', '', '### Added', '- one (US-1)', '', '### Fixed', '- two', '',
+      '## [1.10.0] - 2027-01-01', '', '- not this one', '',
+      '## [1.1.0] - 2026-11-20', '', '- older', '',
+      '## [1.3.0] - 2026-12-09', '',
+      '## [1.4.0] - 2026-12-20', '', '### Added', '', '### Fixed', '',
+      '## [1.5.0] - 2027-02-01', '', '- first', '',
+      '## [1.5.0] - 2027-02-02', '', '- second', '',
+      '## [0.9.0] - 2026-10-01', '', '- last',
+    ].join('\n'));
+    const ok = notes('1.2.0', file);
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(ok.stdout, 'the section body, trimmed, with no neighbouring section').toBe('### Added\n- one (US-1)\n\n### Fixed\n- two\n');
+    expect(notes('1.10.0', file).stdout, 'the version is matched exactly, not as a pattern').toBe('- not this one\n');
+    expect(notes('0.9.0', file).stdout, 'the last section runs to the end of the file').toBe('- last\n');
+    for (const [v, why] of [['2.0.0', 'has no section'], ['1.3.0', 'has an empty section'], ['1.4.0', 'has only empty headings'], ['1.5.0', 'has two sections'], ['1.2', 'is only a prefix of a version']]) {
+      const bad = notes(v, file);
+      expect(bad.status, `a version that ${why} fails`).not.toBe(0);
+      expect(bad.stdout, `a version that ${why} prints no notes`).toBe('');
+      expect(bad.stderr).toContain(v);
+    }
+  });
+  expect(notes('').status, 'a missing version fails').not.toBe(0);
+
+  // The publish job checks out the repo, writes the notes for the checked version before it
+  // publishes, and hands them to the release.
+  const publish = releaseWorkflow().jobs.publish;
+  const uses = publish.steps.map((s) => s.uses ?? s.run);
+  const at = (u: string): number => uses.findIndex((x) => x === u);
+  const write = publish.steps.findIndex((s) => s.run === 'node scripts/release_notes.mjs "$VERSION" > release-notes.md');
+  expect(at('actions/checkout@v4'), 'publish checks out the repo').toBeGreaterThanOrEqual(0);
+  expect(write, 'publish writes release-notes.md from CHANGELOG.md').toBeGreaterThan(at('actions/checkout@v4'));
+  expect(at('softprops/action-gh-release@v2'), 'the notes are written before the release is published').toBeGreaterThan(write);
+  expect(at('actions/download-artifact@v4'), 'the artifacts are downloaded after the checkout, which would clean them').toBeGreaterThan(at('actions/checkout@v4'));
+  const release = publish.steps.find((s) => s.uses === 'softprops/action-gh-release@v2');
+  expect(release?.with?.body_path, 'the release notes are the CHANGELOG section').toBe('release-notes.md');
+});

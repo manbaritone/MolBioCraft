@@ -16,7 +16,8 @@ name: Build and Release
 # steps for each.
 #
 # A v* tag push publishes the four installers, SHA256SUMS.txt, NOTICE.txt and PROVENANCE.md to a
-# GitHub Release (the publish job). A workflow_dispatch run builds and uploads the same seven files
+# GitHub Release (the publish job), whose notes are the version's CHANGELOG.md section
+# (scripts/release_notes.mjs). A workflow_dispatch run builds and uploads the same seven files
 # as workflow artifacts and publishes nothing.
 
 on:
@@ -463,6 +464,15 @@ jobs:
       VERSION: ${{ needs.reference-check.outputs.version }}
 
     steps:
+      # The checkout comes first: it cleans the workspace, which would delete downloaded assets.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # The release notes are the body of the version's CHANGELOG.md section (CR-01M704A6). A
+      # version with no section, or an empty one, fails here, before anything is published.
+      - name: Write the Release Notes From the CHANGELOG.md Section of This Version
+        run: node scripts/release_notes.mjs "$VERSION" > release-notes.md
+
       - name: Download the Installers, SHA256SUMS.txt, NOTICE.txt and PROVENANCE.md
         uses: actions/download-artifact@v4
         with:
@@ -477,6 +487,7 @@ jobs:
       - name: Publish GitHub Release Assets
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes.md
           fail_on_unmatched_files: true
           files: |
             assets/MolBioCraft-${{ env.VERSION }}-macOS-universal.dmg
