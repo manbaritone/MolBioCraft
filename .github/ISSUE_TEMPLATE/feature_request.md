@@ -1,9 +1,11 @@
 ---
 name: Feature Request
-about: Suggest a new bioinformatics pipeline, vector backbone, cloning/phylogenetics algorithm, or BioJS plugin
-title: '[FEAT] '
+about: Suggest a new bioinformatics pipeline, vector backbone, cloning/phylogenetics
+  algorithm, or BioJS plugin
+title: "[FEAT] "
 labels: enhancement
 assignees: ''
+
 ---
 
 ## Scientific / Laboratory Workflow Need

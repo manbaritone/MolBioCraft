@@ -1,9 +1,11 @@
 ---
 name: Bug Report
-about: Report a bug in sequence analysis, guided pipelines, cloning simulation, or macOS/Windows/Linux packaging
-title: '[BUG] '
+about: Report a bug in sequence analysis, guided pipelines, cloning simulation, or
+  macOS/Windows/Linux packaging
+title: "[BUG] "
 labels: bug
 assignees: ''
+
 ---
 
 ## Environment
