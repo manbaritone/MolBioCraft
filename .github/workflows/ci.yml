@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-and-build:
+    name: Full-Stack Rust + Tauri v2 + TypeScript/React/SVG (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+
+    steps:
+      # Linux disk (BG01M6S2VQ): run 42265243701 passed every gating step on ubuntu-latest, then the
+      # runner died with "No space left on device" in the TypeScript coverage step. continue-on-error
+      # cannot save a step whose runner process dies, so the job failed. Remove preinstalled
+      # toolchains this job never uses (.NET, Android, GHC, CodeQL); rm -rf skips a path the image
+      # lacks. Non-blocking: the df -h lines show what it freed.
+      - name: Free Runner Disk of Unused Preinstalled Toolchains (Linux, Non-Blocking)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux GTK & WebKit2GTK headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libssl-dev
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Rust Stable Toolchain (with wasm32-unknown-unknown)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo Registry & Build Artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Build Zero-Import Rust WebAssembly Engine & Production Frontend
+        run: |
+          npm run wasm:build
+          npm run build
+
+      - name: Run TypeScript / React / SVG & Tauri IPC Vitest Suite
+        run: npm test
+
+      # The RPC payload snapshot (read by rpc_contract.rs) must be what the app sends today:
+      # regenerate it from a full Vitest run and fail if it differs from the committed file.
+      # It is platform-independent, so one OS checks it.
+      - name: Check RPC Payload Snapshot Is Current (rpc:capture)
+        if: runner.os == 'Linux'
+        run: |
+          npm run rpc:capture
+          git diff --exit-code -- crates/molbiocraft-wasm/tests/ts_rpc_payloads.json || {
+            echo "::error file=crates/molbiocraft-wasm/tests/ts_rpc_payloads.json::RPC payload snapshot is stale; run npm run rpc:capture and commit the result"
+            exit 1
+          }
+
+      - name: Run 7-Crate Rust Bioinformatics Workspace Tests
+        run: cargo test --workspace
+
+      - name: Run Tauri v2 Desktop & Embedded Rust RESTful API Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # Clippy gate (US01M6P2TR, TSD G8): only the correctness and suspicious groups are denied;
+      # every other clippy warning is printed but does not fail the job, and rustfmt is not gated.
+      # Runs on every matrix OS because clippy lints only the cfg branches compiled for the host.
+      # bash, so a failure of the first command fails the step on Windows too.
+      - name: Deny Clippy Correctness & Suspicious Lints (Rust Workspace + Tauri v2 Desktop)
+        shell: bash
+        run: |
+          rustup component add clippy
+          cargo clippy -q --workspace -- -D clippy::correctness -D clippy::suspicious
+          cargo clippy -q --manifest-path src-tauri/Cargo.toml -- -D clippy::correctness -D clippy::suspicious
+
+      - name: Compile Release Native Tauri v2 Desktop Binary
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml --features custom-protocol
+
+      # Linux disk (BG01M6S2VQ): no later step reads src-tauri/target. cargo llvm-cov covers the
+      # workspace, which excludes src-tauri, and builds its own instrumented copy under
+      # target/llvm-cov-target. Vitest loads the engine from public/molbiocraft_wasm.wasm, and the
+      # smoke test serves dist/. rust-cache saves ./target only. So the desktop shell's debug and
+      # release output is deleted to give the coverage steps its space, and df -h shows what they
+      # start with.
+      - name: Delete Desktop Shell Build Output Before Coverage (Linux, Non-Blocking)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          rm -rf src-tauri/target
+          df -h
+
+      # Coverage (US01M6P22S) is measured, not gated: no threshold is checked, every step below
+      # has continue-on-error, so a coverage failure never fails the job. Ubuntu only. Both reports
+      # are uploaded as one workflow artifact, `coverage-reports`.
+      - name: Add llvm-tools-preview Rust Component (Coverage, Non-Blocking)
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        run: rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov (Coverage, Non-Blocking)
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Measure 7-Crate Rust Workspace Coverage (cargo llvm-cov, Non-Blocking)
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p coverage-rust
+          # Exclude the embedded data tables (crates/*/src/*_data.rs): compiled-in fixtures, together
+          # almost fully covered and most of the measured lines, that would inflate the floor.
+          cargo llvm-cov --workspace --summary-only --ignore-filename-regex '_data\.rs$' | tee coverage-rust/summary.txt
+
+      - name: Measure TypeScript Coverage (npm run test:coverage, Non-Blocking)
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        run: npm run test:coverage
+
+      - name: Upload TypeScript & Rust Coverage Reports
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            coverage/
+            coverage-rust/
+          if-no-files-found: warn
+
+      - name: Report Free Disk After Coverage (Linux, Non-Blocking)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: df -h
+
+      # Browser smoke (US01M6P2QT): the 13 scenarios of scripts/e2e/functional-smoke.cjs against the
+      # production web build in headless Chromium (TSD G4). Alert-only until it is stable, per the TSD
+      # Quality Gates table (E2E critical path: "No (alerts) until stable, then Yes"): the step
+      # has continue-on-error, so a failure marks this step failed but never fails the job. Ubuntu only.
+      - name: Run 13-Scenario Browser Smoke Test in Headless Chromium (npm run test:e2e, Alert-Only)
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e

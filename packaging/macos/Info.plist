@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The macOS file associations. src-tauri/tauri.conf.json names this file as bundle.macOS.infoPlist,
+  and the Tauri bundler sets each key below over the Info.plist it writes, so these two lists replace
+  the ones it renders from bundle.fileAssociations. They repeat every association tauri.conf.json
+  declares, unchanged, and add the formats MolBioCraft opens that only macOS registers: Windows gives
+  .pdb and .vcf to other programs. Set no other key here: it would replace the bundler's own.
+  src/__tests__/releasePackaging.test.ts checks this file against tauri.conf.json.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>mbc</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>org.molbiocraft.workbench</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>MolBioCraft Workbench Session</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>gb</string>
+                <string>gbk</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>GenBank Annotated Sequence</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>fasta</string>
+                <string>fa</string>
+                <string>fna</string>
+                <string>faa</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>FASTA Sequence</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>ab1</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>ABI Sanger Chromatogram Trace</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>embl</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>EMBL Sequence</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>gff3</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>GFF3 Feature Annotation</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>bed</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>BED Genomic Intervals</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>fastq</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>FASTQ Sequencing Reads</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>sam</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>SAM Read Alignment</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>vcf</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>VCF Variant Calls</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>pdb</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>PDB Structure</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>cif</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>mmCIF Structure</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.molbiocraft.workbench</string>
+            <key>UTTypeDescription</key>
+            <string>MolBioCraft Session and Workbench File (.mbc)</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.json</string>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>mbc</string>
+                </array>
+                <key>public.mime-type</key>
+                <string>application/vnd.molbiocraft.workbench+json</string>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>

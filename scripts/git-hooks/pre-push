@@ -1,0 +1,219 @@
+#!/bin/sh
+# Copyright 2026 MolBioCraft Contributors
+# SPDX-License-Identifier: CC-BY-NC-4.0
+#
+# molbiocraft-pre-push (D0020, PROVENANCE.md section 5): refuses to push the pre-strip GPL-3.0
+# copies. Commit 5d3e45e (rewritten to 3e51fc0) wrote the GPL-3.0 MrBayes primates and PAML HIV env
+# and lysozyme alignments into test-data/reference/ (align.json, phylo_r.json and phylo_tools.json)
+# and fa0f69a (rewritten to df32388) replaced them with checksums. It refuses a ref
+# - whose history holds 5d3e45e or 3e51fc0, which every commit of that history that holds the copies
+#   descends from (f421e07 / 548e1be among them), or
+# - whose history holds any of the three files as 5d3e45e / 3e51fc0 committed them, found by blob id in every
+#   tree of that history, so a squash, cherry-pick, rebase or `git commit-tree` of a pre-strip tree
+#   is refused too. A copy made some other way has another blob id and is not caught.
+# A branch that holds them reaches main only as a squash merge of its final, stripped tree. A later
+# decision that removes content from history adds its first commit and its blob ids here.
+#
+# It also refuses a ref whose history holds any path under the top-level folder LOCAL_FOLDER names,
+# the local, git-ignored third-party folder that CR-01M6T9MT keeps out of every pushed history
+# (BG-01M6T4EH). Each commit's own tree is asked, not the object listing, which names a tree or
+# blob only at the first path it meets it. The name matches in any letter case, whatever
+# core.ignorecase says, since Resources/ lands in the same folder on a case-insensitive file system.
+# A ref that peels to a tree (a tag on a tree) is refused when that tree holds such a path. It is
+# also refused when the tree is no commit's root tree in this clone: a tree carries no path of its
+# own, so the tree that IS the folder, or a directory inside it, holds no path under the folder and a
+# check of its contents alone clears it, publishing the bytes (BG-01M6XSZ9). Only for a commit's root
+# tree are a tree's entries the repository's own top-level paths. A blob is file content with no path
+# and no history, so nothing in it says whether it is a file of that folder, and it is refused too
+# (BG-01M6XSZ9, which supersedes the earlier reading that a blob holds no path, BG-01M6WGTY).
+#
+# Every check reads the objects as they are stored, with replace refs (`git replace`) and graft files
+# switched off. git sends the stored objects whatever a replace ref shows in their place
+# (BG-01M6WGTY). A graft file instead rewrites the ancestry these checks walk while the pushed tip's
+# own stored parents still name the commits it cuts out, so the checks clear a ref whose history
+# holds the folder; that the remote then rejects the pack for the objects the graft left out of it is
+# a coincidence of receive-pack, not a guard (BG-01M6XSZ9).
+#
+# Install once per clone, from a checkout that has this file:
+#
+#   sh scripts/git-hooks/pre-push --install
+#
+# This copies it to the clone's common git dir, $(git rev-parse --git-common-dir)/hooks/pre-push,
+# which git runs on every push from every worktree of the clone, whatever branch is checked out.
+# Run it again after this file changes: the installed copy does not follow it. It refuses while
+# core.hooksPath is set, since git then runs the hooks in that folder instead. Never set
+# core.hooksPath to scripts/git-hooks: git reads a relative core.hooksPath from the work tree of
+# the checkout that pushes, no branch that holds 5d3e45e has this file, and git runs no hook when
+# the folder has none, so the push would go through on exactly the branches this hook guards.
+#
+# A local check only: it reads the refs git hands it on stdin and this clone's objects, and never
+# contacts the remote. Deleting a remote ref is allowed. When it cannot tell (a pre-strip commit
+# missing from a shallow clone, a partial clone, which lacks objects and would fetch them from its
+# remote, or git failing), it refuses rather than guess.
+
+PRE_STRIP='5d3e45e4701f6d19c0e136c2efebada4fb40f3ff 3e51fc0a925eef9115c1a7da695fc6f00ea7d9a6'
+# test-data/reference/align.json, phylo_r.json and phylo_tools.json as 5d3e45e / 3e51fc0 committed them
+# (`git log --all --find-object=<id>` lists 3e51fc0, which added each, and df32388, which removed it).
+GPL_BLOBS='60b8930f52c66f80d946cb55bbec853d4da969d8 1cb2d4897ebf482b0d181f5b95d0d3f0ae1e9ef5 d069805e91be727c01eefe2f2dc1f17a487c3ebf'
+# The folder's name, written once: the .gitignore rule that ignores it is /$LOCAL_FOLDER/, and
+# src/__tests__/prePushHook.test.ts reads it from here. BG-01M6T4EH AC2's check exempts this file
+# and that test by name, and refuses a path into the folder, and the name LOCAL_FOLDER, in every
+# other test source and script it reads.
+LOCAL_FOLDER=resources
+MARK='molbiocraft-pre-push'
+# Before the first git call: a replace ref must not hide a commit or tree that git would still send.
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
+# Literal pathspecs (GIT_LITERAL_PATHSPECS, which `git --literal-pathspecs push` sets for this hook)
+# turn off the :(top,icase) magic, so the folder's pathspec would match nothing and the folder check
+# would pass every ref (BG-01M6XPXX). GIT_GLOB_PATHSPECS, GIT_NOGLOB_PATHSPECS and GIT_ICASE_PATHSPECS are left: the
+# pathspec has no wildcard and is case-insensitive already, so none changes what it matches, and a
+# combination git rejects makes the walk fail, which refuses.
+unset GIT_LITERAL_PATHSPECS
+# A graft file rewrites ancestry: it cuts the commit that adds the folder, or the pre-strip commit,
+# out of the tip's history, and the walk and the ancestry test below then find nothing although the
+# tip's own stored parents still name them (BG-01M6XSZ9). git reads grafts from the file GIT_GRAFT_FILE names
+# when it is set and from $GIT_DIR/info/grafts when it is not, so pointing the variable at a file it
+# cannot open turns off both the pusher's variable and the repository's own graft file. The path
+# cannot exist, since /dev/null is not a directory; an existing but empty file (/dev/null itself)
+# would do as well, except that git then prints its graft-file deprecation advice on every call.
+GIT_GRAFT_FILE=/dev/null/molbiocraft-no-grafts
+export GIT_GRAFT_FILE
+
+if [ $# -eq 1 ] && [ "$1" = --install ]; then
+  # Git runs a pre-push hook with two arguments (the remote's name and URL), never this one.
+  hooks_path=$(git config --get core.hooksPath)
+  case $? in
+    0)
+      echo "pre-push --install: core.hooksPath is set to '$hooks_path', so git runs the hooks in that folder and would not run this one; unset it (git config --unset core.hooksPath, in the scope that sets it) and run this again" >&2
+      exit 1
+      ;;
+    1) ;;
+    *) echo "pre-push --install: git could not read core.hooksPath" >&2; exit 1 ;;
+  esac
+  common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
+  target="$common/hooks/pre-push"
+  if [ -e "$target" ] && ! grep -q "$MARK" "$target"; then
+    echo "pre-push --install: $target exists and is not this hook; move it aside and run this again" >&2
+    exit 1
+  fi
+  mkdir -p "$common/hooks" && cp "$0" "$target.tmp.$$" && chmod 755 "$target.tmp.$$" && mv -f "$target.tmp.$$" "$target" || exit 1
+  echo "pre-push --install: installed $target; git runs it on every push from every worktree of this clone"
+  exit 0
+fi
+
+remote=$1
+status=0
+shallow=$(git rev-parse --is-shallow-repository) || exit 1
+# A partial clone lacks objects and fetches them from its promisor remote when a command reads one.
+partial=false
+if git config --get extensions.partialClone >/dev/null || git config --type=bool --get-regexp '^remote\..*\.promisor$' | grep -q ' true$'; then
+  partial=true
+fi
+blob_pattern=$(echo $GPL_BLOBS | tr ' ' '|')
+
+# Why the history of the object $1 must not be pushed (one line), or nothing when it may be.
+refusal() {
+  if [ "$partial" = true ]; then
+    echo "this clone is a partial clone, which lacks objects of that history and would fetch them from its remote, so it cannot tell whether that history holds the GPL-3.0 alignments (D0020)"
+    return
+  fi
+  # What the ref peels to: a commit (a branch, or a tag on a commit), a tree or a blob ($1^{} peels
+  # tags to the object they name, so git's fourth object type, tag, is unreachable here; BG-01M6XSCW).
+  # Only a commit has a history, and a path-limited rev-list of a tree prints nothing and exits 0.
+  if ! kind=$(git cat-file -t "$1^{}" 2>/dev/null); then
+    echo "git could not read the object it names, so it cannot tell what that object holds (D0020)"
+    return
+  fi
+  # Only a commit has a history, so the pre-strip check asks a commit's history only.
+  pre_strip=$PRE_STRIP
+  [ "$kind" = commit ] || pre_strip=''
+  for bad in $pre_strip; do
+    if ! git cat-file -e "$bad^{commit}" 2>/dev/null; then
+      [ "$shallow" = false ] && continue # a full clone without the commit: no ref holds it
+      echo "this clone is shallow and lacks $bad, so it cannot tell whether that history holds it (D0020)"
+      return
+    fi
+    git merge-base --is-ancestor "$bad" "$1"
+    case $? in
+      0)
+        echo "its history holds $bad, which commits the GPL-3.0 MrBayes and PAML alignments that D0016 keeps out of the repository. Under D0020 that branch reaches main only as a squash merge (PROVENANCE.md section 5)."
+        return
+        ;;
+      1) ;;
+      *)
+        echo "git could not tell whether its history holds $bad (D0020)"
+        return
+        ;;
+    esac
+  done
+  # Every object of the history (each commit, and every tree and blob they hold). Kept: the GPL
+  # blobs, with the path rev-list found each at, and a listing that failed (e.g. a missing object).
+  found=$({ git rev-list --objects "$1" 2>/dev/null || echo 'rev-list failed'; } | grep -E "^($blob_pattern)( |\$)|^rev-list failed\$")
+  gpl=$(printf '%s\n' "$found" | grep -E "^($blob_pattern)( |\$)" | sed -E 's/^([0-9a-f]+) ?(.*)$/\2 (blob \1)/' | tr '\n' ';' | sed 's/;$//; s/;/; /g')
+  if [ -n "$gpl" ]; then
+    echo "its history holds the GPL-3.0 MrBayes and PAML alignments as 5d3e45e committed them ($gpl), which D0016 keeps out of the repository: a squash, cherry-pick, rebase or commit-tree of a pre-strip tree carries them (PROVENANCE.md section 5)."
+    return
+  elif [ -n "$found" ]; then
+    echo "git could not list the objects of its history, so it cannot tell whether that history holds the GPL-3.0 alignments (D0020)"
+    return
+  fi
+  # The folder from the top of the tree, in any letter case.
+  folder=":(top,icase)$LOCAL_FOLDER/"
+  case $kind in
+    commit)
+      # The newest commit of the history whose tree differs from a parent's under the folder (a
+      # root commit differs from the empty tree). Some commit's tree holds a path there exactly when
+      # some commit adds one. --full-history keeps a side branch that added and removed the folder,
+      # which a merge with no net change would otherwise simplify away.
+      if ! res=$(git rev-list --full-history -n 1 "$1" -- "$folder" 2>/dev/null); then
+        echo "git could not walk its history, so it cannot tell whether that history holds a path under $LOCAL_FOLDER/ (CR-01M6T9MT)"
+      elif [ -n "$res" ]; then
+        echo "its history holds a path under $LOCAL_FOLDER/ (commit $res changes one), the local third-party folder that CR-01M6T9MT keeps out of every pushed history (BG-01M6T4EH); push only history rewritten without it"
+      fi
+      ;;
+    tree)
+      # The tree's own paths there: what it adds to the empty tree (ls-tree takes no icase).
+      if ! empty=$(git hash-object -t tree /dev/null) ||
+        ! res=$(git diff-tree -r --name-only "$empty" "$1^{tree}" -- "$folder" 2>/dev/null); then
+        echo "git could not list the tree it names, so it cannot tell whether that tree holds a path under $LOCAL_FOLDER/ (CR-01M6T9MT)"
+      elif [ -n "$res" ]; then
+        echo "it names a tree that holds a path under $LOCAL_FOLDER/ ($(printf '%s\n' "$res" | head -n 1)), the local third-party folder that CR-01M6T9MT keeps out of every pushed history (BG-01M6T4EH)"
+      else
+        # What the tree IS, not only what it holds: the listing above reads the tree's entries as
+        # top-level paths, which they are only for the root tree of a commit. The tree that is
+        # $LOCAL_FOLDER/, or a directory inside it, holds its fonts at their own names and no path
+        # under $LOCAL_FOLDER/, so the listing clears it and the bytes are pushed (BG-01M6XSZ9).
+        # This clone's commits say which trees are root trees; any other tree is one this hook
+        # cannot place. Both git calls fail closed: an empty id, or a listing git did not produce,
+        # matches nothing and refuses.
+        tree_id=$(git rev-parse --verify "$1^{tree}" 2>/dev/null)
+        if [ -z "$tree_id" ] || ! git rev-list --all --no-commit-header --format=%T 2>/dev/null | grep -qxF "$tree_id"; then
+          echo "it names a tree that is no commit's root tree in this clone, so its entries are not this repository's top-level paths and this hook cannot tell whether it is $LOCAL_FOLDER/ itself or a directory inside it, whose files hold no path under $LOCAL_FOLDER/ (BG-01M6XSZ9); push a commit instead"
+        fi
+      fi
+      ;;
+    blob)
+      # A blob is file content with no path and no history, so nothing in it says whether it is a
+      # file of the local third-party folder: the hook cannot tell and refuses (BG-01M6XSZ9).
+      echo "it names a blob, which is file content with no path and no history, so this hook cannot tell whether it is a file of $LOCAL_FOLDER/ (BG-01M6XSZ9); push a commit instead"
+      ;;
+  esac
+}
+
+# `read` returns non-zero on a last line git did not terminate with a newline, having read it all
+# the same, so that ref would go unjudged without the second test (BG-01M6XSZ9). On end of input it
+# clears the variables, which ends the loop.
+while read -r local_ref local_sha remote_ref remote_sha || [ -n "$local_ref" ]; do
+  case $local_sha in
+    *[!0]*) ;;
+    *) continue ;; # all zeros: a delete, nothing is sent
+  esac
+  why=$(refusal "$local_sha")
+  if [ -n "$why" ]; then
+    echo "pre-push: refusing to push $local_ref to $remote $remote_ref: $why" >&2
+    status=1
+  fi
+done
+
+exit $status

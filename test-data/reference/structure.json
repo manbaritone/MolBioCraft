@@ -1,0 +1,705 @@
+{
+ "tools": {
+  "tmtools": "0.3.0",
+  "biopython": "1.88"
+ },
+ "tm_align": [
+  {
+   "chain_1": "4HHB.A",
+   "chain_2": "4HHB.B",
+   "length_1": 141,
+   "length_2": 146,
+   "tm_score_norm_1": 0.90418,
+   "tm_score_norm_2": 0.87558,
+   "rmsd": 1.406,
+   "aligned_length": 139,
+   "close_pairs_lt_5A": 139,
+   "identity_aligned": 0.4317,
+   "alignment_1": "VLSP-ADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFD-L----S-HGSAQVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLDKFLASVSTVLTSKYR",
+   "alignment_2": "VHLTPEEKSAVTALWGKV--NVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH",
+   "rotation": [
+    [
+     0.944642,
+     -0.291408,
+     -0.15077
+    ],
+    [
+     -0.290651,
+     -0.956433,
+     0.027533
+    ],
+    [
+     -0.152225,
+     0.017813,
+     -0.988185
+    ]
+   ],
+   "translation": [
+    10.8083,
+    27.481,
+    82.5812
+   ]
+  },
+  {
+   "chain_1": "1MBN.A",
+   "chain_2": "4HHB.A",
+   "length_1": 153,
+   "length_2": 141,
+   "tm_score_norm_1": 0.83399,
+   "tm_score_norm_2": 0.89812,
+   "rmsd": 1.575,
+   "aligned_length": 141,
+   "close_pairs_lt_5A": 141,
+   "identity_aligned": 0.2695,
+   "alignment_1": "VLSEGEWQLVLHVWAKVEADVAGHGQDILIRLFKSHPETLEKFDRFKHLKTEAEMKASEDLKKHGVTVLTALGAILKKKGHHEAELKPLAQSHATKHKIPIKYLEFISEAIIHVLHSRHPGDFGADAQGAMNKALELFRKDIAAKYKELGYQG",
+   "alignment_2": "VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHF-DL----SHG-SAQVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLDKFLASVSTVLTSKY---R---",
+   "rotation": [
+    [
+     0.536088,
+     -0.341413,
+     0.772041
+    ],
+    [
+     -0.662214,
+     0.397108,
+     0.635436
+    ],
+    [
+     -0.52353,
+     -0.851905,
+     -0.013204
+    ]
+   ],
+   "translation": [
+    16.7386,
+    14.0411,
+    54.46
+   ]
+  },
+  {
+   "chain_1": "1UBQ.A",
+   "chain_2": "1A5R.A",
+   "length_1": 76,
+   "length_2": 103,
+   "tm_score_norm_1": 0.65351,
+   "tm_score_norm_2": 0.52397,
+   "rmsd": 2.357,
+   "aligned_length": 71,
+   "close_pairs_lt_5A": 69,
+   "identity_aligned": 0.1549,
+   "alignment_1": "-----------------------MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPD-QQRLIFAGKQLEDGRTLSDY-NIQKESTLHLVLRLRGG-------",
+   "alignment_2": "GSMSDQEAKPSTEDLGDKKEGEYIKLKVIGQDSSEIHFKVKMTTHLKKLKESYCQR-QGVPMNSLRFLFEGQRIADNHT-PKELGMEEEDVIEVYQEQ---TGGHSTV",
+   "rotation": [
+    [
+     0.690711,
+     0.522219,
+     0.500206
+    ],
+    [
+     -0.218609,
+     0.81015,
+     -0.543936
+    ],
+    [
+     -0.689295,
+     0.266353,
+     0.673742
+    ]
+   ],
+   "translation": [
+    42.9364,
+    -7.9375,
+    4.341
+   ]
+  },
+  {
+   "chain_1": "4HHB.A",
+   "chain_2": "4HHB.A",
+   "length_1": 141,
+   "length_2": 141,
+   "tm_score_norm_1": 1.0,
+   "tm_score_norm_2": 1.0,
+   "rmsd": 0.0,
+   "aligned_length": 141,
+   "close_pairs_lt_5A": 141,
+   "identity_aligned": 1.0,
+   "alignment_1": "VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFDLSHGSAQVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLDKFLASVSTVLTSKYR",
+   "alignment_2": "VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFDLSHGSAQVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLDKFLASVSTVLTSKYR",
+   "rotation": [
+    [
+     1.0,
+     -0.0,
+     0.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0
+    ],
+    [
+     -0.0,
+     -0.0,
+     1.0
+    ]
+   ],
+   "translation": [
+    -0.0,
+    -0.0,
+    0.0
+   ]
+  }
+ ],
+ "sequence_superposition": [
+  {
+   "chain_1": "4HHB.A",
+   "chain_2": "4HHB.B",
+   "method": "BLOSUM62 global, open -10, extend -0.5, SVD",
+   "equivalent_residues": 139,
+   "identity": 0.4604,
+   "rmsd": 1.567,
+   "score": 287.5
+  },
+  {
+   "chain_1": "1MBN.A",
+   "chain_2": "4HHB.A",
+   "method": "BLOSUM62 global, open -10, extend -0.5, SVD",
+   "equivalent_residues": 138,
+   "identity": 0.2826,
+   "rmsd": 1.962,
+   "score": 101.5
+  }
+ ],
+ "ramachandran": {
+  "1UBQ.A": [
+   {
+    "seq_id": 1,
+    "resname": "MET",
+    "phi": null,
+    "psi": 149.63
+   },
+   {
+    "seq_id": 2,
+    "resname": "GLN",
+    "phi": -91.02,
+    "psi": 138.26
+   },
+   {
+    "seq_id": 3,
+    "resname": "ILE",
+    "phi": -131.1,
+    "psi": 163.05
+   },
+   {
+    "seq_id": 4,
+    "resname": "PHE",
+    "phi": -115.99,
+    "psi": 140.23
+   },
+   {
+    "seq_id": 5,
+    "resname": "VAL",
+    "phi": -118.03,
+    "psi": 114.22
+   },
+   {
+    "seq_id": 6,
+    "resname": "LYS",
+    "phi": -95.23,
+    "psi": 127.54
+   },
+   {
+    "seq_id": 7,
+    "resname": "THR",
+    "phi": -99.58,
+    "psi": 170.75
+   },
+   {
+    "seq_id": 8,
+    "resname": "LEU",
+    "phi": -73.43,
+    "psi": -6.94
+   },
+   {
+    "seq_id": 9,
+    "resname": "THR",
+    "phi": -101.4,
+    "psi": 14.93
+   },
+   {
+    "seq_id": 10,
+    "resname": "GLY",
+    "phi": 77.44,
+    "psi": 16.54
+   },
+   {
+    "seq_id": 11,
+    "resname": "LYS",
+    "phi": -96.27,
+    "psi": 138.08
+   },
+   {
+    "seq_id": 12,
+    "resname": "THR",
+    "phi": -119.94,
+    "psi": 131.76
+   },
+   {
+    "seq_id": 13,
+    "resname": "ILE",
+    "phi": -109.47,
+    "psi": 141.99
+   },
+   {
+    "seq_id": 14,
+    "resname": "THR",
+    "phi": -101.44,
+    "psi": 139.74
+   },
+   {
+    "seq_id": 15,
+    "resname": "LEU",
+    "phi": -126.41,
+    "psi": 154.0
+   },
+   {
+    "seq_id": 16,
+    "resname": "GLU",
+    "phi": -111.8,
+    "psi": 121.13
+   },
+   {
+    "seq_id": 17,
+    "resname": "VAL",
+    "phi": -139.02,
+    "psi": 170.72
+   },
+   {
+    "seq_id": 18,
+    "resname": "GLU",
+    "phi": -120.04,
+    "psi": 144.51
+   },
+   {
+    "seq_id": 19,
+    "resname": "PRO",
+    "phi": -54.94,
+    "psi": -24.53
+   },
+   {
+    "seq_id": 20,
+    "resname": "SER",
+    "phi": -79.84,
+    "psi": -8.14
+   },
+   {
+    "seq_id": 21,
+    "resname": "ASP",
+    "phi": -71.01,
+    "psi": 148.44
+   },
+   {
+    "seq_id": 22,
+    "resname": "THR",
+    "phi": -83.7,
+    "psi": 160.43
+   },
+   {
+    "seq_id": 23,
+    "resname": "ILE",
+    "phi": -61.33,
+    "psi": -37.21
+   },
+   {
+    "seq_id": 24,
+    "resname": "GLU",
+    "phi": -57.57,
+    "psi": -40.49
+   },
+   {
+    "seq_id": 25,
+    "resname": "ASN",
+    "phi": -65.49,
+    "psi": -44.44
+   },
+   {
+    "seq_id": 26,
+    "resname": "VAL",
+    "phi": -58.42,
+    "psi": -46.41
+   },
+   {
+    "seq_id": 27,
+    "resname": "LYS",
+    "phi": -60.81,
+    "psi": -37.96
+   },
+   {
+    "seq_id": 28,
+    "resname": "ALA",
+    "phi": -66.12,
+    "psi": -38.12
+   },
+   {
+    "seq_id": 29,
+    "resname": "LYS",
+    "phi": -64.22,
+    "psi": -37.26
+   },
+   {
+    "seq_id": 30,
+    "resname": "ILE",
+    "phi": -70.0,
+    "psi": -39.56
+   },
+   {
+    "seq_id": 31,
+    "resname": "GLN",
+    "phi": -62.13,
+    "psi": -48.63
+   },
+   {
+    "seq_id": 32,
+    "resname": "ASP",
+    "phi": -53.41,
+    "psi": -41.77
+   },
+   {
+    "seq_id": 33,
+    "resname": "LYS",
+    "phi": -93.58,
+    "psi": -24.4
+   },
+   {
+    "seq_id": 34,
+    "resname": "GLU",
+    "phi": -123.58,
+    "psi": -6.35
+   },
+   {
+    "seq_id": 35,
+    "resname": "GLY",
+    "phi": 81.22,
+    "psi": 5.32
+   },
+   {
+    "seq_id": 36,
+    "resname": "ILE",
+    "phi": -79.73,
+    "psi": 124.87
+   },
+   {
+    "seq_id": 37,
+    "resname": "PRO",
+    "phi": -57.0,
+    "psi": 136.97
+   },
+   {
+    "seq_id": 38,
+    "resname": "PRO",
+    "phi": -57.18,
+    "psi": -32.17
+   },
+   {
+    "seq_id": 39,
+    "resname": "ASP",
+    "phi": -68.24,
+    "psi": -15.57
+   },
+   {
+    "seq_id": 40,
+    "resname": "GLN",
+    "phi": -95.8,
+    "psi": -10.47
+   },
+   {
+    "seq_id": 41,
+    "resname": "GLN",
+    "phi": -84.83,
+    "psi": 129.7
+   },
+   {
+    "seq_id": 42,
+    "resname": "ARG",
+    "phi": -121.24,
+    "psi": 115.96
+   },
+   {
+    "seq_id": 43,
+    "resname": "LEU",
+    "phi": -103.56,
+    "psi": 130.24
+   },
+   {
+    "seq_id": 44,
+    "resname": "ILE",
+    "phi": -122.07,
+    "psi": 131.81
+   },
+   {
+    "seq_id": 45,
+    "resname": "PHE",
+    "phi": -144.27,
+    "psi": 129.64
+   },
+   {
+    "seq_id": 46,
+    "resname": "ALA",
+    "phi": 48.17,
+    "psi": 45.99
+   },
+   {
+    "seq_id": 47,
+    "resname": "GLY",
+    "phi": 61.71,
+    "psi": 21.62
+   },
+   {
+    "seq_id": 48,
+    "resname": "LYS",
+    "phi": -115.07,
+    "psi": 142.71
+   },
+   {
+    "seq_id": 49,
+    "resname": "GLN",
+    "phi": -85.77,
+    "psi": 130.28
+   },
+   {
+    "seq_id": 50,
+    "resname": "LEU",
+    "phi": -79.56,
+    "psi": 138.33
+   },
+   {
+    "seq_id": 51,
+    "resname": "GLU",
+    "phi": -101.83,
+    "psi": 139.96
+   },
+   {
+    "seq_id": 52,
+    "resname": "ASP",
+    "phi": -48.19,
+    "psi": -42.21
+   },
+   {
+    "seq_id": 53,
+    "resname": "GLY",
+    "phi": -82.93,
+    "psi": -8.89
+   },
+   {
+    "seq_id": 54,
+    "resname": "ARG",
+    "phi": -85.45,
+    "psi": 165.46
+   },
+   {
+    "seq_id": 55,
+    "resname": "THR",
+    "phi": -104.51,
+    "psi": 164.59
+   },
+   {
+    "seq_id": 56,
+    "resname": "LEU",
+    "phi": -61.22,
+    "psi": -36.21
+   },
+   {
+    "seq_id": 57,
+    "resname": "SER",
+    "phi": -63.89,
+    "psi": -29.62
+   },
+   {
+    "seq_id": 58,
+    "resname": "ASP",
+    "phi": -55.55,
+    "psi": -39.3
+   },
+   {
+    "seq_id": 59,
+    "resname": "TYR",
+    "phi": -91.02,
+    "psi": 4.65
+   },
+   {
+    "seq_id": 60,
+    "resname": "ASN",
+    "phi": 57.94,
+    "psi": 45.36
+   },
+   {
+    "seq_id": 61,
+    "resname": "ILE",
+    "phi": -88.67,
+    "psi": 116.44
+   },
+   {
+    "seq_id": 62,
+    "resname": "GLN",
+    "phi": -103.44,
+    "psi": 169.54
+   },
+   {
+    "seq_id": 63,
+    "resname": "LYS",
+    "phi": -54.79,
+    "psi": 143.06
+   },
+   {
+    "seq_id": 64,
+    "resname": "GLU",
+    "phi": 66.9,
+    "psi": 19.15
+   },
+   {
+    "seq_id": 65,
+    "resname": "SER",
+    "phi": -71.15,
+    "psi": 159.52
+   },
+   {
+    "seq_id": 66,
+    "resname": "THR",
+    "phi": -119.15,
+    "psi": 126.67
+   },
+   {
+    "seq_id": 67,
+    "resname": "LEU",
+    "phi": -103.14,
+    "psi": 154.61
+   },
+   {
+    "seq_id": 68,
+    "resname": "HIS",
+    "phi": -105.58,
+    "psi": 135.67
+   },
+   {
+    "seq_id": 69,
+    "resname": "LEU",
+    "phi": -106.97,
+    "psi": 115.78
+   },
+   {
+    "seq_id": 70,
+    "resname": "VAL",
+    "phi": -108.12,
+    "psi": 139.93
+   },
+   {
+    "seq_id": 71,
+    "resname": "LEU",
+    "phi": -96.02,
+    "psi": 138.8
+   },
+   {
+    "seq_id": 72,
+    "resname": "ARG",
+    "phi": -117.62,
+    "psi": 98.81
+   },
+   {
+    "seq_id": 73,
+    "resname": "LEU",
+    "phi": -83.72,
+    "psi": 150.39
+   },
+   {
+    "seq_id": 74,
+    "resname": "ARG",
+    "phi": -97.66,
+    "psi": 93.88
+   },
+   {
+    "seq_id": 75,
+    "resname": "GLY",
+    "phi": 120.41,
+    "psi": 125.56
+   },
+   {
+    "seq_id": 76,
+    "resname": "GLY",
+    "phi": 174.16,
+    "psi": null
+   }
+  ]
+ },
+ "counts": {
+  "1CRN": {
+   "models": 1,
+   "atom_records_model_1": 327,
+   "hetatm_records_model_1": 0,
+   "chains_model_1": [
+    "A"
+   ],
+   "polymer_residues_with_ca": {
+    "A": 46
+   },
+   "helices_struct_conf": 2,
+   "strands_struct_sheet_range": 2
+  },
+  "1UBQ": {
+   "models": 1,
+   "atom_records_model_1": 602,
+   "hetatm_records_model_1": 58,
+   "chains_model_1": [
+    "A"
+   ],
+   "polymer_residues_with_ca": {
+    "A": 76
+   },
+   "helices_struct_conf": 2,
+   "strands_struct_sheet_range": 5
+  },
+  "4HHB": {
+   "models": 1,
+   "atom_records_model_1": 4384,
+   "hetatm_records_model_1": 395,
+   "chains_model_1": [
+    "A",
+    "B",
+    "C",
+    "D"
+   ],
+   "polymer_residues_with_ca": {
+    "A": 141,
+    "B": 146,
+    "C": 141,
+    "D": 146
+   },
+   "helices_struct_conf": 32,
+   "strands_struct_sheet_range": 0
+  },
+  "1A5R": {
+   "models": 10,
+   "atom_records_model_1": 1622,
+   "hetatm_records_model_1": 0,
+   "chains_model_1": [
+    "A"
+   ],
+   "polymer_residues_with_ca": {
+    "A": 103
+   },
+   "helices_struct_conf": 2,
+   "strands_struct_sheet_range": 4
+  },
+  "1MBN": {
+   "models": 1,
+   "atom_records_model_1": 1216,
+   "hetatm_records_model_1": 44,
+   "chains_model_1": [
+    "A"
+   ],
+   "polymer_residues_with_ca": {
+    "A": 153
+   },
+   "helices_struct_conf": 8,
+   "strands_struct_sheet_range": 0
+  }
+ }
+}

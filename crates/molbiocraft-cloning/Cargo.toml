@@ -1,0 +1,27 @@
+# Copyright 2026 MolBioCraft Contributors
+# SPDX-License-Identifier: CC-BY-NC-4.0
+
+[package]
+name = "molbiocraft-cloning"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Restriction enzyme Aho-Corasick digest engine, agarose gel physics, Gibson/GoldenGate/Gateway/TOPO cloning, SantaLucia+Owczarzy PCR thermodynamics, MFE secondary structure, CRISPR scoring, modular vector architect, and batch sequence operations"
+
+[dependencies]
+molbiocraft-core = { path = "../molbiocraft-core" }
+molbiocraft-formats = { path = "../molbiocraft-formats" }
+molbiocraft-align = { path = "../molbiocraft-align" }
+molbiocraft-protein = { path = "../molbiocraft-protein" }
+serde.workspace = true
+serde_json.workspace = true
+bio.workspace = true
+petgraph.workspace = true
+csv.workspace = true
+aho-corasick.workspace = true
+memchr.workspace = true
+rustc-hash.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon.workspace = true

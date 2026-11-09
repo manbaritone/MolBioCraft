@@ -1,0 +1,32 @@
+# Reference tools for scripts/outside-data (conda / mamba):
+#   mamba env create -p .refenv -f scripts/outside-data/environment.yml
+# Synthego ICE needs its own Python 3.9 environment (see README.md).
+name: molbiocraft-outside-data
+channels: [conda-forge, bioconda]
+dependencies:
+  - python=3.11
+  - biopython
+  - primer3-py
+  - pydeseq2
+  - dendropy
+  - viennarna
+  - pyteomics
+  - blast
+  - mafft
+  - muscle
+  - clustalo
+  - iqtree
+  - fasttree
+  - emboss
+  - paml
+  - wgsim
+  - bwa
+  - samtools
+  - bcftools
+  - spades
+  - r-base
+  - r-ape
+  - r-phangorn
+  - r-pegas
+  - r-jsonlite
+  - bioconductor-deseq2

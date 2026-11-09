@@ -1,0 +1,29 @@
+# Copyright 2026 MolBioCraft Contributors
+# SPDX-License-Identifier: CC-BY-NC-4.0
+
+[package]
+name = "molbiocraft-formats"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Standards-compliant genomics & structural biology parsers powered by Noodles (FASTA, FASTQ, GFF3, VCF, BED, SAM) plus GenBank, EMBL, AB1, PDB/mmCIF, and NCBI .fsa/.tbl"
+
+[dependencies]
+molbiocraft-core = { path = "../molbiocraft-core" }
+serde.workspace = true
+serde_json.workspace = true
+noodles-core.workspace = true
+noodles-fasta.workspace = true
+noodles-fastq.workspace = true
+noodles-gff.workspace = true
+noodles-vcf.workspace = true
+noodles-bed.workspace = true
+noodles-sam.workspace = true
+bio.workspace = true
+statrs.workspace = true
+crc32fast.workspace = true
+flate2.workspace = true
+csv.workspace = true
+memchr.workspace = true
+aho-corasick.workspace = true

@@ -1,0 +1,45 @@
+{
+  "name": "molbiocraft",
+  "version": "1.0.0",
+  "description": "A cross-platform bioinformatics workbench for sequence analysis in molecular biology and evolutionary biology research. Built for macOS, Windows, and Linux.",
+  "license": "CC-BY-NC-4.0",
+  "author": "manbaritone",
+  "homepage": "https://github.com/manbaritone/MolBioCraft",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/manbaritone/MolBioCraft.git"
+  },
+  "bugs": {
+    "url": "https://github.com/manbaritone/MolBioCraft/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:standalone": "tsc --noEmit && vite build --mode standalone && node scripts/build_standalone_html.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "node scripts/e2e/functional-smoke.cjs --serve",
+    "wasm:build": "node scripts/build_rust_wasm.mjs",
+    "rust:test": "cargo test --workspace",
+    "rpc:capture": "node scripts/capture_rpc_payloads.mjs",
+    "package:installers": "./scripts/build_installers.sh"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "molstar": "5.13.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "2.1.9",
+    "playwright": "1.64.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,87 @@
+# Node / Vite frontend build, cache & coverage
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.vite/
+
+# Rust / Cargo build outputs, profiling & local workspace toolchain
+.toolchain/
+target/
+crates/*/target/
+src-tauri/target/
+*.profraw
+*.profdata
+lcov.info
+
+# Packaging & release outputs (publish via GitHub Releases, not the repo)
+packaging/AppIcon.iconset/
+release/
+*.app/
+*.dmg
+*.pkg
+*.msi
+*.exe
+*.deb
+*.rpm
+*.AppImage
+*.bundle
+
+# Local reference resources & third-party proprietary bundles (never push or inspect)
+/resources/
+
+# OS & Editor metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.log
+*.tmp
+*.bak
+
+# Secrets & local env
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.cer
+*.pfx
+
+# Local tooling, SDLC Studio, agent instructions & internal audit files (local only, not tracked)
+/sdlc-studio/
+/AGENTS.md
+/CLAUDE.md
+.github/copilot-instructions.md
+/MOLBIOCRAFT_FUNCTIONAL_INTEGRITY_AUDIT.md
+/MOLBIOCRAFT_RUST_PACKAGING_INTEGRITY_AUDIT.md
+/MOLBIOCRAFT_UI_UX_PERFORMANCE_REPORT.md
+/docs/audit/
+.claude/
+.agents/
+.gemini/
+.impeccable/
+
+# Python / R tooling (outside-data reference scripts)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.Rhistory
+.RData
+.Rproj.user/
+
+# Local test data (e.g. user .fsa runs) — never committed. The raw public inputs are fetched by
+# scripts/outside-data/fetch.sh. Only our own derived reference values and simulated reads are
+# committed (D0010; sources and licences in PROVENANCE.md). A file under an ignored directory cannot
+# be re-included, so the folder's contents are ignored rather than the folder.
+test-data/*
+!test-data/reference/
+!test-data/sim/

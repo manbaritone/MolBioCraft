@@ -1,0 +1,732 @@
+{
+ "add_attb_sites": [
+  "doc",
+  "range"
+ ],
+ "align_large_genomes_minimizer_chain": [
+  "kmerK",
+  "maxSeedOccurrences",
+  "querySeq",
+  "targetSeq",
+  "windowW"
+ ],
+ "align_pairwise": [
+  "gapExtend",
+  "gapOpen",
+  "matchScore",
+  "maxLen",
+  "mismatchPenalty",
+  "mode",
+  "seq1",
+  "seq2"
+ ],
+ "align_pairwise_banded_sparse": [
+  "gapExtend",
+  "gapOpen",
+  "k",
+  "matchScore",
+  "maxLen",
+  "mismatchScore",
+  "mode",
+  "seq1",
+  "seq2",
+  "w"
+ ],
+ "align_pairwise_gotoh": [
+  "gapExtend",
+  "gapOpen",
+  "matchScore",
+  "matrix",
+  "mismatchPenalty",
+  "mode",
+  "seq1",
+  "seq2"
+ ],
+ "align_pdb_kabsch": [
+  "chainA",
+  "chainB",
+  "pdbA",
+  "pdbB"
+ ],
+ "align_structures_tm": [
+  "chainA",
+  "chainB",
+  "pdbA",
+  "pdbB"
+ ],
+ "analyze_gibson_overlap_junction": [
+  "overlapSeq"
+ ],
+ "analyze_pdb_3d_geometry": [
+  "pdbOrCif"
+ ],
+ "analyze_protein_sequence": [
+  "isDna",
+  "seq",
+  "windowSize"
+ ],
+ "analyze_sequence_composition": [
+  "seq"
+ ],
+ "analyze_silent_mutations": [
+  "maxCandidates",
+  "seq"
+ ],
+ "analyze_silent_mutations_in_cds": [
+  "maxCandidates",
+  "regions",
+  "seq"
+ ],
+ "analyze_user_tree": [
+  "alignedSeqs",
+  "names",
+  "userNewick"
+ ],
+ "anneal_oligos": [
+  "bottomOligo5to3",
+  "duplexName",
+  "phosphorylated5Prime",
+  "topOligo5to3"
+ ],
+ "annotate_gateway_att_sites": [
+  "doc"
+ ],
+ "annotate_vcf_coding_consequences_noodles": [
+  "features",
+  "geneticCodeId",
+  "referenceSeq",
+  "vcfText"
+ ],
+ "assemble_modular_custom_vector": [
+  "spec"
+ ],
+ "assemble_sanger_contig_poa": [
+  "contigName",
+  "reads",
+  "trimLowQuality"
+ ],
+ "audit_sequence_alerts": [
+  "cutSites",
+  "doc",
+  "scanStoppedEarly",
+  "strain"
+ ],
+ "audit_twist_onboarding": [
+  "dnaConcNgUl",
+  "dnaVolumeUl",
+  "doc",
+  "insertionSiteBp"
+ ],
+ "backbone_torsions": [
+  "chain",
+  "text"
+ ],
+ "batch_modify_annotation_intervals": [
+  "deltaEndBp",
+  "deltaStartBp",
+  "doc"
+ ],
+ "batch_set_cds_translation": [
+  "doc"
+ ],
+ "build_catalog_vector_document": [
+  "entry"
+ ],
+ "build_cloning_action_vector_document": [
+  "preset"
+ ],
+ "build_construct_lineage_dag_rust": [
+  "allDocs",
+  "targetDoc"
+ ],
+ "build_curated_database_document": [
+  "recordId",
+  "timestampIso"
+ ],
+ "build_ncbi_reference_preset_document": [
+  "nowIso",
+  "preset"
+ ],
+ "build_nj_newick": [
+  "alignedSeqs",
+  "names"
+ ],
+ "build_upgma_newick": [
+  "alignedSeqs",
+  "names"
+ ],
+ "calculate_primer_metrics": [
+  "mgMm",
+  "naMm",
+  "primerNm",
+  "seq"
+ ],
+ "calculate_primer_thermodynamics_santalucia": [
+  "mgMm",
+  "naMm",
+  "primerNm",
+  "seq"
+ ],
+ "call_freebayes_variants": [
+  "refName",
+  "refSeq",
+  "sampleSeq"
+ ],
+ "check_cotransformation": [
+  "vecA",
+  "vecB"
+ ],
+ "classify_taxonomy": [
+  "seq"
+ ],
+ "clean_sequence": [
+  "alphaOnly",
+  "seq"
+ ],
+ "compare_tree_topologies_robinson_foulds": [
+  "newickA",
+  "newickB"
+ ],
+ "complement_sequence": [
+  "isRna",
+  "seq"
+ ],
+ "compute_agarose_gel_physics": [
+  "agarosePct",
+  "bufferType",
+  "fragmentSizesBp",
+  "gelLengthMm"
+ ],
+ "compute_chromatogram_viewport": [
+  "autoscaled",
+  "baseOffset",
+  "baselineY",
+  "chromatogram",
+  "maxPeakHeight",
+  "rawMode",
+  "verticalScale",
+  "windowBases"
+ ],
+ "compute_dna_ligation_calcs": [
+  "concNgPerUl",
+  "insertLengthBp",
+  "lengthBp",
+  "vectorMassNg",
+  "volumeUl"
+ ],
+ "compute_document_table_metrics_rust": [
+  "doc"
+ ],
+ "compute_dotplot_hits": [
+  "minMatches",
+  "seq1",
+  "seq2",
+  "windowSize"
+ ],
+ "compute_evolutionary_distances": [
+  "alignedSeqs",
+  "groups",
+  "model",
+  "names"
+ ],
+ "compute_mash_minimizer_distance": [
+  "k",
+  "seqA",
+  "seqB",
+  "sketchCapacity",
+  "w"
+ ],
+ "compute_mbc_payload_checksum": [
+  "docs"
+ ],
+ "compute_nucleotide_composition_by_codon_pos": [
+  "alignedSeqs",
+  "names"
+ ],
+ "compute_population_diversity": [
+  "alignedSeqs",
+  "groups",
+  "model",
+  "names"
+ ],
+ "compute_rscu": [
+  "alignedSeqs"
+ ],
+ "compute_sam_pileup_and_coverage_noodles": [
+  "referenceSeq",
+  "samText",
+  "windowCount"
+ ],
+ "compute_substitution_rate_matrix": [
+  "alignedSeqs",
+  "names"
+ ],
+ "concatenate_documents": [
+  "docs",
+  "spacer"
+ ],
+ "construct_phylogenetic_tree": [
+  "algorithm",
+  "alignedSeqs",
+  "bootstrapReplicates",
+  "jackknifePct",
+  "model",
+  "names"
+ ],
+ "convert_dna_rna": [
+  "seq",
+  "toRna"
+ ],
+ "convert_selection_to_oligo": [
+  "doc",
+  "range",
+  "strand"
+ ],
+ "design_pcr_primers": [
+  "doc",
+  "fwdTail5Prime",
+  "positionSlackBp",
+  "regionEnd",
+  "regionStart",
+  "revTail5Prime",
+  "targetTm"
+ ],
+ "detect_common_features": [
+  "doc"
+ ],
+ "diagnose_missense_mutation": [
+  "alignedSeqs",
+  "mutantAa",
+  "positionAa",
+  "wildTypeAa"
+ ],
+ "engine_diagnostics": [],
+ "ensure_resident_sequence": [
+  "bins",
+  "docId",
+  "features",
+  "isProtein",
+  "isRna",
+  "revisionKey",
+  "seq"
+ ],
+ "estimate_gamma_and_site_rates": [
+  "alignedSeqs",
+  "numCategories"
+ ],
+ "evaluate_golden_gate_overhang_fidelity": [
+  "overhangs"
+ ],
+ "evaluate_multi_digest_buffer_plan": [
+  "enzymes"
+ ],
+ "evict_resident_sequence": [
+  "docId"
+ ],
+ "execute_bio_pipeline_rust": [
+  "completedAtIso",
+  "doc",
+  "hostOS",
+  "pipelineId"
+ ],
+ "execute_builtin_rust_workflow_macro": [
+  "doc",
+  "macroId"
+ ],
+ "explore_alignment_data": [
+  "alignedSeqs"
+ ],
+ "export_embl": [
+  "doc"
+ ],
+ "export_fasta": [
+  "doc"
+ ],
+ "export_genbank": [
+  "doc"
+ ],
+ "export_gff3": [
+  "doc"
+ ],
+ "export_lineage_bundle_genbank": [
+  "allDocs",
+  "targetDoc"
+ ],
+ "export_table_delimited_csv_rust": [
+  "delimiter",
+  "headers",
+  "rows"
+ ],
+ "export_vector_catalog_csv": [
+  "entries"
+ ],
+ "extract_annotated_features": [
+  "doc",
+  "filterType"
+ ],
+ "extract_region_with_annotations_rust": [
+  "doc",
+  "end1Based",
+  "nowIso",
+  "start1Based"
+ ],
+ "find_best_substitution_models": [
+  "alignedSeqs"
+ ],
+ "find_cpg_islands": [
+  "minGcPct",
+  "minLengthBp",
+  "minObsExp",
+  "seq"
+ ],
+ "find_crispr_guides": [
+  "circular",
+  "maxResults",
+  "nuclease",
+  "seq"
+ ],
+ "find_genomic_repeats": [
+  "maxHits",
+  "minArmBp",
+  "seq"
+ ],
+ "find_non_cutting_enzymes": [
+  "customEnzymes",
+  "seq",
+  "topology"
+ ],
+ "find_orfs": [
+  "allowAlternativeStart",
+  "circular",
+  "minLengthAa",
+  "seq",
+  "tableId"
+ ],
+ "find_restriction_cut_sites": [
+  "customEnzymes",
+  "seq",
+  "topology"
+ ],
+ "generate_catalog_circular_svg": [
+  "entry"
+ ],
+ "generate_consensus_document": [
+  "docs",
+  "thresholdPct"
+ ],
+ "generate_large_genome_benchmark": [
+  "lengthBp",
+  "organismPreset"
+ ],
+ "generate_large_protein_benchmark": [
+  "lengthAa",
+  "proteinPreset"
+ ],
+ "get_bio_pipeline_catalog": [],
+ "get_builtin_workflow_macros_rust": [],
+ "get_cloning_action_vector_presets": [],
+ "get_common_plasmid_features": [],
+ "get_host_strain_guides": [],
+ "get_modular_vector_parts": [],
+ "get_origin_compatibility_groups": [],
+ "get_rebase_enzymes": [],
+ "get_reference_database_categories": [],
+ "get_resident_track_overview": [
+  "bins",
+  "docId"
+ ],
+ "get_sample_library": [],
+ "get_twist_antibiotic_standards": [],
+ "get_vector_catalog": [],
+ "get_vector_system_guides": [],
+ "group_documents_by_prefix": [
+  "docs"
+ ],
+ "infer_ancestral_sequences": [
+  "alignedSeqs",
+  "method",
+  "names"
+ ],
+ "intersect_genomic_intervals_noodles": [
+  "flankBp",
+  "referenceFasta",
+  "trackAText",
+  "trackBText"
+ ],
+ "is_mbc_file_or_payload_rust": [
+  "fileName",
+  "rawText"
+ ],
+ "layout_newick_phylogenetic_tree": [
+  "height",
+  "newick",
+  "style",
+  "width"
+ ],
+ "map_read_and_call_variants": [
+  "phredScores",
+  "readName",
+  "readSeq",
+  "refSeq"
+ ],
+ "mask_sequence_regions": [
+  "doc",
+  "mode",
+  "range"
+ ],
+ "ml_tree_search": [
+  "alignedSeqs",
+  "model",
+  "names"
+ ],
+ "mutate_or_shuffle_sequence": [
+  "mode",
+  "mutationRatePct",
+  "seed",
+  "seq"
+ ],
+ "optimize_codons": [
+  "host",
+  "isDna",
+  "seq"
+ ],
+ "parse_binary_packet": [
+  "bytes",
+  "fileName"
+ ],
+ "parse_embl": [
+  "fallbackName",
+  "text"
+ ],
+ "parse_fasta": [
+  "defaultName",
+  "text"
+ ],
+ "parse_fastq": [
+  "maxReads",
+  "text"
+ ],
+ "parse_genbank": [
+  "fallbackName",
+  "text"
+ ],
+ "parse_gff3": [
+  "text"
+ ],
+ "parse_mbc_workbench_rust": [
+  "fallbackSessionName",
+  "nowIso",
+  "rawText"
+ ],
+ "parse_pdb_ca": [
+  "pdbText"
+ ],
+ "parse_structure": [
+  "text"
+ ],
+ "parse_vcf": [
+  "text"
+ ],
+ "predict_coiled_coils_and_tm": [
+  "proteinSeq"
+ ],
+ "predict_glimmer_genes": [
+  "minAaLength",
+  "seq"
+ ],
+ "predict_secondary_structure": [
+  "circular",
+  "danglingEnds",
+  "moleculeType",
+  "seq",
+  "temperatureC"
+ ],
+ "prepare_genbank_submission": [
+  "doc",
+  "meta"
+ ],
+ "query_curated_database_records": [
+  "category",
+  "query"
+ ],
+ "randomly_sample_documents": [
+  "docs",
+  "sampleSize",
+  "seed"
+ ],
+ "resident_store_stats": [],
+ "reverse_complement": [
+  "isRna",
+  "seq"
+ ],
+ "reverse_only_sequence": [
+  "seq"
+ ],
+ "run_bbduk_trim": [
+  "options",
+  "qualities",
+  "seq"
+ ],
+ "run_de_novo_assembly": [
+  "assembler",
+  "inputs",
+  "minOverlapBp"
+ ],
+ "run_local_blast": [
+  "databaseName",
+  "docs",
+  "program",
+  "querySeq"
+ ],
+ "run_molecular_clock_and_timetree": [
+  "alignedSeqs",
+  "calibrationAgeMya",
+  "method",
+  "names"
+ ],
+ "run_msa": [
+  "algorithm",
+  "docs",
+  "maxSeqLen"
+ ],
+ "run_ngs_mapping": [
+  "mapper",
+  "readSeq",
+  "referenceSeq"
+ ],
+ "run_selection_and_neutrality_tests": [
+  "alignedSeqs"
+ ],
+ "run_whole_genome_synteny": [
+  "engine",
+  "seqA",
+  "seqB"
+ ],
+ "scan_fuzzy_subsequence_simd": [
+  "bothStrands",
+  "maxEdits",
+  "maxHits",
+  "pattern",
+  "seq"
+ ],
+ "scan_jaspar_pssm_motifs": [
+  "customSites",
+  "minRelScore",
+  "seq"
+ ],
+ "scan_microsatellite_strs": [
+  "minHomopolymerBp",
+  "minUnitsDiPlus",
+  "seq"
+ ],
+ "scan_post_translational_modifications": [
+  "proteinSeq"
+ ],
+ "scan_protein_functional_motifs": [
+  "proteinSeq"
+ ],
+ "scan_restriction_sites": [
+  "customEnzymes",
+  "seq",
+  "topology"
+ ],
+ "search_approximate_myers": [
+  "maxEditDist",
+  "maxHits",
+  "pattern",
+  "searchRevcomp",
+  "seq"
+ ],
+ "search_proteome_blosum62_hsps": [
+  "evalueCutoff",
+  "queryProtein",
+  "targets",
+  "wordLen"
+ ],
+ "search_resident_motif_fmindex": [
+  "bothStrands",
+  "docId",
+  "maxHits",
+  "pattern"
+ ],
+ "segment_genome_hmm_viterbi": [
+  "seq"
+ ],
+ "serialize_mbc_workbench_rust": [
+  "appVersion",
+  "savedAtIso",
+  "snapshot"
+ ],
+ "set_circular_origin": [
+  "doc",
+  "newOrigin1Based"
+ ],
+ "simulate_molecular_cloning": [
+  "enzyme3Prime",
+  "enzyme5Prime",
+  "goldenGateEnzyme",
+  "insertDoc",
+  "method",
+  "vectorDoc"
+ ],
+ "simulate_mutagenesis": [
+  "deletionLengthBp",
+  "doc",
+  "mode",
+  "positionBp",
+  "replacementBases"
+ ],
+ "simulate_peptide_ms2_spectrum": [
+  "carbamidomethylCys",
+  "peptideSeq"
+ ],
+ "simulate_proteolytic_digest_ms": [
+  "carbamidomethylCys",
+  "maxMassDa",
+  "maxMissedCleavages",
+  "minMassDa",
+  "protease",
+  "proteinSeq"
+ ],
+ "simulate_restriction_digest": [
+  "doc",
+  "selectedEnzymeNames"
+ ],
+ "simulate_twist_clonal_insertion": [
+  "framingMode",
+  "insertName",
+  "insertSeqRaw",
+  "insertionSiteBp",
+  "vectorDoc"
+ ],
+ "slice_resident_viewport": [
+  "docId",
+  "endPos",
+  "startPos"
+ ],
+ "splice_modular_part_into_document_rust": [
+  "doc",
+  "nowIso",
+  "part",
+  "positionBp"
+ ],
+ "synthesize_folded_pdb": [
+  "chainId",
+  "perturbationAngstrom",
+  "proteinSeq"
+ ],
+ "test_saved_primers": [
+  "maxMismatches",
+  "savedPrimers",
+  "seq"
+ ],
+ "translate_sequence": [
+  "dna",
+  "frameOffset",
+  "tableId"
+ ],
+ "trim_sanger_trace_mott_phred": [
+  "chromatogram",
+  "errorCutoff"
+ ]
+}

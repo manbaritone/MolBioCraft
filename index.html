@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <title>&#8203;</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      .mbc-boot-splash-shell {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: radial-gradient(circle at 50% 40%, rgba(240, 247, 255, 0.90) 0%, rgba(224, 242, 254, 0.94) 100%);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        .mbc-boot-splash-shell {
+          background: #0f1116;
+        }
+      }
+      .mbc-boot-splash-card {
+        --inset: clamp(1.5rem, 4.6vw, 2.75rem);
+        position: relative;
+        width: min(48rem, calc(100vw - 2.25rem));
+        aspect-ratio: 1800 / 1100;
+        min-height: 25rem;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        border-radius: 14px;
+        overflow: hidden;
+        color: #ffffff;
+        background:
+          radial-gradient(ellipse 34% 30% at 100% 100%, #5198a1 0%, rgba(81, 152, 161, 0) 100%),
+          radial-gradient(ellipse 60% 55% at 0% 0%, #3c82dc 0%, rgba(60, 130, 220, 0) 100%),
+          linear-gradient(128deg, #3c82dc 0%, #3f51b5 30%, #1e3498 86%);
+        box-shadow: 0 28px 68px rgba(10, 20, 70, 0.42), 0 8px 24px rgba(0, 0, 0, 0.22);
+      }
+      .mbc-boot-splash-phoenix {
+        position: absolute;
+        top: 5.5%;
+        right: 1.6%;
+        width: 46%;
+        height: auto;
+        aspect-ratio: 1;
+        object-fit: contain;
+        pointer-events: none;
+      }
+      .mbc-boot-splash-body {
+        position: relative;
+        z-index: 1;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        padding: clamp(1.75rem, 5vw, 2.6rem) var(--inset) clamp(1rem, 2.4vw, 1.35rem);
+      }
+      .mbc-boot-splash-copy {
+        flex: 1;
+        max-width: 52%;
+      }
+      .mbc-boot-splash-title,
+      .mbc-boot-splash-sub {
+        color: #ffd666;
+        font-weight: 700;
+      }
+      .mbc-boot-splash-title {
+        font-size: clamp(2.4rem, 1.6rem + 3vw, 3.6rem);
+        letter-spacing: -0.02em;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .mbc-boot-splash-sub {
+        font-size: clamp(1.5rem, 1rem + 1.9vw, 2.2rem);
+        line-height: 1.1;
+        margin-top: 0.4rem;
+      }
+      .mbc-boot-splash-helix {
+        display: block;
+        width: clamp(8.5rem, 24vw, 11.25rem);
+        height: auto;
+        margin-top: clamp(0.9rem, 2.4vw, 1.35rem);
+        margin-left: calc(-1 * var(--inset) - 0.15rem);
+      }
+      .mbc-boot-splash-details p {
+        margin: clamp(0.9rem, 2.4vw, 1.3rem) 0 0;
+      }
+      .mbc-boot-splash-summary {
+        font-size: clamp(1rem, 0.85rem + 0.7vw, 1.3rem);
+        font-weight: 600;
+        line-height: 1.32;
+      }
+      .mbc-boot-splash-license {
+        font-size: clamp(0.85rem, 0.75rem + 0.45vw, 1.0625rem);
+        font-style: italic;
+        font-weight: 500;
+        line-height: 1.45;
+      }
+      .mbc-boot-splash-meta {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 0.7rem;
+        font-size: clamp(0.875rem, 0.8rem + 0.35vw, 1.0625rem);
+        font-weight: 600;
+        line-height: 1.4;
+      }
+      @media (max-width: 640px) {
+        .mbc-boot-splash-card { aspect-ratio: auto; }
+        .mbc-boot-splash-phoenix { top: auto; bottom: 3.5rem; width: 62%; opacity: 0.28; }
+        .mbc-boot-splash-copy { max-width: 100%; }
+      }
+      progress.mbc-boot-progress {
+        appearance: none;
+        border: 0 solid;
+        overflow: clip;
+        display: block;
+        inline-size: 100%;
+        block-size: 0.5rem;
+        container-type: inline-size;
+        --progress-bar-radius: 9999px;
+        --progress-bar-indeterminate-size: 26%;
+        --progress-bar-indeterminate-animation-duration: 1.5s;
+        border-radius: var(--progress-bar-radius);
+        background: rgba(214, 222, 255, 0.22);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        progress.mbc-boot-progress {
+          --progress-bar-indeterminate-animation-duration: 10s;
+        }
+      }
+      progress.mbc-boot-progress::-webkit-progress-bar {
+        background: transparent;
+      }
+      progress.mbc-boot-progress::-webkit-progress-value {
+        background: rgba(214, 222, 255, 0.72);
+        border-radius: var(--progress-bar-radius);
+        animation: mbc-boot-indeterminate var(--progress-bar-indeterminate-animation-duration) infinite linear;
+      }
+      progress.mbc-boot-progress::-moz-progress-bar {
+        background: rgba(214, 222, 255, 0.72);
+        border-radius: var(--progress-bar-radius);
+        animation: mbc-boot-indeterminate var(--progress-bar-indeterminate-animation-duration) infinite linear;
+      }
+      @keyframes mbc-boot-indeterminate {
+        from,
+        to {
+          inline-size: var(--progress-bar-indeterminate-size);
+          margin-right: auto;
+        }
+        from {
+          translate: -100%;
+        }
+        to {
+          translate: 100cqi;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="mbc-boot-splash-shell">
+        <section class="mbc-boot-splash-card" aria-label="Loading MolBioCraft Workbench">
+          <img class="mbc-boot-splash-phoenix" src="/splash/phoenix-details.webp" width="880" height="880" alt="" aria-hidden="true" />
+          <div class="mbc-boot-splash-body">
+            <div class="mbc-boot-splash-copy">
+              <div class="mbc-boot-splash-title">MolBioCraft</div>
+              <div class="mbc-boot-splash-sub">Workbench</div>
+              <img class="mbc-boot-splash-helix" src="/splash/dna-helix-protein-horizontal.svg" width="1840" height="345" alt="" aria-hidden="true" />
+              <div class="mbc-boot-splash-details">
+                <p class="mbc-boot-splash-summary">Molecular &amp;<br />Evolutionary Biology Workbench</p>
+                <p class="mbc-boot-splash-license">CC BY-NC 4.0 (SPDX: CC-BY-NC-4.0)<br />Open-Source Research Workbench</p>
+              </div>
+            </div>
+            <div class="mbc-boot-splash-meta">
+              <div id="mbc-boot-status" role="status" aria-live="polite">Loading MolBioCraft Workbench…</div>
+              <div>Version 1.0.0</div>
+            </div>
+            <progress class="mbc-boot-progress" aria-labelledby="mbc-boot-status"></progress>
+          </div>
+        </section>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

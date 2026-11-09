@@ -1,0 +1,490 @@
+name: Build and Release
+
+# The four MolBioCraft installers, each built by the Tauri bundler on its own OS (US01M6TK7V, D0071),
+# once the reference-oracle suite has passed:
+# - macos-latest:   MolBioCraft-<v>-macOS-universal.dmg, Apple Silicon (arm64) + Intel (x86_64), by
+#                   scripts/build_installers.sh (tauri build --target universal-apple-darwin --bundles app,dmg)
+# - windows-latest: MolBioCraft-<v>-Windows-x64.msi (tauri build --target x86_64-pc-windows-msvc --bundles msi)
+#                   and MolBioCraft-<v>-Windows-x64-Portable.exe, the release molbiocraft-desktop.exe
+# - ubuntu-22.04:   MolBioCraft-<v>-Linux-x86_64.deb (tauri build --target x86_64-unknown-linux-gnu --bundles deb)
+# <v> is the version in src-tauri/tauri.conf.json. Each build job checks the architecture of what it
+# built and that NOTICE and PROVENANCE.md are in it, and uploads each installer as a workflow
+# artifact named after the file. The checksums job adds SHA256SUMS.txt, NOTICE.txt and PROVENANCE.md.
+#
+# The builds are unsigned: the macOS app is ad-hoc signed (bundle.macOS.signingIdentity "-") and not
+# notarised, and the Windows files carry no Authenticode signature. README.md gives the first-launch
+# steps for each.
+#
+# A v* tag push publishes the four installers, SHA256SUMS.txt, NOTICE.txt and PROVENANCE.md to a
+# GitHub Release (the publish job). A workflow_dispatch run builds and uploads the same seven files
+# as workflow artifacts and publishes nothing.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The Tauri CLI each build runs through npx, matching the tauri 2.12 crate in src-tauri/Cargo.lock;
+  # scripts/build_installers.sh pins the same version.
+  TAURI_CLI: '@tauri-apps/cli@2.12.4'
+
+jobs:
+  reference-check:
+    name: Reference-Oracle Suite and Release Version (macos-latest)
+    runs-on: macos-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # The version every installer name carries. A tag run must be the tag of that version, so a
+      # v0.3.0 tag on a commit whose tauri.conf.json still says 0.2.0 fails here, before any build.
+      - name: Read the Release Version From src-tauri/tauri.conf.json (a Tag Must Be v<version>)
+        id: version
+        shell: bash
+        run: |
+          version="$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::the tag $GITHUB_REF_NAME is not v$version, the version in src-tauri/tauri.conf.json"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust Stable Toolchain (with wasm32-unknown-unknown)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo Registry & Build Artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # The reference check below runs the whole Vitest suite and every cargo workspace test, so the
+      # release runs no separate npm test or cargo test.
+      - name: Install Frontend Dependencies & Build the WebAssembly Engine
+        run: |
+          npm ci
+          npm run wasm:build
+
+      # Reference-oracle suite (US01M6P2SS): the same data and check as nightly.yml. The check runs
+      # the whole Vitest suite and every cargo workspace test (with --include-ignored) with
+      # MOLBIOCRAFT_REQUIRE_TEST_DATA=1, so a release cannot ship unless every test that reads the
+      # reference data ran against it and passed. If any test fails or is skipped the check fails,
+      # and no installer is built: every build job needs this one. The one exception is the
+      # local-only test of the private lab runs (D0010), which the check names in this log and lets
+      # skip.
+      #
+      # The data comes from the cache the nightly saves. The actions/cache semantics this relies on
+      # (github.com/actions/cache and its restore README, docs.github.com dependency-caching):
+      # - Caches are scoped to a ref. A run restores caches saved on its own ref or on the default
+      #   branch, and a tag run cannot restore a cache another tag saved. The nightly's scheduled
+      #   runs save on the default branch, so every tag run can restore that cache.
+      # - A restore needs the same key and the same cache version. The key below is the nightly's,
+      #   with no runner.os in it. The version hashes the cached path and the compression tool
+      #   (zstd, present on ubuntu-latest and macos-latest), plus a Windows-only marker that the
+      #   enableCrossOsArchive input removes; both workflows set it, so a cache saved on the Linux
+      #   nightly restores on this macOS job, and would on a Windows runner too.
+      # - Without restore-keys only an exact key match is restored, so a cache saved under an older
+      #   fetch.sh (the key is the hash of the script that defines the data set) never is.
+      # - The path below is the nightly's, character for character (the version hashes it). It
+      #   leaves out the committed test-data/reference and test-data/sim (D0010), so a restore never
+      #   overwrites the tagged commit's copies with those of the commit that saved the cache.
+      # fetch.sh then downloads only what the restored folder lacks: everything on a miss (e.g. when
+      # fetch.sh changed since the nightly last saved). This job saves no cache: one saved on a tag
+      # could be restored only by re-runs for that tag, and the nightly owns the cache. With the
+      # committed reference results and simulated reads, the fetched data is all the check reads,
+      # apart from the private lab runs, whose one test the check names as local-only.
+      - name: Restore the Nightly's Reference Data Cache (test-data/, Keyed on the Hash of fetch.sh)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            test-data/*
+            !test-data/reference
+            !test-data/sim
+          key: outside-data-${{ hashFiles('scripts/outside-data/fetch.sh') }}
+          enableCrossOsArchive: true
+
+      - name: Fetch Reference Data Missing From the Cache (scripts/outside-data/fetch.sh)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/outside-data/fetch.sh test-data 2>&1 | tee "$RUNNER_TEMP/fetch.log"
+          if grep -q '^FAIL ' "$RUNNER_TEMP/fetch.log"; then
+            echo "::warning::some reference-data downloads failed (FAIL lines above); the reference check below names what is missing"
+          fi
+
+      - name: Run Reference-Oracle Suite (All Vitest + cargo test --workspace --include-ignored, MOLBIOCRAFT_REQUIRE_TEST_DATA=1)
+        timeout-minutes: 60
+        env:
+          MOLBIOCRAFT_REQUIRE_TEST_DATA: '1'
+          MOLBIOCRAFT_TEST_DATA_DIR: test-data
+        run: node scripts/check_reference_suite.mjs
+
+  macos:
+    name: macOS Universal (arm64 + x86_64) .app and .dmg (macos-latest)
+    needs: reference-check
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.reference-check.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Rust Stable Toolchain (aarch64 + x86_64 Apple Darwin, wasm32-unknown-unknown)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown
+
+      - name: Cache Cargo Registry & Build Artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            src-tauri -> target
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      # The script builds the engine, runs tauri build --target universal-apple-darwin --bundles
+      # app,dmg, and fails unless lipo -archs lists arm64 and x86_64 for the app's binary, the
+      # ad-hoc signature verifies, and Contents/Resources holds NOTICE and PROVENANCE.md, both in
+      # the built .app and in the .app inside the .dmg. It writes
+      # release/MolBioCraft-<v>-macOS-universal.dmg.
+      - name: Build and Check the Universal .app and .dmg (scripts/build_installers.sh, Tauri Bundler)
+        run: ./scripts/build_installers.sh
+
+      - name: Upload MolBioCraft-<v>-macOS-universal.dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: MolBioCraft-${{ env.VERSION }}-macOS-universal.dmg
+          path: release/MolBioCraft-${{ env.VERSION }}-macOS-universal.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64 .msi and Portable .exe (windows-latest)
+    needs: reference-check
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.reference-check.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Rust Stable Toolchain (x86_64-pc-windows-msvc, wasm32-unknown-unknown)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc,wasm32-unknown-unknown
+
+      - name: Cache Cargo Registry & Build Artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            src-tauri -> target
+
+      - name: Install Frontend Dependencies & Build the WebAssembly Engine
+        run: |
+          npm ci
+          npm run wasm:build
+
+      # WiX, which builds the MSI, runs only on Windows; the bundler fetches it. It also leaves the
+      # release molbiocraft-desktop.exe, with the frontend embedded, which runs without installing
+      # (the portable EXE) wherever the WebView2 runtime is present, as on Windows 10 and 11.
+      - name: Build the x64 MSI With the Tauri Bundler (tauri build --target x86_64-pc-windows-msvc --bundles msi)
+        id: build
+        shell: bash
+        run: npx --yes --package="$TAURI_CLI" -- tauri build --target x86_64-pc-windows-msvc --bundles msi --ci
+
+      - name: Stage MolBioCraft-<v>-Windows-x64.msi and MolBioCraft-<v>-Windows-x64-Portable.exe in release/
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=src-tauri/target/x86_64-pc-windows-msvc/release
+          msi="$out/bundle/msi/MolBioCraft_${VERSION}_x64_en-US.msi"
+          exe="$out/molbiocraft-desktop.exe"
+          for f in "$msi" "$exe"; do
+            [ -f "$f" ] || { echo "::error::the build wrote no $f"; exit 1; }
+          done
+          mkdir -p release
+          cp "$msi" "release/MolBioCraft-${VERSION}-Windows-x64.msi"
+          cp "$exe" "release/MolBioCraft-${VERSION}-Windows-x64-Portable.exe"
+
+      # An administrative install (msiexec /a) unpacks every file the MSI installs, in its install
+      # folder layout, into msi-admin/ without installing anything, so the next step can check them.
+      - name: Unpack the Staged MSI With an Administrative Install (msiexec /a)
+        id: unpack-msi
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path "release/MolBioCraft-$($env:VERSION)-Windows-x64.msi").Path
+          $dir = Join-Path (Get-Location) 'msi-admin'
+          $log = Join-Path $env:RUNNER_TEMP 'msi-admin.log'
+          $p = Start-Process msiexec.exe -ArgumentList @('/a', "`"$msi`"", '/qn', "TARGETDIR=`"$dir`"", '/l*v', "`"$log`"") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "msiexec /a $msi exited with code $($p.ExitCode)" }
+          Get-ChildItem -Recurse -File $dir | ForEach-Object { $_.FullName }
+
+      - name: Check the Portable EXE and the MSI's Installed EXE Are PE32+ x86-64, With NOTICE and PROVENANCE.md Installed
+        id: self-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          check="$(mktemp)"
+          cat > "$check" <<'JS'
+          // A PE32+ image for x86-64: MZ header, PE signature at e_lfanew, machine 0x8664, magic 0x20b.
+          const f = process.argv[2];
+          const b = require('fs').readFileSync(f);
+          const bad = (m) => { console.error(`${f}: ${m}`); process.exit(1); };
+          if (b.length < 64 || b.readUInt16LE(0) !== 0x5a4d) bad('not a PE file (no MZ header)');
+          const pe = b.readUInt32LE(0x3c);
+          if (pe + 26 > b.length || b.readUInt32LE(pe) !== 0x4550) bad('no PE signature at e_lfanew');
+          const machine = b.readUInt16LE(pe + 4);
+          const magic = b.readUInt16LE(pe + 24);
+          if (machine !== 0x8664) bad(`PE machine 0x${machine.toString(16)}, not x86-64 (0x8664)`);
+          if (magic !== 0x20b) bad(`optional-header magic 0x${magic.toString(16)}, not PE32+ (0x20b)`);
+          console.log(`${f}: PE32+ x86-64`);
+          JS
+          portable="release/MolBioCraft-${VERSION}-Windows-x64-Portable.exe"
+          [ -f "$portable" ] || fail "$portable is missing"
+          node "$check" "$portable" || fail "$portable is not a PE32+ x86-64 executable"
+          [ -d msi-admin ] || fail "msi-admin/ is missing: the MSI was not unpacked"
+          installed="$(find msi-admin -type f -name molbiocraft-desktop.exe)"
+          count="$(printf '%s' "$installed" | grep -c . || true)"
+          [ "$count" = 1 ] || fail "the MSI must install one molbiocraft-desktop.exe, and installs $count; it holds: $(find msi-admin -type f | tr '\n' ' ')"
+          node "$check" "$installed" || fail "the MSI installs $installed, which is not a PE32+ x86-64 executable"
+          dir="$(dirname "$installed")"
+          for f in NOTICE PROVENANCE.md; do
+            [ -f "$dir/$f" ] || fail "the MSI installs no $f beside $installed"
+            cmp -s "$f" "$dir/$f" || fail "the $f the MSI installs ($dir/$f) differs from this checkout's $f"
+          done
+          echo "the MSI installs $installed with NOTICE and PROVENANCE.md beside it"
+
+      - name: Upload MolBioCraft-<v>-Windows-x64.msi
+        uses: actions/upload-artifact@v4
+        with:
+          name: MolBioCraft-${{ env.VERSION }}-Windows-x64.msi
+          path: release/MolBioCraft-${{ env.VERSION }}-Windows-x64.msi
+          if-no-files-found: error
+
+      - name: Upload MolBioCraft-<v>-Windows-x64-Portable.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: MolBioCraft-${{ env.VERSION }}-Windows-x64-Portable.exe
+          path: release/MolBioCraft-${{ env.VERSION }}-Windows-x64-Portable.exe
+          if-no-files-found: error
+
+  linux:
+    name: Linux x86_64 .deb (ubuntu-22.04)
+    needs: reference-check
+    # The oldest Ubuntu with WebKitGTK 4.1, so the package needs no newer glibc than 22.04's.
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.reference-check.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install the Tauri Linux Build Dependencies (WebKitGTK 4.1, GTK 3, librsvg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libxdo-dev libssl-dev build-essential curl wget file
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Rust Stable Toolchain (x86_64-unknown-linux-gnu, wasm32-unknown-unknown)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,wasm32-unknown-unknown
+
+      - name: Cache Cargo Registry & Build Artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            src-tauri -> target
+
+      - name: Install Frontend Dependencies & Build the WebAssembly Engine
+        run: |
+          npm ci
+          npm run wasm:build
+
+      - name: Build the x86_64 .deb With the Tauri Bundler (tauri build --target x86_64-unknown-linux-gnu --bundles deb)
+        id: build
+        run: npx --yes --package="$TAURI_CLI" -- tauri build --target x86_64-unknown-linux-gnu --bundles deb --ci
+
+      # The bundler installs the binary in /usr/bin and bundle.resources in /usr/lib/MolBioCraft;
+      # bundle.linux.deb.files adds NOTICE and PROVENANCE.md under /usr/share/doc/molbiocraft.
+      - name: Stage MolBioCraft-<v>-Linux-x86_64.deb in release/ and Check Its ELF x86-64 Binary, NOTICE and PROVENANCE.md
+        id: self-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          built="src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/MolBioCraft_${VERSION}_amd64.deb"
+          deb="release/MolBioCraft-${VERSION}-Linux-x86_64.deb"
+          [ -f "$built" ] || fail "the build wrote no $built"
+          mkdir -p release
+          cp "$built" "$deb"
+          arch="$(dpkg-deb --field "$deb" Architecture)"
+          [ "$arch" = amd64 ] || fail "$deb is for $arch, not amd64"
+          listing="$(dpkg-deb -c "$deb")"
+          printf '%s\n' "$listing"
+          paths="$(printf '%s\n' "$listing" | awk '{ print $NF }' | sed 's|^\./||')"
+          for p in usr/bin/molbiocraft-desktop usr/lib/MolBioCraft/NOTICE usr/lib/MolBioCraft/PROVENANCE.md usr/share/doc/molbiocraft/NOTICE usr/share/doc/molbiocraft/PROVENANCE.md; do
+            printf '%s\n' "$paths" | grep -qxF "$p" || fail "dpkg-deb -c $deb lists no $p"
+          done
+          root="$(mktemp -d)"
+          dpkg-deb -x "$deb" "$root"
+          check="$(mktemp)"
+          cat > "$check" <<'JS'
+          // A 64-bit little-endian ELF for x86-64: ELF magic, EI_CLASS 2, EI_DATA 1, e_machine 62.
+          const f = process.argv[2];
+          const b = require('fs').readFileSync(f);
+          const bad = (m) => { console.error(`${f}: ${m}`); process.exit(1); };
+          if (b.length < 64 || b.readUInt32BE(0) !== 0x7f454c46) bad('not an ELF file');
+          if (b[4] !== 2) bad(`not a 64-bit ELF (EI_CLASS ${b[4]})`);
+          if (b[5] !== 1) bad(`not little-endian (EI_DATA ${b[5]})`);
+          const machine = b.readUInt16LE(18);
+          if (machine !== 62) bad(`ELF machine ${machine}, not x86-64 (62)`);
+          console.log(`${f}: ELF 64-bit LSB x86-64`);
+          JS
+          node "$check" "$root/usr/bin/molbiocraft-desktop" || fail "usr/bin/molbiocraft-desktop in $deb is not an ELF x86-64 executable"
+          for d in usr/lib/MolBioCraft usr/share/doc/molbiocraft; do
+            for f in NOTICE PROVENANCE.md; do
+              cmp -s "$f" "$root/$d/$f" || fail "/$d/$f in $deb differs from this checkout's $f"
+            done
+          done
+          echo "$deb ($(dpkg-deb --field "$deb" Package) $(dpkg-deb --field "$deb" Version), amd64) holds the ELF x86-64 binary, NOTICE and PROVENANCE.md"
+
+      - name: Upload MolBioCraft-<v>-Linux-x86_64.deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: MolBioCraft-${{ env.VERSION }}-Linux-x86_64.deb
+          path: release/MolBioCraft-${{ env.VERSION }}-Linux-x86_64.deb
+          if-no-files-found: error
+
+  checksums:
+    name: SHA256SUMS.txt, NOTICE.txt and PROVENANCE.md (ubuntu-latest)
+    needs: [reference-check, macos, windows, linux]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.reference-check.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the Four Installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: MolBioCraft-*
+          path: release
+          merge-multiple: true
+
+      # NOTICE.txt (the third-party notices, among them the CC BY 4.0 attribution of NOTICE section
+      # 6) and PROVENANCE.md go beside the installers, so they reach the portable EXE's users too.
+      - name: Stage NOTICE.txt and PROVENANCE.md and Write SHA256SUMS.txt
+        id: checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="MolBioCraft-${VERSION}-macOS-universal.dmg MolBioCraft-${VERSION}-Windows-x64.msi MolBioCraft-${VERSION}-Windows-x64-Portable.exe MolBioCraft-${VERSION}-Linux-x86_64.deb"
+          got="$(cd release && ls -A | sort | tr '\n' ' ')"
+          want="$(printf '%s\n' $files | sort | tr '\n' ' ')"
+          [ "$got" = "$want" ] || { echo "::error::release/ holds [$got], not the four installers [$want]"; exit 1; }
+          cp NOTICE release/NOTICE.txt
+          cp PROVENANCE.md release/PROVENANCE.md
+          (cd release && sha256sum $files NOTICE.txt PROVENANCE.md > SHA256SUMS.txt)
+          cat release/SHA256SUMS.txt
+
+      - name: Upload SHA256SUMS.txt
+        uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS.txt
+          path: release/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Upload NOTICE.txt
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOTICE.txt
+          path: release/NOTICE.txt
+          if-no-files-found: error
+
+      - name: Upload PROVENANCE.md
+        uses: actions/upload-artifact@v4
+        with:
+          name: PROVENANCE.md
+          path: release/PROVENANCE.md
+          if-no-files-found: error
+
+  publish:
+    name: Publish the GitHub Release (v* Tag Pushes Only)
+    needs: [reference-check, checksums]
+    # Only a pushed v* tag publishes. A workflow_dispatch run, on a branch or a tag, stops at the
+    # artifacts above.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.reference-check.outputs.version }}
+
+    steps:
+      - name: Download the Installers, SHA256SUMS.txt, NOTICE.txt and PROVENANCE.md
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Verify SHA256SUMS.txt
+        shell: bash
+        working-directory: assets
+        run: sha256sum --check --strict SHA256SUMS.txt
+
+      - name: Publish GitHub Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            assets/MolBioCraft-${{ env.VERSION }}-macOS-universal.dmg
+            assets/MolBioCraft-${{ env.VERSION }}-Windows-x64.msi
+            assets/MolBioCraft-${{ env.VERSION }}-Windows-x64-Portable.exe
+            assets/MolBioCraft-${{ env.VERSION }}-Linux-x86_64.deb
+            assets/SHA256SUMS.txt
+            assets/NOTICE.txt
+            assets/PROVENANCE.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

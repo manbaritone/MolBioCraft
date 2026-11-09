@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use MolBioCraft in academic research or teaching, please cite it using this metadata."
+title: "MolBioCraft: Molecular & Evolutionary Biology Workbench"
+abstract: "A cross-platform bioinformatics workbench for sequence analysis in molecular biology and evolutionary biology research. Built for macOS, Windows, and Linux."
+version: 1.0.0
+date-released: "2026-10-30"
+url: "https://github.com/manbaritone/MolBioCraft"
+repository-code: "https://github.com/manbaritone/MolBioCraft"
+license: "CC-BY-NC-4.0"
+type: software
+authors:
+  - alias: "manbaritone"
+    name: "Bundit Boonyarit"
+keywords:
+  - bioinformatics
+  - molecular-biology
+  - plasmid-design
+  - molecular-cloning
+  - crispr
+  - phylogenetics
+  - vector-design
+  - evolutionary-biology
+  - sequence-alignment

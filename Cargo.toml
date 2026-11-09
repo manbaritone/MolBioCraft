@@ -1,0 +1,55 @@
+# Copyright 2026 MolBioCraft Contributors
+# SPDX-License-Identifier: CC-BY-NC-4.0
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/molbiocraft-core",
+    "crates/molbiocraft-formats",
+    "crates/molbiocraft-align",
+    "crates/molbiocraft-phylo",
+    "crates/molbiocraft-cloning",
+    "crates/molbiocraft-protein",
+    "crates/molbiocraft-wasm",
+]
+exclude = ["src-tauri"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+authors = ["Bundit Boonyarit", "MolBioCraft Contributors"]
+license = "CC-BY-NC-4.0"
+repository = "https://github.com/manbaritone/MolBioCraft"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bio = "2.0"
+noodles-core = "0.16"
+noodles-fasta = "0.49"
+noodles-fastq = "0.17"
+noodles-gff = "0.43"
+noodles-vcf = "0.73"
+noodles-bed = "0.21"
+noodles-sam = "0.70"
+aho-corasick = "1.1"
+memchr = "2.7"
+rustc-hash = "2.0"
+petgraph = "0.6"
+nalgebra = { version = "0.33", default-features = false, features = ["std"] }
+ndarray = "0.16"
+statrs = "0.18"
+csv = "1.4"
+crc32fast = "1.5"
+flate2 = "1.1"
+triple_accel = "0.4"
+rayon = "1.10"
+
+# Cargo's `trim-paths` is not stable, so this profile leaves the build machine's source paths in
+# panic locations. scripts/build_rust_wasm.mjs remaps them (`--remap-path-prefix`) for the WASM
+# engine; a plain `cargo build --release` does not.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"

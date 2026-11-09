@@ -1,0 +1,122 @@
+name: Nightly Reference Suite
+
+# The reference-oracle suite (US01M6P2SS, TSD G2 / G12) on the test-data/ folder, whose git-ignored
+# part per-push CI never fetches. scripts/check_reference_suite.mjs runs the whole Vitest suite and
+# every cargo workspace test with MOLBIOCRAFT_REQUIRE_TEST_DATA=1, so every test that reads the
+# reference data runs against it, and it fails if any test fails or is skipped, apart from the one
+# local-only test (below). The Pfam MSA test is #[ignore]d for per-push CI; the check passes
+# --include-ignored to cargo test, so it runs here.
+#
+# The checkout holds the reference results (test-data/reference/*.json) and simulated reads
+# (test-data/sim/), committed per D0010 (BG-01M6PE3P; sources and licences in PROVENANCE.md), and
+# scripts/outside-data/fetch.sh downloads the public inputs, the OSIRIS and CRAN trace fragment runs
+# among them. Together that is all the check reads, apart from the private lab runs, which are never
+# committed or fetched: their one test is local-only in the check, which names it in this log on
+# every run and fails on any other skip.
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # 03:17 UTC every day
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-reference-suite
+  cancel-in-progress: false
+
+jobs:
+  reference-suite:
+    name: Reference-Oracle Suite Against Fetched test-data (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Rust Stable Toolchain (with wasm32-unknown-unknown)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo Registry & Build Artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Build Zero-Import Rust WebAssembly Engine
+        run: npm run wasm:build
+
+      # The data cache, which release.yml restores too: its key has no runner.os and both sides set
+      # enableCrossOsArchive (see the comment there). Scheduled runs are on the default branch, whose
+      # caches any branch or tag can restore. Restore and save are separate steps so the data is
+      # cached even when the check below fails (by default actions/cache's combined form saves only
+      # when every earlier step succeeded).
+      # The cache holds the fetched folders only. The committed test-data/reference and
+      # test-data/sim are left out, since a restore would overwrite the checkout's copies with those
+      # of whichever commit saved the cache (the key changes with fetch.sh, not with them).
+      # actions/cache resolves each path as a glob without descendants and archives what matches,
+      # so test-data/* (each top-level entry) is what lets the two exclusions apply.
+      - name: Restore Reference Data Cache (test-data/, Keyed on the Hash of fetch.sh)
+        id: test-data-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            test-data/*
+            !test-data/reference
+            !test-data/sim
+          key: outside-data-${{ hashFiles('scripts/outside-data/fetch.sh') }}
+          enableCrossOsArchive: true
+
+      # fetch.sh skips files already present, so after a cache hit it downloads only missing files
+      # (it still lists the Biopython Tests/ folders and the OSIRIS and trace trees through the
+      # GitHub API each run, authenticated with the job token). A failed download or a failed API
+      # listing prints a FAIL line, and then test-data/ is incomplete and is not cached: a cache is
+      # immutable, so an incomplete one would stay until fetch.sh changes.
+      - name: Fetch Reference Data (scripts/outside-data/fetch.sh)
+        id: fetch
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/outside-data/fetch.sh test-data 2>&1 | tee "$RUNNER_TEMP/fetch.log"
+          if grep -q '^FAIL ' "$RUNNER_TEMP/fetch.log"; then
+            echo "::warning::some reference-data downloads failed (FAIL lines above); test-data/ is not cached this run"
+            echo "complete=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save Reference Data Cache
+        if: steps.test-data-cache.outputs.cache-hit != 'true' && steps.fetch.outputs.complete == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            test-data/*
+            !test-data/reference
+            !test-data/sim
+          key: ${{ steps.test-data-cache.outputs.cache-primary-key }}
+          enableCrossOsArchive: true
+
+      # The check runs the whole Vitest suite (`vitest run --dir src/__tests__`), then every cargo
+      # workspace test (`cargo test --workspace --no-fail-fast -- --include-ignored`), both with
+      # MOLBIOCRAFT_REQUIRE_TEST_DATA=1, and prints `reference suite: PASS` only when every test ran
+      # and passed with none skipped but the named local-only one (its file runs on its own with
+      # MOLBIOCRAFT_REQUIRE_TEST_DATA=0, every other test in it still required to pass, and none
+      # allowed to print the skip line while it runs, as a test that returned early would); otherwise
+      # it names each failing test file and test. A plain step, so its failure fails the job.
+      - name: Run Reference-Oracle Suite (All Vitest + cargo test --workspace --include-ignored, MOLBIOCRAFT_REQUIRE_TEST_DATA=1)
+        timeout-minutes: 60
+        env:
+          MOLBIOCRAFT_REQUIRE_TEST_DATA: '1'
+          MOLBIOCRAFT_TEST_DATA_DIR: test-data
+        run: node scripts/check_reference_suite.mjs

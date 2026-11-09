@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "default",
+  "description": "Least-privilege Tauri v2 capability set for the MolBioCraft main workbench window (core IPC commands and backend progress events only).",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-toggle-maximize"
+  ]
+}

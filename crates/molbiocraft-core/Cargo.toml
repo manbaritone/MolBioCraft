@@ -1,0 +1,26 @@
+# Copyright 2026 MolBioCraft Contributors
+# SPDX-License-Identifier: CC-BY-NC-4.0
+
+[package]
+name = "molbiocraft-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core Rust bioinformatics data structures, large-genome FM-index & IntervalTree indexing, viewport windowing, IUPAC DNA/RNA engine, and OS platform I/O"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+bio.workspace = true
+ndarray.workspace = true
+statrs.workspace = true
+triple_accel.workspace = true
+memchr.workspace = true
+rustc-hash.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["custom"] }

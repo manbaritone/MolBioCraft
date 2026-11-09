@@ -1,0 +1,19 @@
+# The .deb desktop entry. src-tauri/tauri.conf.json names this file as bundle.linux.deb.desktopTemplate,
+# and the Tauri bundler renders it as a Handlebars template, filling in the name, exec, icon, comment
+# and mime_type fields (mime_type joins every bundle.fileAssociations mimeType). Categories is set
+# here because no bundle.category gives Science and Biology. %F hands the opened files to the app.
+[Desktop Entry]
+Type=Application
+Name={{name}}
+GenericName=Bioinformatics Sequence Analysis Workbench
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}} %F
+StartupWMClass={{exec}}
+Icon={{icon}}
+Terminal=false
+Categories=Science;Biology;
+{{#if mime_type}}
+MimeType={{mime_type}};
+{{/if}}

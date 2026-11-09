@@ -1,0 +1,204 @@
+MolBioCraft: Molecular & Evolutionary Biology Workbench
+Copyright 2026 Bundit Boonyarit (@manbaritone) and MolBioCraft Contributors
+
+Licensed under the Creative Commons Attribution-NonCommercial 4.0 International
+Public License (CC BY-NC 4.0; SPDX: CC-BY-NC-4.0).
+
+================================================================================
+1. ATTRIBUTION & SCIENTIFIC CITATION
+================================================================================
+MolBioCraft is an independently developed, open-source bioinformatics application
+designed for personal, educational, and scientific research workflows.
+
+If you use analyses, construct maps, primer designs, alignments, or phylogenetic
+trees produced by MolBioCraft in academic publications, preprints, or theses,
+please cite:
+  Boonyarit, B. (2026). MolBioCraft: Molecular & Evolutionary Biology Workbench 
+  (v1.0.0) [Computer software]. https://github.com/manbaritone/MolBioCraft
+  
+================================================================================
+2. PUBLIC SCIENTIFIC STANDARDS & DATABASES ACKNOWLEDGED
+================================================================================
+- Restriction Endonuclease Recognition & Cleavage Data:
+  Derived from the public REBASE database:
+  Roberts, R.J., Vincze, T., Posfai, J., & Macelis, D. (2023). REBASE: a database
+  for DNA restriction and modification: enzymes, genes and genomes. Nucleic Acids
+  Research, 51(D1), D629-D630.
+- Nucleotide & Amino Acid Nomenclature:
+  NC-IUB (1985). Nomenclature for incompletely specified bases in nucleic acid
+  sequences. Biochemical Journal, 229(2), 281-286.
+- Sequence Interchange Formats:
+  INSDC (GenBank / EMBL-EBI / DDBJ) Feature Table Specification; Sequence Ontology
+  (SO); GA4GH SAM/BAM/VCF/BED/GFF3 Specifications; Applied Biosystems ABIF v1.0
+  Tag Directory Specification; Worldwide Protein Data Bank (wwPDB) PDB/mmCIF.
+- Reference Construct Accessions:
+  Public domain NCBI RefSeq / GenBank records (including J01749.1, L09137.2,
+  NC_000913.3, NC_001416.1, MN908947.3).
+
+================================================================================
+3. THIRD-PARTY OPEN-SOURCE LIBRARIES
+================================================================================
+MolBioCraft incorporates the following open-source libraries under their
+respective MIT, Apache-2.0, ISC, Unlicense, or file-level MPL-2.0 terms:
+- rust-bio (`bio` 2.0) — Copyright (c) Johannes Köster and contributors (MIT)
+- noodles (`noodles-core`, `noodles-fasta`, `noodles-fastq`, `noodles-gff`,
+  `noodles-vcf`, `noodles-bed`, `noodles-sam`) — Copyright (c) Michael Macias (MIT)
+- `aho-corasick` & `memchr` — Copyright (c) Andrew Gallant (Unlicense OR MIT)
+- `petgraph`, `ndarray`, `nalgebra`, `statrs`, `rayon`, `serde`, `serde_json`,
+  `csv`, `crc32fast`, `flate2`, `rustc-hash` (MIT OR Apache-2.0)
+- `triple_accel` — Copyright (c) Daniel Liu (MIT)
+- `tauri`, `rfd`, `objc2-app-kit` — Copyright (c) Tauri Programme within The
+  Commons Conservancy (MIT OR Apache-2.0)
+- `r-efi` (`5.3.0`, `6.0.0`) — Copyright (c) The r-efi Project,
+  https://github.com/r-efi/r-efi (MIT OR Apache-2.0 OR LGPL-2.1-or-later;
+  taken under MIT)
+- Five unmodified MPL-2.0 crates in the desktop shell (`src-tauri`):
+  - `cssparser` (`0.37.0`) & `cssparser-macros` (`0.7.1`) — Copyright (c) Simon
+    Sapin and The Servo Project Developers (MPL-2.0; source:
+    https://github.com/servo/rust-cssparser and
+    https://crates.io/crates/cssparser /
+    https://crates.io/crates/cssparser-macros)
+  - `selectors` (`0.38.0`) — Copyright (c) The Servo Project Developers
+    (MPL-2.0; source: https://github.com/servo/stylo and
+    https://crates.io/crates/selectors)
+  - `dtoa-short` (`0.3.5`) — Copyright (c) Xidorn Quan (MPL-2.0; source:
+    https://github.com/upsuper/dtoa-short and
+    https://crates.io/crates/dtoa-short)
+  - `option-ext` (`0.2.0`) — Copyright (c) Simon Ochsenreither (MPL-2.0;
+    source: https://github.com/soc/option-ext and
+    https://crates.io/crates/option-ext)
+- `react`, `react-dom` — Copyright (c) Meta Platforms, Inc. and affiliates (MIT)
+- `lucide-react` — Copyright (c) Lucide Contributors (ISC)
+- `molstar` (`5.13.1`) — Copyright (c) 2018-2026 Mol* contributors (MIT;
+  Sehnal, D., Bittrich, S., Deshpande, M., Svobodová, R., Berka, K., Bazgier, V.,
+  Velankar, S., Burley, S.K., Koča, J., & Rose, A.S., 2021. Mol* Viewer: modern
+  web app for 3D visualization and analysis of large biomolecular structures.
+  Nucleic Acids Research, 49(W1), W431-W437)
+
+================================================================================
+4. TRADEMARKS & NON-AFFILIATION NOTICE
+================================================================================
+"MolBioCraft" is a provisional project name pending formal trademark clearance.
+MolBioCraft is an independent open-source project and is NOT affiliated with,
+endorsed by, sponsored by, or certified by
+any commercial molecular-biology software vendor, or by New England Biolabs
+(NEB), Thermo Fisher Scientific, Promega Corporation, Takara Bio, or any other
+third-party reagent or software vendor. Any factual references to standard
+genetic vectors (e.g., pUC, pBR322, pET) or published biochemical buffer
+formulations are purely descriptive for scientific reproducibility.
+
+================================================================================
+5. BIOSAFETY & RESEARCH USE DISCLAIMER
+================================================================================
+MolBioCraft is an in silico computational tool and is NOT validated for clinical
+diagnostics, therapeutic manufacturing, or regulated GMP/GLP use. Users are
+solely responsible for verifying all experimental construct sequences and
+complying with applicable Institutional Biosafety Committee (IBC) and regulatory
+guidelines.
+
+================================================================================
+6. THIRD-PARTY DATA
+================================================================================
+- Top8000 Ramachandran reference data (the rama8000 contour grids):
+  Copyright (c) 2016-2026 David C. Richardson, Jane S. Richardson, and
+  contributors. Produced by the Richardson Lab, Duke University.
+  Source: https://github.com/rlabduke/reference_data, files
+  Top8000/Top8000_ramachandran_pct_contour_grids/rama8000-*.data at commit
+  5ee6875fc29eccc3c9dc7cbe705ff9fd1b505d7d.
+  Licence: Creative Commons Attribution 4.0 International (CC BY 4.0),
+  https://creativecommons.org/licenses/by/4.0/ (legal code:
+  https://creativecommons.org/licenses/by/4.0/legalcode). The data are provided
+  as-is, without warranties of any kind, as Section 5 of that licence states.
+  Citation: Williams CJ, Headd JJ, Moriarty NW, Prisant MG, Videau LL, Deis LN,
+  Verma V, Keedy DA, Hintze BJ, Chen VB, Jain S, Lewis SM, Arendall WB,
+  Snoeyink J, Adams PD, Lovell SC, Richardson JS, Richardson DC (2018).
+  MolProbity: More and better reference data for improved all-atom structure
+  validation. Protein Science, 27(1), 293-315. https://doi.org/10.1002/pro.3330
+  What MolBioCraft derived from it: MolBioCraft does not ship the grids. It
+  ships six 10-degree Ramachandran region maps derived from them (general, Gly,
+  trans-Pro, cis-Pro, pre-Pro and Ile/Val), in
+  crates/molbiocraft-protein/src/backbone.rs. Each 2-degree grid node is
+  classed with MolProbity's cutoffs, as coded in cctbx ramalyze.py: favoured at
+  a value of at least 0.02; otherwise allowed at least 0.0005 (general), 0.0020
+  (cis-Pro) or 0.0010 (the other classes); otherwise outlier. Each 10-degree
+  cell then takes the median class of its 25 nodes.
+  scripts/outside-data/derive_ramachandran_maps.py regenerates the maps from the
+  grids. The maps are a coarse approximation of MolProbity's Ramachandran
+  categories, not MolProbity's classifier. Their use does not imply endorsement
+  by the Richardson Lab or Duke University.
+- AlphaFold DB entry AF-P69905-F1 (haemoglobin subunit alpha, UniProt P69905),
+  model version 6 (files AF-P69905-F1-model_v6.cif and
+  AF-P69905-F1-model_v6.pdb):
+  ALPHAFOLD DATA, COPYRIGHT (2021) DEEPMIND TECHNOLOGIES LIMITED.
+  This copyright notice is quoted from AlphaFold DB's licence statement, which
+  AlphaFold DB's files carry in their licence and disclaimer records. The test
+  fixtures described below do not keep those records, so the notice is kept
+  here instead.
+  From the AlphaFold Protein Structure Database (AlphaFold DB), by Google
+  DeepMind (DeepMind Technologies Limited) and EMBL's European Bioinformatics
+  Institute (EMBL-EBI).
+  Source: https://alphafold.ebi.ac.uk/files/AF-P69905-F1-model_v6.cif and
+  https://alphafold.ebi.ac.uk/files/AF-P69905-F1-model_v6.pdb, fetched
+  2026-11-06 (entry page: https://alphafold.ebi.ac.uk/entry/P69905).
+  Licence: Creative Commons Attribution 4.0 International (CC BY 4.0),
+  https://creativecommons.org/licenses/by/4.0/ (legal code:
+  https://creativecommons.org/licenses/by/4.0/legalcode). The data are provided
+  as-is, without warranties of any kind, as Section 5 of that licence states.
+  Citation: Jumper J, Evans R, Pritzel A, et al. (2021). Highly accurate
+  protein structure prediction with AlphaFold. Nature, 596, 583-589.
+  https://doi.org/10.1038/s41586-021-03819-2
+  Varadi M, Bertoni D, Magana P, et al. (2024). AlphaFold Protein Structure
+  Database in 2024: providing structure coverage for over 214 million protein
+  sequences. Nucleic Acids Research, 52(D1), D368-D375.
+  https://doi.org/10.1093/nar/gkad1011
+  What MolBioCraft changed: the two files were cut to the Cα atoms of residues
+  1-5 for a test fixture, keeping the header records that say what each file
+  is, with trailing spaces trimmed. The fixtures are AF_P69905_ATOM_SITE,
+  AF_P69905_CIF and AF_P69905_PDB in
+  src/__tests__/structureAndPipelineOrder.test.tsx; the same five Cα records
+  also sit under constructed headers in that file's other fixtures. They are
+  test data only and are not part of any MolBioCraft build. Their use does not
+  imply endorsement by Google DeepMind or EMBL-EBI.
+- iGEM Registry parts BBa_G00100, BBa_G00101, BBa_G00103, BBa_G00104,
+  BBa_G00105, BBa_G00106 and BBa_G00107 (the VF2 and VR BioBrick primers and
+  the five M13 universal sequencing primers):
+  From the Registry of Standard Biological Parts, by the iGEM Foundation and
+  the depositors of each part. The Registry supplies no copyright notice of
+  its own with a part record.
+  Source: https://api.registry.igem.org/v1/parts/slugs/<part>, the part pages
+  at https://parts.igem.org/Part:<part>.
+  Licence: Creative Commons Attribution 4.0 International (CC BY 4.0),
+  https://creativecommons.org/licenses/by/4.0/ (legal code:
+  https://creativecommons.org/licenses/by/4.0/legalcode). The data are provided
+  as-is, without warranties of any kind, as Section 5 of that licence states.
+  What MolBioCraft ships: each part's 17 to 24 base sequence, unchanged, as one
+  sample primer document in crates/molbiocraft-cloning/src/sample_library_data.rs
+  (the doc-primer-seq-* documents). What MolBioCraft changed: the documents carry
+  MolBioCraft's own short names for the primers (VF2, VR, M13-F (-20) and so on,
+  which are also the Registry's own titles), its own descriptions, and a melting
+  temperature and GC fraction it computes itself; no value is taken from a part
+  record but the sequence and the part number. Their use does not imply
+  endorsement by the iGEM Foundation or by any depositor.
+
+================================================================================
+7. BUNDLED FONTS
+================================================================================
+MolBioCraft bundles subsets of the following fonts, compiled to WOFF2 from the
+masters in src/assets/fonts by scripts/subset_fonts.sh. Each subset keeps its
+font's copyright and licence records, and each font's licence text is the
+OFL.txt in its folder.
+- Google Sans (the interface text):
+  Copyright 2025 The Google Sans Project Authors (github.com/googlefonts/googlesans)
+  Licence: SIL Open Font License, Version 1.1 (src/assets/fonts/google-sans/OFL.txt).
+- Google Sans Code (sequences, coordinates and code):
+  Copyright 2025 The Google Sans Code Project Authors (github.com/googlefonts/googlesans-code)
+  Licence: SIL Open Font License, Version 1.1 (src/assets/fonts/google-sans-code/OFL.txt).
+- Space Grotesk (display headings and the MolBioCraft wordmark):
+  Copyright 2020 The Space Grotesk Project Authors (https://github.com/floriankarsten/space-grotesk)
+  Licence: SIL Open Font License, Version 1.1 (src/assets/fonts/space-grotesk/OFL.txt).
+- Poppins:
+  Copyright 2020 The Poppins Project Authors (https://github.com/itfoundry/Poppins)
+  Licence: SIL Open Font License, Version 1.1 (src/assets/fonts/poppins/OFL.txt).
+"Google Sans" and "Google Sans Code" are trademarks of Google LLC. They are used
+here only to name the fonts, and their use does not imply any affiliation with
+or endorsement by Google LLC.

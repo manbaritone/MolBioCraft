@@ -1,0 +1,25 @@
+# Copyright 2026 MolBioCraft Contributors
+# SPDX-License-Identifier: CC-BY-NC-4.0
+
+[package]
+name = "molbiocraft-protein"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Multi-table NCBI translation, Rust-Bio ORF discovery, codon optimization, Bjellqvist pI, Guruprasad DIWV instability, Kyte-Doolittle hydropathy, Lupas coiled-coils, TM helices, and 3D Kabsch SVD structure superposition"
+
+[dependencies]
+molbiocraft-core = { path = "../molbiocraft-core" }
+molbiocraft-formats = { path = "../molbiocraft-formats" }
+serde.workspace = true
+serde_json.workspace = true
+bio.workspace = true
+nalgebra.workspace = true
+petgraph.workspace = true
+statrs.workspace = true
+rustc-hash.workspace = true
+aho-corasick.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon.workspace = true

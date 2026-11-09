@@ -1,0 +1,115 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MolBioCraft",
+  "version": "1.0.0",
+  "identifier": "org.molbiocraft.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "width": 1540,
+        "height": 940,
+        "minWidth": 1100,
+        "minHeight": 720,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost http://127.0.0.1:18420 http://127.0.0.1:* https://eutils.ncbi.nlm.nih.gov https://rest.uniprot.org https://files.rcsb.org https://data.rcsb.org https://search.rcsb.org https://www.rcsb.org; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'",
+      "freezePrototype": false,
+      "capabilities": ["default"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "msi", "deb"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "licenseFile": "../packaging/macos/LICENSE.rtf",
+    "resources": {
+      "../NOTICE": "NOTICE",
+      "../PROVENANCE.md": "PROVENANCE.md"
+    },
+    "category": "Education",
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "11.0",
+      "infoPlist": "../packaging/macos/Info.plist",
+      "dmg": {
+        "background": "../packaging/macos/dmg-background.tiff",
+        "windowSize": {
+          "width": 660,
+          "height": 420
+        },
+        "appPosition": {
+          "x": 185,
+          "y": 230
+        },
+        "applicationFolderPosition": {
+          "x": 475,
+          "y": 230
+        }
+      }
+    },
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/doc/molbiocraft/NOTICE": "../NOTICE",
+          "/usr/share/doc/molbiocraft/PROVENANCE.md": "../PROVENANCE.md"
+        },
+        "desktopTemplate": "../packaging/linux/molbiocraft.desktop"
+      }
+    },
+    "fileAssociations": [
+      {
+        "ext": ["mbc"],
+        "name": "MolBioCraft Workbench Session",
+        "description": "MolBioCraft Session and Workbench File (.mbc)",
+        "role": "Editor",
+        "rank": "Owner",
+        "mimeType": "application/vnd.molbiocraft.workbench+json",
+        "exportedType": {
+          "identifier": "org.molbiocraft.workbench",
+          "conformsTo": ["public.json", "public.data"]
+        }
+      },
+      {
+        "ext": ["gb", "gbk"],
+        "name": "GenBank Annotated Sequence",
+        "description": "NCBI GenBank Plasmid or Genomic Sequence (.gb, .gbk)",
+        "role": "Editor",
+        "rank": "Alternate",
+        "mimeType": "chemical/x-genbank"
+      },
+      {
+        "ext": ["fasta", "fa", "fna", "faa"],
+        "name": "FASTA Sequence",
+        "description": "FASTA Nucleotide or Protein Sequence (.fasta, .fa)",
+        "role": "Editor",
+        "rank": "Alternate",
+        "mimeType": "text/x-fasta"
+      },
+      {
+        "ext": ["ab1"],
+        "name": "ABI Sanger Chromatogram Trace",
+        "description": "Applied Biosystems Sanger Sequencing Trace (.ab1)",
+        "role": "Viewer",
+        "rank": "Alternate"
+      }
+    ]
+  }
+}
