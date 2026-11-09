@@ -21,7 +21,7 @@
   </p>
 
   <p>
-    <a href="https://www.buymeacoffee.com/8zwp8mftb9u"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me an iced cocoa&emoji=☕&slug=8zwp8mftb9u&button_colour=FFDD00&font_colour=000000&font_family=Poppins&outline_colour=000000&coffee_colour=ffffff" alt="Buy me an iced cocoa" /></a>
+    <a href="https://www.buymeacoffee.com/8zwp8mftb9u"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20an%20iced%20cocoa&amp;emoji=%E2%98%95&amp;slug=8zwp8mftb9u&amp;button_colour=FFDD00&amp;font_colour=000000&amp;font_family=Poppins&amp;outline_colour=000000&amp;coffee_colour=ffffff" alt="Buy me an iced cocoa" /></a>
   </p>
 
 </div>
