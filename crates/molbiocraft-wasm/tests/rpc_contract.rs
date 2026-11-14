@@ -409,3 +409,100 @@ fn removed_readers_answer_unknown_operation_and_empty_sequence() {
     assert_eq!(doc["sequence"], json!("AC"), "{doc}");
     assert_eq!(doc["chromatogram"]["peakLocations"], json!([1, 3]), "{doc}");
 }
+
+/// US-01M7DVH2 AC1: the scan op replies with the scan's own report as one envelope, independently of
+/// the guide rows, and answers `maxResults` 0 with that report and no rows.
+///
+/// Wrong implementations this fails on: an op that replies with the guide list alone (no
+/// `candidateCount`, so the fields are absent); one that counts the rows it returns as the
+/// candidates (25 rows, 0 candidates for the no-guide case, and 25 for the capped one); one that
+/// reads `maxResults` 0 as the engine's default of 30 (rows come back); one that drops the
+/// topology, the origin span or the warnings from the envelope.
+#[test]
+fn us_01m7dvh2_ac1_the_scan_op_returns_the_report_as_an_envelope() {
+    // 100 bases of A and T with one planted SpCas9 site at 41..63: a known candidate count.
+    let mut bases: Vec<u8> = (0..100u32)
+        .map(|i| if i % 3 == 0 { b'A' } else { b'T' })
+        .collect();
+    bases[40..63].copy_from_slice(b"ATCGTACTGATCAGTCATGAAGG");
+    let seq = String::from_utf8(bases).unwrap();
+
+    let scan = wasm_reply(
+        "scan_crispr_guides",
+        &json!({ "seq": seq, "nuclease": "SpCas9 (NGG)", "maxResults": 25, "circular": false }),
+    );
+    // Every field of the envelope, beside the rows.
+    assert_eq!(scan["candidateCount"], json!(1), "{scan}");
+    assert_eq!(scan["scannedLengthBp"], json!(100), "{scan}");
+    assert_eq!(scan["sequenceLengthBp"], json!(100), "{scan}");
+    assert_eq!(scan["scannedCircular"], json!(false), "{scan}");
+    assert_eq!(scan["originSpanBp"], json!(0), "{scan}");
+    assert_eq!(scan["warnings"], json!([]), "{scan}");
+    assert_eq!(scan["guides"].as_array().unwrap().len(), 1, "{scan}");
+    assert_eq!(scan["guides"][0]["start"], json!(41), "{scan}");
+
+    // The same call for the report alone: the metadata stands, with no rows and no cap warning.
+    let report = wasm_reply(
+        "scan_crispr_guides",
+        &json!({ "seq": seq, "nuclease": "SpCas9 (NGG)", "maxResults": 0, "circular": false }),
+    );
+    assert_eq!(report["guides"], json!([]), "{report}");
+    assert_eq!(report["candidateCount"], json!(1), "{report}");
+    assert_eq!(report["scannedLengthBp"], json!(100), "{report}");
+    assert_eq!(report["sequenceLengthBp"], json!(100), "{report}");
+    assert_eq!(report["warnings"], json!([]), "{report}");
+
+    // A sequence with no candidate guide still reports what was searched.
+    let none = wasm_reply(
+        "scan_crispr_guides",
+        &json!({ "seq": "AT".repeat(60), "nuclease": "SpCas9 (NGG)", "maxResults": 25 }),
+    );
+    assert_eq!(none["guides"], json!([]), "{none}");
+    assert_eq!(none["candidateCount"], json!(0), "{none}");
+    assert_eq!(none["scannedLengthBp"], json!(120), "{none}");
+    assert_eq!(none["sequenceLengthBp"], json!(120), "{none}");
+    assert_eq!(none["scannedCircular"], json!(false), "{none}");
+
+    // Read as the circle it is: the envelope says so and names the bases across the origin.
+    let circular = wasm_reply(
+        "scan_crispr_guides",
+        &json!({ "seq": seq, "nuclease": "SpCas9 (NGG)", "maxResults": 0, "circular": true }),
+    );
+    assert_eq!(circular["scannedCircular"], json!(true), "{circular}");
+    assert_eq!(circular["originSpanBp"], json!(22), "{circular}");
+    assert_eq!(circular["candidateCount"], json!(1), "{circular}");
+
+    // The capped case: the rows are the cap, the candidates are the scan's own count.
+    let many: String = std::iter::repeat("ATCGTACTGATCAGTCATGAAGG")
+        .take(12)
+        .collect::<Vec<_>>()
+        .join("TTTT");
+    let capped = wasm_reply(
+        "scan_crispr_guides",
+        &json!({ "seq": many, "nuclease": "SpCas9 (NGG)", "maxResults": 3 }),
+    );
+    let detected = capped["candidateCount"].as_u64().unwrap();
+    assert!(detected > 3, "{capped}");
+    assert_eq!(capped["guides"].as_array().unwrap().len(), 3, "{capped}");
+    assert!(
+        capped["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains(&format!("shows the 3 highest-scoring of the {detected} candidate guides")),
+        "{capped}"
+    );
+
+    // The guide-list op is unchanged for any caller still using it: the rows alone.
+    let guides_only = wasm_reply(
+        "find_crispr_guides",
+        &json!({ "seq": seq, "nuclease": "SpCas9 (NGG)", "maxResults": 25, "circular": false }),
+    );
+    assert!(guides_only.is_array(), "{guides_only}");
+    assert_eq!(guides_only.as_array().unwrap().len(), 1, "{guides_only}");
+    // And its documented default still answers a `maxResults` of 0 with rows, not with none.
+    let defaulted = wasm_reply(
+        "find_crispr_guides",
+        &json!({ "seq": many, "nuclease": "SpCas9 (NGG)", "maxResults": 0 }),
+    );
+    assert_eq!(defaulted.as_array().unwrap().len(), 12, "{defaulted}");
+}

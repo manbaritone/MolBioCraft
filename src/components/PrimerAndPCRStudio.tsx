@@ -14,7 +14,7 @@ import {
   databasePrimerCandidate,
   designPCRPrimers,
   documentPrimerCandidate as screeningCandidateOf,
-  findCrisprGuides,
+  scanCrisprGuides,
   findPrimerBindings,
   primerMatchSettingsText,
   testSavedPrimersOnSequence,
@@ -32,22 +32,6 @@ import { usePrimerDatabaseSave } from './PrimerDatabaseWindow';
 
 /** How many of the candidate guides the CRISPR tab lists. */
 const CRISPR_GUIDES_LISTED = 25;
-
-/**
- * A guide record with the scan facts every one of them carries (BG-01M6S15R): the engine's
- * `find_crispr_guides` reply is the guide list alone, so each guide repeats how many candidate
- * guides the scan found, the range of the sequence it read, and the scan's own warnings.
- */
-type ScannedGuide = CrisprGuideRecord & {
-  candidateCount?: number;
-  scannedLengthBp?: number;
-  sequenceLengthBp?: number;
-  /** Whether the scan read the record as the circle it is, origin and all (BG-01M6T6GQ). */
-  scannedCircular?: boolean;
-  /** The bases across the origin such a scan read, 0 when it did not wrap. */
-  originSpanBp?: number;
-  warnings?: string[];
-};
 
 /** A count or a length as a researcher reads it, grouped like the engine's own sentences. */
 const bp = (n: number) => n.toLocaleString('en-US');
@@ -228,20 +212,25 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
 
   // The record's own topology goes to the engine: a plasmid is scanned as the circle it is, so the
   // guides across its origin are listed (BG-01M6T6GQ).
-  const crisprGuides = useMemo(
+  const crisprResult = useMemo(
     () =>
-      findCrisprGuides(
+      scanCrisprGuides(
         doc.sequence,
         crisprNuclease,
         CRISPR_GUIDES_LISTED,
         doc.topology === 'circular'
-      ) as ScannedGuide[],
+      ),
     [doc.sequence, doc.topology, crisprNuclease]
   );
-  // What the scan itself reports, taken from the guides it returned and never derived here: a scan
-  // that found no guide counted no seed match either, and says so instead of naming a range.
-  const crisprScan = crisprGuides[0];
-  const crisprCandidates = crisprScan?.candidateCount ?? 0;
+  const crisprGuides = crisprResult.guides;
+  // The scan's own report (US-01M7DVH2): the envelope the scan op replies with, so these numbers are
+  // there when it found no guide, and none of them is derived from the rows the tab holds. Absent
+  // only where the engine sent no report; it is then said to be unavailable, never read as zeroes.
+  const crisprScan = crisprResult.report;
+  // The rows the scan returned. The detected total beside it is the scan's own `candidateCount`,
+  // never this number: the rows are the highest-scoring of the candidates, not all of them.
+  const crisprReturned = crisprResult.guides.length;
+  const crisprCandidates = crisprScan?.candidateCount;
   const crisprScanned = crisprScan?.scannedLengthBp;
   const crisprSequenceBp = crisprScan?.sequenceLengthBp;
   const crisprScanIsPartial =
@@ -252,10 +241,19 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   // read whole was read straight, and says so instead of claiming its origin.
   const crisprScanWrapped =
     crisprScan?.scannedCircular === true && (crisprScan.originSpanBp ?? 0) > 0;
+  /** How the scan read the molecule, in the words the seed-match sentence and the no-guide line share. */
+  const crisprReadAs =
+    crisprScanIsPartial
+      ? `bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence, on both strands`
+      : crisprScanWrapped
+      ? `all ${bp(crisprSequenceBp!)} bases of this circular sequence, including the ${bp(crisprScan!.originSpanBp)} across its origin, on both strands`
+      : `all ${bp(crisprSequenceBp ?? 0)} bases of this linear sequence, on both strands`;
   const crisprTabCount =
-    crisprCandidates > crisprGuides.length
-      ? `top ${bp(crisprGuides.length)} of ${bp(crisprCandidates)} Guides`
-      : `${bp(crisprGuides.length)} Guides`;
+    crisprCandidates === undefined
+      ? 'scan report unavailable'
+      : crisprCandidates > crisprReturned
+      ? `top ${bp(crisprReturned)} of ${bp(crisprCandidates)} Guides`
+      : `${bp(crisprReturned)} Guides`;
 
   const handleSavePrimersToDoc = () => {
     const updatedPrimers: PrimerRecord[] = [
@@ -960,20 +958,20 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
           </div>
 
           <div className="info-callout">
-            {crisprScan === undefined
-              ? `No ${crisprNuclease} guide in this sequence.`
-              : crisprCandidates > crisprGuides.length
-              ? `Lists the ${bp(crisprGuides.length)} highest-scoring of the ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`
+            {crisprCandidates === undefined
+              ? `CRISPR scan report unavailable (${crisprResult.reportUnavailableReason ?? 'the engine sent no scan report'}): this tab cannot say how many candidate guides there are, what range was searched, or whether the scan is complete.`
+              : crisprCandidates === 0
+              ? `No candidate ${crisprNuclease} guide: 0 of the candidates this scan looked for are in ${crisprReadAs}.`
+              : crisprCandidates > crisprReturned
+              ? `Lists the ${bp(crisprReturned)} highest-scoring of the ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`
               : `Lists all ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`}{' '}
             <strong>Heuristic score</strong>: rule-of-thumb activity (GC 40–65 %, 3&apos; G, no TTTT) — not a trained Doench model.{' '}
             {crisprScan !== undefined && (
               <>
                 <strong>Seed matches</strong>:{' '}
                 {crisprScanIsPartial
-                  ? `other exact copies of the 12-nt PAM-proximal seed in bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence — the range searched, on both strands`
-                  : crisprScanWrapped
-                  ? `other exact copies of the 12-nt PAM-proximal seed across all ${bp(crisprSequenceBp!)} bases of this circular sequence, including the ${bp(crisprScan!.originSpanBp!)} across its origin, on both strands`
-                  : `other exact copies of the 12-nt PAM-proximal seed across all ${bp(crisprSequenceBp!)} bases of this linear sequence, on both strands`}{' '}
+                  ? `other exact copies of the 12-nt PAM-proximal seed in bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence — the range searched, on both strands — and no copy outside it`
+                  : `other exact copies of the 12-nt PAM-proximal seed across ${crisprReadAs}`}{' '}
                 (no genome-wide off-target search).
               </>
             )}

@@ -602,6 +602,12 @@
   "seqA",
   "seqB"
  ],
+ "scan_crispr_guides": [
+  "circular",
+  "maxResults",
+  "nuclease",
+  "seq"
+ ],
  "scan_fuzzy_subsequence_simd": [
   "bothStrands",
   "maxEdits",

@@ -451,6 +451,97 @@ export function buildUPGMANewick(names: string[], alignedSeqs: string[]): string
  * `span - 1` start positions of each strand — 22 for SpCas9's 23-base site, 23 for Cas12a's 24-base
  * one — so pass the document's own topology.
  */
+/** The scan's own report (US-01M7DVH2): what a CRISPR guide scan searched and what it found. */
+export interface CrisprScanReport {
+  /** Every candidate guide over the range read, kept or not. */
+  candidateCount: number;
+  /** The bases read, from base 1, on both strands. */
+  scannedLengthBp: number;
+  /** The length of the whole sequence; equal to `scannedLengthBp` when the scan read it all. */
+  sequenceLengthBp: number;
+  /** Whether both strands were read across the origin, as a circle (BG-01M6T6GQ). */
+  scannedCircular: boolean;
+  /** The bases across the origin a circular scan read, or 0 when it did not wrap. */
+  originSpanBp: number;
+  /** One plain sentence per range or list the scan could not report whole (D0005). */
+  warnings: string[];
+}
+
+/**
+ * A scan's reply: the rows it kept and its report. `report` is absent only when the engine sent no
+ * report - an older engine, or a call that failed - and `reportUnavailableReason` then says which,
+ * so a reader shows that instead of a count the scan never gave (US-01M7DVH2 AC5). An absent report
+ * is never an empty one: 0 candidates is a scan that ran and found none.
+ */
+export interface CrisprScanResult {
+  guides: CrisprGuideRecord[];
+  report?: CrisprScanReport;
+  reportUnavailableReason?: string;
+}
+
+/** Whether `value` holds every field of a scan report, with the type each one must have. */
+function isCrisprScanReport(value: unknown): value is CrisprScanReport & { guides?: unknown } {
+  const v = value as Record<string, unknown> | null;
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    typeof v.candidateCount === 'number' &&
+    typeof v.scannedLengthBp === 'number' &&
+    typeof v.sequenceLengthBp === 'number' &&
+    typeof v.scannedCircular === 'boolean' &&
+    typeof v.originSpanBp === 'number' &&
+    Array.isArray(v.warnings)
+  );
+}
+
+/**
+ * The CRISPR guide scan itself (US-01M7DVH2): the engine's `scan_crispr_guides` op, which replies
+ * with the whole scan envelope, so the candidate count, the range read, how the record was read and
+ * the warnings are there even when the scan found no guide - they are not read off a guide row.
+ * Pass the document's own topology, as {@link findCrisprGuides} documents.
+ *
+ * A reply without the report, and a call that threw, both come back with `report` absent and
+ * `reportUnavailableReason` set; neither is turned into zeroes.
+ */
+export function scanCrisprGuides(
+  rawSeq: string,
+  nuclease: 'SpCas9 (NGG)' | 'Cas12a / Cpf1 (TTTV)' = 'SpCas9 (NGG)',
+  maxResults = 30,
+  circular = false
+): CrisprScanResult {
+  let reply: unknown;
+  try {
+    reply = invokeRustBioSync<unknown>('scan_crispr_guides', {
+      seq: rawSeq,
+      nuclease,
+      maxResults,
+      circular,
+    });
+  } catch (e) {
+    return {
+      guides: [],
+      reportUnavailableReason: `the scan could not be run: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  const guides = Array.isArray((reply as { guides?: unknown } | null)?.guides)
+    ? ((reply as { guides: CrisprGuideRecord[] }).guides ?? [])
+    : [];
+  if (!isCrisprScanReport(reply)) {
+    return { guides, reportUnavailableReason: 'the engine returned no scan report' };
+  }
+  return {
+    guides,
+    report: {
+      candidateCount: reply.candidateCount,
+      scannedLengthBp: reply.scannedLengthBp,
+      sequenceLengthBp: reply.sequenceLengthBp,
+      scannedCircular: reply.scannedCircular,
+      originSpanBp: reply.originSpanBp,
+      warnings: reply.warnings,
+    },
+  };
+}
+
 export function findCrisprGuides(
   rawSeq: string,
   nuclease: 'SpCas9 (NGG)' | 'Cas12a / Cpf1 (TTTV)' = 'SpCas9 (NGG)',

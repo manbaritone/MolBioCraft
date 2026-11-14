@@ -28,9 +28,9 @@
 
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PrimerAndPCRStudio } from '../components/PrimerAndPCRStudio';
-import { findCrisprGuides } from '../core/bioEngine';
+import { findCrisprGuides, scanCrisprGuides } from '../core/bioEngine';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import type { CrisprGuideRecord, SequenceDocument } from '../types/bio';
 
@@ -200,16 +200,230 @@ describe('the CRISPR tab says how many guides there are and what was searched (B
     expect(callout(html)).toContain('Lists all 1 candidate SpCas9 (NGG) guides found.');
     expect(warningRegions(html), 'nothing was cut, so nothing is warned about').toEqual([]);
 
-    // No guide at all: the tab says so and claims no searched range, rather than reporting one it
-    // never got from the engine.
-    const noPam = dnaDoc('Crispr_Cap_nopam', 'ATATATATATATATATATATATATATATATATATAT');
-    expect(findCrisprGuides(noPam.sequence, 'SpCas9 (NGG)', 25)).toEqual([]);
-    const none = crisprTab(noPam);
-    expect(tabLabel(none)).toBe('Find CRISPR Sites & Off-Targets (0 Guides)');
-    expect(callout(none)).toContain('No SpCas9 (NGG) guide in this sequence.');
-    expect(callout(none)).not.toMatch(/bases of this sequence|Lists/);
-    expect(warningRegions(none)).toEqual([]);
+    // A scan that found no guide is US-01M7DVH2 AC2's case: it reports its own numbers, which the
+    // describe below reads.
   });
+});
+
+/**
+ * US-01M7DVH2: the scan's own report - the candidates detected, the interval read, how the record
+ * was read and the warnings - comes from the scan envelope (`scan_crispr_guides`), so the tab has it
+ * when the scan found no guide and never derives it from the rows it holds. This replaces the
+ * zero-guide case above, whose bare "No SpCas9 (NGG) guide in this sequence." said none of it.
+ *
+ * Every number is the real engine's, through the studio's own `scanCrisprGuides` call.
+ */
+
+/** 36 bases of A and T: neither strand spells an NGG PAM, so the scan detects no candidate. */
+const NO_PAM_SEQ = 'ATATATATATATATATATATATATATATATATATAT';
+/** The same bases as a plasmid: the scan reads it as a circle and still detects nothing. */
+const noPamCircular: SequenceDocument = {
+  ...dnaDoc('Crispr_Report_nopam_circular', NO_PAM_SEQ),
+  topology: 'circular',
+};
+/**
+ * 100 bases past `GUIDE_SCAN_MAX_BP` in A and T only: a scan that stops short of the record and
+ * detects no candidate, the one shape where a zero-guide scan still has a warning to show.
+ */
+const noPamPastTheBound = () => dnaDoc('Crispr_Report_nopam_8Mb', atOnlyDna(8_000_100, 0x15_7a01));
+
+/** 2 kb of random bases: candidates to find, small enough for the report-unavailable renders. */
+const hundredKbSmall = randomDna(2_000, 0x15_7a02);
+
+/** The studio rendered on `doc`, for a studio module loaded inside a test. */
+const renderStudio = (Studio: typeof PrimerAndPCRStudio, doc: SequenceDocument) =>
+  renderToStaticMarkup(
+    <Studio
+      doc={doc}
+      allDocuments={[doc]}
+      onUpdateDocument={() => undefined}
+      onAddConstruct={() => undefined}
+      initialSubTab="crispr"
+    />
+  );
+
+/**
+ * The studio over an engine whose reply to the scan op the test chooses, every other op being the
+ * real engine's: the only way to render what an older engine (no such op) or a failed call gives.
+ */
+async function studioWithScanReply(): Promise<{
+  PrimerAndPCRStudio: typeof PrimerAndPCRStudio;
+  replies: {
+    real: (op: string, payload?: unknown) => unknown;
+    scan: (payload?: unknown) => unknown;
+  };
+}> {
+  const actual = await vi.importActual<typeof import('../lib/rustBioEngine')>('../lib/rustBioEngine');
+  const replies = {
+    real: (op: string, payload?: unknown) => actual.invokeRustBioSync<unknown>(op, payload),
+    scan: (payload?: unknown) => actual.invokeRustBioSync<unknown>('scan_crispr_guides', payload),
+  };
+  vi.resetModules();
+  vi.doMock('../lib/rustBioEngine', () => ({
+    ...actual,
+    invokeRustBioSync: (op: string, payload?: unknown) =>
+      op === 'scan_crispr_guides' ? replies.scan(payload) : replies.real(op, payload),
+  }));
+  const mod = await import('../components/PrimerAndPCRStudio');
+  return { PrimerAndPCRStudio: mod.PrimerAndPCRStudio, replies };
+}
+
+describe('a CRISPR scan reports its own numbers even with no guide (US-01M7DVH2)', () => {
+  it('US-01M7DVH2 AC2 a sequence with no candidate guide still shows the detected count, the interval searched, how the record was read and any warning', () => {
+    const linear = dnaDoc('Crispr_Report_nopam', NO_PAM_SEQ);
+    // The engine's own report, through the call the studio makes: a scan that ran and found none.
+    const scan = scanCrisprGuides(linear.sequence, 'SpCas9 (NGG)', 25, false);
+    expect(scan.guides).toEqual([]);
+    expect(scan.report, 'a scan that found no guide still reports').toEqual({
+      candidateCount: 0,
+      scannedLengthBp: 36,
+      sequenceLengthBp: 36,
+      scannedCircular: false,
+      originSpanBp: 0,
+      warnings: [],
+    });
+
+    const none = crisprTab(linear);
+    expect(tabLabel(none)).toBe('Find CRISPR Sites & Off-Targets (0 Guides)');
+    // The detected count, the interval with the sequence length, and how it was read.
+    expect(callout(none)).toContain(
+      'No candidate SpCas9 (NGG) guide: 0 of the candidates this scan looked for are in all 36 bases of this linear sequence, on both strands.'
+    );
+    expect(callout(none), 'the seed-match sentence names the same interval').toContain(
+      'other exact copies of the 12-nt PAM-proximal seed across all 36 bases of this linear sequence, on both strands'
+    );
+    expect(callout(none), 'never a bare no-guides with the numbers absent').not.toMatch(
+      /No SpCas9 \(NGG\) guide in this sequence\./
+    );
+    expect(warningRegions(none), 'the whole record was read, so there is nothing to warn about').toEqual([]);
+
+    // The same bases as a plasmid: the report says the origin was read, and names its bases.
+    const circular = crisprTab(noPamCircular);
+    expect(
+      scanCrisprGuides(NO_PAM_SEQ, 'SpCas9 (NGG)', 25, true).report,
+      'read as the circle it is'
+    ).toMatchObject({ candidateCount: 0, scannedCircular: true, originSpanBp: 22 });
+    expect(callout(circular)).toContain(
+      'No candidate SpCas9 (NGG) guide: 0 of the candidates this scan looked for are in all 36 bases of this circular sequence, including the 22 across its origin, on both strands.'
+    );
+    expect(callout(circular), 'a circular record is not reported as linear').not.toContain('linear sequence');
+  });
+
+  it('US-01M7DVH2 AC2 a zero-guide scan that stopped short of the record shows its warning and the range it read', () => {
+    const doc = noPamPastTheBound();
+    const scan = scanCrisprGuides(doc.sequence, 'SpCas9 (NGG)', 25, false);
+    expect(scan.guides).toEqual([]);
+    expect(
+      [scan.report?.candidateCount, scan.report?.scannedLengthBp, scan.report?.sequenceLengthBp],
+      'no candidate, and a scan shorter than the record'
+    ).toEqual([0, 8_000_000, 8_000_100]);
+
+    const html = crisprTab(doc);
+    expect(callout(html)).toContain(
+      'No candidate SpCas9 (NGG) guide: 0 of the candidates this scan looked for are in bases 1 to 8,000,000 of the 8,000,100 bases of this sequence, on both strands.'
+    );
+    // The scan's own warning, through the shared warnings component.
+    expect(warningRegions(html)).toEqual([
+      {
+        label: 'CRISPR guide warnings',
+        sentences: [
+          'Guides were searched for in bases 1 to 8,000,000 of the 8,000,100 bases of this sequence, on both strands, and seed matches counted there: a guide or a seed match outside that range is not in this result.',
+        ],
+      },
+    ]);
+  }, 55_000);
+
+  it('US-01M7DVH2 AC3 the detected total is the scan envelope\'s, not the number of rows the tab holds', () => {
+    const scan = scanCrisprGuides(hundredKb.sequence, 'SpCas9 (NGG)', 25, false);
+    const detected = scan.report?.candidateCount ?? 0;
+    expect(scan.guides, 'the rows are the cap').toHaveLength(25);
+    expect(detected, 'and far fewer than the candidates detected').toBeGreaterThan(10_000);
+
+    const html = crisprTab(hundredKb);
+    // The wording the cap test above asserts, with both numbers from the envelope.
+    expect(tabLabel(html)).toBe(`Find CRISPR Sites & Off-Targets (top 25 of ${fmt(detected)} Guides)`);
+    expect(callout(html)).toContain(
+      `Lists the 25 highest-scoring of the ${fmt(detected)} candidate SpCas9 (NGG) guides found.`
+    );
+    expect(callout(html), '25 rows are not called all the candidates').not.toMatch(/Lists all/);
+    expect(tabLabel(html), 'the rows are never the total').not.toBe(
+      'Find CRISPR Sites & Off-Targets (25 Guides)'
+    );
+
+    // An uncapped scan keeps the other wording: every candidate is listed, and none is a top-of.
+    const tiny = dnaDoc('Crispr_Report_tiny', `TTTT${'ATCGTACTGATCAGTCATGAAGG'}TTTT`);
+    const tinyScan = scanCrisprGuides(tiny.sequence, 'SpCas9 (NGG)', 25, false);
+    expect([tinyScan.guides.length, tinyScan.report?.candidateCount]).toEqual([1, 1]);
+    const tinyHtml = crisprTab(tiny);
+    expect(tabLabel(tinyHtml)).toBe('Find CRISPR Sites & Off-Targets (1 Guides)');
+    expect(callout(tinyHtml)).toContain('Lists all 1 candidate SpCas9 (NGG) guides found.');
+    expect(callout(tinyHtml)).not.toMatch(/top 1 of|highest-scoring/);
+  }, 55_000);
+
+  it('US-01M7DVH2 AC4 a scan that stopped short names the range read and the sequence length, and says the seed counts cover that range only', () => {
+    const html = crisprTab(pastTheBound);
+    const shown = callout(html);
+    expect(shown).toContain(
+      'other exact copies of the 12-nt PAM-proximal seed in bases 1 to 8,000,000 of the 8,000,100 bases of this sequence — the range searched, on both strands — and no copy outside it'
+    );
+    expect(shown, 'the whole sequence is not claimed').not.toMatch(/across all [\d,]+ bases/);
+
+    // A record read whole names no shorter range, and says the counts cover all of it.
+    const whole = callout(crisprTab(hundredKb));
+    expect(whole).toContain(
+      'other exact copies of the 12-nt PAM-proximal seed across all 100,000 bases of this linear sequence, on both strands'
+    );
+    expect(whole, 'no range shorter than the record').not.toMatch(/bases 1 to|no copy outside it/);
+  }, 55_000);
+
+  it('US-01M7DVH2 AC5 a reply with no scan report is shown as unavailable, never as 0 candidates or a complete scan', async () => {
+    const { PrimerAndPCRStudio: Studio, replies } = await studioWithScanReply();
+    try {
+      // An older engine: it knows the guide-list op only, so the reply carries no report.
+      replies.scan = (payload) => replies.real('find_crispr_guides', payload);
+      const older = renderStudio(Studio, dnaDoc('Crispr_Report_older', hundredKbSmall));
+      expect(callout(older)).toContain(
+        'CRISPR scan report unavailable (the engine returned no scan report)'
+      );
+      expect(callout(older), 'no count is invented').not.toMatch(
+        /0 of the candidates|candidate guides found|Lists all|highest-scoring/
+      );
+      expect(callout(older), 'and no searched range either').not.toMatch(/bases of this|seed/);
+      expect(tabLabel(older)).toBe('Find CRISPR Sites & Off-Targets (scan report unavailable)');
+      expect(warningRegions(older), 'an absent report has no warnings of its own').toEqual([]);
+
+      // A reply holding the report's other fields but not the count is not a report either: a
+      // partial envelope is never completed with a zero.
+      replies.scan = (payload) => {
+        const real = replies.real('scan_crispr_guides', payload) as Record<string, unknown>;
+        const { candidateCount, ...rest } = real;
+        void candidateCount;
+        return rest;
+      };
+      const partial = renderStudio(Studio, dnaDoc('Crispr_Report_partial', hundredKbSmall));
+      expect(callout(partial)).toContain(
+        'CRISPR scan report unavailable (the engine returned no scan report)'
+      );
+      expect(callout(partial), 'a missing count is not a count of 0').not.toMatch(
+        /0 of the candidates|candidate guides found/
+      );
+      expect(tabLabel(partial)).toBe('Find CRISPR Sites & Off-Targets (scan report unavailable)');
+
+      // A failed call: the reason is the engine's, and still no numbers.
+      replies.scan = () => {
+        throw new Error('unknown op: scan_crispr_guides');
+      };
+      const failed = renderStudio(Studio, dnaDoc('Crispr_Report_failed', hundredKbSmall));
+      expect(callout(failed)).toContain(
+        'CRISPR scan report unavailable (the scan could not be run: unknown op: scan_crispr_guides)'
+      );
+      expect(callout(failed)).not.toMatch(/0 of the candidates|candidate guides found/);
+      expect(tabLabel(failed)).toBe('Find CRISPR Sites & Off-Targets (scan report unavailable)');
+    } finally {
+      vi.doUnmock('../lib/rustBioEngine');
+      vi.resetModules();
+    }
+  }, 55_000);
 });
 
 /**

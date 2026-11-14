@@ -55,7 +55,7 @@ use molbiocraft_cloning::{
     ModularAssemblySpec, ModularVectorPart, SelectionRange1Based,
 };
 use molbiocraft_cloning::cloning_crispr::{
-    audit_sequence_alerts_for_scan, find_crispr_guides_for_topology,
+    audit_sequence_alerts_for_scan, find_crispr_guides_for_topology, scan_crispr_guides,
 };
 use molbiocraft_cloning::rebase_catalog::{
     scan_restriction_sites, RestrictionPositionLimit, RESTRICTION_POSITIONS_PER_ENZYME,
@@ -1065,6 +1065,18 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
                 max_results,
                 circular,
             ))
+        }
+        // The scan itself (US-01M7DVH2): the same payload keys as `find_crispr_guides`, replying
+        // with the whole `CrisprGuideScan` envelope - the candidate count, the bases read, the
+        // sequence length, how the record was read, the bases across its origin and the warnings -
+        // so a reader of the scan's numbers does not have to find them on a guide row, and gets
+        // them when the scan found no guide. `maxResults` 0 asks for that report with no rows.
+        "scan_crispr_guides" => {
+            let seq = str_arg(&payload, "seq", "");
+            let nuclease = str_arg(&payload, "nuclease", "SpCas9 (NGG)");
+            let max_results = usize_arg(&payload, "maxResults", 30);
+            let circular = bool_arg(&payload, "circular", false);
+            to_val(scan_crispr_guides(seq, nuclease, max_results, None, circular))
         }
         "audit_sequence_alerts" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;

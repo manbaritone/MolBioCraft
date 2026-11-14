@@ -220,7 +220,19 @@ pub fn find_crispr_guides(
     nuclease: &str,
     max_results: usize,
 ) -> Vec<CrisprGuideRecord> {
-    scan_crispr_guides(raw_seq, nuclease, max_results, None, false).guides
+    scan_crispr_guides(raw_seq, nuclease, rows_wanted(max_results), None, false).guides
+}
+
+/// The rows [`find_crispr_guides`] and [`find_crispr_guides_for_topology`] keep: their documented
+/// default of 30 for a `max_results` of 0, which they have always answered that way. The scan
+/// itself reads `max_results` as the number it is, so a caller that wants the scan's report with no
+/// rows asks for 0 (US-01M7DVH2).
+fn rows_wanted(max_results: usize) -> usize {
+    if max_results == 0 {
+        30
+    } else {
+        max_results
+    }
 }
 
 /// [`find_crispr_guides`] told which molecule it is reading (BG-01M6T6GQ): with `circular` the whole
@@ -232,7 +244,7 @@ pub fn find_crispr_guides_for_topology(
     max_results: usize,
     circular: bool,
 ) -> Vec<CrisprGuideRecord> {
-    scan_crispr_guides(raw_seq, nuclease, max_results, None, circular).guides
+    scan_crispr_guides(raw_seq, nuclease, rows_wanted(max_results), None, circular).guides
 }
 
 /// [`find_crispr_guides`] as the scan it is (BG-01M6S15R): both strands of the same range read base
@@ -249,6 +261,12 @@ pub fn find_crispr_guides_for_topology(
 /// sampled index this replaces made a repeated seed read as unique — a specificity of 100 for a
 /// guide with nine other copies). Cost is linear in the bases read; see [`GUIDE_SCAN_MAX_BP`] for
 /// the measured time and memory.
+///
+/// `max_results` is the rows kept, as the number it is: 0 keeps none, so a caller that wants the
+/// scan's own report — the candidate count, the range read, how the record was read and the
+/// warnings — asks for 0 and gets that report with an empty `guides` (US-01M7DVH2). A request for
+/// no rows is not a capped list, so it raises no cap warning; `find_crispr_guides` and
+/// `find_crispr_guides_for_topology` keep their own default of 30 for 0.
 ///
 /// `circular` reads the record as the circle it is (BG-01M6T6GQ): every base of both strands is the
 /// start of a candidate, a site that runs off the last base continues at base 1, and the seeds are
@@ -293,7 +311,7 @@ pub fn scan_crispr_guides(
             warnings: bounded_warning(scanned),
         };
     }
-    let limit = if max_results == 0 { 30 } else { max_results };
+    let limit = max_results;
     let nuc_label = if is_spcas9 {
         "SpCas9 (NGG)"
     } else {
@@ -525,7 +543,8 @@ pub fn scan_crispr_guides(
     ranking.truncate(limit);
 
     let mut warnings = bounded_warning(scanned);
-    if ranking.len() < candidates.len() {
+    // A caller that asked for no rows was not capped: it asked for the report alone (US-01M7DVH2).
+    if limit > 0 && ranking.len() < candidates.len() {
         warnings.push(format!(
             "Guide list capped: it shows the {} highest-scoring of the {} candidate guides found.",
             format_thousands(ranking.len()),
