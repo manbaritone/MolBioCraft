@@ -53,6 +53,9 @@ function sweepMolecules(len: number): string[] {
         const bg = background();
         out.push(bg.slice(0, at) + planted + bg.slice(at + motif.length));
       }
+      // Across base 1: the motif's tail opens the molecule and its head closes it.
+      const head = Math.ceil(motif.length / 2);
+      out.push(planted.slice(head) + background().slice(motif.length) + planted.slice(0, head));
     }
   }
   return out;
@@ -76,6 +79,47 @@ function sweepRecords(topology: 'circular' | 'linear', lengths: number[]) {
   return lengths.flatMap((len) =>
     sweepMolecules(len).flatMap((seq) => findRestrictionCutSites(seq, topology, enzymes).map((site) => ({ seq, site })))
   );
+}
+
+/**
+ * Linear molecules that end exactly at a cut or at the motif: each sweep enzyme planted forward and
+ * reversed in a molecule spanning exactly its motif and both cuts, then with 3 bases added on the
+ * left, the right or both, so every molecule end meets a cut in some of them.
+ */
+function endAtCutMolecules(): string[] {
+  let state = 4242;
+  const bases = (n: number) =>
+    Array.from({ length: n }, () => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return 'ACGT'[(state >> 16) & 3];
+    }).join('');
+  const out: string[] = [];
+  for (const name of SWEEP_ENZYMES) {
+    const e = REBASE_ENZYMES.find((x) => x.name === name)!;
+    const m = e.recognitionSeq.length;
+    for (const strand of [1, -1] as const) {
+      const cuts = strand === 1 ? [e.cutFwd, e.cutRev] : [m - e.cutRev, m - e.cutFwd];
+      const lo = Math.min(0, ...cuts);
+      const hi = Math.max(m, ...cuts);
+      const planted = strand === 1 ? e.recognitionSeq : revComp(e.recognitionSeq);
+      for (const [left, right] of [[0, 0], [3, 0], [0, 3], [3, 3]]) {
+        out.push(bases(left - lo) + planted + bases(hi - m + right));
+      }
+    }
+  }
+  return out;
+}
+
+/** The picture of every record agrees with the engine's own end type and overhang. */
+function expectEngineAgreement(seq: string, site: RestrictionCutSite, circular: boolean) {
+  const p = cleavagePicture(site, seq, circular);
+  const label = `${site.id} on ${seq} (${circular ? 'circular' : 'linear'})`;
+  expect(p.endType, label).toBe(site.overhangType);
+  expect(p.overhangSeq, label).toBe(site.overhangSeq);
+  const o = oracleCuts(site);
+  expect(p.topCut.boundary - p.motif.start, label).toBe(o.top - (site.position - 1));
+  expect(p.bottomCut.boundary - p.motif.start, label).toBe(o.bottom - (site.position - 1));
+  return p;
 }
 
 describe('US-01M7CC6K AC1 cut boundaries, end type and overhang of AciI, EcoRI, PstI and SmaI', () => {
@@ -123,6 +167,21 @@ describe('US-01M7CC6K AC1 cut boundaries, end type and overhang of AciI, EcoRI, 
       expect(p.topCut.boundary - p.motif.start, label).toBe(o.top - (site.position - 1));
       expect(p.bottomCut.boundary - p.motif.start, label).toBe(o.bottom - (site.position - 1));
     }
+  });
+
+  it('agrees with the engine for every record on linear molecules that end exactly at a cut', () => {
+    const enzymes = SWEEP_ENZYMES.map((n) => REBASE_ENZYMES.find((e) => e.name === n)!);
+    let atAnEnd = 0;
+    for (const seq of endAtCutMolecules()) {
+      for (const site of findRestrictionCutSites(seq, 'linear', enzymes)) {
+        const p = expectEngineAgreement(seq, site, false);
+        for (const c of [p.topCut, p.bottomCut]) {
+          if (c.position === null || c.firstBaseAfter === null) atAnEnd++;
+          expect(c.position, site.id).not.toBe(0);
+        }
+      }
+    }
+    expect(atAnEnd).toBeGreaterThan(10);
   });
 });
 
@@ -201,6 +260,25 @@ describe('US-01M7CC6K AC3 a Type IIS site cuts outside its motif', () => {
     expect(p.topCut.gapFromMotif).toBe(0);
     expect(p.bottomCut.gapFromMotif).toBe(0);
   });
+
+  const endCases = [
+    { enzyme: 'BsaI-HFv2', seq: 'AAGGTCTCAAAAA', cuts: [10, 14], end: '5prime', oh: 'AAAA' },
+    { enzyme: 'BsaI-HFv2', seq: 'AAAAAGAGACCTT', cuts: [1, 5], end: '5prime', oh: 'AAAA' },
+    { enzyme: 'BsaI-HFv2', seq: 'TTTTTGAGACC', cuts: [1, 5], end: '5prime', oh: 'TTTT' },
+    { enzyme: 'AcuI', seq: 'TTCTGAAG' + 'C'.repeat(16), cuts: [25, 23], end: '3prime', oh: 'CC' },
+    { enzyme: 'BsgI', seq: 'A'.repeat(16) + 'CTGCACTTT', cuts: [3, 1], end: '3prime', oh: 'AA' },
+  ] as const;
+  for (const c of endCases) {
+    it(`${c.enzyme} on the linear ${c.seq.length}-nt ${c.seq} ends at a cut and is drawn as the engine cuts it`, () => {
+      const site = engineSite(c.seq, 'linear', c.enzyme);
+      expect([site.cutTop, site.cutBottom, site.overhangType, site.overhangSeq]).toEqual([...c.cuts, c.end, c.oh]);
+      const p = expectEngineAgreement(c.seq, site, false);
+      expect(p.overhangLength).toBe(c.oh.length);
+      expect(p.topCut.firstBaseAfter).toBe(c.cuts[0] <= c.seq.length ? c.cuts[0] : null);
+      expect(p.bottomCut.firstBaseAfter).toBe(c.cuts[1] <= c.seq.length ? c.cuts[1] : null);
+      expect(p.topCut.gapFromMotif + p.bottomCut.gapFromMotif).toBeGreaterThan(0);
+    });
+  }
 });
 
 describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank on a linear one', () => {
@@ -315,7 +393,9 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
   });
 
   it('places every circular record of eight enzymes where the enzyme cuts, small circles included', () => {
-    const records = sweepRecords('circular', [24, 28, 30, 36, 50]);
+    const records = sweepRecords('circular', [24, 28, 30, 36, 50]).filter(
+      ({ seq, site }) => Math.min(site.enzyme.cutFwd, site.enzyme.cutRev) < seq.length
+    );
     expect(new Set(records.map((r) => r.site.enzyme.name))).toEqual(new Set(SWEEP_ENZYMES));
     let behindOrigin = 0;
     for (const { seq, site } of records) {
@@ -331,6 +411,41 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
       if (Math.min(o.top, o.bottom) < 0) behindOrigin++;
     }
     expect(behindOrigin).toBeGreaterThan(10);
+  });
+
+  it('agrees with the engine for every circular record on circles of 12 to 40, 50 and 80 bp', () => {
+    const lengths = [...Array.from({ length: 29 }, (_, i) => 12 + i), 50, 80];
+    const records = sweepRecords('circular', lengths);
+    let checked = 0;
+    let shortCircles = 0;
+    for (const { seq, site } of records) {
+      // Within the stated reach: the cut nearer the motif lies less than one molecule length from it.
+      if (Math.min(site.enzyme.cutFwd, site.enzyme.cutRev) >= seq.length) continue;
+      expectEngineAgreement(seq, site, true);
+      checked++;
+      if (site.enzyme.isTypeIIS && Math.max(site.enzyme.cutFwd, site.enzyme.cutRev) >= seq.length) shortCircles++;
+    }
+    expect(checked).toBeGreaterThan(1000);
+    expect(shortCircles).toBeGreaterThan(20);
+  });
+
+  it('a reverse AcuI site on a 21-bp circle, shorter than its far cut, is drawn on the right turn', () => {
+    // AcuI CTGAAG(16/14) read as CTTCAG at base 8: its cuts lie 20 and 22 nt before the motif end, across base 1.
+    const seq = 'AAAAAAACTTCAGAAAAAACG';
+    const site = engineSite(seq, 'circular', 'AcuI');
+    expect([site.strand, site.overhangType, site.overhangSeq]).toEqual([-1, '3prime', 'GA']);
+    const p = cleavagePicture(site, seq, true, 1);
+    expect(p.endType).toBe('3prime');
+    expect(p.overhangSeq).toBe('GA');
+    expect(p.topCut.gapFromMotif).toBe(14);
+    expect(p.bottomCut.gapFromMotif).toBe(16);
+  });
+
+  it('refuses, by name, a circular record whose cuts disagree with its own overhang, and an empty sequence', () => {
+    const seq = 'TTTTGAATTCTTTT';
+    const site = engineSite(seq, 'circular', 'EcoRI');
+    expect(() => cleavagePicture({ ...site, cutBottom: site.cutBottom + 1 }, seq, true)).toThrow(/EcoRI-5-1.*disagree/);
+    expect(() => cleavagePicture(site, '', false)).toThrow(/EcoRI-5-1 has no sequence/);
   });
 
   it('rests on every catalogue enzyme cutting at or after its motif start on the recognition strand', () => {
@@ -407,6 +522,11 @@ describe('BG-01M7CDM1 a cut after the last base of a linear molecule is numbered
     const site = engineSite(seq, 'linear', 'Sau3AI');
     expect([site.cutTop, site.cutBottom]).toEqual([1, 5]);
     expect(cutSiteDisplayPosition(site.cutTop, seq.length, false)).toBe(0);
+    // The picture numbers no base before it: no position, never 0, and base 1 follows the cut.
+    const p = cleavagePicture(site, seq, false, 2);
+    expect(p.topCut.position).toBeNull();
+    expect(p.topCut.firstBaseAfter).toBe(1);
+    expect(p.bottomCut.position).toBe(4);
   });
 });
 

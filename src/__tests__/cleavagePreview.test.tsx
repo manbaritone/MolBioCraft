@@ -782,3 +782,28 @@ describe('US-01M7CC3B AC4 focus moves into the opened preview, and a stray Escap
     expect(run.marker.focus).not.toHaveBeenCalled();
   });
 });
+
+// ─── BG-01M7CETX (US-01M7CC6K redelivery) ───
+
+describe("BG-01M7CETX a linear molecule's ends are labelled at its own first and last base", () => {
+  it("EcoRI at base 1: the 5'- and 3'- labels stand beside base 1, after the blank columns, not before them", () => {
+    const p = previewOf('GAATTCTTTT', 'linear', 'EcoRI', 3);
+    expect(p.top).toBe("   5'-G▼AATT CTTT-3'");
+    expect(p.bottom).toBe("   3'-C TTAA▲GAAA-5'");
+  });
+
+  it("NlaIII CATG^ at the 3' end: the -3' label follows the last base and its cut, with no flank columns between", () => {
+    const p = previewOf('TTTTCATG', 'linear', 'NlaIII', 2);
+    expect(p.top).toBe("5'-TT CATG▼-3'");
+    expect(p.bottom).toBe("3'-AA▲GTAC -5'");
+  });
+
+  it("a reverse BsaI cut before base 1 is told as before base 1, never as after base 0", () => {
+    const p = previewOf('TTTTTGAGACC', 'linear', 'BsaI-HFv2', 2);
+    expect([p.site.cutTop, p.site.cutBottom, p.site.overhangType]).toEqual([1, 5, '5prime']);
+    expect(p.top).toBe("  5'-▼TTTT TGAGACC-3'");
+    expect(p.words).toContain('Top strand cut before base 1; bottom strand cut after base 4');
+    expect(p.words).toContain("5' overhang, 4 nt: TTTT");
+    expect(p.words).not.toMatch(/after base 0|past the end/);
+  });
+});

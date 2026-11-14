@@ -29,18 +29,28 @@ export function markedStrands(p: CleavagePicture): { top: string; bottom: string
   };
 }
 
+/**
+ * The marked strands with their 5'/3' end labels beside the molecule's own first and last base: on a
+ * linear molecule the blank columns past an end stay before the label on the left and are dropped
+ * on the right, so a label never stands beyond them.
+ */
+export function labelledStrands(p: CleavagePicture): { top: string; bottom: string } {
+  const strands = markedStrands(p);
+  const { left, right } = p.unavailableFlank;
+  const label = (s: string, opening: string, closing: string) =>
+    ' '.repeat(left) + opening + s.slice(left, s.length - right) + closing;
+  return { top: label(strands.top, "5'-", "-3'"), bottom: label(strands.bottom, "3'-", "-5'") };
+}
+
 const reverse = (s: string) => [...s].reverse().join('');
 
+/** A cut in words: after the base before it, or before base 1 of a linear molecule, which no base precedes. */
 const cutWords = (strand: 'Top' | 'bottom', cut: CleavageCut) =>
-  cut.position === null
-    ? `${strand} strand cut past the end of the linear molecule`
-    : `${strand} strand cut after base ${cut.position}`;
+  cut.position === null ? `${strand} strand cut before base 1` : `${strand} strand cut after base ${cut.position}`;
 
 function endWords(p: CleavagePicture): string {
   if (p.endType === 'blunt') return 'Blunt end';
-  const side = p.endType === '5prime' ? "5'" : "3'";
-  const seq = p.overhangSeq === null ? ' (part of it lies past the end of the linear molecule)' : `: ${p.overhangSeq}`;
-  return `${side} overhang, ${p.overhangLength} nt${seq}`;
+  return `${p.endType === '5prime' ? "5'" : "3'"} overhang, ${p.overhangLength} nt: ${p.overhangSeq}`;
 }
 
 /** The parts of a DOM element that revealing the preview touches (a plain object stands in for one in tests). */
@@ -106,7 +116,7 @@ export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence
   }, [site.id]);
 
   const p = cleavagePicture(site, sequence, circular, flank);
-  const strands = markedStrands(p);
+  const strands = labelledStrands(p);
   const siteSeq = p.top.slice(p.motif.start, p.motif.end);
   const first = p.coordinates[p.motif.start];
   const last = p.coordinates[p.motif.end - 1];
@@ -158,9 +168,9 @@ export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence
         aria-label="Top strand 5' to 3' over bottom strand 3' to 5', ▼ and ▲ marking the cuts"
         style={{ margin: '6px 0', fontFamily: 'var(--font-mono)', lineHeight: 1.4, overflowX: 'auto' }}
       >
-        <code data-strand="top">{`5'-${strands.top}-3'`}</code>
+        <code data-strand="top">{strands.top}</code>
         {'\n'}
-        <code data-strand="bottom">{`3'-${strands.bottom}-5'`}</code>
+        <code data-strand="bottom">{strands.bottom}</code>
       </pre>
       <p style={{ margin: '2px 0' }}>{`${cutWords('Top', p.topCut)}; ${cutWords('bottom', p.bottomCut)}`}</p>
       <p style={{ margin: '2px 0' }}>
