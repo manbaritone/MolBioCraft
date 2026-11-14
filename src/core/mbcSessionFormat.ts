@@ -66,6 +66,8 @@ export interface MbcWorkspaceUiState {
   docTableCollapsed: boolean;
   selectedRange: { start: number; end: number; label?: string } | null;
   displaySettings: MbcDisplaySettings;
+  /** The Split layout's circle / linear divider (US-01M7CCRP); absent in sessions saved before it. */
+  paneSplit?: { ratio: number; collapsed: 'circular' | 'linear' | null };
 }
 
 export interface MbcWorkbenchSnapshot {

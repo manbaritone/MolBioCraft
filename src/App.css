@@ -2351,6 +2351,35 @@ fieldset > legend,
   border-color: var(--mbc-blue);
 }
 
+/* US-01M7CCRP: the divider takes keyboard focus; its ring and its line show where it is. */
+.map-seq-divider:focus-visible {
+  outline: 2px solid var(--mbc-blue);
+  outline-offset: -2px;
+  border-radius: var(--mbc-radius-xs);
+}
+
+.map-seq-divider:focus-visible::after {
+  background: var(--mbc-blue);
+}
+
+/* With a pane collapsed the divider stays, a narrow strip between the restore rail and the card
+   that took the space, so it keeps focus (Enter restores) and can be dragged back out. */
+.map-seq-split.collapsed-circular > .map-seq-divider {
+  left: 24px;
+  width: 6px;
+}
+
+.map-seq-split.collapsed-linear > .map-seq-divider {
+  left: auto;
+  right: 24px;
+  width: 6px;
+}
+
+.map-seq-split.collapsed-circular > .map-seq-divider::after,
+.map-seq-split.collapsed-linear > .map-seq-divider::after {
+  left: 2px;
+}
+
 /* Mid-drag past the collapse threshold: the card a release would fold away fades. */
 .map-seq-split[data-collapse-preview='circular'] > .map-seq-grid > .plasmid-map-wrapper,
 .map-seq-split[data-collapse-preview='linear'] > .map-seq-grid > .linear-seq-container {

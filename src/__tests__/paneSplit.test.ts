@@ -27,13 +27,19 @@ import {
   clampPaneSplitRatio,
   collapsePane,
   dragPaneSplit,
+  PANE_SPLIT_KEY_STEP_LARGE_PX,
+  PANE_SPLIT_KEY_STEP_PX,
   paneCollapsedAt,
   paneSplitRatioAt,
+  paneSplitValueNow,
+  parsePaneSplit,
   resetPaneSplit,
   restorePanes,
+  stepPaneSplit,
 } from '../core/paneSplit';
+import type { MbcWorkbenchFileEnvelope } from '../core/mbcSessionFormat';
 import { mountApp, releaseLeakedMount, type AppHarness } from './appHarness';
-import { cascaded, gridTracks } from './cssCascade';
+import { appCssRules, cascaded, gridTracks } from './cssCascade';
 import { dispatchLiveEvent, type LiveElement } from './liveDom';
 
 vi.mock('../lib/tauriIpc', async (importOriginal) => (await import('./appHarness')).tauriIpcMock(await importOriginal<object>()));
@@ -56,17 +62,17 @@ const xForCircle = (circlePx: number) => circlePx + PANE_SPLIT_GAP_PX / 2;
 
 // ─── The App, mounted ───
 
-async function openSplit(): Promise<AppHarness> {
+async function openSplit(frameWidth: () => number = () => FRAME): Promise<AppHarness> {
   const app = await mountApp({
     width: WINDOW, height: 900,
-    layout: (el) => (el.classList.contains('map-seq-split') ? { width: FRAME, height: 640 } : { width: 0, height: 0 }),
+    layout: (el) => (el.classList.contains('map-seq-split') ? { width: frameWidth(), height: 640 } : { width: 0, height: 0 }),
   });
   await app.menu('new-session:sample-library');
   expect(app.one('.map-seq-grid').classList.contains('mode-split'), 'the sample opens in Split').toBe(true);
   return app;
 }
-async function withSplit(run: (app: AppHarness) => Promise<void>) {
-  const app = await openSplit();
+async function withSplit(run: (app: AppHarness) => Promise<void>, frameWidth?: () => number) {
+  const app = await openSplit(frameWidth);
   try { await run(app); } finally { app.unmount(); }
 }
 
@@ -229,7 +235,12 @@ describe('US-01M7CCT5 AC2: a drag past the edge collapses a pane; restore and do
         expect(columns(app).tracks, 'the other pane takes the space').toEqual(['minmax(0, 1fr)']);
         const hidden = app.one(pane === 'circular' ? '.map-seq-grid > .plasmid-map-wrapper' : '.map-seq-grid > .linear-seq-container');
         expect(cascaded(hidden, 'display', VIEW)).toBe('none');
-        expect(dividers(app), 'no divider while a pane is collapsed').toHaveLength(0);
+        // US-01M7CCRP: the divider stays while a pane is collapsed, a 6px strip beside the restore
+        // rail (so keyboard focus stays on it), never over the card that took the space.
+        expect(dividers(app), 'the divider stays, at the collapsed edge').toHaveLength(1);
+        expect(cascaded(divider(app), 'width', VIEW)).toBe('6px');
+        expect(divider(app).getAttribute('aria-valuenow')).toBe(pane === 'circular' ? '0' : '100');
+        expect(app.all('.map-seq-divider-controls'), 'no collapse buttons while collapsed').toHaveLength(0);
         const restore = named(app, pane === 'circular' ? 'Restore circular map' : 'Restore linear map');
         expect(cascaded(restore, 'display', VIEW), 'the restore button is visible').not.toBe('none');
         // Restore: the ratio from before the drag that shut it (not the default, not the clamp edge).
@@ -321,5 +332,184 @@ describe('US-01M7CCT5 AC4: inspector width, explorer width and SplitDocumentPane
       await dblclick(app, app.one('.mbc-inspector-resizer'));
       expect(ratioOf(app)).toBeCloseTo(560 / cols(FRAME), 3);
     });
+  });
+});
+
+// ─── US-01M7CCRP AC1: the keyboard ───
+
+const press = async (app: AppHarness, key: string, shift = false) => { await app.press(key, { shift }); };
+async function focusDivider(app: AppHarness) {
+  await act(app, () => { divider(app).focus(); });
+  expect(app.doc.activeElement, 'the divider has focus').toBe(divider(app));
+}
+
+describe('US-01M7CCRP AC1: the separator is focusable and moves, collapses and restores from the keyboard', () => {
+  it('US-01M7CCRP AC1 steps by a documented amount, clamped, and announces its value', () => {
+    expect([PANE_SPLIT_KEY_STEP_PX, PANE_SPLIT_KEY_STEP_LARGE_PX]).toEqual([16, 80]);
+    for (const w of [760, 879, 1400, 2200]) {
+      const lo = PANE_MIN_PX.circular / cols(w);
+      const hi = 1 - PANE_MIN_PX.linear / cols(w);
+      for (const step of [16, -16, 80, -80]) {
+        let s = { ratio: DEFAULT_PANE_SPLIT_RATIO, collapsed: null as null };
+        for (let i = 0; i < 80; i++) {
+          const next = stepPaneSplit(s, step, w);
+          const want = Math.min(hi, Math.max(lo, s.ratio + step / cols(w)));
+          expect(next.ratio, `${w}px, step ${step}, press ${i}`).toBeCloseTo(want, 12);
+          expect(next.collapsed).toBeNull();
+          s = next as typeof s;
+        }
+        expect(s.ratio, `${w}px: steps of ${step} end at the bound`).toBeCloseTo(step > 0 ? hi : lo, 12);
+      }
+      // A collapsed pane does not move under the arrows.
+      const shut = { ratio: 0.5, collapsed: 'circular' as const };
+      expect(stepPaneSplit(shut, 80, w)).toBe(shut);
+    }
+    expect([0.4444, 0.5, 0.731].map((ratio) => paneSplitValueNow({ ratio, collapsed: null }))).toEqual([44, 50, 73]);
+    expect(paneSplitValueNow({ ratio: 0.5, collapsed: 'circular' })).toBe(0);
+    expect(paneSplitValueNow({ ratio: 0.5, collapsed: 'linear' })).toBe(100);
+  });
+
+  it('US-01M7CCRP AC1 takes focus, moves on the arrows, collapses on Home/End and restores on Enter', async () => {
+    await withSplit(async (app) => {
+      const d = divider(app);
+      // A focusable separator that names both panes and announces where it is.
+      expect({
+        role: d.getAttribute('role'), tabindex: d.getAttribute('tabindex'), orientation: d.getAttribute('aria-orientation'),
+        now: d.getAttribute('aria-valuenow'), min: d.getAttribute('aria-valuemin'), max: d.getAttribute('aria-valuemax'),
+      }).toEqual({ role: 'separator', tabindex: '0', orientation: 'vertical', now: '44', min: '0', max: '100' });
+      expect(d.getAttribute('aria-label')).toMatch(/circular/i);
+      expect(d.getAttribute('aria-label')).toMatch(/linear/i);
+      expect(d.getAttribute('aria-valuetext')).toBe('Circular map 44%, linear map 56%');
+      // A visible focus ring: a :focus-visible rule on the divider draws an outline.
+      const ring = appCssRules().filter((r) => r.selectorText.split(',').some((x) => /\.map-seq-divider:focus-visible$/.test(x.trim()))
+        && r.decls.some((d) => d.name === 'outline' && /^\d+px solid/.test(d.value)));
+      expect(ring, 'a focus ring on the divider').toHaveLength(1);
+
+      const W = cols(FRAME);
+      await focusDivider(app);
+      const start = ratioOf(app);
+      await press(app, 'ArrowRight');
+      expect(ratioOf(app)).toBeCloseTo(start + 16 / W, 3);
+      await press(app, 'ArrowRight', true);
+      expect(ratioOf(app)).toBeCloseTo(start + 96 / W, 3);
+      await press(app, 'ArrowLeft');
+      expect(ratioOf(app)).toBeCloseTo(start + 80 / W, 3);
+      expect(divider(app).getAttribute('aria-valuenow')).toBe(String(Math.round((start + 80 / W) * 100)));
+      // Held against a bound, the arrows stop at each pane's minimum (and never collapse it).
+      for (let i = 0; i < 12; i++) await press(app, 'ArrowLeft', true);
+      expect(ratioOf(app)).toBeCloseTo(PANE_MIN_PX.circular / W, 3);
+      expect(frame(app).className).not.toMatch(/collapsed/);
+      for (let i = 0; i < 12; i++) await press(app, 'ArrowRight', true);
+      expect(ratioOf(app)).toBeCloseTo(1 - PANE_MIN_PX.linear / W, 3);
+      await press(app, 'ArrowLeft', true);
+      const expanded = ratioOf(app);
+
+      // Home folds the circle away, End the linear map; Enter brings both back at the ratio they had,
+      // and focus stays on the divider throughout.
+      for (const [key, pane, now] of [['Home', 'circular', '0'], ['End', 'linear', '100']] as const) {
+        await press(app, key);
+        expect(frame(app).classList.contains(`collapsed-${pane}`), `${key} collapses ${pane}`).toBe(true);
+        expect(divider(app).getAttribute('aria-valuenow')).toBe(now);
+        expect(app.doc.activeElement, 'focus stays on the divider').toBe(divider(app));
+        await press(app, 'ArrowRight');
+        expect(frame(app).classList.contains(`collapsed-${pane}`), 'the arrows leave a collapsed pane shut').toBe(true);
+        await press(app, 'Enter');
+        expect(frame(app).className).not.toMatch(/collapsed/);
+        expect(ratioOf(app), 'Enter restores the expanded ratio').toBeCloseTo(expanded, 6);
+        expect(app.doc.activeElement).toBe(divider(app));
+      }
+      // Other keys pass through untouched.
+      await press(app, 'a');
+      expect(ratioOf(app)).toBeCloseTo(expanded, 6);
+    });
+  });
+});
+
+// ─── US-01M7CCRP AC2: saved with the workspace, restored on reopen ───
+
+/** The autosaved session the App wrote, as the file envelope. */
+async function autosaved(app: AppHarness): Promise<MbcWorkbenchFileEnvelope> {
+  const React = await import('react');
+  await React.act(async () => { vi.advanceTimersByTime(1000); });
+  await app.settle();
+  const raw = app.win.localStorage.getItem('molbiocraft.workbench.autosave.v1');
+  expect(raw, 'the App autosaved the session').toBeTruthy();
+  return JSON.parse(raw!) as MbcWorkbenchFileEnvelope;
+}
+const reopen = (app: AppHarness, env: MbcWorkbenchFileEnvelope, paneSplit: unknown, keep = true) => app.restoreSession({
+  documents: env.documents, activeDocId: env.workspace.activeDocId, viewerTab: 'sequence-view',
+  workspace: (() => {
+    const { paneSplit: _drop, ...rest } = env.workspace;
+    void _drop;
+    return (keep ? { ...rest, paneSplit } : rest) as never;
+  })(),
+});
+
+describe('US-01M7CCRP AC2: the divider is saved with the workspace and restored on reopen', () => {
+  it('US-01M7CCRP AC2 reads a saved divider back, refusing malformed values', () => {
+    expect(parsePaneSplit({ ratio: 0.6, collapsed: 'linear' })).toEqual({ ratio: 0.6, collapsed: 'linear' });
+    expect(parsePaneSplit({ ratio: 0.3, collapsed: null })).toEqual({ ratio: 0.3, collapsed: null });
+    // An older session saved none.
+    expect(parsePaneSplit(undefined)).toEqual(DEFAULT_PANE_SPLIT);
+    for (const bad of [null, 0.6, 'split', [0.6], true]) expect(parsePaneSplit(bad), JSON.stringify(bad)).toEqual(DEFAULT_PANE_SPLIT);
+    for (const ratio of [0, 1, -0.2, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '0.6', null]) {
+      expect(parsePaneSplit({ ratio, collapsed: 'circular' }), `ratio ${String(ratio)}`).toEqual({ ratio: DEFAULT_PANE_SPLIT_RATIO, collapsed: 'circular' });
+    }
+    for (const collapsed of ['both', 'Circular', 1, {}, true]) {
+      expect(parsePaneSplit({ ratio: 0.55, collapsed }), `collapsed ${JSON.stringify(collapsed)}`).toEqual({ ratio: 0.55, collapsed: null });
+    }
+  });
+
+  it('US-01M7CCRP AC2 saves the ratio and collapse with the session and restores them, clamped to the current width', async () => {
+    let width = FRAME;
+    await withSplit(async (app) => {
+      const W = cols(FRAME);
+      // Saved: a dragged ratio, then a collapse on top of it.
+      await drag(app, [xForCircle(520)]);
+      await app.click(named(app, 'Collapse linear map'));
+      const env = await autosaved(app);
+      expect(env.workspace.paneSplit?.collapsed).toBe('linear');
+      expect(env.workspace.paneSplit?.ratio).toBeCloseTo(520 / W, 3);
+
+      // Reset in the App, then the saved session reopened through the session parser: both return.
+      await app.click(named(app, 'Restore linear map'));
+      await dblclick(app, divider(app));
+      expect(ratioOf(app)).toBeCloseTo(4 / 9, 3);
+      await reopen(app, env, env.workspace.paneSplit);
+      expect(frame(app).classList.contains('collapsed-linear'), 'the collapse returns').toBe(true);
+      await app.click(named(app, 'Restore linear map'));
+      expect(ratioOf(app), 'the expanded ratio returns').toBeCloseTo(520 / W, 3);
+      expect(columns(app).circle).toBeCloseTo(520, 0);
+
+      // An old session, saved before the divider, opens at the default.
+      await reopen(app, env, undefined, false);
+      expect(ratioOf(app)).toBeCloseTo(4 / 9, 3);
+      expect(frame(app).className).not.toMatch(/collapsed/);
+      // Malformed values are refused, field by field, and never reach the layout.
+      for (const [bad, want] of [
+        [{ ratio: 'wide', collapsed: 'sideways' }, { ratio: 4 / 9, collapsed: false }],
+        [0.7, { ratio: 4 / 9, collapsed: false }],
+        [{ ratio: 0.55, collapsed: 'circular' }, { ratio: 0.55, collapsed: 'circular' }],
+        [{ ratio: 7, collapsed: null }, { ratio: 4 / 9, collapsed: false }],
+      ] as const) {
+        await reopen(app, env, bad);
+        expect(ratioOf(app), JSON.stringify(bad)).toBeCloseTo(want.ratio, 3);
+        expect(frame(app).classList.contains('collapsed-circular'), JSON.stringify(bad)).toBe(want.collapsed === 'circular');
+      }
+
+      // A ratio wider than this frame can hold is clamped to it on reopen ...
+      await reopen(app, env, { ratio: 0.95, collapsed: null });
+      expect(ratioOf(app)).toBeCloseTo(1 - PANE_MIN_PX.linear / W, 3);
+      expect(columns(app).linear).toBeGreaterThanOrEqual(PANE_MIN_PX.linear - 0.5);
+      await reopen(app, env, { ratio: 0.05, collapsed: null });
+      expect(ratioOf(app)).toBeCloseTo(PANE_MIN_PX.circular / W, 3);
+      // ... and a ratio that fits a wide window is clamped when the window narrows.
+      width = 1600;
+      await reopen(app, env, { ratio: 0.78, collapsed: null });
+      expect(ratioOf(app), 'it fits 1600px').toBeCloseTo(0.78, 3);
+      width = FRAME;
+      await act(app, () => {});
+      expect(ratioOf(app), 'clamped at 879px').toBeCloseTo(1 - PANE_MIN_PX.linear / W, 3);
+    }, () => width);
   });
 });

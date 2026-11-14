@@ -117,13 +117,20 @@ import { parseAlignedFasta, parseTextAlignment, splitFlatfileRecords, textAlignm
 import { SplitDocumentPane } from './components/SplitDocumentPane';
 import {
   DEFAULT_PANE_SPLIT,
+  PANE_SPLIT_KEY_STEP_LARGE_PX,
+  PANE_SPLIT_KEY_STEP_PX,
+  PANE_SPLIT_SIDE_BY_SIDE_PX,
+  clampPaneSplitRatio,
   collapsePane,
   dragPaneSplit,
   paneSplitIsDefault,
   paneSplitRatioAt,
   paneSplitStyle,
+  paneSplitValueNow,
+  parsePaneSplit,
   resetPaneSplit,
   restorePanes,
+  stepPaneSplit,
   type PaneSplitState,
 } from './core/paneSplit';
 import { StructureAlignmentDialog } from './components/StructureAlignmentDialog';
@@ -1404,6 +1411,9 @@ export const App: React.FC = () => {
     handle: HTMLElement;
     frame: HTMLElement;
   } | null>(null);
+  // US-01M7CCRP: the Split frame, observed so a ratio restored from a session (or kept across a window
+  // resize) is clamped to the width the maps now have.
+  const [paneSplitFrame, setPaneSplitFrame] = useState<HTMLDivElement | null>(null);
   // Restoring the sequence map (⌘0, View › Actual Size, the header's % readout) returns its zoom to
   // 100% and counts up its restore key, on which the circle recentres a pan.
   const [sequenceViewRestores, setSequenceViewRestores] = useState(0);
@@ -1943,6 +1953,26 @@ export const App: React.FC = () => {
     if (preview) frame.setAttribute('data-collapse-preview', preview);
     else frame.removeAttribute('data-collapse-preview');
   };
+  // A ratio the maps side by side cannot hold (a restored session, a narrower window) is clamped to
+  // the frame's width; a stacked layout keeps the ratio for when the maps are side by side again.
+  useEffect(() => {
+    const frame = paneSplitFrame;
+    // A host without layout (a test's bare DOM) gives no width to clamp to.
+    if (!frame || typeof frame.getBoundingClientRect !== 'function') return;
+    const clampToFrame = () => {
+      const width = frame.getBoundingClientRect().width;
+      if (width < PANE_SPLIT_SIDE_BY_SIDE_PX || paneSplitDragRef.current) return;
+      setPaneSplit((s) => {
+        const ratio = clampPaneSplitRatio(s.ratio, width);
+        return ratio === s.ratio ? s : { ...s, ratio };
+      });
+    };
+    clampToFrame();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(clampToFrame);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, [paneSplitFrame, paneSplit.ratio]);
   /** Ends the divider drag: a release commits where it got to, a cancel puts the old state back. */
   const finishPaneSplitDrag = (commit: boolean) => {
     const drag = paneSplitDragRef.current;
@@ -4203,6 +4233,7 @@ export const App: React.FC = () => {
       viewerTab,
       mapLayoutMode,
       zoomLevel,
+      paneSplit,
       textFormat,
       colorScheme,
       darkMode,
@@ -4334,6 +4365,7 @@ export const App: React.FC = () => {
     viewerTab,
     mapLayoutMode,
     zoomLevel,
+    paneSplit,
     textFormat,
     colorScheme,
     darkMode,
@@ -4445,6 +4477,8 @@ export const App: React.FC = () => {
     setViewerTab(env.workspace.viewerTab);
     setMapLayoutMode(env.workspace.mapLayoutMode);
     setZoomLevel(clampSequenceZoom(env.workspace.zoomLevel));
+    // Checked on the way in: a session saved before the divider, or a malformed value, opens at the default.
+    setPaneSplit(parsePaneSplit(env.workspace.paneSplit));
     setTextFormat(env.workspace.textFormat);
     // Checked here as importing a preferences file checks it: a scheme that is not a known nucleotide
     // scheme opens in the default ('standard'), whatever the session parser let through.
@@ -14713,6 +14747,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                         paneSplitDragging ? ' dragging' : ''
                       }`}
                       style={paneSplitStyle(paneSplit.ratio) as React.CSSProperties}
+                      ref={setPaneSplitFrame}
                     >
                       {paneSplitCollapsed === 'circular' && (
                         <button
@@ -14765,14 +14800,39 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           />
                         )}
                       </div>
-                      {paneSplitShown && !paneSplitCollapsed && (
+                      {paneSplitShown && (
                         <>
+                          {/* US-01M7CCRP: it stays, at the collapsed pane's edge, while a pane is collapsed, so focus stays on it and Enter restores. */}
                           <div
                             className="map-seq-divider"
                             role="separator"
+                            tabIndex={0}
                             aria-orientation="vertical"
                             aria-label="Resize the circular and linear maps"
-                            title="Drag to resize the circular and linear maps; drag to an edge to collapse one • Double-click to reset"
+                            aria-valuenow={paneSplitValueNow(paneSplit)}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuetext={
+                              paneSplit.collapsed === 'circular'
+                                ? 'Circular map collapsed'
+                                : paneSplit.collapsed === 'linear'
+                                  ? 'Linear map collapsed'
+                                  : `Circular map ${paneSplitValueNow(paneSplit)}%, linear map ${100 - paneSplitValueNow(paneSplit)}%`
+                            }
+                            title={`Drag, or press Left/Right Arrow (${PANE_SPLIT_KEY_STEP_PX}px; Shift ${PANE_SPLIT_KEY_STEP_LARGE_PX}px), to resize the circular and linear maps • Home/End or a drag to an edge collapses one, Enter restores • Double-click to reset`}
+                            onKeyDown={(e) => {
+                              const width = e.currentTarget.parentElement?.getBoundingClientRect().width ?? 0;
+                              const step = e.shiftKey ? PANE_SPLIT_KEY_STEP_LARGE_PX : PANE_SPLIT_KEY_STEP_PX;
+                              let next: PaneSplitState;
+                              if (e.key === 'ArrowLeft') next = stepPaneSplit(paneSplit, -step, width);
+                              else if (e.key === 'ArrowRight') next = stepPaneSplit(paneSplit, step, width);
+                              else if (e.key === 'Home') next = collapsePane(paneSplit, 'circular');
+                              else if (e.key === 'End') next = collapsePane(paneSplit, 'linear');
+                              else if (e.key === 'Enter') next = restorePanes(paneSplit);
+                              else return;
+                              e.preventDefault();
+                              if (next !== paneSplit) setPaneSplit(next);
+                            }}
                             onPointerDown={(e) => {
                               if (e.button !== 0 || paneSplitDragRef.current) return;
                               const handle = e.currentTarget;
@@ -14815,6 +14875,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             }}
                             onDoubleClick={() => setPaneSplit(resetPaneSplit())}
                           />
+                          {!paneSplitCollapsed && (
                           <div className="map-seq-divider-controls">
                             <button
                               type="button"
@@ -14833,6 +14894,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                               <ChevronRight size={12} aria-hidden="true" />
                             </button>
                           </div>
+                          )}
                         </>
                       )}
                       {paneSplitCollapsed === 'linear' && (

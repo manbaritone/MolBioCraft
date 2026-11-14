@@ -194,6 +194,10 @@ pub struct MbcWorkspaceUiStateRust {
     pub selected_range: Option<MbcSelectedRangeRust>,
     #[serde(default)]
     pub display_settings: MbcDisplaySettingsRust,
+    /// The Split layout's circle / linear divider (US-01M7CCRP): an object the app validates on
+    /// restore. A session saved before it has none and opens at the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_split: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -572,6 +576,7 @@ pub fn parse_mbc_workbench_rust(
 
     let resolved_workspace = MbcWorkspaceUiStateRust {
         project_explorer: ws_obj.and_then(|w| w.get("projectExplorer")).filter(|v| v.is_object()).cloned(),
+        pane_split: ws_obj.and_then(|w| w.get("paneSplit")).filter(|v| v.is_object()).cloned(),
         active_doc_id: resolved_active_id,
         selected_folder: ws_obj
             .and_then(|w| w.get("selectedFolder"))
@@ -1149,6 +1154,7 @@ mod tests {
                 doc_table_collapsed: false,
                 selected_range: None,
                 display_settings: MbcDisplaySettingsRust::default(),
+                pane_split: Some(serde_json::json!({"ratio": 0.6, "collapsed": "linear"})),
             },
         };
 
@@ -1166,6 +1172,15 @@ mod tests {
         assert!(parsed.checksum_verified);
         assert!(parsed.warnings.is_empty(), "an untouched session must not warn: {:?}", parsed.warnings);
         assert_eq!(parsed.envelope.workspace.project_explorer, snap.workspace.project_explorer);
+        // US-01M7CCRP: the divider's state round-trips; a session without it has none.
+        assert_eq!(parsed.envelope.workspace.pane_split, snap.workspace.pane_split);
+        let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
+        old["workspace"].as_object_mut().unwrap().remove("paneSplit");
+        let old_parsed = parse_mbc_workbench_bytes_rust(old.to_string().as_bytes(), "Fallback", "2026-10-31T08:00:00.000Z").unwrap();
+        assert_eq!(old_parsed.envelope.workspace.pane_split, None);
+        old["workspace"]["paneSplit"] = serde_json::json!("0.6");
+        let odd = parse_mbc_workbench_bytes_rust(old.to_string().as_bytes(), "Fallback", "2026-10-31T08:00:00.000Z").unwrap();
+        assert_eq!(odd.envelope.workspace.pane_split, None, "a paneSplit that is not an object is dropped");
         assert_eq!(parsed.envelope.session_name, "Test_Study");
         assert_eq!(parsed.envelope.workspace.viewer_tab, "sequence-alignment");
         assert!(parsed.envelope.checksum_crc32.is_some());

@@ -103,3 +103,42 @@ export function paneSplitStyle(ratio: number): Record<string, string> {
     '--mbc-split-ratio': String(r),
   };
 }
+
+// ─── US-01M7CCRP: the keyboard, and the state a session keeps ───
+
+/** An arrow key moves the divider this far; with Shift, the larger step. */
+export const PANE_SPLIT_KEY_STEP_PX = 16;
+export const PANE_SPLIT_KEY_STEP_LARGE_PX = 80;
+/** The viewer canvas width from which App.css puts the maps side by side, and the divider shows. */
+export const PANE_SPLIT_SIDE_BY_SIDE_PX = 760;
+
+/**
+ * The divider moved `deltaPx` (negative: towards the circle) in a grid `widthPx` wide, clamped to
+ * both minimums. A collapsed pane is left as it is: restoring it is its own key.
+ */
+export function stepPaneSplit(state: PaneSplitState, deltaPx: number, widthPx: number): PaneSplitState {
+  if (state.collapsed) return state;
+  const cols = columnsOf(widthPx);
+  if (cols <= 0) return state;
+  return { ratio: clampPaneSplitRatio(state.ratio + deltaPx / cols, widthPx), collapsed: null };
+}
+
+/** The circle's share as the separator announces it, 0..100: 0 with the circle collapsed, 100 with the linear map collapsed. */
+export function paneSplitValueNow(state: PaneSplitState): number {
+  if (state.collapsed === 'circular') return 0;
+  if (state.collapsed === 'linear') return 100;
+  return Math.round(state.ratio * 100);
+}
+
+/**
+ * The divider state a saved session holds, checked: a ratio that is not a number strictly between 0
+ * and 1 opens at the default ratio, a collapse that is not one of the two panes opens expanded, and
+ * anything that is not an object (an older session saved none) opens at the default.
+ */
+export function parsePaneSplit(value: unknown): PaneSplitState {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return { ...DEFAULT_PANE_SPLIT };
+  const v = value as Record<string, unknown>;
+  const ratio = typeof v.ratio === 'number' && Number.isFinite(v.ratio) && v.ratio > 0 && v.ratio < 1 ? v.ratio : DEFAULT_PANE_SPLIT_RATIO;
+  const collapsed = v.collapsed === 'circular' || v.collapsed === 'linear' ? v.collapsed : null;
+  return { ratio, collapsed };
+}
