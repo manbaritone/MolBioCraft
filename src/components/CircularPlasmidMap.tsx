@@ -655,15 +655,24 @@ export function circularCalloutNote(
   hiddenByUser = 0
 ): string | null {
   const scopeOnly = scope ? `Cut sites: ${scope} only` : null;
-  // Sites the user hid (US-01M7CCGA) are told apart from labels left out for space.
+  // Sites the user hid (US-01M7CCGA) are told apart from labels left out for space. A partial
+  // scan's scope outranks both counts: each shorter line drops counts, never the scope, down to
+  // the scope alone, drawn at any width (BG-01M6RPWR).
   if (hiddenByUser > 0) {
     const hidden = `${hiddenByUser.toLocaleString()} ${hiddenByUser === 1 ? 'site' : 'sites'} hidden by you`;
+    const left = sites + annotations;
     const omitted = circularCalloutNote(sites, annotations, Infinity, scope);
-    const full = omitted ? `${omitted}; ${hidden}` : hidden;
-    if (full.length <= maxChars) return full;
-    const short = sites + annotations > 0 ? `${(sites + annotations).toLocaleString()} not shown for space; ${hidden}` : hidden;
-    if (short.length <= maxChars) return short;
-    return sites + annotations > 0 ? `${(sites + annotations).toLocaleString()} not shown, ${hiddenByUser.toLocaleString()} hidden` : hidden;
+    const lines = scope
+      ? [
+          `${omitted}; ${hidden}`,
+          left > 0 ? `${left.toLocaleString()} not shown, ${hiddenByUser.toLocaleString()} hidden by you; ${scope} scanned` : `${hidden}; ${scope} scanned`,
+          `${hiddenByUser.toLocaleString()} hidden; ${scope} scanned`,
+        ]
+      : left > 0
+      ? [`${omitted}; ${hidden}`, `${left.toLocaleString()} not shown for space; ${hidden}`, `${left.toLocaleString()} not shown, ${hiddenByUser.toLocaleString()} hidden`]
+      : [hidden];
+    const fits = lines.find((line) => line.length <= maxChars);
+    return fits ?? scopeOnly ?? lines[lines.length - 1];
   }
   if (sites <= 0 && annotations <= 0) return scopeOnly;
   const plural = (n: number, word: string) => `${n.toLocaleString()} more ${word}${n === 1 ? '' : 's'}`;

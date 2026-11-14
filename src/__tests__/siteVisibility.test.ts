@@ -375,6 +375,24 @@ describe('US-01M7CCGA AC1: a hidden site has no marker or label on either map', 
     expect(linearMarkup(state)).toBe(linearMarkup());
   });
 
+  it('US-01M7CCGA AC1 the remaining site of a partly hidden two-cutter is still drawn as a multi-cutter', () => {
+    /** The callout group of `enzyme` cutting after `at`. */
+    const callout = (html: string, enzyme: string, at: number) => {
+      const t = html.indexOf(`<title>${enzyme} (`);
+      const title = [...html.matchAll(new RegExp(`<title>${enzyme} \\([A-Z]+\\) cuts after ${at}\\b`, 'g'))][0];
+      expect(title, `${enzyme} at ${at} is drawn`).toBeDefined();
+      expect(t).toBeGreaterThanOrEqual(0);
+      return html.slice(html.lastIndexOf('<g', title!.index!), html.indexOf('</g>', title!.index!));
+    };
+    const whole = callout(circularMarkup(), 'EcoRI', cutAfter(MAP_ECO2));
+    const partly = callout(circularMarkup(setOccurrenceVisibility(emptySiteVisibility(MAP_REV), MAP_ECO1, false)), 'EcoRI', cutAfter(MAP_ECO2));
+    expect(partly).toBe(whole);
+    expect(partly).toContain('var(--mbc-text-secondary)');
+    expect(partly).not.toContain('var(--mbc-blue)');
+    // The single cutter, for contrast, is drawn blue.
+    expect(callout(circularMarkup(), 'BamHI', 97)).toContain('var(--mbc-blue)');
+  });
+
   it('US-01M7CCGA AC1 a choice of another revision hides nothing on the maps', () => {
     const old = sequenceRevision('A' + SEQ, 'circular');
     const stale = setEnzymeVisibility(setOccurrenceVisibility(emptySiteVisibility(old), MAP_ECO1, false), 'NotAnEnzyme', false);
@@ -393,6 +411,39 @@ describe('US-01M7CCGA AC2: the note tells sites the user hid apart from labels l
     expect(circularCalloutNote(5, 0, 200, 'first 60,000 bp', 2)).toBe('5 more sites in Restriction Analysis (first 60,000 bp); 2 sites hidden by you');
     // With nothing hidden the words are those the map always gave.
     expect(circularCalloutNote(5, 2, 200, null)).toBe('5 more sites in Restriction Analysis, 2 in Annotations');
+  });
+
+  it('US-01M7CCGA AC2 a partial scan\'s note names its scope at every width, with or without hidden or omitted sites', () => {
+    const scope = 'first 60,000 bp';
+    for (const width of [30, 40, 60, 200]) {
+      for (const hidden of [0, 2]) {
+        for (const [sites, annotations] of [[0, 0], [5, 0], [5, 2], [0, 3]]) {
+          const note = circularCalloutNote(sites, annotations, width, scope, hidden);
+          const what = `width ${width}, ${hidden} hidden, ${sites} sites and ${annotations} labels left out`;
+          expect(note, what).not.toBeNull();
+          expect(note!, what).toContain(scope);
+          // Counts are dropped before the scope: a line names hidden sites only when it fits.
+          if (note!.length > width) expect(note, what).toBe(`Cut sites: ${scope} only`);
+        }
+      }
+    }
+    // The reviewer's cases, and each step of the chain.
+    expect(circularCalloutNote(5, 2, 40, scope)).toBe('Cut sites: first 60,000 bp only');
+    expect(circularCalloutNote(5, 2, 40, scope, 1)).toBe('1 hidden; first 60,000 bp scanned');
+    expect(circularCalloutNote(0, 0, 30, scope, 2)).toBe('Cut sites: first 60,000 bp only');
+    expect(circularCalloutNote(0, 0, 40, scope, 2)).toBe('2 hidden; first 60,000 bp scanned');
+    expect(circularCalloutNote(0, 0, 60, scope, 2)).toBe('Cut sites: first 60,000 bp only; 2 sites hidden by you');
+    expect(circularCalloutNote(5, 2, 60, scope, 1)).toBe('7 not shown, 1 hidden by you; first 60,000 bp scanned');
+    expect(circularCalloutNote(5, 2, 200, scope, 1)).toBe('5 more sites in Restriction Analysis (first 60,000 bp), 2 in Annotations; 1 site hidden by you');
+    // A whole-molecule scan never claims a scope.
+    for (const width of [30, 40, 60, 200]) expect(circularCalloutNote(5, 2, width, null, 1)).not.toMatch(/scanned|only|bp/);
+  });
+
+  it('US-01M7CCGA AC2 in the single-cutter view, a hidden multi-cutter is not counted as hidden by you', () => {
+    const html = circularMarkup(setEnzymeVisibility(emptySiteVisibility(MAP_REV), 'EcoRI', false), true);
+    expect(notesOf(html)).toEqual([]);
+    expect(html).toContain('0 annotations · 2 unique sites');
+    expect(html).not.toMatch(/hidden by you/);
   });
 
   it('US-01M7CCGA AC2 on a crowded map, the hidden sites are counted apart and never as left out for space', () => {
