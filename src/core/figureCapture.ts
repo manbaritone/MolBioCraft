@@ -11,7 +11,8 @@
  * The pure serializers it builds on live in {@link ./figureExport}, which has no DOM in it.
  */
 
-import { postMacosNativeSave, postMacosNativeSaveBinary } from '../platform/macosMenuBridge';
+import { isTauriDesktopRuntime, saveNativeBinaryFileDialogTauri, saveNativeFileDialogTauri } from '../lib/tauriIpc';
+import { encodeBytesToBase64, postMacosNativeSave, postMacosNativeSaveBinary } from '../platform/macosMenuBridge';
 import { sanitizeExportFilename, validateCrossPlatformFilename } from '../platform/osPlatform';
 import {
   FIGURE_FORMAT_META,
@@ -96,21 +97,46 @@ export function findFigureSvg(host: Element | null | undefined): SVGSVGElement |
   if (!host) return null;
   let best: SVGSVGElement | null = null;
   let bestArea = 0;
+  let bestShown = false;
   for (const candidate of Array.from(host.querySelectorAll('svg'))) {
     if (candidate.closest('button, a, [role="button"], .mbc-figure-export')) continue;
     const rect = candidate.getBoundingClientRect();
-    // A figure that is scrolled out of view measures zero; fall back to its own drawn size.
+    // A drawing in a hidden or collapsed pane measures zero. It is still found by its own drawn
+    // size, so the menu offers it and the export can say why it will not save it, but a drawing
+    // that is on screen always wins over one that is not.
+    const shown = rect.width > 0 && rect.height > 0;
     const viewBox = (candidate.getAttribute('viewBox') ?? '').split(/[\s,]+/).map(Number);
     const width = rect.width || (viewBox.length === 4 ? viewBox[2] : 0);
     const height = rect.height || (viewBox.length === 4 ? viewBox[3] : 0);
     if (width < MIN_FIGURE_WIDTH_PX || height < MIN_FIGURE_HEIGHT_PX) continue;
     const area = width * height;
-    if (area > bestArea) {
+    if ((shown && !bestShown) || (shown === bestShown && area > bestArea)) {
       bestArea = area;
+      bestShown = shown;
       best = candidate as SVGSVGElement;
     }
   }
   return best;
+}
+
+/** What to do about a figure in a hidden or collapsed pane; the export control shows it with the reason. */
+export const SHOW_FIGURE_TO_EXPORT = 'Show the figure to export it';
+
+/**
+ * Why a drawing cannot be saved, or `null` when it can. A figure in a collapsed or hidden pane has
+ * no layout box at all (`getClientRects()` is empty) and measures 0 x 0; saving it would write an
+ * empty figure, so it is refused with this as the reason. A drawing scrolled out of view keeps its
+ * layout box and is saved as before (BG-01M6RJZB), as is one whose boxes cannot be listed.
+ */
+export function figureNotShowingReason(svg: SVGSVGElement | null | undefined): string | null {
+  if (!svg) return `There is no figure on screen here. ${SHOW_FIGURE_TO_EXPORT}.`;
+  const rect = svg.getBoundingClientRect();
+  if (rect.width > 0 && rect.height > 0) return null;
+  if (typeof svg.getClientRects !== 'function' || svg.getClientRects().length > 0) return null;
+  return (
+    `The figure measures ${Math.round(rect.width)} × ${Math.round(rect.height)} px, because its pane is hidden or ` +
+    `collapsed. ${SHOW_FIGURE_TO_EXPORT}.`
+  );
 }
 
 /**
@@ -256,18 +282,72 @@ export function captureTable(table: HTMLTableElement, caption?: string): FigureT
 // Saving
 // ---------------------------------------------------------------------------
 
-function saveText(content: string, filename: string, mimeType: string): FigureExportOutcome {
-  const validated = validateCrossPlatformFilename(sanitizeExportFilename(filename));
-  if (postMacosNativeSave(validated.sanitized, content)) return 'native';
-  return browserDownload(new Blob([content], { type: mimeType }), validated.sanitized);
+/** How the native Save dialog ended: written to `path`, dismissed by the user, or failed. */
+export type NativeSaveResult =
+  | { kind: 'saved'; path: string }
+  | { kind: 'cancelled' }
+  | { kind: 'failed'; error: string };
+
+/** A save handed off: how, and, when the desktop app can tell, how its dialog will end. */
+interface SaveHandoff {
+  outcome: FigureExportOutcome;
+  saved?: Promise<NativeSaveResult>;
 }
 
-function saveBytes(bytes: Uint8Array, filename: string, mimeType: string): FigureExportOutcome {
+/** The older macOS app bundle, whose Save panel reports nothing back to the page. */
+function hasWebKitSaveBridge(): boolean {
+  const g = globalThis as unknown as {
+    __MBC_MACOS_APP_BUNDLE__?: boolean;
+    webkit?: { messageHandlers?: { mbcNative?: { postMessage?: unknown } } };
+  };
+  return Boolean(g.__MBC_MACOS_APP_BUNDLE__ && typeof g.webkit?.messageHandlers?.mbcNative?.postMessage === 'function');
+}
+
+/** Tell the rest of the app about the save, with the same window events the bridge sends. */
+function announceNativeSave(type: 'mbc:native-file-saved' | 'mbc:native-file-error', detail: string): void {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+  window.dispatchEvent(new CustomEvent<string>(type, { detail }));
+}
+
+/**
+ * Follow the desktop app's Save dialog to its end. The bridge's own path sends a window event on a
+ * save or an error but nothing on a cancel, so an export awaits its own dialog instead: the path
+ * the user chose, `null` when they cancelled, or the error.
+ */
+function settleNativeSave(dialog: Promise<string | null>): Promise<NativeSaveResult> {
+  return dialog.then(
+    (path): NativeSaveResult => {
+      if (!path) return { kind: 'cancelled' };
+      announceNativeSave('mbc:native-file-saved', path);
+      return { kind: 'saved', path };
+    },
+    (err: unknown): NativeSaveResult => {
+      const error = err instanceof Error ? err.message : String(err);
+      announceNativeSave('mbc:native-file-error', error);
+      return { kind: 'failed', error };
+    }
+  );
+}
+
+function saveText(content: string, filename: string, mimeType: string): SaveHandoff {
   const validated = validateCrossPlatformFilename(sanitizeExportFilename(filename));
-  if (postMacosNativeSaveBinary(validated.sanitized, bytes)) return 'native';
+  if (!hasWebKitSaveBridge() && isTauriDesktopRuntime()) {
+    return { outcome: 'native', saved: settleNativeSave(saveNativeFileDialogTauri(validated.sanitized, content)) };
+  }
+  if (postMacosNativeSave(validated.sanitized, content)) return { outcome: 'native' };
+  return { outcome: browserDownload(new Blob([content], { type: mimeType }), validated.sanitized) };
+}
+
+function saveBytes(bytes: Uint8Array, filename: string, mimeType: string): SaveHandoff {
+  const validated = validateCrossPlatformFilename(sanitizeExportFilename(filename));
+  if (!hasWebKitSaveBridge() && isTauriDesktopRuntime()) {
+    const dialog = saveNativeBinaryFileDialogTauri(validated.sanitized, encodeBytesToBase64(bytes));
+    return { outcome: 'native', saved: settleNativeSave(dialog) };
+  }
+  if (postMacosNativeSaveBinary(validated.sanitized, bytes)) return { outcome: 'native' };
   const copy = new Uint8Array(bytes.length);
   copy.set(bytes);
-  return browserDownload(new Blob([copy.buffer], { type: mimeType }), validated.sanitized);
+  return { outcome: browserDownload(new Blob([copy.buffer], { type: mimeType }), validated.sanitized) };
 }
 
 function browserDownload(blob: Blob, filename: string): FigureExportOutcome {
@@ -300,14 +380,27 @@ export interface FigureExportRequest {
   delimitedWriter?: (headers: string[], rows: string[][], delimiter: ',' | '\t') => string;
 }
 
+/** What {@link exportFigure} hands back. */
+export interface FigureExportResult {
+  outcome: FigureExportOutcome;
+  filename: string;
+  error?: string;
+  /**
+   * For a save handed to the desktop app's own dialog: how that dialog ends. Absent where the
+   * runtime cannot tell (a browser download, or the older macOS bundle's panel).
+   */
+  saved?: Promise<NativeSaveResult>;
+}
+
 /**
  * Save one figure in one format. Returns how the save was handled, or `false` with a message the
- * caller can show; nothing here reports success on its own.
+ * caller can show; nothing here reports success on its own. A figure in a hidden or collapsed pane
+ * (it measures zero and has no layout box) is never saved.
  */
 export async function exportFigure(
   request: FigureExportRequest,
   format: FigureExportFormat
-): Promise<{ outcome: FigureExportOutcome; filename: string; error?: string }> {
+): Promise<FigureExportResult> {
   const filename = figureFileName(request.baseName, format);
   const meta = FIGURE_FORMAT_META[format];
   try {
@@ -316,15 +409,16 @@ export async function exportFigure(
       if (!content) {
         return { outcome: false, filename, error: 'This view has no table or report to export' };
       }
-      return { outcome: saveText(content, filename, meta.mimeType), filename };
+      return { ...saveText(content, filename, meta.mimeType), filename };
     }
 
     const svg = request.svg;
-    if (!svg) return { outcome: false, filename, error: 'This view has no figure to export' };
+    const notShowing = figureNotShowingReason(svg);
+    if (notShowing || !svg) return { outcome: false, filename, error: notShowing ?? SHOW_FIGURE_TO_EXPORT };
     const capture = captureSvg(svg, { title: request.title });
 
     if (format === 'svg') {
-      return { outcome: saveText(capture.markup, filename, meta.mimeType), filename };
+      return { ...saveText(capture.markup, filename, meta.mimeType), filename };
     }
 
     const raster = await rasterize(capture, RASTER_SCALE);
@@ -338,7 +432,7 @@ export async function exportFigure(
         cssWidth: capture.cssWidth,
         cssHeight: capture.cssHeight,
       });
-      return { outcome: saveBytes(pdf, filename, meta.mimeType), filename };
+      return { ...saveBytes(pdf, filename, meta.mimeType), filename };
     }
 
     const blob = await canvasToBlob(
@@ -347,7 +441,7 @@ export async function exportFigure(
       format === 'jpeg' ? 0.95 : undefined
     );
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    return { outcome: saveBytes(bytes, filename, meta.mimeType), filename };
+    return { ...saveBytes(bytes, filename, meta.mimeType), filename };
   } catch (err) {
     return { outcome: false, filename, error: err instanceof Error ? err.message : String(err) };
   }
@@ -384,4 +478,94 @@ export function availableFormats(request: {
   if (request.hasTable || request.hasText) out.push('txt');
   if (request.hasTable) out.push('tsv', 'csv');
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// What the Export control says
+// ---------------------------------------------------------------------------
+
+/**
+ * Where one export stands, as the Export control reports it. `dialog` is the desktop Save dialog
+ * being open; `settling` says whether its end will be reported (false where the runtime cannot
+ * tell, which leaves the dialog as the last word).
+ */
+export type FigureExportStatus = { filename: string; format: FigureExportFormat } & (
+  | { phase: 'preparing' }
+  | { phase: 'dialog'; settling: boolean }
+  | { phase: 'saved'; path: string }
+  | { phase: 'cancelled' }
+  | { phase: 'downloaded' }
+  | { phase: 'failed'; error: string }
+);
+
+/** Whether the control is still working on an export, and so must not start another. */
+export function figureExportBusy(status: FigureExportStatus | null): boolean {
+  if (!status) return false;
+  return status.phase === 'preparing' || (status.phase === 'dialog' && status.settling);
+}
+
+/** The last part of a saved path, on either separator, so the report names the file the user chose. */
+function savedName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+/** The one line the control shows for a status. Only a written file is ever reported as saved. */
+export function describeFigureExportStatus(status: FigureExportStatus): string {
+  switch (status.phase) {
+    case 'preparing':
+      return `Preparing "${status.filename}"…`;
+    case 'dialog':
+      return `Choose where to save "${status.filename}"`;
+    case 'saved':
+      return `Saved "${savedName(status.path)}"`;
+    case 'cancelled':
+      return `Save cancelled: "${status.filename}" was not saved`;
+    case 'downloaded':
+      return `Download started for "${status.filename}"`;
+    case 'failed':
+      return `Export failed: ${status.error}`;
+  }
+}
+
+/**
+ * One export from the Export control, from the click to the end of the save: reports `preparing`,
+ * then the save dialog and its end, a started download, or the failure, through `report`. Any
+ * throw or rejection on the way, from gathering the figure to the dialog, ends as `failed`; the
+ * returned promise rejects only if `report` itself throws while reporting that failure.
+ */
+export async function runFigureExport(opts: {
+  baseName: string;
+  format: FigureExportFormat;
+  /**
+   * Gathers what to save; runs after `preparing` is reported, in the same turn, so a save that
+   * needs no rasterizing still starts inside the click that asked for it.
+   */
+  prepare: () => FigureExportRequest;
+  report: (status: FigureExportStatus) => void;
+  exporter?: (request: FigureExportRequest, format: FigureExportFormat) => Promise<FigureExportResult>;
+}): Promise<FigureExportStatus> {
+  const { format, report } = opts;
+  const exporter = opts.exporter ?? exportFigure;
+  let filename = figureFileName(opts.baseName, format);
+  const end = (status: FigureExportStatus): FigureExportStatus => {
+    report(status);
+    return status;
+  };
+  try {
+    report({ phase: 'preparing', filename, format });
+    const result = await exporter(opts.prepare(), format);
+    filename = result.filename || filename;
+    if (result.outcome === false) {
+      return end({ phase: 'failed', filename, format, error: result.error ?? `"${filename}" was not written` });
+    }
+    if (result.outcome === 'downloaded') return end({ phase: 'downloaded', filename, format });
+    if (!result.saved) return end({ phase: 'dialog', filename, format, settling: false });
+    report({ phase: 'dialog', filename, format, settling: true });
+    const saved = await result.saved;
+    if (saved.kind === 'saved') return end({ phase: 'saved', filename, format, path: saved.path });
+    if (saved.kind === 'cancelled') return end({ phase: 'cancelled', filename, format });
+    return end({ phase: 'failed', filename, format, error: saved.error });
+  } catch (err) {
+    return end({ phase: 'failed', filename, format, error: err instanceof Error ? err.message : String(err) });
+  }
 }

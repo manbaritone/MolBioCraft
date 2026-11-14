@@ -15,9 +15,11 @@ import { Download } from 'lucide-react';
 import {
   availableFormats,
   captureTable,
-  exportFigure,
+  describeFigureExportStatus,
+  figureExportBusy,
   findFigureSvg,
-  type FigureExportOutcome,
+  runFigureExport,
+  type FigureExportStatus,
 } from '../core/figureCapture';
 import { FIGURE_FORMAT_META, type FigureExportFormat, type FigureTable } from '../core/figureExport';
 
@@ -60,13 +62,6 @@ const resolve = <T,>(value: T | (() => T | null) | null | undefined): T | null =
   return value ?? null;
 };
 
-/** Pick a file-name stem the user will recognise if they later look for the file. */
-function describeOutcome(outcome: FigureExportOutcome, filename: string, error?: string): string {
-  if (outcome === 'native') return `Choose where to save "${filename}"`;
-  if (outcome === 'downloaded') return `Exported "${filename}"`;
-  return error ? `Export failed: ${error}` : `Export failed for "${filename}"`;
-}
-
 export function FigureExportButton({
   targetRef,
   baseName,
@@ -80,8 +75,8 @@ export function FigureExportButton({
   className,
 }: FigureExportButtonProps): React.ReactElement {
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState<FigureExportFormat | null>(null);
-  const [note, setNote] = useState('');
+  /** The current or last export: preparing, its save dialog, saved, cancelled, downloaded or failed. */
+  const [status, setStatus] = useState<FigureExportStatus | null>(null);
   const [formats, setFormats] = useState<FigureExportFormat[]>([]);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -119,40 +114,44 @@ export function FigureExportButton({
     setOpen((previous) => !previous);
   }, [hostElement, table, text]);
 
+  /** One export, start to end; every throw on the way ends as a reported failure (US-01M7CCQ6). */
   const run = useCallback(
     async (format: FigureExportFormat) => {
       setOpen(false);
-      setBusy(format);
-      try {
-        const host = hostElement();
-        const provided = resolve(table);
-        const domTable = host?.querySelector('table');
-        const result = await exportFigure(
-          {
+      await runFigureExport({
+        baseName,
+        format,
+        prepare: () => {
+          const host = hostElement();
+          const provided = resolve(table);
+          const domTable = host?.querySelector('table');
+          return {
             svg: findFigureSvg(host),
             table: provided ?? (domTable ? captureTable(domTable, caption) : null),
             text: resolve(text),
             baseName,
             title: title ?? baseName,
             delimitedWriter,
-          },
-          format
-        );
-        const message = describeOutcome(result.outcome, result.filename, result.error);
-        setNote(message);
-        onStatus?.(message);
-      } finally {
-        setBusy(null);
-      }
+          };
+        },
+        report: (next) => {
+          setStatus(next);
+          onStatus?.(describeFigureExportStatus(next));
+        },
+      });
     },
     [baseName, caption, delimitedWriter, hostElement, onStatus, table, text, title]
   );
 
+  const busy = figureExportBusy(status);
+  const note = status ? describeFigureExportStatus(status) : '';
+
+  /** A finished export's report stays a few seconds; one still in progress stays until it ends. */
   useEffect(() => {
-    if (!note) return undefined;
-    const timer = window.setTimeout(() => setNote(''), 6000);
+    if (!status || busy) return undefined;
+    const timer = window.setTimeout(() => setStatus(null), 6000);
     return () => window.clearTimeout(timer);
-  }, [note]);
+  }, [status, busy]);
 
   return (
     <div
@@ -166,10 +165,12 @@ export function FigureExportButton({
         aria-haspopup="menu"
         aria-expanded={open}
         title={`Export "${baseName}" as an image, a document or a table`}
-        disabled={busy !== null}
+        disabled={busy}
       >
         <Download size={compact ? 11 : 12} aria-hidden="true" />
-        {busy ? `Exporting ${FIGURE_FORMAT_META[busy].extension.toUpperCase()}…` : 'Export'}
+        {busy && status
+          ? `${status.phase === 'preparing' ? 'Preparing' : 'Saving'} ${FIGURE_FORMAT_META[status.format].extension.toUpperCase()}…`
+          : 'Export'}
         <span aria-hidden="true">▾</span>
       </button>
       {open && (
@@ -191,7 +192,11 @@ export function FigureExportButton({
           ))}
         </div>
       )}
-      {note && !onStatus && <span className="mbc-figure-export-note">{note}</span>}
+      {note && !onStatus && (
+        <span className="mbc-figure-export-note" role="status">
+          {note}
+        </span>
+      )}
     </div>
   );
 }
