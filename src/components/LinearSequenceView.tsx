@@ -22,6 +22,7 @@ import { cutSiteDisplayPosition } from '../core/restrictionDisplay';
 import { chartMaxWidth } from '../core/chartLayout';
 import { FigureExportButton } from './FigureExportButton';
 import { ResultWarnings } from './ResultWarnings';
+import { CleavagePreview } from './CleavagePreview';
 import { meanGcWords, subsetNote, type RestrictionScanScope } from './CircularPlasmidMap';
 
 interface LinearSequenceViewProps {
@@ -784,6 +785,9 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   const [pageIndex, setPageIndex] = useState(0);
   const [colorOptionsOpen, setColorOptionsOpen] = useState(false);
   const [showDownloadSummaryTab, setShowDownloadSummaryTab] = useState(false);
+  /** The one cut site whose cleavage preview is open (US-01M7CC3B), and the marker that opened it. */
+  const [previewCutId, setPreviewCutId] = useState<string | null>(null);
+  const previewMarkerRef = useRef<HTMLElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   /** The schematic track, so its Export control saves the map and not a graph below it. */
   const schematicRef = useRef<HTMLDivElement | null>(null);
@@ -1041,6 +1045,24 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       label: `Coordinate ${clampedPos.toLocaleString()} ${unitLabel}`,
     });
   };
+
+  /** A cut marker's click (or Enter/Space): select the recognition span, as before, and preview the cut. */
+  const openCleavagePreview = (c: RestrictionCutSite, marker: HTMLElement) => {
+    onSelectRange({
+      start: c.position,
+      end: c.position + c.enzyme.recognitionSeq.length - 1,
+      label: `${c.enzyme.name} (${c.overhangType}: ${c.overhangSeq || 'blunt'})`,
+    });
+    previewMarkerRef.current = marker;
+    setPreviewCutId(c.id);
+  };
+  /** Close the preview and put focus back on the marker that opened it. */
+  const closeCleavagePreview = () => {
+    setPreviewCutId(null);
+    previewMarkerRef.current?.focus();
+  };
+  const previewCut = previewCutId === null ? undefined : cutSites.find((c) => c.id === previewCutId);
+  const previewDomId = `cleavage-preview-${doc.id}`;
 
   const handleCreateFeature = (e: React.FormEvent) => {
     e.preventDefault();
@@ -2032,23 +2054,36 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
           >
             {(row.rowCuts.length > 0 || row.rowPrimers.length > 0) && (
               <div className="seq-track-markers">
-                {row.rowCuts.map((c) => (
-                  <span
-                    key={c.id}
-                    className={`cut-pill ${c.enzyme.isTypeIIS ? 'type2s' : ''}`}
-                    onClick={() =>
-                      onSelectRange({
-                        start: c.position,
-                        end: c.position + c.enzyme.recognitionSeq.length - 1,
-                        label: `${c.enzyme.name} (${c.overhangType}: ${
-                          c.overhangSeq || 'blunt'
-                        })`,
-                      })
-                    }
-                  >
-                    ▼ {c.enzyme.name} ({cutSiteDisplayPosition(c.cutTop, doc.sequence.length, doc.topology === 'circular')})
-                  </span>
-                ))}
+                {row.rowCuts.map((c) => {
+                  const shownAt = cutSiteDisplayPosition(c.cutTop, doc.sequence.length, doc.topology === 'circular');
+                  const open = previewCut?.id === c.id;
+                  return (
+                    <span
+                      key={c.id}
+                      className={`cut-pill ${c.enzyme.isTypeIIS ? 'type2s' : ''}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-haspopup="dialog"
+                      aria-expanded={open}
+                      aria-controls={open ? previewDomId : undefined}
+                      aria-label={`${c.enzyme.name} (${shownAt}) cut site: select it and open its cleavage preview`}
+                      onClick={(e) => openCleavagePreview(c, e.currentTarget)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openCleavagePreview(c, e.currentTarget);
+                        } else if (e.key === 'Escape' && open) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          closeCleavagePreview();
+                        }
+                      }}
+                    >
+                      ▼ {c.enzyme.name} ({shownAt})
+                    </span>
+                  );
+                })}
                 {row.rowPrimers.map((p) => (
                   <span
                     key={p.id}
@@ -2066,6 +2101,15 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                   </span>
                 ))}
               </div>
+            )}
+            {previewCut && row.rowCuts.some((c) => c.id === previewCut.id) && (
+              <CleavagePreview
+                id={previewDomId}
+                site={previewCut}
+                sequence={doc.sequence}
+                circular={doc.topology === 'circular'}
+                onClose={closeCleavagePreview}
+              />
             )}
 
             <div className="seq-strand-line top-strand">
