@@ -8,7 +8,9 @@ import { complementAligned } from './alignmentViewModel';
  * A restriction site is numbered by the last top-strand base *before* the cut
  * (pUC19: "EcoRI (396)" for G^AATTC starting at 396). The engine's `cutTop` is the 1-based first
  * base *after* the cut, so the displayed number is one less (wrapping to the sequence length when
- * a circular molecule is cut before base 1).
+ * a circular molecule is cut before base 1). A linear molecule has no wrap (BG-01M7CDM1): the engine
+ * reports a cut after its last base as `seqLen + 1`, numbered `seqLen`, and a cut before base 1 as
+ * 1, numbered 0 (no base precedes it).
  */
 export function cutSiteDisplayPosition(cutTop: number, seqLen: number, circular = true): number {
   if (cutTop > 1) return cutTop - 1;
@@ -76,10 +78,11 @@ const distanceToMotif = (b: number, motifStart: number, motifEnd: number) =>
   b < motifStart ? motifStart - b : b > motifEnd ? b - motifEnd : 0;
 
 /**
- * The engine's 1-based `cut` (first base after the cut, taken modulo the molecule's length) as an
- * unwrapped 0-based boundary. On a linear molecule it is `cut - 1`, save that the engine wraps a cut
- * after the last base to 1 (BG-01M7CDM1), so a cut of 1 is base 1's start or the molecule's end,
- * whichever lies nearer the motif. On a circle it is the representative on the side the enzyme cuts:
+ * The engine's 1-based `cut` (first base after the cut, taken modulo the length on a circle) as an
+ * unwrapped 0-based boundary. On a linear molecule it is `cut - 1`: the engine reports a cut after
+ * the last base as len + 1 (BG-01M7CDM1). A cut of 1 is still read as base 1's start or the
+ * molecule's end, whichever lies nearer the motif (US-01M7CC6K settles that rule). On a circle it
+ * is the representative on the side the enzyme cuts:
  * every catalogue enzyme's offsets are >= 0 from the motif start on its recognition strand, so a
  * forward site's cuts lie at or after `motifStart` and a reverse site's at or before `motifEnd`.
  */
@@ -128,8 +131,8 @@ export function cleavagePicture(
     top += inMolecule(i) ? sequence[mod(i, len)] : ' ';
   }
 
-  // A linear molecule's cut after its last base: the engine's cut wraps to 1 there, but no base
-  // follows it and the last base before it is the molecule's last, not "before base 1".
+  // A linear molecule's cut after its last base (the engine's len + 1): no base follows it and the
+  // last base before it is the molecule's last.
   const cut = (raw: number): CleavageCut => ({
     boundary: raw - lo,
     available: true,

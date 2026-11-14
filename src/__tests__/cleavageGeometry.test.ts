@@ -359,10 +359,11 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
     expect(bottomWithCut(ps)).toBe('AA^GTACAA');
   });
   it('a cut after the last base of a linear molecule is numbered by that base, with no base after it', () => {
-    // NlaIII CATG^ at the end of a linear fragment: the engine's cutTop wraps to 1.
+    // NlaIII CATG^ at the end of a linear fragment: no base follows the cut, so the engine's
+    // cutTop lies past the end (BG-01M7CDM1), never wrapped to 1.
     const seq = 'TTTTCATG';
     const site = engineSite(seq, 'linear', 'NlaIII');
-    expect(site.cutTop).toBe(1);
+    expect(site.cutTop).toBe(9);
     const p = cleavagePicture(site, seq, false, 1);
     expect(p.topCut.available).toBe(true);
     expect(p.topCut.position).toBe(8);
@@ -374,6 +375,37 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
     expect(p.overhangSeq).toBe('CATG');
     expect(p.overhangSeq).toBe(site.overhangSeq);
     expect(p.unavailableFlank).toEqual({ left: 0, right: 1 });
+  });
+});
+
+describe('BG-01M7CDM1 a cut after the last base of a linear molecule is numbered by that base', () => {
+  it('the engine reports an NlaIII cut after the last base as len + 1 and the marker reads len, not 0', () => {
+    const seq = 'TTTTTTTTCATG';
+    const site = engineSite(seq, 'linear', 'NlaIII');
+    expect([site.cutTop, site.cutBottom]).toEqual([13, 9]);
+    expect(cutSiteDisplayPosition(site.cutTop, seq.length, false)).toBe(12);
+    expect(cutSiteDisplayPosition(site.cutBottom, seq.length, false)).toBe(8);
+  });
+
+  it('a bottom-strand Sau3AI cut after the last base is len + 1 too, numbered by the last base', () => {
+    const seq = 'TTTTTTTTGATC';
+    const site = engineSite(seq, 'linear', 'Sau3AI');
+    expect([site.cutTop, site.cutBottom]).toEqual([9, 13]);
+    expect(cutSiteDisplayPosition(site.cutBottom, seq.length, false)).toBe(12);
+  });
+
+  it('a circle keeps its wrap: the same NlaIII cut is before base 1, numbered by the last base', () => {
+    const seq = 'TTTTTTTTCATG';
+    const site = engineSite(seq, 'circular', 'NlaIII');
+    expect([site.cutTop, site.cutBottom]).toEqual([1, 9]);
+    expect(cutSiteDisplayPosition(site.cutTop, seq.length, true)).toBe(12);
+  });
+
+  it('a linear cut before base 1 stays 1, with no base before it to number it by', () => {
+    const seq = 'GATCTTTTTTTT';
+    const site = engineSite(seq, 'linear', 'Sau3AI');
+    expect([site.cutTop, site.cutBottom]).toEqual([1, 5]);
+    expect(cutSiteDisplayPosition(site.cutTop, seq.length, false)).toBe(0);
   });
 });
 

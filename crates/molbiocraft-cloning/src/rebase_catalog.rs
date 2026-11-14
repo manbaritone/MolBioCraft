@@ -440,9 +440,20 @@ fn record_cut_site(
     }
     let (cut_top_raw, cut_bottom_raw) = raw_cut_offsets(enz, idx, motif_len, strand);
 
+    // Each cut is reported as the 1-based first base after it. A circle wraps it into 1..=len (a
+    // cut after the last base is before base 1). A linear molecule has no wrap (BG-01M7CDM1):
+    // `site_cuts_molecule` keeps its raw cuts in 0..=len, so a cut before base 1 is 1 and a cut
+    // after the last base is len + 1, the first base after it lying past the end.
     let len_i = seq_len as isize;
-    let cut_top = (((cut_top_raw % len_i) + len_i) % len_i) as usize + 1;
-    let cut_bottom = (((cut_bottom_raw % len_i) + len_i) % len_i) as usize + 1;
+    let first_base_after = |raw: isize| -> usize {
+        if topology == Topology::Linear {
+            raw as usize + 1
+        } else {
+            (((raw % len_i) + len_i) % len_i) as usize + 1
+        }
+    };
+    let cut_top = first_base_after(cut_top_raw);
+    let cut_bottom = first_base_after(cut_bottom_raw);
 
     let min_cut = cut_top_raw.min(cut_bottom_raw).max(0) as usize;
     let max_cut = (cut_top_raw.max(cut_bottom_raw).max(0) as usize).min(search_space.len());
@@ -851,6 +862,11 @@ pub fn simulate_restriction_digest(
         }];
     }
 
+    // A top-strand cut at an end of a linear molecule (before base 1, or after the last base as
+    // len + 1) separates no fragment (BG-01M7CDM1): it would add an empty band.
+    if doc.topology == Topology::Linear {
+        cuts.retain(|c| (2..=seq_len).contains(&c.cut_top));
+    }
     cuts.sort_by_key(|c| c.cut_top);
     let mut unique_cuts: Vec<RestrictionCutSite> = Vec::with_capacity(cuts.len());
     let mut seen_pos: FxHashSet<usize> = FxHashSet::default();
@@ -1577,5 +1593,58 @@ mod rebase_validation {
         ] {
             assert_eq!(sizes(enzymes), expected(enzymes), "{enzymes:?}");
         }
+    }
+
+    /// The one site of catalogue enzyme `name` on `seq`, as (cut_top, cut_bottom, overhang, end).
+    fn only_cut(seq: &str, topology: Topology, name: &str) -> (usize, usize, String, String) {
+        let e = get_rebase_enzymes().into_iter().find(|e| e.name == name).unwrap();
+        let sites = find_restriction_cut_sites(seq, topology, Some(&[e]));
+        assert_eq!(sites.len(), 1, "{name} on {seq}: one site");
+        let c = &sites[0];
+        (c.cut_top, c.cut_bottom, c.overhang_seq.clone(), c.overhang_type.clone())
+    }
+
+    /// BG-01M7CDM1: a linear molecule has no wrap. A cut after its last base is reported as len + 1
+    /// (no base follows it), a cut before base 1 as 1; a circle keeps the wrap to base 1.
+    #[test]
+    fn a_linear_end_cut_is_never_wrapped_to_base_1() {
+        // NlaIII CATG^ at the 3' end: the top-strand cut falls after base 12.
+        let end = "TTTTTTTTCATG";
+        assert_eq!(only_cut(end, Topology::Linear, "NlaIII"), (13, 9, "CATG".into(), "3prime".into()));
+        assert_eq!(only_cut(end, Topology::Circular, "NlaIII"), (1, 9, "CATG".into(), "3prime".into()));
+        // Sau3AI ^GATC at the 3' end: the bottom-strand cut falls after base 12.
+        let end = "TTTTTTTTGATC";
+        assert_eq!(only_cut(end, Topology::Linear, "Sau3AI"), (9, 13, "GATC".into(), "5prime".into()));
+        assert_eq!(only_cut(end, Topology::Circular, "Sau3AI"), (9, 1, "GATC".into(), "5prime".into()));
+        // A forward motif at base 1: a cut before base 1 is 1 on either strand, never len + 1.
+        assert_eq!(only_cut("GATCTTTTTTTT", Topology::Linear, "Sau3AI"), (1, 5, "GATC".into(), "5prime".into()));
+        assert_eq!(only_cut("CATGTTTTTTTT", Topology::Linear, "NlaIII"), (5, 1, "CATG".into(), "3prime".into()));
+        // A cut inside the molecule is unchanged.
+        assert_eq!(only_cut("TTTTCATGTTTT", Topology::Linear, "NlaIII"), (9, 5, "CATG".into(), "3prime".into()));
+    }
+
+    /// BG-01M7CDM1: a top-strand cut at an end of a linear molecule separates no fragment, so the
+    /// digest neither adds an empty band nor loses a base.
+    #[test]
+    fn a_linear_digest_ignores_a_top_strand_cut_at_an_end() {
+        let mut doc: SequenceDocument = serde_json::from_str(
+            r#"{"id":"d","name":"d","accession":"","description":"","moleculeType":"DNA","topology":"linear","sequence":"","features":[],"primers":[],"history":[],"createdAt":"","updatedAt":"","folder":""}"#,
+        )
+        .unwrap();
+        let mut frags = |seq: &str, enzyme: &str| -> Vec<(usize, usize, usize, String)> {
+            doc.sequence = seq.to_string();
+            let mut v: Vec<_> = simulate_restriction_digest(&doc, &[enzyme.to_string()])
+                .into_iter()
+                .map(|f| (f.start, f.end, f.length_bp, f.sequence))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(frags("TTTTTTTTCATG", "NlaIII"), vec![(1, 12, 12, "TTTTTTTTCATG".to_string())]);
+        assert_eq!(frags("GATCTTTTTTTT", "Sau3AI"), vec![(1, 12, 12, "GATCTTTTTTTT".to_string())]);
+        assert_eq!(
+            frags("TTCATGTTTTCATG", "NlaIII"),
+            vec![(1, 6, 6, "TTCATG".to_string()), (7, 14, 8, "TTTTCATG".to_string())]
+        );
     }
 }
