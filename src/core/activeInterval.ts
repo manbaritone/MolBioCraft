@@ -17,10 +17,20 @@
  * `startIndex = start - 1` and `endExclusive = end`, so `sequence.slice(startIndex, endExclusive)`
  * is exactly the bases the segment covers.
  *
+ * The App's own readers of `selectedRange` and the circular map's go through this model
+ * (BG-01M7CG2W): the map's sector and HUD, the status bar, the copied and extracted bases
+ * ({@link intervalSequence}) and the reverse-complement remap ({@link reverseInterval}).
+ *
+ * Non-finite input: the operations that take a raw coordinate, delta, base or length -
+ * {@link normaliseInterval}, {@link moveInterval}, {@link resizeIntervalBy}, {@link resizeInterval}
+ * and {@link formatIntervalLabel} - throw a RangeError rather than return `{ NaN, NaN }`; the rest
+ * take an interval already normalised. {@link selectionInterval} is the one tolerant reader - for
+ * a UI that must render whatever selection the App holds - and answers `null` instead of throwing.
+ *
  * This is a pure coordinate model for the UI; it computes no scientific result.
  */
 
-import type { ActiveInterval, IntervalEdge, IntervalRenderSegment, Topology } from '../types/bio';
+import type { ActiveInterval, IntervalEdge, IntervalRenderSegment, MoleculeType, Topology } from '../types/bio';
 
 function assertLength(length: number): void {
   if (!Number.isInteger(length) || length < 1) {
@@ -32,6 +42,14 @@ function assertCoordinate(name: string, value: number): void {
   if (!Number.isFinite(value)) {
     throw new RangeError(`active interval ${name} is not a finite number: ${value}`);
   }
+}
+
+/** Throws RangeError unless the molecule length, both edges and the delta or base are usable. */
+function assertOperands(interval: ActiveInterval, amount: number, length: number): void {
+  assertLength(length);
+  assertCoordinate('start', interval.start);
+  assertCoordinate('end', interval.end);
+  assertCoordinate('delta or base', amount);
 }
 
 /** Wrap any integer onto 1..length around a circular molecule's origin. */
@@ -73,7 +91,11 @@ export function normaliseInterval(
   return { start: wrap(start, length), end: wrap(end, length) };
 }
 
-/** The App's `selectedRange` shape for an interval: the same 1-based inclusive `{ start, end }`. */
+/**
+ * The App's `selectedRange` shape for an interval: the same 1-based inclusive `{ start, end }`,
+ * `start > end` included for an origin-crossing interval on a circular molecule - a shape every
+ * reader of `selectedRange` must take through this model, not as `end - start`.
+ */
 export function toSelectedRange(interval: ActiveInterval): { start: number; end: number } {
   return { start: interval.start, end: interval.end };
 }
@@ -126,6 +148,7 @@ export function moveInterval(
   length: number,
   topology: Topology
 ): ActiveInterval {
+  assertOperands(interval, delta, length);
   const d = Math.round(delta);
   if (topology === 'circular') {
     return { start: wrap(interval.start + d, length), end: wrap(interval.end + d, length) };
@@ -147,6 +170,7 @@ export function resizeIntervalBy(
   length: number,
   topology: Topology
 ): ActiveInterval {
+  assertOperands(interval, delta, length);
   const d = Math.round(delta);
   if (topology === 'linear') {
     const anchor = edge === 'start' ? interval.end : interval.start;
@@ -178,6 +202,7 @@ export function resizeInterval(
   length: number,
   topology: Topology
 ): ActiveInterval {
+  assertOperands(interval, base, length);
   const current = edge === 'start' ? interval.start : interval.end;
   if (topology === 'linear') {
     return resizeIntervalBy(interval, edge, clamp(Math.round(base), length) - current, length, topology);
@@ -193,13 +218,66 @@ export function resizeInterval(
   return resizeIntervalBy(interval, edge, d, length, topology);
 }
 
+/** The unit a length is counted in for a molecule: `bp` for DNA, `nt` for RNA, `aa` for protein. */
+export type IntervalUnit = 'bp' | 'nt' | 'aa';
+
+export function intervalUnit(moleculeType: MoleculeType): IntervalUnit {
+  return moleculeType === 'Protein' ? 'aa' : moleculeType === 'RNA' ? 'nt' : 'bp';
+}
+
 /**
- * A label in 1-based inclusive coordinates with thousands separators, for example
- * `10..20 (11 bp)`, `1..1 (1 bp)`, or `5,990..71 (143 bp, across the origin)` for an interval
- * that crosses the origin of a circular molecule.
+ * A label in 1-based inclusive coordinates with thousands separators, in the molecule's unit -
+ * for example `10..20 (11 bp)`, `1..1 (1 aa)`, or `5,990..71 (143 bp, across the origin)` for
+ * an interval that crosses the origin of a circular molecule. The interval is normalised for
+ * `topology` first, so a reversed pair on a linear molecule is labelled `low..high` and never
+ * as a crossing. Throws RangeError on a non-finite edge or an unusable length.
  */
-export function formatIntervalLabel(interval: ActiveInterval, length: number): string {
+export function formatIntervalLabel(
+  interval: ActiveInterval,
+  length: number,
+  topology: Topology,
+  unit: IntervalUnit = 'bp'
+): string {
+  const iv = normaliseInterval(interval, length, topology);
   const n = (x: number) => x.toLocaleString('en-US');
-  const across = crossesOrigin(interval) ? ', across the origin' : '';
-  return `${n(interval.start)}..${n(interval.end)} (${n(intervalLength(interval, length))} bp${across})`;
+  const across = crossesOrigin(iv) ? ', across the origin' : '';
+  return `${n(iv.start)}..${n(iv.end)} (${n(intervalLength(iv, length))} ${unit}${across})`;
+}
+
+/**
+ * The App's `selectedRange` (or none) as a valid interval on a molecule of `length` bases:
+ * {@link normaliseInterval}, but answering `null` - never throwing - for no selection, an empty
+ * molecule or a non-finite edge, so a view always has something to draw. A linear molecule never
+ * yields `start > end`; a circular one keeps an origin-crossing selection.
+ */
+export function selectionInterval(
+  range: { start: number; end: number } | null | undefined,
+  length: number,
+  topology: Topology
+): ActiveInterval | null {
+  if (!range) return null;
+  try {
+    return normaliseInterval(range, length, topology);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The bases the interval covers, in reading order from `start`: for an origin-crossing interval
+ * the end of the molecule and then its start. `sequence.length` is the molecule's length.
+ */
+export function intervalSequence(sequence: string, interval: ActiveInterval): string {
+  return renderSegments(interval, sequence.length)
+    .map((seg) => sequence.slice(seg.startIndex, seg.endExclusive))
+    .join('');
+}
+
+/**
+ * The same bases after the molecule is reversed (or reverse-complemented): base b becomes
+ * `length - b + 1`, so `{ start, end }` becomes `{ length - end + 1, length - start + 1 }`. An
+ * origin-crossing interval stays crossing, and applying it twice gives the interval back.
+ */
+export function reverseInterval(interval: ActiveInterval, length: number): ActiveInterval {
+  return { start: length - interval.end + 1, end: length - interval.start + 1 };
 }

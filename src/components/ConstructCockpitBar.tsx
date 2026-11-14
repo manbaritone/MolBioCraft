@@ -7,6 +7,7 @@ import {
   tmNoAnswerSentence,
   translateSequence,
 } from '../core/bioEngine';
+import { formatIntervalLabel, intervalContains, intervalSequence, intervalUnit, renderSegments, selectionInterval } from '../core/activeInterval';
 import type {
   RestrictionCutSite,
   SequenceDocument,
@@ -102,10 +103,19 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
 
   // Compute live biophysical & thermodynamic metrics for active selection (or whole sequence)
   const telemetry = useMemo(() => {
-    const start = selectedRange ? Math.max(1, Math.min(seqLen, selectedRange.start, selectedRange.end)) : 1;
-    const end = selectedRange ? Math.max(start, Math.min(seqLen, Math.max(selectedRange.start, selectedRange.end))) : seqLen;
-    const spanLen = Math.max(1, end - start + 1);
-    const slice = doc.sequence.slice(start - 1, Math.min(end, start - 1 + 4000)).toUpperCase();
+    // The selection as the active-interval model reads it (BG-01M7CG2W): on a circular molecule
+    // start > end crosses the origin, and the span is its bases from start round to end - the end
+    // of the molecule then its start - read from `bases` at [from, to). Anything else is read in
+    // place on the sequence; a linear molecule never has start > end.
+    const iv = selectionInterval(selectedRange, seqLen, doc.topology);
+    const crossing = iv !== null && iv.start > iv.end;
+    const start = iv ? iv.start : 1;
+    const end = iv ? iv.end : seqLen;
+    const bases = crossing ? intervalSequence(doc.sequence, iv) : doc.sequence;
+    const from = crossing ? 0 : start - 1;
+    const to = crossing ? bases.length : end;
+    const spanLen = Math.max(1, to - from);
+    const slice = bases.slice(from, Math.min(to, from + 4000)).toUpperCase();
 
     if (doc.moleculeType === 'Protein') {
       return {
@@ -138,8 +148,8 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
     let a = 0;
     let t = 0;
     let ambiguity = 0;
-    for (let i = start - 1; i < end; i++) {
-      const code = doc.sequence.charCodeAt(i);
+    for (let i = from; i < to; i++) {
+      const code = bases.charCodeAt(i);
       const ch = code & 0xdf; // folded to upper case
       if (ch === 71) g++;
       else if (ch === 67) c++;
@@ -182,7 +192,7 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
     // stop, so internal stops counted as residues: a 10 kb ORF with a TGA at codon 2,000 read 3,332,
     // not 1,999. The preview total and the In-Frame badge count these, and the preview, its first 12
     // codons, ends on the first stop when it reaches one.
-    const residueCount = residuesToFirstStop(doc.sequence, start - 1, end);
+    const residueCount = residuesToFirstStop(bases, from, to);
     const frameHead = spanLen >= 3 ? translateSequence(dnaSlice.slice(0, 36), 0).slice(0, 12) : '';
     const stopInHead = frameHead.indexOf('*');
     const peptidePreview = stopInHead >= 0 ? frameHead.slice(0, stopInHead + 1) : frameHead;
@@ -195,7 +205,7 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
     let orfBadge: { tone: 'pass' | 'info' | 'warn'; label: string; title: string } | null = null;
     if (selectedRange && spanLen >= 3) {
       const rem = spanLen % 3;
-      const spanDna = doc.sequence.slice(start - 1, end).toUpperCase().replace(/U/g, 'T');
+      const spanDna = bases.slice(from, to).toUpperCase().replace(/U/g, 'T');
       const fullAa = translateSequence(spanDna, 0);
       const internalAa = fullAa.length > 1 ? fullAa.slice(0, -1) : '';
       let internalStops = 0;
@@ -238,7 +248,8 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
     const uniqueInSpan: string[] = [];
     for (const cs of cutSites) {
       const ename = cs.enzyme.name;
-      if (enzymeSiteCounts[ename] === 1 && cs.position >= start && cs.position <= end) {
+      const inSpan = iv ? intervalContains(iv, cs.position, seqLen) : cs.position >= start && cs.position <= end;
+      if (enzymeSiteCounts[ename] === 1 && inSpan) {
         if (!uniqueInSpan.includes(ename)) {
           uniqueInSpan.push(ename);
         }
@@ -264,7 +275,7 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
       orfBadge,
       uniqueCuttersInSpan: uniqueInSpan,
     };
-  }, [doc.sequence, doc.moleculeType, seqLen, selectedRange, cutSites, enzymeSiteCounts]);
+  }, [doc.sequence, doc.moleculeType, doc.topology, seqLen, selectedRange, cutSites, enzymeSiteCounts]);
 
   // Unique cutters across the entire construct for horizon ticks
   const uniqueCutSites = useMemo(
@@ -455,18 +466,21 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
           })}
 
           {/* Active Selection Lens Brush */}
-          {selectedRange && (
+          {/* One rectangle per side of the origin for a selection that crosses it (BG-01M7CG2W). */}
+          {selectedRange && renderSegments(telemetry, seqLen).map((seg) => (
             <rect
-              x={((telemetry.start - 1) / seqLen) * 1000}
+              key={`lens-${seg.startIndex}`}
+              className="mbc-cockpit-lens"
+              x={(seg.startIndex / seqLen) * 1000}
               y={1}
-              width={Math.max(4, (telemetry.spanLen / seqLen) * 1000)}
+              width={Math.max(4, ((seg.endExclusive - seg.startIndex) / seqLen) * 1000)}
               height={20}
               fill="rgba(0, 158, 115, 0.22)"
               stroke="#009E73"
               strokeWidth={1.8}
               rx={2}
             />
-          )}
+          ))}
         </svg>
 
         {hoveredLocus && (
@@ -528,7 +542,7 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
           >
             <strong>{selectedRange ? 'Selection:' : isContigSummary && declaredLen > seqLen ? 'Reference Span:' : 'Full Span:'}</strong>{' '}
             {selectedRange
-              ? `${telemetry.start.toLocaleString()}..${telemetry.end.toLocaleString()} (${telemetry.spanLen.toLocaleString()} ${doc.moleculeType === 'Protein' ? 'aa' : doc.moleculeType === 'RNA' ? 'nt' : 'bp'})`
+              ? formatIntervalLabel(telemetry, seqLen, doc.topology, intervalUnit(doc.moleculeType))
               : isContigSummary && declaredLen > seqLen
               ? `1..${declaredLen.toLocaleString()} (${declaredLen.toLocaleString()} bp declared • ${seqLen.toLocaleString()} bp resident)`
               : `${telemetry.start.toLocaleString()}..${telemetry.end.toLocaleString()} (${telemetry.spanLen.toLocaleString()} ${doc.moleculeType === 'Protein' ? 'aa' : doc.moleculeType === 'RNA' ? 'nt' : 'bp'})`}

@@ -4,7 +4,7 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ZoomIn, ZoomOut } from 'lucide-react';
 import { downloadSummarySequence } from '../core/contigSummary';
-import { moveInterval, normaliseInterval, renderSegments, resizeIntervalBy } from '../core/activeInterval';
+import { intervalContains, intervalSequence, moveInterval, normaliseInterval, renderSegments, resizeIntervalBy, selectionInterval } from '../core/activeInterval';
 import {
   anchoredOffset,
   classifyWheelGesture,
@@ -1775,10 +1775,14 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   const totalPages = Math.max(1, Math.ceil(totalRows / ROWS_PER_PAGE));
   const safePageIndex = Math.min(pageIndex, Math.max(0, totalPages - 1));
 
-  // The first base of the selection, and the page that holds it at this row length.
-  const selectionStart = selectedRange
-    ? Math.max(1, Math.min(seqLen, Math.min(selectedRange.start, selectedRange.end)))
-    : null;
+  // The selection as the active-interval model reads it (BG-01M7CG2W): on a circular molecule
+  // start > end crosses the origin; a linear molecule never has start > end.
+  const selectionIv = useMemo(
+    () => (rawLen === 0 ? null : selectionInterval(selectedRange, seqLen, doc.topology)),
+    [selectedRange, rawLen, seqLen, doc.topology]
+  );
+  // The first base of the selection in reading order, and the page that holds it at this row length.
+  const selectionStart = selectionIv ? selectionIv.start : null;
   const selectionPage =
     selectionStart === null ? null : Math.floor(Math.floor((selectionStart - 1) / basesPerRow) / ROWS_PER_PAGE);
   // A new row length keeps the selection's first base on the page or, with nothing selected, the
@@ -2499,14 +2503,21 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   /** The quickbar's whole readout, as the bar's accessible description (it may be cut short on screen). */
   const quickbarReadoutId = useId();
   const selectionQuickStats = useMemo(() => {
-    if (!selectedRange || rawLen === 0) return null;
-    const start = Math.max(1, Math.min(seqLen, Math.min(selectedRange.start, selectedRange.end)));
-    const end = Math.max(start, Math.min(seqLen, Math.max(selectedRange.start, selectedRange.end)));
-    const length = end - start + 1;
+    if (!selectionIv) return null;
+    // An origin-crossing selection's bases are the end of the molecule then its start, read from
+    // `bases` at [from, to); any other is read in place on the sequence.
+    const { start, end } = selectionIv;
+    const crossing = start > end;
+    const bases = crossing ? intervalSequence(doc.sequence, selectionIv) : doc.sequence;
+    const from = crossing ? 0 : start - 1;
+    const to = crossing ? bases.length : end;
+    const length = to - from;
     if (isProtein) {
       return {
         start,
         end,
+        crossing,
+        sequence: () => bases.slice(from, to),
         length,
         gcPercent: null as number | null,
         tmBasicC: null as number | null,
@@ -2522,13 +2533,13 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     // a letter is no base, so it is neither in that length nor an ambiguity base.
     let gc = 0;
     let at = 0;
-    let bases = 0;
-    for (let i = start - 1; i < end; i++) {
-      const code = doc.sequence.charCodeAt(i);
+    let letters = 0;
+    for (let i = from; i < to; i++) {
+      const code = bases.charCodeAt(i);
       const ch = code | 0x20; // folded to lower case
       if (ch === 0x67 || ch === 0x63) gc++; // g, c
       else if (ch === 0x61 || ch === 0x74 || ch === 0x75) at++; // a, t, u
-      if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) bases++; // a letter, a base
+      if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) letters++; // a letter, a base
     }
     const denom = Math.max(1, gc + at);
     const gcPercent = (gc / denom) * 100;
@@ -2538,18 +2549,20 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     // its own copy, which read 26 N and 14 A/C/G/T as 37.4 °C. Otherwise the Wallace rule holds
     // below 14 bases and the basic formula from 14 up, on the bases: a gap counted in the length
     // read ACGTACGT-ACGTAC as "n/a: ... holds 1 N", and ACGTACGT-ACGTA by the 14-base formula.
-    const tmNoAnswerReason = basicTmHasNoAnswer(bases, gc + at) ? tmNoAnswerSentence(bases - (gc + at)) : null;
+    const tmNoAnswerReason = basicTmHasNoAnswer(letters, gc + at) ? tmNoAnswerSentence(letters - (gc + at)) : null;
     const tmBasicC =
-      tmNoAnswerReason !== null ? null : bases < 14 ? 2 * at + 4 * gc : 64.9 + (41 * (gc - 16.4)) / denom;
+      tmNoAnswerReason !== null ? null : letters < 14 ? 2 * at + 4 * gc : 64.9 + (41 * (gc - 16.4)) / denom;
     return {
       start,
       end,
+      crossing,
+      sequence: () => bases.slice(from, to),
       length,
       gcPercent: Math.max(0, Math.min(100, gcPercent)),
       tmBasicC,
       tmNoAnswerReason,
     };
-  }, [selectedRange, rawLen, seqLen, isProtein, doc.sequence]);
+  }, [selectionIv, isProtein, doc.sequence]);
 
   /** The quickbar's actions, in order; those that do not fit its one line go to its More menu. */
   const quickbarActions: QuickbarAction[] = [];
@@ -2561,7 +2574,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
         label: isProtein ? 'Copy AA' : "Copy 5'→3'",
         title: isProtein ? 'Copy selected amino acid sequence' : "Copy selected 5'→3' sequence",
         run: () => {
-          const sub = doc.sequence.slice(stats.start - 1, stats.end);
+          const sub = stats.sequence();
           navigator.clipboard?.writeText(sub);
           onStatusNotice?.(
             `Copied ${sub.length.toLocaleString()} ${unitLabel} (${stats.start}..${stats.end}) to clipboard.`
@@ -2575,7 +2588,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               label: 'Copy RevComp',
               title: 'Copy Reverse Complement of selected region',
               run: () => {
-                const sub = doc.sequence.slice(stats.start - 1, stats.end);
+                const sub = stats.sequence();
                 const rc = reverseComplement(sub);
                 navigator.clipboard?.writeText(rc);
                 onStatusNotice?.(
@@ -2590,6 +2603,12 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
         label: '+ Annotate',
         title: 'Create a new feature annotation spanning the active selection',
         run: () => {
+          if (stats.crossing) {
+            onStatusNotice?.(
+              `Annotate: the selection ${stats.start}..${stats.end} runs across the origin; a feature is added on one side of it only. Select within the molecule, or set the origin first.`
+            );
+            return;
+          }
           setNewFeatStart(stats.start);
           setNewFeatEnd(stats.end);
           setShowAddFeature(true);
@@ -3241,9 +3260,10 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               type="button"
               className="btn-secondary-sm"
               onClick={() => {
-                if (selectedRange) {
-                  setNewFeatStart(selectedRange.start);
-                  setNewFeatEnd(selectedRange.end);
+                // An origin-crossing selection is not a feature's start..end (BG-01M7CG2W): not prefilled.
+                if (selectionIv && selectionIv.start <= selectionIv.end) {
+                  setNewFeatStart(selectionIv.start);
+                  setNewFeatEnd(selectionIv.end);
                 }
                 setShowAddFeature(!showAddFeature);
               }}
@@ -3542,10 +3562,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               <span className="mono-bases">
                 {row.topSlice.split('').map((ch, idx) => {
                   const pos = row.rowStart + idx;
-                  const inSel =
-                    selectedRange &&
-                    pos >= selectedRange.start &&
-                    pos <= selectedRange.end;
+                  const inSel = selectionIv !== null && intervalContains(selectionIv, pos, seqLen);
                   const tokenClass = isProtein
                     ? `aa-res ${classifyProteinResidueCss(ch)}`
                     : `base-ch base-${ch === 'U' ? 'T' : ch}`;

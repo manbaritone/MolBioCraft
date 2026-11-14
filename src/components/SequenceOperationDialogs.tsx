@@ -257,6 +257,13 @@ export const DesignPrimersOperationDialog: React.FC<DesignPrimersOperationDialog
 }) => {
   const len = doc.sequence.length;
   const sel = selection && selection.end > selection.start && selection.end <= len ? selection : null;
+  // A selection across the origin of a circular molecule (start > end, BG-01M7CG2W) is not a
+  // target region primer design can take (it reads start..end within the molecule): say so rather
+  // than drop it silently or offer the arc between its ends.
+  const crossing = Boolean(selection && doc.topology === 'circular' && selection.start > selection.end);
+  const crossingNote = crossing && selection
+    ? `The selection ${selection.start}..${selection.end} runs across the origin; set the origin first to design primers around it.`
+    : null;
   const num = (v: string | number | boolean) => Number(v);
   return (
     <OperationDialog
@@ -266,7 +273,7 @@ export const DesignPrimersOperationDialog: React.FC<DesignPrimersOperationDialog
       transientKeys={['regionStart', 'regionEnd']}
       defaults={{ regionStart: sel?.start ?? 1, regionEnd: sel?.end ?? len, targetTm: 60, slack: 50, fwdTail: '', revTail: '', extractProduct: true }}
       onDownload={onDownload}
-      summary={<span><strong>{doc.name}</strong> · {len.toLocaleString()} bp{sel ? ` · selection ${sel.start}–${sel.end}` : ''}</span>}
+      summary={<span><strong>{doc.name}</strong> · {len.toLocaleString()} bp{sel ? ` · selection ${sel.start}–${sel.end}` : ''}{crossingNote ? ` · ${crossingNote}` : ''}</span>}
       validate={(v) => {
         if (doc.moleculeType === 'Protein' || !len) return 'Primer design needs a DNA sequence.';
         const s = num(v.regionStart);
@@ -290,6 +297,7 @@ export const DesignPrimersOperationDialog: React.FC<DesignPrimersOperationDialog
               {sel && (
                 <button type="button" className="btn-secondary-sm" onClick={() => { set('regionStart', sel.start); set('regionEnd', sel.end); }}>Use selection</button>
               )}
+              {crossingNote && <span className="mbc-opdlg-hint" role="note">{crossingNote}</span>}
             </div>
           </OptionRow>
           <OptionRow label="Target Tm (°C):" htmlFor="opdlg-pr-tm" hint="SantaLucia nearest-neighbour Tm of the annealing part.">

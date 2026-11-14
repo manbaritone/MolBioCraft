@@ -233,6 +233,16 @@ import {
   SequenceDocument,
 } from './types/bio';
 import {
+  crossesOrigin,
+  formatIntervalLabel,
+  intervalLength,
+  intervalSegments,
+  intervalSequence,
+  intervalUnit,
+  reverseInterval,
+  selectionInterval,
+} from './core/activeInterval';
+import {
   analyzeProteinSequence,
   analyzeSequenceComposition,
   COMMON_PLASMID_FEATURES,
@@ -826,6 +836,99 @@ const FOLDER_ACCENT_PALETTE = [
   '#7c3aed',
   '#e11d48',
 ];
+
+/**
+ * The document and 1-based `{ start, end }` to hand an engine operation that reads the bases
+ * `start..end` (extraction, attB flanking) for the selection `range` on `doc` (BG-01M7CG2W). A
+ * selection across the origin of a circular molecule (start > end) is handed over on the
+ * molecule rotated so the selection starts at base 1 - `{ 1, its length }` - so the operation
+ * reads exactly its bases, the end of the molecule then its start. Any other selection is handed
+ * over as it is, normalised; none (or one that is not a usable interval) gives null.
+ */
+export function selectionOnOwnOrigin(
+  doc: SequenceDocument,
+  range: { start: number; end: number } | null | undefined
+): { doc: SequenceDocument; start: number; end: number } | null {
+  const iv = selectionInterval(range, doc.sequence.length, doc.topology);
+  if (!iv) return null;
+  if (!crossesOrigin(iv)) return { doc, start: iv.start, end: iv.end };
+  return { doc: setCircularOrigin(doc, iv.start), start: 1, end: intervalLength(iv, doc.sequence.length) };
+}
+
+/**
+ * The result of an engine operation run on `selectionOnOwnOrigin`'s rotated molecule, with the
+ * provenance of the molecule the person selected on: its own history, then the steps the operation
+ * added - never the rotation, which the person did not make. `region.doc === doc` (no rotation)
+ * returns `result` unchanged.
+ */
+function withoutRotationStep(
+  result: SequenceDocument,
+  doc: SequenceDocument,
+  region: { doc: SequenceDocument }
+): SequenceDocument {
+  if (region.doc === doc) return result;
+  const added = result.history.slice(region.doc.history.length).map((node) => ({
+    ...node,
+    parentIds: node.parentIds.map((id) => (id === region.doc.id ? doc.id : id)),
+  }));
+  return { ...result, history: [...doc.history, ...added] };
+}
+
+/**
+ * Extract Region for the selection `range` on `doc` (none: its first 500 bases) as a new
+ * document (BG-01M7CG2W). A selection across the origin of a circular molecule is extracted as its
+ * bases in reading order - the end of the molecule, then its start - and the document is named,
+ * described and given provenance by its own 1-based range, `start..end, across the origin`.
+ */
+export function extractSelectedRegionDocument(
+  doc: SequenceDocument,
+  range: { start: number; end: number } | null | undefined,
+  nowIso: string
+): SequenceDocument {
+  const region = selectionOnOwnOrigin(doc, range) ?? { doc, start: 1, end: Math.min(doc.sequence.length, 500) };
+  const extracted = extractRegionWithAnnotationsRust(region.doc, region.start, region.end, nowIso);
+  if (region.doc === doc) return extracted;
+  const iv = selectionInterval(range, doc.sequence.length, doc.topology)!;
+  const unit = intervalUnit(doc.moleculeType);
+  const across = `${iv.start}..${iv.end}, across the origin`;
+  const kept = withoutRotationStep(extracted, doc, region);
+  const step = kept.history[kept.history.length - 1];
+  return {
+    ...kept,
+    id: `doc-ext-${doc.id}-${iv.start}-${iv.end}`,
+    name: `${doc.name}_${iv.start}_${iv.end}`,
+    accession: `MBC_EXT_${iv.start}_${iv.end}`,
+    description: `Extracted region ${across} (${extracted.sequence.length} ${unit}) from ${doc.name}`,
+    history: [
+      ...kept.history.slice(0, -1),
+      { ...step, id: `h-ext-${iv.start}-${iv.end}`, operation: `Extract Region (${across})` },
+    ],
+  };
+}
+
+/**
+ * Mask Selection / Mask Homopolymers on `doc` (BG-01M7CG2W): a selection across the origin of a
+ * circular molecule is masked one side of the origin at a time - its bases from start to the end
+ * of the molecule, then from base 1 to end - and the counts are the two passes' sums.
+ */
+export function maskActiveSelection(
+  doc: SequenceDocument,
+  mode: 'selection' | 'low-complexity',
+  range: { start: number; end: number } | null | undefined
+): ReturnType<typeof maskSequenceRegions> {
+  const iv = mode === 'selection' ? selectionInterval(range, doc.sequence.length, doc.topology) : null;
+  if (!iv) return maskSequenceRegions(doc, mode, range ?? null);
+  const [first, second] = intervalSegments(iv, doc.sequence.length);
+  const once = maskSequenceRegions(doc, mode, first);
+  if (!second) return once;
+  const twice = maskSequenceRegions(once.updated, mode, second);
+  return {
+    updated: twice.updated,
+    maskedBases: once.maskedBases + twice.maskedBases,
+    maskedRuns: once.maskedRuns + twice.maskedRuns,
+    annotationsOmitted: once.annotationsOmitted || twice.annotationsOmitted,
+  };
+}
 
 /** The Flatfile tab's record formats, as its toolbar names the one shown. */
 const FLATFILE_FORMAT_NAMES = { genbank: 'GenBank', fasta: 'FASTA', embl: 'EMBL-EBI', gff3: 'GFF3 Annotations' } as const;
@@ -2018,14 +2121,16 @@ export const App: React.FC = () => {
   // The status bar's selection readout is the whole selection's (BG-01M6RTHN): one engine pass,
   // about 9 ms at 1,000,000 bp and under 100 ms at 10,000,000 bp when measured. It stopped after its
   // first 12,001 bp, so a 200 kb selection read "(12001 bp | GC ...)", its GC and Tm from that slice.
+  // The selection as the active-interval model reads it (BG-01M7CG2W): on a circular molecule
+  // start > end crosses the origin, so its length and bases come from the model, never end - start.
+  const selectionIv = useMemo(
+    () => selectionInterval(selectedRange, activeDoc.sequence.length, activeDoc.topology),
+    [selectedRange, activeDoc.sequence.length, activeDoc.topology]
+  );
   const selectionComposition = useMemo(() => {
-    if (!sessionActive || !selectedRange || activeDoc.moleculeType === 'Protein') return null;
-    const sub = activeDoc.sequence.slice(
-      Math.max(0, selectedRange.start - 1),
-      Math.min(activeDoc.sequence.length, Math.max(selectedRange.start, selectedRange.end))
-    );
-    return analyzeSequenceComposition(sub);
-  }, [sessionActive, activeDoc.sequence, activeDoc.moleculeType, selectedRange]);
+    if (!sessionActive || !selectionIv || activeDoc.moleculeType === 'Protein') return null;
+    return analyzeSequenceComposition(intervalSequence(activeDoc.sequence, selectionIv));
+  }, [sessionActive, activeDoc.sequence, activeDoc.moleculeType, selectionIv]);
 
   const proteinStats = useMemo(() => {
     if (
@@ -2253,7 +2358,7 @@ export const App: React.FC = () => {
       setCheckedDocIds([docId]);
       selectDocumentWithHistory(docId);
       setSelectedRange(null);
-    } else if (selectedRange && selectedRange.end > sequenceLength) {
+    } else if (selectedRange && Math.max(selectedRange.start, selectedRange.end) > sequenceLength) {
       setSelectedRange(null);
     }
   };
@@ -2402,12 +2507,12 @@ export const App: React.FC = () => {
       ],
     };
     handleUpdateDocument(updated);
-    if (isActiveTarget && selectedRange && rcSeq.length > 0) {
-      setSelectedRange({
-        ...selectedRange,
-        start: Math.max(1, Math.min(rcSeq.length, rcSeq.length - selectedRange.end + 1)),
-        end: Math.max(1, Math.min(rcSeq.length, rcSeq.length - selectedRange.start + 1)),
-      });
+    // The same bases on the mirrored molecule; an origin-crossing selection stays crossing.
+    const mirroredSelection = isActiveTarget
+      ? selectionInterval(selectedRange, rcSeq.length, targetDoc.topology)
+      : null;
+    if (selectedRange && mirroredSelection) {
+      setSelectedRange({ ...selectedRange, ...reverseInterval(mirroredSelection, rcSeq.length) });
     }
     setStatusBanner(
       `Applied Reverse Complement to ${targetDoc.name} (${inverted.features.length} annotation coordinates inverted)`
@@ -2469,12 +2574,12 @@ export const App: React.FC = () => {
       ],
     };
     handleUpdateDocument(updated);
-    if (isActiveTarget && selectedRange && revSeq.length > 0) {
-      setSelectedRange({
-        ...selectedRange,
-        start: Math.max(1, Math.min(revSeq.length, revSeq.length - selectedRange.end + 1)),
-        end: Math.max(1, Math.min(revSeq.length, revSeq.length - selectedRange.start + 1)),
-      });
+    // The same bases on the mirrored molecule; an origin-crossing selection stays crossing.
+    const mirroredSelection = isActiveTarget
+      ? selectionInterval(selectedRange, revSeq.length, targetDoc.topology)
+      : null;
+    if (selectedRange && mirroredSelection) {
+      setSelectedRange({ ...selectedRange, ...reverseInterval(mirroredSelection, revSeq.length) });
     }
     setStatusBanner(
       `Applied Reverse-Only (3'→5') to ${targetDoc.name} (${inverted.features.length} annotation coordinates mirrored)`
@@ -2488,14 +2593,7 @@ export const App: React.FC = () => {
   };
 
   const handleExtractSelectedRegion = () => {
-    const start = selectedRange?.start ?? 1;
-    const end = selectedRange?.end ?? Math.min(activeDoc.sequence.length, 500);
-    const extracted = extractRegionWithAnnotationsRust(
-      activeDoc,
-      start,
-      end,
-      new Date().toISOString()
-    );
+    const extracted = extractSelectedRegionDocument(activeDoc, selectedRange, new Date().toISOString());
     handleAddConstruct(extracted);
   };
 
@@ -2552,6 +2650,11 @@ export const App: React.FC = () => {
     }
     const target = activeDoc;
     const range = { start: selectedRange.start, end: selectedRange.end };
+    const featureIv = selectionInterval(range, target.sequence.length, target.topology);
+    if (featureIv && crossesOrigin(featureIv)) {
+      setStatusBanner('Add Feature: the selection runs across the origin; a feature is added on one side of it only. Select within the molecule, or set the origin first.');
+      return;
+    }
     setPromptDialog({
       title: 'Add Feature',
       label: `Name for ${range.start.toLocaleString()}..${range.end.toLocaleString()} on "${target.name}"`,
@@ -5961,7 +6064,7 @@ export const App: React.FC = () => {
       setStatusBanner('Mask Selection: select the residues to mask first.');
       return;
     }
-    const { updated, maskedBases, maskedRuns, annotationsOmitted } = maskSequenceRegions(activeDoc, mode, selectedRange);
+    const { updated, maskedBases, maskedRuns, annotationsOmitted } = maskActiveSelection(activeDoc, mode, selectedRange);
     handleUpdateDocument(updated);
     setStatusBanner(
       maskedBases > 0
@@ -6003,6 +6106,11 @@ export const App: React.FC = () => {
       setStatusBanner('Selection to Oligo: select the bases for the oligo first.');
       return;
     }
+    const oligoIv = selectionInterval(selectedRange, activeDoc.sequence.length, activeDoc.topology);
+    if (oligoIv && crossesOrigin(oligoIv)) {
+      setStatusBanner('Selection to Oligo: the selection runs across the origin, and a primer binds within the molecule. Select bases on one side of the origin, or set the origin first.');
+      return;
+    }
     const { updatedDoc, primer } = convertSelectionToOligoPrimer(activeDoc, selectedRange, 1);
     handleUpdateDocument(updatedDoc);
     openPrimersStudio('saved');
@@ -6029,7 +6137,10 @@ export const App: React.FC = () => {
 
   const handleAddAttBSitesToActive = () => {
     if (!ensureCommandAvailable('nucleotide-analysis', 'Add attB Sites')) return;
-    const amplicon = addAttBSitesToSequence(activeDoc, selectedRange);
+    const region = selectionOnOwnOrigin(activeDoc, selectedRange);
+    const amplicon = region
+      ? withoutRotationStep(addAttBSitesToSequence(region.doc, { start: region.start, end: region.end }), activeDoc, region)
+      : addAttBSitesToSequence(activeDoc, null);
     handleAddConstruct(amplicon);
     setStatusBanner(
       `Created Gateway BP-ready amplicon "${amplicon.name}" (${amplicon.sequence.length.toLocaleString()} bp)`
@@ -6166,9 +6277,8 @@ export const App: React.FC = () => {
   /** Copy the selection (or the whole active sequence); reports the real outcome. */
   const handleCopySequenceToClipboard = () => {
     if (!ensureCommandAvailable('export-sequence', 'Copy Sequence')) return;
-    const sub = selectedRange
-      ? activeDoc.sequence.slice(selectedRange.start - 1, selectedRange.end)
-      : activeDoc.sequence;
+    const copyIv = selectionInterval(selectedRange, activeDoc.sequence.length, activeDoc.topology);
+    const sub = copyIv ? intervalSequence(activeDoc.sequence, copyIv) : activeDoc.sequence;
     const unit = activeDoc.moleculeType === 'Protein' ? 'aa' : 'bp';
     if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
       setStatusBanner('Copy failed: the clipboard is not available in this environment.');
@@ -14697,15 +14807,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
               {(viewerTab === 'sequence-view' || inspectorAvailable) && (
                 <div className="mbc-viewer-zoom-controls">
                   {viewerTab === 'sequence-view' && (<>
-                  {selectedRange && (
+                  {selectedRange && selectionIv && (
                     <span
                       className="mbc-selection-readout"
-                      title={`Selected: ${selectedRange.start}..${selectedRange.end} (${
-                        selectedRange.end - selectedRange.start + 1
-                      } ${activeDoc.moleculeType === 'Protein' ? 'aa' : activeDoc.moleculeType === 'RNA' ? 'nt' : 'bp'})${selectedRange.label ? ` [${selectedRange.label}]` : ''}`}
+                      title={`Selected: ${formatIntervalLabel(selectionIv, activeDoc.sequence.length, activeDoc.topology, intervalUnit(activeDoc.moleculeType))}${selectedRange.label ? ` [${selectedRange.label}]` : ''}`}
                     >
-                      {selectedRange.start}..{selectedRange.end} (
-                      {selectedRange.end - selectedRange.start + 1} {activeDoc.moleculeType === 'Protein' ? 'aa' : activeDoc.moleculeType === 'RNA' ? 'nt' : 'bp'})
+                      {formatIntervalLabel(selectionIv, activeDoc.sequence.length, activeDoc.topology, intervalUnit(activeDoc.moleculeType))}
                       {selectedRange.label ? ` • ${selectedRange.label}` : ''}
                     </span>
                   )}
@@ -15964,8 +16071,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
               <span>
                 {activeDoc.documentKind === 'tree'
                   ? `Tips: ${activeDoc.docMetadata?.['No. tips'] ?? 'unknown'}`
-                  : selectedRange && selectionComposition
-                  ? <>{`Selection: ${selectedRange.start}..${selectedRange.end} (${selectionComposition.length} bp | GC: ${selectionComposition.gcPercent.toFixed(1)}% | Tm: `}{selectionTm(selectionComposition)})</>
+                  : selectionIv && selectionComposition
+                  ? <>{`Selection: ${selectionIv.start}..${selectionIv.end} (${selectionComposition.length} ${intervalUnit(activeDoc.moleculeType)} | GC: ${selectionComposition.gcPercent.toFixed(1)}% | Tm: `}{selectionTm(selectionComposition)})</>
                   : isContigSummaryRecord(activeDoc)
                   ? `Summary record: ${declaredLengthOf(activeDoc).toLocaleString()} ${activeDoc.moleculeType === 'RNA' ? 'nt' : 'bp'} declared, bases not downloaded`
                   : `Full Length: ${activeDoc.sequence.length.toLocaleString()} ${

@@ -8,7 +8,10 @@ export type MoleculeType = 'DNA' | 'RNA' | 'Protein';
  * The one active interval on a molecule (MB-NAV-01), in 1-based inclusive coordinates - the
  * same `{ start, end }` the App passes to every viewer as `selectedRange`. On a linear molecule
  * `start <= end` always; on a circular molecule `start > end` means the interval crosses the
- * origin and covers `start..length` then `1..end`. See `src/core/activeInterval.ts`.
+ * origin and covers `start..length` then `1..end`. Readers of `selectedRange` take its length,
+ * bases, sector and reverse-complement remap from `src/core/activeInterval.ts`
+ * (`selectionInterval`, `intervalLength`, `intervalSequence`, `reverseInterval`), never from
+ * `end - start` - which is wrong for such an interval.
  */
 export interface ActiveInterval {
   start: number;

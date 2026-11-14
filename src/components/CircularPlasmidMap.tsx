@@ -11,10 +11,11 @@ import {
   RestrictionCutSite,
   SequenceDocument,
   SequenceFeature,
+  Topology,
 } from '../types/bio';
 import { getResidentTrackOverviewRust } from '../lib/rustBioEngine';
 import { cutSiteDisplayPosition } from '../core/restrictionDisplay';
-import { normaliseInterval, renderSegments } from '../core/activeInterval';
+import { formatIntervalLabel, intervalUnit, normaliseInterval, selectionInterval } from '../core/activeInterval';
 import {
   WHEEL_NOTCH_PX,
   anchoredOffset,
@@ -805,28 +806,42 @@ export function layoutCircularCallouts(
 const SELECTION_MIN_SPAN_DEG = 0.5;
 
 /**
- * The selection's sector(s) on a circle of `length` bases (US-01M7CCJC AC4): base b spans the
+ * The selection's sector on a circle of `length` bases (US-01M7CCJC AC4): base b spans the
  * angles [(b - 1) / length, b / length) of 360 degrees, the boundaries the linear overview and
- * the base rows draw too (activeInterval's renderSegments). A selection is normalised as the
- * linear model does (start <= end, clamped to 1..length); none gives no sector.
+ * the base rows draw too (activeInterval's renderSegments). The selection is normalised for the
+ * molecule's `topology` (activeInterval's selectionInterval): on a circular molecule an
+ * origin-crossing selection (start > end) is one sector from (start - 1) / length past 360 degrees
+ * to 360 + end / length (BG-01M7CG2W); on a linear one start <= end always. None gives no sector.
  */
 export function selectionSectorAngles(
   selectedRange: { start: number; end: number } | null,
-  length: number
+  length: number,
+  topology: Topology
 ): { label: string; startAngle: number; endAngle: number }[] {
-  if (!selectedRange || !(length >= 1)) return [];
-  let interval;
-  try {
-    interval = normaliseInterval(selectedRange, length, 'linear');
-  } catch {
-    return [];
-  }
-  const label = `${interval.start}..${interval.end}`;
-  return renderSegments(interval, length).map((seg) => ({
-    label,
-    startAngle: (seg.startIndex / length) * 360,
-    endAngle: (seg.endExclusive / length) * 360,
-  }));
+  const interval = selectionInterval(selectedRange, length, topology);
+  if (!interval) return [];
+  const endBase = interval.start > interval.end ? interval.end + length : interval.end;
+  return [
+    {
+      label: `${interval.start}..${interval.end}`,
+      startAngle: ((interval.start - 1) / length) * 360,
+      endAngle: (endBase / length) * 360,
+    },
+  ];
+}
+
+/**
+ * What clicking an ORF on the ring selects: the ORF itself. On a circular molecule an ORF across
+ * the origin (end < start, as the ORF finder reports it) stays start > end, so the selection is
+ * the ORF and not the arc between its ends; on a linear molecule it is normalised to start <= end.
+ */
+export function orfSelectRange(
+  orf: { start: number; end: number; frame: number; lengthAa: number },
+  length: number,
+  topology: Topology
+): { start: number; end: number; label: string } {
+  const iv = normaliseInterval(orf, length, topology);
+  return { start: iv.start, end: iv.end, label: `ORF Frame ${orf.frame > 0 ? `+${orf.frame}` : orf.frame} (${orf.lengthAa} aa)` };
 }
 
 /**
@@ -862,8 +877,9 @@ export function describeSelectionSector(
   }
   const drawn = Math.max(SELECTION_MIN_SPAN_DEG, span);
   // A sector widened to the minimum near the end of the molecule is moved back so it ends at
-  // twelve o'clock, never spilling past the origin onto base 1.
-  const start = Math.min(startAngle, 360 - drawn);
+  // twelve o'clock, never spilling past the origin onto base 1. A sector that already ends past
+  // 360 degrees is an origin-crossing selection and is drawn where it is.
+  const start = endAngle > 360 ? startAngle : Math.min(startAngle, 360 - drawn);
   const end = start + drawn;
   const large = drawn > 180 ? 1 : 0;
   return [
@@ -1016,7 +1032,14 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   }
 
   const seqLen = Math.max(1, doc.sequence.length);
-  const selectionSectors = useMemo(() => selectionSectorAngles(selectedRange, seqLen), [selectedRange, seqLen]);
+  const selectionSectors = useMemo(
+    () => selectionSectorAngles(selectedRange, seqLen, doc.topology),
+    [selectedRange, seqLen, doc.topology]
+  );
+  const selectionInterval_ = useMemo(
+    () => selectionInterval(selectedRange, seqLen, doc.topology),
+    [selectedRange, seqLen, doc.topology]
+  );
   const isProtein = doc.moleculeType === 'Protein';
   const unitLabel = isProtein ? 'aa' : 'bp';
   const viewWidth = 680;
@@ -1431,10 +1454,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
         <span className="circular-hover-pill" aria-live="polite">
           {hoveredItem
             ? hoveredItem
-            : selectedRange
-            ? `Selected ${selectedRange.start.toLocaleString()}..${selectedRange.end.toLocaleString()} (${(
-                Math.abs(selectedRange.end - selectedRange.start) + 1
-              ).toLocaleString()} ${unitLabel})`
+            : selectionInterval_
+            ? `Selected ${formatIntervalLabel(selectionInterval_, seqLen, doc.topology, intervalUnit(doc.moleculeType))}`
             : !isProtein
             ? `Mean GC ${meanGc.value}${meanGc.approx ? ` (${meanGc.approx})` : ''} • ${doc.features.length} features`
             : `${seqLen.toLocaleString()} aa polypeptide`}
@@ -1775,15 +1796,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
                   stroke="#c26401"
                   strokeWidth="0.9"
                   className="clickable-arc"
-                  onClick={() =>
-                    onSelectRange({
-                      start: Math.min(orf.start, orf.end),
-                      end: Math.max(orf.start, orf.end),
-                      label: `ORF Frame ${
-                        orf.frame > 0 ? `+${orf.frame}` : orf.frame
-                      } (${orf.lengthAa} aa)`,
-                    })
-                  }
+                  onClick={() => onSelectRange(orfSelectRange(orf, seqLen, doc.topology))}
                   onMouseEnter={() =>
                     setHoveredItem(
                       `ORF (${orf.strand > 0 ? '+' : '-'}${Math.abs(orf.frame)}): ${
