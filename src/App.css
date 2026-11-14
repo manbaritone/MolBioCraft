@@ -2173,18 +2173,30 @@ fieldset > legend,
     justify-content: flex-start;
   }
 
-  /* Short of height, the overview tracks give way first (their large shrink factor), scrolling
-     in their own strip, and the rows of bases last, so the first row stays in view. */
+  /* Short of height, the card gives way in turn, each strip down to a floor: the overview tracks
+     first (their large shrink factor), down to 64px, enough for the backbone and the first lanes to
+     brush, zoom and click (BG-01M7CJJQ: with no floor they fell to 1px at 1440x900 with the document
+     table shown while the quickbar wrapped, and to 15px at 1440x860 with it on one line), scrolling the rest in their own strip; then the rows of bases, down to 120px; and
+     last the toolbar, which keeps its search line and scrolls its other lines. Each shrink factor is
+     at least 1: once the others sit on their floors, a strip whose factor is under 1 would give only
+     that fraction of the shortfall, and the card would clip its rows. */
   .map-seq-grid.mode-split > .linear-seq-container > .mbc-schematic-header {
     flex: 0 1000 auto;
-    min-block-size: 0;
+    min-block-size: 64px;
     overflow-y: auto;
     overscroll-behavior: contain;
   }
 
   .map-seq-grid.mode-split > .linear-seq-container > .sequence-blocks-scroll {
-    flex: 1 1 160px;
+    flex: 1 100 160px;
     min-block-size: 120px;
+  }
+
+  .map-seq-grid.mode-split > .linear-seq-container > .linear-toolbar {
+    flex: 0 1 auto;
+    min-block-size: calc(var(--mbc-control-h-md) + 12px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   /* The toolbar's buttons and the pager share wrapping lines in the narrower column. */

@@ -834,3 +834,110 @@ describe('Split view side by side (US-01M6Q1CC)', () => {
   });
 });
 
+
+// ─── BG-01M7CJJQ: the linear overview keeps a usable height in Split view ───
+
+describe('The linear overview keeps a usable height beside the circle (BG-01M7CJJQ)', () => {
+  const CARD = `${SPLIT} > .linear-seq-container`;
+  const OVERVIEW = `${CARD} > .mbc-schematic-header`;
+  const TOOLBAR = `${CARD} > .linear-toolbar`;
+  const ROWS = `${CARD} > .sequence-blocks-scroll`;
+  // The linear card's content box at 1440x900 with the document table shown (the Sample Project's
+  // opening state), measured 2026-11-14 on a2abb73 in Chromium and WebKit: 425px with its borders.
+  // A desktop window of 1440x900 shows less than that to the page (its title bar), so the same card
+  // at a 1440x860 viewport too: 385px, where the overview had fallen to 15px.
+  const COLUMN_1440 = 423;
+  const COLUMN_1440_WINDOW = 383;
+  // What does not give: the card's title row (35px measured) and the quickbar's fixed slot.
+  const TITLE_ROW = 35;
+  const SIDE_BY_SIDE = [CANVAS_DEFAULT, CANVAS_MEASURED, CANVAS_WITH_RAIL, 1377];
+
+  const ROOT = new Map(CSS_RULES.filter((r) => r.at.length === 0 && r.selectors.includes(':root')).flatMap((r) => [...r.decls].map(([k, v]) => [k, v.value] as const)));
+  /** A length in px: `Npx`, a root token, or a calc() sum of those; NaN for anything else (0, %, auto). */
+  const px = (value: string | undefined): number => {
+    if (value === undefined) return NaN;
+    let v = value;
+    for (let i = 0; i < 5 && /var\(/.test(v); i++) v = v.replace(/var\((--[\w-]+)\)/g, (_m, name: string) => ROOT.get(name) ?? 'NaN');
+    const body = /^calc\((.*)\)$/.exec(v.trim())?.[1] ?? v;
+    const terms = body.trim().split(/\s+([+-])\s+/);
+    let sum = 0;
+    for (let i = 0; i < terms.length; i += 2) {
+      const n = /^([\d.]+)px$/.exec(terms[i].trim());
+      if (!n) return NaN;
+      sum += (i > 0 && terms[i - 1] === '-' ? -1 : 1) * Number(n[1]);
+    }
+    return sum;
+  };
+  /** The cascaded value of one property under any of its names (min-height is min-block-size here). */
+  const cascadedAny = (selector: string, props: string[], width: number) => props
+    .map((p) => cascaded(selector, p, width))
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .sort((a, b) => a.rule.order - b.rule.order)
+    .pop()?.value;
+  const minOf = (sel: string, width: number) => px(cascadedAny(sel, ['min-block-size', 'min-height'], width));
+  const shrinkOf = (sel: string, width: number) => {
+    const shorthand = cascaded(sel, 'flex', width);
+    const longhand = cascaded(sel, 'flex-shrink', width);
+    if (longhand && (!shorthand || longhand.rule.order > shorthand.rule.order)) return Number(longhand.value);
+    return shorthand ? Number(shorthand.value.split(/\s+/)[1] ?? 1) : 1;
+  };
+
+  it('holds the overview at 48px or more, from its own rule, wherever the maps sit side by side', () => {
+    // Wrong implementations this catches: the collapsing rule (`min-block-size: 0`) left in place;
+    // a floor on the svg inside the strip (the strip still shrinks to 0 and clips it); a floor in a
+    // rule the side-by-side rule follows, under either name of the property; and a floor under 48px.
+    for (const width of SIDE_BY_SIDE) {
+      const floor = minOf(OVERVIEW, width);
+      expect(floor, `the overview's floor at ${width}px: ${cascadedAny(OVERVIEW, ['min-block-size', 'min-height'], width)}`).toBeGreaterThanOrEqual(48);
+      // It may still give way first down to that floor, and scrolls what it cannot show.
+      expect(cascaded(OVERVIEW, 'overflow-y', width)?.value, 'the overview scrolls in its own strip').toMatch(/^(auto|scroll)$/);
+    }
+    // The overview is the card's own strip in the markup, where the rule's selector finds it.
+    autosavePuc19(100, 'split');
+    const { html } = driveApp([(_m, d) => d('file:restore-autosave')]);
+    const grid = byClass(parseMarkup(html), 'map-seq-grid');
+    expect(grid.map((g) => g.classes.has('mode-split')), 'one Split grid').toEqual([true]);
+    const card = byClass(grid[0], 'linear-seq-container');
+    expect(card, 'one linear card').toHaveLength(1);
+    const strips = kids(card[0]).map((k) => [...k.classes][0]);
+    const order = ['mbc-schematic-header', 'linear-toolbar', 'sequence-blocks-scroll'].map((c) => strips.indexOf(c));
+    expect(order.every((i) => i >= 0), `the card's strips: ${strips.join(', ')}`).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it('keeps the rows on their floor and takes the rest of a shortfall from the toolbar', () => {
+    // Wrong implementations this catches: room for the overview made by lowering the rows' floor;
+    // a toolbar that cannot give (its content height stays, so a short card clips the rows or the
+    // overview); a toolbar whose shrink factor is under 1 (it then gives only that fraction of what
+    // is left once the others sit on their floors, and the card clips its rows); a toolbar that gives
+    // before the rows; a toolbar that gives with nothing to scroll it; and floors that do not fit
+    // together in the card at 1440x900 with the document table shown.
+    const quickbar = linearView.SELECTION_QUICKBAR_HEIGHT_PX;
+    expect(quickbar, "the quickbar's fixed slot").toBe(32);
+    for (const width of SIDE_BY_SIDE) {
+      const rows = minOf(ROWS, width);
+      expect(rows, `the rows' floor at ${width}px`).toBeGreaterThanOrEqual(120);
+      expect(shrinkOf(ROWS, width), 'the rows give down to their floor').toBeGreaterThan(0);
+
+      // A factor under 1 gives only that fraction of what is left once the others sit on their floors.
+      expect(shrinkOf(TOOLBAR, width), `the toolbar gives all of the rest at ${width}px`).toBeGreaterThanOrEqual(1);
+      // The rows give before the toolbar: their weighted share (factor x 160px basis) is the larger.
+      expect(shrinkOf(ROWS, width) * 160, `the rows give first at ${width}px`).toBeGreaterThan(shrinkOf(TOOLBAR, width) * 135 * 10);
+      expect(cascaded(TOOLBAR, 'overflow-y', width)?.value, 'the toolbar scrolls what it cannot show').toMatch(/^(auto|scroll)$/);
+      const toolbar = minOf(TOOLBAR, width);
+      // Its floor keeps the search box and Go-to line (a control height) in view.
+      expect(toolbar, `the toolbar's floor at ${width}px`).toBeGreaterThanOrEqual(px('var(--mbc-control-h-md)'));
+
+      const floors = TITLE_ROW + minOf(OVERVIEW, width) + toolbar + quickbar + rows;
+      expect(floors, `every floor fits the 1440x900 card at ${width}px`).toBeLessThanOrEqual(COLUMN_1440);
+      expect(floors, `and the card of a 1440x900 window at ${width}px`).toBeLessThanOrEqual(COLUMN_1440_WINDOW);
+    }
+  });
+
+  it('leaves the stacked Split, where the card scrolls as a whole, as it was', () => {
+    // Below the side-by-side breakpoint the card keeps its 380px floor and no strip is clamped.
+    expect(cascaded(CARD, 'min-block-size', 759)?.value).toBe('380px');
+    expect(cascadedAny(OVERVIEW, ['min-block-size', 'min-height'], 759)).toBeUndefined();
+    expect(cascaded(TOOLBAR, 'overflow-y', 759)).toBeNull();
+  });
+});
