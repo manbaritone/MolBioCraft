@@ -2093,6 +2093,183 @@ fieldset > legend,
   background: var(--mbc-bg-selected);
 }
 
+/* Displayed restriction sites (US-01M7CC7J): which scanned sites the maps are to draw. */
+.mbc-dsites {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--mbc-border-light);
+  min-width: 0;
+}
+
+.mbc-dsites-title {
+  margin: 0;
+  font-size: var(--font-size-label);
+  font-weight: 600;
+}
+
+.mbc-dsites-counts {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--mbc-text-muted);
+}
+
+.mbc-dsites-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mbc-dsites-search {
+  flex: 1 1 120px;
+  min-width: 0;
+  height: var(--mbc-control-h-sm);
+  padding: 0 6px;
+  font-size: var(--font-size-label);
+  border: 1px solid var(--mbc-border);
+  border-radius: var(--mbc-radius-xs);
+  background: var(--mbc-bg-elevated);
+  color: inherit;
+}
+
+.mbc-dsites-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: var(--font-size-label);
+}
+
+.mbc-dsites-note {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--mbc-text-muted);
+}
+
+.mbc-dsites-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mbc-dsites-bulk > button,
+.mbc-dsites-goto,
+.mbc-dsites-expand {
+  font-size: var(--font-size-caption);
+  border: 1px solid var(--mbc-border);
+  border-radius: var(--mbc-radius-xs);
+  background: var(--mbc-bg-elevated);
+  color: inherit;
+  cursor: pointer;
+}
+
+.mbc-dsites-bulk > button {
+  padding: 2px 8px;
+}
+
+.mbc-dsites-bulk > button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.mbc-dsites-bulk > button:hover:not(:disabled),
+.mbc-dsites-goto:hover,
+.mbc-dsites-expand:hover {
+  background: var(--mbc-bg-selected-soft);
+}
+
+.mbc-dsites-bulk > button:focus-visible,
+.mbc-dsites-goto:focus-visible,
+.mbc-dsites-expand:focus-visible,
+.mbc-dsites-search:focus-visible {
+  outline: 2px solid var(--mbc-accent);
+  outline-offset: 1px;
+}
+
+.mbc-dsites-list,
+.mbc-dsites-occurrences {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mbc-dsites-list {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--mbc-border-light);
+  border-radius: var(--mbc-radius-xs);
+}
+
+.mbc-dsites-row + .mbc-dsites-row {
+  border-top: 1px solid var(--mbc-border-light);
+}
+
+.mbc-dsites-enzyme,
+.mbc-dsites-occurrence {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  min-width: 0;
+  font-size: var(--font-size-label);
+}
+
+.mbc-dsites-occurrence {
+  padding-left: 30px;
+  font-size: var(--font-size-caption);
+}
+
+.mbc-dsites-expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  flex: none;
+}
+
+.mbc-dsites-expand-spacer {
+  width: 18px;
+  flex: none;
+}
+
+.mbc-dsites-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mbc-dsites-motif {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-caption);
+  color: var(--mbc-text-muted);
+}
+
+.mbc-dsites-count,
+.mbc-dsites-strand {
+  color: var(--mbc-text-muted);
+  white-space: nowrap;
+  font-size: var(--font-size-caption);
+}
+
+.mbc-dsites-pos {
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+}
+
+.mbc-dsites-goto {
+  margin-left: auto;
+  padding: 1px 6px;
+  white-space: nowrap;
+  flex: none;
+}
+
 .stats-list .stat-kv {
   display: flex;
   justify-content: space-between;

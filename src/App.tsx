@@ -229,6 +229,7 @@ import {
   NucleotideColorScheme,
   NUCLEOTIDE_COLOR_SCHEMES,
   ProteinAnalysisReport,
+  RestrictionCutSite,
   SequenceDocument,
 } from './types/bio';
 import {
@@ -489,7 +490,14 @@ import type {
   LocalSequenceDbEntry,
   ReferenceDatabaseCategoryId,
 } from './components/DatabaseExplorerModal';
-import { cutSiteDisplayPosition } from './core/restrictionDisplay';
+import {
+  cutSiteDisplayPosition,
+  emptySiteVisibility,
+  reconcileSiteVisibility,
+  sequenceRevision,
+  type SiteVisibility,
+} from './core/restrictionDisplay';
+import { DisplayedSitesPanel, clearedChoiceCount, clearedChoicesNotice } from './components/DisplayedSitesPanel';
 import { alignmentImageRefusal, alignmentImageRows, exportAlignmentImage, isAlignmentImageDocument } from './core/alignmentImage';
 import type { FigureImageFormat } from './core/figureExport';
 
@@ -2349,6 +2357,61 @@ export const App: React.FC = () => {
       ).toLocaleString()} KiB held in memory)`
     );
   };
+
+  // Which scanned sites the maps are to draw (US-01M7CC7J): display state per document, keyed by
+  // document id, plain data ready to keep with the session. The scanned molecule's revision keys
+  // each site's choice; the shown choices are reconciled to the current scan, so a choice made
+  // before an edit lands on no other site. An unscanned view reconciles nothing and writes nothing.
+  const [siteVisibilityByDoc, setSiteVisibilityByDoc] = useState<Record<string, SiteVisibility>>({});
+  // The revision hashes exactly the string the scan read, as it read it (the first bases of a long
+  // molecule, read as linear), once per sequence version: hashing 10 Mb can take a few hundred
+  // milliseconds, so it is kept until the scanned bases or topology change, never redone on a render.
+  const restrictionRevisionCache = useRef<{ sequence: string; firstBp: number; topology: string; revision: string } | null>(null);
+  const restrictionMolecule = useMemo(() => {
+    if (restrictionScan === EMPTY_RESTRICTION_SCAN) return null;
+    const firstBp = restrictionScope?.firstBp ?? 0;
+    const circular = !firstBp && activeDoc.topology === 'circular';
+    const topology = circular ? 'circular' : 'linear';
+    const seqLen = firstBp ? Math.min(firstBp, activeDoc.sequence.length) : activeDoc.sequence.length;
+    const cached = restrictionRevisionCache.current;
+    if (cached && cached.sequence === activeDoc.sequence && cached.firstBp === firstBp && cached.topology === topology) {
+      return { revision: cached.revision, seqLen, circular };
+    }
+    const revision = sequenceRevision(firstBp ? activeDoc.sequence.slice(0, firstBp) : activeDoc.sequence, topology);
+    restrictionRevisionCache.current = { sequence: activeDoc.sequence, firstBp, topology, revision };
+    return { revision, seqLen, circular };
+  }, [restrictionScan, restrictionScope, activeDoc.sequence, activeDoc.topology]);
+  const storedSiteVisibility = siteVisibilityByDoc[activeDoc.id];
+  const activeSiteVisibility = useMemo(() => {
+    if (!restrictionMolecule) return null;
+    const stored = storedSiteVisibility ?? emptySiteVisibility(restrictionMolecule.revision);
+    return reconcileSiteVisibility(stored, cutSites, restrictionMolecule.revision);
+  }, [restrictionMolecule, storedSiteVisibility, cutSites]);
+  // An edit or rescan that clears per-site choices keeps the cleared state and says how many went,
+  // in the status line (never a dialog). Only a scanned view reconciles, so nothing is cleared
+  // while the sites are not scanned.
+  useEffect(() => {
+    if (!storedSiteVisibility || !activeSiteVisibility) return;
+    const cleared = clearedChoiceCount(storedSiteVisibility, activeSiteVisibility);
+    if (cleared === 0 && storedSiteVisibility.revision === activeSiteVisibility.revision) return;
+    setSiteVisibilityByDoc((prev) => ({ ...prev, [activeDoc.id]: activeSiteVisibility }));
+    if (cleared > 0) setStatusBanner(clearedChoicesNotice(cleared));
+  }, [storedSiteVisibility, activeSiteVisibility, activeDoc.id, setStatusBanner]);
+  // A visibility change only records the document's choices: it never moves the view or the selection.
+  const handleSiteVisibilityChange = useCallback(
+    (next: SiteVisibility) => setSiteVisibilityByDoc((prev) => ({ ...prev, [activeDoc.id]: next })),
+    [activeDoc.id]
+  );
+  // Go to site, as a once-cutter button does: select the recognition span.
+  const goToCutSite = useCallback(
+    (site: RestrictionCutSite) =>
+      setSelectedRange({
+        start: site.position,
+        end: site.position + site.enzyme.recognitionSeq.length - 1,
+        label: `${site.enzyme.name} cuts after ${cutSiteDisplayPosition(site.cutTop, activeDoc.sequence.length, activeDoc.topology === 'circular')}`,
+      }),
+    [activeDoc.sequence.length, activeDoc.topology]
+  );
 
   // The single cutters by their complete counts (BG-01M6S1K2), in the order of their sites.
   const uniqueCutterNames = useMemo(
@@ -15968,6 +16031,18 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                               );
                             })}
                           </div>
+                          {restrictionMolecule && activeSiteVisibility && (
+                            <DisplayedSitesPanel
+                              key={activeDoc.id}
+                              sites={cutSites}
+                              siteCounts={restrictionSiteCounts}
+                              visibility={activeSiteVisibility}
+                              molecule={restrictionMolecule}
+                              uniqueCuttersOnly={showUniqueCuttersOnly}
+                              onVisibilityChange={handleSiteVisibilityChange}
+                              onGoToSite={goToCutSite}
+                            />
+                          )}
                         </div>
                       )}
                     </div>
