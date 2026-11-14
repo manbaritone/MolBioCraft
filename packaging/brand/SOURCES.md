@@ -32,5 +32,20 @@ or recolouring.
 | `public/brand/phoenix-mascot-favicon-64.png` | mascot | 64 x 64 | 6 (RGBA; corners cut to the tile radius) | `index.html` favicon, the standalone build's favicon |
 | `public/brand/phoenix-emblem-512.png` | emblem | 512 x 512 | 6 (RGBA, alpha kept) | About dialog, home hero, startup splash, boot splash |
 
-The desktop and installer icons (`src-tauri/icons/`, `packaging/*.icns|ico|png`) are not made
-here; they still come from `scripts/generate_icons.py`.
+## Desktop and installer icons
+
+`scripts/generate_icons.py` writes them from the mascot alone (run it from the repository root,
+on macOS, which has `iconutil`). Each size is a LANCZOS downscale of the master whose outer black
+corners are cut away by a rounded-rectangle alpha mask at the same 1/5 radius (box-filtered, so no
+faint alpha is left in the corners); no colour is keyed, so the engraved lines inside the tile
+stay opaque. The tile fills each icon edge to edge, as the old icon set did.
+
+| Output | Pixels | Container |
+| --- | --- | --- |
+| `src-tauri/icons/32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.png`, `Square*Logo.png`, `StoreLogo.png`; `packaging/icon_512.png`, `packaging/icon_256.png` | as named (`@2x` = 256, `icon.png` = 512) | PNG, colour type 6 (RGBA) |
+| `src-tauri/icons/icon.ico` = `packaging/molbiocraft.ico` | 16, 24, 32, 48, 64, 128, 256 | ICO (type 1), PNG-compressed images |
+| `src-tauri/icons/icon.icns` = `packaging/AppIcon.icns` | 16 to 1024 | ICNS, made by `iconutil` from an `.iconset` |
+| `packaging/logo.svg` = `public/logo.svg` (the README logo) | 512 viewBox | SVG embedding the 512 px icon |
+
+The old engraving's masters (`packaging/molbiocraft_app_icon_*1024.png`) were removed, so no run
+can restore it.
