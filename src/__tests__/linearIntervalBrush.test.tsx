@@ -21,7 +21,21 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 type ElementProbe = (type: unknown, props: Record<string, unknown>) => void;
-const probe = vi.hoisted(() => ({ onElement: null as null | ElementProbe }));
+const probe = vi.hoisted(() => ({
+  onElement: null as null | ElementProbe,
+  /** Sees every effect a component registers while it renders (server rendering runs none). */
+  onEffect: null as null | ((effect: () => unknown) => void),
+}));
+
+// The views' effects are read off `useEffect` and run by hand on stand-in elements (US-01M7CCJC).
+vi.mock('react', async () => {
+  const actual = await vi.importActual<typeof import('react')>('react');
+  const useEffect = ((effect: Parameters<typeof actual.useEffect>[0], deps?: Parameters<typeof actual.useEffect>[1]) => {
+    probe.onEffect?.(effect);
+    return actual.useEffect(effect, deps);
+  }) as typeof actual.useEffect;
+  return { ...actual, default: { ...actual, useEffect }, useEffect };
+});
 
 type JsxFn = (type: unknown, props: Record<string, unknown>, ...rest: unknown[]) => unknown;
 const watch = vi.hoisted(() => (fn: JsxFn): JsxFn => (type, props, ...rest) => {
@@ -46,7 +60,14 @@ const {
   BRUSH_IDLE,
   BRUSH_HANDLE_HIT_PX,
   BRUSH_DRAG_THRESHOLD_PX,
+  rowDragStep,
+  ROW_DRAG_IDLE,
+  rowDragEdgeAction,
+  rowDragEdgeBase,
+  firstVisibleRowStart,
+  selectionFollowPage,
 } = await import('../components/LinearSequenceView');
+const { CircularPlasmidMap } = await import('../components/CircularPlasmidMap');
 const { findRestrictionCutSites } = await import('../core/bioEngine');
 const { REBASE_ENZYMES } = await import('../data/rebaseEnzymes');
 type SequenceDocument = import('../types/bio').SequenceDocument;
@@ -57,6 +78,7 @@ type BrushInput = import('../components/LinearSequenceView').BrushInput;
 
 afterEach(() => {
   probe.onElement = null;
+  probe.onEffect = null;
   vi.unstubAllGlobals();
 });
 
@@ -605,5 +627,455 @@ describe('US-01M7CCFQ AC4 focusable 10 px edge handles, arrow keys, and pointerc
     });
     expect(v.selections).toEqual([{ start: 40, end: 49 }, { start: 30, end: 39 }]);
     expect(v.clears).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// US-01M7CCJC: drag-select bases in the rows, and the overview follows the rows' scroll.
+//
+// A drag across the base rows is a pure reducer too (`rowDragStep`, positions read from the
+// bases' data-pos); turning the page while a drag holds the pointer past the rows' top or bottom
+// edge is `rowDragEdgeAction` + `rowDragEdgeBase`. The navigation rule is `selectionFollowPage`
+// and the effects of the view, which are read off `useEffect` and run by hand, during the
+// render, on a stand-in rows scroller - so a state update they make re-renders the view.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+type RowRect = [start: number, top: number, height: number];
+
+/** A stand-in for the rows' scroll area: its box, its rows' boxes, and the listeners added to it. */
+function fakeScroller(o: { width?: number; top?: number; height?: number; rows?: RowRect[]; scrollTop?: number; scrollHeight?: number } = {}) {
+  const listeners: Record<string, ((e: { type: string }) => void)[]> = {};
+  const top = o.top ?? 100;
+  const height = o.height ?? 160;
+  // Row boxes are given as they sit at scrollTop 0, and move up as the pane scrolls.
+  const rowEls = (o.rows ?? []).map(([start, rowTop, h]) => {
+    const at = () => rowTop - el.scrollTop;
+    const strand = { getBoundingClientRect: () => ({ top: at() + 20, bottom: at() + 36 }) };
+    return {
+      start,
+      getAttribute: (n: string) => (n === 'data-row-start' ? String(start) : null),
+      getBoundingClientRect: () => ({ top: at(), bottom: at() + h }),
+      querySelector: (sel: string) => (sel === '.top-strand' ? strand : null),
+    };
+  });
+  const el = {
+    clientWidth: o.width ?? 1000,
+    clientHeight: height,
+    scrollHeight: o.scrollHeight ?? 2000,
+    scrollTop: o.scrollTop ?? 0,
+    getBoundingClientRect: () => ({ top, bottom: top + height, left: 0, right: o.width ?? 1000, width: o.width ?? 1000, height }),
+    querySelectorAll: (sel: string) => (sel === '[data-row-start]' ? rowEls : []),
+    querySelector: (sel: string) => rowEls.find((r) => sel === `[data-row-start="${r.start}"]`) ?? null,
+    addEventListener: (t: string, f: (e: { type: string }) => void) => { (listeners[t] ??= []).push(f); },
+    removeEventListener: (t: string, f: (e: { type: string }) => void) => { listeners[t] = (listeners[t] ?? []).filter((g) => g !== f); },
+    dispatchEvent: (e: { type: string }) => { (listeners[e.type] ?? []).forEach((f) => f(e)); return true; },
+    fire: (t: string) => (listeners[t] ?? []).forEach((f) => f({ type: t })),
+    listening: (t: string) => (listeners[t] ?? []).length,
+    setPointerCapture: vi.fn(),
+    releasePointerCapture: vi.fn(),
+  };
+  return el;
+}
+type FakeScroller = ReturnType<typeof fakeScroller>;
+
+/** The target of a pointer event over base `pos` (null: over a gutter, a marker, a feature bar). */
+const baseTarget = (pos: number | null) => ({
+  closest: (sel: string) => (sel === '[data-pos]' && pos !== null ? { getAttribute: (n: string) => (n === 'data-pos' ? String(pos) : null) } : null),
+  getAttribute: () => null,
+});
+const rowEvent = (scroller: FakeScroller, pos: number | null, x: number, y: number) => ({
+  target: baseTarget(pos), clientX: x, clientY: y, pointerId: 7, button: 0, currentTarget: scroller,
+  preventDefault() {}, stopPropagation() {},
+});
+
+const SEQ3000 = 'ACGTTGCAAT'.repeat(300);
+const runEffects = (effects: (() => unknown)[]) => {
+  for (const effect of effects) {
+    try {
+      effect();
+    } catch {
+      // An effect for an element this harness does not stand in for.
+    }
+  }
+};
+
+interface RowsDrive {
+  rows: Record<string, unknown>;
+  effects: (() => unknown)[];
+  next?: Record<string, unknown>;
+  bases: Map<number, Record<string, unknown>>;
+}
+
+/**
+ * Render the view; `act` runs once, inside the render, when the rows' scroller is created (after
+ * the view's hooks have run, so `effects` holds the effects of this pass).
+ */
+function renderRows(
+  doc: SequenceDocument,
+  selectedRange: { start: number; end: number } | null,
+  act: ((d: RowsDrive) => void) | null,
+  /** Act only on a pass that draws this base (a pass before the view has turned to its page is skipped). */
+  onPassWith?: number,
+  /** Runs on every later pass (a re-render the act caused), inside that render. */
+  everyLaterPass?: () => void,
+) {
+  const selections: { start: number; end: number; label?: string }[] = [];
+  let passEffects: (() => unknown)[] = [];
+  let next: Record<string, unknown> | undefined;
+  let bases = new Map<number, Record<string, unknown>>();
+  let scrollerPasses = 0;
+  let acted = false;
+  probe.onEffect = (effect) => passEffects.push(effect);
+  probe.onElement = (type, props) => {
+    if (type === 'button' && /Next/.test(String([props.children].flat().join('')))) next = props;
+    if (type === 'span' && props['data-pos'] !== undefined) bases.set(Number(props['data-pos']), props);
+    if (props.className === 'sequence-blocks-scroll') {
+      scrollerPasses++;
+      const effects = passEffects;
+      passEffects = [];
+      if (!acted && act && (onPassWith === undefined || bases.has(onPassWith))) {
+        acted = true;
+        act({ rows: props, effects, next, bases });
+      } else if (acted && everyLaterPass) {
+        everyLaterPass();
+      }
+      bases = new Map();
+    }
+  };
+  const html = renderToStaticMarkup(
+    <LinearSequenceView doc={doc} cutSites={[]} selectedRange={selectedRange}
+      onSelectRange={(r) => selections.push(r)} onUpdateDocument={() => {}} />,
+  );
+  probe.onElement = null;
+  probe.onEffect = null;
+  return { html, selections, scrollerPasses };
+}
+const attach = (d: RowsDrive, scroller: FakeScroller) => (d.rows.ref as (el: unknown) => void)(scroller);
+const rowsHandler = (d: RowsDrive, name: string) => handler(d.rows, name);
+/** The bases the rows draw highlighted, by their data-pos. */
+const highlighted = (html: string) =>
+  [...html.matchAll(/<span\b[^>]*class="[^"]*\bsel-base\b[^"]*"[^>]*>/g)].map((m) => Number(attr(m[0], 'data-pos')));
+const pageTickOf = (html: string) => Number(/data-page-tick="(\d+)"/.exec(schematicSvg(html))?.[1]);
+const overviewIntervalOf = (html: string) => [...new Set(rectsOf(schematicSvg(html)).map((r) => attr(r, 'data-active-interval')).filter(Boolean))];
+const range = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, k) => a + k);
+
+function rowGesture(inputs: Parameters<typeof rowDragStep>[1][], current: ActiveInterval | null = null) {
+  let drag = ROW_DRAG_IDLE;
+  const selects: ActiveInterval[] = [];
+  const restores: (ActiveInterval | null)[] = [];
+  for (const input of inputs) {
+    const step = rowDragStep(drag, input, current);
+    drag = step.drag;
+    if (step.select) selects.push(step.select);
+    if (step.cancelled) restores.push(step.cancelled.restore);
+  }
+  return { selects, restores, drag, last: selects[selects.length - 1] };
+}
+const rdown = (pos: number, x = 0, y = 0) => ({ type: 'down' as const, pos, x, y, pointerId: 7 });
+const rmove = (pos: number | null, x = 40, y = 40, pointerId = 7) => ({ type: 'move' as const, pos, x, y, pointerId });
+const rup = (pos: number | null, x = 40, y = 40) => ({ type: 'up' as const, pos, x, y, pointerId: 7 });
+
+// ═══ US-01M7CCJC AC1 ═══
+
+describe('US-01M7CCJC AC1 a drag across bases selects exactly the bases under it', () => {
+  it('from the base pressed to the base under the pointer, both included, in either direction', () => {
+    const at = [1, 2, 59, 60, 61, 120, 121, 1199, 1200, 1201, 2999, 3000];
+    for (const a of at) for (const b of at) {
+      const g = rowGesture([rdown(a), rmove(b)]);
+      if (a === b) expect(g.last, `${a} -> ${b}`).toEqual({ start: a, end: a });
+      else expect(g.last, `${a} -> ${b}`).toEqual({ start: Math.min(a, b), end: Math.max(a, b) });
+    }
+    expect(rowGesture([rdown(70), rmove(130), rmove(20), rup(20)]).selects).toEqual([{ start: 70, end: 130 }, { start: 20, end: 70 }]);
+  });
+
+  it('a press that has not travelled 3 px is a click: the drag selects nothing', () => {
+    expect(BRUSH_DRAG_THRESHOLD_PX).toBe(3);
+    expect(rowGesture([rdown(70, 10, 10), rmove(71, 12, 11), rup(71, 12, 12)]).selects).toEqual([]);
+    expect(rowGesture([rdown(70, 10, 10), rmove(71, 13, 10)]).selects).toEqual([{ start: 70, end: 71 }]);
+  });
+
+  it('over a gutter or a marker the drag keeps its bases, and goes on over the next base', () => {
+    expect(rowGesture([rdown(70), rmove(100), rmove(null), rmove(null, 90, 90), rmove(140)]).selects)
+      .toEqual([{ start: 70, end: 100 }, { start: 70, end: 140 }]);
+    expect(rowGesture([rdown(70), rmove(null), rup(null)]).selects).toEqual([]);
+  });
+
+  it('another pointer, or a move with no press, does nothing; pointercancel puts back the selection', () => {
+    expect(rowGesture([rmove(80), rup(90)]).selects).toEqual([]);
+    expect(rowGesture([rdown(70), rmove(90, 40, 40, 9)]).selects).toEqual([]);
+    expect(rowGesture([rdown(70), rmove(90), { type: 'cancel', pointerId: 7 }], { start: 5, end: 9 }).restores).toEqual([{ start: 5, end: 9 }]);
+    expect(rowGesture([rdown(70), rmove(90), { type: 'cancel', pointerId: 7 }]).restores).toEqual([null]);
+  });
+
+  it('held past the rows\' bottom or top edge, a drag scrolls the rows, then turns the page, then stops', () => {
+    const m = (scrollTop: number) => ({ scrollTop, clientHeight: 160, scrollHeight: 1000 });
+    expect(rowDragEdgeAction(m(0), 1, 0, 3)).toBe('scroll');
+    expect(rowDragEdgeAction(m(839.5), 1, 0, 3)).toBe('next-page');
+    expect(rowDragEdgeAction(m(840), 1, 0, 3)).toBe('next-page');
+    expect(rowDragEdgeAction(m(840), 1, 2, 3)).toBe('none');
+    expect(rowDragEdgeAction(m(300), -1, 1, 3)).toBe('scroll');
+    expect(rowDragEdgeAction(m(0), -1, 1, 3)).toBe('previous-page');
+    expect(rowDragEdgeAction(m(0), -1, 0, 3)).toBe('none');
+    expect(rowDragEdgeAction(m(300), 0, 1, 3)).toBe('none');
+  });
+
+  it('at the edge the drag reaches the last base of the last row in view, or the first of the first', () => {
+    // A 160 px pane at 100..260; rows of 60 bases.
+    const s = fakeScroller({ rows: [[1141, -20, 92], [1161, 72, 92], [1201, 164, 92], [1261, 256, 92], [1321, 348, 92]] });
+    expect(rowDragEdgeBase(s as unknown as HTMLElement, 1, 60, 3000)).toBe(1320);
+    expect(rowDragEdgeBase(s as unknown as HTMLElement, -1, 60, 3000)).toBe(1161);
+    const end = fakeScroller({ rows: [[2941, 120, 92]] });
+    expect(rowDragEdgeBase(end as unknown as HTMLElement, 1, 60, 3000), 'clamped to the last base').toBe(3000);
+    expect(rowDragEdgeBase(fakeScroller() as unknown as HTMLElement, 1, 60, 3000), 'no rows, no base').toBeNull();
+  });
+
+  it('a drag from page 1 that turns to page 2 selects across the page boundary', () => {
+    // 20 rows of 60 bases a page: page 1 is 1..1200, page 2 1201..2400.
+    expect(rowGesture([rdown(1150), rmove(1190), rmove(1260)]).last).toEqual({ start: 1150, end: 1260 });
+    expect(rowGesture([rdown(1230), rmove(1210), rmove(1140)]).last).toEqual({ start: 1140, end: 1230 });
+  });
+
+  it('the view: a drag across rows selects its bases, captured once it travels', () => {
+    for (const [a, b] of [[70, 130], [130, 70], [1, 1200], [61, 60]] as const) {
+      const s = fakeScroller();
+      const v = renderRows(docOf(SEQ3000), null, (d) => {
+        attach(d, s);
+        rowsHandler(d, 'onPointerDown')(rowEvent(s, a, 100, 100));
+        expect(s.setPointerCapture, 'a press alone captures nothing').not.toHaveBeenCalled();
+        rowsHandler(d, 'onPointerMove')(rowEvent(s, b, 160, 140));
+        expect(s.setPointerCapture).toHaveBeenCalledWith(7);
+        rowsHandler(d, 'onPointerUp')(rowEvent(s, b, 160, 140));
+        expect(s.releasePointerCapture).toHaveBeenCalledWith(7);
+      });
+      expect(v.selections, `${a} -> ${b}`).toEqual([{ start: Math.min(a, b), end: Math.max(a, b) }]);
+    }
+  });
+
+  it('the view: a plain click on a base keeps today\'s 20-base selection, and a drag swallows its own click', () => {
+    let stopped = 0;
+    const s = fakeScroller();
+    const click = renderRows(docOf(SEQ3000), null, (d) => {
+      attach(d, s);
+      rowsHandler(d, 'onPointerDown')(rowEvent(s, 70, 100, 100));
+      rowsHandler(d, 'onPointerUp')(rowEvent(s, 70, 101, 101));
+      rowsHandler(d, 'onClickCapture')({ stopPropagation: () => { stopped++; } });
+      (d.bases.get(70)!.onClick as () => void)();
+    });
+    expect(stopped).toBe(0);
+    expect(click.selections).toEqual([{ start: 70, end: 89 }]);
+    const drag = renderRows(docOf(SEQ3000), null, (d) => {
+      attach(d, s);
+      rowsHandler(d, 'onPointerDown')(rowEvent(s, 70, 100, 100));
+      rowsHandler(d, 'onPointerMove')(rowEvent(s, 75, 140, 100));
+      rowsHandler(d, 'onPointerUp')(rowEvent(s, 70, 100, 100));
+      rowsHandler(d, 'onClickCapture')({ stopPropagation: () => { stopped++; } });
+    });
+    expect(drag.selections).toEqual([{ start: 70, end: 75 }, { start: 70, end: 70 }]);
+    expect(stopped).toBe(1);
+  });
+
+  it('the overview and the rows show the interval a drag selected, base for base', () => {
+    for (const sel of [{ start: 70, end: 130 }, { start: 1, end: 1 }, { start: 1150, end: 1200 }]) {
+      const { html } = renderRows(docOf(SEQ3000), sel, null);
+      expect(overviewIntervalOf(html)).toEqual([`${sel.start}..${sel.end}`]);
+      expect(highlighted(html)).toEqual(range(sel.start, sel.end));
+    }
+  });
+});
+
+// ═══ US-01M7CCJC AC2 ═══
+
+describe('US-01M7CCJC AC2 the navigation rule: edits win while dragged, scroll moves only the marker', () => {
+  it('a new selection brings its page, except while a drag in the rows is making it', () => {
+    expect(selectionFollowPage(3, 0, false)).toBe(3);
+    expect(selectionFollowPage(3, 0, true)).toBe(0);
+    expect(selectionFollowPage(null, 2, false)).toBe(2);
+    expect(selectionFollowPage(0, 2, false)).toBe(0);
+  });
+
+  it('first visible row: the first whose box reaches below the pane\'s top', () => {
+    const s = fakeScroller({ rows: [[1, 100, 92], [61, 192, 92], [121, 284, 92], [181, 376, 92]], scrollTop: 200 });
+    expect(firstVisibleRowStart(s as unknown as HTMLElement)).toBe(121);
+    expect(firstVisibleRowStart(fakeScroller({ rows: [[1, 100, 92]] }) as unknown as HTMLElement)).toBe(1);
+    expect(firstVisibleRowStart(fakeScroller() as unknown as HTMLElement)).toBeNull();
+  });
+
+  it('a manual scroll of the rows moves the overview\'s marker once it settles, and selects nothing', () => {
+    const rows: RowRect[] = [[1, 100, 92], [61, 192, 92], [121, 284, 92], [181, 376, 92]];
+    const s = fakeScroller({ rows });
+    const before = renderRows(docOf(SEQ3000), null, (d) => {
+      attach(d, s);
+      runEffects(d.effects);
+      s.scrollTop = 200; // the reader scrolls the rows
+      s.fire('scroll');
+    });
+    expect(pageTickOf(before.html), 'not settled: the marker stays').toBe(1);
+    const t = fakeScroller({ rows });
+    const settled = renderRows(docOf(SEQ3000), null, (d) => {
+      attach(d, t);
+      runEffects(d.effects);
+      t.scrollTop = 200;
+      expect(t.listening('scrollend'), 'the view listens for the scroll to settle').toBeGreaterThan(0);
+      t.fire('scrollend');
+    });
+    expect(pageTickOf(settled.html)).toBe(121);
+    expect(settled.selections).toEqual([]);
+    expect(overviewIntervalOf(settled.html)).toEqual([]);
+  });
+
+  it('a settled scroll that lands where the marker already is re-renders nothing (no update loop)', () => {
+    // Each re-render the settle causes sees the scroll settle again at the same row: without the
+    // unchanged-row guard that is a render loop (React stops it with "Too many re-renders").
+    const s = fakeScroller({ rows: [[1, 100, 92], [61, 192, 92], [121, 284, 92]] });
+    const v = renderRows(docOf(SEQ3000), null, (d) => {
+      attach(d, s);
+      runEffects(d.effects);
+      s.scrollTop = 200;
+      s.fire('scrollend');
+    }, undefined, () => s.fire('scrollend'));
+    expect(pageTickOf(v.html)).toBe(121);
+    expect(v.scrollerPasses, 'one re-render for the settle, then quiet').toBeLessThanOrEqual(4);
+    expect(v.selections).toEqual([]);
+  });
+
+  it('the scroll a new selection causes moves the marker and never re-selects', () => {
+    vi.stubGlobal('getComputedStyle', () => ({ paddingTop: '0px', paddingLeft: '0px', paddingRight: '0px' }));
+    vi.stubGlobal('requestAnimationFrame', () => 0);
+    vi.stubGlobal('cancelAnimationFrame', () => {});
+    // The selection's row (1261, on page 2) is below the pane: the view scrolls it up.
+    const s = fakeScroller({ rows: [[1201, 40, 92], [1261, 400, 92]], scrollTop: 0 });
+    const v = renderRows(docOf(SEQ3000), { start: 1300, end: 1310 }, (d) => {
+      attach(d, s);
+      runEffects(d.effects);
+      expect(s.scrollTop, 'the selection scrolled the rows').toBe(300);
+      s.fire('scrollend');
+    }, 1300);
+    expect(v.selections).toEqual([]);
+    expect(pageTickOf(v.html), 'the marker is where the rows now start').toBe(1261);
+    expect(overviewIntervalOf(v.html)).toEqual(['1300..1310']);
+  });
+
+  it('while a drag in the rows is selecting, the selection does not scroll the rows', () => {
+    vi.stubGlobal('getComputedStyle', () => ({ paddingTop: '0px', paddingLeft: '0px', paddingRight: '0px' }));
+    vi.stubGlobal('requestAnimationFrame', () => 0);
+    vi.stubGlobal('cancelAnimationFrame', () => {});
+    const rows: RowRect[] = [[1201, 40, 92], [1261, 400, 92]];
+    const control = fakeScroller({ rows });
+    renderRows(docOf(SEQ3000), { start: 1300, end: 1310 }, (d) => {
+      attach(d, control);
+      runEffects(d.effects);
+    }, 1300);
+    expect(control.scrollTop, 'no drag: the selection is revealed').toBe(300);
+    const s = fakeScroller({ rows });
+    const v = renderRows(docOf(SEQ3000), { start: 1300, end: 1310 }, (d) => {
+      attach(d, s);
+      rowsHandler(d, 'onPointerDown')(rowEvent(s, 1230, 100, 100));
+      rowsHandler(d, 'onPointerMove')(rowEvent(s, 1215, 60, 100));
+      runEffects(d.effects);
+    }, 1300);
+    expect(s.scrollTop, 'the drag owns the view').toBe(0);
+    expect(v.selections).toEqual([{ start: 1215, end: 1230 }]);
+  });
+});
+
+// ═══ US-01M7CCJC AC3 ═══
+
+describe('US-01M7CCJC AC3 the selection survives a bases-per-row change and a page change', () => {
+  it('rows reflowed from 60 to 40 bases keep the same start and end, in the rows and on the overview', () => {
+    for (const sel of [{ start: 70, end: 130 }, { start: 1, end: 1 }, { start: 1190, end: 1210 }]) {
+      const v = renderRows(docOf(SEQ3000), sel, (d) => attach(d, fakeScroller({ width: 470 })));
+      const page = Math.floor((sel.start - 1) / 40 / 20);
+      const pageFirst = page * 800 + 1;
+      expect(v.html, 'the rows hold 40 bases now').toContain(`data-row-start="${pageFirst + 40}"`);
+      expect(v.html).not.toContain(`data-row-start="${pageFirst + 60}"`);
+      expect(v.selections, 'nothing re-selected').toEqual([]);
+      expect(overviewIntervalOf(v.html)).toEqual([`${sel.start}..${sel.end}`]);
+      expect(highlighted(v.html)).toEqual(range(Math.max(sel.start, pageFirst), Math.min(sel.end, pageFirst + 799)));
+    }
+  });
+
+  it('turning the page keeps the selection: the next page highlights its part, the overview the whole', () => {
+    const sel = { start: 1150, end: 1250 };
+    const v = renderRows(docOf(SEQ3000), sel, (d) => {
+      expect(d.next, 'the Next button').toBeDefined();
+      (d.next!.onClick as () => void)();
+    });
+    expect(v.html).toContain('data-row-start="1201"');
+    expect(v.html).not.toContain('data-row-start="1141"');
+    expect(v.selections).toEqual([]);
+    expect(overviewIntervalOf(v.html)).toEqual(['1150..1250']);
+    expect(highlighted(v.html)).toEqual(range(1201, 1250));
+    expect(pageTickOf(v.html)).toBe(1201);
+  });
+});
+
+// ═══ US-01M7CCJC AC4 ═══
+
+describe('US-01M7CCJC AC4 the circular map draws the same interval as the overview and the rows', () => {
+  const CX = 340;
+  const CY = 270;
+  const R_OUT = 166;
+  const R_IN = 126;
+  const polar = (r: number, deg: number) => {
+    const rad = ((deg - 90) * Math.PI) / 180;
+    return [CX + r * Math.cos(rad), CY + r * Math.sin(rad)];
+  };
+  const circularSector = (doc: SequenceDocument, sel: { start: number; end: number }) => {
+    const html = renderToStaticMarkup(
+      <CircularPlasmidMap doc={doc} cutSites={[]} orfs={[]} selectedRange={sel} onSelectRange={() => {}}
+        showOrfs={false} showPrimers={false} showUniqueCuttersOnly={false} zoomLevel={100} onZoomChange={() => {}} />,
+    );
+    const paths = html.match(/<path\b[^>]*data-active-interval="[^"]*"[^>]*>/g) ?? [];
+    return paths;
+  };
+
+  it('every interval the views can emit: the same bases, at the same fraction of the molecule', () => {
+    const doc = docOf(SEQ100, { topology: 'circular' });
+    for (const sel of [{ start: 1, end: 1 }, { start: 100, end: 100 }, { start: 1, end: 100 }, { start: 30, end: 39 }, { start: 61, end: 80 }, { start: 1, end: 50 }, { start: 51, end: 100 }]) {
+      const paths = circularSector(doc, sel);
+      expect(paths, `${sel.start}..${sel.end}: one sector`).toHaveLength(1);
+      const p = paths[0]!;
+      expect(attr(p, 'data-active-interval')).toBe(`${sel.start}..${sel.end}`);
+      const a0 = Number(attr(p, 'data-start-angle'));
+      const a1 = Number(attr(p, 'data-end-angle'));
+      expect(a0).toBeCloseTo(((sel.start - 1) / 100) * 360, 6);
+      expect(a1).toBeCloseTo((sel.end / 100) * 360, 6);
+      // The overview: the same bases, at the same fraction of its width.
+      const { html } = renderRows(doc, sel, null);
+      const hl = rectsOf(schematicSvg(html)).filter((r) => attr(r, 'data-active-interval'))[0]!;
+      expect(attr(hl, 'data-active-interval')).toBe(`${sel.start}..${sel.end}`);
+      expect(((Number(attr(hl, 'x')) - X0) / W) * 360).toBeCloseTo(a0, 6);
+      if (sel.end - sel.start + 1 >= 1) expect(highlighted(html)).toEqual(range(sel.start, sel.end));
+    }
+  });
+
+  it('the sector is the plain arc from the start angle to the end angle, with no arrowhead bevel', () => {
+    const doc = docOf(SEQ100, { topology: 'circular' });
+    for (const sel of [{ start: 30, end: 39 }, { start: 61, end: 80 }, { start: 1, end: 50 }]) {
+      const d = attr(circularSector(doc, sel)[0]!, 'd')!;
+      const nums = [...d.matchAll(/-?\d+(?:\.\d+)?/g)].map(Number);
+      const [mx, my] = nums;
+      const [sx, sy] = polar(R_OUT, ((sel.start - 1) / 100) * 360);
+      expect(mx).toBeCloseTo(sx, 1);
+      expect(my).toBeCloseTo(sy, 1);
+      // The outer arc ends at the end angle: `A r r 0 large 1 x y`.
+      const [ex, ey] = polar(R_OUT, (sel.end / 100) * 360);
+      expect(nums[7]).toBeCloseTo(ex, 1);
+      expect(nums[8]).toBeCloseTo(ey, 1);
+      // Then down to the inner radius at the same angle.
+      const [ix, iy] = polar(R_IN, (sel.end / 100) * 360);
+      expect(nums[9]).toBeCloseTo(ix, 1);
+      expect(nums[10]).toBeCloseTo(iy, 1);
+    }
+  });
+
+  it('the whole molecule is a full ring, and a 1-bp interval is still drawn', () => {
+    const doc = docOf(SEQ100, { topology: 'circular' });
+    const whole = attr(circularSector(doc, { start: 1, end: 100 })[0]!, 'd')!;
+    expect(whole).not.toMatch(/NaN/);
+    expect(whole.match(/A /g)?.length, 'two half-turns on each radius').toBe(4);
+    const one = attr(circularSector(doc, { start: 100, end: 100 })[0]!, 'd')!;
+    expect(one).not.toMatch(/NaN/);
+    expect(one.length).toBeGreaterThan(20);
   });
 });

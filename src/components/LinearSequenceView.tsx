@@ -317,6 +317,132 @@ export function brushKeyStep(
   return { interval: next, edge: swapped ? other : edge };
 }
 
+// ─── Drag-selecting bases in the rows, and the navigation rule (US-01M7CCJC, MB-NAV-01) ───
+
+/** A drag across the base rows: `pending` until it travels BRUSH_DRAG_THRESHOLD_PX, then `active`. */
+export type RowDrag =
+  | { phase: 'idle' }
+  | {
+      phase: 'pending' | 'active';
+      pointerId: number;
+      /** The base pressed: one edge of every interval the drag selects. */
+      anchor: number;
+      downX: number;
+      downY: number;
+      /** The selection when the press began, which a cancel puts back. */
+      before: ActiveInterval | null;
+      last: ActiveInterval | null;
+    };
+
+export const ROW_DRAG_IDLE: RowDrag = { phase: 'idle' };
+
+/** A pointer event over the rows: `pos` is the 1-based base under it (its data-pos), or null over no base. */
+export type RowDragInput =
+  | { type: 'down'; pos: number; x: number; y: number; pointerId: number }
+  | { type: 'move' | 'up'; pos: number | null; x: number; y: number; pointerId: number }
+  | { type: 'cancel'; pointerId: number };
+
+export type RowDragStepResult = Omit<BrushStepResult, 'drag'> & { drag: RowDrag };
+
+/**
+ * One pointer event of a drag across the base rows, as a pure step. The drag selects from the
+ * base pressed to the base under the pointer, both included, in either direction (always
+ * start <= end), across rows and - with the page turned under it - across pages. A press that
+ * has not travelled BRUSH_DRAG_THRESHOLD_PX screen pixels is a click and selects nothing (the
+ * base's own click then selects as it always has); over no base the drag keeps what it has.
+ * Cancel puts back `before` when the drag had changed it.
+ */
+export function rowDragStep(drag: RowDrag, input: RowDragInput, current: ActiveInterval | null): RowDragStepResult {
+  if (input.type === 'down') {
+    if (!Number.isInteger(input.pos) || input.pos < 1 || !Number.isFinite(input.x) || !Number.isFinite(input.y)) return { drag };
+    return {
+      drag: { phase: 'pending', pointerId: input.pointerId, anchor: input.pos, downX: input.x, downY: input.y, before: current, last: null },
+    };
+  }
+  if (drag.phase === 'idle' || input.pointerId !== drag.pointerId) return { drag };
+  if (input.type === 'cancel') {
+    const result: RowDragStepResult = { drag: ROW_DRAG_IDLE };
+    if (drag.phase === 'active' && drag.last !== null && !sameInterval(drag.last, drag.before)) {
+      result.cancelled = { restore: drag.before };
+    }
+    return result;
+  }
+  if (!Number.isFinite(input.x) || !Number.isFinite(input.y)) return { drag };
+  const travelled = Math.hypot(input.x - drag.downX, input.y - drag.downY) >= BRUSH_DRAG_THRESHOLD_PX;
+  if (drag.phase === 'pending' && !travelled) return { drag: input.type === 'up' ? ROW_DRAG_IDLE : drag };
+  const active: RowDrag = { ...drag, phase: 'active' };
+  const pos = input.pos;
+  if (pos === null || !Number.isInteger(pos) || pos < 1) return { drag: input.type === 'up' ? ROW_DRAG_IDLE : active };
+  const next = { start: Math.min(drag.anchor, pos), end: Math.max(drag.anchor, pos) };
+  const changed = !sameInterval(next, drag.last);
+  const nextDrag: RowDrag = input.type === 'up' ? ROW_DRAG_IDLE : { ...active, last: changed ? next : drag.last };
+  return changed ? { drag: nextDrag, select: next } : { drag: nextDrag };
+}
+
+/**
+ * A row drag held past the rows' bottom (dir 1) or top (dir -1) edge: scroll the rows on while
+ * they can scroll, then turn to the next (previous) page, then stop at the molecule's end.
+ */
+export function rowDragEdgeAction(
+  m: { scrollTop: number; clientHeight: number; scrollHeight: number },
+  dir: number,
+  pageIndex: number,
+  totalPages: number
+): 'scroll' | 'next-page' | 'previous-page' | 'none' {
+  if (dir > 0) {
+    if (m.scrollTop + m.clientHeight < m.scrollHeight - 1) return 'scroll';
+    return pageIndex < totalPages - 1 ? 'next-page' : 'none';
+  }
+  if (dir < 0) {
+    if (m.scrollTop > 0) return 'scroll';
+    return pageIndex > 0 ? 'previous-page' : 'none';
+  }
+  return 'none';
+}
+
+type RowsPane = Pick<HTMLElement, 'getBoundingClientRect' | 'querySelectorAll'>;
+const rowBoxes = (scroller: RowsPane) =>
+  Array.from(scroller.querySelectorAll<HTMLElement>('[data-row-start]'))
+    .map((row) => ({ start: Number(row.getAttribute('data-row-start')), box: row.getBoundingClientRect() }))
+    .filter((r) => Number.isInteger(r.start) && r.start >= 1);
+
+/**
+ * The base a row drag held past an edge reaches: past the bottom, the last base of the last row
+ * that shows in the pane; past the top, the first base of the first. Null when no row shows.
+ */
+export function rowDragEdgeBase(scroller: RowsPane, dir: number, basesPerRow: number, seqLen: number): number | null {
+  const view = scroller.getBoundingClientRect();
+  const rows = rowBoxes(scroller);
+  if (dir > 0) {
+    const shown = rows.filter((r) => r.box.top < view.bottom);
+    const last = shown[shown.length - 1];
+    return last ? Math.min(seqLen, last.start + basesPerRow - 1) : null;
+  }
+  const first = rows.find((r) => r.box.bottom > view.top);
+  return first ? first.start : null;
+}
+
+/** The first base of the first row that shows in the rows' pane (its box reaches below the pane's top), or null. */
+export function firstVisibleRowStart(scroller: RowsPane): number | null {
+  const view = scroller.getBoundingClientRect();
+  return rowBoxes(scroller).find((r) => r.box.bottom > view.top + 0.5)?.start ?? null;
+}
+
+/**
+ * The navigation rule of the linear view (MB-NAV-01):
+ * 1. The selection changes only by a direct edit - a drag on the overview or the rows, a click,
+ *    a key on a handle, a jump or a search hit. Scrolling never selects.
+ * 2. A new selection brings the page that holds its first base, and its row into view (a
+ *    programmatic scroll) - unless a drag in the rows is making it: that drag owns the rows'
+ *    view, so the bases stay under the pointer.
+ * 3. When a scroll of the rows settles - the reader's or the one rule 2 made - the overview's
+ *    navigation caret moves to the first row in view. It is a point, never a second range.
+ * This is the page rule 2 gives: the selection's page, or the page shown while a row drag runs.
+ */
+export function selectionFollowPage(selectionPage: number | null, currentPage: number, rowDragging: boolean): number {
+  return rowDragging || selectionPage === null ? currentPage : selectionPage;
+}
+
 /**
  * A pointer's clientX in the overview SVG's user units, through its screen transform (or, without
  * one, its box against the 800-unit viewBox), and the SVG units one screen pixel spans there.
@@ -1034,7 +1160,24 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [jumpCoordInput, setJumpCoordInput] = useState('');
-  const [settledScrollRowOffset, setSettledScrollRowOffset] = useState(0);
+  /**
+   * Where the rows' scroll last settled: the first row in view, for the page `key` it was read on
+   * (another document, page or row length starts from the page's first base again).
+   */
+  const [settledRows, setSettledRows] = useState<{ key: string; base: number } | null>(null);
+  const settledRowsRef = useRef<{ key: string; base: number } | null>(null);
+  const rowsKeyRef = useRef('');
+  /** The drag across the base rows (US-01M7CCJC); while it runs it owns the rows' view. */
+  const rowDragRef = useRef<RowDrag>(ROW_DRAG_IDLE);
+  const rowSuppressClickRef = useRef(false);
+  const rowEdgeRef = useRef<{ dir: number; timer: ReturnType<typeof setInterval> | null; x: number; y: number }>({
+    dir: 0,
+    timer: null,
+    x: 0,
+    y: 0,
+  });
+  /** After a row drag turns the page: show the new page from its top (1) or its bottom (-1). */
+  const rowTurnScrollRef = useRef(0);
   const [showAddFeature, setShowAddFeature] = useState(false);
   const [newFeatName, setNewFeatName] = useState('New_Annotation');
   const [newFeatType, setNewFeatType] = useState<FeatureType>('CDS');
@@ -1133,15 +1276,40 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   }
   // A new selection (a feature clicked on the circle, a search hit, a jump) brings its first base
   // onto the page; the effect below scrolls its row into view inside the rows' own scroll area.
+  // A drag in the base rows owns their view, so its selection moves no page (selectionFollowPage).
   const followKey = selectionStart === null ? null : `${doc.id}:${selectionStart}`;
   const [followedKey, setFollowedKey] = useState<string | null>(null);
   if (followKey !== followedKey) {
     setFollowedKey(followKey);
-    if (selectionPage !== null) setPageIndex(selectionPage);
+    if (selectionPage !== null) {
+      setPageIndex(selectionFollowPage(selectionPage, safePageIndex, rowDragRef.current.phase !== 'idle'));
+    }
   }
+  rowsKeyRef.current = `${doc.id}:${safePageIndex}:${basesPerRow}`;
+  // What a row drag's edge timer reads between renders.
+  const safePageIndexRef = useRef(safePageIndex);
+  safePageIndexRef.current = safePageIndex;
+  const totalPagesRef = useRef(totalPages);
+  totalPagesRef.current = totalPages;
+  const basesPerRowRef = useRef(basesPerRow);
+  basesPerRowRef.current = basesPerRow;
+
+  // A page a row drag turned is shown from the edge the drag came in by; an unmount stops its timer.
+  useEffect(() => {
+    const scroller = scrollContainerRef.current;
+    const dir = rowTurnScrollRef.current;
+    rowTurnScrollRef.current = 0;
+    if (!scroller || dir === 0) return;
+    scroller.scrollTop = dir > 0 ? 0 : scroller.scrollHeight;
+  }, [safePageIndex]);
+  useEffect(
+    () => () => {
+      if (rowEdgeRef.current.timer !== null) clearInterval(rowEdgeRef.current.timer);
+    },
+    []
+  );
 
   useEffect(() => {
-    setSettledScrollRowOffset(0);
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
@@ -1152,8 +1320,12 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   useEffect(() => {
     const scroller = scrollContainerRef.current;
     if (selectionStart === null || !scroller || typeof requestAnimationFrame !== 'function') return undefined;
+    // A selection a drag in the rows is making is already under the pointer: no scroll.
+    if (rowDragRef.current.phase !== 'idle') return undefined;
     const rowStart = Math.floor((selectionStart - 1) / basesPerRow) * basesPerRow + 1;
-    const reveal = () => revealSelectedRow(scroller, rowStart);
+    const reveal = () => {
+      if (rowDragRef.current.phase === 'idle') revealSelectedRow(scroller, rowStart);
+    };
     reveal();
     // Rows drawn on demand (content-visibility) take their real height once in view, so look again.
     let second = 0;
@@ -1168,18 +1340,25 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followKey, safePageIndex, basesPerRow]);
 
-  // Deferred scroll-settled coordinate update using native `scrollend` with a 120ms debounced
-  // `setTimeout` custom `scrollend` fallback for unsupported WebViews.
+  // When a scroll of the rows settles (native `scrollend`, or 120 ms after the last `scroll`
+  // where a WebView has none), the overview's navigation caret moves to the first row in view.
+  // It only ever sets that caret - never the selection - and only when the row changed, so a
+  // scroll the selection caused cannot select again or loop (the navigation rule, rule 3).
   useEffect(() => {
     const el = scrollContainerRef.current;
-    if (!el || typeof window === 'undefined') return;
+    if (!el) return;
 
-    const supportsNativeScrollEnd = 'onscrollend' in window;
+    const supportsNativeScrollEnd = typeof window !== 'undefined' && 'onscrollend' in window;
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
     const handleScrollEnd = () => {
-      const approxRow = Math.max(0, Math.floor(el.scrollTop / 92));
-      setSettledScrollRowOffset(approxRow);
+      const base = firstVisibleRowStart(el);
+      if (base === null) return;
+      const key = rowsKeyRef.current;
+      const was = settledRowsRef.current;
+      if (was && was.key === key && was.base === base) return;
+      settledRowsRef.current = { key, base };
+      setSettledRows(settledRowsRef.current);
     };
 
     const handleScrollFallback = () => {
@@ -1337,6 +1516,115 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     e.preventDefault();
     onSelectRange({ start: r.interval.start, end: r.interval.end });
     if (r.edge !== edge) handleRefs.current[r.edge]?.focus();
+  };
+
+  // ─── Drag-selecting bases in the rows (US-01M7CCJC) ───
+  const currentSelection: ActiveInterval | null = selectedRange
+    ? { start: Math.min(selectedRange.start, selectedRange.end), end: Math.max(selectedRange.start, selectedRange.end) }
+    : null;
+  const applyRowDrag = (input: RowDragInput) => {
+    const r = rowDragStep(rowDragRef.current, input, currentSelection);
+    rowDragRef.current = r.drag;
+    if (r.select) onSelectRange({ start: r.select.start, end: r.select.end });
+    if (r.cancelled) {
+      if (r.cancelled.restore) onSelectRange({ start: r.cancelled.restore.start, end: r.cancelled.restore.end });
+      else onClearSelection?.();
+    }
+    return r;
+  };
+  /** The base under a pointer: the element at the point (the rows hold the capture), else the event's target. */
+  const rowPosAt = (e: React.PointerEvent<HTMLDivElement>): number | null => {
+    const hit =
+      typeof document !== 'undefined' && typeof document.elementFromPoint === 'function'
+        ? document.elementFromPoint(e.clientX, e.clientY)
+        : null;
+    const base = ((hit ?? e.target) as Element | null)?.closest?.('[data-pos]');
+    const pos = base ? Number(base.getAttribute('data-pos')) : NaN;
+    return Number.isInteger(pos) && pos >= 1 ? pos : null;
+  };
+  const stopRowEdge = () => {
+    const edge = rowEdgeRef.current;
+    if (edge.timer !== null) clearInterval(edge.timer);
+    edge.timer = null;
+    edge.dir = 0;
+  };
+  const endRowDrag = (scroller: HTMLDivElement, pointerId: number) => {
+    stopRowEdge();
+    if (scroller.style) scroller.style.userSelect = '';
+    try {
+      scroller.releasePointerCapture?.(pointerId);
+    } catch {
+      // The capture is already gone.
+    }
+  };
+  /** Held past the rows' top or bottom edge, the drag scrolls on, then turns the page (rowDragEdgeAction). */
+  const rowEdgeTick = (scroller: HTMLDivElement, pointerId: number) => {
+    const { dir, x, y } = rowEdgeRef.current;
+    const action = rowDragEdgeAction(scroller, dir, safePageIndexRef.current, totalPagesRef.current);
+    if (action === 'scroll') scroller.scrollTop += dir * 46;
+    else if (action === 'next-page' || action === 'previous-page') {
+      rowTurnScrollRef.current = dir;
+      setPageIndex((p) => Math.max(0, Math.min(totalPagesRef.current - 1, p + dir)));
+      return; // the new page's rows are read on the next tick
+    } else return;
+    const pos = rowDragEdgeBase(scroller, dir, basesPerRowRef.current, seqLen);
+    if (pos !== null) applyRowDrag({ type: 'move', pos, x, y, pointerId });
+  };
+  const onRowsPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    rowSuppressClickRef.current = false;
+    stopRowEdge();
+    rowDragRef.current = ROW_DRAG_IDLE;
+    const pos = rowPosAt(e);
+    if (pos === null) return;
+    applyRowDrag({ type: 'down', pos, x: e.clientX, y: e.clientY, pointerId: e.pointerId });
+  };
+  const onRowsPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const before = rowDragRef.current;
+    if (before.phase === 'idle') return;
+    const scroller = e.currentTarget;
+    applyRowDrag({ type: 'move', pos: rowPosAt(e), x: e.clientX, y: e.clientY, pointerId: e.pointerId });
+    const now = rowDragRef.current;
+    if (now.phase !== 'active') return;
+    if (before.phase === 'pending') {
+      // Captured only once it is a drag, so a plain click still reaches its base.
+      try {
+        scroller.setPointerCapture?.(e.pointerId);
+      } catch {
+        // Without capture the drag still follows the pointer over the rows.
+      }
+      if (scroller.style) scroller.style.userSelect = 'none';
+    }
+    const box = scroller.getBoundingClientRect?.();
+    const dir = !box ? 0 : e.clientY > box.bottom ? 1 : e.clientY < box.top ? -1 : 0;
+    const edge = rowEdgeRef.current;
+    edge.x = e.clientX;
+    edge.y = e.clientY;
+    if (dir === 0) stopRowEdge();
+    else if (edge.timer === null || edge.dir !== dir) {
+      stopRowEdge();
+      edge.dir = dir;
+      const pointerId = e.pointerId;
+      edge.timer = setInterval(() => rowEdgeTick(scroller, pointerId), 250);
+    }
+  };
+  const onRowsPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const before = rowDragRef.current;
+    if (before.phase === 'idle') return;
+    const r = applyRowDrag({ type: 'up', pos: rowPosAt(e), x: e.clientX, y: e.clientY, pointerId: e.pointerId });
+    // The click that ends a drag is the drag's, not the 20-base click of the base under it.
+    rowSuppressClickRef.current = before.phase === 'active' || Boolean(r.select);
+    endRowDrag(e.currentTarget, e.pointerId);
+  };
+  const onRowsPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (rowDragRef.current.phase === 'idle') return;
+    applyRowDrag({ type: 'cancel', pointerId: e.pointerId });
+    endRowDrag(e.currentTarget, e.pointerId);
+  };
+  const onRowsClickCapture = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!rowSuppressClickRef.current) return;
+    rowSuppressClickRef.current = false;
+    e.stopPropagation();
   };
 
   // Resident Rust sequence store track overview (cached 180-bin GC%, AT%, cumulative GC-skew, oriC/terC)
@@ -1622,10 +1910,11 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     [rows, previewPicture, showCutMarks]
   );
 
-  const settledViewportStartPos = Math.min(
-    pageEndPos,
-    pageStartPos + settledScrollRowOffset * basesPerRow
-  );
+  /** The overview's navigation caret: the first row in view once the rows' scroll settled, else the page's first base. */
+  const settledViewportStartPos =
+    settledRows && settledRows.key === `${doc.id}:${safePageIndex}:${basesPerRow}`
+      ? Math.min(pageEndPos, Math.max(pageStartPos, settledRows.base))
+      : pageStartPos;
 
   const selectionQuickStats = useMemo(() => {
     if (!selectedRange || rawLen === 0) return null;
@@ -1880,11 +2169,11 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               />
             ))}
           <path
-            data-page-tick={pageStartPos}
-            d={`M ${SCHEMATIC_X0 + ((pageStartPos - 1) / overviewLen) * SCHEMATIC_W} 24 l 4 6 h -8 z`}
+            data-page-tick={settledViewportStartPos}
+            d={`M ${SCHEMATIC_X0 + ((settledViewportStartPos - 1) / overviewLen) * SCHEMATIC_W} 24 l 4 6 h -8 z`}
             fill="var(--mbc-text-muted)"
           >
-            <title>{`The base rows start at ${pageStartPos.toLocaleString()} ${unitLabel}`}</title>
+            <title>{`The base rows show from ${settledViewportStartPos.toLocaleString()} ${unitLabel}`}</title>
           </path>
 
           {/* Multi-Lane Non-Overlapping Schematic Feature Pills */}
@@ -2504,6 +2793,12 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
         ref={attachRowsScroll}
         className="sequence-blocks-scroll"
         tabIndex={0}
+        onPointerDown={onRowsPointerDown}
+        onPointerMove={onRowsPointerMove}
+        onPointerUp={onRowsPointerUp}
+        onPointerCancel={onRowsPointerCancel}
+        onLostPointerCapture={onRowsPointerCancel}
+        onClickCapture={onRowsClickCapture}
         onKeyDown={(e) => {
           if (e.key === 'PageDown') {
             e.preventDefault();
@@ -2599,6 +2894,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                     <React.Fragment key={idx}>
                       {row.marks.top === idx && cutMark('top')}
                       <span
+                        data-pos={pos}
                         className={`${tokenClass} ${inSel ? 'sel-base' : ''}`}
                         onClick={() =>
                           onSelectRange({

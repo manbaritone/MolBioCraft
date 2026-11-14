@@ -14,6 +14,7 @@ import {
 } from '../types/bio';
 import { getResidentTrackOverviewRust } from '../lib/rustBioEngine';
 import { cutSiteDisplayPosition } from '../core/restrictionDisplay';
+import { normaliseInterval, renderSegments } from '../core/activeInterval';
 import {
   WHEEL_NOTCH_PX,
   anchoredOffset,
@@ -800,6 +801,75 @@ export function layoutCircularCallouts(
   ];
 }
 
+/** The narrowest sector the map draws for a selection, in degrees, so one base of a long molecule still shows. */
+const SELECTION_MIN_SPAN_DEG = 0.5;
+
+/**
+ * The selection's sector(s) on a circle of `length` bases (US-01M7CCJC AC4): base b spans the
+ * angles [(b - 1) / length, b / length) of 360 degrees, the boundaries the linear overview and
+ * the base rows draw too (activeInterval's renderSegments). A selection is normalised as the
+ * linear model does (start <= end, clamped to 1..length); none gives no sector.
+ */
+export function selectionSectorAngles(
+  selectedRange: { start: number; end: number } | null,
+  length: number
+): { label: string; startAngle: number; endAngle: number }[] {
+  if (!selectedRange || !(length >= 1)) return [];
+  let interval;
+  try {
+    interval = normaliseInterval(selectedRange, length, 'linear');
+  } catch {
+    return [];
+  }
+  const label = `${interval.start}..${interval.end}`;
+  return renderSegments(interval, length).map((seg) => ({
+    label,
+    startAngle: (seg.startIndex / length) * 360,
+    endAngle: (seg.endExclusive / length) * 360,
+  }));
+}
+
+/**
+ * A plain annular sector from `startAngle` to `endAngle` (degrees clockwise from twelve o'clock):
+ * the outer arc, down to the inner radius, the inner arc back. No bevel - a selection has no
+ * strand. At least SELECTION_MIN_SPAN_DEG wide; a full turn is the whole ring (two half-turns per
+ * radius, drawn even-odd so the middle stays open).
+ */
+export function describeSelectionSector(
+  cx: number,
+  cy: number,
+  rInner: number,
+  rOuter: number,
+  startAngle: number,
+  endAngle: number
+): string {
+  const f = (p: { x: number; y: number }) => `${p.x.toFixed(2)} ${p.y.toFixed(2)}`;
+  const span = endAngle - startAngle;
+  if (span >= 360 - 1e-9) {
+    const o0 = polarToCartesian(cx, cy, rOuter, 0);
+    const o1 = polarToCartesian(cx, cy, rOuter, 180);
+    const i0 = polarToCartesian(cx, cy, rInner, 0);
+    const i1 = polarToCartesian(cx, cy, rInner, 180);
+    return [
+      `M ${f(o0)}`,
+      `A ${rOuter} ${rOuter} 0 1 1 ${f(o1)}`,
+      `A ${rOuter} ${rOuter} 0 1 1 ${f(o0)} Z`,
+      `M ${f(i0)}`,
+      `A ${rInner} ${rInner} 0 1 0 ${f(i1)}`,
+      `A ${rInner} ${rInner} 0 1 0 ${f(i0)} Z`,
+    ].join(' ');
+  }
+  const end = startAngle + Math.max(SELECTION_MIN_SPAN_DEG, span);
+  const large = end - startAngle > 180 ? 1 : 0;
+  return [
+    `M ${f(polarToCartesian(cx, cy, rOuter, startAngle))}`,
+    `A ${rOuter} ${rOuter} 0 ${large} 1 ${f(polarToCartesian(cx, cy, rOuter, end))}`,
+    `L ${f(polarToCartesian(cx, cy, rInner, end))}`,
+    `A ${rInner} ${rInner} 0 ${large} 0 ${f(polarToCartesian(cx, cy, rInner, startAngle))}`,
+    'Z',
+  ].join(' ');
+}
+
 function describeFeatureArc(
   cx: number,
   cy: number,
@@ -941,6 +1011,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   }
 
   const seqLen = Math.max(1, doc.sequence.length);
+  const selectionSectors = useMemo(() => selectionSectorAngles(selectedRange, seqLen), [selectedRange, seqLen]);
   const isProtein = doc.moleculeType === 'Protein';
   const unitLabel = isProtein ? 'aa' : 'bp';
   const viewWidth = 680;
@@ -1567,23 +1638,21 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
             fill="var(--mbc-blue)"
           />
 
-          {/* Selected Range Highlight Sector */}
-          {selectedRange && (
+          {/* The one active interval (MB-NAV-01): the selection's bases on the same 0-based half-open
+              boundaries the linear overview and the base rows draw (renderSegments), as a plain sector. */}
+          {selectionSectors.map((seg) => (
             <path
-              d={describeFeatureArc(
-                cx,
-                cy,
-                rBackbone - 20,
-                rBackbone + 20,
-                ((selectedRange.start - 1) / seqLen) * 360,
-                (selectedRange.end / seqLen) * 360,
-                1
-              )}
+              key={`selection-${seg.startAngle}`}
+              data-active-interval={seg.label}
+              data-start-angle={seg.startAngle}
+              data-end-angle={seg.endAngle}
+              d={describeSelectionSector(cx, cy, rBackbone - 20, rBackbone + 20, seg.startAngle, seg.endAngle)}
               fill="rgba(251, 188, 4, 0.24)"
+              fillRule="evenodd"
               stroke="var(--mbc-amber)"
               strokeWidth="1.4"
             />
-          )}
+          ))}
 
           {/* Adaptive Coordinate Ruler Ticks, labelled inside the innermost track */}
           {ticks.map((t) => {
