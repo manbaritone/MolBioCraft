@@ -832,7 +832,8 @@ export function selectionSectorAngles(
 /**
  * A plain annular sector from `startAngle` to `endAngle` (degrees clockwise from twelve o'clock):
  * the outer arc, down to the inner radius, the inner arc back. No bevel - a selection has no
- * strand. At least SELECTION_MIN_SPAN_DEG wide; a full turn is the whole ring (two half-turns per
+ * strand. At least SELECTION_MIN_SPAN_DEG wide, and never past 360 degrees (a widened sector at the
+ * molecule's end is moved back to end at twelve o'clock); a full turn is the whole ring (two half-turns per
  * radius, drawn even-odd so the middle stays open).
  */
 export function describeSelectionSector(
@@ -859,13 +860,17 @@ export function describeSelectionSector(
       `A ${rInner} ${rInner} 0 1 0 ${f(i0)} Z`,
     ].join(' ');
   }
-  const end = startAngle + Math.max(SELECTION_MIN_SPAN_DEG, span);
-  const large = end - startAngle > 180 ? 1 : 0;
+  const drawn = Math.max(SELECTION_MIN_SPAN_DEG, span);
+  // A sector widened to the minimum near the end of the molecule is moved back so it ends at
+  // twelve o'clock, never spilling past the origin onto base 1.
+  const start = Math.min(startAngle, 360 - drawn);
+  const end = start + drawn;
+  const large = drawn > 180 ? 1 : 0;
   return [
-    `M ${f(polarToCartesian(cx, cy, rOuter, startAngle))}`,
+    `M ${f(polarToCartesian(cx, cy, rOuter, start))}`,
     `A ${rOuter} ${rOuter} 0 ${large} 1 ${f(polarToCartesian(cx, cy, rOuter, end))}`,
     `L ${f(polarToCartesian(cx, cy, rInner, end))}`,
-    `A ${rInner} ${rInner} 0 ${large} 0 ${f(polarToCartesian(cx, cy, rInner, startAngle))}`,
+    `A ${rInner} ${rInner} 0 ${large} 0 ${f(polarToCartesian(cx, cy, rInner, start))}`,
     'Z',
   ].join(' ');
 }

@@ -605,6 +605,24 @@ export function rowDragStep(drag: RowDrag, input: RowDragInput, current: ActiveI
 }
 
 /**
+ * Drop the page's text selection, if it holds one. A drag across the base rows selects bases, never
+ * the page's text: without this, WebKit (the macOS app's engine) keeps a native selection over the
+ * strands, frames and labels the drag crossed, and Cmd+C copies that text.
+ */
+export function clearNativeTextSelection(): void {
+  const selection = typeof globalThis.getSelection === 'function' ? globalThis.getSelection() : null;
+  if (selection && selection.rangeCount > 0 && !selection.isCollapsed) selection.removeAllRanges();
+}
+
+/** Stop (true) or allow again (false) native text selection in the rows, from the press on, in both engines. */
+function holdRowsTextSelection(scroller: HTMLElement, hold: boolean): void {
+  const style = scroller.style as (CSSStyleDeclaration & { webkitUserSelect?: string }) | undefined;
+  if (!style) return;
+  style.userSelect = hold ? 'none' : '';
+  style.webkitUserSelect = hold ? 'none' : '';
+}
+
+/**
  * A row drag held past the rows' bottom (dir 1) or top (dir -1) edge: scroll the rows on while
  * they can scroll, then turn to the next (previous) page, then stop at the molecule's end.
  */
@@ -1824,7 +1842,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   };
   const endRowDrag = (scroller: HTMLDivElement, pointerId: number) => {
     stopRowEdge();
-    if (scroller.style) scroller.style.userSelect = '';
+    clearNativeTextSelection();
+    holdRowsTextSelection(scroller, false);
     try {
       scroller.releasePointerCapture?.(pointerId);
     } catch {
@@ -1840,7 +1859,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       rowTurnScrollRef.current = dir;
       setPageIndex((p) => Math.max(0, Math.min(totalPagesRef.current - 1, p + dir)));
       return; // the new page's rows are read on the next tick
-    } else return;
+    }
+    // Scrolled, or at the molecule's end with nothing left to scroll: reach the edge's base now.
     const pos = rowDragEdgeBase(scroller, dir, basesPerRowRef.current, seqLen);
     if (pos !== null) applyRowDrag({ type: 'move', pos, x, y, pointerId });
   };
@@ -1851,7 +1871,20 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     rowDragRef.current = ROW_DRAG_IDLE;
     const pos = rowPosAt(e);
     if (pos === null) return;
+    // A press on a base starts no native text selection (its default is prevented, and the rows
+    // take no text selection until the drag ends); a plain click still follows, and the rows keep
+    // the keyboard focus a press would have given them.
+    e.preventDefault();
+    clearNativeTextSelection();
+    holdRowsTextSelection(e.currentTarget, true);
+    try {
+      e.currentTarget.focus?.({ preventScroll: true });
+    } catch {
+      // Focus is a convenience here.
+    }
     applyRowDrag({ type: 'down', pos, x: e.clientX, y: e.clientY, pointerId: e.pointerId });
+    // A press that never becomes a drag lets text selection back in when it is released.
+    if (rowDragRef.current.phase === 'idle') holdRowsTextSelection(e.currentTarget, false);
   };
   const onRowsPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const before = rowDragRef.current;
@@ -1867,8 +1900,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       } catch {
         // Without capture the drag still follows the pointer over the rows.
       }
-      if (scroller.style) scroller.style.userSelect = 'none';
     }
+    clearNativeTextSelection();
     const box = scroller.getBoundingClientRect?.();
     const dir = !box ? 0 : e.clientY > box.bottom ? 1 : e.clientY < box.top ? -1 : 0;
     const edge = rowEdgeRef.current;

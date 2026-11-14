@@ -64,6 +64,7 @@ const {
   ROW_DRAG_IDLE,
   rowDragEdgeAction,
   rowDragEdgeBase,
+  clearNativeTextSelection,
   firstVisibleRowStart,
   selectionFollowPage,
 } = await import('../components/LinearSequenceView');
@@ -814,6 +815,8 @@ function fakeScroller(o: { width?: number; top?: number; height?: number; rows?:
     listening: (t: string) => (listeners[t] ?? []).length,
     setPointerCapture: vi.fn(),
     releasePointerCapture: vi.fn(),
+    style: {} as { userSelect?: string; webkitUserSelect?: string },
+    focus: vi.fn(),
   };
   return el;
 }
@@ -989,6 +992,83 @@ describe('US-01M7CCJC AC1 a drag across bases selects exactly the bases under it
         expect(s.releasePointerCapture).toHaveBeenCalledWith(7);
       });
       expect(v.selections, `${a} -> ${b}`).toEqual([{ start: Math.min(a, b), end: Math.max(a, b) }]);
+    }
+  });
+
+  it('a press on a base starts no native text selection, and none survives the drag (WebKit kept one before)', () => {
+    const page = { removeAllRanges: vi.fn(), rangeCount: 1, isCollapsed: false };
+    vi.stubGlobal('getSelection', () => page);
+    const s = fakeScroller();
+    let prevented = 0;
+    const ev = (pos: number | null, x: number, y: number) => ({ ...rowEvent(s, pos, x, y), preventDefault: () => { prevented++; } });
+    const seen: string[] = [];
+    const v = renderRows(docOf(SEQ3000), null, (d) => {
+      attach(d, s);
+      rowsHandler(d, 'onPointerDown')(ev(70, 100, 100));
+      seen.push(`down: prevented ${prevented}, user-select ${s.style.userSelect}/${s.style.webkitUserSelect}, cleared ${page.removeAllRanges.mock.calls.length}`);
+      expect(s.focus, 'the rows keep the focus a press gives them').toHaveBeenCalledWith({ preventScroll: true });
+      rowsHandler(d, 'onPointerMove')(ev(130, 160, 140));
+      seen.push(`move: user-select ${s.style.userSelect}, cleared ${page.removeAllRanges.mock.calls.length}`);
+      rowsHandler(d, 'onPointerUp')(ev(130, 160, 140));
+      seen.push(`up: user-select ${s.style.userSelect || 'auto'}/${s.style.webkitUserSelect || 'auto'}, cleared ${page.removeAllRanges.mock.calls.length}`);
+    });
+    expect(seen).toEqual([
+      'down: prevented 1, user-select none/none, cleared 1',
+      'move: user-select none, cleared 2',
+      'up: user-select auto/auto, cleared 3',
+    ]);
+    expect(v.selections).toEqual([{ start: 70, end: 130 }]);
+  });
+
+  it('a plain click on a base clears no more than it must and lets text selection back in; a press off the bases is left alone', () => {
+    const page = { removeAllRanges: vi.fn(), rangeCount: 1, isCollapsed: true };
+    vi.stubGlobal('getSelection', () => page);
+    const s = fakeScroller();
+    let prevented = 0;
+    const ev = (pos: number | null, x: number, y: number) => ({ ...rowEvent(s, pos, x, y), preventDefault: () => { prevented++; } });
+    const v = renderRows(docOf(SEQ3000), null, (d) => {
+      attach(d, s);
+      rowsHandler(d, 'onPointerDown')(ev(70, 100, 100));
+      rowsHandler(d, 'onPointerUp')(ev(70, 101, 100));
+      expect(s.style.userSelect || 'auto').toBe('auto');
+      (d.bases.get(70)!.onClick as () => void)();
+      rowsHandler(d, 'onPointerDown')(ev(null, 100, 100));
+      // A press the drag cannot use (no finite position) holds no text selection back.
+      rowsHandler(d, 'onPointerDown')(ev(70, Number.NaN, 100));
+      expect(s.style.userSelect || 'auto').toBe('auto');
+    });
+    expect(prevented, 'only the presses on a base').toBe(2);
+    expect(page.removeAllRanges, 'a collapsed caret is not a selection to clear').not.toHaveBeenCalled();
+    expect(v.selections).toEqual([{ start: 70, end: 89 }]);
+    expect(s.style.userSelect || 'auto').toBe('auto');
+  });
+
+  it('clearNativeTextSelection drops a real selection, leaves a caret, and does nothing where there is no page', () => {
+    const range = { removeAllRanges: vi.fn(), rangeCount: 1, isCollapsed: false };
+    vi.stubGlobal('getSelection', () => range);
+    clearNativeTextSelection();
+    expect(range.removeAllRanges).toHaveBeenCalledTimes(1);
+    vi.stubGlobal('getSelection', () => ({ ...range, rangeCount: 0, removeAllRanges: vi.fn() }));
+    expect(() => clearNativeTextSelection()).not.toThrow();
+    vi.stubGlobal('getSelection', undefined);
+    expect(() => clearNativeTextSelection()).not.toThrow();
+  });
+
+  it('held past the bottom of the last page with nothing left to scroll, the drag reaches the last base shown', () => {
+    vi.useFakeTimers();
+    try {
+      // The last page (2401..3000), scrolled to its end: the row 2941..3000 is the last in view.
+      const s = fakeScroller({ rows: [[2881, 30, 92], [2941, 122, 92]], scrollHeight: 160 });
+      const v = renderRows(docOf(SEQ3000), { start: 2950, end: 2950 }, (d) => {
+        attach(d, s);
+        rowsHandler(d, 'onPointerDown')(rowEvent(s, 2950, 100, 150));
+        rowsHandler(d, 'onPointerMove')(rowEvent(s, null, 100, 300));
+      }, 2950);
+      expect(v.selections, 'over no base: nothing yet').toEqual([]);
+      vi.advanceTimersByTime(260);
+      expect(v.selections).toEqual([{ start: 2950, end: 3000 }]);
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -1208,6 +1288,27 @@ describe('US-01M7CCJC AC4 the circular map draws the same interval as the overvi
       expect(nums[9]).toBeCloseTo(ix, 1);
       expect(nums[10]).toBeCloseTo(iy, 1);
     }
+  });
+
+  it('a 1-bp interval of a long molecule is a 0.5-degree sector, and the last base\'s ends at twelve o\'clock, not past it', () => {
+    const long = docOf('ACGTTGCAAT'.repeat(606) + 'A', { topology: 'circular' }); // 6,061 bp: a base is 0.059 degrees
+    const degOf = (x: number, y: number) => ((((Math.atan2(y - CY, x - CX) * 180) / Math.PI + 90) % 360) + 360) % 360;
+    const sector = (b: number) => {
+      const nums = [...attr(circularSector(long, { start: b, end: b })[0]!, 'd')!.matchAll(/-?\d+(?:\.\d+)?/g)].map(Number);
+      const a0 = degOf(nums[0], nums[1]);
+      const a1 = degOf(nums[7], nums[8]);
+      return { a0, a1, span: (((a1 - a0) % 360) + 360) % 360 };
+    };
+    const first = sector(1);
+    expect(first.a0).toBeCloseTo(0, 1);
+    expect(first.span).toBeCloseTo(0.5, 1);
+    const mid = sector(3000);
+    expect(mid.a0).toBeCloseTo((2999 / 6061) * 360, 1);
+    expect(mid.span).toBeCloseTo(0.5, 1);
+    const last = sector(6061);
+    expect(last.span).toBeCloseTo(0.5, 1);
+    expect(last.a1 === 0 || last.a1 > 359.99, `ends at twelve o'clock, got ${last.a1}`).toBe(true);
+    expect(last.a0).toBeCloseTo(359.5, 1);
   });
 
   it('the whole molecule is a full ring, and a 1-bp interval is still drawn', () => {
