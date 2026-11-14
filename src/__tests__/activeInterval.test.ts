@@ -12,6 +12,7 @@ import {
   intervalSequence,
   intervalUnit,
   moveInterval,
+  piecesWithinInterval,
   normaliseInterval,
   renderSegments,
   resizeInterval,
@@ -557,5 +558,107 @@ describe('BG-01M7CG2W the App operations on an origin-crossing selection', () =>
     expect(plain.maskedBases).toBe(10);
     expect(plain.updated.sequence.slice(10, 20)).toBe('N'.repeat(10));
     expect(plain.updated.sequence.slice(0, 10)).toBe(puc19.sequence.slice(0, 10));
+  });
+});
+
+describe('BG-01M7CG2W round 2: features carried into an extracted origin-crossing region', () => {
+  it('keeps exactly each piece\'s overlap with the interval, in the interval\'s own coordinates', () => {
+    const sel = { start: 5990, end: 71 };
+    const L = 6061;
+    expect(piecesWithinInterval([{ start: 5989, end: 6036 }], sel, L)).toEqual([{ start: 1, end: 47 }]);
+    expect(piecesWithinInterval([{ start: 6000, end: 6061 }], sel, L)).toEqual([{ start: 11, end: 72 }]);
+    expect(piecesWithinInterval([{ start: 30, end: 200 }], sel, L)).toEqual([{ start: 102, end: 143 }]);
+    expect(piecesWithinInterval([{ start: 5980, end: 100 }], sel, L)).toEqual([{ start: 1, end: 143 }]);
+    expect(piecesWithinInterval([{ start: 6050, end: 20 }], sel, L)).toEqual([{ start: 61, end: 92 }]);
+    expect(piecesWithinInterval([{ start: 100, end: 5000 }], sel, L)).toEqual([]);
+    expect(piecesWithinInterval([{ start: 5995, end: 6010 }, { start: 40, end: 60 }], sel, L)).toEqual([
+      { start: 6, end: 21 },
+      { start: 112, end: 132 },
+    ]);
+    // Parts that meet across the origin are one piece.
+    expect(piecesWithinInterval([{ start: 6040, end: 6061 }, { start: 1, end: 10 }], sel, L)).toEqual([{ start: 51, end: 82 }]);
+    // A plain interval: offsets from its start.
+    expect(piecesWithinInterval([{ start: 5, end: 30 }], { start: 10, end: 20 }, 100)).toEqual([{ start: 1, end: 11 }]);
+    // Agrees with a base-by-base walk on a short molecule, every interval and piece kind.
+    for (const length of [3, 7]) {
+      for (const iv of [...nonCrossing(length), ...crossing(length)]) {
+        const order = walk(iv, length);
+        for (const piece of [...nonCrossing(length), ...crossing(length)]) {
+          const covered = new Set(walk(piece, length));
+          const want = order.map((b, i) => (covered.has(b) ? i + 1 : 0)).filter(Boolean);
+          const got = piecesWithinInterval([piece], iv, length).flatMap((p) => walk(p, length + 100));
+          expect(got).toEqual(want);
+        }
+      }
+    }
+  });
+
+  it('extracts each feature by its own overlap: before, after, whole, crossing itself, reverse strand, joined', async () => {
+    const { extractSelectedRegionDocument } = await import('../App');
+    const { SAMPLE_LIBRARY } = await import('../data/sampleLibrary');
+    const base = structuredClone(SAMPLE_LIBRARY.find((d) => d.id === 'doc-puc19')!);
+    const f = (id: string, start: number, end: number, strand: 1 | -1, segments?: [number, number][]) => ({
+      ...base.features[0],
+      id,
+      name: id,
+      start,
+      end,
+      strand,
+      segments: segments?.map(([a, b], i) => ({ index: i + 1, name: `${id} ${i + 1}`, start: a, end: b, color: '#000' })),
+    });
+    const doc = {
+      ...base,
+      sequence: SEQ_6061,
+      primers: [],
+      features: [
+        f('T7 Terminator', 5989, 6036, 1),
+        f('to the end', 6000, 6061, -1),
+        f('after', 30, 200, 1),
+        f('whole', 5980, 100, 1),
+        f('crossing itself', 6050, 20, -1),
+        f('outside', 100, 5000, 1),
+        f('joined', 5995, 60, 1, [[5995, 6010], [40, 60]]),
+      ],
+    };
+    const ex = extractSelectedRegionDocument(doc, { start: 5990, end: 71 }, '2026-11-14T00:00:00.000Z');
+    const got = ex.features.map((x) => ({ name: x.name, start: x.start, end: x.end, strand: x.strand, segments: x.segments?.map((g) => [g.start, g.end]) }));
+    expect(got).toEqual([
+      { name: 'T7 Terminator', start: 1, end: 47, strand: 1, segments: undefined },
+      { name: 'to the end', start: 11, end: 72, strand: -1, segments: undefined },
+      { name: 'after', start: 102, end: 143, strand: 1, segments: undefined },
+      { name: 'whole', start: 1, end: 143, strand: 1, segments: undefined },
+      { name: 'crossing itself', start: 61, end: 92, strand: -1, segments: undefined },
+      { name: 'joined', start: 6, end: 132, strand: 1, segments: [[6, 21], [112, 132]] },
+    ]);
+    // Each extracted feature covers the same bases as its source.
+    expect(ex.sequence.slice(0, 47)).toBe(SEQ_6061.slice(5989, 6036));
+    expect(ex.sequence.slice(101, 143)).toBe(SEQ_6061.slice(29, 71));
+  });
+
+  it('carries a primer binding wholly inside the crossing region, and none that is cut by it', async () => {
+    const { extractSelectedRegionDocument } = await import('../App');
+    const { SAMPLE_LIBRARY } = await import('../data/sampleLibrary');
+    const base = structuredClone(SAMPLE_LIBRARY.find((d) => d.id === 'doc-puc19')!);
+    const template = SAMPLE_LIBRARY.flatMap((d) => d.primers)[0];
+    expect(template, 'a sample primer to copy').toBeDefined();
+    const primer = { ...template, id: 'p', bindStart: 6040, bindEnd: 6059 };
+    const doc = { ...base, sequence: SEQ_6061, features: [], primers: [primer, { ...primer, id: 'q', bindStart: 5980, bindEnd: 5999 }] };
+    const ex = extractSelectedRegionDocument(doc, { start: 5990, end: 71 }, '2026-11-14T00:00:00.000Z');
+    expect(ex.primers.map((p) => [p.id, p.bindStart, p.bindEnd])).toEqual([['p-ext-5990', 51, 70]]);
+  });
+
+  it('flanks a crossing selection with attB sites from its own bases, recorded by its own range, with no rotation step', async () => {
+    const { attBSelectedRegionDocument } = await import('../App');
+    const { SAMPLE_LIBRARY } = await import('../data/sampleLibrary');
+    const puc19 = structuredClone(SAMPLE_LIBRARY.find((d) => d.id === 'doc-puc19')!);
+    const n = puc19.sequence.length;
+    const amp = attBSelectedRegionDocument(puc19, { start: n - 92, end: 50 });
+    const insert = puc19.sequence.slice(n - 93) + puc19.sequence.slice(0, 50);
+    expect(amp.sequence.slice(31, 31 + 143)).toBe(insert.toUpperCase());
+    expect(amp.description).toContain(`(${n - 92}..50, across the origin)`);
+    expect(amp.description).not.toContain('(1..143)');
+    expect(amp.features.find((x) => x.type === 'CDS')!.notes).toContain(`(${n - 92}..50, across the origin)`);
+    expect(amp.history.slice(0, -1)).toEqual(puc19.history);
+    expect(amp.history.some((h) => /Set Circular Origin/.test(h.operation))).toBe(false);
   });
 });

@@ -2658,7 +2658,8 @@ describe('large-sequence surfaces (BG-01M6RTHN)', () => {
       const [statusTm, quickbarTm] = n < s.length ? ['n/a', 'n/a'] : [`${tm.toFixed(1)}°C`, `${tm.toFixed(1)} °C`];
       return {
         acgt: n,
-        status: `Selection: ${start}..${end} (${s.length} bp | GC: ${gc}% | Tm: ${statusTm})`,
+        // The status bar shares the selection label (BG-01M7CG2W): thousands separators included.
+        status: `Selection: ${start.toLocaleString('en-US')}..${end.toLocaleString('en-US')} (${s.length.toLocaleString('en-US')} bp | GC: ${gc}% | Tm: ${statusTm})`,
         quickbar: [`${start.toLocaleString()}..${end.toLocaleString()}`, `(${s.length.toLocaleString()} bp · GC ${gc}% · Tm ${quickbarTm})`],
       };
     };

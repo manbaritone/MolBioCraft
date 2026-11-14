@@ -239,6 +239,7 @@ import {
   intervalSegments,
   intervalSequence,
   intervalUnit,
+  piecesWithinInterval,
   reverseInterval,
   selectionInterval,
 } from './core/activeInterval';
@@ -895,6 +896,7 @@ export function extractSelectedRegionDocument(
   const step = kept.history[kept.history.length - 1];
   return {
     ...kept,
+    ...crossingRegionAnnotations(doc, iv),
     id: `doc-ext-${doc.id}-${iv.start}-${iv.end}`,
     name: `${doc.name}_${iv.start}_${iv.end}`,
     accession: `MBC_EXT_${iv.start}_${iv.end}`,
@@ -903,6 +905,71 @@ export function extractSelectedRegionDocument(
       ...kept.history.slice(0, -1),
       { ...step, id: `h-ext-${iv.start}-${iv.end}`, operation: `Extract Region (${across})` },
     ],
+  };
+}
+
+/**
+ * The features and primers of `doc` carried into the region `iv` extracts when it crosses the
+ * origin (BG-01M7CG2W), in the region's coordinates (its first base is 1). Each feature keeps
+ * exactly its overlap with the region - one that starts before it, ends after it, covers it whole,
+ * crosses the origin itself or is joined from parts - with its strand; one whose overlap is in
+ * several parts keeps them as its segments. A primer is carried when it binds wholly inside the
+ * region. Computed from `doc` itself, not from a rotated copy: rotating a molecule turns a feature
+ * that runs over the new origin into one spanning the whole molecule.
+ */
+function crossingRegionAnnotations(
+  doc: SequenceDocument,
+  iv: { start: number; end: number }
+): Pick<SequenceDocument, 'features' | 'primers'> {
+  const length = doc.sequence.length;
+  const features = doc.features.flatMap((f) => {
+    const parts = f.segments && f.segments.length > 1 ? f.segments : [{ start: f.start, end: f.end }];
+    const within = piecesWithinInterval(parts, iv, length);
+    if (within.length === 0) return [];
+    const { segments: _drop, ...rest } = f;
+    void _drop;
+    return [{
+      ...rest,
+      id: `${f.id}-ext-${iv.start}`,
+      start: within[0].start,
+      end: within[within.length - 1].end,
+      ...(within.length > 1
+        ? { segments: within.map((w, i) => ({ index: i + 1, name: `${f.name} part ${i + 1}`, start: w.start, end: w.end, color: f.color })) }
+        : {}),
+    }];
+  });
+  const primers = doc.primers.flatMap((p) => {
+    const lo = Math.min(p.bindStart, p.bindEnd);
+    const hi = Math.max(p.bindStart, p.bindEnd);
+    const within = piecesWithinInterval([{ start: lo, end: hi }], iv, length);
+    if (within.length !== 1 || within[0].end - within[0].start !== hi - lo) return [];
+    return [{ ...p, id: `${p.id}-ext-${iv.start}`, bindStart: within[0].start, bindEnd: within[0].end }];
+  });
+  return { features, primers };
+}
+
+/**
+ * Add attB Sites for the selection `range` on `doc` (none: the whole sequence). A selection across
+ * the origin of a circular molecule is flanked as its bases in reading order, with the provenance of
+ * `doc` (no rotation step) and its own range, `start..end, across the origin`, in the description
+ * and the insert's notes (BG-01M7CG2W).
+ */
+export function attBSelectedRegionDocument(
+  doc: SequenceDocument,
+  range: { start: number; end: number } | null | undefined
+): SequenceDocument {
+  const region = selectionOnOwnOrigin(doc, range);
+  if (!region) return addAttBSitesToSequence(doc, null);
+  const amplicon = addAttBSitesToSequence(region.doc, { start: region.start, end: region.end });
+  if (region.doc === doc) return amplicon;
+  const iv = selectionInterval(range, doc.sequence.length, doc.topology)!;
+  const rotated = `(${region.start}..${region.end})`;
+  const own = `(${iv.start}..${iv.end}, across the origin)`;
+  const kept = withoutRotationStep(amplicon, doc, region);
+  return {
+    ...kept,
+    description: kept.description?.split(rotated).join(own),
+    features: kept.features.map((f) => (f.notes ? { ...f, notes: f.notes.split(rotated).join(own) } : f)),
   };
 }
 
@@ -6137,10 +6204,7 @@ export const App: React.FC = () => {
 
   const handleAddAttBSitesToActive = () => {
     if (!ensureCommandAvailable('nucleotide-analysis', 'Add attB Sites')) return;
-    const region = selectionOnOwnOrigin(activeDoc, selectedRange);
-    const amplicon = region
-      ? withoutRotationStep(addAttBSitesToSequence(region.doc, { start: region.start, end: region.end }), activeDoc, region)
-      : addAttBSitesToSequence(activeDoc, null);
+    const amplicon = attBSelectedRegionDocument(activeDoc, selectedRange);
     handleAddConstruct(amplicon);
     setStatusBanner(
       `Created Gateway BP-ready amplicon "${amplicon.name}" (${amplicon.sequence.length.toLocaleString()} bp)`
@@ -16072,7 +16136,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 {activeDoc.documentKind === 'tree'
                   ? `Tips: ${activeDoc.docMetadata?.['No. tips'] ?? 'unknown'}`
                   : selectionIv && selectionComposition
-                  ? <>{`Selection: ${selectionIv.start}..${selectionIv.end} (${selectionComposition.length} ${intervalUnit(activeDoc.moleculeType)} | GC: ${selectionComposition.gcPercent.toFixed(1)}% | Tm: `}{selectionTm(selectionComposition)})</>
+                  ? <>{`Selection: ${
+                      // The shared label, '5,990..71 (143 bp, across the origin)', its ')' moved past GC and Tm.
+                      formatIntervalLabel(selectionIv, activeDoc.sequence.length, activeDoc.topology, intervalUnit(activeDoc.moleculeType)).slice(0, -1)
+                    } | GC: ${selectionComposition.gcPercent.toFixed(1)}% | Tm: `}{selectionTm(selectionComposition)})</>
                   : isContigSummaryRecord(activeDoc)
                   ? `Summary record: ${declaredLengthOf(activeDoc).toLocaleString()} ${activeDoc.moleculeType === 'RNA' ? 'nt' : 'bp'} declared, bases not downloaded`
                   : `Full Length: ${activeDoc.sequence.length.toLocaleString()} ${

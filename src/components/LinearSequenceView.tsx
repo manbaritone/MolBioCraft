@@ -268,7 +268,7 @@ function brushIntervalAt(drag: Exclude<BrushDrag, { phase: 'idle' }>, x: number,
  * selected interval is 1-based inclusive with start <= end, inside 1..layout.length. The
  * topology is not consulted: on the linear overview a drag stays linear on a circle too, and an
  * interval across a circle's origin (start > end, made on the circular map) is never dragged -
- * a press on it starts a new interval - because no consumer of the selection reads start > end yet.
+ * a press on it starts a new interval - so the overview itself never selects start > end.
  * Non-finite positions, another pointer's events and a layout without bases are ignored.
  */
 export function brushStep(
@@ -1701,8 +1701,10 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   const [showAddFeature, setShowAddFeature] = useState(false);
   const [newFeatName, setNewFeatName] = useState('New_Annotation');
   const [newFeatType, setNewFeatType] = useState<FeatureType>('CDS');
-  const [newFeatStart, setNewFeatStart] = useState(selectedRange?.start ?? 1);
-  const [newFeatEnd, setNewFeatEnd] = useState(selectedRange?.end ?? 120);
+  // An origin-crossing selection (start > end) is not a feature's start..end: never prefilled (BG-01M7CG2W).
+  const prefillable = selectedRange && selectedRange.start <= selectedRange.end ? selectedRange : null;
+  const [newFeatStart, setNewFeatStart] = useState(prefillable?.start ?? 1);
+  const [newFeatEnd, setNewFeatEnd] = useState(prefillable?.end ?? 120);
   const [newFeatStrand, setNewFeatStrand] = useState<1 | -1>(1);
   const [pageIndex, setPageIndex] = useState(0);
   const [colorOptionsOpen, setColorOptionsOpen] = useState(false);
@@ -2088,15 +2090,16 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   };
 
   // ─── Drag-selecting bases in the rows (US-01M7CCJC) ───
-  const currentSelection: ActiveInterval | null = selectedRange
-    ? { start: Math.min(selectedRange.start, selectedRange.end), end: Math.max(selectedRange.start, selectedRange.end) }
-    : null;
+  // The selection a drag started from, as it is - an origin-crossing one included, label and all -
+  // so a cancelled drag puts back exactly that selection (BG-01M7CG2W). A drag itself only ever
+  // selects start <= end.
+  const currentSelection: ActiveInterval | null = selectedRange;
   const applyRowDrag = (input: RowDragInput) => {
     const r = rowDragStep(rowDragRef.current, input, currentSelection);
     rowDragRef.current = r.drag;
     if (r.select) onSelectRange({ start: r.select.start, end: r.select.end });
     if (r.cancelled) {
-      if (r.cancelled.restore) onSelectRange({ start: r.cancelled.restore.start, end: r.cancelled.restore.end });
+      if (r.cancelled.restore) onSelectRange(r.cancelled.restore);
       else onClearSelection?.();
     }
     return r;

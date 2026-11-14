@@ -281,3 +281,39 @@ export function intervalSequence(sequence: string, interval: ActiveInterval): st
 export function reverseInterval(interval: ActiveInterval, length: number): ActiveInterval {
   return { start: length - interval.end + 1, end: length - interval.start + 1 };
 }
+
+/**
+ * Where `pieces` of the molecule (1-based inclusive; a piece with start > end runs across the
+ * origin) fall inside `interval`, in the interval's own coordinates: base `interval.start` is 1 and
+ * the count runs on in reading order (round the origin for a crossing interval). Each piece keeps
+ * exactly its overlap with the interval; pieces that end up touching or overlapping are merged, and
+ * the result is in ascending order. A piece outside the interval gives nothing (BG-01M7CG2W: the
+ * features carried into an extracted origin-crossing region).
+ */
+export function piecesWithinInterval(
+  pieces: readonly ActiveInterval[],
+  interval: ActiveInterval,
+  length: number
+): ActiveInterval[] {
+  assertLength(length);
+  const offset = (b: number) => ((b - interval.start + length) % length) + 1;
+  const sides = intervalSegments(interval, length);
+  const hits: ActiveInterval[] = [];
+  for (const piece of pieces) {
+    for (const p of intervalSegments(piece, length)) {
+      for (const side of sides) {
+        const a = Math.max(p.start, side.start);
+        const b = Math.min(p.end, side.end);
+        if (a <= b) hits.push({ start: offset(a), end: offset(b) });
+      }
+    }
+  }
+  hits.sort((x, y) => x.start - y.start);
+  const merged: ActiveInterval[] = [];
+  for (const h of hits) {
+    const last = merged[merged.length - 1];
+    if (last && h.start <= last.end + 1) last.end = Math.max(last.end, h.end);
+    else merged.push({ ...h });
+  }
+  return merged;
+}
