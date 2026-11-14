@@ -5,12 +5,16 @@
  * US-01M7CC7J: the Displayed restriction sites panel. Every site is the real engine's record
  * (scanRestrictionSites over public/molbiocraft_wasm.wasm). The panel is rendered with
  * renderToStaticMarkup; its handlers are read off the elements its render creates (the element
- * probe of cleavagePreview.test.tsx) and called by hand.
+ * probe of cleavagePreview.test.tsx) and called by hand. The App's own wiring of the panel (a
+ * cleared choice told after an edit, Go to site, an enzyme checkbox) is driven through the real App
+ * over the live DOM (appHarness.tsx), never read off App.tsx's source (BG-01M7DH6B).
  */
 
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mountApp, type AppHarness } from './appHarness';
+import type { LiveElement } from './liveDom';
 
 type ElementProbe = (type: unknown, props: Record<string, unknown>) => void;
 const probe = vi.hoisted(() => ({ onElement: null as null | ElementProbe }));
@@ -261,18 +265,6 @@ describe('US-01M7CC7J AC3: Go to site is its own action', () => {
     single.click(`Go to ${ONCE} site cutting after ${cutSiteDisplayPosition(site.cutTop, MOLECULE.seqLen, true)}`);
     expect(single.gone).toEqual([site]);
   });
-
-  it('US-01M7CC7J AC3 the App keeps a visibility change to the document\'s choices, away from the selection and view', async () => {
-    const fs = await vi.importActual<{ readFileSync: (p: URL, e: string) => string }>('node:fs');
-    const app = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
-    const panel = app.match(/<DisplayedSitesPanel[\s\S]*?\/>/);
-    expect(panel, 'the App renders the panel').not.toBeNull();
-    expect(panel![0]).toMatch(/onVisibilityChange=\{handleSiteVisibilityChange\}/);
-    const handler = app.match(/const handleSiteVisibilityChange = useCallback\(([\s\S]*?)\n {2}\);/);
-    expect(handler, 'the handler is defined').not.toBeNull();
-    expect(handler![1]).toMatch(/setSiteVisibilityByDoc/);
-    expect(handler![1]).not.toMatch(/setSelectedRange|scroll|setViewer|setCursor|setActive/);
-  });
 });
 
 describe('US-01M7CC7J AC3: choices are written at the scan\'s revision, and a cleared choice is told', () => {
@@ -301,14 +293,13 @@ describe('US-01M7CC7J AC3: choices are written at the scan\'s revision, and a cl
     expect(clearedChoicesNotice(1)).toMatch(/^1 per-site display choice was cleared/);
   });
 
-  it('US-01M7CC7J AC3 the App hashes the scanned string once per version and tells cleared choices in the status line', async () => {
+  it('US-01M7CC7J AC3 the App hashes the scanned string once per version', async () => {
     const fs = await vi.importActual<{ readFileSync: (p: URL, e: string) => string }>('node:fs');
     const app = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
     const molecule = app.match(/const restrictionMolecule = useMemo\(\(\) => \{([\s\S]*?)\n {2}\}, \[/);
     expect(molecule).not.toBeNull();
     expect(molecule![1]).toMatch(/restrictionRevisionCache\.current/);
     expect(molecule![1]).toMatch(/sequenceRevision\(firstBp \? activeDoc\.sequence\.slice\(0, firstBp\) : activeDoc\.sequence, topology\)/);
-    expect(app).toMatch(/if \(cleared > 0\) setStatusBanner\(clearedChoicesNotice\(cleared\)\);/);
   });
 });
 
@@ -335,5 +326,158 @@ describe('US-01M7CC7J AC4: labels and keyboard reach', () => {
     // A mixed enzyme says so to assistive technology.
     expect(r.one(`Show ${THRICE} sites on the maps`)['aria-checked']).toBe('mixed');
     expect(r.one(`Collapse the 3 sites of ${THRICE}`)['aria-controls']).toBeTruthy();
+  });
+});
+
+describe('BG-01M7DH6B: a reverse-strand occurrence is labelled reverse', () => {
+  // The engine's own records for BsmBI-v2 (CGTCTC(1/5)) on pET-28a(+)-eGFP: two of its three sites
+  // are on the reverse strand, so a panel that called every site forward fails here.
+  const BSMBI = 'BsmBI-v2';
+
+  it('BG-01M7DH6B AC1 the fixture is the engine\'s scan of pET-28a(+)-eGFP, with BsmBI-v2 cutting on both strands', () => {
+    expect(plasmid.name).toBe('pET-28a(+)-eGFP');
+    expect(keptOf(BSMBI).map((s) => [cutSiteDisplayPosition(s.cutTop, MOLECULE.seqLen, true), s.strand])).toEqual([
+      [923, -1],
+      [2500, 1],
+      [3627, -1],
+    ]);
+    expect(COUNTS[BSMBI]).toBe(3);
+  });
+
+  it('BG-01M7DH6B AC1 each occurrence\'s checkbox, strand word and Go to name its own strand', () => {
+    const r = render({ initialQuery: 'BsmBI', initialExpanded: [BSMBI] });
+    for (const [pos, strand] of [[923, 'reverse'], [2500, 'forward'], [3627, 'reverse']] as const) {
+      expect(r.one(`Show ${BSMBI} at ${pos}, ${strand} strand`).type).toBe('checkbox');
+      r.one(`Go to ${BSMBI} site cutting after ${pos}, ${strand} strand`);
+    }
+    expect([...r.html.matchAll(/<span class="mbc-dsites-strand">(\w+)<\/span>/g)].map((m) => m[1])).toEqual(['reverse', 'forward', 'reverse']);
+  });
+});
+
+describe('BG-01M7DH6B: an enzyme checkbox sets the enzyme\'s choice', () => {
+  it('BG-01M7DH6B AC1 clearing a multi-cutter\'s checkbox hides the enzyme, not each of its sites', () => {
+    const r = render({ initialQuery: TWICE });
+    r.check(`Show ${TWICE} sites on the maps`, false);
+    expect(r.changes).toHaveLength(1);
+    expect(r.changes[0].hiddenEnzymes).toEqual([TWICE]);
+    expect(r.changes[0].occurrences).toEqual({});
+    // Ticked again, its sites' own choices are cleared with it.
+    const mixed = setOccurrenceVisibility(EMPTY, keptOf(TWICE)[0], false);
+    const back = render({ visibility: mixed, initialQuery: TWICE });
+    back.check(`Show ${TWICE} sites on the maps`, true);
+    expect(back.changes[0].hiddenEnzymes).toEqual([]);
+    expect(back.changes[0].occurrences).toEqual({});
+  });
+});
+
+// ─── The App's wiring of the panel, through the real App ───
+
+const textOf = (el: LiveElement) => el.textContent ?? '';
+
+/** The Displayed restriction sites panel of a mounted App, driven as a user drives it. */
+interface PanelDriver {
+  /** Types `query` into the panel's search. */
+  search(query: string): Promise<void>;
+  /** The one checkbox or button labelled `label`. */
+  control(label: string): LiveElement;
+  /** Expands a multi-cutter's occurrences (no-op when already open). */
+  expand(name: string, sites: number): Promise<void>;
+  /** The panel's detected / filtered out / hidden by you / shown line. */
+  counts(): string;
+  /** Every status-line notice now shown. */
+  notices(): string[];
+  /** The Sequence tab's selection readout, or null when nothing is selected. */
+  selection(): string | null;
+}
+
+/**
+ * Mounts the App with pET-28a(+)-eGFP restored on the Sequence tab, every enzyme listed (the
+ * unique-cutter filter off), and runs `run` against its Displayed restriction sites panel.
+ */
+async function withPanelApp(run: (panel: PanelDriver, app: AppHarness) => Promise<void>): Promise<void> {
+  const app = await mountApp();
+  try {
+    await app.restoreSession({
+      documents: [plasmid],
+      activeDocId: plasmid.id,
+      viewerTab: 'sequence-view',
+      workspace: {
+        mapLayoutMode: 'split',
+        displaySettings: {
+          showOrfs: false, minOrfAa: 50, allowAltStartCodons: false, showPrimers: true, showTranslation: false,
+          showGcGraph: false, showHydropathyGraph: false, showUniqueCuttersOnly: false,
+        },
+      },
+    });
+    await app.settle();
+    const control = (label: string) => app.one(`[aria-label="${label}"]`, label);
+    const panel: PanelDriver = {
+      search: (query) => app.input(control('Search enzymes by name'), query),
+      control,
+      expand: async (name, sites) => {
+        if (app.all(`button[aria-label="Expand the ${sites} sites of ${name}"]`).length) await app.click(control(`Expand the ${sites} sites of ${name}`));
+        control(`Collapse the ${sites} sites of ${name}`);
+      },
+      counts: () => textOf(app.one('section[aria-label="Displayed restriction sites"] .mbc-dsites-counts', 'the panel\'s counts')).replace(/\s+/g, ' ').trim(),
+      notices: () => app.all('.statusbar-toast-text').map(textOf),
+      selection: () => {
+        const found = app.all('.mbc-selection-readout');
+        expect(found.length, 'at most one selection readout').toBeLessThanOrEqual(1);
+        return found.length ? textOf(found[0]) : null;
+      },
+    };
+    await run(panel, app);
+  } finally {
+    app.unmount();
+  }
+}
+
+describe('BG-01M7DH6B: the App\'s wiring of the panel', () => {
+  vi.setConfig({ testTimeout: 120_000 });
+
+  it('BG-01M7DH6B AC1 in the App, a checkbox changes only what is drawn and Go to site selects that site\'s recognition span', async () => {
+    await withPanelApp(async (panel, app) => {
+      expect(panel.selection(), 'nothing is selected at first').toBeNull();
+      const none = panel.counts();
+      expect(none).toContain(' 0 hidden by you ');
+      await panel.search('BsmBI');
+      await panel.expand('BsmBI-v2', 3);
+      // A checkbox records a choice: the summary counts it, and nothing is selected.
+      await app.change(panel.control('Show BsmBI-v2 at 2500, forward strand'), false);
+      expect(panel.counts()).toContain(' 1 hidden by you ');
+      expect(panel.selection()).toBeNull();
+      // Go to site on the reverse-strand site cutting after 923: its recognition site GAGACG (CGTCTC
+      // read on the other strand) is bases 929..934, and the choices are as they were.
+      expect(plasmid.sequence.slice(928, 934)).toBe('GAGACG');
+      await app.click(panel.control('Go to BsmBI-v2 site cutting after 923, reverse strand'));
+      expect(panel.selection()).toBe('929..934 (6 bp) • BsmBI-v2 cuts after 923');
+      expect(panel.counts()).toContain(' 1 hidden by you ');
+    });
+  });
+
+  it('BG-01M7DH6B AC1 in the App, an edit clears the per-site choices and says so, and keeps the enzyme choices', async () => {
+    await withPanelApp(async (panel, app) => {
+      // Hide a two-site enzyme by its checkbox, and one site of a three-site enzyme by its own.
+      await panel.search(TWICE);
+      await app.change(panel.control(`Show ${TWICE} sites on the maps`), false);
+      await panel.search(THRICE);
+      await panel.expand(THRICE, 3);
+      const site = keptOf(THRICE)[0];
+      await app.change(panel.control(occLabel(site)), false);
+      expect(panel.counts()).toContain(' 3 hidden by you ');
+      expect(panel.notices().join(' ')).not.toContain('per-site display');
+
+      // Reverse Complement: the same sites, read from the other strand, so a new scan's sites.
+      await app.menu('sequence:reverse-complement');
+      await app.settle();
+      // The one per-site choice is cleared and told in the status line; the enzyme's is kept.
+      expect(panel.notices().join(' ')).toContain(clearedChoicesNotice(1));
+      expect(panel.counts()).toContain(' 2 hidden by you ');
+      const thrice = panel.control(`Show ${THRICE} sites on the maps`) as LiveElement & { checked: boolean };
+      expect(thrice.checked).toBe(true);
+      expect(thrice.getAttribute('aria-checked')).toBeNull();
+      await panel.search(TWICE);
+      expect((panel.control(`Show ${TWICE} sites on the maps`) as LiveElement & { checked: boolean }).checked).toBe(false);
+    });
   });
 });
