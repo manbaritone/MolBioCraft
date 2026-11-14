@@ -1,7 +1,7 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { RestrictionCutSite } from '../types/bio';
 import {
@@ -164,6 +164,10 @@ export interface DisplayedSitesPanelProps {
  * The Displayed restriction sites panel (US-01M7CC7J): which scanned sites the maps are to draw,
  * per enzyme and per occurrence. Display state only: it never changes the scan or a digest, and
  * a checkbox never moves the view or the selection (Go to site is its own button).
+ *
+ * A mixed enzyme (some of its sites shown, some hidden) draws its checkbox clear and indeterminate,
+ * and a click on it shows every site. A checkbox whose row leaves the list (Shown only) hands focus
+ * to the next checkbox still listed, else the one before it, else the search (BG-01M7DH9X).
  */
 export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
   const { sites, siteCounts, molecule, uniqueCuttersOnly, onVisibilityChange, onGoToSite } = props;
@@ -176,10 +180,54 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
   const [query, setQuery] = useState(props.initialQuery ?? '');
   const [shownOnly, setShownOnly] = useState(props.initialShownOnly ?? false);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(props.initialExpanded ?? []));
+  // The listed checkboxes by key (`e:` an enzyme's, `o:` an occurrence's), and the search, so focus
+  // can move on when the checkbox it is on leaves the list.
+  const boxes = useRef(new Map<string, HTMLInputElement>());
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const pendingFocus = useRef<{ key: string; order: readonly string[] } | null>(null);
+  const boxRef = (key: string, indeterminate = false) => (el: HTMLInputElement | null) => {
+    if (el) {
+      el.indeterminate = indeterminate;
+      boxes.current.set(key, el);
+    } else boxes.current.delete(key);
+  };
 
   const rows = displayedSitesRows(sites, siteCounts, visibility, { query, uniqueCuttersOnly, shownOnly }, molecule);
   const { counts } = applySiteVisibility(sites, molecule.revision, visibility, { uniqueCuttersOnly, siteCounts });
+  // The user's hides the unique-cutter filter keeps off the maps anyway: held, and counted apart.
+  const held = uniqueCuttersOnly
+    ? applySiteVisibility(sites, molecule.revision, visibility, { uniqueCuttersOnly: false }).counts.hiddenByUser - counts.hiddenByUser
+    : 0;
   const drawnRows = rows.slice(0, DISPLAYED_SITES_RENDER_LIMIT);
+  // Every listed checkbox, in the order Tab reaches it.
+  const order: string[] = [];
+  for (const row of drawnRows) {
+    order.push(`e:${row.name}`);
+    if (row.keptCount > 1 && expanded.has(row.name)) for (const o of row.occurrences) order.push(`o:${o.id}`);
+  }
+  /** A checkbox's change: the new choices, remembering the box so focus can follow if its row goes. */
+  const choose = (key: string, next: SiteVisibility) => {
+    pendingFocus.current = { key, order };
+    onVisibilityChange(next);
+  };
+  useEffect(() => {
+    const pending = pendingFocus.current;
+    if (!pending) return;
+    if (boxes.current.has(pending.key)) {
+      // Still listed: wait for the render that carries the change (or none, if nothing changed).
+      if (pending.order !== order) pendingFocus.current = null;
+      return;
+    }
+    pendingFocus.current = null;
+    // Only focus that was lost with the row moves: focus the user put elsewhere stays there.
+    const active = typeof document === 'undefined' ? null : document.activeElement;
+    if (active && active !== document.body) return;
+    const at = pending.order.indexOf(pending.key);
+    const after = pending.order.slice(at + 1).find((k) => boxes.current.has(k));
+    const before = [...pending.order.slice(0, Math.max(at, 0))].reverse().find((k) => boxes.current.has(k));
+    const target = (after && boxes.current.get(after)) || (before && boxes.current.get(before)) || searchRef.current;
+    target?.focus();
+  });
   const matchWords = `${rows.length.toLocaleString()} matching ${rows.length === 1 ? 'enzyme' : 'enzymes'}`;
   const toggleExpanded = (name: string) =>
     setExpanded((prev) => {
@@ -194,12 +242,14 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
       <h4 className="mbc-dsites-title">Displayed restriction sites</h4>
       <p className="mbc-dsites-counts" aria-live="polite">
         {counts.detected.toLocaleString()} detected · {(counts.detected - counts.eligible).toLocaleString()} filtered out ·{' '}
-        {counts.hiddenByUser.toLocaleString()} hidden by you · {counts.shown.toLocaleString()} shown
+        {counts.hiddenByUser.toLocaleString()} hidden by you
+        {held > 0 ? ` (${held.toLocaleString()} more held under the unique-cutter filter)` : ''} · {counts.shown.toLocaleString()} shown
       </p>
       <div className="mbc-dsites-tools">
         <input
           type="search"
           className="mbc-dsites-search"
+          ref={searchRef}
           aria-label="Search enzymes by name"
           placeholder="Search enzymes"
           value={query}
@@ -264,13 +314,13 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                   )}
                   <input
                     type="checkbox"
-                    checked={row.state !== 'hidden'}
+                    checked={row.state === 'shown'}
                     aria-checked={row.state === 'mixed' ? 'mixed' : undefined}
-                    ref={(el) => {
-                      if (el) el.indeterminate = row.state === 'mixed';
-                    }}
+                    ref={boxRef(`e:${row.name}`, row.state === 'mixed')}
                     aria-label={`Show ${row.name} sites on the maps`}
-                    onChange={(e) => onVisibilityChange(setEnzymeVisibility(visibility, row.name, e.target.checked))}
+                    onChange={(e) =>
+                      choose(`e:${row.name}`, setEnzymeVisibility(visibility, row.name, row.state === 'mixed' || e.target.checked))
+                    }
                   />
                   <span className="mbc-dsites-name">{row.name}</span>
                   <code className="mbc-dsites-motif">{row.recognitionSeq}</code>
@@ -296,8 +346,9 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                         <input
                           type="checkbox"
                           checked={o.shownByUser}
+                          ref={boxRef(`o:${o.id}`)}
                           aria-label={`Show ${row.name} at ${o.displayPosition}, ${strandWord(o.site)} strand`}
-                          onChange={(e) => onVisibilityChange(setOccurrenceVisibility(visibility, o.site, e.target.checked))}
+                          onChange={(e) => choose(`o:${o.id}`, setOccurrenceVisibility(visibility, o.site, e.target.checked))}
                         />
                         <span className="mbc-dsites-pos" title={`cuts after base ${o.displayPosition}`}>
                           {o.displayPosition.toLocaleString()}

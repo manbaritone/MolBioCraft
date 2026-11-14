@@ -1491,13 +1491,17 @@ export const App: React.FC = () => {
   const [vectorStudioTab, setVectorStudioTab] = useState<VectorStudioTab>('catalog');
   const [statusBanner, setStatusBannerState] = useState<string | null>(null);
   const statusBannerTimerRef = useRef<number | null>(null);
-  /** Shows `message` in the status line for 5.2 s, or, with `keep`, until it is dismissed or replaced. */
-  const setStatusBanner = useCallback((message: string | null, options?: { keep?: boolean }): void => {
+  /**
+   * Shows `message` in the status line for 5.2 s, or, with `keep`, until it is dismissed or replaced;
+   * with `append`, after the message already shown (an edit's own confirmation is kept).
+   */
+  const setStatusBanner = useCallback((message: string | null, options?: { keep?: boolean; append?: boolean }): void => {
     if (statusBannerTimerRef.current !== null && typeof window !== 'undefined') {
       window.clearTimeout(statusBannerTimerRef.current);
       statusBannerTimerRef.current = null;
     }
-    setStatusBannerState(message);
+    if (message && options?.append) setStatusBannerState((prev) => (prev && prev !== message ? `${prev} · ${message}` : message));
+    else setStatusBannerState(message);
     if (message && !options?.keep && typeof window !== 'undefined') {
       statusBannerTimerRef.current = window.setTimeout(() => {
         setStatusBannerState(null);
@@ -2388,14 +2392,14 @@ export const App: React.FC = () => {
     return reconcileSiteVisibility(stored, cutSites, restrictionMolecule.revision);
   }, [restrictionMolecule, storedSiteVisibility, cutSites]);
   // An edit or rescan that clears per-site choices keeps the cleared state and says how many went,
-  // in the status line (never a dialog). Only a scanned view reconciles, so nothing is cleared
-  // while the sites are not scanned.
+  // in the status line (never a dialog), after the edit's own confirmation. Only a scanned view
+  // reconciles, so nothing is cleared while the sites are not scanned.
   useEffect(() => {
     if (!storedSiteVisibility || !activeSiteVisibility) return;
     const cleared = clearedChoiceCount(storedSiteVisibility, activeSiteVisibility);
     if (cleared === 0 && storedSiteVisibility.revision === activeSiteVisibility.revision) return;
     setSiteVisibilityByDoc((prev) => ({ ...prev, [activeDoc.id]: activeSiteVisibility }));
-    if (cleared > 0) setStatusBanner(clearedChoicesNotice(cleared));
+    if (cleared > 0) setStatusBanner(clearedChoicesNotice(cleared), { append: true });
   }, [storedSiteVisibility, activeSiteVisibility, activeDoc.id, setStatusBanner]);
   // The maps draw only the displayed sites (US-01M7CCGA): they are handed the whole scan with these
   // choices and filter what they draw; every digest, fragment and cloning path keeps the whole scan.

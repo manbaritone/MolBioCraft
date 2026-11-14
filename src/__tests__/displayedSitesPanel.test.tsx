@@ -238,8 +238,50 @@ describe('US-01M7CC7J AC2: bulk actions over every match, Shown only and counts'
     expect(counts.hiddenByUser).toBe(1);
     const { html } = render({ visibility: v, uniqueCuttersOnly: true });
     expect(html).toContain(
-      `${counts.detected.toLocaleString()} detected · ${(counts.detected - counts.eligible).toLocaleString()} filtered out · 1 hidden by you · ${counts.shown.toLocaleString()} shown`
+      `${counts.detected.toLocaleString()} detected · ${(counts.detected - counts.eligible).toLocaleString()} filtered out · 1 hidden by you (1 more held under the unique-cutter filter) · ${counts.shown.toLocaleString()} shown`
     );
+  });
+
+  it('BG-01M7DH9X AC1 the hides the unique-cutter filter holds are counted, and only while it is on', () => {
+    // Every multi-cutter hidden: the filter takes them all off the maps, and the summary says how
+    // many of the user's hides it holds rather than reading 0 hidden by you.
+    const multi = namesOf(SITES).filter((n) => COUNTS[n] !== 1);
+    const v = multi.reduce((st, n) => setEnzymeVisibility(st, n, false), EMPTY);
+    const heldSites = SITES.filter((s) => COUNTS[s.enzyme.name] !== 1).length;
+    expect(heldSites).toBeGreaterThan(1);
+    const on = render({ visibility: v, uniqueCuttersOnly: true }).html;
+    expect(on).toContain(` · 0 hidden by you (${heldSites.toLocaleString()} more held under the unique-cutter filter) · `);
+    const off = render({ visibility: v, uniqueCuttersOnly: false }).html;
+    expect(off).toContain(` · ${heldSites.toLocaleString()} hidden by you · `);
+    expect(off).not.toContain('held under');
+    expect(render({ uniqueCuttersOnly: true }).html).not.toContain('held under');
+  });
+});
+
+describe('BG-01M7DH9X: a mixed enzyme reads as indeterminate', () => {
+  it('BG-01M7DH9X AC1 a mixed enzyme\'s checkbox is clear, indeterminate and mixed, and a click on it shows every site', () => {
+    const mixed = setOccurrenceVisibility(EMPTY, keptOf(THRICE)[0], false);
+    const r = render({ visibility: mixed, initialQuery: THRICE });
+    const box = r.one(`Show ${THRICE} sites on the maps`);
+    expect(box.checked, 'drawn clear, so a click ticks it').toBe(false);
+    expect(box['aria-checked']).toBe('mixed');
+    const el = { indeterminate: false };
+    (box.ref as (e: unknown) => void)(el);
+    expect(el.indeterminate).toBe(true);
+    // The click ticks it: every site shown, its sites' own choices cleared. A browser that reports
+    // the click as a clear (an indeterminate box that was ticked) still shows them all.
+    for (const checked of [true, false]) {
+      const next = render({ visibility: mixed, initialQuery: THRICE });
+      next.check(`Show ${THRICE} sites on the maps`, checked);
+      expect(next.changes[0].occurrences).toEqual({});
+      expect(next.changes[0].hiddenEnzymes).toEqual([]);
+      expect(keptOf(THRICE).every((s) => shownByUser(next.changes[0]).has(s))).toBe(true);
+    }
+    // A shown enzyme is ticked and not indeterminate; a hidden one clear.
+    const shown = render({ initialQuery: THRICE }).one(`Show ${THRICE} sites on the maps`);
+    expect([shown.checked, shown['aria-checked']]).toEqual([true, undefined]);
+    const hidden = render({ visibility: setEnzymeVisibility(EMPTY, THRICE, false), initialQuery: THRICE }).one(`Show ${THRICE} sites on the maps`);
+    expect([hidden.checked, hidden['aria-checked']]).toEqual([false, undefined]);
   });
 });
 
@@ -388,6 +430,12 @@ interface PanelDriver {
   notices(): string[];
   /** The Sequence tab's selection readout, or null when nothing is selected. */
   selection(): string | null;
+  /** Ticks or clears Shown only. */
+  shownOnly(on: boolean): Promise<void>;
+  /** The enzymes the panel lists, in order. */
+  enzymes(): string[];
+  /** What has keyboard focus: an element's aria-label, or 'body' when focus was lost. */
+  focused(): string;
 }
 
 /**
@@ -424,6 +472,12 @@ async function withPanelApp(run: (panel: PanelDriver, app: AppHarness) => Promis
         const found = app.all('.mbc-selection-readout');
         expect(found.length, 'at most one selection readout').toBeLessThanOrEqual(1);
         return found.length ? textOf(found[0]) : null;
+      },
+      shownOnly: (on) => app.change(app.one('section[aria-label="Displayed restriction sites"] label.mbc-dsites-check input', 'Shown only'), on),
+      enzymes: () => app.all('section[aria-label="Displayed restriction sites"] .mbc-dsites-name').map(textOf),
+      focused: () => {
+        const el = app.doc.activeElement as LiveElement;
+        return el === (app.doc.body as unknown) ? 'body' : el.getAttribute('aria-label') ?? `<${el.localName}>`;
       },
     };
     await run(panel, app);
@@ -472,12 +526,78 @@ describe('BG-01M7DH6B: the App\'s wiring of the panel', () => {
       await app.settle();
       // The one per-site choice is cleared and told in the status line; the enzyme's is kept.
       expect(panel.notices().join(' ')).toContain(clearedChoicesNotice(1));
+      // The edit's own confirmation is kept alongside it (BG-01M7DH9X).
+      expect(panel.notices().join(' ')).toContain(`Applied Reverse Complement to ${plasmid.name}`);
       expect(panel.counts()).toContain(' 2 hidden by you ');
       const thrice = panel.control(`Show ${THRICE} sites on the maps`) as LiveElement & { checked: boolean };
       expect(thrice.checked).toBe(true);
       expect(thrice.getAttribute('aria-checked')).toBeNull();
       await panel.search(TWICE);
       expect((panel.control(`Show ${TWICE} sites on the maps`) as LiveElement & { checked: boolean }).checked).toBe(false);
+    });
+  });
+});
+
+describe('BG-01M7DH9X: focus, mixed enzymes and the edit\'s confirmation in the App', () => {
+  vi.setConfig({ testTimeout: 120_000 });
+  const box = (name: string) => `Show ${name} sites on the maps`;
+
+  it('BG-01M7DH9X AC1 with Shown only, Space on an enzyme checkbox hides its row and focus moves to the next row, the one before, then the search', async () => {
+    await withPanelApp(async (panel, app) => {
+      await panel.search('Bsm');
+      await panel.shownOnly(true);
+      const listed = panel.enzymes();
+      expect(listed.length, 'several enzymes match').toBeGreaterThanOrEqual(3);
+      // A row hidden while focus is elsewhere (WebKit does not focus a checkbox it clicks) leaves
+      // focus where the user put it: then shown again.
+      panel.control('Search enzymes by name').focus();
+      await app.change(panel.control(box(listed[0])), false);
+      expect(panel.enzymes()).toEqual(listed.slice(1));
+      expect(panel.focused()).toBe('Search enzymes by name');
+      await panel.shownOnly(false);
+      await app.change(panel.control(box(listed[0])), true);
+      await panel.shownOnly(true);
+      expect(panel.enzymes()).toEqual(listed);
+      // The first row: hidden, its row leaves the list, and focus lands on the next row's checkbox.
+      panel.control(box(listed[0])).focus();
+      expect(panel.focused()).toBe(box(listed[0]));
+      await app.press(' ');
+      expect(panel.enzymes()).toEqual(listed.slice(1));
+      expect(panel.focused()).toBe(box(listed[1]));
+      // The last row: there is no next, so focus lands on the one before it.
+      const last = listed[listed.length - 1];
+      panel.control(box(last)).focus();
+      await app.press(' ');
+      expect(panel.enzymes()).toEqual(listed.slice(1, -1));
+      expect(panel.focused()).toBe(box(listed[listed.length - 2]));
+      // Hide the rest from the keyboard, one at a time: focus stays in the panel, and goes to the
+      // search once the list is empty.
+      for (let left = listed.length - 2; left > 0; left--) {
+        await app.press(' ');
+        expect(panel.enzymes()).toHaveLength(left - 1);
+        expect(panel.focused()).toBe(left > 1 ? box(panel.enzymes()[panel.enzymes().length - 1]) : 'Search enzymes by name');
+      }
+      // With Shown only off, a checkbox that stays listed keeps its focus.
+      await panel.shownOnly(false);
+      panel.control(box(listed[0])).focus();
+      await app.press(' ');
+      expect(panel.focused()).toBe(box(listed[0]));
+    });
+  });
+
+  it('BG-01M7DH9X AC1 a mixed enzyme reads as indeterminate in the App, and a mouse click on it shows every site', async () => {
+    await withPanelApp(async (panel, app) => {
+      await panel.search(THRICE);
+      await panel.expand(THRICE, 3);
+      await app.change(panel.control(occLabel(keptOf(THRICE)[0])), false);
+      const enzyme = panel.control(box(THRICE)) as LiveElement & { checked: boolean; indeterminate?: boolean };
+      expect([enzyme.checked, enzyme.getAttribute('aria-checked'), enzyme.indeterminate]).toEqual([false, 'mixed', true]);
+      expect(panel.counts()).toContain(' 1 hidden by you ');
+      await app.click(enzyme);
+      expect(panel.counts()).toContain(' 0 hidden by you ');
+      const after = panel.control(box(THRICE)) as LiveElement & { checked: boolean; indeterminate?: boolean };
+      expect([after.checked, after.getAttribute('aria-checked'), after.indeterminate]).toEqual([true, null, false]);
+      for (const s of keptOf(THRICE)) expect((panel.control(occLabel(s)) as LiveElement & { checked: boolean }).checked).toBe(true);
     });
   });
 });
