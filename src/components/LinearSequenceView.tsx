@@ -802,6 +802,23 @@ export const GenomeInspectorExtras: React.FC<{
   );
 };
 
+/**
+ * Scroll the row starting at `rowStart` to the top of the rows' scroll area when its top strand is
+ * out of view there. A row holding an open cleavage preview is left alone: the preview has already
+ * scrolled itself into view (US-01M7CC3B), and moving the row to the top would push it out again.
+ */
+export function revealSelectedRow(scroller: HTMLElement, rowStart: number): void {
+  const row = scroller.querySelector<HTMLElement>(`[data-row-start="${rowStart}"]`);
+  const strand = row?.querySelector<HTMLElement>('.top-strand');
+  if (!row || !strand) return;
+  if (row.querySelector('.mbc-cleavage-preview')) return;
+  const view = scroller.getBoundingClientRect();
+  const line = strand.getBoundingClientRect();
+  if (line.top >= view.top && line.bottom <= view.bottom) return;
+  const padTop = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+  scroller.scrollTop += row.getBoundingClientRect().top - view.top - padTop;
+}
+
 export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   doc,
   cutSites,
@@ -940,16 +957,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     const scroller = scrollContainerRef.current;
     if (selectionStart === null || !scroller || typeof requestAnimationFrame !== 'function') return undefined;
     const rowStart = Math.floor((selectionStart - 1) / basesPerRow) * basesPerRow + 1;
-    const reveal = () => {
-      const row = scroller.querySelector<HTMLElement>(`[data-row-start="${rowStart}"]`);
-      const strand = row?.querySelector<HTMLElement>('.top-strand');
-      if (!row || !strand) return;
-      const view = scroller.getBoundingClientRect();
-      const line = strand.getBoundingClientRect();
-      if (line.top >= view.top && line.bottom <= view.bottom) return;
-      const padTop = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
-      scroller.scrollTop += row.getBoundingClientRect().top - view.top - padTop;
-    };
+    const reveal = () => revealSelectedRow(scroller, rowStart);
     reveal();
     // Rows drawn on demand (content-visibility) take their real height once in view, so look again.
     let second = 0;

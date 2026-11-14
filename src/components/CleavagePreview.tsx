@@ -43,6 +43,43 @@ function endWords(p: CleavagePicture): string {
   return `${side} overhang, ${p.overhangLength} nt${seq}`;
 }
 
+/** The parts of a DOM element that revealing the preview touches (a plain object stands in for one in tests). */
+export interface RevealableElement {
+  parentElement: RevealableElement | null;
+  clientHeight?: number;
+  style: { maxHeight: string; overflowY: string };
+  scrollIntoView?: (options: ScrollIntoViewOptions) => void;
+  focus: (options?: FocusOptions) => void;
+}
+
+/** The nearest ancestor of `el` that scrolls vertically (the sequence view's rows pane), or null. */
+export function scrollPaneOf(
+  el: RevealableElement,
+  overflowOf: (e: RevealableElement) => string = (e) => getComputedStyle(e as unknown as Element).overflowY
+): RevealableElement | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    if (/^(auto|scroll|overlay)$/.test(overflowOf(p))) return p;
+  }
+  return null;
+}
+
+/** Room left above and below the preview when it is fitted to its pane (its own margins). */
+const PANE_FIT_MARGIN_PX = 10;
+
+/**
+ * Bring a just-opened preview into sight: cap its height to its scroll pane's visible height (it
+ * scrolls inside itself beyond that), scroll it into view within the pane by the least distance,
+ * and move focus into it without scrolling again.
+ */
+export function revealCleavagePreview(el: RevealableElement, pane: RevealableElement | null): void {
+  if (pane && pane.clientHeight) {
+    el.style.maxHeight = `${Math.max(48, pane.clientHeight - PANE_FIT_MARGIN_PX)}px`;
+    el.style.overflowY = 'auto';
+  }
+  el.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  el.focus({ preventScroll: true });
+}
+
 export interface CleavagePreviewProps {
   /** The engine's record of the one site to show. */
   site: RestrictionCutSite;
@@ -64,7 +101,8 @@ export interface CleavagePreviewProps {
 export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence, circular, flank = 4, onClose, id }) => {
   const rootRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    rootRef.current?.focus({ preventScroll: true });
+    const el = rootRef.current as unknown as RevealableElement | null;
+    if (el) revealCleavagePreview(el, scrollPaneOf(el));
   }, [site.id]);
 
   const p = cleavagePicture(site, sequence, circular, flank);
@@ -100,6 +138,7 @@ export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence
         maxWidth: 'min(560px, calc(100% - 68px))',
         border: '1px solid var(--mbc-border)',
         borderRadius: 6,
+        boxSizing: 'border-box',
         background: 'var(--mbc-bg-elevated)',
         color: 'var(--mbc-text-main)',
         fontSize: 'var(--font-size-caption)',
@@ -111,9 +150,9 @@ export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence
           ×
         </button>
       </div>
-      <p style={{ margin: '4px 0' }}>{`Site ${siteSeq}, bases ${first}–${last}, ${orientation}`}</p>
+      <p style={{ margin: '2px 0' }}>{`Site ${siteSeq}, bases ${first}–${last}, ${orientation}`}</p>
       {p.crossesOrigin && (
-        <p style={{ margin: '4px 0' }}>{`It runs across the origin, from base ${sequence.length} to base 1.`}</p>
+        <p style={{ margin: '2px 0' }}>{`It runs across the origin, from base ${sequence.length} to base 1.`}</p>
       )}
       <pre
         aria-label="Top strand 5' to 3' over bottom strand 3' to 5', ▼ and ▲ marking the cuts"
@@ -123,17 +162,17 @@ export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence
         {'\n'}
         <code data-strand="bottom">{`3'-${strands.bottom}-5'`}</code>
       </pre>
-      <p style={{ margin: '4px 0' }}>{`${cutWords('Top', p.topCut)}; ${cutWords('bottom', p.bottomCut)}`}</p>
-      <p style={{ margin: '4px 0' }}>
+      <p style={{ margin: '2px 0' }}>{`${cutWords('Top', p.topCut)}; ${cutWords('bottom', p.bottomCut)}`}</p>
+      <p style={{ margin: '2px 0' }}>
         <strong>{endWords(p)}</strong>
       </p>
       {p.typeIIS && (
-        <p style={{ margin: '4px 0' }}>
+        <p style={{ margin: '2px 0' }}>
           {`Type IIS: cuts outside the ${site.enzyme.recognitionSeq} motif, top strand ${p.topCut.gapFromMotif} nt and bottom strand ${p.bottomCut.gapFromMotif} nt from it`}
         </p>
       )}
       {p.cleavage === 'methylation-blocked' && (
-        <p role="status" style={{ margin: '4px 0', padding: '2px 6px', background: 'var(--mbc-amber-soft)', border: '1px solid var(--mbc-amber-border)', borderRadius: 4 }}>
+        <p role="status" style={{ margin: '2px 0', padding: '2px 6px', background: 'var(--mbc-amber-soft)', border: '1px solid var(--mbc-amber-border)', borderRadius: 4 }}>
           {`Methylation may block this cut${sensitivity.length > 0 ? ` (${site.enzyme.name} is ${sensitivity.join('/')}-sensitive)` : ''}: it is not a guaranteed cut.`}
         </p>
       )}

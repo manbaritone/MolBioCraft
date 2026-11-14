@@ -27,7 +27,19 @@ type ElementProbe = (type: unknown, props: Record<string, unknown>) => void;
 const probe = vi.hoisted(() => ({
   /** Sees every element a component creates, with its props, while it renders. */
   onElement: null as null | ElementProbe,
+  /** Sees every effect a component registers while it renders (server rendering runs none). */
+  onEffect: null as null | ((effect: () => unknown) => void),
 }));
+
+// The preview's open effect is read off its `useEffect` and run by hand on stand-in elements.
+vi.mock('react', async () => {
+  const actual = await vi.importActual<typeof import('react')>('react');
+  const useEffect = ((effect: Parameters<typeof actual.useEffect>[0], deps?: Parameters<typeof actual.useEffect>[1]) => {
+    probe.onEffect?.(effect);
+    return actual.useEffect(effect, deps);
+  }) as typeof actual.useEffect;
+  return { ...actual, default: { ...actual, useEffect }, useEffect };
+});
 
 type JsxFn = (type: unknown, props: Record<string, unknown>, ...rest: unknown[]) => unknown;
 const watch = vi.hoisted(() => (fn: JsxFn): JsxFn => (type, props, ...rest) => {
@@ -44,7 +56,7 @@ vi.mock('react/jsx-runtime', async () => {
 });
 
 const { CleavagePreview } = await import('../components/CleavagePreview');
-const { LinearSequenceView, cutBoundaryInRow } = await import('../components/LinearSequenceView');
+const { LinearSequenceView, cutBoundaryInRow, revealSelectedRow } = await import('../components/LinearSequenceView');
 const { findRestrictionCutSites } = await import('../core/bioEngine');
 const { REBASE_ENZYMES } = await import('../data/rebaseEnzymes');
 type SequenceDocument = import('../types/bio').SequenceDocument;
@@ -53,6 +65,7 @@ type CleavageCut = import('../core/restrictionDisplay').CleavageCut;
 
 afterEach(() => {
   probe.onElement = null;
+  probe.onEffect = null;
   vi.unstubAllGlobals();
 });
 
@@ -652,5 +665,120 @@ describe('US-01M7CCR2 AC3 the marks take no pointer events, so the bases under t
     const unmarked = clickBases(false);
     expect(unmarked).toEqual([{ start: 5, end: 14 }, { start: 6, end: 14 }, { start: 10, end: 14 }]);
     expect(clickBases(true)).toEqual(unmarked);
+  });
+});
+
+// ─── US-01M7CC3B repair: the preview opens where it can be seen ───
+
+/**
+ * The preview of the EcoRI site of TTTTGAATTCTTTT drawn as the row of a scroll pane `paneHeight`
+ * px tall, its open effects then run by hand on stand-ins for the dialog, its row and the pane.
+ */
+function openInPane(paneHeight: number) {
+  const pane = { parentElement: null, clientHeight: paneHeight, style: { maxHeight: '', overflowY: '' }, focus: vi.fn() };
+  const row = { parentElement: pane, style: { maxHeight: '', overflowY: '' }, focus: vi.fn() };
+  const calls: string[] = [];
+  const dialog = {
+    parentElement: row,
+    style: { maxHeight: '', overflowY: '' },
+    scrollIntoView: vi.fn((o: object) => { calls.push(`scroll ${JSON.stringify(o)}`); }),
+    focus: vi.fn((o?: object) => { calls.push(`focus ${JSON.stringify(o)}`); }),
+  };
+  vi.stubGlobal('getComputedStyle', (e: object) => ({ overflowY: e === pane ? 'auto' : 'visible' }));
+  const effects: (() => unknown)[] = [];
+  let refs = 0;
+  probe.onEffect = (effect) => effects.push(effect);
+  probe.onElement = (_type, props) => {
+    if (props.role === 'dialog' && props.ref && typeof props.ref === 'object') {
+      refs++;
+      (props.ref as { current: unknown }).current = dialog;
+    }
+  };
+  const site = engineSite('TTTTGAATTCTTTT', 'linear', 'EcoRI');
+  renderToStaticMarkup(<CleavagePreview site={site} sequence="TTTTGAATTCTTTT" circular={false} onClose={() => {}} />);
+  probe.onEffect = null;
+  probe.onElement = null;
+  expect(refs, 'the dialog carries the ref its effect reads').toBe(1);
+  expect(effects.length, 'the preview registers an open effect').toBeGreaterThan(0);
+  for (const effect of effects) effect();
+  return { dialog, pane, calls };
+}
+
+describe('US-01M7CC3B AC1 the opened preview is brought into sight in the rows pane', () => {
+  it('scrolls the dialog into view within its pane by the least distance', () => {
+    const { dialog, calls } = openInPane(160);
+    expect(dialog.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(dialog.scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'nearest' }));
+    expect(calls[0], 'it scrolls before it takes focus').toMatch(/^scroll /);
+  });
+
+  it('caps the dialog to the pane it opens in, so the whole of it fits there', () => {
+    // A 160 px pane, as the Sample Project split layout gives at 1440x900, less the dialog's
+    // 4 px and 6 px margins.
+    const short = openInPane(160);
+    expect(short.dialog.style).toEqual({ maxHeight: '150px', overflowY: 'auto' });
+    const tall = openInPane(420);
+    expect(tall.dialog.style.maxHeight).toBe('410px');
+  });
+
+  it('in a map of more than one row only the clicked site\'s row draws the dialog', () => {
+    // EcoRI at 5 (row 1-60) and at 91 (row 61-120); the second marker is clicked.
+    const seq = `TTTTGAATTC${'T'.repeat(80)}GAATTC${'T'.repeat(30)}`;
+    const run = driveMap(seq, ['EcoRI'], 'click', { pick: 'EcoRI (91)' });
+    expect(run.driven).toBe(true);
+    expect(run.selections).toEqual([{ start: 91, end: 96, label: 'EcoRI (5prime: AATT)' }]);
+    expect(dialogsIn(run.html)).toBe(1);
+    expect(run.html.match(/id="cleavage-preview-doc-cleave"/g)).toHaveLength(1);
+    const dialogAt = run.html.indexOf('role="dialog"');
+    expect(dialogAt).toBeGreaterThan(run.html.indexOf('data-row-start="61"'));
+    expect(run.html.indexOf('data-row-start="1"')).toBeLessThan(run.html.indexOf('data-row-start="61"'));
+  });
+});
+
+describe('US-01M7CC3B AC1 following the selection leaves an opened preview in sight', () => {
+  /** A rows pane 160 px tall whose selected row (top strand at 300 px, out of view) may hold the preview. */
+  const paneWithRow = (holdsPreview: boolean) => {
+    const rect = (top: number, height: number) => () => ({ top, bottom: top + height });
+    const strand = { getBoundingClientRect: rect(300, 16) };
+    const row = {
+      getBoundingClientRect: rect(200, 200),
+      querySelector: (sel: string) => (sel === '.top-strand' ? strand : sel === '.mbc-cleavage-preview' && holdsPreview ? {} : null),
+    };
+    const scroller = {
+      scrollTop: 1000,
+      getBoundingClientRect: rect(100, 160),
+      querySelector: (sel: string) => (sel === '[data-row-start="61"]' ? row : null),
+    };
+    vi.stubGlobal('getComputedStyle', () => ({ paddingTop: '0px' }));
+    return scroller;
+  };
+
+  it('a row holding the open preview is not pulled to the top over it', () => {
+    const scroller = paneWithRow(true);
+    revealSelectedRow(scroller as unknown as HTMLElement, 61);
+    expect(scroller.scrollTop).toBe(1000);
+  });
+
+  it('a selected row out of view without a preview is still scrolled to the top', () => {
+    const scroller = paneWithRow(false);
+    revealSelectedRow(scroller as unknown as HTMLElement, 61);
+    expect(scroller.scrollTop).toBe(1100);
+  });
+});
+
+describe('US-01M7CC3B AC4 focus moves into the opened preview, and a stray Escape does nothing', () => {
+  it('the open effect puts focus in the dialog without a second scroll', () => {
+    const { dialog } = openInPane(160);
+    expect(dialog.focus).toHaveBeenCalledTimes(1);
+    expect(dialog.focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
+  it('Escape on a marker with no open preview selects, opens and focuses nothing', () => {
+    const run = driveMap('TTTTGAATTCTTTT', ['EcoRI'], 'Escape' as Gesture);
+    expect(run.driven).toBe(true);
+    expect(run.selections).toEqual([]);
+    expect(dialogsIn(run.html)).toBe(0);
+    expect(run.prevented(), 'the key is left to the page').toBe(0);
+    expect(run.marker.focus).not.toHaveBeenCalled();
   });
 });
