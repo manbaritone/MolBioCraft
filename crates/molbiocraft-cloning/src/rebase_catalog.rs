@@ -455,13 +455,16 @@ fn record_cut_site(
     let cut_top = first_base_after(cut_top_raw);
     let cut_bottom = first_base_after(cut_bottom_raw);
 
-    let min_cut = cut_top_raw.min(cut_bottom_raw).max(0) as usize;
-    let max_cut = (cut_top_raw.max(cut_bottom_raw).max(0) as usize).min(search_space.len());
-    let overhang_seq = if max_cut > min_cut && min_cut < search_space.len() {
-        String::from_utf8_lossy(&search_space[min_cut..max_cut]).to_string()
+    // The overhang is the top-strand bases between the two cuts. A circle reads them through the
+    // wrap (BG-01M7CDFB), so an overhang before base 1, across it or past the last base is whole; a
+    // linear molecule's cuts already lie in 0..=len.
+    let (min_cut, max_cut) = (cut_top_raw.min(cut_bottom_raw), cut_top_raw.max(cut_bottom_raw));
+    let overhang_bytes: Vec<u8> = if topology == Topology::Linear {
+        search_space[min_cut as usize..max_cut as usize].to_vec()
     } else {
-        String::new()
+        (min_cut..max_cut).map(|i| search_space[i.rem_euclid(len_i) as usize]).collect()
     };
+    let overhang_seq = String::from_utf8_lossy(&overhang_bytes).to_string();
 
     let overhang_type = if cut_top_raw < cut_bottom_raw {
         "5prime"
@@ -1646,5 +1649,115 @@ mod rebase_validation {
             frags("TTCATGTTTTCATG", "NlaIII"),
             vec![(1, 6, 6, "TTCATG".to_string()), (7, 14, 8, "TTTTCATG".to_string())]
         );
+    }
+
+    /// A deterministic pseudo-random background of `n` bases.
+    fn background(n: usize, seed: u64) -> String {
+        let mut state = seed.wrapping_mul(7919).wrapping_add(17);
+        (0..n)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                b"ACGT"[(state >> 33) as usize & 3] as char
+            })
+            .collect()
+    }
+
+    /// `seq` turned on its circle so its base `r + 1` becomes base 1: a site at 1-based `p` moves to
+    /// `(p - 1 - r) mod n + 1`.
+    fn rotate(seq: &str, r: usize) -> String {
+        format!("{}{}", &seq[r..], &seq[..r])
+    }
+
+    /// The (overhang, end) of the site of catalogue enzyme `name` at 1-based `position` on `strand`
+    /// of the circle `seq`.
+    fn circular_site(seq: &str, name: &str, position: usize, strand: i8) -> (String, String) {
+        let e = get_rebase_enzymes().into_iter().find(|e| e.name == name).unwrap();
+        let sites = find_restriction_cut_sites(seq, Topology::Circular, Some(&[e]));
+        let c = sites
+            .iter()
+            .find(|c| c.position == position && c.strand == strand)
+            .unwrap_or_else(|| panic!("{name}: a site at {position} on strand {strand} of a {}-bp circle", seq.len()));
+        (c.overhang_seq.clone(), c.overhang_type.clone())
+    }
+
+    /// The same site read with the circle turned so it lies well inside the molecule, where the
+    /// overhang is a plain slice of the sequence: the independent value the origin case must match.
+    fn interior_reading(seq: &str, name: &str, position: usize, strand: i8) -> (String, String) {
+        let n = seq.len();
+        let shift = n / 2; // base n - shift + 1 becomes base 1
+        let turned = rotate(seq, n - shift);
+        circular_site(&turned, name, (position - 1 + shift) % n + 1, strand)
+    }
+
+    /// BG-01M7CDFB: on a circle, a reverse-strand site whose overhang lies before base 1, or
+    /// straddles it, reports every overhang base, read through the wrap, as when the site is
+    /// interior.
+    #[test]
+    fn a_circular_overhang_at_base_1_is_read_through_the_origin() {
+        let cases: Vec<(&str, String, usize, i8, &str, &str)> = vec![
+            // BsaI GGTCTC(1/5) read as GAGACC at base 1: both cuts 1 and 5 nt before base 1.
+            ("BsaI-HFv2", "GAGACCAAAAAAAAAAAAAACGTT".to_string(), 1, -1, "ACGT", "5prime"),
+            // BfuAI ACCTGC(4/8) read as GCAGGT at base 6 of a 199-bp circle: 3 nt before base 1, 1 after.
+            ("BfuAI", format!("TCCCAGCAGGT{}TGG", background(199 - 14, 1)), 6, -1, "TGGT", "5prime"),
+            // ... and at base 8: 1 nt before base 1, 3 after.
+            ("BfuAI", format!("TGGCCCAGCAGGT{}T", background(199 - 14, 2)), 8, -1, "TTGG", "5prime"),
+            // BtsI-v2 GCAGTG(2/0) read as CACTGC at base 2 of a 134-bp circle: a 3' AA across base 1.
+            ("BtsI-v2", format!("ACACTGC{}A", background(134 - 8, 3)), 2, -1, "AA", "3prime"),
+            // AcuI CTGAAG(16/14) read as CTTCAG at base 11 of a 2,602-bp circle: 4 and 6 nt before base 1.
+            ("AcuI", format!("CCCCCCCCCCCTTCAG{}AGCCCC", background(2602 - 22, 4)), 11, -1, "AG", "3prime"),
+            // ... and at base 16: a 3' end straddling base 1.
+            ("AcuI", format!("GCCCCCCCCCCCCCCCTTCAG{}C", background(2602 - 22, 5)), 16, -1, "CG", "3prime"),
+        ];
+        for (name, seq, position, strand, overhang, end) in cases {
+            let label = format!("{name} at {position} on a {}-bp circle", seq.len());
+            let got = circular_site(&seq, name, position, strand);
+            assert_eq!(got, (overhang.to_string(), end.to_string()), "{label}");
+            assert_eq!(got, interior_reading(&seq, name, position, strand), "{label}: the same site turned inside");
+        }
+    }
+
+    /// BG-01M7CDFB: a circle has no privileged base. Turned to every one of its rotations, every
+    /// site of six enzymes (short- and long-reach Type IIS on either strand, 5' and 3' Type II) keeps
+    /// its overhang, end and cuts, and its overhang is as long as the enzyme's stagger.
+    #[test]
+    fn every_rotation_of_a_circle_reports_the_same_overhangs() {
+        let names = ["BsaI-HFv2", "BfuAI", "BtsI-v2", "AcuI", "EcoRI", "PstI"];
+        let enzymes: Vec<RestrictionEnzyme> =
+            get_rebase_enzymes().into_iter().filter(|e| names.contains(&e.name.as_str())).collect();
+        assert_eq!(enzymes.len(), names.len());
+        let n = 64;
+        let mut origin_cases = 0;
+        for (k, e) in enzymes.iter().enumerate() {
+            for (j, motif) in [e.recognition_seq.clone(), molbiocraft_core::reverse_complement(&e.recognition_seq)].into_iter().enumerate() {
+                let bg = background(n, (k * 2 + j) as u64 + 100);
+                let at = n / 2 - motif.len() / 2;
+                let seq = format!("{}{}{}", &bg[..at], motif, &bg[at + motif.len()..]);
+                // Each site as (enzyme, position, strand, cut_top, cut_bottom, overhang, end) in the
+                // unrotated circle's coordinates.
+                let mut read = |r: usize| {
+                    let back = |p: usize| (p - 1 + r) % n + 1;
+                    let mut v: Vec<_> = find_restriction_cut_sites(&rotate(&seq, r), Topology::Circular, Some(&enzymes))
+                        .into_iter()
+                        .map(|c| {
+                            let stagger = c.enzyme.cut_fwd.abs_diff(c.enzyme.cut_rev) as usize;
+                            assert_eq!(c.overhang_seq.len(), stagger, "{} turned by {r}: overhang length", c.id);
+                            let crosses = [c.position, c.cut_top, c.cut_bottom].iter().any(|&p| p <= stagger + 1)
+                                || c.position + c.enzyme.recognition_seq.len() > n;
+                            (crosses, (c.enzyme.name, back(c.position), c.strand, back(c.cut_top), back(c.cut_bottom), c.overhang_seq, c.overhang_type))
+                        })
+                        .collect();
+                    origin_cases += v.iter().filter(|(crosses, _)| *crosses).count();
+                    let mut sites: Vec<_> = v.drain(..).map(|(_, s)| s).collect();
+                    sites.sort();
+                    sites
+                };
+                let reference = read(0);
+                assert!(reference.iter().any(|s| s.0 == e.name), "{} planted in {seq}", e.name);
+                for r in 1..n {
+                    assert_eq!(read(r), reference, "{} motif {motif} turned by {r}", e.name);
+                }
+            }
+        }
+        assert!(origin_cases > 100, "the rotations put sites at the origin: {origin_cases}");
     }
 }

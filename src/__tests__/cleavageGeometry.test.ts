@@ -248,6 +248,8 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
     expect(p.bottomCut.position).toBe(23);
     expect(p.overhangLength).toBe(4);
     expect(p.overhangSeq).toBe('ACGT');
+    // BG-01M7CDFB: the engine's own record carries the same 4-nt overhang, not an empty one.
+    expect([site.overhangSeq, site.overhangType]).toEqual(['ACGT', '5prime']);
     expect(p.coordinates.slice(0, 8)).toEqual([19, 20, 21, 22, 23, 24, 1, 2]);
     expect(p.coordinates[p.motif.start]).toBe(1);
   });
@@ -315,7 +317,7 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
   it('places every circular record of eight enzymes where the enzyme cuts, small circles included', () => {
     const records = sweepRecords('circular', [24, 28, 30, 36, 50]);
     expect(new Set(records.map((r) => r.site.enzyme.name))).toEqual(new Set(SWEEP_ENZYMES));
-    let compared = 0;
+    let behindOrigin = 0;
     for (const { seq, site } of records) {
       const p = cleavagePicture(site, seq, true);
       const o = oracleCuts(site);
@@ -323,13 +325,12 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
       expect(p.topCut.boundary - p.motif.start, label).toBe(o.top - (site.position - 1));
       expect(p.bottomCut.boundary - p.motif.start, label).toBe(o.bottom - (site.position - 1));
       expect(p.endType, label).toBe(site.overhangType);
-      // BG-01M7CDFB: the engine's overhangSeq is empty when a cut falls before base 1.
-      if (Math.min(o.top, o.bottom) >= 0) {
-        expect(p.overhangSeq, label).toBe(site.overhangSeq);
-        compared++;
-      }
+      // BG-01M7CDFB: the engine reads an overhang before or across base 1 through the wrap too.
+      expect(p.overhangSeq, label).toBe(site.overhangSeq);
+      expect(site.overhangSeq.length, label).toBe(Math.abs(o.top - o.bottom));
+      if (Math.min(o.top, o.bottom) < 0) behindOrigin++;
     }
-    expect(compared).toBeGreaterThan(50);
+    expect(behindOrigin).toBeGreaterThan(10);
   });
 
   it('rests on every catalogue enzyme cutting at or after its motif start on the recognition strand', () => {
