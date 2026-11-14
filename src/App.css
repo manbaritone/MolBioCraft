@@ -2348,6 +2348,29 @@ fieldset > legend,
   .map-seq-grid.mode-split > .linear-seq-container {
     min-block-size: 0;
     justify-content: flex-start;
+    position: relative;
+  }
+
+  /* BG-01M7CRMG: the new-annotation form opens over the foot of the rows, scrolling itself if it must,
+     so opening it never takes height from a card whose strips already sit on their floors. */
+  .map-seq-grid.mode-split > .linear-seq-container > .add-feature-drawer {
+    position: absolute;
+    inset-inline: 0;
+    inset-block-end: 0;
+    z-index: 5;
+    max-block-size: 50%;
+    overflow-y: auto;
+    border-top: 1px solid #a8c7fa;
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.12);
+  }
+
+  /* Its fields keep to a compact width (an engine's default field is wider), so it takes two lines. */
+  .map-seq-grid.mode-split > .linear-seq-container > .add-feature-drawer > input[type='text'] {
+    inline-size: 120px;
+  }
+
+  .map-seq-grid.mode-split > .linear-seq-container > .add-feature-drawer input[type='number'] {
+    inline-size: 72px;
   }
 
   /* Short of height, the card gives way in turn, each strip down to a floor: the overview tracks
@@ -2412,25 +2435,28 @@ fieldset > legend,
   }
 
   /* When the toolbar's lines do not fit what the card leaves it (the view measures this and sets
-     is-folded), it folds to two lines that never scroll away: search and Go to, then Tools and the
-     pager. Tools opens the rest (+ Add Annotation, Color Options, cut marks, the generators and the
-     window readout) in a panel over the rows; search hits and warnings come after the pager line. */
+     is-folded), it folds to two lines that never scroll away: search, the hit count and Go to, then
+     Tools and the pager. Tools opens the rest (+ Add Annotation, Color Options, cut marks, the
+     generators and the window readout) in a panel over the rows, and the hit count opens the search's
+     hits and warnings the same way, so nothing the toolbar holds is left below a scroll. */
   .map-seq-grid.mode-split > .linear-seq-container > .linear-toolbar.is-folded {
     min-block-size: calc(var(--mbc-control-h-md) + var(--mbc-control-h-sm) + 13px);
     padding-block: 4px;
     gap: 4px;
   }
 
-  .map-seq-grid.mode-split .linear-toolbar.is-folded > .search-box-group {
-    display: contents;
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .search-results {
+    display: none;
   }
 
-  .map-seq-grid.mode-split .linear-toolbar.is-folded > .search-box-group > :not(.seq-search-and-jump-row) {
-    order: 2;
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .linear-search-hits-btn {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .map-seq-grid.mode-split .linear-toolbar.is-folded > .linear-toolbar-actions {
-    order: 1;
     flex-wrap: nowrap;
     flex-shrink: 0;
   }
@@ -2465,6 +2491,23 @@ fieldset > legend,
 
   .map-seq-grid.mode-split .linear-toolbar.is-folded .linear-toolbar-left-pills {
     display: none;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .search-results.is-open {
+    display: flex;
+    flex-direction: column;
+    gap: var(--mbc-space-1);
+    position: fixed;
+    z-index: 1000;
+    inline-size: min(340px, calc(100vw - 16px));
+    max-block-size: min(240px, 50vh);
+    overflow-y: auto;
+    padding: var(--mbc-space-2);
+    border: 1px solid var(--mbc-border-strong);
+    border-radius: var(--mbc-radius-sm);
+    background: var(--mbc-bg-elevated);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+    font-size: var(--font-size-label);
   }
 
   .map-seq-grid.mode-split .linear-toolbar.is-folded .linear-toolbar-left-pills.is-open {
@@ -2822,9 +2865,15 @@ fieldset > legend,
   justify-content: space-between;
 }
 
-/* Tools shows only on a folded toolbar beside the circle (BG-01M7CRMG). */
-.linear-toolbar-more {
+/* Tools and the hit count show only on a folded toolbar beside the circle (BG-01M7CRMG); elsewhere
+   the hits and warnings sit in the toolbar as they always have. */
+.linear-toolbar-more,
+.linear-search-hits-btn {
   display: none;
+}
+
+.search-results {
+  display: contents;
 }
 
 .pagination-group {

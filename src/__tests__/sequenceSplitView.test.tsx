@@ -1011,11 +1011,19 @@ describe('On a short card the toolbar folds its tools behind Tools and keeps its
       expect(cascaded(`${BAR} .linear-toolbar-more`, 'display', width)?.value, 'Tools shows').toBe('inline-flex');
       expect(cascaded(`${BAR} > .linear-toolbar-actions`, 'flex-wrap', width)?.value, 'one pager line').toBe('nowrap');
       expect(cascaded(`${BAR} > .linear-toolbar-actions`, 'flex-shrink', width)?.value, 'that does not give').toBe('0');
-      expect(cascaded(`${BAR} > .search-box-group`, 'display', width)?.value, 'the search lines join the toolbar').toBe('contents');
-      const pagerOrder = Number(cascaded(`${BAR} > .linear-toolbar-actions`, 'order', width)?.value ?? 0);
-      const hitsOrder = Number(cascaded(`${BAR} > .search-box-group > :not(.seq-search-and-jump-row)`, 'order', width)?.value ?? 0);
-      expect(pagerOrder, 'the pager line comes after the search line').toBeGreaterThan(0);
-      expect(hitsOrder, 'and the hits and warnings after the pager').toBeGreaterThan(pagerOrder);
+      // BG-01M7CRMG repair: the hits and warnings no longer sit under the pager (where they fell to
+      // 0px); the hit count shows on the search line and opens them over the rows.
+      expect(cascaded(`${BAR} .search-results`, 'display', width)?.value, 'the hits leave the toolbar').toBe('none');
+      expect(cascaded(`${BAR} .linear-search-hits-btn`, 'display', width)?.value, 'their count shows').toBe('inline-flex');
+      expect(cascaded(`${BAR} .linear-search-hits-btn`, 'flex-shrink', width)?.value, 'and keeps its width').toBe('0');
+      expect(cascaded(`${BAR} .search-results.is-open`, 'display', width)?.value).toBe('flex');
+      expect(cascaded(`${BAR} .search-results.is-open`, 'position', width)?.value).toBe('fixed');
+      expect(cascaded(`${BAR} .search-results.is-open`, 'overflow-y', width)?.value, 'a long list scrolls in its panel').toBe('auto');
+      // The new-annotation form opens over the foot of the rows: no strip gives for it.
+      expect(cascaded(CARD, 'position', width)?.value, 'the card holds the form').toBe('relative');
+      expect(cascaded(`${CARD} > .add-feature-drawer`, 'position', width)?.value, 'the form overlays the rows').toBe('absolute');
+      expect(cascaded(`${CARD} > .add-feature-drawer`, 'inset-block-end', width)?.value).toBe('0');
+      expect(cascaded(`${CARD} > .add-feature-drawer`, 'overflow-y', width)?.value, 'and scrolls itself').toBe('auto');
       for (const control of ['.btn-page', '.linear-toolbar-more']) {
         expect(cascaded(`${BAR} ${control}`, 'block-size', width)?.value, `${control} is a small control`).toBe('var(--mbc-control-h-sm)');
       }
@@ -1027,6 +1035,9 @@ describe('On a short card the toolbar folds its tools behind Tools and keeps its
     }
     // Unfolded, and wherever the maps stack, Tools is not drawn and the toolbar is as it was.
     expect(cascaded('.linear-toolbar-more', 'display', 1377)?.value).toBe('none');
+    expect(cascaded('.linear-search-hits-btn', 'display', 1377)?.value).toBe('none');
+    expect(cascaded('.search-results', 'display', 1377)?.value, 'the hits sit in the toolbar as before').toBe('contents');
+    expect(CSS_RULES.filter((r) => r.selectors.includes(`${CARD} > .add-feature-drawer`) && r.at.every((a) => appliesAt(a, 759))), 'the stacked form stays in the card').toEqual([]);
     for (const sel of [`${BAR} .linear-toolbar-left-pills`, `${BAR} .linear-toolbar-more`, `${CARD} > .linear-toolbar.is-folded`, `${CARD} > .studio-card-header`, `${CARD} > .seq-selection-quickbar`]) {
       expect(CSS_RULES.filter((r) => r.selectors.includes(sel) && r.at.every((a) => appliesAt(a, 759))), `${sel} at 759px`).toEqual([]);
     }
@@ -1060,5 +1071,178 @@ describe('On a short card the toolbar folds its tools behind Tools and keeps its
     expect(pager.map((b) => `${b.attrs.title ?? ''}:${textOf(b)}`).filter((x) => /page/.test(x))).toEqual(['First page:⏮', 'Previous page:◀ Prev', 'Next page:Next ▶', 'Last page:⏭']);
     const h4 = findAll(byClass(card, 'studio-card-header')[0], (e) => e.tag === 'h4')[0];
     expect(h4.attrs.title, 'the title row names the molecule in full').toBe(`Linear Map — ${puc19.name}`);
+  });
+});
+
+// ─── BG-01M7CRMG (repair): the fold, the panels and focus, in React DOM over the live DOM ───
+
+describe('The linear card folds from what it measures, and its panels open, close and hand focus back (BG-01M7CRMG)', () => {
+  /** Sets globals, returning the step that puts every one back as it was. */
+  const stubGlobals = (values: Record<string, unknown>) => {
+    const g = globalThis as unknown as Record<string, unknown>;
+    const saved = Object.keys(values).map((k) => [k, Object.getOwnPropertyDescriptor(g, k)] as const);
+    for (const [k, v] of Object.entries(values)) Object.defineProperty(g, k, { value: v, configurable: true, writable: true, enumerable: true });
+    return () => { for (const [k, d] of saved) { if (d) Object.defineProperty(g, k, d); else delete g[k]; } };
+  };
+
+  /**
+   * The view mounted with the client renderer over the live DOM. The card's strips have the sizes
+   * measured at 1366x768 (title 33px, quickbar 32px with 2px under it, floors 64px and 120px) and a
+   * toolbar of 135px whole or 65px folded; `card` sets the card's inner height.
+   */
+  async function mountView() {
+    const liveDom = await import('./liveDom');
+    const doc = new liveDom.LiveDocument();
+    const win = new liveDom.LiveWindow(doc, { width: 1366, height: 768 });
+    const observers = new liveDom.LiveResizeObservers();
+    const size = { card: 318 };
+    const has = (el: { classList: { contains(c: string): boolean } }, c: string) => el.classList.contains(c);
+    doc.layout = (el) => {
+      const box = (height: number) => ({ width: 439, height });
+      if (has(el, 'linear-seq-container')) return box(size.card);
+      if (has(el, 'studio-card-header')) return box(33);
+      if (has(el, 'seq-selection-quickbar')) return box(32);
+      if (has(el, 'linear-toolbar')) return box(has(el, 'is-folded') ? 65 : 135);
+      if (has(el, 'mbc-schematic-header')) return box(64);
+      if (has(el, 'sequence-blocks-scroll')) return box(120);
+      if (has(el, 'linear-toolbar-more') || has(el, 'linear-search-hits-btn')) return { width: 58, height: 24 };
+      return { width: 0, height: 0 };
+    };
+    // The cascade as App.css gives it for the strips the view reads (the live DOM computes no CSS).
+    const computed = (el: { classList: { contains(c: string): boolean } }) => ({
+      display: 'block', position: has(el, 'add-feature-drawer') ? 'absolute' : 'static',
+      minBlockSize: has(el, 'mbc-schematic-header') ? '64px' : has(el, 'sequence-blocks-scroll') ? '120px' : '0px',
+      marginTop: '0px', marginBottom: has(el, 'seq-selection-quickbar') ? '2px' : '0px',
+    });
+    const restore = stubGlobals({
+      window: win, document: doc, sessionStorage: win.sessionStorage, localStorage: win.localStorage,
+      requestAnimationFrame: win.requestAnimationFrame, cancelAnimationFrame: win.cancelAnimationFrame,
+      ResizeObserver: observers.Ctor, getComputedStyle: computed, matchMedia: (q: string) => win.matchMedia(q),
+      IS_REACT_ACT_ENVIRONMENT: true, ...liveDom.liveDomConstructors,
+    });
+    vi.resetModules();
+    const React = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const view = await import('../components/LinearSequenceView');
+    const { SAMPLE_LIBRARY: library } = await import('../data/sampleLibrary');
+    const sample = library.find((d) => d.id === 'doc-puc19')!;
+    const container = doc.createElement('div');
+    doc.body.appendChild(container);
+    const root = createRoot(container as unknown as Element);
+    const step = (fn: () => void) => { void React.act(fn); };
+    const settle = () => {
+      for (let i = 0; i < 10; i++) {
+        const due = observers.due();
+        const frames = win.animationFrames.take();
+        if (!due.length && !frames.length) return;
+        step(() => { for (const f of frames) f(0); for (const d of due) d(); });
+      }
+    };
+    step(() => root.render(React.createElement(view.LinearSequenceView, {
+      doc: sample, cutSites: [], selectedRange: null, onSelectRange: () => {}, onUpdateDocument: () => {}, onLoadBenchmarkDocument: () => {},
+    })));
+    settle();
+    const q = (sel: string) => container.querySelector(sel) as InstanceType<typeof liveDom.LiveElement> | null;
+    const folded = () => Boolean(q('.linear-toolbar')?.classList.contains('is-folded'));
+    const resize = (card: number) => { size.card = card; settle(); };
+    const click = (el: InstanceType<typeof liveDom.LiveElement> | null) => { expect(el, 'the control is drawn').not.toBeNull(); liveDom.userClick(el!, {}, step); settle(); };
+    const press = (key: string) => { liveDom.userPress(doc, key, {}, step); settle(); };
+    // React DOM was loaded by this file before the live DOM existed, so it does not hear a text
+    // field's input events: the edit reaches the field's own change handler, as React hands it on.
+    const type = (el: InstanceType<typeof liveDom.LiveElement> | null, value: string) => {
+      liveDom.setFieldValue(el!, value);
+      const key = Object.keys(el!).find((k) => k.startsWith('__reactProps$'))!;
+      const props = (el as unknown as Record<string, { onChange: (e: { target: unknown }) => void }>)[key];
+      step(() => props.onChange({ target: el }));
+      settle();
+    };
+    const unmount = () => { step(() => root.unmount()); restore(); vi.resetModules(); };
+    return { doc, q, folded, resize, click, press, type, step, unmount, body: doc.body };
+  }
+
+  it('folds from the toolbar it measures unfolded, against the card and every other floor', async () => {
+    // Wrong implementations this catches (LC-003): a fold the view never sets (always unfolded); a
+    // measurement of the folded toolbar (65px), which would unfold it at 1440x860 and fold it again on
+    // the next pass; and a fold that ignores a resize of the card.
+    const v = await mountView();
+    try {
+      expect(v.folded(), '1366x768: 318px card').toBe(true);
+      v.resize(383);
+      expect(v.folded(), '1440x860: 383px card, still too short for the 135px toolbar').toBe(true);
+      v.resize(423);
+      expect(v.folded(), '1440x900: 423px card, the whole toolbar fits').toBe(false);
+      v.resize(318);
+      expect(v.folded(), 'and folds again when the card shortens').toBe(true);
+    } finally {
+      v.unmount();
+    }
+  });
+
+  it('opens Tools, closes it on Escape and outside, and puts focus where a tool leads', async () => {
+    // Wrong implementations this catches: Escape that closes the panel but drops focus (or does
+    // nothing when focus is not in the panel, as WebKit leaves it after a click); a panel an outside
+    // click leaves open; and a tool chosen from the panel that leaves focus on the button it hid.
+    const v = await mountView();
+    try {
+      const tools = v.q('.linear-toolbar-more');
+      const pills = () => v.q('.linear-toolbar-left-pills')!;
+      const open = () => tools!.getAttribute('aria-expanded');
+      v.click(tools);
+      expect(open(), 'Tools opens').toBe('true');
+      expect(pills().classList.contains('is-open')).toBe(true);
+      v.step(() => { v.doc.focused = null; });
+      v.press('Escape');
+      expect(open(), 'Escape closes it').toBe('false');
+      expect(v.doc.activeElement, 'and focus returns to Tools').toBe(tools);
+
+      v.click(tools);
+      v.click(v.body as never);
+      expect(open(), 'a click outside closes it').toBe('false');
+
+      v.click(tools);
+      v.click(pills().querySelector('[data-tool="add-annotation"]') as never);
+      expect(open(), 'choosing a tool closes the panel').toBe('false');
+      const form = v.q('.add-feature-drawer');
+      expect(form, 'the new-annotation form is open').not.toBeNull();
+      expect(v.doc.activeElement.closest('.add-feature-drawer'), 'focus is in the form').toBe(form);
+
+      v.click(tools);
+      v.click(pills().querySelector('[data-tool="color-options"]') as never);
+      expect(v.doc.activeElement.getAttribute('aria-label'), 'focus is in the Color Options dialog').toBe('Close Color Options');
+      v.click(v.q('.mbc-modal-close'));
+
+      v.click(tools);
+      v.click(pills().querySelector('button:not([data-tool])') as never);
+      expect(v.doc.activeElement, 'any other tool hands focus back to Tools').toBe(tools);
+    } finally {
+      v.unmount();
+    }
+  });
+
+  it('keeps a search\'s hit count on the search line and its hits one click away', async () => {
+    // Wrong implementations this catches: hits ordered under the pager on a folded toolbar, where
+    // they collapse to nothing; a count that is not drawn; a count that opens nothing, or another
+    // element; and a jump that leaves the list open or focus nowhere.
+    const v = await mountView();
+    try {
+      expect(v.folded()).toBe(true);
+      expect(v.q('.linear-search-hits-btn'), 'no count before a search').toBeNull();
+      v.type(v.q('#mbc-seq-search-input'), 'GAATTC');
+      const count = v.q('.linear-search-hits-btn');
+      expect(count, 'the hit count is drawn').not.toBeNull();
+      expect(count!.closest('.seq-search-and-jump-row'), 'on the search line, which never scrolls').not.toBeNull();
+      expect(count!.textContent).toMatch(/^\d[\d,]* hits? ▾$/);
+      const list = v.q('.search-results')!;
+      expect(count!.getAttribute('aria-controls'), 'it opens the hit list').toBe(list.getAttribute('id'));
+      expect(list.querySelector('.hit-count-badge'), 'which holds the count and the jumps').not.toBeNull();
+      v.click(count);
+      expect(count!.getAttribute('aria-expanded')).toBe('true');
+      expect(list.classList.contains('is-open')).toBe(true);
+      v.click(list.querySelector('.hit-jump-btn') as never);
+      expect(list.classList.contains('is-open'), 'a jump closes the list').toBe(false);
+      expect(v.doc.activeElement, 'and leaves focus on the count').toBe(count);
+    } finally {
+      v.unmount();
+    }
   });
 });

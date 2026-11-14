@@ -1754,8 +1754,18 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   const toolsPanelRef = useRef<HTMLDivElement | null>(null);
   const toolsPanelId = useId();
   const [toolsFolded, setToolsFolded] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
-  const [toolsAt, setToolsAt] = useState<{ top: number; left: number } | null>(null);
+  /** The search hits' control on a folded toolbar, and the list it opens. */
+  const hitsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const hitsPanelRef = useRef<HTMLDivElement | null>(null);
+  const hitsPanelId = useId();
+  const addFormRef = useRef<HTMLFormElement | null>(null);
+  /** Which of a folded toolbar's panels is open, and where on screen (they are drawn fixed). */
+  const [openPanel, setOpenPanel] = useState<null | 'tools' | 'hits'>(null);
+  const [panelAt, setPanelAt] = useState<{ top: number; left: number } | null>(null);
+  /** Where focus goes once a panel closes on a choice: its button, the opened form or the dialog. */
+  const [focusAfter, setFocusAfter] = useState<null | 'tools' | 'hits' | 'form' | 'dialog'>(null);
+  const toolsOpen = openPanel === 'tools';
+  const hitsOpen = openPanel === 'hits';
 
   const rawLen = doc.sequence.length;
   const seqLen = Math.max(1, rawLen);
@@ -2955,33 +2965,58 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     observer.observe(card);
     return () => observer.disconnect();
   }, [measureToolbarFold]);
-  const openTools = () => {
-    const r = toolsButtonRef.current?.getBoundingClientRect?.();
+  const openPanelUnder = (which: 'tools' | 'hits') => {
+    const button = which === 'tools' ? toolsButtonRef.current : hitsButtonRef.current;
+    const r = button?.getBoundingClientRect?.();
     const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
-    // Under the Tools button, kept on screen (the panel is at most 340px wide).
-    setToolsAt(r ? { top: r.bottom + 4, left: Math.max(8, Math.min(r.left, vw - 348)) } : null);
-    setToolsOpen(true);
+    // Under its button, kept on screen (a panel is at most 340px wide).
+    setPanelAt(r ? { top: r.bottom + 4, left: Math.max(8, Math.min(r.left, vw - 348)) } : null);
+    setOpenPanel(which);
   };
+  const hasSearchResults = searchMatches.length > 0 || searchResult.warnings.length > 0;
   useEffect(() => {
-    if (!toolsFolded) setToolsOpen(false);
-  }, [toolsFolded]);
+    if (!toolsFolded || (openPanel === 'hits' && !hasSearchResults)) setOpenPanel(null);
+  }, [toolsFolded, openPanel, hasSearchResults]);
   useEffect(() => {
-    if (!toolsOpen || typeof document === 'undefined') return;
-    const close = (e: Event) => {
+    if (!focusAfter) return;
+    const target: HTMLElement | null | undefined =
+      focusAfter === 'hits' ? hitsButtonRef.current
+      : focusAfter === 'form' ? addFormRef.current?.querySelector?.<HTMLElement>('input, select')
+      : focusAfter === 'dialog' ? cardRef.current?.querySelector?.<HTMLElement>('.mbc-modal-close')
+      : null;
+    (target ?? toolsButtonRef.current)?.focus();
+    setFocusAfter(null);
+  }, [focusAfter]);
+  useEffect(() => {
+    if (!openPanel || typeof document === 'undefined') return;
+    const panel = openPanel === 'tools' ? toolsPanelRef : hitsPanelRef;
+    const button = openPanel === 'tools' ? toolsButtonRef : hitsButtonRef;
+    const inside = (e: Event) => {
       const t = e.target as Node | null;
-      if (t && (toolsPanelRef.current?.contains(t) || toolsButtonRef.current?.contains(t))) return;
-      setToolsOpen(false);
+      return Boolean(t && (panel.current?.contains(t) || button.current?.contains(t)));
     };
-    const shut = () => setToolsOpen(false);
+    const close = (e: Event) => {
+      if (!inside(e)) setOpenPanel(null);
+    };
+    const shut = () => setOpenPanel(null);
+    // Escape closes the open panel wherever focus is (WebKit does not focus a clicked button).
+    const escape = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setOpenPanel(null);
+      setFocusAfter(openPanel);
+    };
+    document.addEventListener('keydown', escape);
     document.addEventListener('pointerdown', close, true);
     window.addEventListener('resize', shut);
-    window.addEventListener('scroll', shut, true);
+    window.addEventListener('scroll', close, true);
     return () => {
+      document.removeEventListener('keydown', escape);
       document.removeEventListener('pointerdown', close, true);
       window.removeEventListener('resize', shut);
-      window.removeEventListener('scroll', shut, true);
+      window.removeEventListener('scroll', close, true);
     };
-  }, [toolsOpen]);
+  }, [openPanel]);
 
   overviewFileDrawingRef.current = () =>
     // Drawn inside an <svg>, as on screen, so its elements are read as SVG; the export keeps the inside.
@@ -3311,6 +3346,20 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               }
               className="seq-search-input"
             />
+            {/* Shown only while the toolbar is folded (App.css): the hit count, opening the hits. */}
+            {hasSearchResults && (
+              <button
+                ref={hitsButtonRef}
+                type="button"
+                className="btn-secondary-sm linear-search-hits-btn"
+                aria-expanded={toolsFolded && hitsOpen}
+                aria-controls={hitsPanelId}
+                title={`Show the ${searchResult.totalHits.toLocaleString()} FM-Index hits and jump to one`}
+                onClick={() => (hitsOpen ? setOpenPanel(null) : openPanelUnder('hits'))}
+              >
+                {searchResult.totalHits.toLocaleString()} {searchResult.totalHits === 1 ? 'hit' : 'hits'} ▾
+              </button>
+            )}
             <form className="coord-jump-form" onSubmit={handleJumpToCoordinate}>
               <input
                 type="text"
@@ -3326,6 +3375,23 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               </button>
             </form>
           </div>
+          {/* The hits and the search's warnings: in place, or on a folded toolbar the panel the hit
+              count opens, so no result is ever below a scroll with nothing to show for it. */}
+          <div
+            id={hitsPanelId}
+            ref={hitsPanelRef}
+            className={`search-results${toolsFolded && hitsOpen ? ' is-open' : ''}`}
+            role={toolsFolded ? 'group' : undefined}
+            aria-label={toolsFolded ? 'Search hits' : undefined}
+            style={toolsFolded && hitsOpen && panelAt ? { top: panelAt.top, left: panelAt.left } : undefined}
+            onClick={(e) => {
+              // Jumping to a hit closes the list and leaves focus on the hit count.
+              if (toolsFolded && hitsOpen && (e.target as Element | null)?.closest?.('button')) {
+                setOpenPanel(null);
+                setFocusAfter('hits');
+              }
+            }}
+          >
           {searchMatches.length > 0 && (
             // Every hit the list holds has a jump button; the row is at most three control heights
             // tall and scrolls beyond that.
@@ -3360,6 +3426,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             </div>
           )}
           <ResultWarnings warnings={searchResult.warnings} label="Search warnings" />
+          </div>
         </div>
 
         <div className="linear-toolbar-actions">
@@ -3372,13 +3439,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             aria-expanded={toolsFolded && toolsOpen}
             aria-controls={toolsPanelId}
             title="More tools: + Add Annotation, Color Options, cut marks and the sequence generators"
-            onClick={() => (toolsOpen ? setToolsOpen(false) : openTools())}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape' && toolsOpen) {
-                e.preventDefault();
-                setToolsOpen(false);
-              }
-            }}
+            onClick={() => (toolsOpen ? setOpenPanel(null) : openPanelUnder('tools'))}
           >
             Tools ▾
           </button>
@@ -3388,22 +3449,22 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             className={`linear-toolbar-left-pills${toolsFolded && toolsOpen ? ' is-open' : ''}`}
             role={toolsFolded ? 'group' : undefined}
             aria-label={toolsFolded ? 'More tools' : undefined}
-            style={toolsFolded && toolsOpen && toolsAt ? { top: toolsAt.top, left: toolsAt.left } : undefined}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape' && toolsOpen) {
-                e.preventDefault();
-                setToolsOpen(false);
-                toolsButtonRef.current?.focus();
-              }
-            }}
+            style={toolsFolded && toolsOpen && panelAt ? { top: panelAt.top, left: panelAt.left } : undefined}
             onClick={(e) => {
-              // A tool that acts (a button) closes the panel; the cut-marks box keeps it open.
-              if (toolsFolded && toolsOpen && (e.target as Element | null)?.closest?.('button')) setToolsOpen(false);
+              // A tool that acts (a button) closes the panel, and focus goes where the tool opened
+              // (the new-annotation form, the Color Options dialog) or back to Tools; the cut-marks box
+              // keeps the panel open.
+              const tool = (e.target as Element | null)?.closest?.('button');
+              if (!toolsFolded || !toolsOpen || !tool) return;
+              setOpenPanel(null);
+              const kind = tool.getAttribute('data-tool');
+              setFocusAfter(kind === 'add-annotation' && !showAddFeature ? 'form' : kind === 'color-options' ? 'dialog' : 'tools');
             }}
           >
             <button
               type="button"
               className="btn-secondary-sm"
+              data-tool="add-annotation"
               onClick={() => {
                 // An origin-crossing selection is not a feature's start..end (BG-01M7CG2W): not prefilled.
                 if (selectionIv && selectionIv.start <= selectionIv.end) {
@@ -3418,6 +3479,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             <button
               type="button"
               className="btn-secondary-sm"
+              data-tool="color-options"
               onClick={() => setColorOptionsOpen(true)}
               title="Open Nucleotide & Ambiguity Color Options"
             >
@@ -3553,7 +3615,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       )}
 
       {showAddFeature && (
-        <form className="add-feature-drawer" onSubmit={handleCreateFeature}>
+        <form ref={addFormRef} className="add-feature-drawer" onSubmit={handleCreateFeature}>
           <strong>New Annotation:</strong>
           <input
             type="text"

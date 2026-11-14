@@ -186,7 +186,9 @@ function searchPanel(doc: SequenceDocument, query: string) {
   const group = groups[0];
   const input = findAll(group, (e) => e.tag === 'input' && e.attrs.id === 'mbc-seq-search-input')[0];
   expect(input?.attrs.value, 'the search box holds the query typed').toBe(query);
-  const row = kids(group);
+  // The hits and warnings sit in one results box (BG-01M7CRMG: the panel a folded toolbar's hit count
+  // opens), drawn in place with display: contents, so the row reads through it.
+  const row = kids(group).flatMap((e) => (e.classes.has('search-results') ? kids(e) : [e]));
   const pillsAt = row.findIndex((e) => e.classes.has('search-hit-pills'));
   const warnAt = row.findIndex((e) => 'data-mbc-result-warnings' in e.attrs);
   return {
