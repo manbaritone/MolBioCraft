@@ -99,9 +99,9 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
     },
     test: {
-      // Never collect tests from agent worktrees under .claude/: a path-filtered run in the main
-      // checkout would otherwise also run each worktree's copy, against that tree's code (BG-01M6SBEE).
-      exclude: [...configDefaults.exclude, '**/.claude/**'],
+      // Never collect tests from agent worktrees (.claude/, and sprint lanes under sdlc-studio/): a path-filtered run in the main
+      // checkout would otherwise also run each worktree's copy, against that tree's code (BG-01M6SBEE, BG-01M7CDQT).
+      exclude: [...configDefaults.exclude, '**/.claude/**', '**/sdlc-studio/**'],
       // Measured only (`npm run test:coverage`): no thresholds are set, so a coverage figure never fails a run.
       coverage: {
         provider: 'v8',
