@@ -18,7 +18,7 @@ import {
   sliceResidentViewportRust,
   type ResidentMotifSearchResult,
 } from '../lib/rustBioEngine';
-import { cutSiteDisplayPosition } from '../core/restrictionDisplay';
+import { cleavagePicture, cutSiteDisplayPosition, type CleavageCut } from '../core/restrictionDisplay';
 import { chartMaxWidth } from '../core/chartLayout';
 import { FigureExportButton } from './FigureExportButton';
 import { ResultWarnings } from './ResultWarnings';
@@ -86,6 +86,52 @@ export function linearRowLength(widthPx: number, advancePx: number = RESIDUE_ADV
 }
 
 const ROWS_PER_PAGE = 20;
+
+/**
+ * Where one strand's cut falls in the sequence row of bases `rowStart`..`rowEnd` (US-01M7CCR2): the
+ * 0-based boundary into the row's bases (the cut lies just before the row's base `boundary`), or
+ * null when the cut is not in this row or falls past an end of a linear molecule. A cut is marked
+ * once, in the row of the first base after it: a cut between two rows opens the later one, and a
+ * cut before base 1 of a circle opens the first row. A cut after a linear molecule's last base,
+ * which no base follows, closes that base's row.
+ */
+export function cutBoundaryInRow(cut: CleavageCut, rowStart: number, rowEnd: number): number | null {
+  if (!cut.available) return null;
+  if (cut.firstBaseAfter !== null) {
+    return cut.firstBaseAfter >= rowStart && cut.firstBaseAfter <= rowEnd ? cut.firstBaseAfter - rowStart : null;
+  }
+  return cut.position !== null && cut.position >= rowStart && cut.position <= rowEnd ? cut.position - rowStart + 1 : null;
+}
+
+/** The session-storage key of the 'Show cut marks' choice. */
+const SHOW_CUT_MARKS_KEY = 'molbiocraft.sequenceView.showCutMarks';
+
+/** The 'Show cut marks' choice made earlier this session; shown when none was made or the store cannot be read. */
+function readShowCutMarks(): boolean {
+  try {
+    return globalThis.sessionStorage?.getItem(SHOW_CUT_MARKS_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * A cut mark between two bases: a 2px rule in the text colour that takes no room in the row (its
+ * border is cancelled by its margins) and no pointer events, so the bases under it click as before.
+ */
+const CUT_MARK_STYLE: React.CSSProperties = {
+  display: 'inline-block',
+  width: 0,
+  height: '1.2em',
+  margin: '0 -1px',
+  borderLeft: '2px solid var(--mbc-text-main)',
+  verticalAlign: 'middle',
+  pointerEvents: 'none',
+};
+
+const cutMark = (strand: 'top' | 'bottom') => (
+  <span aria-hidden="true" data-cut-mark={strand} className="seq-cut-mark" style={CUT_MARK_STYLE} />
+);
 const SCHEMATIC_X0 = 38;
 const SCHEMATIC_X1 = 762;
 const SCHEMATIC_W = SCHEMATIC_X1 - SCHEMATIC_X0;
@@ -788,6 +834,16 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   /** The one cut site whose cleavage preview is open (US-01M7CC3B), and the marker that opened it. */
   const [previewCutId, setPreviewCutId] = useState<string | null>(null);
   const previewMarkerRef = useRef<HTMLElement | null>(null);
+  /** Whether the base rows mark the previewed site's cuts (US-01M7CCR2), kept for the session. */
+  const [showCutMarks, setShowCutMarks] = useState(readShowCutMarks);
+  const toggleCutMarks = (on: boolean) => {
+    setShowCutMarks(on);
+    try {
+      globalThis.sessionStorage?.setItem(SHOW_CUT_MARKS_KEY, on ? '1' : '0');
+    } catch {
+      // The store is unavailable: the choice still holds in this view.
+    }
+  };
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   /** The schematic track, so its Export control saves the map and not a graph below it. */
   const schematicRef = useRef<HTMLDivElement | null>(null);
@@ -1063,6 +1119,11 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   };
   const previewCut = previewCutId === null ? undefined : cutSites.find((c) => c.id === previewCutId);
   const previewDomId = `cleavage-preview-${doc.id}`;
+  /** The previewed site's two-strand picture, whose cuts the base rows mark where the preview draws them. */
+  const previewPicture = useMemo(
+    () => (previewCut && !isProtein ? cleavagePicture(previewCut, doc.sequence, doc.topology === 'circular') : null),
+    [previewCut, isProtein, doc.sequence, doc.topology]
+  );
 
   const handleCreateFeature = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1212,6 +1273,22 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     pageOverlappingFeatures,
     pagePrimers,
   ]);
+
+  /** Each row with the boundaries of the previewed site's top- and bottom-strand cuts in it, while marks are shown. */
+  const markedRows = useMemo(
+    () =>
+      rows.map((row) => ({
+        ...row,
+        marks:
+          previewPicture && showCutMarks
+            ? {
+                top: cutBoundaryInRow(previewPicture.topCut, row.rowStart, row.rowEnd),
+                bottom: cutBoundaryInRow(previewPicture.bottomCut, row.rowStart, row.rowEnd),
+              }
+            : { top: null, bottom: null },
+      })),
+    [rows, previewPicture, showCutMarks]
+  );
 
   const settledViewportStartPos = Math.min(
     pageEndPos,
@@ -1791,6 +1868,20 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             >
               Color Options
             </button>
+            {!isProtein && (
+              <label
+                title="Mark the top- and bottom-strand cuts of the restriction site whose preview is open on the bases"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+              >
+                <input
+                  type="checkbox"
+                  data-cut-marks-toggle={true}
+                  checked={showCutMarks}
+                  onChange={(e) => toggleCutMarks(e.target.checked)}
+                />
+                Show cut marks
+              </label>
+            )}
             {onLoadBenchmarkDocument && (
               <>
                 <button
@@ -2046,7 +2137,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
           }
         }}
       >
-        {rows.map((row, rowIdx) => (
+        {markedRows.map((row, rowIdx) => (
           <div
             key={row.rowStart}
             data-row-start={row.rowStart}
@@ -2128,20 +2219,23 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                     ? `aa-res ${classifyProteinResidueCss(ch)}`
                     : `base-ch base-${ch === 'U' ? 'T' : ch}`;
                   return (
-                    <span
-                      key={idx}
-                      className={`${tokenClass} ${inSel ? 'sel-base' : ''}`}
-                      onClick={() =>
-                        onSelectRange({
-                          start: pos,
-                          end: Math.min(seqLen, pos + 19),
-                        })
-                      }
-                    >
-                      {ch}
-                    </span>
+                    <React.Fragment key={idx}>
+                      {row.marks.top === idx && cutMark('top')}
+                      <span
+                        className={`${tokenClass} ${inSel ? 'sel-base' : ''}`}
+                        onClick={() =>
+                          onSelectRange({
+                            start: pos,
+                            end: Math.min(seqLen, pos + 19),
+                          })
+                        }
+                      >
+                        {ch}
+                      </span>
+                    </React.Fragment>
                   );
                 })}
+                {row.marks.top === row.topSlice.length && cutMark('top')}
               </span>
               <span className="coord-gutter-right">
                 {row.rowEnd} {isProtein ? 'C' : "3'"}
@@ -2152,7 +2246,17 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               <>
                 <div className="seq-strand-line bottom-strand">
                   <span className="coord-gutter">3&apos; {' '.repeat(7)}</span>
-                  <span className="mono-bases comp-bases">{row.botSlice}</span>
+                  <span className="mono-bases comp-bases">
+                    {row.marks.bottom === null ? (
+                      row.botSlice
+                    ) : (
+                      <>
+                        {row.botSlice.slice(0, row.marks.bottom)}
+                        {cutMark('bottom')}
+                        {row.botSlice.slice(row.marks.bottom)}
+                      </>
+                    )}
+                  </span>
                   <span className="coord-gutter-right">5&apos;</span>
                 </div>
 

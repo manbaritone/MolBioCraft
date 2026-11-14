@@ -44,11 +44,12 @@ vi.mock('react/jsx-runtime', async () => {
 });
 
 const { CleavagePreview } = await import('../components/CleavagePreview');
-const { LinearSequenceView } = await import('../components/LinearSequenceView');
+const { LinearSequenceView, cutBoundaryInRow } = await import('../components/LinearSequenceView');
 const { findRestrictionCutSites } = await import('../core/bioEngine');
 const { REBASE_ENZYMES } = await import('../data/rebaseEnzymes');
 type SequenceDocument = import('../types/bio').SequenceDocument;
 type RestrictionCutSite = import('../types/bio').RestrictionCutSite;
+type CleavageCut = import('../core/restrictionDisplay').CleavageCut;
 
 afterEach(() => {
   probe.onElement = null;
@@ -388,5 +389,268 @@ describe('US-01M7CC3B AC4 the keyboard opens the preview and Escape closes it, b
     expect(escaped).toBe(true);
     expect(dialogsIn(run.html)).toBe(0);
     expect(run.selections).toHaveLength(1);
+  });
+});
+
+// ─── US-01M7CCR2: the base rows mark the previewed site's cuts ───
+//
+// With a site's preview open (its marker clicked), the top strand's row carries a mark where the
+// top strand is cut and the bottom strand's row one where the bottom strand is cut, at the
+// boundaries the preview draws. Each row below is read back as text with ▼ for a top-strand mark
+// and ▲ for a bottom-strand mark; every expected row is written out by hand from the enzyme's
+// published cleavage. A view's rows hold 60 bases when no width has been measured (as here).
+
+const T = (n: number) => 'T'.repeat(n);
+const A = (n: number) => 'A'.repeat(n);
+
+/** Each base row as drawn: its first coordinate, its top and bottom strands, ▼/▲ where the marks sit. */
+function strandRows(html: string): { start: number; top: string; bottom: string }[] {
+  return html.split('data-row-start="').slice(1).map((block) => {
+    const line = (cls: string) => {
+      const m = new RegExp(
+        `class="seq-strand-line ${cls}"[\\s\\S]*?class="mono-bases[^"]*"[^>]*>([\\s\\S]*?)</span><span class="coord-gutter-right"`,
+      ).exec(block);
+      expect(m, `the ${cls} line is drawn`).not.toBeNull();
+      return decode(
+        m![1]
+          .replace(/<span[^>]*data-cut-mark="top"[^>]*><\/span>/g, '▼')
+          .replace(/<span[^>]*data-cut-mark="bottom"[^>]*><\/span>/g, '▲')
+          .replace(/<!--[\s\S]*?-->/g, '')
+          .replace(/<[^>]+>/g, ''),
+      );
+    };
+    return { start: Number(block.slice(0, block.indexOf('"'))), top: line('top-strand'), bottom: line('bottom-strand') };
+  });
+}
+
+const isCutMark = (props: Record<string, unknown>) => props['data-cut-mark'] === 'top' || props['data-cut-mark'] === 'bottom';
+const isShowCutMarks = (type: unknown, props: Record<string, unknown>) => type === 'input' && props.type === 'checkbox' && props['data-cut-marks-toggle'] === true;
+
+/**
+ * The sequence view of `seq` with its one engine site of `enzyme`: the site's marker is clicked
+ * (unless `click` is false) on the first pass that draws it, and `then` sees every element created
+ * after that click.
+ */
+function viewSite(
+  seq: string,
+  topology: 'circular' | 'linear',
+  enzyme: string,
+  opts: { click?: boolean; then?: ElementProbe; selectedRange?: { start: number; end: number } | null } = {},
+) {
+  const cutSites = findRestrictionCutSites(seq, topology, [enzymeNamed(enzyme)]);
+  expect(cutSites, `one ${enzyme} site`).toHaveLength(1);
+  const selections: { start: number; end: number; label?: string }[] = [];
+  let driven = false;
+  probe.onElement = (type, props) => {
+    if (opts.click !== false && !driven && isCutPill(type, props)) {
+      driven = true;
+      const marker = { focus() {} };
+      (props.onClick as (e: object) => void)({ currentTarget: marker, target: marker, preventDefault() {}, stopPropagation() {} });
+      return;
+    }
+    if (driven || opts.click === false) opts.then?.(type, props);
+  };
+  const html = renderToStaticMarkup(
+    <LinearSequenceView doc={docOf(seq, topology)} cutSites={cutSites} selectedRange={opts.selectedRange ?? null}
+      onSelectRange={(r) => selections.push(r)} onUpdateDocument={() => {}} />,
+  );
+  probe.onElement = null;
+  return { html, rows: strandRows(html), selections, driven };
+}
+
+/** A session store that holds what is written to it. */
+const sessionStore = () => {
+  const data = new Map<string, string>();
+  return {
+    data,
+    getItem: (k: string) => data.get(k) ?? null,
+    setItem: (k: string, v: string) => { data.set(k, String(v)); },
+    removeItem: (k: string) => { data.delete(k); },
+  };
+};
+
+/** Flip the 'Show cut marks' box (to `checked`) the first `times` passes it is drawn after the click. */
+const flipCutMarks = (sequence: boolean[]): ElementProbe => {
+  let i = 0;
+  return (type, props) => {
+    if (i < sequence.length && isShowCutMarks(type, props)) {
+      (props.onChange as (e: object) => void)({ target: { checked: sequence[i] }, currentTarget: { checked: sequence[i] } });
+      i++;
+    }
+  };
+};
+
+describe('US-01M7CCR2 AC1 the base rows mark both cuts where the preview draws them', () => {
+  it('no marks are drawn before a site is clicked', () => {
+    const v = viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI', { click: false });
+    expect(v.rows).toEqual([{ start: 1, top: 'TTTTGAATTCTTTT', bottom: 'AAAACTTAAGAAAA' }]);
+  });
+
+  it("EcoRI G^AATTC: ▼ after the G on the top strand, ▲ before the G on the bottom, as in its preview", () => {
+    const v = viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI');
+    expect(v.driven).toBe(true);
+    expect(dialogsIn(v.html)).toBe(1);
+    expect(v.rows).toEqual([{ start: 1, top: 'TTTTG▼AATTCTTTT', bottom: 'AAAACTTAA▲GAAAA' }]);
+    // The preview drawn beside them places the same two cuts.
+    expect(strandOf(v.html, 'top')).toBe("5'-TTTTG▼AATT CTTTT-3'");
+    expect(strandOf(v.html, 'bottom')).toBe("3'-AAAAC TTAA▲GAAAA-5'");
+  });
+
+  it("PstI CTGCA^G: the top strand is cut after the A and the bottom after base 5, not the other way round", () => {
+    const v = viewSite('TTTTCTGCAGTTTT', 'linear', 'PstI');
+    expect(v.rows).toEqual([{ start: 1, top: 'TTTTCTGCA▼GTTTT', bottom: 'AAAAG▲ACGTCAAAA' }]);
+  });
+
+  it('BsaI GGTCTC(1/5): the marks sit 1 and 5 nt past the motif, outside it', () => {
+    const v = viewSite('AAAAGGTCTCAAAAAAAAAAAAAA', 'linear', 'BsaI-HFv2');
+    expect(v.rows).toEqual([
+      { start: 1, top: 'AAAAGGTCTCA▼AAAAAAAAAAAAA', bottom: 'TTTTCCAGAGTTTTT▲TTTTTTTTT' },
+    ]);
+  });
+
+  it('an EcoRI site across a row break: ▼ in the first row, ▲ in the next', () => {
+    // GAATTC at 58-63: the top strand is cut after 58 (row 1), the bottom after 62 (row 2).
+    const v = viewSite(T(57) + 'GAATTC' + T(17), 'linear', 'EcoRI');
+    expect(v.rows).toEqual([
+      { start: 1, top: T(57) + 'G▼AA', bottom: A(57) + 'CTT' },
+      { start: 61, top: 'TTC' + T(17), bottom: 'AA▲G' + A(17) },
+    ]);
+  });
+
+  it('a BsaI motif closing one row marks both its cuts in the next row, not the motif\'s', () => {
+    // GGTCTC at 55-60: cuts after 61 and 65.
+    const v = viewSite(A(54) + 'GGTCTC' + A(20), 'linear', 'BsaI-HFv2');
+    expect(v.rows).toEqual([
+      { start: 1, top: A(54) + 'GGTCTC', bottom: T(54) + 'CCAGAG' },
+      { start: 61, top: 'A▼' + A(19), bottom: 'TTTTT▲' + T(15) },
+    ]);
+  });
+
+  it('an EcoRI site across base 1 of a circle: ▼ before base 22, ▲ after base 3', () => {
+    const v = viewSite('ATTC' + A(16) + 'GA', 'circular', 'EcoRI');
+    expect(v.rows).toEqual([{ start: 1, top: 'ATTC' + A(16) + 'G▼A', bottom: 'TAA▲G' + T(16) + 'CT' }]);
+  });
+
+  it('a site across the origin of a 70 bp circle: ▼ in the last row, ▲ in the first', () => {
+    // GAATTC at 68-70 and 1-3: the top strand is cut after 68, the bottom after 2.
+    const v = viewSite('TTC' + A(64) + 'GAA', 'circular', 'EcoRI');
+    expect(v.rows).toEqual([
+      { start: 1, top: 'TTC' + A(57), bottom: 'AA▲G' + T(57) },
+      { start: 61, top: A(7) + 'G▼AA', bottom: T(7) + 'CTT' },
+    ]);
+  });
+
+  it("NlaIII CATG^ at the end of a linear molecule: ▼ after its last base, closing the row", () => {
+    const v = viewSite('TTTTCATG', 'linear', 'NlaIII');
+    expect(v.rows).toEqual([{ start: 1, top: 'TTTTCATG▼', bottom: 'AAAA▲GTAC' }]);
+    expect(strandOf(v.html, 'top').replace(/ /g, '')).toBe("5'-TTTTCATG▼-3'");
+  });
+
+  it('a cut between two bases is marked once, in the row of the base after it', () => {
+    const cut = (firstBaseAfter: number | null, position: number | null, available = true): CleavageCut =>
+      ({ boundary: 0, available, position, firstBaseAfter, gapFromMotif: 0 });
+    // Between bases 60 and 61: the start of row 61-120, not the end of row 1-60.
+    expect(cutBoundaryInRow(cut(61, 60), 1, 60)).toBeNull();
+    expect(cutBoundaryInRow(cut(61, 60), 61, 120)).toBe(0);
+    expect(cutBoundaryInRow(cut(75, 74), 61, 120)).toBe(14);
+    // Before base 1 of a circle: the start of the first row only.
+    expect(cutBoundaryInRow(cut(1, 130), 1, 60)).toBe(0);
+    expect(cutBoundaryInRow(cut(1, 130), 121, 130)).toBeNull();
+    // After a linear molecule's last base, where no base follows: the end of its row.
+    expect(cutBoundaryInRow(cut(null, 80), 61, 80)).toBe(20);
+    expect(cutBoundaryInRow(cut(null, 80), 1, 60)).toBeNull();
+    // Past an end of a linear molecule there is no DNA to cut, so no mark.
+    expect(cutBoundaryInRow(cut(null, null, false), 61, 80)).toBeNull();
+    expect(cutBoundaryInRow(cut(null, null, false), 1, 60)).toBeNull();
+  });
+});
+
+describe("US-01M7CCR2 AC2 a 'Show cut marks' toggle hides and shows the marks for the session", () => {
+  it("the toggle is a labelled checkbox, ticked to start with", () => {
+    const boxes: Record<string, unknown>[] = [];
+    const v = viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI', {
+      click: false,
+      then: (type, props) => { if (isShowCutMarks(type, props)) boxes.push(props); },
+    });
+    expect(boxes.length).toBeGreaterThan(0);
+    expect(boxes.at(-1)).toMatchObject({ type: 'checkbox', checked: true });
+    expect(v.html).toMatch(/<label[^>]*><input type="checkbox"[^>]*data-cut-marks-toggle="true"[^>]*\/>Show cut marks<\/label>/);
+  });
+
+  it('unticking it hides the marks and keeps the selection and the open preview', () => {
+    const range = { start: 5, end: 10 };
+    const shown = viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI', { selectedRange: range });
+    const hidden = viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI', { selectedRange: range, then: flipCutMarks([false]) });
+    expect(hidden.rows).toEqual([{ start: 1, top: 'TTTTGAATTCTTTT', bottom: 'AAAACTTAAGAAAA' }]);
+    expect(hidden.html).not.toContain('data-cut-mark=');
+    // The selection is the click's alone: the toggle neither selects nor clears.
+    expect(hidden.selections).toEqual([{ start: 5, end: 10, label: 'EcoRI (5prime: AATT)' }]);
+    expect(hidden.html.match(/sel-base/g)?.length).toBe(6);
+    expect(hidden.html.match(/sel-base/g)?.length).toBe(shown.html.match(/sel-base/g)?.length);
+    expect(dialogsIn(hidden.html), 'the preview stays open').toBe(1);
+  });
+
+  it('ticking it again shows them again', () => {
+    const v = viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI', { then: flipCutMarks([false, true]) });
+    expect(v.rows).toEqual([{ start: 1, top: 'TTTTG▼AATTCTTTT', bottom: 'AAAACTTAA▲GAAAA' }]);
+  });
+
+  it('the choice is kept for the session: a view opened later starts with it', () => {
+    const store = sessionStore();
+    vi.stubGlobal('sessionStorage', store);
+    viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI', { then: flipCutMarks([false]) });
+    expect([...store.data.values()]).toEqual(['0']);
+    const later = viewSite('TTTTCTGCAGTTTT', 'linear', 'PstI');
+    expect(later.rows).toEqual([{ start: 1, top: 'TTTTCTGCAGTTTT', bottom: 'AAAAGACGTCAAAA' }]);
+    expect(dialogsIn(later.html)).toBe(1);
+    viewSite('TTTTCTGCAGTTTT', 'linear', 'PstI', { then: flipCutMarks([true]) });
+    expect([...store.data.values()]).toEqual(['1']);
+    expect(viewSite('TTTTCTGCAGTTTT', 'linear', 'PstI').rows[0].top).toBe('TTTTCTGCA▼GTTTT');
+  });
+
+  it('with no session store the marks show and the toggle still works', () => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => { throw new Error('storage blocked'); },
+      setItem: () => { throw new Error('storage blocked'); },
+    });
+    expect(viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI').rows[0].top).toBe('TTTTG▼AATTCTTTT');
+    expect(viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI', { then: flipCutMarks([false]) }).rows[0].top).toBe('TTTTGAATTCTTTT');
+  });
+});
+
+describe('US-01M7CCR2 AC3 the marks take no pointer events, so the bases under them click as before', () => {
+  it('every mark is pointer-events: none, hidden from assistive tech, and has no handler of its own', () => {
+    const marks: Record<string, unknown>[] = [];
+    viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI', { then: (_t, props) => { if (isCutMark(props)) marks.push(props); } });
+    expect(marks.map((m) => m['data-cut-mark']).sort()).toEqual(['bottom', 'top']);
+    for (const m of marks) {
+      expect((m.style as React.CSSProperties | undefined)?.pointerEvents).toBe('none');
+      expect(m['aria-hidden']).toBe('true');
+      expect(Object.keys(m).filter((k) => /^on[A-Z]/.test(k))).toEqual([]);
+      expect(m.children).toBeUndefined();
+    }
+  });
+
+  it('the bases either side of a mark select from themselves, as with no mark there', () => {
+    const clickBases = (click: boolean) => {
+      const handlers: (() => void)[] = [];
+      const v = viewSite('TTTTGAATTCTTTT', 'linear', 'EcoRI', {
+        click,
+        then: (type, props) => {
+          if (type === 'span' && /(^| )base-ch( |$)/.test(String(props.className ?? ''))) handlers.push(props.onClick as () => void);
+        },
+      });
+      // The last pass draws the 14 bases, no more and no fewer.
+      const last = handlers.slice(-14);
+      expect(handlers.length % 14).toBe(0);
+      v.selections.length = 0;
+      last[4](); // G5, before the top-strand mark
+      last[5](); // A6, after it
+      last[9](); // C10, after the bottom-strand mark's column
+      return v.selections;
+    };
+    const unmarked = clickBases(false);
+    expect(unmarked).toEqual([{ start: 5, end: 14 }, { start: 6, end: 14 }, { start: 10, end: 14 }]);
+    expect(clickBases(true)).toEqual(unmarked);
   });
 });
