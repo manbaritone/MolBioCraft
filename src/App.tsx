@@ -15565,6 +15565,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       doc={activeDoc}
                       initialSubTab={primersInitialSubTab}
                       commandNonce={studioCommandNonce}
+                      primerDatabaseRevision={primerDbRefresh}
                       allDocuments={documents}
                       onUpdateDocument={handleUpdateDocument}
                       onAddConstruct={handleAddConstruct}
@@ -17218,6 +17219,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         <PrimerDatabaseWindow
           returnFocusTo={primerDbWindow.opener}
           refreshKey={primerDbRefresh}
+          onStoreChanged={() => setPrimerDbRefresh((n) => n + 1)}
           onOpenImport={() => setPrimerDbImportOpen(true)}
           onFindBindings={(primerIds) =>
             requireActiveSession(() => setOperationDialog({ kind: 'primer-db-binding', primerIds }))

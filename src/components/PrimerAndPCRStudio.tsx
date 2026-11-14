@@ -70,6 +70,8 @@ interface PrimerAndPCRStudioProps {
   /** Sub-tab requested by a menu command (CRISPR sites, saved primers, design). */
   initialSubTab?: 'design' | 'saved' | 'crispr';
   commandNonce?: number;
+  /** Bumped when the Primers window or the import writes the Primer Database, so the screened list is read again. */
+  primerDatabaseRevision?: number;
   /** The Primer Database that Save to Primer Database writes to; the user's own store unless given. */
   primerDatabase?: PrimerDatabase;
 }
@@ -84,6 +86,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   initialSubTab = 'design',
   commandNonce,
   primerDatabase,
+  primerDatabaseRevision = 0,
 }) => {
   // In the workbench the conditions of each sub-tab sit in App's inspector; drawn on its own, the
   // studio keeps every setting where it sits in its card (US-01M6TAKD).
@@ -189,14 +192,15 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     return Array.from(map.values());
   }, [doc, allDocuments]);
 
-  // Read when the tab opens and after a save to the database; an unreadable store is named, never
+  // Read when the tab opens, after a save to the database here, and when the Primers window or the
+  // import writes it (primerDatabaseRevision); an unreadable store is named, never
   // read as one without primers.
   const databaseCatalog = useMemo(() => {
     const read = primerDb.read();
     if (!read.ok) return { candidates: [], error: `The Primer Database cannot be read, so its primers are not screened: ${read.error.message}` };
     return { candidates: activePrimers(read.records).map(databasePrimerCandidate), error: null as string | null };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primerDb, subTab, dbSaveMessage]);
+  }, [primerDb, subTab, dbSaveMessage, primerDatabaseRevision]);
 
   const savedPrimerCatalog = useMemo(
     () => [...documentPrimerCatalog.map(screeningCandidateOf), ...databaseCatalog.candidates],

@@ -469,6 +469,102 @@ describe('No invented Tm or ΔG for an RNA or modified record (US-01M7DQMY AC5)'
   });
 });
 
+// ─── Round 1 repair: an added RNA or modified primer, and the studio's list after a window save ───
+
+describe('An added RNA or modified primer has no invented Tm anywhere (US-01M7DQMY AC5)', () => {
+  const RNA_REASON = 'Tm and ΔG unavailable: it is RNA, and the engine computes DNA nearest-neighbour values only.';
+  const MOD_REASON = 'Tm and ΔG unavailable: it carries the modification "/5Phos/", which the engine has no parameters for.';
+
+  it('US-01M7DQMY AC5 after Find Where These Bind and Add, the studio tab and the Test with Saved Primers dialog show n/a with the reason for the added primers, never a number', async () => {
+    await withSession(seededStorage(), 'sequence-view', async (app) => {
+      await openBindingDialog(app, ['guide-rna', 'phos-primer']);
+      await run(app, bindingDialog(app), 'Add Selected Binding Sites');
+      const added = docIn(await savedDocuments(app), TARGET.id).primers.filter((p) => p.source?.kind === 'primerDatabase');
+      expect(added.map((p) => p.name)).toEqual(['guide-rna', 'phos-primer']);
+      // Stored in the app's no-answer form: the reason, with numeric placeholders the engine never computed
+      // (wrong implementation: the engine's DNA Tm of the U-to-T oligo stored as tmAnnealC).
+      for (const p of added) {
+        expect([p.tmNoAnswerReason, p.tmAnnealC, p.tmFullC], p.name).toEqual([p.name === 'guide-rna' ? RNA_REASON : MOD_REASON, 0, 0]);
+      }
+
+      // The studio's tab screens the added primers as document primers: n/a with the reason, as the records are
+      // (wrong implementation: the document candidate's reason set to null, so the engine's DNA Tm shows).
+      await app.menu('primers:pcr');
+      const rows = await studioRows(app);
+      for (const [name, reason] of [['guide-rna', RNA_REASON], ['phos-primer', MOD_REASON]] as const) {
+        const mine = rows.filter((r) => r[0] === name);
+        expect(mine.map((r) => r[1]).sort(), name).toEqual(['Document', 'Primer Database']);
+        for (const r of mine) expect(r[6], `${name} (${r[1]})`).toBe(`n/a: ${reason}`);
+      }
+      expect(rows.filter((r) => r[0] === 'guide-rna' || r[0] === 'phos-primer').flat().join(' ')).not.toMatch(/\d °C/);
+
+      // The dialog places the records again beside the added primers; none of them carries a number.
+      await clickMenuPath(app, ['Cloning', 'Primers', 'Design Primers', 'Test with Saved Primers…']);
+      const listed = checklist(savedPrimersDialog(app), 'Primers to test');
+      expect(listed.find((r) => r[0] === 'guide-rna')?.[3]).toBe(RNA_REASON);
+      expect(listed.find((r) => r[0] === 'phos-primer')?.[3]).toBe(MOD_REASON);
+      await run(app, savedPrimersDialog(app), 'Test');
+      const after = docIn(await savedDocuments(app), TARGET.id).primers.filter((p) => p.name === 'guide-rna' || p.name === 'phos-primer');
+      expect(after.length).toBeGreaterThanOrEqual(4);
+      for (const p of after) {
+        expect(p.tmNoAnswerReason, `${p.name}: ${p.notes}`).toBe(p.name === 'guide-rna' ? RNA_REASON : MOD_REASON);
+        expect(p.notes ?? '', p.name).not.toMatch(/\d °C/);
+        expect([p.tmAnnealC, p.tmFullC], p.name).toEqual([0, 0]);
+      }
+    });
+  });
+});
+
+describe('A document primer keeps either record of why it has no Tm (US-01M7DQMY AC5)', () => {
+  it("US-01M7DQMY AC5 the studio tab shows n/a for a primer whose source alone, or whose own no-answer reason alone, says why", async () => {
+    const RNA_REASON = 'Tm and ΔG unavailable: it is RNA, and the engine computes DNA nearest-neighbour values only.';
+    const MOD_REASON = 'Tm and ΔG unavailable: it carries the modification "/5Phos/", which the engine has no parameters for.';
+    // As a session from another build may hold them: one primer with only its source's reason, one with only its own.
+    const sourceOnly: PrimerRecord = {
+      ...docPrimer('mqmy-src-only', 'source-only', TARGET_SEQ.slice(100, 120), 101),
+      source: {
+        kind: 'primerDatabase', recordId: 'rec-x', name: 'source-only', sequence: TARGET_SEQ.slice(100, 120), tail5Prime: '',
+        molecule: 'RNA', modifications: '', sequenceRevision: 'rev', thermoUnavailableReason: RNA_REASON,
+        match: { method: 'm', maxMismatches: 1, clamp3PrimeBases: 5, mismatches: 0 },
+      },
+    };
+    const reasonOnly: PrimerRecord = { ...docPrimer('mqmy-reason-only', 'reason-only', TARGET_SEQ.slice(130, 150), 131), tmNoAnswerReason: MOD_REASON };
+    const app = await mountApp({ storage: seededStorage([]) });
+    try {
+      const target = { ...TARGET, primers: [EXISTING, sourceOnly, reasonOnly] };
+      await app.restoreSession({ documents: [target], activeDocId: target.id, viewerTab: 'primers-pcr' });
+      const rows = await studioRows(app);
+      // Wrong implementations: only one of the two reasons carried, so the engine's DNA Tm shows for the other.
+      expect(rows.filter((r) => r[0] === 'source-only').map((r) => r[6])).toEqual([`n/a: ${RNA_REASON}`]);
+      expect(rows.filter((r) => r[0] === 'reason-only').map((r) => r[6])).toEqual([`n/a: ${MOD_REASON}`]);
+      expect(rows.filter((r) => r[0] === 'T7').map((r) => r[6])[0]).toMatch(/^\d+(\.\d)? °C$/);
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
+describe("The studio's tab reads the Primer Database again when the Primers window saves (US-01M7DQMY AC2)", () => {
+  it('US-01M7DQMY AC2 a primer added in the Primers window while the studio tab is open is screened without switching tabs', async () => {
+    const NEW_SITE = TARGET_SEQ.slice(220, 240);
+    await withSession(seededStorage(), 'primers-pcr', async (app) => {
+      expect((await studioRows(app)).some((r) => r[0] === 'late-primer')).toBe(false);
+      await app.menu('tools:primer-database');
+      const win = () => app.one('[role="dialog"][aria-labelledby="primer-db-title"]');
+      await app.click(button(win(), 'Add'));
+      const form = app.one('form[aria-label="Add primer"]');
+      const field = (label: string) => form.querySelectorAll('input').find((f) => f.getAttribute('aria-label') === label)!;
+      await app.input(field('Name'), 'late-primer');
+      await app.input(field("Sequence (5' → 3')"), NEW_SITE);
+      await app.click(button(form, 'Save Primer'));
+      await app.click(button(win(), 'Close Primer Database'));
+      // Wrong implementation: the list is read only when the sub-tab changes, so the new record is missing.
+      const rows = app.canvas().querySelectorAll('tr[data-primer-key]').map((tr) => tr.querySelectorAll('td').map((td) => words(td.textContent)));
+      expect(rows.filter((r) => r[0] === 'late-primer').map((r) => [r[1], r[4]])).toEqual([['Primer Database', '221..240']]);
+    });
+  });
+});
+
 // ─── AC6 ───
 
 describe('A degenerate record is listed as not searched (US-01M7DQMY AC6)', () => {

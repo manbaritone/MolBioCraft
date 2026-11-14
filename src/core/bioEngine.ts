@@ -822,7 +822,11 @@ export function databasePrimerCandidate(rec: DatabasePrimer): PrimerCandidate {
   };
 }
 
-/** A document's primer as a candidate, screened exactly as before. */
+/**
+ * A document's primer as a candidate, screened exactly as before. A primer added from an RNA or
+ * modified record keeps why it has no Tm or ΔG (its source's reason, else its own no-answer reason):
+ * the engine reads its oligo as DNA and would otherwise answer with an invented value.
+ */
 export function documentPrimerCandidate(p: PrimerRecord): PrimerCandidate {
   return {
     key: `document:${p.id}`,
@@ -830,7 +834,7 @@ export function documentPrimerCandidate(p: PrimerRecord): PrimerCandidate {
     sourceLabel: 'Document',
     name: p.name,
     record: p,
-    thermoUnavailableReason: null,
+    thermoUnavailableReason: p.source?.thermoUnavailableReason ?? p.tmNoAnswerReason ?? null,
     notSearchedReason: null,
   };
 }

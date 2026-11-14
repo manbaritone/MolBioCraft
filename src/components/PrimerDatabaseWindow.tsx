@@ -459,6 +459,8 @@ export interface PrimerDatabaseWindowProps {
   onOpenImport?: () => void;
   /** Re-read the store when this changes (after an import the window did not write itself). */
   refreshKey?: number;
+  /** Told after every write this window makes, so other views of the store re-read it. */
+  onStoreChanged?: () => void;
   /** The element focus returns to when the window closes (its in-app opener). */
   returnFocusTo?: HTMLElement | null;
   database?: PrimerDatabase;
@@ -476,6 +478,7 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
   onClose,
   onOpenImport,
   refreshKey = 0,
+  onStoreChanged,
   returnFocusTo = null,
   database,
   duplicatePolicy = primerDuplicatePolicy,
@@ -484,7 +487,10 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
 }) => {
   const db = useMemo(() => database ?? openPrimerDatabase(), [database]);
   const [version, setVersion] = useState(0);
-  const reload = () => setVersion((v) => v + 1);
+  const reload = () => {
+    setVersion((v) => v + 1);
+    onStoreChanged?.();
+  };
   // Re-read on every change of version: another tab may have written since.
   const read = useMemo(() => db.read(), [db, version, refreshKey]);
   const [view, setView] = useState<'active' | 'trash'>('active');
