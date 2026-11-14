@@ -10,7 +10,12 @@ import React, { useMemo, useState } from 'react';
 import { OperationDialog, OptionRow } from './OperationDialog';
 import { alignmentRowsOf, runCalculateExpressionLevels, runFindStructuralVariants, runCrisprEditing, runAnnotateByBlast, runAnnotateFromDocuments, runDesignDegeneratePrimers, runImportPrimers, type OperationResult } from '../core/operationRunners';
 import { featuresTooLongToTransfer, MAX_TRANSFERRED_FEATURE_BP } from '../core/annotateFromDocuments';
-import { describeSpreadsheetProblem, fieldLabel, importedRowsOf, NO_COLUMN_MAPPING, readPrimerSpreadsheet, type PrimerColumnMapping } from '../core/primerImport';
+import {
+  choiceFor, classifyPrimerRows, countsOf, DEFAULT_DUPLICATE_CHOICES, describeImportCounts, describeSpreadsheetProblem, DUPLICATE_CLASS_LABEL, fieldLabel, importedRowsOf,
+  NO_COLUMN_MAPPING, NO_ROW_CHOICES, planPrimerDatabaseImport, readPrimerSpreadsheet, savePrimerDatabaseImport,
+  type DuplicateChoice, type DuplicateChoices, type PrimerColumnMapping,
+} from '../core/primerImport';
+import { openPrimerDatabase, type PrimerDatabase } from '../core/primerDatabase';
 import type { LocalSequenceDbEntry } from '../core/localBlastDb';
 import { DEGENERATE_DEFAULTS } from '../core/degeneratePrimers';
 import type { SequenceDocument } from '../types/bio';
@@ -184,15 +189,39 @@ export const AnnotateFromDocumentsDialog: React.FC<AnnotateFromDocumentsDialogPr
 
 // ───────────────────────────── Import Primers ─────────────────────────────
 
+export type PrimerImportDestination = 'documents' | 'database';
+
 export interface ImportPrimersDialogProps {
-  onCreate: (r: OperationResult) => void;
+  /** Receives the primer documents; without it the dialog offers no Documents destination. */
+  onCreate?: (r: OperationResult) => void;
   onClose: () => void;
+  /**
+   * Receives the report of a save to the Primer Database (US-01M7DQ0X); without it the dialog
+   * offers no Primer Database destination, so a save is never made where nobody shows its report.
+   */
+  onDatabaseSaved?: (report: string) => void;
+  /** The destination chosen when the dialog opens, when both are offered. */
+  initialDestination?: PrimerImportDestination;
+  /** The store to read and write; the app's own localStorage store when omitted. */
+  database?: PrimerDatabase;
 }
+
+/** A new record id: a random UUID, or a time-and-random id where the platform has none. */
+function newPrimerId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return c?.randomUUID ? c.randomUUID() : `primer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const CHOICE_LABEL: Readonly<Record<DuplicateChoice, string>> = { skip: 'Skip', keep: 'Keep separately', merge: 'Merge metadata' };
 
 /** Rows the preview table draws, so a sheet of thousands of oligos does not stall the dialog. */
 const PREVIEW_ROW_LIMIT = 200;
 
-export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCreate, onClose }) => {
+export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCreate, onClose, onDatabaseSaved, initialDestination, database }) => {
+  const offered: PrimerImportDestination[] = [...(onCreate ? ['documents' as const] : []), ...(onDatabaseSaved ? ['database' as const] : [])];
+  const [destination, setDestination] = useState<PrimerImportDestination>(initialDestination && offered.includes(initialDestination) ? initialDestination : offered[0] ?? 'documents');
+  const [classChoices, setClassChoices] = useState<Readonly<DuplicateChoices>>(DEFAULT_DUPLICATE_CHOICES);
+  const [rowChoices, setRowChoices] = useState<Readonly<Record<number, DuplicateChoice>>>(NO_ROW_CHOICES);
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState('');
   const [mapping, setMapping] = useState<Partial<PrimerColumnMapping>>(NO_COLUMN_MAPPING);
@@ -201,6 +230,18 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
   const preview = useMemo(() => (reading ? importedRowsOf(reading) : null), [reading]);
   const importedByRow = useMemo(() => new Map((preview?.rows ?? []).map((r) => [r.row, r] as const)), [preview]);
   const skippedByRow = useMemo(() => new Map((preview?.skipped ?? []).map((s) => [s.line, s.reason] as const)), [preview]);
+  // The Primer Database destination: the store as it stands, read (never assumed empty) before
+  // anything is classified, and the save the user's choices would make.
+  const store = useMemo(() => (destination === 'database' ? database ?? openPrimerDatabase() : null), [destination, database]);
+  const dbRead = useMemo(() => store?.read() ?? null, [store]);
+  const plan = useMemo(() => {
+    if (!reading || reading.problem || !dbRead?.ok) return null;
+    let k = 0;
+    return planPrimerDatabaseImport(reading, dbRead.records, classChoices, rowChoices, { now: '', newId: () => `preview-${++k}`, source: 'the sheet' });
+  }, [reading, dbRead, classChoices, rowChoices]);
+  const classified = useMemo(() => (reading && dbRead?.ok ? classifyPrimerRows(reading.rows, dbRead.records).classified : []), [reading, dbRead]);
+  const classByRow = useMemo(() => new Map(classified.map((c) => [c.row.row, c] as const)), [classified]);
+  const toDatabase = destination === 'database';
   const columnChoices = reading ? Array.from({ length: reading.columnCount }, (_x, c) => ({ value: c, label: fieldLabel(reading.header, c + 1) })) : [];
   const mapSelect = (key: keyof PrimerColumnMapping, label: string, optional: boolean) => reading && (
     <label key={key} style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
@@ -220,7 +261,10 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
       transientKeys={[]}
       defaults={{ folder: 'Primers' }}
       summary={<span>Paste rows or choose a CSV, TSV or semicolon-separated file saved as text: a name column and a sequence column (a header row is optional; a notes column becomes the description). Quoted cells may hold separators and line breaks.</span>}
-      validate={() => (!preview ? 'Paste primer rows or choose a file.' : preview.problem ? `Cannot read the spreadsheet: ${describeSpreadsheetProblem(preview.problem)}.` : !preview.rows.length ? 'No valid primer rows found.' : null)}
+      validate={() => (!preview ? 'Paste primer rows or choose a file.' : preview.problem ? `Cannot read the spreadsheet: ${describeSpreadsheetProblem(preview.problem)}.`
+        : !toDatabase ? (!preview.rows.length ? 'No valid primer rows found.' : null)
+        : dbRead && !dbRead.ok ? `The Primer Database cannot be read, so nothing can be imported into it: ${dbRead.error.message}`
+        : plan && !plan.imported ? `Nothing to import into the Primer Database: ${describeImportCounts(countsOf(plan))}.` : null)}
       renderOptions={(v, set) => (
         <>
           <OptionRow label="Primer list:" htmlFor="opdlg-ip-text">
@@ -243,6 +287,14 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
               </div>
             </div>
           </OptionRow>
+          {offered.length > 1 && (
+            <OptionRow label="Import into:" htmlFor="opdlg-ip-destination">
+              <select id="opdlg-ip-destination" value={destination} onChange={(e) => setDestination(e.target.value as PrimerImportDestination)}>
+                <option value="documents">Documents</option>
+                <option value="database">Primer Database</option>
+              </select>
+            </OptionRow>
+          )}
           {reading && (
             <OptionRow label="Columns:">
               <div className="prefs-row" style={{ flexWrap: 'wrap', gap: 8 }}>
@@ -257,11 +309,11 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
             <OptionRow label="Preview:">
               <div style={{ display: 'grid', gap: 4, width: '100%' }}>
                 {preview.problem && <div className="mbc-opdlg-notice" role="alert" data-ip-problem="">Cannot read the spreadsheet: {describeSpreadsheetProblem(preview.problem)}.</div>}
-                <div className="mbc-opdlg-muted" style={{ paddingTop: 4 }}>
+                {!toDatabase && <div className="mbc-opdlg-muted" style={{ paddingTop: 4 }}>
                   {preview.rows.length} primer{preview.rows.length === 1 ? '' : 's'}
                   {preview.rows.length ? ` (${preview.rows.slice(0, 3).map((r) => r.name).join(', ')}${preview.rows.length > 3 ? ', …' : ''})` : ''}
                   {preview.skipped.length ? ` · ${preview.skipped.length} skipped: ${preview.skipped.slice(0, 3).map((s) => `line ${s.line} ${s.reason}`).join('; ')}` : ''}
-                </div>
+                </div>}
                 {reading.rows.length > PREVIEW_ROW_LIMIT && (
                   <div className="mbc-opdlg-muted">The first {PREVIEW_ROW_LIMIT} of {reading.rows.length} rows are shown; the count above covers every row.</div>
                 )}
@@ -269,7 +321,7 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
                   <div style={{ maxHeight: 220, overflow: 'auto' }}>
                     <table className="mbc-opdlg-ip-preview" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
                       <thead>
-                        <tr><th>Row</th><th>Name</th><th>Original</th><th>Normalized</th><th>Molecule</th><th>Modifications</th><th>Labels</th><th>Import</th></tr>
+                        <tr><th>Row</th><th>Name</th><th>Original</th><th>Normalized</th><th>Molecule</th><th>Modifications</th><th>Labels</th><th>Import</th>{toDatabase && <th>In the database</th>}</tr>
                       </thead>
                       <tbody>
                         {reading.rows.slice(0, PREVIEW_ROW_LIMIT).map((r) => {
@@ -285,8 +337,9 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
                               <td data-ip-col="labels">{r.labels.join(', ')}</td>
                               <td data-ip-col="import">
                                 {r.errors.map((e) => `${fieldLabel(reading.header, e.column)}: ${e.message}`).join('; ')}
-                                {!r.errors.length && (made ? `as ${made.name}` : `skipped: ${skippedByRow.get(r.row) ?? ''}`)}
+                                {!r.errors.length && !toDatabase && (made ? `as ${made.name}` : `skipped: ${skippedByRow.get(r.row) ?? ''}`)}
                               </td>
+                              {toDatabase && <td data-ip-col="class">{classByRow.has(r.row) ? DUPLICATE_CLASS_LABEL[classByRow.get(r.row)!.cls] : 'Rejected'}</td>}
                             </tr>
                           );
                         })}
@@ -297,16 +350,87 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
               </div>
             </OptionRow>
           )}
-          <OptionRow label="Folder:" htmlFor="opdlg-ip-folder">
-            <input id="opdlg-ip-folder" type="text" value={String(v.folder)} onChange={(e) => set('folder', e.target.value)} />
-          </OptionRow>
+          {!toDatabase && (
+            <OptionRow label="Folder:" htmlFor="opdlg-ip-folder">
+              <input id="opdlg-ip-folder" type="text" value={String(v.folder)} onChange={(e) => set('folder', e.target.value)} />
+            </OptionRow>
+          )}
+          {toDatabase && dbRead && !dbRead.ok && (
+            <div className="info-callout" role="alert" data-ip-db-problem="">The Primer Database cannot be read, so nothing can be imported into it: {dbRead.error.message}</div>
+          )}
+          {toDatabase && plan && (
+            <OptionRow label="Duplicates:">
+              <div style={{ display: 'grid', gap: 6, width: '100%' }}>
+                <div className="mbc-opdlg-muted" data-ip-db-counts="">If saved: {describeImportCounts(countsOf(plan))}.</div>
+                {(['exact', 'sameName', 'sameOligo'] as const).map((cls) => {
+                  const rows = classified.filter((c) => c.cls === cls);
+                  if (!rows.length) return null;
+                  return (
+                    <div key={cls} data-ip-class={cls} style={{ display: 'grid', gap: 2 }}>
+                      <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                        <strong>{DUPLICATE_CLASS_LABEL[cls]} ({rows.length})</strong>
+                        <select id={`opdlg-ip-class-${cls}`} aria-label={`${DUPLICATE_CLASS_LABEL[cls]}: every row`} value={classChoices[cls]}
+                          onChange={(e) => {
+                            const choice = e.target.value as DuplicateChoice;
+                            setClassChoices((c) => ({ ...c, [cls]: choice }));
+                            // A choice for the whole class replaces the choices made row by row.
+                            setRowChoices((r) => Object.fromEntries(Object.entries(r).filter(([row]) => classByRow.get(Number(row))?.cls !== cls)));
+                          }}>
+                          {(['skip', 'keep', 'merge'] as const).map((ch) => <option key={ch} value={ch}>{CHOICE_LABEL[ch]} (every row)</option>)}
+                        </select>
+                      </label>
+                      {rows.map((c) => {
+                        const match = c.cls === 'sameName' ? c.nameMatch : c.oligoMatch;
+                        return (
+                          <label key={c.row.row} data-ip-dup-row={c.row.row} style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                            <span>Row {c.row.row} {c.row.name}: matches {match ? (match.kind === 'database' ? `${match.name} in the database` : `${match.name} on row ${match.row}`) : '-'}</span>
+                            <select id={`opdlg-ip-row-${c.row.row}`} aria-label={`Row ${c.row.row}`} value={choiceFor(c, classChoices, rowChoices) ?? 'keep'}
+                              onChange={(e) => setRowChoices((r) => ({ ...r, [c.row.row]: e.target.value as DuplicateChoice }))}>
+                              {(['skip', 'keep', 'merge'] as const).map((ch) => <option key={ch} value={ch}>{CHOICE_LABEL[ch]}</option>)}
+                            </select>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+                {[...plan.rejected, ...plan.skipped].map((p) => (
+                  <div key={p.row} className="mbc-opdlg-muted" data-ip-outcome-row={p.row}>Row {p.row} {p.name}: {plan.rejected.includes(p) ? `rejected: ${p.reason}` : p.reason}</div>
+                ))}
+              </div>
+            </OptionRow>
+          )}
         </>
       )}
-      onRun={(v) => onCreate(runImportPrimers(text, v, mapping))}
+      onRun={(v) => {
+        if (!toDatabase) {
+          if (!onCreate) throw new Error('Nothing was imported: this window does not create documents.');
+          onCreate(runImportPrimers(text, v, mapping));
+          return;
+        }
+        if (!store || !onDatabaseSaved) throw new Error('Nothing was saved: this window does not import into the Primer Database.');
+        if (!reading || reading.problem) throw new Error(`Nothing was saved to the Primer Database: ${reading?.problem ? describeSpreadsheetProblem(reading.problem) : 'paste primer rows or choose a file'}.`);
+        // Read the store again at save time: the plan is made against what it holds now.
+        const current = store.read();
+        if (!current.ok) throw new Error(`Nothing was saved to the Primer Database: ${current.error.message}`);
+        const now = new Date().toISOString();
+        const saving = planPrimerDatabaseImport(reading, current.records, classChoices, rowChoices, { now, newId: newPrimerId, source: fileName || 'a pasted primer list' });
+        const saved = savePrimerDatabaseImport(store, saving, now);
+        if (!saved.ok) throw new Error(saved.message);
+        onDatabaseSaved(saved.message);
+      }}
       onClose={onClose}
     />
   );
 };
+
+/**
+ * Import Primers with the Primer Database chosen, for the Primer Database window's Import
+ * (US-01M7DQFS): it offers no Documents destination, and `onSaved` receives the save's report.
+ */
+export const ImportPrimersToDatabaseDialog: React.FC<{ onSaved: (report: string) => void; onClose: () => void; database?: PrimerDatabase }> = ({ onSaved, onClose, database }) => (
+  <ImportPrimersDialog onDatabaseSaved={onSaved} onClose={onClose} initialDestination="database" database={database} />
+);
 
 // ───────────────────────────── Annotate by BLAST ─────────────────────────────
 

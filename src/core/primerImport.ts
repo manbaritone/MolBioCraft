@@ -21,6 +21,9 @@
  * columns are name and sequence. The caller may map any column itself.
  */
 
+import { normalizePrimerSequence as normalizeDatabaseSequence, PRIMER_BACKUP_FORMAT, PRIMER_DATABASE_SCHEMA, type PrimerDatabase } from './primerDatabase';
+import type { DatabasePrimer } from '../types/bio';
+
 export type PrimerSeparator = ',' | '\t' | ';';
 
 /** One record of the sheet: `row` is the 1-based line it starts on. */
@@ -434,4 +437,226 @@ export function importedRowsOf(reading: PrimerSpreadsheetReading): PrimerImportR
 /** "row 3, field 2: a quote opened here is never closed" */
 export function describeSpreadsheetProblem(p: SpreadsheetProblem): string {
   return `row ${p.row}, field ${p.field}: ${p.message}`;
+}
+
+// ─── Into the Primer Database (US-01M7DQ0X) ───
+
+/**
+ * How a sheet row stands against the Primer Database and the rows above it in the sheet:
+ * `new`, `sameName` (same name, different oligo), `sameOligo` (same oligo, different name) or
+ * `exact` (one record or row has both its name and its oligo).
+ */
+export type DuplicateClass = 'new' | 'sameName' | 'sameOligo' | 'exact';
+export type DuplicateChoice = 'skip' | 'keep' | 'merge';
+export type DuplicateChoices = Record<Exclude<DuplicateClass, 'new'>, DuplicateChoice>;
+
+/**
+ * What each class does until the user chooses: an exact duplicate is skipped, a same-oligo row is
+ * skipped (the oligo is already there), and a same-name row with a different oligo is kept as a
+ * record of its own (nothing is overwritten by name).
+ */
+export const DEFAULT_DUPLICATE_CHOICES: Readonly<DuplicateChoices> = Object.freeze({ exact: 'skip', sameOligo: 'skip', sameName: 'keep' });
+/** No choice made for a single row: every row follows its class. */
+export const NO_ROW_CHOICES: Readonly<Record<number, DuplicateChoice>> = Object.freeze({});
+
+export const DUPLICATE_CLASS_LABEL: Readonly<Record<DuplicateClass, string>> = Object.freeze({
+  new: 'New',
+  sameName: 'Same name, different oligo',
+  sameOligo: 'Same oligo, different name',
+  exact: 'Exact duplicate',
+});
+
+/** A record or an earlier row a row matches. */
+export type PrimerMatch = { kind: 'database'; id: string; name: string } | { kind: 'row'; row: number; name: string };
+
+export interface ClassifiedPrimerRow {
+  row: FaithfulPrimerRow;
+  cls: DuplicateClass;
+  /** What the name matches (a database record before an earlier row), or null. */
+  nameMatch: PrimerMatch | null;
+  /** What the oligo matches (a database record before an earlier row), or null. */
+  oligoMatch: PrimerMatch | null;
+}
+
+export interface PrimerRowProblem { row: number; name: string; reason: string }
+
+/**
+ * The modification text a row's oligo is stored with: terminal ones as written, internal ones at
+ * their base. In an RNA oligo an `r` prefix only says the base is RNA, which the molecule already
+ * says, so it is left out; in a DNA oligo it marks an RNA base and is kept.
+ */
+export function modificationTextOf(row: FaithfulPrimerRow): string {
+  return row.modifications.filter((m) => !(row.molecule === 'RNA' && /^r[ACGU]$/.test(m.text))).map((m) => (m.placement === 'internal' ? `${m.text}@${m.position}` : m.text)).join(' ');
+}
+
+/** A name compared trimmed and case-insensitively. */
+export function nameKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/**
+ * An oligo's identity: its normalized sequence, its molecule and its modification text. A reverse
+ * complement, the RNA or DNA counterpart, or the same bases with another modification differ.
+ */
+export function oligoKey(sequence: string, molecule: PrimerMolecule, modifications: string): string {
+  return `${molecule}\u0000${sequence}\u0000${modifications.trim().replace(/\s+/g, ' ')}`;
+}
+
+/** Why the Primer Database would refuse a row (its own rules: a one-line name, a valid sequence), or null. */
+function storeRefusal(row: FaithfulPrimerRow): string | null {
+  if (!row.name.trim()) return 'A primer needs a name.';
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(row.name)) return 'A primer name is one line, without tabs or line breaks.';
+  const seq = normalizeDatabaseSequence(row.sequence, row.molecule);
+  if (!seq.ok) return seq.reason;
+  if (seq.sequence !== row.sequence) return 'The sequence does not read the same way in the Primer Database.';
+  return null;
+}
+
+/**
+ * Classifies each valid row against the active database records and the rows above it in the sheet,
+ * by name and by oligo. A row with an error, or one the database would refuse, is rejected.
+ */
+export function classifyPrimerRows(rows: FaithfulPrimerRow[], existing: DatabasePrimer[]): { classified: ClassifiedPrimerRow[]; rejected: PrimerRowProblem[] } {
+  const active = existing.filter((r) => r.trashedAt === undefined);
+  const classified: ClassifiedPrimerRow[] = [];
+  const rejected: PrimerRowProblem[] = [];
+  const seen: { row: number; name: string; nk: string; ok: string }[] = [];
+  for (const row of rows) {
+    const reason = row.errors.length ? row.errors.map((e) => e.message).join('; ') : storeRefusal(row);
+    if (reason) { rejected.push({ row: row.row, name: row.name, reason }); continue; }
+    const nk = nameKey(row.name);
+    const ok = oligoKey(row.sequence, row.molecule, modificationTextOf(row));
+    const dbExact = active.find((r) => nameKey(r.name) === nk && oligoKey(r.sequence, r.molecule, r.modifications) === ok);
+    const rowExact = seen.find((s) => s.nk === nk && s.ok === ok);
+    const dbName = active.find((r) => nameKey(r.name) === nk);
+    const rowName = seen.find((s) => s.nk === nk);
+    const dbOligo = active.find((r) => oligoKey(r.sequence, r.molecule, r.modifications) === ok);
+    const rowOligo = seen.find((s) => s.ok === ok);
+    const fromDb = (r: DatabasePrimer): PrimerMatch => ({ kind: 'database', id: r.id, name: r.name });
+    const fromRow = (s: { row: number; name: string }): PrimerMatch => ({ kind: 'row', row: s.row, name: s.name });
+    const exact = dbExact ? fromDb(dbExact) : rowExact ? fromRow(rowExact) : null;
+    const nameMatch = exact ?? (dbName ? fromDb(dbName) : rowName ? fromRow(rowName) : null);
+    const oligoMatch = exact ?? (dbOligo ? fromDb(dbOligo) : rowOligo ? fromRow(rowOligo) : null);
+    const cls: DuplicateClass = exact ? 'exact' : nameMatch ? 'sameName' : oligoMatch ? 'sameOligo' : 'new';
+    classified.push({ row, cls, nameMatch: cls === 'sameOligo' ? null : nameMatch, oligoMatch: cls === 'sameName' ? null : oligoMatch });
+    seen.push({ row: row.row, name: row.name, nk, ok });
+  }
+  return { classified, rejected };
+}
+
+/** The choice that applies to a row: its own, else its class's. */
+export function choiceFor(c: ClassifiedPrimerRow, byClass: Readonly<DuplicateChoices>, byRow: Readonly<Record<number, DuplicateChoice>>): DuplicateChoice | null {
+  if (c.cls === 'new') return null;
+  return byRow[c.row.row] ?? byClass[c.cls];
+}
+
+export interface PrimerDatabaseImportPlan {
+  /** New records, in sheet order. */
+  added: DatabasePrimer[];
+  /** Stored records with the merged labels and filled fields; name and sequence as stored. */
+  merged: DatabasePrimer[];
+  skipped: PrimerRowProblem[];
+  rejected: PrimerRowProblem[];
+  /** Rows that end up saved: added rows and rows whose merge changed a record. */
+  imported: number;
+}
+
+/** Merge a row into a record: add its labels, fill empty fields; the name, sequence and molecule never change. */
+function mergeInto(target: DatabasePrimer, row: FaithfulPrimerRow, time: string): DatabasePrimer {
+  const labels = [...target.labels];
+  for (const l of row.labels) if (!labels.includes(l)) labels.push(l);
+  const modifications = target.modifications || modificationTextOf(row);
+  const description = target.description || row.description;
+  const changed = labels.length !== target.labels.length || modifications !== target.modifications || description !== target.description;
+  return changed ? { ...target, labels, modifications, description, modifiedAt: time } : target;
+}
+
+/**
+ * What saving the reviewed sheet does, given the user's choices. A new row and a row kept
+ * separately become new records; a merged row adds to the record (or earlier row) it matches; a
+ * skipped row, a merge that adds nothing, and a merge into a row that is itself not saved are
+ * skipped with the reason.
+ */
+export function planPrimerDatabaseImport(
+  reading: PrimerSpreadsheetReading,
+  existing: DatabasePrimer[],
+  byClass: Readonly<DuplicateChoices>,
+  byRow: Readonly<Record<number, DuplicateChoice>>,
+  env: { now: string; newId: () => string; source: string },
+): PrimerDatabaseImportPlan {
+  const { classified, rejected } = classifyPrimerRows(reading.rows, existing);
+  const added: DatabasePrimer[] = [];
+  const addedByRow = new Map<number, number>();
+  const mergedById = new Map<string, DatabasePrimer>();
+  const skipped: PrimerRowProblem[] = [];
+  let imported = 0;
+  const stored = new Map(existing.map((r) => [r.id, r] as const));
+  // Where a row ends up, so a later row can merge into it: an added record or a stored one.
+  const landed = new Map<number, { added: number } | { id: string }>();
+  for (const c of classified) {
+    const { row } = c;
+    const choice = choiceFor(c, byClass, byRow);
+    if (choice === 'skip') { skipped.push({ row: row.row, name: row.name, reason: `skipped: ${DUPLICATE_CLASS_LABEL[c.cls].toLowerCase()}` }); continue; }
+    if (choice === null || choice === 'keep') {
+      const ids = new Set([...existing.map((r) => r.id), ...added.map((r) => r.id)]);
+      let id = env.newId();
+      while (ids.has(id)) id = env.newId();
+      addedByRow.set(row.row, added.length);
+      landed.set(row.row, { added: added.length });
+      added.push({
+        id, name: row.name.trim(), sequence: row.sequence, originalInput: row.original, molecule: row.molecule,
+        modifications: modificationTextOf(row), tail5Prime: '', description: row.description, labels: [...new Set(row.labels)],
+        createdAt: env.now, modifiedAt: env.now, provenance: `Imported from ${env.source}, row ${row.row}`,
+      });
+      imported++;
+      continue;
+    }
+    const match = c.cls === 'sameName' ? c.nameMatch : c.oligoMatch;
+    const into = !match ? undefined : match.kind === 'database' ? { id: match.id } : landed.get(match.row);
+    if (!into) { skipped.push({ row: row.row, name: row.name, reason: `not merged: row ${match && match.kind === 'row' ? match.row : '?'} it matches is not saved` }); continue; }
+    if ('added' in into) {
+      const before = added[into.added];
+      added[into.added] = mergeInto(before, row, env.now);
+      if (added[into.added] === before) skipped.push({ row: row.row, name: row.name, reason: 'not merged: nothing new to add' });
+      else imported++;
+    } else {
+      const before = mergedById.get(into.id) ?? stored.get(into.id)!;
+      const after = mergeInto(before, row, env.now);
+      if (after === before) skipped.push({ row: row.row, name: row.name, reason: 'not merged: nothing new to add' });
+      else { mergedById.set(into.id, after); imported++; }
+    }
+    landed.set(row.row, into);
+  }
+  return { added, merged: [...mergedById.values()], skipped, rejected, imported };
+}
+
+export interface PrimerDatabaseImportCounts { imported: number; added: number; merged: number; skipped: number; rejected: number }
+
+export function countsOf(plan: PrimerDatabaseImportPlan): PrimerDatabaseImportCounts {
+  return { imported: plan.imported, added: plan.added.length, merged: plan.imported - plan.added.length, skipped: plan.skipped.length, rejected: plan.rejected.length };
+}
+
+/** "3 imported (2 new, 1 merged), 2 skipped, 1 rejected" */
+export function describeImportCounts(n: PrimerDatabaseImportCounts): string {
+  return `${n.imported} imported (${n.added} new, ${n.merged} merged), ${n.skipped} skipped, ${n.rejected} rejected`;
+}
+
+/**
+ * Saves a plan in ONE store write: the new and merged records go through the store's backup
+ * restore, which re-reads the store, adds the new ids and replaces the merged ones together, and
+ * writes once, so either every row is saved or none is. (Between the dialog's read and this write,
+ * a record another window changed and this plan merges into is replaced by the merged one.)
+ */
+export function savePrimerDatabaseImport(db: PrimerDatabase, plan: PrimerDatabaseImportPlan, now: string): { ok: true; message: string } | { ok: false; message: string } {
+  const counts = countsOf(plan);
+  if (!plan.added.length && !plan.merged.length) return { ok: false, message: `Nothing was saved to the Primer Database: no row is left to import (${describeImportCounts(counts)}).` };
+  const backup = JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: PRIMER_DATABASE_SCHEMA, exportedAt: now, records: [...plan.added, ...plan.merged] });
+  const result = db.importBackup(backup, { replace: plan.merged.map((r) => r.id) });
+  if (!result.ok) return { ok: false, message: `Nothing was saved to the Primer Database: ${result.error.message}` };
+  const s = result.value;
+  if (s.added.length !== plan.added.length || s.replaced.length !== plan.merged.length) {
+    return { ok: false, message: `The Primer Database did not take the import as planned (${s.added.length} added, ${s.replaced.length} merged of ${plan.added.length} and ${plan.merged.length}); check it before importing again.` };
+  }
+  return { ok: true, message: `Saved to the Primer Database: ${describeImportCounts(counts)}.` };
 }
