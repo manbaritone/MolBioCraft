@@ -730,13 +730,13 @@ describe('Split view side by side (US-01M6Q1CC)', () => {
     /**
      * The view drawn with AmpR selected (or nothing), running `script` one entry per render pass:
      * a width measures the rows' scroll area through its callback ref (the column resizing between
-     * passes), and 'next' clicks Next ▶.
+     * passes), and 'next' clicks Next ▶ (the button titled "Next page").
      */
     const draw = (script: readonly (number | 'next')[], selected = true) => {
       let pass = 0;
       let next: (() => void) | undefined;
       probe.onElement = (type, props) => {
-        if (type === 'button' && props.className === 'btn-page' && props.children === 'Next ▶') next = props.onClick as () => void;
+        if (type === 'button' && props.className === 'btn-page' && props.title === 'Next page') next = props.onClick as () => void;
         if (type !== 'div' || props.className !== 'sequence-blocks-scroll') return;
         const entry = script[pass++];
         if (entry === 'next') next!();
@@ -848,9 +848,14 @@ describe('The linear overview keeps a usable height beside the circle (BG-01M7CJ
   // at a 1440x860 viewport too: 385px, where the overview had fallen to 15px.
   const COLUMN_1440 = 423;
   const COLUMN_1440_WINDOW = 383;
-  // What does not give: the card's title row (35px measured) and the quickbar's fixed slot.
-  const TITLE_ROW = 35;
-  const SIDE_BY_SIDE = [CANVAS_DEFAULT, CANVAS_MEASURED, CANVAS_WITH_RAIL, 1377];
+  // BG-01M7CRMG: the card at 1366x768 with the table shown (a 803px canvas), measured 2026-11-14
+  // in Chromium and WebKit: 318px inside its borders, where a two-line title had clipped the rows.
+  const COLUMN_1366 = 318;
+  const CANVAS_1366 = 803;
+  const SIDE_BY_SIDE = [CANVAS_DEFAULT, CANVAS_MEASURED, CANVAS_WITH_RAIL, CANVAS_1366, 1377];
+  const HEADER = `${CARD} > .studio-card-header`;
+  const QUICKBAR = `${CARD} > .seq-selection-quickbar`;
+  const FOLDED = `${CARD} > .linear-toolbar.is-folded`;
 
   const ROOT = new Map(CSS_RULES.filter((r) => r.at.length === 0 && r.selectors.includes(':root')).flatMap((r) => [...r.decls].map(([k, v]) => [k, v.value] as const)));
   /** A length in px: `Npx`, a root token, or a calc() sum of those; NaN for anything else (0, %, auto). */
@@ -880,6 +885,30 @@ describe('The linear overview keeps a usable height beside the circle (BG-01M7CJ
     const longhand = cascaded(sel, 'flex-shrink', width);
     if (longhand && (!shorthand || longhand.rule.order > shorthand.rule.order)) return Number(longhand.value);
     return shorthand ? Number(shorthand.value.split(/\s+/)[1] ?? 1) : 1;
+  };
+  /**
+   * What does not give: the card's title row, one line (its tallest control, the overview zoom, a
+   * control height; its padding under it; its 1px rule: 33px measured in both engines), and the
+   * quickbar's fixed slot with the space under it. A title row that may wrap has no height to add up.
+   */
+  const titleRow = (width: number) => {
+    expect(cascaded(HEADER, 'flex-wrap', width)?.value, `the title row keeps one line at ${width}px`).toBe('nowrap');
+    const h4 = `${HEADER} > h4`;
+    expect(cascaded(h4, 'white-space', width)?.value, 'the name stays on its line').toBe('nowrap');
+    expect(cascaded(h4, 'overflow', width)?.value, 'and is cut short').toBe('hidden');
+    expect(cascaded(h4, 'text-overflow', width)?.value, 'with an ellipsis').toBe('ellipsis');
+    expect(cascaded(h4, 'min-inline-size', width)?.value, 'and may narrow below its text').toBe('0');
+    return px('var(--mbc-control-h-md)') + px(cascaded(HEADER, 'padding-block-end', width)?.value) + 1;
+  };
+  const quickbarSlot = (width: number) => linearView.SELECTION_QUICKBAR_HEIGHT_PX + px(cascaded(QUICKBAR, 'margin-block-end', width)?.value);
+  /** The folded toolbar's floor: its search line and its Tools-and-pager line, never less. */
+  const foldedFloor = (width: number) => {
+    const floor = minOf(FOLDED, width);
+    const lines = px('var(--mbc-control-h-md)') + px('var(--mbc-control-h-sm)');
+    const pad = px(cascaded(FOLDED, 'padding-block', width)?.value);
+    const gap = px(cascaded(FOLDED, 'gap', width)?.value);
+    expect(floor, `the folded toolbar holds both lines at ${width}px`).toBeGreaterThanOrEqual(lines + 2 * pad + gap + 1);
+    return floor;
   };
 
   it('holds the overview at 48px or more, from its own rule, wherever the maps sit side by side', () => {
@@ -928,9 +957,12 @@ describe('The linear overview keeps a usable height beside the circle (BG-01M7CJ
       // Its floor keeps the search box and Go-to line (a control height) in view.
       expect(toolbar, `the toolbar's floor at ${width}px`).toBeGreaterThanOrEqual(px('var(--mbc-control-h-md)'));
 
-      const floors = TITLE_ROW + minOf(OVERVIEW, width) + toolbar + quickbar + rows;
+      // BG-01M7CRMG: the toolbar's floor is its folded two lines (a toolbar at its search line alone
+      // had scrolled its pager away), the title row is one line, and the quickbar counts its margin.
+      const floors = titleRow(width) + minOf(OVERVIEW, width) + foldedFloor(width) + quickbarSlot(width) + rows;
       expect(floors, `every floor fits the 1440x900 card at ${width}px`).toBeLessThanOrEqual(COLUMN_1440);
-      expect(floors, `and the card of a 1440x900 window at ${width}px`).toBeLessThanOrEqual(COLUMN_1440_WINDOW);
+      expect(floors, `and the card of a 1440x900 window (1440x860) at ${width}px`).toBeLessThanOrEqual(COLUMN_1440_WINDOW);
+      expect(floors, `and the card at 1366x768 at ${width}px`).toBeLessThanOrEqual(COLUMN_1366);
     }
   });
 
@@ -939,5 +971,94 @@ describe('The linear overview keeps a usable height beside the circle (BG-01M7CJ
     expect(cascaded(CARD, 'min-block-size', 759)?.value).toBe('380px');
     expect(cascadedAny(OVERVIEW, ['min-block-size', 'min-height'], 759)).toBeUndefined();
     expect(cascaded(TOOLBAR, 'overflow-y', 759)).toBeNull();
+  });
+});
+
+// ─── BG-01M7CRMG: on a short card the toolbar folds, and its pager never scrolls away ───
+
+describe('On a short card the toolbar folds its tools behind Tools and keeps its pager in view (BG-01M7CRMG)', () => {
+  const CARD = `${SPLIT} > .linear-seq-container`;
+  const BAR = `${SPLIT} .linear-toolbar.is-folded`;
+  const SIDE = [CANVAS_DEFAULT, 803, 1377];
+
+  it('folds exactly when the toolbar\'s lines do not fit what the other floors leave it', () => {
+    // Wrong implementations this catches: folding on width alone (1440x860 and 1440x900 share one
+    // width, and only the shorter one is short), never folding, folding against the toolbar's
+    // search line instead of every line, and leaving out the overview's or the rows' floor.
+    const { linearToolbarFolds } = linearView;
+    // Measured 2026-11-14 in Chromium and WebKit with the table shown: the card's inner height; the
+    // title row (33px), the quickbar (32px) and the 2px under it; floors 64px and 120px; and the
+    // toolbar's every line (134-135px at 482px, 104px at 748px).
+    const at = (card: number, toolbarFull: number) => linearToolbarFolds({ card, fixed: 33 + 32 + 2, overviewFloor: 64, rowsFloor: 120, toolbarFull });
+    expect(at(318, 135), '1366x768').toBe(true);
+    expect(at(383, 135), '1440x860').toBe(true);
+    expect(at(423, 135), '1440x900: everything fits, nothing folds').toBe(false);
+    expect(at(723, 104), '1920x1200').toBe(false);
+    // The edge: a toolbar that fits to the pixel stays whole; one pixel more folds it.
+    expect(at(64 + 120 + 67 + 135, 135)).toBe(false);
+    expect(at(64 + 120 + 67 + 134, 135)).toBe(true);
+    expect(linearToolbarFolds({ card: 383, fixed: 67, overviewFloor: 0, rowsFloor: 120, toolbarFull: 135 }), 'the overview\'s floor counts').toBe(false);
+    expect(linearToolbarFolds({ card: 383, fixed: 67, overviewFloor: 64, rowsFloor: 0, toolbarFull: 135 }), 'the rows\' floor counts').toBe(false);
+  });
+
+  it('keeps search and the Tools-and-pager line, never wrapped, ahead of anything that scrolls', () => {
+    // Wrong implementations this catches: the tools left inline on a folded toolbar (they wrap the
+    // pager to a third line the card cannot show); Tools never shown; the pager line wrapping or
+    // sitting below the search hits (which then scroll it away); pager buttons taller than the line's
+    // control height; and a page readout that cannot narrow, pushing the line past the card.
+    for (const width of SIDE) {
+      expect(cascaded(`${BAR} .linear-toolbar-left-pills`, 'display', width)?.value, `the tools fold away at ${width}px`).toBe('none');
+      expect(cascaded(`${BAR} .linear-toolbar-more`, 'display', width)?.value, 'Tools shows').toBe('inline-flex');
+      expect(cascaded(`${BAR} > .linear-toolbar-actions`, 'flex-wrap', width)?.value, 'one pager line').toBe('nowrap');
+      expect(cascaded(`${BAR} > .linear-toolbar-actions`, 'flex-shrink', width)?.value, 'that does not give').toBe('0');
+      expect(cascaded(`${BAR} > .search-box-group`, 'display', width)?.value, 'the search lines join the toolbar').toBe('contents');
+      const pagerOrder = Number(cascaded(`${BAR} > .linear-toolbar-actions`, 'order', width)?.value ?? 0);
+      const hitsOrder = Number(cascaded(`${BAR} > .search-box-group > :not(.seq-search-and-jump-row)`, 'order', width)?.value ?? 0);
+      expect(pagerOrder, 'the pager line comes after the search line').toBeGreaterThan(0);
+      expect(hitsOrder, 'and the hits and warnings after the pager').toBeGreaterThan(pagerOrder);
+      for (const control of ['.btn-page', '.linear-toolbar-more']) {
+        expect(cascaded(`${BAR} ${control}`, 'block-size', width)?.value, `${control} is a small control`).toBe('var(--mbc-control-h-sm)');
+      }
+      expect(cascaded(`${BAR} .page-indicator`, 'min-inline-size', width)?.value, 'the readout narrows last').toBe('0');
+      expect(cascaded(`${BAR} .page-indicator`, 'text-overflow', width)?.value, 'with an ellipsis').toBe('ellipsis');
+      // The tools open over the rows, outside the toolbar's and the card's clipping.
+      expect(cascaded(`${BAR} .linear-toolbar-left-pills.is-open`, 'display', width)?.value).toBe('flex');
+      expect(cascaded(`${BAR} .linear-toolbar-left-pills.is-open`, 'position', width)?.value).toBe('fixed');
+    }
+    // Unfolded, and wherever the maps stack, Tools is not drawn and the toolbar is as it was.
+    expect(cascaded('.linear-toolbar-more', 'display', 1377)?.value).toBe('none');
+    for (const sel of [`${BAR} .linear-toolbar-left-pills`, `${BAR} .linear-toolbar-more`, `${CARD} > .linear-toolbar.is-folded`, `${CARD} > .studio-card-header`, `${CARD} > .seq-selection-quickbar`]) {
+      expect(CSS_RULES.filter((r) => r.selectors.includes(sel) && r.at.every((a) => appliesAt(a, 759))), `${sel} at 759px`).toEqual([]);
+    }
+  });
+
+  it('wires Tools to every tool it holds, and names the pager and the title in full', () => {
+    // Wrong implementations this catches: a Tools button that controls nothing (or another element),
+    // a tool left outside what it opens, a cut-short title with no full name, and a pager whose
+    // buttons say nothing more than an arrow on hover.
+    const root = parseMarkup(renderToStaticMarkup(
+      <LinearSequenceView doc={puc19} cutSites={puc19Cuts} selectedRange={null} onSelectRange={() => {}} onUpdateDocument={() => {}}
+        onLoadBenchmarkDocument={() => {}} />,
+    ));
+    const card = byClass(root, 'linear-seq-container')[0];
+    const tools = byClass(card, 'linear-toolbar-more');
+    expect(tools, 'one Tools button').toHaveLength(1);
+    expect(tools[0].attrs['aria-label']).toBe('More tools');
+    expect(tools[0].attrs['aria-expanded'], 'closed until opened').toBe('false');
+    const pills = byClass(card, 'linear-toolbar-left-pills');
+    expect(pills).toHaveLength(1);
+    expect(tools[0].attrs['aria-controls'], 'Tools opens the tools').toBe(pills[0].attrs.id);
+    expect(pills[0].attrs.id).toBeTruthy();
+    const held = textOf(pills[0]);
+    for (const tool of ['+ Add Annotation', 'Color Options', 'Show cut marks', '500 kbp Genome', '10k aa Protein', 'Window GC']) {
+      expect(held, `Tools holds ${tool}`).toContain(tool);
+    }
+    // Tools and the pager share the actions line, Tools first, then the tools it opens.
+    const line = byClass(card, 'linear-toolbar-actions')[0];
+    expect(kids(line).map((k) => [...k.classes].find((c) => c !== 'btn-secondary-sm'))).toEqual(['linear-toolbar-more', 'linear-toolbar-left-pills', 'pagination-group']);
+    const pager = kids(byClass(card, 'pagination-group')[0]);
+    expect(pager.map((b) => `${b.attrs.title ?? ''}:${textOf(b)}`).filter((x) => /page/.test(x))).toEqual(['First page:⏮', 'Previous page:◀ Prev', 'Next page:Next ▶', 'Last page:⏭']);
+    const h4 = findAll(byClass(card, 'studio-card-header')[0], (e) => e.tag === 'h4')[0];
+    expect(h4.attrs.title, 'the title row names the molecule in full').toBe(`Linear Map — ${puc19.name}`);
   });
 });

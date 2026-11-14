@@ -2386,6 +2386,102 @@ fieldset > legend,
   .map-seq-grid.mode-split .linear-toolbar-left-pills {
     display: contents;
   }
+
+  /* BG-01M7CRMG: the title row is one line, its name cut short with the whole of it in its title,
+     so the card's floors add up to what they say (it wrapped to 65px in a 441px card at 1366x768). */
+  .map-seq-grid.mode-split > .linear-seq-container > .studio-card-header {
+    flex-wrap: nowrap;
+    padding-block-end: var(--mbc-space-1);
+  }
+
+  /* The quickbar keeps its 32px line; only the space under it narrows. */
+  .map-seq-grid.mode-split > .linear-seq-container > .seq-selection-quickbar {
+    margin-block-end: 2px;
+  }
+
+  .map-seq-grid.mode-split > .linear-seq-container > .studio-card-header > * {
+    flex-shrink: 0;
+  }
+
+  .map-seq-grid.mode-split > .linear-seq-container > .studio-card-header > h4 {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* When the toolbar's lines do not fit what the card leaves it (the view measures this and sets
+     is-folded), it folds to two lines that never scroll away: search and Go to, then Tools and the
+     pager. Tools opens the rest (+ Add Annotation, Color Options, cut marks, the generators and the
+     window readout) in a panel over the rows; search hits and warnings come after the pager line. */
+  .map-seq-grid.mode-split > .linear-seq-container > .linear-toolbar.is-folded {
+    min-block-size: calc(var(--mbc-control-h-md) + var(--mbc-control-h-sm) + 13px);
+    padding-block: 4px;
+    gap: 4px;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded > .search-box-group {
+    display: contents;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded > .search-box-group > :not(.seq-search-and-jump-row) {
+    order: 2;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded > .linear-toolbar-actions {
+    order: 1;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .linear-toolbar-more {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .linear-toolbar-more,
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .btn-page {
+    flex-shrink: 0;
+    block-size: var(--mbc-control-h-sm);
+    padding-block: 0;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .btn-page {
+    padding-inline: 6px;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .pagination-group {
+    min-inline-size: 0;
+    gap: 4px;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .page-indicator {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .linear-toolbar-left-pills {
+    display: none;
+  }
+
+  .map-seq-grid.mode-split .linear-toolbar.is-folded .linear-toolbar-left-pills.is-open {
+    display: flex;
+    position: fixed;
+    z-index: 1000;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--mbc-space-2);
+    max-inline-size: min(340px, calc(100vw - 16px));
+    padding: var(--mbc-space-2);
+    border: 1px solid var(--mbc-border-strong);
+    border-radius: var(--mbc-radius-sm);
+    background: var(--mbc-bg-elevated);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+    font-size: var(--font-size-label);
+  }
 }
 
 /* US-01M7CCT5: the Split frame holds the map grid, the divider between its two cards, and the
@@ -2724,6 +2820,11 @@ fieldset > legend,
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* Tools shows only on a folded toolbar beside the circle (BG-01M7CRMG). */
+.linear-toolbar-more {
+  display: none;
 }
 
 .pagination-group {

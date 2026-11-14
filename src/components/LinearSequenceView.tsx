@@ -1,7 +1,7 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ZoomIn, ZoomOut } from 'lucide-react';
 import { downloadSummarySequence } from '../core/contigSummary';
 import { intervalContains, intervalSequence, moveInterval, normaliseInterval, renderSegments, resizeIntervalBy, selectionInterval } from '../core/activeInterval';
@@ -1472,6 +1472,21 @@ export function quickbarMenuKey(key: string, index: number, count: number): { fo
   }
 }
 
+/**
+ * Whether the linear toolbar folds its tools behind its Tools button (BG-01M7CRMG). Beside the
+ * circle the card is as tall as the column, and the toolbar has what is left once every other strip
+ * sits on its floor: `card` (the card's inner height) less `fixed` (the strips that never give: the
+ * title row, the quickbar and any banner), the overview's floor and the rows' floor. A toolbar
+ * whose every line (`toolbarFull`, its unfolded height) does not fit there folds, so its search and
+ * pager lines stay in view and nothing it holds is left below a scroll with no sign of it.
+ */
+export function linearToolbarFolds(m: { card: number; fixed: number; overviewFloor: number; rowsFloor: number; toolbarFull: number }): boolean {
+  return m.toolbarFull > m.card - m.fixed - m.overviewFloor - m.rowsFloor + 0.5;
+}
+
+/** A layout effect in a browser; on the server (which has no layout to read) a plain effect, unwarned. */
+const useBrowserLayoutEffect = typeof document !== 'undefined' ? useLayoutEffect : useEffect;
+
 /** The quickbar's actions as drawn: the first `inlineCount` inline, the rest in the More menu. */
 export function QuickbarActionStrip({
   actions,
@@ -1732,6 +1747,15 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   /** The schematic track, so its Export control saves the map and not a graph below it. */
   const schematicRef = useRef<HTMLDivElement | null>(null);
+  /** The card and its toolbar, measured to fold the toolbar's tools when its lines do not fit. */
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const toolsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const toolsPanelRef = useRef<HTMLDivElement | null>(null);
+  const toolsPanelId = useId();
+  const [toolsFolded, setToolsFolded] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [toolsAt, setToolsAt] = useState<{ top: number; left: number } | null>(null);
 
   const rawLen = doc.sequence.length;
   const seqLen = Math.max(1, rawLen);
@@ -2894,12 +2918,78 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       </>
     );
   };
+  // BG-01M7CRMG: fold the toolbar's tools when its lines do not fit the card. Its unfolded height is
+  // read with the fold lifted for the read and put back before anything paints.
+  const measureToolbarFold = useCallback(() => {
+    const card = cardRef.current;
+    const bar = toolbarRef.current;
+    if (!card || !bar || typeof getComputedStyle !== 'function') return;
+    const folded = bar.classList.contains('is-folded');
+    if (folded) bar.classList.remove('is-folded');
+    const toolbarFull = bar.scrollHeight + (bar.offsetHeight - bar.clientHeight);
+    if (folded) bar.classList.add('is-folded');
+    // Every strip's margins count with what never gives (the quickbar's space under it, say).
+    let fixed = 0;
+    let overviewFloor = 0;
+    let rowsFloor = 0;
+    for (const el of Array.from(card.children) as HTMLElement[]) {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.position === 'absolute' || cs.position === 'fixed') continue;
+      fixed += (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+      if (el === bar) continue;
+      const floor = parseFloat(cs.minBlockSize) || 0;
+      if (el.classList.contains('mbc-schematic-header')) overviewFloor = floor;
+      else if (el.classList.contains('sequence-blocks-scroll')) rowsFloor = floor;
+      else fixed += el.getBoundingClientRect().height;
+    }
+    setToolsFolded(linearToolbarFolds({ card: card.clientHeight, fixed, overviewFloor, rowsFloor, toolbarFull }));
+  }, []);
+  useBrowserLayoutEffect(measureToolbarFold, [
+    measureToolbarFold, doc.id, isProtein, Boolean(onLoadBenchmarkDocument), searchMatches.length,
+    searchResult.warnings.length, showAddFeature, isContigSummary, showDownloadSummaryTab, schematicCoverage.length,
+  ]);
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card || typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(() => measureToolbarFold());
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [measureToolbarFold]);
+  const openTools = () => {
+    const r = toolsButtonRef.current?.getBoundingClientRect?.();
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
+    // Under the Tools button, kept on screen (the panel is at most 340px wide).
+    setToolsAt(r ? { top: r.bottom + 4, left: Math.max(8, Math.min(r.left, vw - 348)) } : null);
+    setToolsOpen(true);
+  };
+  useEffect(() => {
+    if (!toolsFolded) setToolsOpen(false);
+  }, [toolsFolded]);
+  useEffect(() => {
+    if (!toolsOpen || typeof document === 'undefined') return;
+    const close = (e: Event) => {
+      const t = e.target as Node | null;
+      if (t && (toolsPanelRef.current?.contains(t) || toolsButtonRef.current?.contains(t))) return;
+      setToolsOpen(false);
+    };
+    const shut = () => setToolsOpen(false);
+    document.addEventListener('pointerdown', close, true);
+    window.addEventListener('resize', shut);
+    window.addEventListener('scroll', shut, true);
+    return () => {
+      document.removeEventListener('pointerdown', close, true);
+      window.removeEventListener('resize', shut);
+      window.removeEventListener('scroll', shut, true);
+    };
+  }, [toolsOpen]);
+
   overviewFileDrawingRef.current = () =>
     // Drawn inside an <svg>, as on screen, so its elements are read as SVG; the export keeps the inside.
     renderToStaticMarkup(<svg>{drawOverview(OVERVIEW_FIT, false)}</svg>).slice('<svg>'.length, -'</svg>'.length);
 
   return (
     <div
+      ref={cardRef}
       className={`linear-seq-container scheme-${colorScheme} ${
         isProtein ? 'molecule-protein' : ''
       }`}
@@ -2979,7 +3069,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
 
       {/* Linear Schematic Overview Track */}
       <div className="studio-card-header" style={{ paddingTop: 0 }}>
-        <h4>Linear Map — {doc.name}</h4>
+        <h4 title={`Linear Map — ${doc.name}`}>Linear Map — {doc.name}</h4>
         <div
           className="mbc-overview-zoom"
           role="group"
@@ -3206,7 +3296,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       </div>
 
       {/* Sequence View Sub-Toolbar */}
-      <div className="linear-toolbar">
+      <div ref={toolbarRef} className={`linear-toolbar${toolsFolded ? ' is-folded' : ''}`}>
         <div className="search-box-group">
           <div className="seq-search-and-jump-row">
             <input
@@ -3273,7 +3363,44 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
         </div>
 
         <div className="linear-toolbar-actions">
-          <div className="linear-toolbar-left-pills">
+          {/* Shown only while the toolbar is folded (App.css): it holds the tools beside the pager. */}
+          <button
+            ref={toolsButtonRef}
+            type="button"
+            className="btn-secondary-sm linear-toolbar-more"
+            aria-label="More tools"
+            aria-expanded={toolsFolded && toolsOpen}
+            aria-controls={toolsPanelId}
+            title="More tools: + Add Annotation, Color Options, cut marks and the sequence generators"
+            onClick={() => (toolsOpen ? setToolsOpen(false) : openTools())}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && toolsOpen) {
+                e.preventDefault();
+                setToolsOpen(false);
+              }
+            }}
+          >
+            Tools ▾
+          </button>
+          <div
+            id={toolsPanelId}
+            ref={toolsPanelRef}
+            className={`linear-toolbar-left-pills${toolsFolded && toolsOpen ? ' is-open' : ''}`}
+            role={toolsFolded ? 'group' : undefined}
+            aria-label={toolsFolded ? 'More tools' : undefined}
+            style={toolsFolded && toolsOpen && toolsAt ? { top: toolsAt.top, left: toolsAt.left } : undefined}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && toolsOpen) {
+                e.preventDefault();
+                setToolsOpen(false);
+                toolsButtonRef.current?.focus();
+              }
+            }}
+            onClick={(e) => {
+              // A tool that acts (a button) closes the panel; the cut-marks box keeps it open.
+              if (toolsFolded && toolsOpen && (e.target as Element | null)?.closest?.('button')) setToolsOpen(false);
+            }}
+          >
             <button
               type="button"
               className="btn-secondary-sm"
@@ -3352,6 +3479,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               className="btn-page"
               disabled={safePageIndex === 0}
               onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
+              title="Previous page"
             >
               ◀ Prev
             </button>
@@ -3364,6 +3492,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               className="btn-page"
               disabled={safePageIndex >= totalPages - 1}
               onClick={() => setPageIndex((p) => Math.min(totalPages - 1, p + 1))}
+              title="Next page"
             >
               Next ▶
             </button>
