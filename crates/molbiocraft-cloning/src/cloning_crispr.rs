@@ -54,7 +54,7 @@ const NUCLEASE_PRESETS: &[(&str, &str, &str, usize, usize, Option<usize>, &str)]
         20,
         17,
         None,
-        "Blunt cut 3 bp 5' of the PAM, between spacer nt 17 and nt 18 (SpCas9 convention); the reported position is the last base 5' of the cut on each strand.",
+        "Blunt cut 3 bp 5' of the PAM, between spacer nt 17 and nt 18 (SpCas9 convention); the reported position is the last plus-strand base before the cut, on either strand.",
     ),
     (
         "Cas12a / Cpf1 (TTTV)",
@@ -206,6 +206,12 @@ pub struct CrisprGuideRecord {
     /// for a blunt cutter, so a single position is never read as a staggered one or the other way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut_position_target_strand: Option<usize>,
+    /// Why a staggered nuclease's second cut has no coordinate (US-01M7DV29 AC4): on a range the
+    /// scan read straight (a linear molecule, or a circle read only part-way) a cut past either end
+    /// of that range falls on no base, so `cut_position_target_strand` is left empty and this says
+    /// so, rather than a position wrapped round a molecule that has no origin to wrap across.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_position_target_strand_note: Option<String>,
     /// Which bases of `pam_seq` are an IUPAC ambiguity letter rather than a base this scan read as
     /// A, C, G or T (US-01M7DV29 AC5): the pattern's unconstrained positions are not screened, so an
     /// `N` there is reported as the letter it is and never as a confirmed base. `None` where every
@@ -675,6 +681,17 @@ pub fn scan_crispr_guides(
             scanned - (i + cut_off) % scanned
         }
     };
+    // The same cut, or nothing where it falls on no base: only a circle read whole wraps (`wraps`),
+    // so on a straight read a cut whose break would lie at or past the end of the range read
+    // (`i + cut_off >= scanned`, on either strand) has no plus-strand base before it inside the
+    // range and is not given one by the modulus (US-01M7DV29 AC4).
+    let cut_in_range = |offset: u32, strand: i8, cut_off: usize| -> Option<usize> {
+        if wraps || (offset as usize) + cut_off < scanned {
+            Some(cut_at(offset, strand, cut_off))
+        } else {
+            None
+        }
+    };
     let coords = |offset: u32, strand: i8| -> (usize, usize, usize) {
         let i = offset as usize;
         if strand == 1 {
@@ -726,6 +743,7 @@ pub fn scan_crispr_guides(
                 .expect("a candidate found in pass 1 is a candidate when its record is built");
             let (on_t, spec, off_cnt, gc) = score_guide(spacer, pam);
             let (_, end1, cut_pos) = coords(r.offset, r.strand);
+            let target_cut = cut_offset_target.map(|off| cut_in_range(r.offset, r.strand, off));
             CrisprGuideRecord {
                 id: format!(
                     "{}-{}-{}",
@@ -759,8 +777,14 @@ pub fn scan_crispr_guides(
                 pam_side: preset.pam_side.clone(),
                 pam_pattern: preset.pam_pattern.clone(),
                 cut_convention: preset.cut_convention.clone(),
-                cut_position_target_strand: cut_offset_target
-                    .map(|off| cut_at(r.offset, r.strand, off)),
+                cut_position_target_strand: target_cut.flatten(),
+                cut_position_target_strand_note: match target_cut {
+                    Some(None) => Some(
+                        "The target-strand cut falls past the end of the sequence read, so it has no position here."
+                            .to_string(),
+                    ),
+                    _ => None,
+                },
                 pam_ambiguity_note: pam_ambiguity_note(pam, &preset.pam_pattern),
             }
         })

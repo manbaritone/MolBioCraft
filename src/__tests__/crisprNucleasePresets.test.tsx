@@ -182,4 +182,22 @@ describe('the CRISPR tab offers the nucleases the engine scans for (US-01M7DV29)
     expect(spGuide.pamAmbiguityNote).toBeUndefined();
     expect(spRows[0]).not.toContain('ambiguity code');
   }, 55_000);
+
+  it('US-01M7DV29 AC4 a staggered target-strand cut past the end of a linear sequence has no position and says why, and a circle read whole wraps it', () => {
+    // The Cas12a site ends the molecule, so its target-strand cut (record base 32) lies past base 29.
+    const endSeq = `TTTTTTTTA${SPACER20}`;
+    const linear = scanCrisprGuides(endSeq, 'Cas12a / Cpf1 (TTTV)', 5, false).guides;
+    const atEnd = linear.find((g) => g.strand === 1 && g.start === 6)!;
+    expect(atEnd.cutPosition, 'the PAM-strand cut is inside the molecule').toBe(27);
+    expect(atEnd.cutPositionTargetStrand, 'never wrapped to the start of a linear molecule').toBeUndefined();
+    expect(atEnd.cutPositionTargetStrandNote).toContain('past the end');
+    // Mid-sequence, the same site keeps its second coordinate and has no note.
+    const mid = scanCrisprGuides(cas12aDoc.sequence, 'Cas12a / Cpf1 (TTTV)', 5, false).guides[0];
+    expect([mid.cutPositionTargetStrand, mid.cutPositionTargetStrandNote]).toEqual([32, undefined]);
+    // A circle read whole does wrap it: base 32 of a 29-base circle is base 3.
+    const circle = scanCrisprGuides(endSeq, 'Cas12a / Cpf1 (TTTV)', 5, true).guides.find(
+      (g) => g.strand === 1 && g.start === 6
+    )!;
+    expect([circle.cutPositionTargetStrand, circle.cutPositionTargetStrandNote]).toEqual([3, undefined]);
+  }, 55_000);
 });

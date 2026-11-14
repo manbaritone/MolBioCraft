@@ -1404,3 +1404,72 @@ fn us_01m7dv29_ac3_every_preset_is_scanned_by_its_own_rule() {
         }
     }
 }
+
+fn revcomp_acgt(s: &str) -> String {
+    s.bytes()
+        .rev()
+        .map(|b| match b {
+            b'A' => 'T',
+            b'C' => 'G',
+            b'G' => 'C',
+            b'T' => 'A',
+            other => other as char,
+        })
+        .collect()
+}
+
+#[test]
+fn us_01m7dv29_ac4_a_target_strand_cut_past_a_linear_end_has_no_position() {
+    // The Cas12a site ends the molecule: 5' TTTTT TTTA [spacer 20] 3', 29 bases. Its target-strand
+    // cut, after spacer nt 23, is site base 27, record base 32 - past the end of a linear molecule.
+    let seq = format!("TTTTTTTTA{SPACER20}");
+    assert_eq!(seq.len(), 29);
+    let scan = scan_crispr_guides(&seq, "Cas12a / Cpf1 (TTTV)", 25, None, false);
+    let g = only_guide(&scan);
+    assert_eq!((g.start, g.end, g.strand), (6, 29, 1));
+    assert_eq!(g.cut_position, 27, "the PAM-strand cut still falls inside the molecule");
+    assert_eq!(
+        g.cut_position_target_strand, None,
+        "a cut past the end of a linear molecule is never wrapped to its start"
+    );
+    assert!(
+        g.cut_position_target_strand_note
+            .as_deref()
+            .is_some_and(|n| n.contains("past the end")),
+        "and the row says why it has no position: {:?}",
+        g.cut_position_target_strand_note
+    );
+
+    // The same site read on the reverse strand of the reverse-complemented molecule sits at its
+    // start, plus 1..24, and its target-strand cut lies before base 1: again no position.
+    let rev = revcomp_acgt(&seq);
+    let scan = scan_crispr_guides(&rev, "Cas12a / Cpf1 (TTTV)", 25, None, false);
+    let g = only_guide(&scan);
+    assert_eq!(g.strand, -1);
+    assert_eq!((g.start.min(g.end), g.start.max(g.end)), (1, 24), "the site at plus 1..24");
+    assert_eq!(g.cut_position_target_strand, None, "never wrapped to the far end");
+    assert!(g.cut_position_target_strand_note.is_some());
+
+    // A blunt cutter has neither a second coordinate nor a note.
+    let sp = format!("{SPACER20}TGG");
+    let scan = scan_crispr_guides(&sp, "SpCas9 (NGG)", 25, None, false);
+    for g in &scan.guides {
+        assert_eq!(g.cut_position_target_strand, None);
+        assert_eq!(g.cut_position_target_strand_note, None);
+    }
+}
+
+#[test]
+fn us_01m7dv29_ac4_a_circle_read_whole_wraps_the_target_strand_cut_across_its_origin() {
+    // The same 29 bases as a circle read whole: base 32 is base 3 across the origin.
+    let seq = format!("TTTTTTTTA{SPACER20}");
+    let scan = scan_crispr_guides(&seq, "Cas12a / Cpf1 (TTTV)", 25, None, true);
+    let g = scan
+        .guides
+        .iter()
+        .find(|g| g.strand == 1 && g.start == 6)
+        .expect("the forward site at 6");
+    assert!(scan.scanned_circular, "a circle read whole");
+    assert_eq!(g.cut_position_target_strand, Some(3), "32 taken round a 29-base circle");
+    assert_eq!(g.cut_position_target_strand_note, None);
+}

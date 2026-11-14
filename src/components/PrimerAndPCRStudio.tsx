@@ -1053,6 +1053,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                     {g.nuclease} ({g.pamSide} PAM)
                     {g.cutPositionTargetStrand !== undefined &&
                       ` — staggered cut, target strand @ ${bp(g.cutPositionTargetStrand)}`}
+                    {g.cutPositionTargetStrand === undefined &&
+                      g.cutPositionTargetStrandNote &&
+                      ` — staggered cut, target strand: ${g.cutPositionTargetStrandNote}`}
                   </td>
                   <td>{g.gcPercent}%</td>
                   <td>

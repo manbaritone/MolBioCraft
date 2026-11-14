@@ -487,6 +487,8 @@ export interface CrisprScanGuide extends CrisprGuideRecord {
   cutConvention: string;
   /** The staggered second cut as a plus-strand coordinate (Cas12a); absent for a blunt cutter. */
   cutPositionTargetStrand?: number;
+  /** Why a staggered cut has no second position: it falls past the end of the range read straight. */
+  cutPositionTargetStrandNote?: string;
   /** Which bases of `pamSeq` are an ambiguity letter rather than a base the scan read; absent where none are. */
   pamAmbiguityNote?: string;
 }
