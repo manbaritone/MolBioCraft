@@ -14,6 +14,7 @@ import {
 } from '../types/bio';
 import { getResidentTrackOverviewRust } from '../lib/rustBioEngine';
 import { cutSiteDisplayPosition } from '../core/restrictionDisplay';
+import { WHEEL_NOTCH_PX, wheelZoomScale } from '../core/wheelZoom';
 
 interface CircularPlasmidMapProps {
   doc: SequenceDocument;
@@ -81,12 +82,20 @@ export function stepSequenceZoom(percent: number, direction: 1 | -1): number {
 
 /**
  * The zoom one ⌘/Ctrl/⌥+wheel notch moves `percent` to: 8% larger rolling up, 7.5% smaller rolling
- * down, to the whole percent.
+ * down, to the whole percent. Every wheel event is one notch whatever the size of its delta, and a
+ * zero or NaN delta moves nothing. The step is the shared `wheelZoomScale` (src/core/wheelZoom.ts)
+ * at one WHEEL_NOTCH_PX with this map's own 8% / 7.5% pair.
  */
 export function wheelSequenceZoom(percent: number, deltaY: number): number {
   const from = clampSequenceZoom(percent);
-  if (deltaY === 0) return from;
-  return clampSequenceZoom(Math.round(from * (deltaY < 0 ? 1.08 : 0.925)));
+  if (!(deltaY < 0 || deltaY > 0)) return from;
+  const scaled = wheelZoomScale(from, Math.sign(deltaY) * WHEEL_NOTCH_PX, {
+    min: SEQUENCE_ZOOM_MIN,
+    max: SEQUENCE_ZOOM_MAX,
+    zoomInPerNotch: 1.08,
+    zoomOutPerNotch: 0.925,
+  });
+  return clampSequenceZoom(Math.round(scaled));
 }
 
 /**
