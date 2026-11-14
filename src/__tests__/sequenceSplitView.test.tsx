@@ -357,7 +357,15 @@ describe('Split view side by side (US-01M6Q1CC)', () => {
     const { html } = driveApp([(_m, d) => d('new-session:sample-library')]);
     const app = parseMarkup(html);
     expect(byClass(app, 'map-seq-grid')[0]?.classes.has('mode-split'), 'Split view with the circle').toBe(true);
-    const all = buttons(app);
+    // The linear overview has a zoom of its own (US-01M7CCG9): its -, + and Fit are labelled for
+    // the linear map and sit in its own group, so they are not the sequence map's zoom counted here.
+    const overviewZoom = byClass(app, 'mbc-overview-zoom');
+    expect(overviewZoom, 'the linear map\'s own zoom group').toHaveLength(1);
+    expect(buttons(overviewZoom[0]).map((b) => b.attrs['aria-label'])).toEqual([
+      'Zoom out the linear map', 'Zoom in the linear map', 'Fit the whole molecule in the linear map',
+    ]);
+    const inOverview = new Set([...walk(overviewZoom[0])]);
+    const all = buttons(app).filter((b) => !inOverview.has(b));
     const header = byClass(app, 'mbc-viewer-zoom-controls');
     expect(header, 'the viewer header zoom controls').toHaveLength(1);
     for (const [what, pick] of [['zoom-out', isZoomOut], ['zoom-in', isZoomIn], ['readout', isReadoutOrReset]] as const) {

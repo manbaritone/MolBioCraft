@@ -2,8 +2,20 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ZoomIn, ZoomOut } from 'lucide-react';
 import { downloadSummarySequence } from '../core/contigSummary';
 import { moveInterval, normaliseInterval, renderSegments, resizeIntervalBy } from '../core/activeInterval';
+import {
+  anchoredOffset,
+  classifyWheelGesture,
+  normalizeWheelDelta,
+  WHEEL_NOTCH_PX,
+  wheelZoomScale,
+  zoomAnchorPoint,
+  type WheelGestureLike,
+} from '../core/wheelZoom';
+import { setFigureFileDrawing } from '../core/figureCapture';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
   ActiveInterval,
   FeatureType,
@@ -317,6 +329,219 @@ export function brushKeyStep(
   return { interval: next, edge: swapped ? other : edge };
 }
 
+// ─── The linear overview's own zoom (US-01M7CCG9, CR-01M7CCSD) ───
+
+/**
+ * The overview's view: `scale` (1 = the whole molecule across the track) and `offset`, the pan in
+ * SVG units. A 0-based base boundary `b` of a molecule of `length` bases is drawn at
+ * x = SCHEMATIC_X0 + offset + (b / length) · SCHEMATIC_W · scale - the frame of wheelZoom's
+ * anchoredOffset, screen = content × scale + offset, with content and screen measured from the
+ * track's left end. The selection is not part of the view: zooming never changes it.
+ */
+export interface OverviewView {
+  scale: number;
+  offset: number;
+}
+
+export const OVERVIEW_FIT: OverviewView = { scale: 1, offset: 0 };
+/** At the zoom bound one base is this many SVG units wide (12 px on an 800 px overview): single bases show. */
+export const OVERVIEW_BASE_UNITS_AT_MAX = 12;
+/** One press of + or - zooms by three wheel notches (1.08³ ≈ 1.26×). */
+export const OVERVIEW_BUTTON_STEP_PX = 3 * WHEEL_NOTCH_PX;
+/** From this width of a base (SVG units) the axis carries one tick per base. */
+export const OVERVIEW_BASE_TICK_UNITS = 6;
+
+/** The zoom bound for a molecule of `length` bases: the scale at which one base is OVERVIEW_BASE_UNITS_AT_MAX wide (never below 1). */
+export function overviewMaxScale(length: number): number {
+  const n = Number.isFinite(length) && length >= 1 ? length : 1;
+  return Math.max(1, (OVERVIEW_BASE_UNITS_AT_MAX * n) / SCHEMATIC_W);
+}
+
+/**
+ * A view held to its bounds: scale in 1..overviewMaxScale(length), and an offset that keeps the
+ * track filled (SCHEMATIC_W · (1 - scale) .. 0), so no zoom or pan shows past the molecule's ends.
+ * A view that is not finite is the fitted view.
+ */
+export function clampOverviewView(view: OverviewView, length: number): OverviewView {
+  if (!Number.isFinite(view.scale) || !Number.isFinite(view.offset)) return OVERVIEW_FIT;
+  const scale = Math.min(overviewMaxScale(length), Math.max(1, view.scale));
+  const offset = Math.min(0, Math.max(SCHEMATIC_W * (1 - scale), view.offset));
+  return { scale, offset };
+}
+
+/** Where 0-based base boundary `boundary` is drawn (SVG x) in `view`. */
+export function overviewX(boundary: number, view: OverviewView, length: number): number {
+  return SCHEMATIC_X0 + view.offset + (boundary / Math.max(1, length)) * SCHEMATIC_W * view.scale;
+}
+
+/** The brush's scale in `view`: the zoomed track's left end and width, so a pointer maps to the base drawn under it. */
+export function overviewBrushLayout(view: OverviewView, length: number, unitsPerPx: number): BrushLayout {
+  return { x0: SCHEMATIC_X0 + view.offset, width: SCHEMATIC_W * view.scale, length, unitsPerPx };
+}
+
+/** The first and last base the track shows in `view` (1-based, inclusive). */
+export function overviewVisibleBases(view: OverviewView, length: number): { first: number; last: number } {
+  const layout = overviewBrushLayout(view, length, 1);
+  return { first: schematicBaseAt(SCHEMATIC_X0, layout), last: schematicBaseAt(SCHEMATIC_X1 - 1e-9, layout) };
+}
+
+/**
+ * The view after zooming to `scale` about SVG x `anchorX`: the molecule point under the anchor
+ * stays put (anchoredOffset), then the view is held to its bounds - so near either end of the
+ * molecule the anchor gives way rather than show past the end. A non-finite anchor zooms about the
+ * track's centre.
+ */
+export function overviewZoomTo(view: OverviewView, scale: number, anchorX: number, length: number): OverviewView {
+  const from = clampOverviewView(view, length);
+  const to = clampOverviewView({ scale, offset: from.offset }, length).scale;
+  const anchor = zoomAnchorPoint({
+    pointer: Number.isFinite(anchorX) ? { x: anchorX - SCHEMATIC_X0, y: 0 } : undefined,
+    viewport: { x: 0, width: SCHEMATIC_W, height: 0 },
+  });
+  const offset = anchoredOffset({ pointer: anchor, offset: { x: from.offset, y: 0 }, fromScale: from.scale, toScale: to }).x;
+  return clampOverviewView({ scale: to, offset }, length);
+}
+
+export interface OverviewWheelEvent extends WheelGestureLike {
+  deltaMode?: number;
+  /** The pointer's x in the overview's SVG units. */
+  x: number;
+}
+
+/**
+ * One wheel over the overview, the overview being a canvas (classifyWheelGesture): a vertical
+ * wheel, plain or with Ctrl / Cmd / Alt, and a Chromium trackpad pinch (a ctrl-flagged wheel) zoom
+ * by the shared multiplicative step about the pointer; a mostly horizontal or empty wheel is not
+ * the overview's.
+ */
+export function overviewWheelStep(event: OverviewWheelEvent, view: OverviewView, length: number): { handled: boolean; view: OverviewView } {
+  if (classifyWheelGesture(event, 'canvas') !== 'zoom') return { handled: false, view };
+  const from = clampOverviewView(view, length);
+  const scale = wheelZoomScale(from.scale, normalizeWheelDelta(event).y, { min: 1, max: overviewMaxScale(length) });
+  return { handled: true, view: overviewZoomTo(from, scale, event.x, length) };
+}
+
+/**
+ * The ruler in `view`: the fitted overview keeps its six ticks at 0, 20 .. 100% (labelled with
+ * the base count up to there, at least 1); a zoomed one ticks the bases it shows at a 1-2-5 step
+ * that gives about six labels.
+ */
+export function overviewRulerTicks(view: OverviewView, length: number): { x: number; label: number }[] {
+  const n = Math.max(1, length);
+  if (view.scale === 1 && view.offset === 0) {
+    return [0, 0.2, 0.4, 0.6, 0.8, 1.0].map((frac) => ({ x: SCHEMATIC_X0 + frac * SCHEMATIC_W, label: Math.max(1, Math.round(frac * n)) }));
+  }
+  const { first, last } = overviewVisibleBases(view, n);
+  const span = Math.max(1, last - first + 1);
+  const raw = span / 6;
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = Math.max(1, [1, 2, 5, 10].map((k) => k * pow).find((k) => k >= raw) ?? 10 * pow);
+  const ticks: { x: number; label: number }[] = [];
+  for (let b = Math.ceil((first - 1) / step) * step; b <= last && ticks.length < 50; b += step) {
+    if (b < first - 1) continue;
+    const x = overviewX(b, view, n);
+    if (x >= SCHEMATIC_X0 - 0.5 && x <= SCHEMATIC_X1 + 0.5) ticks.push({ x, label: Math.max(1, b) });
+  }
+  return ticks;
+}
+
+type OverviewListener = (event: Event) => void;
+/** The part of the overview's `<svg>` `bindOverviewWheel` needs. */
+export interface OverviewWheelTarget {
+  addEventListener(type: string, listener: OverviewListener, options?: AddEventListenerOptions): void;
+  removeEventListener(type: string, listener: OverviewListener): void;
+}
+
+export interface OverviewWheelHooks {
+  /** The view now, or null while the overview may not zoom (a brush drag is running). */
+  read(): OverviewView | null;
+  /** A client x in the overview's SVG units (NaN when it cannot be read). */
+  toSvgX(clientX: number): number;
+  length(): number;
+  apply(view: OverviewView): void;
+}
+
+/**
+ * Wheels and WebKit pinches on the overview `target`, as bindCircularMapWheel does for the circle:
+ * non-passive, so a gesture the overview takes has its default (page scroll, page zoom) prevented
+ * and one it does not take (a horizontal wheel) keeps it; the wheel deltas of one animation frame
+ * are summed into one step. A WebKit pinch (gesturestart / gesturechange, as WKWebView and Safari
+ * send it) zooms to the gesture's start scale times its `scale` about the pinch point; wheels sent
+ * while it runs are prevented, not applied. Returns the function that removes every listener.
+ */
+export function bindOverviewWheel(target: OverviewWheelTarget, hooks: OverviewWheelHooks): () => void {
+  const options: AddEventListenerOptions = { passive: false };
+  let pending: OverviewWheelEvent | null = null;
+  let frame: number | null = null;
+  let gestureFrom: number | null = null;
+
+  const flush = () => {
+    frame = null;
+    const event = pending;
+    pending = null;
+    const view = hooks.read();
+    if (!event || !view) return;
+    const step = overviewWheelStep(event, view, hooks.length());
+    if (step.handled && (step.view.scale !== view.scale || step.view.offset !== view.offset)) hooks.apply(step.view);
+  };
+  const schedule = () => {
+    if (frame !== null) return;
+    if (typeof requestAnimationFrame === 'function') {
+      // A frame that runs at once (flush clears `frame`) must not leave its id behind as pending.
+      frame = -2;
+      const id = requestAnimationFrame(flush);
+      if (frame === -2) frame = id;
+    } else {
+      frame = -1;
+      flush();
+    }
+  };
+  const onWheel = (event: WheelEvent) => {
+    if (classifyWheelGesture(event, 'canvas') !== 'zoom') return;
+    event.preventDefault();
+    if (gestureFrom !== null) return;
+    pending = {
+      deltaX: 0,
+      deltaY: (pending?.deltaY ?? 0) + normalizeWheelDelta(event).y,
+      deltaMode: 0,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      x: hooks.toSvgX(event.clientX),
+    };
+    schedule();
+  };
+  const onGestureStart = (event: Event & { scale?: number }) => {
+    event.preventDefault();
+    gestureFrom = hooks.read()?.scale ?? null;
+    pending = null;
+  };
+  const onGestureChange = (event: Event & { scale?: number; clientX?: number }) => {
+    event.preventDefault();
+    const view = hooks.read();
+    if (gestureFrom === null || !view || !(Number(event.scale) > 0)) return;
+    const next = overviewZoomTo(view, gestureFrom * Number(event.scale), hooks.toSvgX(Number(event.clientX)), hooks.length());
+    if (next.scale !== view.scale || next.offset !== view.offset) hooks.apply(next);
+  };
+  const onGestureEnd = (event: Event) => {
+    event.preventDefault();
+    gestureFrom = null;
+  };
+  const listeners: [string, OverviewListener][] = [
+    ['wheel', onWheel as unknown as OverviewListener],
+    ['gesturestart', onGestureStart as unknown as OverviewListener],
+    ['gesturechange', onGestureChange as unknown as OverviewListener],
+    ['gestureend', onGestureEnd as unknown as OverviewListener],
+  ];
+  for (const [type, listener] of listeners) target.addEventListener(type, listener, options);
+  return () => {
+    for (const [type, listener] of listeners) target.removeEventListener(type, listener);
+    if (frame !== null && frame !== -1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    frame = null;
+    pending = null;
+  };
+}
+
 // ─── Drag-selecting bases in the rows, and the navigation rule (US-01M7CCJC, MB-NAV-01) ───
 
 /** A drag across the base rows: `pending` until it travels BRUSH_DRAG_THRESHOLD_PX, then `active`. */
@@ -501,8 +726,11 @@ function classifyProteinResidueCss(aa: string): string {
 export function layoutLinearSchematicFeatures(
   features: SequenceFeature[],
   seqLen: number,
-  maxLanes = 3
+  maxLanes = 3,
+  /** The overview's zoom (US-01M7CCG9); a zoomed layout places only the features the track shows. */
+  view: OverviewView = OVERVIEW_FIT
 ): { placed: SchematicFeaturePlaced[]; laneCount: number } {
+  const zoomed = view.scale !== 1 || view.offset !== 0;
   const safeLen = Math.max(1, seqLen);
   // the 360 longest, when there are more; the view says how many of the document's it drew
   const cappedFeatures =
@@ -538,11 +766,12 @@ export function layoutLinearSchematicFeatures(
   for (const f of sorted) {
     const fStart = Number(f.qualifiers?.genomic_start) || f.start;
     const fEnd = Number(f.qualifiers?.genomic_end) || f.end;
-    const x1 = SCHEMATIC_X0 + ((Math.max(1, fStart) - 1) / safeLen) * SCHEMATIC_W;
+    const x1 = SCHEMATIC_X0 + view.offset + ((Math.max(1, fStart) - 1) / safeLen) * SCHEMATIC_W * view.scale;
     const x2 = Math.max(
       x1 + 8,
-      Math.min(SCHEMATIC_X1, SCHEMATIC_X0 + (Math.min(safeLen, fEnd) / safeLen) * SCHEMATIC_W)
+      Math.min(zoomed ? Infinity : SCHEMATIC_X1, SCHEMATIC_X0 + view.offset + (Math.min(safeLen, fEnd) / safeLen) * SCHEMATIC_W * view.scale)
     );
+    if (zoomed && (x2 < SCHEMATIC_X0 || x1 > SCHEMATIC_X1)) continue;
     const boxWidth = x2 - x1;
     const fullTextW = f.name.length * CHAR_W + 12;
 
@@ -1404,10 +1633,55 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   /** SVG units per screen pixel of the overview, measured when drawn, so handles stay 10 px wide. */
   const [overviewUnitsPerPx, setOverviewUnitsPerPx] = useState(1);
   const overviewResizeRef = useRef<ResizeObserver | null>(null);
+  // The overview's own zoom (US-01M7CCG9), kept per document: another document opens fitted.
+  const [overviewZoom, setOverviewZoom] = useState<{ docId: string; view: OverviewView }>({ docId: doc.id, view: OVERVIEW_FIT });
+  const overviewView = overviewZoom.docId === doc.id ? clampOverviewView(overviewZoom.view, overviewLen) : OVERVIEW_FIT;
+  const overviewViewRef = useRef(overviewView);
+  overviewViewRef.current = overviewView;
+  const overviewLenRef = useRef(overviewLen);
+  overviewLenRef.current = overviewLen;
+  const docIdRef = useRef(doc.id);
+  docIdRef.current = doc.id;
+  // The pills as the zoomed track shows them; the fitted view reuses the whole-map layout.
+  const overviewLayout = useMemo(
+    () =>
+      overviewView.scale === 1 && overviewView.offset === 0
+        ? schematicLayout
+        : layoutLinearSchematicFeatures(doc.features, declaredLen, 3, overviewView),
+    [schematicLayout, doc.features, declaredLen, overviewView.scale, overviewView.offset]
+  );
+  const overviewClipId = `mbc-overview-clip-${doc.id.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+  /** Zoom the overview by `deltaPx` (wheel pixels; negative zooms in) about the selection's centre when the track shows it, else the track's centre. */
+  const zoomOverviewBy = (deltaPx: number) => {
+    const scale = wheelZoomScale(overviewView.scale, deltaPx, { min: 1, max: overviewMaxScale(overviewLen) });
+    const centre = overviewInterval && overviewInterval.start <= overviewInterval.end
+      ? (overviewX(overviewInterval.start - 1, overviewView, overviewLen) + overviewX(overviewInterval.end, overviewView, overviewLen)) / 2
+      : NaN;
+    const anchor = centre >= SCHEMATIC_X0 && centre <= SCHEMATIC_X1 ? centre : NaN;
+    setOverviewZoom({ docId: doc.id, view: overviewZoomTo(overviewView, scale, anchor, overviewLen) });
+  };
+  const overviewZoomPercent = Math.round(overviewView.scale * 100);
+  /** The whole schematic, unzoomed, as markup: what the linear map's Export saves (AC4). */
+  const overviewFileDrawingRef = useRef<() => string>(() => '');
+  const overviewUnbindRef = useRef<(() => void) | null>(null);
   const attachOverview = useCallback((svg: SVGSVGElement | null) => {
     overviewResizeRef.current?.disconnect();
     overviewResizeRef.current = null;
+    overviewUnbindRef.current?.();
+    overviewUnbindRef.current = null;
     if (!svg) return;
+    setFigureFileDrawing(svg, () => overviewFileDrawingRef.current());
+    overviewUnbindRef.current = bindOverviewWheel(svg, {
+      // A running brush drag keeps the scale its press was read at.
+      read: () => (brushDragRef.current.phase === 'idle' ? overviewViewRef.current : null),
+      toSvgX: (clientX) => overviewPoint(svg, clientX).x,
+      length: () => overviewLenRef.current,
+      apply: (view) => {
+        // The next wheel may come before React has drawn this one: it reads the zoom it set.
+        overviewViewRef.current = clampOverviewView(view, overviewLenRef.current);
+        setOverviewZoom({ docId: docIdRef.current, view: overviewViewRef.current });
+      },
+    });
     const measure = () => {
       const w = svg.getBoundingClientRect().width;
       if (w > 0) setOverviewUnitsPerPx(800 / w);
@@ -1453,7 +1727,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     if (e.button !== undefined && e.button !== 0) return;
     const svg = e.currentTarget;
     const p = overviewPoint(svg, e.clientX);
-    brushLayoutRef.current = { x0: SCHEMATIC_X0, width: SCHEMATIC_W, length: overviewLen, unitsPerPx: p.unitsPerPx };
+    brushLayoutRef.current = overviewBrushLayout(overviewView, overviewLen, p.unitsPerPx);
     brushSuppressClickRef.current = false;
     dropBrushFrame();
     brushDragRef.current = BRUSH_IDLE;
@@ -1969,127 +2243,16 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     };
   }, [selectedRange, rawLen, seqLen, isProtein, doc.sequence]);
 
-  return (
-    <div
-      className={`linear-seq-container scheme-${colorScheme} ${
-        isProtein ? 'molecule-protein' : ''
-      }`}
-    >
-      {colorOptionsOpen && (
-        <NucleotideColorOptionsModal onClose={() => setColorOptionsOpen(false)} />
-      )}
-
-      {/* Contig Summary Alert Banner & Download Tab */}
-      {isContigSummary && (
-        <div
-          className="mbc-contig-summary-banner"
-          role="region"
-          aria-label="Contig Summary Notice"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: 8,
-            padding: '7px 12px',
-            background: 'var(--mbc-amber-soft)',
-            borderBottom: '1px solid var(--mbc-amber-border)',
-            color: 'var(--mbc-text-main)',
-            fontSize: 12,
-          }}
-        >
-          <div>
-            <strong>Selected sequences are only summaries</strong>
-            <span style={{ marginLeft: 8, opacity: 0.9 }}>
-              ({doc.name} • {declaredLen.toLocaleString()} {unitLabel} Contig Summary)
-            </span>
-          </div>
-          <div style={{ display: 'inline-flex', gap: 6 }}>
-            <button
-              type="button"
-              className="btn-secondary-sm"
-              onClick={() => setShowDownloadSummaryTab((v) => !v)}
-            >
-              Download Tab
-            </button>
-            <button
-              type="button"
-              className="btn-primary-sm"
-              onClick={handleDownloadFullSequence}
-            >
-              Download Full Sequence(s)
-            </button>
-          </div>
-        </div>
-      )}
-
-      {(isContigSummary && showDownloadSummaryTab) && (
-        <div
-          className="mbc-contig-download-pane"
-          style={{
-            padding: '12px 16px',
-            background: 'var(--mbc-bg-elevated)',
-            borderBottom: '1px solid var(--mbc-border)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            fontSize: 12.5,
-          }}
-        >
-          <span>This is only a summary, click &apos;Download&apos; to get the full document</span>
-          <button
-            type="button"
-            className="btn-primary-sm"
-            onClick={handleDownloadFullSequence}
-          >
-            Download
-          </button>
-        </div>
-      )}
-
-      {/* Linear Schematic Overview Track */}
-      <div className="studio-card-header" style={{ paddingTop: 0 }}>
-        <h4>Linear Map — {doc.name}</h4>
-        <FigureExportButton
-          compact
-          targetRef={schematicRef}
-          baseName={`${doc.name} — Linear Map`}
-          title={`${doc.name} — linear sequence map`}
-          table={{
-            headers: ['Name', 'Type', 'Start', 'End', 'Length', 'Strand'],
-            rows: doc.features.map((f) => [
-              f.name,
-              String(f.type),
-              String(f.start),
-              String(f.end),
-              String(f.end - f.start + 1),
-              f.strand === -1 ? '-' : '+',
-            ]),
-            caption: `${doc.name} — ${doc.features.length} features`,
-          }}
-        />
-      </div>
-      {schematicCoverage.length > 0 && (
-        <div style={{ paddingInline: 10 }}>
-          <ResultWarnings warnings={schematicCoverage} label="Linear map coverage" />
-        </div>
-      )}
-      <div className="mbc-schematic-header" data-mbc-figure ref={schematicRef}>
-        <svg
-          ref={attachOverview}
-          viewBox={`0 0 800 ${schematicHeight}`}
-          className="schematic-overview-svg"
-          role="group"
-          aria-label={`Linear schematic overview of ${doc.name}`}
-          style={{ touchAction: 'none', userSelect: 'none', cursor: 'crosshair' }}
-          onPointerDown={onOverviewPointerDown}
-          onPointerMove={onOverviewPointerMove}
-          onPointerUp={onOverviewPointerUp}
-          onPointerCancel={onOverviewPointerCancel}
-          onLostPointerCapture={onOverviewPointerCancel}
-          onClickCapture={onOverviewClickCapture}
-        >
+  /**
+   * The overview's drawing in `view` (US-01M7CCG9). On screen (`live`) it is drawn in the current
+   * zoom, clipped to the track, with the focusable edge handles; for a file it is drawn whole, in
+   * the fitted view, without them - so the linear map's Export saves the whole schematic, never
+   * the zoomed window.
+   */
+  const drawOverview = (view: OverviewView, live: boolean) => {
+    const zoomed = view.scale !== 1 || view.offset !== 0;
+    return (
+      <>
           <rect x="0" y="0" width="800" height={schematicHeight} fill="var(--mbc-bg-panel)" />
           <line
             x1={SCHEMATIC_X0}
@@ -2099,10 +2262,16 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             stroke="var(--mbc-border-strong)"
             strokeWidth="1.5"
           />
+          {zoomed && (
+            <clipPath id={overviewClipId}>
+              <rect x={SCHEMATIC_X0 - 6} y={0} width={SCHEMATIC_W + 12} height={schematicHeight} />
+            </clipPath>
+          )}
+          <g clipPath={zoomed ? `url(#${overviewClipId})` : undefined}>
           {/* Ruler ticks */}
-          {[0, 0.2, 0.4, 0.6, 0.8, 1.0].map((frac, idx) => {
-            const x = SCHEMATIC_X0 + frac * SCHEMATIC_W;
-            const coord = Math.max(1, Math.round(frac * declaredLen));
+          {overviewRulerTicks(view, overviewLen).map((tick, idx) => {
+            const x = tick.x;
+            const coord = tick.label;
             return (
               <g key={idx}>
                 <line
@@ -2127,13 +2296,30 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             );
           })}
 
+          {/* At single-base zoom the axis carries one tick per base it shows. */}
+          {(SCHEMATIC_W * view.scale) / overviewLen >= OVERVIEW_BASE_TICK_UNITS &&
+            (() => {
+              const { first, last } = overviewVisibleBases(view, overviewLen);
+              const marks: string[] = [];
+              for (let b = first - 1; b <= last; b++) marks.push(`M ${overviewX(b, view, overviewLen).toFixed(2)} 20 v 6`);
+              return (
+                <path
+                  data-base-ticks={`${first}..${last}`}
+                  d={marks.join(' ')}
+                  stroke="var(--mbc-text-muted)"
+                  strokeWidth="0.8"
+                  pointerEvents="none"
+                />
+              );
+            })()}
+
           {/* Chromosomal oriC / terC Cumulative GC-Skew Markers */}
           {!isProtein && declaredLen >= 20_000 && (
             <>
               <g>
                 <title>{`Predicted oriC (GC-skew minimum): ${trackOverview.predictedOricBp.toLocaleString()} bp`}</title>
                 <circle
-                  cx={SCHEMATIC_X0 + (trackOverview.predictedOricBp / declaredLen) * SCHEMATIC_W}
+                  cx={overviewX(trackOverview.predictedOricBp, view, overviewLen)}
                   cy={23}
                   r={3.6}
                   fill="var(--mbc-green)"
@@ -2142,7 +2328,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               <g>
                 <title>{`Predicted terC (GC-skew maximum): ${trackOverview.predictedTercBp.toLocaleString()} bp`}</title>
                 <circle
-                  cx={SCHEMATIC_X0 + (trackOverview.predictedTercBp / declaredLen) * SCHEMATIC_W}
+                  cx={overviewX(trackOverview.predictedTercBp, view, overviewLen)}
                   cy={23}
                   r={3.6}
                   fill="var(--mbc-amber)"
@@ -2158,9 +2344,9 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               <rect
                 key={`active-${seg.startIndex}`}
                 data-active-interval={`${overviewInterval.start}..${overviewInterval.end}`}
-                x={SCHEMATIC_X0 + (seg.startIndex / overviewLen) * SCHEMATIC_W}
+                x={overviewX(seg.startIndex, view, overviewLen)}
                 y={4}
-                width={Math.max(2, ((seg.endExclusive - seg.startIndex) / overviewLen) * SCHEMATIC_W)}
+                width={Math.max(2, overviewX(seg.endExclusive, view, overviewLen) - overviewX(seg.startIndex, view, overviewLen))}
                 height={schematicHeight - 8}
                 fill="rgba(26, 115, 232, 0.16)"
                 stroke="var(--mbc-blue)"
@@ -2170,7 +2356,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             ))}
           <path
             data-page-tick={settledViewportStartPos}
-            d={`M ${SCHEMATIC_X0 + ((settledViewportStartPos - 1) / overviewLen) * SCHEMATIC_W} 24 l 4 6 h -8 z`}
+            d={`M ${overviewX(settledViewportStartPos - 1, view, overviewLen)} 24 l 4 6 h -8 z`}
             fill="var(--mbc-text-muted)"
           >
             <title>{`The base rows show from ${settledViewportStartPos.toLocaleString()} ${unitLabel}`}</title>
@@ -2183,14 +2369,13 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
           {overviewInterval &&
             overviewInterval.start <= overviewInterval.end &&
             (['start', 'end'] as const).map((edge) => {
-              const per = SCHEMATIC_W / overviewLen;
-              const edgeX = SCHEMATIC_X0 + (edge === 'start' ? overviewInterval.start - 1 : overviewInterval.end) * per;
+              const edgeX = overviewX(edge === 'start' ? overviewInterval.start - 1 : overviewInterval.end, view, overviewLen);
               const w = BRUSH_HANDLE_HIT_PX * overviewUnitsPerPx;
               const base = overviewInterval[edge];
               return (
                 <g key={`handle-${edge}`}>
                   <line x1={edgeX} x2={edgeX} y1={4} y2={schematicHeight - 4} stroke="var(--mbc-blue)" strokeWidth="2.4" pointerEvents="none" />
-                  <rect
+                  {live && <rect
                     ref={(el) => {
                       handleRefs.current[edge] = el;
                     }}
@@ -2210,13 +2395,13 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                     aria-valuenow={base}
                     aria-valuetext={`${edge === 'start' ? 'Start' : 'End'} at ${base.toLocaleString()} ${unitLabel}`}
                     onKeyDown={onHandleKeyDown(edge)}
-                  />
+                  />}
                 </g>
               );
             })}
 
           {/* Multi-Lane Non-Overlapping Schematic Feature Pills */}
-          {schematicLayout.placed.map((item) => {
+          {(live ? overviewLayout : schematicLayout).placed.map((item) => {
             const f = item.feature;
             const insideLightText = isDarkFillHex(f.color);
             const gStart = Number(f.qualifiers?.genomic_start) || f.start;
@@ -2303,6 +2488,176 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             );
           })}
 
+          </g>
+      </>
+    );
+  };
+  overviewFileDrawingRef.current = () =>
+    // Drawn inside an <svg>, as on screen, so its elements are read as SVG; the export keeps the inside.
+    renderToStaticMarkup(<svg>{drawOverview(OVERVIEW_FIT, false)}</svg>).slice('<svg>'.length, -'</svg>'.length);
+
+  return (
+    <div
+      className={`linear-seq-container scheme-${colorScheme} ${
+        isProtein ? 'molecule-protein' : ''
+      }`}
+    >
+      {colorOptionsOpen && (
+        <NucleotideColorOptionsModal onClose={() => setColorOptionsOpen(false)} />
+      )}
+
+      {/* Contig Summary Alert Banner & Download Tab */}
+      {isContigSummary && (
+        <div
+          className="mbc-contig-summary-banner"
+          role="region"
+          aria-label="Contig Summary Notice"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 8,
+            padding: '7px 12px',
+            background: 'var(--mbc-amber-soft)',
+            borderBottom: '1px solid var(--mbc-amber-border)',
+            color: 'var(--mbc-text-main)',
+            fontSize: 12,
+          }}
+        >
+          <div>
+            <strong>Selected sequences are only summaries</strong>
+            <span style={{ marginLeft: 8, opacity: 0.9 }}>
+              ({doc.name} • {declaredLen.toLocaleString()} {unitLabel} Contig Summary)
+            </span>
+          </div>
+          <div style={{ display: 'inline-flex', gap: 6 }}>
+            <button
+              type="button"
+              className="btn-secondary-sm"
+              onClick={() => setShowDownloadSummaryTab((v) => !v)}
+            >
+              Download Tab
+            </button>
+            <button
+              type="button"
+              className="btn-primary-sm"
+              onClick={handleDownloadFullSequence}
+            >
+              Download Full Sequence(s)
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(isContigSummary && showDownloadSummaryTab) && (
+        <div
+          className="mbc-contig-download-pane"
+          style={{
+            padding: '12px 16px',
+            background: 'var(--mbc-bg-elevated)',
+            borderBottom: '1px solid var(--mbc-border)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            fontSize: 12.5,
+          }}
+        >
+          <span>This is only a summary, click &apos;Download&apos; to get the full document</span>
+          <button
+            type="button"
+            className="btn-primary-sm"
+            onClick={handleDownloadFullSequence}
+          >
+            Download
+          </button>
+        </div>
+      )}
+
+      {/* Linear Schematic Overview Track */}
+      <div className="studio-card-header" style={{ paddingTop: 0 }}>
+        <h4>Linear Map — {doc.name}</h4>
+        <div
+          className="mbc-overview-zoom"
+          role="group"
+          aria-label="Linear map zoom"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginInlineStart: 'auto', marginInlineEnd: 6 }}
+        >
+          <button
+            type="button"
+            className="btn-secondary-sm"
+            aria-label="Zoom out the linear map"
+            title="Zoom out the linear map"
+            disabled={overviewView.scale <= 1}
+            onClick={() => zoomOverviewBy(OVERVIEW_BUTTON_STEP_PX)}
+          >
+            <ZoomOut size={14} aria-hidden="true" />
+          </button>
+          <span data-overview-zoom={overviewZoomPercent} aria-live="polite" style={{ minWidth: 44, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
+            {overviewZoomPercent.toLocaleString()}%
+          </span>
+          <button
+            type="button"
+            className="btn-secondary-sm"
+            aria-label="Zoom in the linear map"
+            title="Zoom in the linear map (or use the wheel over it)"
+            disabled={overviewView.scale >= overviewMaxScale(overviewLen)}
+            onClick={() => zoomOverviewBy(-OVERVIEW_BUTTON_STEP_PX)}
+          >
+            <ZoomIn size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="btn-secondary-sm"
+            aria-label="Fit the whole molecule in the linear map"
+            title="Fit the whole molecule in the linear map"
+            disabled={overviewView.scale === 1 && overviewView.offset === 0}
+            onClick={() => setOverviewZoom({ docId: doc.id, view: OVERVIEW_FIT })}
+          >
+            Fit
+          </button>
+        </div>
+        <FigureExportButton
+          compact
+          targetRef={schematicRef}
+          baseName={`${doc.name} — Linear Map`}
+          title={`${doc.name} — linear sequence map`}
+          table={{
+            headers: ['Name', 'Type', 'Start', 'End', 'Length', 'Strand'],
+            rows: doc.features.map((f) => [
+              f.name,
+              String(f.type),
+              String(f.start),
+              String(f.end),
+              String(f.end - f.start + 1),
+              f.strand === -1 ? '-' : '+',
+            ]),
+            caption: `${doc.name} — ${doc.features.length} features`,
+          }}
+        />
+      </div>
+      {schematicCoverage.length > 0 && (
+        <div style={{ paddingInline: 10 }}>
+          <ResultWarnings warnings={schematicCoverage} label="Linear map coverage" />
+        </div>
+      )}
+      <div className="mbc-schematic-header" data-mbc-figure ref={schematicRef}>
+        <svg
+          ref={attachOverview}
+          viewBox={`0 0 800 ${schematicHeight}`}
+          className="schematic-overview-svg"
+          role="group"
+          aria-label={`Linear schematic overview of ${doc.name}`}
+          style={{ touchAction: 'none', userSelect: 'none', cursor: 'crosshair' }}
+          onPointerDown={onOverviewPointerDown}
+          onPointerMove={onOverviewPointerMove}
+          onPointerUp={onOverviewPointerUp}
+          onPointerCancel={onOverviewPointerCancel}
+          onLostPointerCapture={onOverviewPointerCancel}
+          onClickCapture={onOverviewClickCapture}
+        >
+          {drawOverview(overviewView, true)}
         </svg>
 
         {/* Multi-Row Wrapped Linear Genome Map for Complete Viral & Organelle Genomes */}
