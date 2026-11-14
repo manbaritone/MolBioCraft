@@ -1335,7 +1335,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     }
 
     for (const cut of displayedCuts) {
-      const cutAt = cutSiteDisplayPosition(cut.cutTop, seqLen);
+      const cutAt = cutSiteDisplayPosition(cut.cutTop, seqLen, doc.topology === 'circular');
       const angle = (cutAt / seqLen) * 360;
       const cutsOnce = enzymeCounts[cut.enzyme.name] === 1;
       // Drawn as a unique cutter only when the scan covered the whole molecule.
@@ -1443,6 +1443,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     visibleFeatures,
     doc.features,
     doc.primers,
+    doc.topology,
     showPrimers,
     showUniqueCuttersOnly,
     isProtein,

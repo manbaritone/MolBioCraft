@@ -8,11 +8,16 @@
  * enzymes' published cleavage (AciI C^CGC, EcoRI G^AATTC, PstI CTGCA^G, SmaI CCC^GGG,
  * BsaI GGTCTC(1/5), XbaI T^CTAGA, NlaIII CATG^).
  */
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { CircularPlasmidMap } from '../components/CircularPlasmidMap';
+import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
+import { executeBioPipelineRust } from '../lib/rustBioEngine';
 import { findRestrictionCutSites } from '../core/bioEngine';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { cleavagePicture, cutSiteDisplayPosition, type CleavagePicture } from '../core/restrictionDisplay';
-import type { RestrictionCutSite } from '../types/bio';
+import type { RestrictionCutSite, SequenceDocument } from '../types/bio';
 
 /** The engine's one site of `enzyme` on `seq`. */
 function engineSite(seq: string, topology: 'circular' | 'linear', enzyme: string): RestrictionCutSite {
@@ -574,4 +579,69 @@ describe('BG-01M7CQMJ methylation across base 1 of a circle blocks the site, as 
       expect(engineSite(c.seq, 'linear', c.enzyme).methylationBlocked).toBe(false);
     });
   }
+});
+
+describe('BG-01M7CQV7 the circular map numbers a cut as the site list does, on linear and circular molecules', () => {
+  /** The words of the map's callout for the engine's one site of `enzyme` on `seq`. */
+  const mapCallout = (seq: string, topology: 'circular' | 'linear', enzyme: string) => {
+    const site = engineSite(seq, topology, enzyme);
+    const doc = { ...EMPTY_WORKSPACE_DOCUMENT, id: 'm', name: 'm', sequence: seq, moleculeType: 'DNA', topology } as SequenceDocument;
+    const html = renderToStaticMarkup(
+      createElement(CircularPlasmidMap, {
+        doc, cutSites: [site], orfs: [], selectedRange: null, onSelectRange: () => {},
+        showOrfs: false, showPrimers: false, showUniqueCuttersOnly: false,
+      })
+    );
+    const label = new RegExp(`aria-label="Select ${enzyme} \\((\\d+)\\)"`).exec(html)?.[1];
+    return { site, label: label === undefined ? undefined : Number(label), html };
+  };
+  const pad = 'A'.repeat(40);
+
+  it('a linear Sau3AI cut before base 1 is 0, as the site list numbers it, not the length', () => {
+    const seq = `GATC${pad}`;
+    const { site, label } = mapCallout(seq, 'linear', 'Sau3AI');
+    expect(site.cutTop).toBe(1);
+    expect(label).toBe(cutSiteDisplayPosition(site.cutTop, seq.length, false));
+    expect(label).toBe(0);
+  });
+
+  it('the same cut on a circle is after the last base, numbered by it', () => {
+    const seq = `GATC${pad}`;
+    const { site, label } = mapCallout(seq, 'circular', 'Sau3AI');
+    expect(label).toBe(cutSiteDisplayPosition(site.cutTop, seq.length, true));
+    expect(label).toBe(seq.length);
+  });
+
+  it('a linear NlaIII cut after the last base is numbered by that base', () => {
+    const seq = `${pad}CATG`;
+    const { site, label } = mapCallout(seq, 'linear', 'NlaIII');
+    expect(site.cutTop).toBe(seq.length + 1);
+    expect(label).toBe(seq.length);
+  });
+});
+
+describe('BG-01M7CQV7 the pipeline restriction audit labels a cut as the site list numbers it', () => {
+  /** The engine pipeline's label for `enzyme`'s cut zone on `seq`. */
+  const zoneLabel = (seq: string, topology: 'circular' | 'linear', enzyme: string) => {
+    const doc = { ...EMPTY_WORKSPACE_DOCUMENT, id: 'p', name: 'p', sequence: seq, moleculeType: 'DNA', topology } as SequenceDocument;
+    const report = executeBioPipelineRust<{ visualZones: { id: string; label: string }[] }>(doc, 'cloning-expression-qc', 'linux', '2026-11-14T00:00:00Z');
+    return report.visualZones.find((z) => z.id.startsWith(`cut-${enzyme}-`))?.label;
+  };
+  const pad = 'A'.repeat(40);
+
+  it('numbers a linear cut before base 1 as 0, one after the last base by that base, and a circle by its wrap', () => {
+    for (const [seq, topology, enzyme] of [
+      [`GATC${pad}`, 'linear', 'Sau3AI'],
+      [`GATC${pad}`, 'circular', 'Sau3AI'],
+      [`${pad}CATG`, 'linear', 'NlaIII'],
+      [`${pad}CATG`, 'circular', 'NlaIII'],
+    ] as const) {
+      const site = engineSite(seq, topology, enzyme);
+      expect(zoneLabel(seq, topology, enzyme), `${enzyme} on ${topology} ${seq}`).toBe(
+        `${enzyme} @ ${cutSiteDisplayPosition(site.cutTop, seq.length, topology === 'circular')}`
+      );
+    }
+    expect(zoneLabel(`GATC${pad}`, 'linear', 'Sau3AI')).toBe('Sau3AI @ 0');
+    expect(zoneLabel(`${pad}CATG`, 'linear', 'NlaIII')).toBe(`NlaIII @ ${pad.length + 4}`);
+  });
 });

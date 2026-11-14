@@ -578,6 +578,20 @@ fn build_markdown_report(
     }
 }
 
+/// The number a cut is labelled by, as the site list numbers it (`cutSiteDisplayPosition`): the
+/// last base before the cut. The engine's `cut_top` is the first base after it, so this is one less;
+/// a cut before base 1 is the length on a circle (the cut after its last base) and 0 on a linear
+/// molecule, which has no base before it (BG-01M7CQV7).
+fn cut_display_position(cut_top: usize, seq_len: usize, topology: Topology) -> usize {
+    if cut_top > 1 {
+        cut_top - 1
+    } else if topology == Topology::Linear {
+        0
+    } else {
+        seq_len
+    }
+}
+
 /// Executes a complete guided bioinformatics pipeline in Rust.
 pub fn execute_bio_pipeline_rust(
     doc: &SequenceDocument,
@@ -860,7 +874,7 @@ pub fn execute_bio_pipeline_rust(
                 visual_zones.push(PipelineVisualZone {
                     id: format!("cut-{}-{}", u_name, site.position),
                     track: "CRISPR / Cloning".into(),
-                    label: format!("{} @ {}", u_name, site.cut_top),
+                    label: format!("{} @ {}", u_name, cut_display_position(site.cut_top, clean_seq.len(), doc.topology)),
                     start: site.position,
                     end: (site.position + site.enzyme.recognition_seq.len() - 1)
                         .min(clean_seq.len()),
@@ -2056,4 +2070,64 @@ pub fn execute_bio_pipeline_rust(
         markdown_protocol,
         suggested_export_filename,
     })
+}
+
+#[cfg(test)]
+mod cut_label_tests {
+    use super::*;
+
+    /// The restriction audit's cut-zone labels of `seq`, as (enzyme, label), by enzyme.
+    fn cut_labels(seq: &str, topology: Topology) -> Vec<(String, String)> {
+        let doc = SequenceDocument { id: "d".into(), name: "d".into(), sequence: seq.into(), topology, ..Default::default() };
+        let report = execute_bio_pipeline_rust(&doc, "cloning-expression-qc", "linux", "2026-11-14T00:00:00Z").unwrap();
+        let mut v: Vec<(String, String)> = report
+            .visual_zones
+            .into_iter()
+            .filter(|z| z.id.starts_with("cut-"))
+            .map(|z| (z.label.split(" @ ").next().unwrap().to_string(), z.label))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// BG-01M7CQV7: a cut zone is labelled by the last base before the cut, as the site list
+    /// numbers it: a linear cut before base 1 is 0 and one after the last base is the length; a
+    /// circle's cut after the last base, before base 1, is the length too.
+    #[test]
+    fn a_cut_zone_is_labelled_as_the_site_list_numbers_the_cut() {
+        let pad = "A".repeat(40);
+        let label = |pairs: &[(&str, usize)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(e, n)| (e.to_string(), format!("{e} @ {n}"))).collect()
+        };
+        // GATC at base 1: Sau3AI, MboI and DpnII cut before it (^GATC).
+        let start = format!("GATC{pad}");
+        // GATC at base 1: Sau3AI, MboI and DpnII cut before it (^GATC), DpnI inside it (GA^TC).
+        assert_eq!(
+            cut_labels(&start, Topology::Linear),
+            label(&[("DpnI", 2), ("DpnII", 0), ("MboI", 0), ("Sau3AI", 0)]),
+            "linear {start}"
+        );
+        // CATG at the last bases: FatI ^CATG, CviAII C^ATG, NlaIII CATG^ after the last base.
+        let end = format!("{pad}CATG");
+        let n = end.len();
+        assert_eq!(
+            cut_labels(&end, Topology::Linear),
+            label(&[("CviAII", n - 3), ("FatI", n - 4), ("NlaIII", n)]),
+            "linear {end}"
+        );
+        // The same molecules as circles: a cut before base 1 is after the last base.
+        assert_eq!(
+            cut_labels(&start, Topology::Circular),
+            label(&[("DpnI", 2), ("DpnII", start.len()), ("MboI", start.len()), ("Sau3AI", start.len())]),
+            "circular {start}"
+        );
+        assert_eq!(
+            cut_labels(&end, Topology::Circular),
+            label(&[("CviAII", n - 3), ("FatI", n - 4), ("NlaIII", n)]),
+            "circular {end}"
+        );
+        // An interior site: EcoRI G^AATTC at base 11 and MluCI ^AATT at base 12 are labelled 11.
+        let mid = format!("{}GAATTC{}", &pad[..10], &pad[..30]);
+        assert_eq!(cut_labels(&mid, Topology::Linear), label(&[("EcoRI", 11), ("MluCI", 11)]), "linear {mid}");
+    }
 }
