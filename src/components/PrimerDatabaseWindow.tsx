@@ -40,6 +40,7 @@ import {
   type PrimerSpreadsheetReading,
 } from '../core/primerImport';
 import { saveWorkbenchFile } from '../platform/macosMenuBridge';
+import { isTauriDesktopRuntime, saveNativeFileDialogTauri } from '../lib/tauriIpc';
 import type { DatabasePrimer, PrimerMolecule } from '../types/bio';
 
 // ---- The duplicate policy (US-01M7DQ0X AC1-AC2), in one place -------------------------------
@@ -184,7 +185,15 @@ export function savePrimerCandidate(
   const current = db.read();
   if (!current.ok) return refused(current.error);
   const others = activePrimers(current.records).filter((r) => r.id !== opts.editId);
-  const match = policy.classify({ ...candidate, sequence: seq.sequence, molecule: seq.molecule }, others);
+  const classified = policy.classify({ ...candidate, sequence: seq.sequence, molecule: seq.molecule }, others);
+  // During an edit, merging into another record would drop the user's edits to this one
+  // (BG-01M7DVJJ): an edit is kept separately or skipped, never merged away.
+  const match: PrimerDuplicateMatch = opts.editId
+    ? (() => {
+        const choices: PrimerDuplicateChoice[] = classified.choices.filter((c) => c !== 'merge');
+        return { ...classified, choices, defaultChoice: choices.includes(classified.defaultChoice) ? classified.defaultChoice : 'skip' };
+      })()
+    : classified;
   if (match.cls === 'new') return write();
   const choice = opts.choice;
   if (!choice || !match.choices.includes(choice)) return { status: 'needsChoice', match };
@@ -226,7 +235,13 @@ export const DuplicateChoicePanel: React.FC<{
       </p>
       <div className="cloning-action-row">
         {choices.map(([c, text]) => (
-          <button key={c} type="button" className={c === def ? 'btn-primary' : 'btn-secondary'} onClick={() => onChoose(c)}>
+          <button
+            key={c}
+            type="button"
+            className={c === def ? 'btn-primary' : 'btn-secondary'}
+            data-default-choice={c === def ? 'true' : undefined}
+            onClick={() => onChoose(c)}
+          >
             {text}
             {c === def ? ' (default)' : ''}
           </button>
@@ -247,28 +262,74 @@ export function usePrimerDatabaseSave(
   db: PrimerDatabase,
   onDone: (message: string) => void,
   policy: PrimerDuplicatePolicy | null = primerDuplicatePolicy,
-): { save: (candidate: DatabasePrimerInput) => void; panel: React.ReactNode } {
-  const [pending, setPending] = useState<{ candidate: DatabasePrimerInput; match: PrimerDuplicateMatch } | null>(null);
-  const finish = (outcome: PrimerSaveOutcome, candidate: DatabasePrimerInput) => {
-    if (outcome.status === 'needsChoice') setPending({ candidate, match: outcome.match });
+): { save: (candidate: DatabasePrimerInput, opener?: HTMLElement | null) => void; panel: React.ReactNode } {
+  const [pending, setPending] = useState<{ candidate: DatabasePrimerInput; match: PrimerDuplicateMatch; opener: HTMLElement | null } | null>(null);
+  const finish = (outcome: PrimerSaveOutcome, candidate: DatabasePrimerInput, opener: HTMLElement | null) => {
+    if (outcome.status === 'needsChoice') setPending({ candidate, match: outcome.match, opener });
     else {
       setPending(null);
       onDone(outcome.message);
     }
   };
-  const save = (candidate: DatabasePrimerInput) => finish(savePrimerCandidate(db, policy, candidate), candidate);
+  // The control that asked to save (the focused Save button): focus returns to it when the panel closes.
+  const activeControl = (): HTMLElement | null => {
+    if (typeof document === 'undefined') return null;
+    const el = document.activeElement as HTMLElement | null;
+    return el && el !== document.body && typeof el.focus === 'function' ? el : null;
+  };
+  // A click need not focus the button it lands on (WebKit does not), so the caller passes it.
+  const save = (candidate: DatabasePrimerInput, opener?: HTMLElement | null) =>
+    finish(savePrimerCandidate(db, policy, candidate), candidate, opener ?? activeControl());
   const panel =
     pending && policy ? (
-      <div role="dialog" aria-label={`Save ${pending.candidate.name} to Primer Database`} className="studio-card">
-        <DuplicateChoicePanel
-          match={pending.match}
-          onChoose={(choice) => finish(savePrimerCandidate(db, policy, pending.candidate, { choice }), pending.candidate)}
-          onCancel={() => setPending(null)}
-        />
-      </div>
+      <FocusedChoicePanel
+        key={`${pending.candidate.name}\u0000${pending.match.cls}`}
+        title={`Save ${pending.candidate.name} to Primer Database`}
+        match={pending.match}
+        returnFocusTo={pending.opener}
+        onChoose={(choice) => finish(savePrimerCandidate(db, policy, pending.candidate, { choice }), pending.candidate, pending.opener)}
+        onCancel={() => setPending(null)}
+      />
     ) : null;
   return { save, panel };
 }
+
+/**
+ * The Studio's duplicate panel as a dialog that takes focus (its default choice) when it opens,
+ * closes on Escape, and gives focus back to the Save button that opened it (BG-01M7DVJJ).
+ */
+const FocusedChoicePanel: React.FC<{
+  title: string;
+  match: PrimerDuplicateMatch;
+  returnFocusTo: HTMLElement | null;
+  onChoose: (choice: PrimerDuplicateChoice) => void;
+  onCancel: () => void;
+}> = ({ title, match, returnFocusTo, onChoose, onCancel }) => {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const target = ref.current?.querySelector<HTMLElement>('button[data-default-choice="true"]') ?? ref.current?.querySelector<HTMLElement>('button');
+    target?.focus();
+    return () => {
+      if (returnFocusTo && returnFocusTo.isConnected) returnFocusTo.focus();
+    };
+  }, [returnFocusTo]);
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label={title}
+      className="studio-card"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          onCancel();
+        }
+      }}
+    >
+      <DuplicateChoicePanel match={match} onChoose={onChoose} onCancel={onCancel} />
+    </div>
+  );
+};
 
 // ---- The window ---------------------------------------------------------------------------------
 
@@ -347,6 +408,51 @@ function liveFieldErrors(f: FormState): PrimerFieldError[] {
 
 const shortTime = (iso: string) => iso.slice(0, 16).replace('T', ' ');
 
+/**
+ * What the platform save path says about a file (BG-01M7DVJJ). Only the desktop app's own save
+ * dialog (cmd_native_save_file_dialog) reports back: the path written, or nothing when the user
+ * cancelled. saveWorkbenchFile cannot: it returns 'native' when it hands the file to a native dialog
+ * whose outcome it never sees, and 'downloaded' when it hands it to the browser, which does not say
+ * whether the user kept it.
+ */
+export type PlatformSaveResult =
+  | { kind: 'saved'; where: string }
+  | { kind: 'cancelled' }
+  | { kind: 'unconfirmed'; how: 'native' | 'downloaded' }
+  | { kind: 'failed'; message: string }
+  | { kind: 'unavailable' };
+
+export async function savePlatformFile(filename: string, content: string): Promise<PlatformSaveResult> {
+  if (isTauriDesktopRuntime()) {
+    try {
+      const where = await saveNativeFileDialogTauri(filename, content);
+      return where ? { kind: 'saved', where } : { kind: 'cancelled' };
+    } catch (err) {
+      return { kind: 'failed', message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  const how = saveWorkbenchFile(filename, content, 'application/json');
+  return how ? { kind: 'unconfirmed', how } : { kind: 'unavailable' };
+}
+
+/** What a save reports: "Exported" only for a file the platform says it wrote. */
+function describeSave(result: PlatformSaveResult, what: string, filename: string): { text: string; kind: 'info' | 'error' } {
+  switch (result.kind) {
+    case 'saved':
+      return { text: `${what} saved to ${result.where}.`, kind: 'info' };
+    case 'cancelled':
+      return { text: `${what} cancelled: no file was saved.`, kind: 'info' };
+    case 'unconfirmed':
+      return result.how === 'downloaded'
+        ? { text: `${what}: handed to your browser to download as ${filename}; the browser does not say whether it was kept.`, kind: 'info' }
+        : { text: `${what}: sent to the save dialog as ${filename}; this build is not told whether it was saved.`, kind: 'info' };
+    case 'failed':
+      return { text: `${what} failed: ${result.message}. No file was saved.`, kind: 'error' };
+    default:
+      return { text: `${what} is not possible here: this window has no save path.`, kind: 'error' };
+  }
+}
+
 export interface PrimerDatabaseWindowProps {
   onClose: () => void;
   /** Opens the primer import dialog with Primer Database chosen (US-01M7DQ0X); absent while unavailable. */
@@ -358,7 +464,7 @@ export interface PrimerDatabaseWindowProps {
   database?: PrimerDatabase;
   duplicatePolicy?: PrimerDuplicatePolicy | null;
   /** Saves a file through the platform save path; defaults to saveWorkbenchFile. */
-  saveFile?: (filename: string, content: string) => 'native' | 'downloaded' | false;
+  saveFile?: (filename: string, content: string) => Promise<PlatformSaveResult>;
 }
 
 export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
@@ -368,7 +474,7 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
   returnFocusTo = null,
   database,
   duplicatePolicy = primerDuplicatePolicy,
-  saveFile = (name, content) => saveWorkbenchFile(name, content, 'application/json'),
+  saveFile = savePlatformFile,
 }) => {
   const db = useMemo(() => database ?? openPrimerDatabase(), [database]);
   const [version, setVersion] = useState(0);
@@ -384,6 +490,64 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
   const [restore, setRestore] = useState<{ text: string; summary: PrimerImportSummary; replace: string[] } | null>(null);
   const [confirm, setConfirm] = useState<'discard' | 'empty-trash' | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const saveButtonRef = useRef<HTMLButtonElement | null>(null);
+  /** The Add or Edit button that opened the form: focus goes back to it when the form closes. */
+  const formOpener = useRef<HTMLElement | null>(null);
+  /** Where focus goes once the next render has drawn it (the control that opened what just closed). */
+  const focusAfterRender = useRef<(() => HTMLElement | null | undefined) | null>(null);
+  useEffect(() => {
+    const target = focusAfterRender.current?.();
+    focusAfterRender.current = null;
+    if (target && target.isConnected) target.focus();
+  });
+  const focusedControl = (): HTMLElement | null => {
+    const el = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
+    return el && el !== document.body ? el : null;
+  };
+  const buttonNamed = (text: string) =>
+    Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button') ?? []).find((b) => (b.textContent ?? '').trim() === text) ?? null;
+  const closeForm = () => {
+    setForm(null);
+    setPendingMatch(null);
+    setFormErrors([]);
+    focusAfterRender.current = () => formOpener.current;
+  };
+  const closeChoice = () => {
+    setPendingMatch(null);
+    focusAfterRender.current = () => saveButtonRef.current;
+  };
+  // A form that opens takes focus in its Name field, so typing and Escape both land in the window.
+  const formOpen = form !== null;
+  const formKey = form?.editId ?? (formOpen ? 'add' : null);
+  useEffect(() => {
+    if (formKey !== null) dialogRef.current?.querySelector<HTMLInputElement>('form input[aria-label="Name"]')?.focus();
+  }, [formKey]);
+  /** Escape closes the innermost open thing first, and the window only when nothing is pending (BG-01M7DVJJ). */
+  const onEscape = () => {
+    if (confirm) {
+      const opener = confirm === 'discard' ? 'Discard Unreadable Database…' : 'Empty Trash';
+      setConfirm(null);
+      focusAfterRender.current = () => buttonNamed(opener);
+    } else if (pendingMatch) closeChoice();
+    else if (form) closeForm();
+    else if (restore) setRestore(null);
+    else onClose();
+  };
+  // A click on a button need not focus it (WebKit), leaving focus on the page body: Escape pressed
+  // there belongs to this window too. Escape inside another dialog stays that dialog's.
+  const onEscapeRef = useRef(onEscape);
+  onEscapeRef.current = onEscape;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.target !== document.body) return;
+      // Another dialog open (the import dialog over this window) owns Escape.
+      const others = Array.from(document.querySelectorAll('dialog[open], [role="dialog"]')).filter((d) => d !== dialogRef.current);
+      if (others.length === 0) onEscapeRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -400,12 +564,14 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
   const listed = (view === 'active' ? activePrimers(records) : trashedPrimers(records)).filter((r) => primerMatchesSearch(r, search));
   const trashCount = trashedPrimers(records).length;
 
-  const startAdd = () => {
+  const startAdd = (opener: HTMLElement | null) => {
+    formOpener.current = opener ?? focusedControl();
     setForm({ ...EMPTY_FORM });
     setFormErrors([]);
     setPendingMatch(null);
   };
-  const startEdit = (r: DatabasePrimer) => {
+  const startEdit = (r: DatabasePrimer, opener: HTMLElement | null) => {
+    formOpener.current = opener ?? focusedControl();
     setForm({
       editId: r.id,
       name: r.name,
@@ -445,8 +611,7 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
       reload();
       return;
     }
-    setForm(null);
-    setFormErrors([]);
+    closeForm();
     report(outcome.message);
     reload();
   };
@@ -457,12 +622,12 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
     reload();
   };
 
-  const exportBackup = () => {
+  const exportBackup = async () => {
     const backup = db.exportBackup();
     if (!backup.ok) return reportError(backup.error);
     const filename = `primer-database-${new Date().toISOString().slice(0, 10)}.json`;
-    const how = saveFile(filename, backup.value);
-    report(how ? `Exported the Primer Database backup as ${filename}.` : 'The backup could not be saved: this window has no save path.', how ? 'info' : 'error');
+    const said = describeSave(await saveFile(filename, backup.value), 'Export', filename);
+    report(said.text.replace(/^Export saved to/, 'Exported the Primer Database backup to'), said.kind);
   };
 
   const restoreText = (text: string, replace: string[] = []) => {
@@ -500,12 +665,13 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
         role="dialog"
         aria-modal="true"
         aria-labelledby="primer-db-title"
+        ref={dialogRef}
         className="prefs-modal-window modal-size-db studio-card"
         style={{ maxHeight: '90vh', overflow: 'auto', width: 'min(1100px, 96vw)' }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
             e.stopPropagation();
-            onClose();
+            onEscape();
           }
         }}
       >
@@ -533,9 +699,10 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
                 <button
                   type="button"
                   className="btn-secondary"
-                  onClick={() => {
-                    const how = saveFile('primer-database-unreadable.json', read.error.storedValue ?? '');
-                    report(how ? 'Saved a copy of the unreadable data.' : 'The copy could not be saved.', how ? 'info' : 'error');
+                  onClick={async () => {
+                    const filename = 'primer-database-unreadable.json';
+                    const said = describeSave(await saveFile(filename, read.error.storedValue ?? ''), 'Copy of the unreadable data', filename);
+                    report(said.text, said.kind);
                   }}
                 >
                   Save Unreadable Data…
@@ -577,7 +744,7 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
               onChange={(e) => setSearch(e.target.value)}
             />
           </label>
-          <button type="button" className="btn-primary" disabled={unreadable} onClick={startAdd}>
+          <button type="button" className="btn-primary" disabled={unreadable} onClick={(e) => startAdd(e.currentTarget)}>
             Add
           </button>
           <button
@@ -589,7 +756,7 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
           >
             Import…
           </button>
-          <button type="button" className="btn-secondary" disabled={unreadable} onClick={exportBackup}>
+          <button type="button" className="btn-secondary" disabled={unreadable} onClick={() => void exportBackup()}>
             Export Backup…
           </button>
           <button type="button" className="btn-secondary" disabled={unreadable} onClick={() => fileRef.current?.click()}>
@@ -748,20 +915,17 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
               <DuplicateChoicePanel
                 match={pendingMatch}
                 onChoose={(choice) => submitForm(choice)}
-                onCancel={() => setPendingMatch(null)}
+                onCancel={closeChoice}
               />
             )}
             <div className="cloning-action-row">
-              <button type="submit" className="btn-primary">
+              <button type="submit" className="btn-primary" ref={saveButtonRef}>
                 {form.editId ? 'Save Changes' : 'Save Primer'}
               </button>
               <button
                 type="button"
                 className="btn-secondary"
-                onClick={() => {
-                  setForm(null);
-                  setPendingMatch(null);
-                }}
+                onClick={closeForm}
               >
                 Cancel
               </button>
@@ -829,7 +993,7 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
                     <td>
                       {view === 'active' ? (
                         <>
-                          <button type="button" aria-label={`Edit ${r.name}`} onClick={() => startEdit(r)}>
+                          <button type="button" aria-label={`Edit ${r.name}`} onClick={(e) => startEdit(r, e.currentTarget)}>
                             Edit
                           </button>
                           <button type="button" aria-label={`Trash ${r.name}`} onClick={() => act(db.trash(r.id), `Moved ${r.name} to the trash.`)}>

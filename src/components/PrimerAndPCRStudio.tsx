@@ -248,9 +248,10 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     setDbSaveMessage(message);
     onStatusNotice?.(message);
   });
-  const saveToPrimerDatabase = (candidate: DatabasePrimerInput) => {
+  const saveToPrimerDatabase = (candidate: DatabasePrimerInput, opener: HTMLElement) => {
     setDbSaveMessage(null);
-    dbSave.save(candidate);
+    // The Save button: focus returns to it when a duplicate panel closes (BG-01M7DVJJ).
+    dbSave.save(candidate, opener);
   };
   /** A designed primer as ordered: the whole oligo 5'->3', tail included, the tail kept apart. */
   const designedPrimerCandidate = (prm: PrimerRecord): DatabasePrimerInput => ({
@@ -602,7 +603,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                     type="button"
                     className="btn-secondary"
                     aria-label={`Save ${prm.name} to Primer Database`}
-                    onClick={() => saveToPrimerDatabase(designedPrimerCandidate(prm))}
+                    onClick={(e) => saveToPrimerDatabase(designedPrimerCandidate(prm), e.currentTarget)}
                   >
                     Save to Primer Database
                   </button>
@@ -738,7 +739,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                           type="button"
                           className="mbc-coord-jump-btn"
                           aria-label={`Save ${p.name} to Primer Database`}
-                          onClick={() => saveToPrimerDatabase(documentPrimerCandidate(p))}
+                          onClick={(e) => saveToPrimerDatabase(documentPrimerCandidate(p), e.currentTarget)}
                         >
                           Save to Primer Database
                         </button>

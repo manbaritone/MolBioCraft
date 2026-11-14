@@ -22,18 +22,39 @@ import {
 import { buildNativeMenuState, resolveNativeMenuItemEnabled } from '../core/commandAvailability';
 import { duplicateMatchFor } from '../components/PrimerDatabaseWindow';
 import type { DatabasePrimer, PrimerRecord, SequenceDocument } from '../types/bio';
-import { mountApp, type AppHarness } from './appHarness';
+import { macHost, mountApp, type AppHarness, type MountOptions } from './appHarness';
 import { dispatchLiveEvent, LiveElement, memoryStorage, type LiveStorage } from './liveDom';
 
 vi.setConfig({ testTimeout: 60_000 });
+
+/**
+ * The desktop app's save dialog (cmd_native_save_file_dialog through saveNativeFileDialogTauri),
+ * answered by each test: the path written, null when the user cancels, or a failure. The rest of
+ * src/lib/tauriIpc is the harness's mock: the Tauri runtime is present only on a macOS host.
+ */
+const nativeSave = vi.hoisted(() => ({
+  answer: null as null | (() => Promise<string | null>),
+  calls: [] as Array<{ filename: string; content: string }>,
+}));
+vi.mock('../lib/tauriIpc', async (importOriginal) => {
+  const mocked = (await import('./appHarness')).tauriIpcMock(await importOriginal<object>());
+  return {
+    ...mocked,
+    saveNativeFileDialogTauri: async (filename: string, content: string) => {
+      nativeSave.calls.push({ filename, content });
+      if (!nativeSave.answer) throw new Error('the test gave the native save dialog no answer');
+      return nativeSave.answer();
+    },
+  };
+});
 
 const nodeFsSpec = 'node:fs';
 const { readFileSync } = (await import(/* @vite-ignore */ nodeFsSpec)) as {
   readFileSync: (path: URL, encoding: 'utf8') => string;
 };
 
-async function withApp(storage: LiveStorage, run: (app: AppHarness) => Promise<void>): Promise<void> {
-  const app = await mountApp({ storage });
+async function withApp(storage: LiveStorage, run: (app: AppHarness) => Promise<void>, opts: MountOptions = {}): Promise<void> {
+  const app = await mountApp({ ...opts, storage });
   try {
     await run(app);
   } finally {
@@ -762,3 +783,196 @@ describe('Keyboard and screen reader (US-01M7DQFS AC5)', () => {
 });
 
 export type { SequenceDocument };
+
+// ─── BG-01M7DVJJ: Escape, honest export, edits never merged away, the Studio panel's focus ───
+
+const isFocused = (app: AppHarness, el: LiveElement | null | undefined) => !!el && app.doc.activeElement === el;
+const focusName = (app: AppHarness) => nameOf(app.doc.activeElement as LiveElement);
+const noticeText = (app: AppHarness) =>
+  openWindow(app)
+    .querySelectorAll('[role="status"], [role="alert"]')
+    .map((n) => words(n.textContent))
+    .join(' | ');
+
+describe('Escape closes the innermost open thing first (BG-01M7DVJJ AC1)', () => {
+  it('BG-01M7DVJJ AC1 Escape closes an Add or Edit form and keeps the window, with focus back on Add or Edit', async () => {
+    const { storage } = seededStorage([ECORI_FWD, GUIDE]);
+    await withApp(storage, async (app) => {
+      await app.menu('tools:primer-database');
+      // Wrong implementation: Escape closes the whole window and the typed name is lost.
+      await app.click(button(openWindow(app), 'Add'));
+      // The form takes focus in its Name field, so Escape lands in the window even where a click does not focus.
+      expect(isFocused(app, field(app.one('form[aria-label="Add primer"]'), 'Name')), `focus is on ${focusName(app)}`).toBe(true);
+      await app.input(field(app.one('form[aria-label="Add primer"]'), 'Name'), 'half-typed');
+      await app.press('Escape');
+      expect(primerWindow(app), 'the window stays open').not.toBeNull();
+      expect(app.all('form[aria-label="Add primer"]')).toHaveLength(0);
+      expect(isFocused(app, button(openWindow(app), 'Add')), `focus is on ${focusName(app)}`).toBe(true);
+      await app.click(button(openWindow(app), 'Edit guide-rna'));
+      expect(isFocused(app, field(app.one('form[aria-label="Edit guide-rna"]'), 'Name')), `focus is on ${focusName(app)}`).toBe(true);
+      await app.press('Escape');
+      expect(app.all('form[aria-label="Edit guide-rna"]')).toHaveLength(0);
+      expect(isFocused(app, button(openWindow(app), 'Edit guide-rna')), `focus is on ${focusName(app)}`).toBe(true);
+      // With nothing open, Escape closes the window as before.
+      await app.press('Escape');
+      expect(primerWindow(app)).toBeNull();
+    });
+  });
+
+  it('BG-01M7DVJJ AC1 Escape closes a pending duplicate choice first, keeping the form and what was typed', async () => {
+    const { storage, records } = seededStorage([ECORI_FWD]);
+    await withApp(storage, async (app) => {
+      await app.menu('tools:primer-database');
+      await app.click(button(openWindow(app), 'Add'));
+      const form = app.one('form[aria-label="Add primer"]');
+      await app.input(field(form, 'Name'), 'EcoRI-fwd');
+      await app.input(field(form, "Sequence (5' → 3')"), 'ACGTACGTACGTAC');
+      await app.click(button(form, 'Save Primer'));
+      expect(app.all('[role="group"][aria-label="Duplicate primer"]')).toHaveLength(1);
+      await app.press('Escape');
+      expect(app.all('[role="group"][aria-label="Duplicate primer"]')).toHaveLength(0);
+      const still = app.one('form[aria-label="Add primer"]');
+      expect(field(still, 'Name').value).toBe('EcoRI-fwd');
+      expect(field(still, "Sequence (5' → 3')").value).toBe('ACGTACGTACGTAC');
+      expect(isFocused(app, button(still, 'Save Primer')), `focus is on ${focusName(app)}`).toBe(true);
+      expect(storedRecords(storage)).toEqual(records);
+      await app.press('Escape');
+      expect(app.all('form[aria-label="Add primer"]')).toHaveLength(0);
+      expect(isFocused(app, button(openWindow(app), 'Add')), `focus is on ${focusName(app)}`).toBe(true);
+    });
+  });
+
+  it('BG-01M7DVJJ AC1 Escape closes the Empty Trash question first, with focus back on Empty Trash', async () => {
+    const { storage } = seededStorage([ECORI_FWD, OLD], ['old-primer']);
+    await withApp(storage, async (app) => {
+      await app.menu('tools:primer-database');
+      await app.click(button(openWindow(app), 'Trash (1)'));
+      await app.click(button(openWindow(app), 'Empty Trash'));
+      await app.press('Escape');
+      expect(primerWindow(app)).not.toBeNull();
+      expect(isFocused(app, button(openWindow(app), 'Empty Trash')), `focus is on ${focusName(app)}`).toBe(true);
+      expect(storedRecords(storage).map((r) => r.name)).toEqual(['EcoRI-fwd', 'old-primer']);
+    });
+  });
+});
+
+describe('Export says what the save path did (BG-01M7DVJJ AC2)', () => {
+  it('BG-01M7DVJJ AC2 on the desktop app, Export says Exported only for a written file, and Export cancelled when the dialog is cancelled', async () => {
+    const { storage, records } = seededStorage([ECORI_FWD, GUIDE]);
+    await withApp(
+      storage,
+      async (app) => {
+        await app.menu('tools:primer-database');
+        nativeSave.calls.length = 0;
+        // Cancelled: wrong implementation reports Exported because the dialog was opened.
+        nativeSave.answer = async () => null;
+        await app.click(button(openWindow(app), 'Export Backup…'));
+        expect(nativeSave.calls).toHaveLength(1);
+        expect(JSON.parse(nativeSave.calls[0].content).records).toEqual(records);
+        expect(noticeText(app)).toContain('Export cancelled: no file was saved.');
+        expect(noticeText(app)).not.toContain('Exported');
+        // Written: the path the dialog wrote to.
+        nativeSave.answer = async () => '/Users/lab/primer-database.json';
+        await app.click(button(openWindow(app), 'Export Backup…'));
+        expect(noticeText(app)).toContain('Exported the Primer Database backup to /Users/lab/primer-database.json.');
+        // Failed: said as a failure.
+        nativeSave.answer = async () => {
+          throw new Error('[ERR_PERMISSION_DENIED] the folder is read-only');
+        };
+        await app.click(button(openWindow(app), 'Export Backup…'));
+        expect(noticeText(app)).toContain('Export failed');
+        expect(noticeText(app)).not.toContain('Exported');
+      },
+      macHost(),
+    );
+    nativeSave.answer = null;
+  });
+
+  it('BG-01M7DVJJ AC2 Save Unreadable Data says cancelled or saved the same way', async () => {
+    const stored = '{"schema":1,"records":[';
+    const storage = memoryStorage({ [PRIMER_DATABASE_KEY]: stored });
+    await withApp(
+      storage,
+      async (app) => {
+        await app.menu('tools:primer-database');
+        nativeSave.calls.length = 0;
+        nativeSave.answer = async () => null;
+        await app.click(button(openWindow(app), 'Save Unreadable Data…'));
+        expect(nativeSave.calls.map((c) => c.content)).toEqual([stored]);
+        expect(noticeText(app)).toContain('Copy of the unreadable data cancelled: no file was saved.');
+        expect(noticeText(app)).not.toMatch(/Saved a copy/);
+        nativeSave.answer = async () => '/Users/lab/unreadable.json';
+        await app.click(button(openWindow(app), 'Save Unreadable Data…'));
+        expect(noticeText(app)).toContain('Copy of the unreadable data saved to /Users/lab/unreadable.json.');
+        expect(storage.getItem(PRIMER_DATABASE_KEY)).toBe(stored);
+      },
+      macHost(),
+    );
+    nativeSave.answer = null;
+  });
+
+  it('BG-01M7DVJJ AC2 in the browser, where the download is not confirmed, Export never says Exported', async () => {
+    const { storage } = seededStorage([ECORI_FWD]);
+    await withApp(storage, async (app) => {
+      await app.menu('tools:primer-database');
+      const before = app.downloads().length;
+      await app.click(button(openWindow(app), 'Export Backup…'));
+      expect(app.downloads().length).toBe(before + 1);
+      expect(noticeText(app)).toContain('handed to your browser to download as primer-database-');
+      expect(noticeText(app)).not.toContain('Exported');
+    });
+  });
+});
+
+describe('An edit is never merged away (BG-01M7DVJJ AC3)', () => {
+  it("BG-01M7DVJJ AC3 an edit matching another record's oligo offers no Merge, and Keep Separately saves the edit", async () => {
+    const third: DatabasePrimerInput = { name: 'third', sequence: 'TTTTGGGGCCCC', labels: ['x'] };
+    const { storage, records } = seededStorage([ECORI_FWD, third]);
+    await withApp(storage, async (app) => {
+      await app.menu('tools:primer-database');
+      await app.click(button(openWindow(app), 'Edit third'));
+      const edit = app.one('form[aria-label="Edit third"]');
+      await app.input(field(edit, "Sequence (5' → 3')"), 'GCTATCGAATTCCGTAC');
+      await app.input(field(edit, 'Modifications'), "5' FAM");
+      await app.input(field(edit, 'Description'), 'now the EcoRI oligo');
+      await app.click(button(edit, 'Save Changes'));
+      const panel = app.one('[role="group"][aria-label="Duplicate primer"]');
+      expect(words(panel.textContent)).toContain('Same oligo, different name');
+      // Wrong implementation: Merge Metadata offered, which writes into EcoRI-fwd and drops these edits.
+      expect(panel.querySelectorAll('button').map(nameOf)).toEqual(['Skip (default)', 'Keep Separately', 'Cancel']);
+      expect(storedRecords(storage)).toEqual(records);
+      await app.click(button(panel, 'Keep Separately'));
+      const [eco, edited] = storedRecords(storage);
+      expect(eco).toEqual(records[0]);
+      expect(edited).toMatchObject({
+        id: records[1].id,
+        name: 'third',
+        sequence: 'GCTATCGAATTCCGTAC',
+        modifications: "5' FAM",
+        description: 'now the EcoRI oligo',
+      });
+    });
+  });
+});
+
+describe("The Studio's duplicate panel takes focus (BG-01M7DVJJ AC4)", () => {
+  it('BG-01M7DVJJ AC4 focus moves into the panel when Save to Primer Database finds a match, and back to the Save button when it closes', async () => {
+    const { storage } = seededStorage([{ name: 'stock-copy', sequence: `GAATTC${SITE}` }]);
+    await withApp(storage, async (app) => {
+      await app.restoreSession({ documents: [TEMPLATE], activeDocId: TEMPLATE.id, viewerTab: 'primers-pcr' });
+      const save = () => app.all('button').find((b) => nameOf(b) === 'Save Doc_Tailed_Fwd to Primer Database')!;
+      await app.click(save());
+      const panel = app.one('[role="dialog"][aria-label="Save Doc_Tailed_Fwd to Primer Database"]');
+      // Wrong implementation: the panel appears but focus stays on the Save button behind it.
+      expect(panel.contains(app.doc.activeElement as LiveElement), `focus is on ${focusName(app)}`).toBe(true);
+      expect(focusName(app)).toBe('Skip (default)');
+      await app.press('Escape');
+      expect(app.all('[role="dialog"][aria-label="Save Doc_Tailed_Fwd to Primer Database"]')).toHaveLength(0);
+      expect(isFocused(app, save()), `focus is on ${focusName(app)}`).toBe(true);
+      await app.click(save());
+      await app.click(button(app.one('[role="dialog"][aria-label="Save Doc_Tailed_Fwd to Primer Database"]'), 'Skip (default)'));
+      expect(isFocused(app, save()), `focus is on ${focusName(app)}`).toBe(true);
+      expect(storedRecords(storage)).toHaveLength(1);
+    });
+  });
+});
