@@ -552,3 +552,26 @@ describe('US-01M7CC6K AC5 a methylation-blocked site is not a guaranteed cut', (
     expect(cleavagePicture(site, seq, false).cleavage).toBe('cuts');
   });
 });
+
+describe('BG-01M7CQMJ methylation across base 1 of a circle blocks the site, as inside it', () => {
+  const pad = 'A'.repeat(30);
+  const turn = (s: string, r: number) => s.slice(r) + s.slice(0, r);
+  const cases: Array<{ enzyme: string; seq: string; blocked: boolean; why: string }> = [
+    { enzyme: 'XbaI', seq: `TCTAGA${pad}GA`, blocked: true, why: 'GA|TCTAGA is Dam GATC before base 1' },
+    { enzyme: 'XbaI', seq: `TC${pad}TCTAGA`, blocked: true, why: 'TCTAGA|TC is Dam GATC past the last base' },
+    { enzyme: 'StuI', seq: `AGGCCT${pad}CC`, blocked: true, why: 'CC|AGGCCT is Dcm CCAGG before base 1' },
+    { enzyme: 'StuI', seq: `GG${pad}AGGCCT`, blocked: true, why: 'AGGCCT|GG is Dcm CCTGG past the last base' },
+    { enzyme: 'XbaI', seq: `TCTAGA${pad}AA`, blocked: false, why: 'no Dam motif on either side' },
+  ];
+  for (const c of cases) {
+    it(`${c.enzyme} on a ${c.seq.length}-bp circle: ${c.why}`, () => {
+      const site = engineSite(c.seq, 'circular', c.enzyme);
+      expect(site.methylationBlocked).toBe(c.blocked);
+      expect(cleavagePicture(site, c.seq, true).cleavage).toBe(c.blocked ? 'methylation-blocked' : 'cuts');
+      // The same circle turned so the site lies inside it.
+      expect(engineSite(turn(c.seq, c.seq.length / 2), 'circular', c.enzyme).methylationBlocked).toBe(c.blocked);
+      // A linear molecule has no base before base 1 or after the last: the site cuts.
+      expect(engineSite(c.seq, 'linear', c.enzyme).methylationBlocked).toBe(false);
+    });
+  }
+});

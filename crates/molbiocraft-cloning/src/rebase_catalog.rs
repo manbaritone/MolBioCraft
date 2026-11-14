@@ -474,7 +474,7 @@ fn record_cut_site(
         "blunt"
     };
 
-    let methylation_blocked = MethylationSensitivity::of(enz).blocks(idx, motif_len, search_space);
+    let methylation_blocked = MethylationSensitivity::of(enz).blocks(idx, motif_len, search_space, seq_len, topology);
 
     sites.push(RestrictionCutSite {
         id: format!("{}-{}-{}", enz.name, idx + 1, strand),
@@ -502,16 +502,27 @@ impl MethylationSensitivity {
         MethylationSensitivity { dam: has("Dam"), dcm: has("Dcm") }
     }
 
-    /// Whether a dam+ dcm+ host blocks the site starting at `idx` in `search_space`: the enzyme is
-    /// sensitive to a methylation whose motif lies within the site or the three bases either side.
-    fn blocks(self, idx: usize, motif_len: usize, search_space: &[u8]) -> bool {
-        if !self.dam && !self.dcm {
+    /// Whether a dam+ dcm+ host blocks the site starting at `idx` in `search_space` (whose first
+    /// `seq_len` bases are the molecule): the enzyme is sensitive to a methylation whose motif lies
+    /// within the site or the three bases either side. A circle reads those bases through the wrap
+    /// (BG-01M7CQMJ), so a context before base 1 or past the last base is whole; a linear molecule
+    /// has no bases beyond its ends, so its context stops at them.
+    fn blocks(self, idx: usize, motif_len: usize, search_space: &[u8], seq_len: usize, topology: Topology) -> bool {
+        if (!self.dam && !self.dcm) || seq_len == 0 {
             return false;
         }
-        let ctx_start = idx.saturating_sub(3);
-        let ctx_end = (idx + motif_len + 3).min(search_space.len());
-        let ctx = &search_space[ctx_start..ctx_end];
-        let has_sub = |needle: &[u8]| ctx.windows(needle.len()).any(|w| w == needle);
+        let circular = topology != Topology::Linear;
+        let (lo, hi) = if circular {
+            (idx as isize - 3, (idx + motif_len + 3) as isize)
+        } else {
+            (idx.saturating_sub(3) as isize, (idx + motif_len + 3).min(seq_len) as isize)
+        };
+        let len_i = seq_len as isize;
+        let at = |i: isize| if circular { search_space[i.rem_euclid(len_i) as usize] } else { search_space[i as usize] };
+        let has_sub = |needle: &[u8]| {
+            let m = needle.len() as isize;
+            (lo..=hi - m).any(|s| (0..m).all(|k| at(s + k) == needle[k as usize]))
+        };
         (self.dam && has_sub(b"GATC")) || (self.dcm && (has_sub(b"CCAGG") || has_sub(b"CCTGG")))
     }
 }
@@ -612,7 +623,7 @@ fn count_and_keep_sites(
                 let start = mat.start();
                 if site_cuts_molecule(&enzymes[e_idx], start, m_len, strand, seq_len, topology) {
                     counts[e_idx] += 1;
-                    if sensitivity[e_idx].blocks(start, m_len, search) {
+                    if sensitivity[e_idx].blocks(start, m_len, search, seq_len, topology) {
                         blocked[e_idx] += 1;
                     }
                     if kept[e_idx].len() < keep {
@@ -635,7 +646,7 @@ fn count_and_keep_sites(
                 && site_cuts_molecule(&enzymes[*e_idx], i, m_len, *strand, seq_len, topology)
             {
                 counts[*e_idx] += 1;
-                if sensitivity[*e_idx].blocks(i, m_len, search) {
+                if sensitivity[*e_idx].blocks(i, m_len, search, seq_len, topology) {
                     blocked[*e_idx] += 1;
                 }
                 if kept_here < keep {
@@ -1759,5 +1770,128 @@ mod rebase_validation {
             }
         }
         assert!(origin_cases > 100, "the rotations put sites at the origin: {origin_cases}");
+    }
+
+    /// Every site of the catalogue enzymes `names` on `seq` as (enzyme, position, strand, blocked).
+    fn methylation_reading(seq: &str, topology: Topology, names: &[&str]) -> Vec<(String, usize, i8, bool)> {
+        let enzymes: Vec<RestrictionEnzyme> =
+            get_rebase_enzymes().into_iter().filter(|e| names.contains(&e.name.as_str())).collect();
+        assert_eq!(enzymes.len(), names.len(), "every enzyme of {names:?} is in the catalogue");
+        let mut v: Vec<_> = find_restriction_cut_sites(seq, topology, Some(&enzymes))
+            .into_iter()
+            .map(|c| (c.enzyme.name, c.position, c.strand, c.methylation_blocked))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Each enzyme of `names` with its complete count of sites on `seq` and of those methylation
+    /// blocks, as `scan_restriction_sites` counts them (the other reader of the methylation rule).
+    fn methylation_counts(seq: &str, topology: Topology, names: &[&str]) -> Vec<(String, usize, usize)> {
+        let enzymes: Vec<RestrictionEnzyme> =
+            get_rebase_enzymes().into_iter().filter(|e| names.contains(&e.name.as_str())).collect();
+        let mut v: Vec<_> = scan_restriction_sites(seq, topology, Some(&enzymes), RestrictionPositionLimit::All)
+            .site_counts
+            .into_iter()
+            .map(|c| (c.enzyme, c.sites, c.methylation_blocked))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// BG-01M7CQMJ: on a circle, a Dam (GATC) or Dcm (CCWGG) context that straddles base 1 blocks
+    /// the site as it does when the same site is turned to the inside; without the methylation
+    /// motif the site cuts wherever it lies, and a linear molecule has no bases before base 1.
+    #[test]
+    fn methylation_across_the_origin_of_a_circle_blocks_the_site() {
+        let pad = "A".repeat(30);
+        // (enzyme, circle with the site at base 1, whether a dam+ dcm+ host blocks it)
+        let cases = [
+            // XbaI TCTAGA at base 1 after a circle ending GA: GA|TCTAGA is Dam GATC across the origin.
+            ("XbaI", format!("TCTAGA{pad}GA"), true),
+            ("XbaI", format!("TCTAGA{pad}AA"), false),
+            // StuI AGGCCT at base 1 after a circle ending CC: CC|AGGCCT is Dcm CCAGG across the origin.
+            ("StuI", format!("AGGCCT{pad}CC"), true),
+            ("StuI", format!("AGGCCT{pad}AA"), false),
+            // XbaI TCTAGA ending at the last base, before a circle starting TC: TCTAGA|TC reads GATC.
+            ("XbaI", format!("TC{pad}TCTAGA"), true),
+            ("XbaI", format!("AA{pad}TCTAGA"), false),
+            // StuI AGGCCT ending at the last base, before a circle starting GG: AGGCCT|GG reads CCTGG.
+            ("StuI", format!("GG{pad}AGGCCT"), true),
+            ("StuI", format!("AA{pad}AGGCCT"), false),
+        ];
+        for (name, seq, blocked) in cases {
+            let n = seq.len();
+            let at = seq.find(&get_rebase_enzymes().into_iter().find(|e| e.name == name).unwrap().recognition_seq).unwrap() + 1;
+            let origin = methylation_reading(&seq, Topology::Circular, &[name]);
+            assert_eq!(origin, vec![(name.to_string(), at, 1, blocked)], "{name} at {at} of the circle {seq}");
+            let shift = n / 2;
+            let inside = methylation_reading(&rotate(&seq, n - shift), Topology::Circular, &[name]);
+            assert_eq!(inside, vec![(name.to_string(), (at - 1 + shift) % n + 1, 1, blocked)], "{name} turned inside");
+            assert_eq!(
+                methylation_counts(&seq, Topology::Circular, &[name]),
+                vec![(name.to_string(), 1, usize::from(blocked))],
+                "{name}: the scan's count of blocked sites on the circle {seq}"
+            );
+            // Linear: no base lies before base 1 or after the last, so only the site itself is read.
+            assert_eq!(
+                methylation_reading(&seq, Topology::Linear, &[name]),
+                vec![(name.to_string(), at, 1, false)],
+                "{name} at an end of the linear {seq}"
+            );
+            assert_eq!(methylation_counts(&seq, Topology::Linear, &[name]), vec![(name.to_string(), 1, 0)], "{name} linear count");
+        }
+        // A linear end still reads a context inside the molecule: GATCTAGA at base 1 and TCTAGATC at
+        // the last base are Dam-blocked, as before.
+        assert_eq!(methylation_reading(&format!("GATCTAGA{pad}"), Topology::Linear, &["XbaI"]), vec![("XbaI".to_string(), 3, 1, true)]);
+        assert_eq!(
+            methylation_reading(&format!("{pad}TCTAGATC"), Topology::Linear, &["XbaI"]),
+            vec![("XbaI".to_string(), 31, 1, true)]
+        );
+    }
+
+    /// BG-01M7CQMJ: a circle has no privileged base. Turned to every one of its rotations, every
+    /// Dam- or Dcm-sensitive site keeps its blocked status, in the kept sites and in the scan's
+    /// counts, so each methylation context is read across the origin on both sides of the site.
+    #[test]
+    fn every_rotation_of_a_circle_reports_the_same_methylation_blocks() {
+        let names = ["XbaI", "StuI", "ClaI", "BclI", "ApaI"];
+        let circles = [
+            // Blocked: XbaI (GATC before), StuI (CCTGG after), ClaI (GATC after), BclI (GATC inside),
+            // ApaI (CCAGG after); and unblocked XbaI, StuI and ApaI sites.
+            "GATCTAGAAAAAAATCTAGAAAAAAAGGCCTGGAAAAAAAGGCCTAAAAAAATCGATCAAAAAATGATCAAAAAAGGGCCCAGGAAAAAAGGGCCCAAAAA",
+            // Smaller than the 36 bases a circle's search reads again past its end.
+            "GATCTAGATT",
+            "AGGCCTGGTT",
+        ];
+        for seq in circles {
+            let n = seq.len();
+            let reference = methylation_reading(seq, Topology::Circular, &names);
+            let counts = methylation_counts(seq, Topology::Circular, &names);
+            assert!(reference.iter().any(|s| s.3), "a blocked site on {seq}");
+            for r in 1..n {
+                let back = |p: usize| (p - 1 + r) % n + 1;
+                let turned = rotate(seq, r);
+                let mut read: Vec<_> = methylation_reading(&turned, Topology::Circular, &names)
+                    .into_iter()
+                    .map(|(e, p, s, b)| (e, back(p), s, b))
+                    .collect();
+                read.sort();
+                assert_eq!(read, reference, "{seq} turned by {r}");
+                assert_eq!(methylation_counts(&turned, Topology::Circular, &names), counts, "{seq} turned by {r}: counts");
+            }
+        }
+        // The large circle's sites as planted, read where none touches the origin.
+        let blocked: Vec<(String, bool)> = methylation_reading(circles[0], Topology::Circular, &names)
+            .into_iter()
+            .filter(|s| s.2 == 1)
+            .map(|(e, _, _, b)| (e, b))
+            .collect();
+        let want = [("XbaI", true), ("XbaI", false), ("StuI", true), ("StuI", false), ("ClaI", true), ("BclI", true), ("ApaI", true), ("ApaI", false)];
+        let mut want: Vec<(String, bool)> = want.iter().map(|(e, b)| (e.to_string(), *b)).collect();
+        want.sort();
+        let mut blocked = blocked;
+        blocked.sort();
+        assert_eq!(blocked, want, "the planted sites of {}", circles[0]);
     }
 }
