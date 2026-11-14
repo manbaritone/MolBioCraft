@@ -370,8 +370,10 @@ import {
   autosaveWorkbenchWithin,
   QUIT_AUTOSAVE_TIMEOUT_MS,
   readNewestLocalStorageWorkbenchAutosave,
+  restoredSiteVisibility,
   serializeMbcFolderZip,
   serializeMbcWorkbench,
+  siteVisibilityForSession,
   workbenchAutosaveNeedsRecovery,
   writeWorkbenchAutosaveDirtyFlag,
   type WorkbenchAutosaveReadResult,
@@ -1004,6 +1006,17 @@ export function maskActiveSelection(
     maskedRuns: once.maskedRuns + twice.maskedRuns,
     annotationsOmitted: once.annotationsOmitted || twice.annotationsOmitted,
   };
+}
+
+/**
+ * The {@link sequenceRevision} of the molecule the restriction scan reads from `sequence`: the whole
+ * molecule in its topology, or, past the scan's limit (BG-01M6RPWR), its first bases as linear: the
+ * rule of the scanned view's restrictionMolecule, read here for a restored session's site choices
+ * (BG-01M7DHM0), which must key on the revision that view will compute.
+ */
+function restrictionScanRevision(sequence: string, topology: SequenceDocument['topology']): string {
+  const firstBp = restrictionScanScope(sequence.length, restrictionScannedBp(sequence.length))?.firstBp ?? 0;
+  return sequenceRevision(firstBp ? sequence.slice(0, firstBp) : sequence, !firstBp && topology === 'circular' ? 'circular' : 'linear');
 }
 
 /** The Flatfile tab's record formats, as its toolbar names the one shown. */
@@ -4486,6 +4499,7 @@ export const App: React.FC = () => {
       mapLayoutMode,
       zoomLevel,
       paneSplit,
+      siteVisibility: siteVisibilityForSession(siteVisibilityByDoc, documents),
       textFormat,
       colorScheme,
       darkMode,
@@ -4648,6 +4662,7 @@ export const App: React.FC = () => {
     mapLayoutMode,
     zoomLevel,
     paneSplit,
+    siteVisibilityByDoc,
     textFormat,
     colorScheme,
     darkMode,
@@ -4761,6 +4776,12 @@ export const App: React.FC = () => {
     setZoomLevel(clampSequenceZoom(env.workspace.zoomLevel));
     // Checked on the way in: a session saved before the divider, or a malformed value, opens at the default.
     setPaneSplit(parsePaneSplit(env.workspace.paneSplit));
+    // Each document's displayed sites as saved (BG-01M7DHM0), malformed entries dropped and a choice
+    // made on a sequence other than the restored one dropped; the App reconciles the rest with the
+    // document's own scan before a map draws them.
+    setSiteVisibilityByDoc(
+      restoredSiteVisibility(env.workspace.siteVisibility, restoredDocuments, (doc) => restrictionScanRevision(doc.sequence, doc.topology))
+    );
     setTextFormat(env.workspace.textFormat);
     // Checked here as importing a preferences file checks it: a scheme that is not a known nucleotide
     // scheme opens in the default ('standard'), whatever the session parser let through.

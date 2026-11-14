@@ -198,6 +198,13 @@ pub struct MbcWorkspaceUiStateRust {
     /// restore. A session saved before it has none and opens at the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_split: Option<serde_json::Value>,
+    /// Which restriction sites each document's maps display (BG-01M7DHM0): an object from document
+    /// id to `{ revision, hiddenEnzymes, occurrences }`, kept by [`sanitize_site_visibility`] to that
+    /// shape. On restore the app drops a document's site choices made on another sequence than the
+    /// one restored, and reconciles the rest with the document's scan. A session saved before it has
+    /// none, and every site is shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_visibility: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,6 +312,73 @@ pub fn serialize_mbc_workbench_rust(
     let mut json = serde_json::to_string_pretty(&envelope).unwrap_or_else(|_| "{}".to_string());
     json.push('\n');
     json
+}
+
+/// Limits on a saved `workspace.siteVisibility` (BG-01M7DHM0): it holds enzyme names and occurrence
+/// ids only, so anything longer or more numerous than these is not one the app wrote.
+const SITE_VISIBILITY_MAX_DOCS: usize = 4096;
+const SITE_VISIBILITY_MAX_ENZYMES: usize = 2048;
+const SITE_VISIBILITY_MAX_OCCURRENCES: usize = 4096;
+const SITE_VISIBILITY_MAX_ID_CHARS: usize = 256;
+const SITE_VISIBILITY_MAX_NAME_CHARS: usize = 64;
+
+/// A saved `workspace.siteVisibility` kept to the shape the app writes (BG-01M7DHM0): an object from
+/// document id to `{ revision: string, hiddenEnzymes: string[], occurrences: { id: { enzyme:
+/// string, shown: bool } } }`, and nothing else. A document entry without a revision string is
+/// dropped, as are an enzyme name or occurrence that is not that shape or is over its length; past
+/// the count limits the rest are dropped. None for a value that is not an object, or keeps no entry.
+pub fn sanitize_site_visibility(value: &serde_json::Value) -> Option<serde_json::Value> {
+    use serde_json::{Map, Value};
+    let short = |s: &str, max: usize| !s.is_empty() && s.chars().count() <= max;
+    let mut docs = Map::new();
+    for (doc_id, entry) in value.as_object()? {
+        if docs.len() >= SITE_VISIBILITY_MAX_DOCS {
+            break;
+        }
+        if !short(doc_id, SITE_VISIBILITY_MAX_ID_CHARS) {
+            continue;
+        }
+        let Some(entry) = entry.as_object() else { continue };
+        let Some(revision) = entry.get("revision").and_then(Value::as_str).filter(|r| short(r, SITE_VISIBILITY_MAX_NAME_CHARS)) else {
+            continue;
+        };
+        let mut hidden: Vec<String> = entry
+            .get("hiddenEnzymes")
+            .and_then(Value::as_array)
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|n| short(n, SITE_VISIBILITY_MAX_NAME_CHARS))
+                    .take(SITE_VISIBILITY_MAX_ENZYMES)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        hidden.sort();
+        hidden.dedup();
+        let mut occurrences = Map::new();
+        if let Some(occ) = entry.get("occurrences").and_then(Value::as_object) {
+            for (id, choice) in occ {
+                if occurrences.len() >= SITE_VISIBILITY_MAX_OCCURRENCES {
+                    break;
+                }
+                if !short(id, SITE_VISIBILITY_MAX_ID_CHARS) {
+                    continue;
+                }
+                let enzyme = choice.get("enzyme").and_then(Value::as_str).filter(|n| short(n, SITE_VISIBILITY_MAX_NAME_CHARS));
+                let shown = choice.get("shown").and_then(Value::as_bool);
+                if let (Some(enzyme), Some(shown)) = (enzyme, shown) {
+                    occurrences.insert(id.clone(), serde_json::json!({ "enzyme": enzyme, "shown": shown }));
+                }
+            }
+        }
+        docs.insert(
+            doc_id.clone(),
+            serde_json::json!({ "revision": revision, "hiddenEnzymes": hidden, "occurrences": occurrences }),
+        );
+    }
+    (!docs.is_empty()).then_some(Value::Object(docs))
 }
 
 const VALID_VIEWER_TABS: &[&str] = &[
@@ -577,6 +651,7 @@ pub fn parse_mbc_workbench_rust(
     let resolved_workspace = MbcWorkspaceUiStateRust {
         project_explorer: ws_obj.and_then(|w| w.get("projectExplorer")).filter(|v| v.is_object()).cloned(),
         pane_split: ws_obj.and_then(|w| w.get("paneSplit")).filter(|v| v.is_object()).cloned(),
+        site_visibility: ws_obj.and_then(|w| w.get("siteVisibility")).and_then(sanitize_site_visibility),
         active_doc_id: resolved_active_id,
         selected_folder: ws_obj
             .and_then(|w| w.get("selectedFolder"))
@@ -1155,6 +1230,13 @@ mod tests {
                 selected_range: None,
                 display_settings: MbcDisplaySettingsRust::default(),
                 pane_split: Some(serde_json::json!({"ratio": 0.6, "collapsed": "linear"})),
+                site_visibility: Some(serde_json::json!({
+                    "doc-a": {
+                        "revision": "c2686.abc",
+                        "hiddenEnzymes": ["BamHI"],
+                        "occurrences": {"EcoRI@396+#c2686.abc": {"enzyme": "EcoRI", "shown": false}}
+                    }
+                })),
             },
         };
 
@@ -1181,6 +1263,26 @@ mod tests {
         old["workspace"]["paneSplit"] = serde_json::json!("0.6");
         let odd = parse_mbc_workbench_bytes_rust(old.to_string().as_bytes(), "Fallback", "2026-10-31T08:00:00.000Z").unwrap();
         assert_eq!(odd.envelope.workspace.pane_split, None, "a paneSplit that is not an object is dropped");
+        // BG-01M7DHM0: the per-document site visibility round-trips; a session without it has none,
+        // and one that is not an object is dropped.
+        assert_eq!(parsed.envelope.workspace.site_visibility, snap.workspace.site_visibility);
+        assert!(parsed.envelope.workspace.site_visibility.is_some());
+        let mut no_sites: serde_json::Value = serde_json::from_str(&json).unwrap();
+        no_sites["workspace"].as_object_mut().unwrap().remove("siteVisibility");
+        let at = "2026-10-31T08:00:00.000Z";
+        let reparsed = |v: &serde_json::Value| parse_mbc_workbench_bytes_rust(v.to_string().as_bytes(), "Fallback", at).unwrap();
+        assert_eq!(reparsed(&no_sites).envelope.workspace.site_visibility, None);
+        for not_object in [serde_json::json!("BamHI"), serde_json::json!(["BamHI"]), serde_json::json!(7), serde_json::Value::Null] {
+            no_sites["workspace"]["siteVisibility"] = not_object.clone();
+            assert_eq!(reparsed(&no_sites).envelope.workspace.site_visibility, None, "{not_object} is dropped");
+        }
+        // An object is kept to its shape on the way in, never as written.
+        no_sites["workspace"]["siteVisibility"] =
+            serde_json::json!({"doc-a": {"revision": "r", "hiddenEnzymes": ["BamHI", 7], "occurrences": {"x": 1}, "script": "<b>"}});
+        assert_eq!(
+            reparsed(&no_sites).envelope.workspace.site_visibility,
+            Some(serde_json::json!({"doc-a": {"revision": "r", "hiddenEnzymes": ["BamHI"], "occurrences": {}}}))
+        );
         assert_eq!(parsed.envelope.session_name, "Test_Study");
         assert_eq!(parsed.envelope.workspace.viewer_tab, "sequence-alignment");
         assert!(parsed.envelope.checksum_crc32.is_some());
@@ -1253,5 +1355,65 @@ mod tests {
         assert_eq!(gz_bad.envelope.session_name, "Test_Study");
         assert_eq!(gz_bad.envelope.document_count, 1);
         assert_eq!(gz_bad.envelope.documents[0].sequence, tampered_seq);
+    }
+    /// BG-01M7DHM0: a saved siteVisibility keeps only the shape the app writes, within its limits.
+    #[test]
+    fn site_visibility_is_filtered_to_its_shape() {
+        use serde_json::json;
+        let raw = json!({
+            "doc-a": {
+                "revision": "c100.x",
+                "hiddenEnzymes": ["BamHI", 7, "", "EcoRI", "BamHI", "N".repeat(65)],
+                "occurrences": {
+                    "EcoRI@5+#c100.x": {"enzyme": "EcoRI", "shown": false},
+                    "EcoRI@9+#c100.x": {"enzyme": "EcoRI", "shown": "no"},
+                    "PstI@3+#c100.x": {"shown": true},
+                    "BsaI@1-#c100.x": {"enzyme": "BsaI", "shown": true, "script": "<b>"},
+                    "x": "not a choice"
+                },
+                "extra": {"kept": false}
+            },
+            "doc-no-revision": {"hiddenEnzymes": ["BamHI"], "occurrences": {}},
+            "doc-bad-revision": {"revision": 3, "hiddenEnzymes": ["BamHI"]},
+            "doc-not-object": ["BamHI"],
+            "doc-bare": {"revision": "l20.y"}
+        });
+        let kept = sanitize_site_visibility(&raw).unwrap();
+        assert_eq!(
+            kept,
+            json!({
+                "doc-a": {
+                    "revision": "c100.x",
+                    "hiddenEnzymes": ["BamHI", "EcoRI"],
+                    "occurrences": {
+                        "EcoRI@5+#c100.x": {"enzyme": "EcoRI", "shown": false},
+                        "BsaI@1-#c100.x": {"enzyme": "BsaI", "shown": true}
+                    }
+                },
+                "doc-bare": {"revision": "l20.y", "hiddenEnzymes": [], "occurrences": {}}
+            })
+        );
+        // Nothing usable, or not an object at all: none.
+        assert_eq!(sanitize_site_visibility(&json!({"d": {"hiddenEnzymes": ["BamHI"]}})), None);
+        assert_eq!(sanitize_site_visibility(&json!("d")), None);
+
+        // Oversized: past the limits the rest is dropped, and an over-long id is never kept.
+        let mut many_occ = serde_json::Map::new();
+        for i in 0..(SITE_VISIBILITY_MAX_OCCURRENCES + 50) {
+            many_occ.insert(format!("EcoRI@{i}+#r"), json!({"enzyme": "EcoRI", "shown": false}));
+        }
+        let names: Vec<String> = (0..(SITE_VISIBILITY_MAX_ENZYMES + 50)).map(|i| format!("E{i}")).collect();
+        let mut docs = serde_json::Map::new();
+        for i in 0..(SITE_VISIBILITY_MAX_DOCS + 10) {
+            docs.insert(format!("doc-{i:05}"), json!({"revision": "r"}));
+        }
+        docs.insert("doc-00000".into(), json!({"revision": "r", "hiddenEnzymes": names, "occurrences": many_occ}));
+        docs.insert("d".repeat(SITE_VISIBILITY_MAX_ID_CHARS + 1), json!({"revision": "r"}));
+        let big = sanitize_site_visibility(&serde_json::Value::Object(docs)).unwrap();
+        let big = big.as_object().unwrap();
+        assert_eq!(big.len(), SITE_VISIBILITY_MAX_DOCS);
+        assert!(!big.contains_key(&"d".repeat(SITE_VISIBILITY_MAX_ID_CHARS + 1)));
+        assert_eq!(big["doc-00000"]["hiddenEnzymes"].as_array().unwrap().len(), SITE_VISIBILITY_MAX_ENZYMES);
+        assert_eq!(big["doc-00000"]["occurrences"].as_object().unwrap().len(), SITE_VISIBILITY_MAX_OCCURRENCES);
     }
 }

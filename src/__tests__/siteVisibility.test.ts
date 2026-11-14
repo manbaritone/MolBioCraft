@@ -27,6 +27,7 @@ import {
 import type { RestrictionCutSite, SequenceDocument } from '../types/bio';
 import { CircularPlasmidMap, circularCalloutNote } from '../components/CircularPlasmidMap';
 import { LinearSequenceView } from '../components/LinearSequenceView';
+import { parseMbcWorkbench, restoredSiteVisibility, serializeMbcWorkbench, siteVisibilityForSession, type MbcWorkbenchSnapshot } from '../core/mbcSessionFormat';
 import { mountApp } from './appHarness';
 import type { LiveElement } from './liveDom';
 
@@ -617,6 +618,172 @@ describe('US-01M7CCGA AC4: choices outlive a document switch, a layout change an
       await app.change(box(`Show EcoRI at ${cutAfter(MAP_ECO1)}, forward strand`), true);
       expect(pillCuts()).toEqual(all.filter((k) => k !== 'BamHI@97'));
       expect(app.all('section.mbc-cleavage-preview')).toHaveLength(0);
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
+// ─── BG-01M7DHM0: the choices are saved with the session and autosave, and restored per document ───
+
+describe('BG-01M7DHM0 AC1: site visibility is saved with the session and restored per document', () => {
+  vi.setConfig({ testTimeout: 120_000 });
+  const TWIN: SequenceDocument = { ...MAP_DOC, id: 'site-visibility-twin', name: 'Site visibility twin' };
+  const PLAIN: SequenceDocument = { ...MAP_DOC, id: 'site-visibility-plain', name: 'Nothing hidden' };
+  const DOCS = [MAP_DOC, TWIN, PLAIN];
+  const WORKSPACE: MbcWorkbenchSnapshot['workspace'] = {
+    activeDocId: MAP_DOC.id, selectedFolder: 'All Project Files', navHistory: [MAP_DOC.id], navIndex: 0,
+    viewerTab: 'sequence-view', mapLayoutMode: 'split', zoomLevel: 100, textFormat: 'genbank', colorScheme: 'standard',
+    darkMode: false, sidebarOpen: true, docTableCollapsed: false, selectedRange: null,
+    displaySettings: {
+      showOrfs: false, minOrfAa: 50, allowAltStartCodons: false, showPrimers: true, showTranslation: false,
+      showGcGraph: false, showHydropathyGraph: false, showUniqueCuttersOnly: false,
+    },
+  };
+  // MAP_DOC: BamHI hidden and the first EcoRI site hidden. TWIN (the same sequence): BsaI hidden, and
+  // its one site shown again inside it. PLAIN: nothing chosen.
+  const mapChoice = setOccurrenceVisibility(setEnzymeVisibility(emptySiteVisibility(MAP_REV), 'BamHI', false), MAP_ECO1, false);
+  const twinChoice = setOccurrenceVisibility(setEnzymeVisibility(emptySiteVisibility(MAP_REV), 'BsaI-HFv2', false), sitesOf(MAP_SCAN.sites, 'BsaI-HFv2')[0], true);
+  const BY_DOC: Record<string, SiteVisibility> = { [MAP_DOC.id]: mapChoice, [TWIN.id]: twinChoice, [PLAIN.id]: emptySiteVisibility(MAP_REV) };
+  /** `byDoc` through the App's session writer and reader (the Rust engine's), and back as the App restores it. */
+  const throughSession = (byDoc: Record<string, SiteVisibility>, documents = DOCS, extra: Record<string, unknown> = {}) => {
+    const workspace = { ...WORKSPACE, siteVisibility: siteVisibilityForSession(byDoc, documents), ...extra };
+    const env = parseMbcWorkbench(serializeMbcWorkbench({ sessionName: 'Sites', documents, workspace })).envelope;
+    return { saved: env.workspace.siteVisibility, restored: restoredSiteVisibility(env.workspace.siteVisibility, env.documents) };
+  };
+
+  it('BG-01M7DHM0 AC1 serialise then parse gives each document its own hidden sites back, and saves no document without a choice', () => {
+    const { saved, restored } = throughSession(BY_DOC);
+    expect(Object.keys(saved ?? {}).sort()).toEqual([MAP_DOC.id, TWIN.id].sort());
+    expect(restored).toEqual({ [MAP_DOC.id]: mapChoice, [TWIN.id]: twinChoice });
+    // Displayed the same, per document: MAP_DOC hides BamHI and one EcoRI site, TWIN hides nothing
+    // (its BsaI site shown again inside the hidden enzyme), PLAIN hides nothing.
+    const mapShown = displayedKeys(MAP_SCAN.sites, MAP_REV, restored[MAP_DOC.id]);
+    expect(mapShown).toEqual(displayedKeys(MAP_SCAN.sites, MAP_REV, mapChoice));
+    expect(mapShown).not.toContain(key(sitesOf(MAP_SCAN.sites, 'BamHI')[0]));
+    expect(mapShown).not.toContain(key(MAP_ECO1));
+    expect(mapShown).toContain(key(MAP_ECO2));
+    expect(displayedKeys(MAP_SCAN.sites, MAP_REV, restored[TWIN.id])).toEqual(MAP_SCAN.sites.map(key).sort());
+    expect(restored[PLAIN.id]).toBeUndefined();
+    // Reconciled with the restored (unchanged) sequence's scan, every choice is kept.
+    expect(reconcileSiteVisibility(restored[MAP_DOC.id], scan(MAP_DOC.sequence).sites, MAP_REV)).toEqual(mapChoice);
+  });
+
+  it('BG-01M7DHM0 AC1 a session saved before it, or with nothing hidden, restores no choice: every site shown', () => {
+    expect(siteVisibilityForSession({ [PLAIN.id]: emptySiteVisibility(MAP_REV) }, DOCS)).toBeUndefined();
+    const { saved, restored } = throughSession({});
+    expect(saved).toBeUndefined();
+    expect(restored).toEqual({});
+    // A document no longer in the session saves nothing.
+    expect(siteVisibilityForSession(BY_DOC, [PLAIN])).toBeUndefined();
+  });
+
+  it('BG-01M7DHM0 AC1 a restored choice for a sequence that changed is dropped; the enzyme choice is kept', () => {
+    // The document as reopened: bases inserted upstream of every site, so each moved site has a new id.
+    const edited = { ...MAP_DOC, sequence: 'ACCA' + SEQ };
+    const { restored, saved } = throughSession({ [MAP_DOC.id]: mapChoice }, [edited]);
+    expect(restored[MAP_DOC.id]).toEqual(mapChoice);
+    const editedRev = sequenceRevision(edited.sequence, 'circular');
+    const editedScan = scan(edited.sequence);
+    const reconciled = reconcileSiteVisibility(restored[MAP_DOC.id], editedScan.sites, editedRev);
+    expect(reconciled).toEqual({ revision: editedRev, hiddenEnzymes: ['BamHI'], occurrences: {} });
+    // Restored with the restored document's revision, the choice is dropped on the way in, as the
+    // reconcile drops it; on the unchanged sequence it is kept.
+    const revisionOf = (d: SequenceDocument) => sequenceRevision(d.sequence, d.topology);
+    expect(restoredSiteVisibility(saved, [edited], revisionOf)).toEqual({ [MAP_DOC.id]: reconciled });
+    expect(restoredSiteVisibility(saved, [MAP_DOC], revisionOf)).toEqual({ [MAP_DOC.id]: mapChoice });
+    const shown = displayedKeys(editedScan.sites, editedRev, reconciled);
+    expect(shown).toEqual(editedScan.sites.filter((s) => s.enzyme.name !== 'BamHI').map(key).sort());
+  });
+
+  it('BG-01M7DHM0 AC1 malformed visibility in a session is ignored, through the parser and on restore', () => {
+    const garbage = [
+      'BamHI', ['BamHI'], 7, null,
+      { [MAP_DOC.id]: 'BamHI' },
+      { [MAP_DOC.id]: { revision: 5, hiddenEnzymes: ['BamHI'] } },
+      { [MAP_DOC.id]: { hiddenEnzymes: ['BamHI'], occurrences: {} } },
+      { 'not-in-the-session': { revision: MAP_REV, hiddenEnzymes: ['BamHI'], occurrences: {} } },
+    ];
+    for (const raw of garbage) {
+      expect(throughSession({}, DOCS, { siteVisibility: raw }).restored).toEqual({});
+      expect(restoredSiteVisibility(raw, DOCS)).toEqual({});
+    }
+    // Inside an entry: what is not the shape is dropped and the rest kept.
+    const mixed = {
+      [MAP_DOC.id]: {
+        revision: MAP_REV,
+        hiddenEnzymes: ['BamHI', 7, '', { name: 'EcoRI' }],
+        occurrences: {
+          [siteOccurrenceId(MAP_ECO1, MAP_REV)]: { enzyme: 'EcoRI', shown: false },
+          [siteOccurrenceId(MAP_ECO2, MAP_REV)]: { enzyme: 'EcoRI', shown: 'no' },
+          [siteOccurrenceId(MAP_ECO2, 'c1.other')]: { enzyme: 'EcoRI', shown: false },
+          junk: 'x',
+        },
+        script: '<b>',
+      },
+    };
+    const expected = { [MAP_DOC.id]: mapChoice };
+    expect(restoredSiteVisibility(mixed, DOCS)).toEqual(expected);
+    expect(throughSession({}, DOCS, { siteVisibility: mixed }).restored).toEqual(expected);
+  });
+
+  it('BG-01M7DHM0 AC1 in the App, hidden sites come back hidden on reopen, on the map and in the panel, and are saved again with the session', async () => {
+    const text = (el: LiveElement) => el.textContent ?? '';
+    const ecoBox = `Show EcoRI at ${cutAfter(MAP_ECO1)}, forward strand`;
+    let savedSession = '';
+    {
+      const app = await mountApp();
+      try {
+        await app.restoreSession({
+          documents: [MAP_DOC, PLAIN], activeDocId: MAP_DOC.id, viewerTab: 'sequence-view',
+          workspace: { ...WORKSPACE, navHistory: [PLAIN.id, MAP_DOC.id], navIndex: 1, siteVisibility: { [MAP_DOC.id]: mapChoice } },
+        });
+        await app.settle();
+        const mapCuts = () =>
+          app.all('svg.plasmid-svg title').map(text).map((t) => /^(\S+) \([A-Z]+\) cuts after (\d+)/.exec(t)).filter(Boolean).map((m) => `${m![1]}@${m![2]}`);
+        const cuts = mapCuts();
+        expect(cuts).toContain(`EcoRI@${cutAfter(MAP_ECO2)}`);
+        expect(cuts).not.toContain('BamHI@97');
+        expect(cuts).not.toContain(`EcoRI@${cutAfter(MAP_ECO1)}`);
+        expect(app.one('input[aria-label="Show BamHI sites on the maps"]').checked).toBe(false);
+        await app.click(app.one('button[aria-label="Expand the 2 sites of EcoRI"]'));
+        expect(app.one(`input[aria-label="${ecoBox}"]`).checked).toBe(false);
+        // The other document opens with nothing hidden.
+        await app.menu('view:back');
+        await app.settle();
+        expect(mapCuts()).toContain('BamHI@97');
+        // Saved again with the session (the writer autosave uses too).
+        await app.menu('file:save-session');
+        await app.settle();
+        const file = app.downloads().filter((f) => f.filename.endsWith('.mbc')).pop();
+        expect(file, 'Save Session wrote no .mbc').toBeDefined();
+        savedSession = await file!.text();
+      } finally {
+        app.unmount();
+      }
+    }
+    const env = parseMbcWorkbench(savedSession).envelope;
+    expect(restoredSiteVisibility(env.workspace.siteVisibility, env.documents)).toEqual({ [MAP_DOC.id]: mapChoice });
+    expect(env.workspace.siteVisibility?.[PLAIN.id]).toBeUndefined();
+  });
+
+  it('BG-01M7DHM0 AC1 in the App, a restored choice made on another sequence is dropped and its enzyme choice kept', async () => {
+    const edited = { ...MAP_DOC, sequence: 'ACCA' + SEQ };
+    const app = await mountApp();
+    try {
+      await app.restoreSession({
+        documents: [edited], activeDocId: edited.id, viewerTab: 'sequence-view',
+        workspace: { ...WORKSPACE, siteVisibility: { [edited.id]: mapChoice } },
+      });
+      await app.settle();
+      const text = (el: LiveElement) => el.textContent ?? '';
+      const cuts = app.all('svg.plasmid-svg title').map(text).filter((t) => /^EcoRI \(/.test(t) || /^BamHI \(/.test(t));
+      expect(cuts.filter((t) => t.startsWith('EcoRI'))).toHaveLength(2);
+      expect(cuts.filter((t) => t.startsWith('BamHI'))).toHaveLength(0);
+      expect(app.one('input[aria-label="Show BamHI sites on the maps"]').checked).toBe(false);
+      expect(app.one('input[aria-label="Show EcoRI sites on the maps"]').checked).toBe(true);
+      // Dropped on the way in, so the reopened session says it was restored and nothing was cleared.
+      expect(app.doc.body.textContent).toContain('Restored workbench');
     } finally {
       app.unmount();
     }

@@ -8,6 +8,7 @@ import {
   serializeMbcWorkbenchRust,
 } from '../lib/rustBioEngine';
 import type { ProjectExplorerState } from './projectExplorer';
+import type { SiteVisibility } from './restrictionDisplay';
 import { NucleotideColorScheme, SequenceDocument } from '../types/bio';
 
 export const MBC_FORMAT_MAGIC = 'MBC_WORKBENCH_V1' as const;
@@ -74,6 +75,72 @@ export interface MbcWorkspaceUiState {
   displaySettings: MbcDisplaySettings;
   /** The Split layout's circle / linear divider (US-01M7CCRP); absent in sessions saved before it. */
   paneSplit?: { ratio: number; collapsed: 'circular' | 'linear' | null };
+  /**
+   * Which restriction sites each document's maps display, by document id (BG-01M7DHM0); absent in
+   * sessions saved before it, and when no document has a choice.
+   */
+  siteVisibility?: Record<string, SiteVisibility>;
+}
+
+/**
+ * The site visibility a session saves (BG-01M7DHM0): the choices of the session's documents only,
+ * and only those holding a choice, so a session where nothing is hidden saves none; undefined when
+ * no document has one.
+ */
+export function siteVisibilityForSession(
+  byDoc: Readonly<Record<string, SiteVisibility>>,
+  documents: readonly SequenceDocument[]
+): Record<string, SiteVisibility> | undefined {
+  const saved: Record<string, SiteVisibility> = {};
+  for (const doc of documents) {
+    const state = byDoc[doc.id];
+    if (state && (state.hiddenEnzymes.length || Object.keys(state.occurrences).length)) saved[doc.id] = state;
+  }
+  return Object.keys(saved).length ? saved : undefined;
+}
+
+/**
+ * The site visibility a restored session opens with (BG-01M7DHM0), from the parser's
+ * `workspace.siteVisibility` (`raw`): an entry per restored document that has one, of the shape
+ * SiteVisibility and nothing else. An entry for a document not in the session, or not that shape,
+ * is dropped, as are an enzyme name that is not a string and an occurrence choice that is not
+ * `{ enzyme, shown }`; so is an occurrence choice made on another revision than its entry's, which
+ * could match no site. Given `revisionOf` (the revision the App's restriction scan of a document
+ * has), an entry made on another revision than its document's is carried onto that one as
+ * reconcileSiteVisibility carries it onto a scan with no site of the old revision: its enzyme
+ * choices kept and every occurrence choice dropped, since none can name a site of the restored
+ * sequence. The App then reconciles each document's choices with its scan when it scans it. Anything
+ * that is not an object gives none.
+ */
+export function restoredSiteVisibility(
+  raw: unknown,
+  documents: readonly SequenceDocument[],
+  revisionOf?: (doc: SequenceDocument) => string
+): Record<string, SiteVisibility> {
+  const restored: Record<string, SiteVisibility> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return restored;
+  const entries = raw as Record<string, unknown>;
+  for (const doc of documents) {
+    if (!Object.prototype.hasOwnProperty.call(entries, doc.id)) continue;
+    const entry = entries[doc.id];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const { revision, hiddenEnzymes, occurrences } = entry as Record<string, unknown>;
+    if (typeof revision !== 'string' || !revision) continue;
+    const hidden = Array.isArray(hiddenEnzymes)
+      ? [...new Set(hiddenEnzymes.filter((n): n is string => typeof n === 'string' && n.length > 0))].sort()
+      : [];
+    const choices: SiteVisibility['occurrences'] = {};
+    if (occurrences && typeof occurrences === 'object' && !Array.isArray(occurrences)) {
+      for (const [id, choice] of Object.entries(occurrences as Record<string, unknown>)) {
+        if (!id.endsWith(`#${revision}`) || !choice || typeof choice !== 'object') continue;
+        const { enzyme, shown } = choice as Record<string, unknown>;
+        if (typeof enzyme === 'string' && enzyme && typeof shown === 'boolean') choices[id] = { enzyme, shown };
+      }
+    }
+    const current = revisionOf?.(doc) ?? revision;
+    restored[doc.id] = { revision: current, hiddenEnzymes: hidden, occurrences: current === revision ? choices : {} };
+  }
+  return restored;
 }
 
 export interface MbcWorkbenchSnapshot {
