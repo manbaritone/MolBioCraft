@@ -5,7 +5,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
-import { normalizePrimerSequence, parsePrimerSpreadsheet, readPrimerSpreadsheet, type PrimerColumnMapping } from '../core/primerImport';
+import { INTERNAL_MODIFICATIONS, normalizePrimerSequence, parsePrimerSpreadsheet, readPrimerSpreadsheet, type PrimerColumnMapping } from '../core/primerImport';
 import { ImportPrimersDialog } from '../components/SequenceAnalysisToolDialogs';
 import { searchFieldText, upsertSavedSearch } from '../core/savedSearches';
 import { evaluateTableRowFilters } from '../components/WorkbenchSmartTable';
@@ -376,7 +376,7 @@ describe('US-01M7DQHR primer sheet reading', () => {
     const text = 'name,sequence\nteg,ACGTAC/iBiotinTEG/ACGTACG\nphos3,ACGTACGTACGT/5Phos/\nphos5,/3Phos/ACGTACGTACGT\nmid,ACGTAC/5Phos/ACGTAC\nss,A*C**GTACGT\nsp,/iSpC3/ACGTAC\nok,ACGTAC/iSpC3/ACGTAC\n';
     const r = readPrimerSpreadsheet(text);
     expect(r.rows.map((x) => [x.row, x.errors.map((e) => e.message)])).toEqual([
-      [2, ['/iBiotinTEG/ at position 7 is not an internal modification MolBioCraft knows, so the base it stands for cannot be kept']],
+      [2, ['/iBiotinTEG/ at position 7 is not an internal modification MolBioCraft knows, so it cannot tell whether it puts a base there or sits between two']],
       [3, ["/5Phos/ is a 5' modification but is written at the 3' end"]],
       [4, ["/3Phos/ is a 3' modification but is written at the 5' end"]],
       [5, ['/5Phos/ is written inside the sequence, but it is not an internal modification']],
@@ -392,7 +392,7 @@ describe('US-01M7DQHR primer sheet reading', () => {
     const lna = normalizePrimerSequence('+a+cgtacgt');
     expect([lna.sequence, lna.error, lna.modifications.map((m) => m.text)]).toEqual(['ACGTACGT', null, ['+A', '+C']]);
     const dialog = renderImportDialog(text);
-    expect(dialog.rows[0].cells.import).toBe('sequence (column 2): /iBiotinTEG/ at position 7 is not an internal modification MolBioCraft knows, so the base it stands for cannot be kept');
+    expect(dialog.rows[0].cells.import).toBe('sequence (column 2): /iBiotinTEG/ at position 7 is not an internal modification MolBioCraft knows, so it cannot tell whether it puts a base there or sits between two');
     expect(parsePrimerSpreadsheet(text).skipped.map((x) => x.line)).toEqual([2, 3, 4, 5, 6, 7]);
   });
 
@@ -493,5 +493,99 @@ describe('US-01M7DQHR primer sheet reading', () => {
       ['M13R', 'CAGGAAACAGCTATGAC', 'reverse'],
     ]);
     expect(parsePrimerSpreadsheet(text).rows.map((x) => x.row)).toEqual([2, 4]);
+  });
+});
+
+// ─── BG-01M7DTWB: the round-2 findings of US-01M7DQHR ───
+
+describe('BG-01M7DTWB internal IDT codes, vertical tabs and the table itself', () => {
+  /**
+   * What 77728aa made from these rows, captured by running that commit's parser:
+   * [name, sequence, description, Tm (°C), GC %].
+   */
+  const PROBES_BEFORE: [string, string, string, number | string, number][] = [
+    ['zen', 'ACGTACGTACGTACGTACG', 'Imported primer (19 nt)', 60, 52.6],
+    ['zen2', 'ACGTACGTACGTACGTACG', 'Imported primer (19 nt)', 60, 52.6],
+    ['tao', 'ACGTACGTACGTACGTACG', 'Imported primer (19 nt)', 60, 52.6],
+    ['inosine', 'ACGTACACGTACG', 'Imported primer (13 nt)', 47.6, 53.8],
+    ['tamra', 'ACGTACACGTACG', 'Imported primer (13 nt)', 47.6, 53.8],
+    ['fam', 'ACGTACACGTACG', 'Imported primer (13 nt)', 47.6, 53.8],
+    ['sp9', 'ACGTACACGTACG', 'Imported primer (13 nt)', 47.6, 53.8],
+  ];
+  const PROBES = 'name,sequence\nzen,/56-FAM/ACGTACGTA/iZEN/CGTACGTACG/3IABkFQ/\nzen2,/56-FAM/ACGTACGTA/ZEN/CGTACGTACG/3IABkFQ/\ntao,/5Cy5/ACGTACGTA/iTAO/CGTACGTACG/3IAbRQSp/\ninosine,ACGTAC/ideoxyI/ACGTACG\ntamra,ACGTAC/i6-TAMN/ACGTACG\nfam,ACGTAC/i6-FAMK/ACGTACG\nsp9,ACGTAC/iSp9/ACGTACG\n';
+
+  // Wrong readings (the round-2 regression): a closed table refusing the common internal codes, so
+  // a PrimeTime ZEN or TAO probe, a deoxyinosine primer and an internal TAMRA or FAM row import
+  // nothing; IDT's own /ZEN/ spelling read as a terminal code written inside the sequence.
+  it('BG-01M7DTWB AC1 qPCR probes with ZEN or TAO, deoxyinosine and internal dyes import as 77728aa imported them', async () => {
+    const made = runImportPrimers(PROBES, {});
+    expect(made.summary).toBe('Imported 7 primers');
+    expect(made.created.map((d) => [d.name, d.sequence, d.description, d.docMetadata?.['Tm (°C)'], d.docMetadata?.['GC %']])).toEqual(PROBES_BEFORE);
+    const dialog = renderImportDialog(PROBES);
+    expect((await dialog.run()).flatMap((m) => m.created.map((d) => d.name))).toEqual(PROBES_BEFORE.map((p) => p[0]));
+    // The faithful reading: a quencher adds no base, a dT-linked dye adds its T, deoxyinosine reads as N.
+    expect(dialog.rows.map((x) => [x.cells.name, x.cells.normalized, x.cells.modifications])).toEqual([
+      ['zen', 'ACGTACGTACGTACGTACG', "/56-FAM/ 5' end, no Tm calculation; /iZEN/ at 9, no Tm calculation; /3IABkFQ/ 3' end, no Tm calculation"],
+      ['zen2', 'ACGTACGTACGTACGTACG', "/56-FAM/ 5' end, no Tm calculation; /ZEN/ at 9, no Tm calculation; /3IABkFQ/ 3' end, no Tm calculation"],
+      ['tao', 'ACGTACGTACGTACGTACG', "/5Cy5/ 5' end, no Tm calculation; /iTAO/ at 9, no Tm calculation; /3IAbRQSp/ 3' end, no Tm calculation"],
+      ['inosine', 'ACGTACNACGTACG', '/ideoxyI/ at 7 (N), no Tm calculation'],
+      ['tamra', 'ACGTACTACGTACG', '/i6-TAMN/ at 7 (T), no Tm calculation'],
+      ['fam', 'ACGTACTACGTACG', '/i6-FAMK/ at 7 (T), no Tm calculation'],
+      ['sp9', 'ACGTACACGTACG', '/iSp9/ at 6, no Tm calculation'],
+    ]);
+    // A code not in the table is refused, and the reason never claims a base the code may not have.
+    const unknown = normalizePrimerSequence('ACGTAC/iQuasar/ACGTACG');
+    expect(unknown.error?.message).toBe('/iQuasar/ at position 7 is not an internal modification MolBioCraft knows, so it cannot tell whether it puts a base there or sits between two');
+    expect(unknown.error?.message).not.toMatch(/stands for/);
+  });
+
+  // Wrong refusals: a row the story's AC4 lists as now refused (a terminal code at the other end or
+  // inside the sequence, a spacer or dye at an end, an unknown internal code) imported anyway, or
+  // dropped without its reason in the preview and without being counted as skipped.
+  it('BG-01M7DTWB AC2 each refusal US-01M7DQHR AC4 discloses shows its reason in the preview and is counted as skipped', () => {
+    const text = 'name,sequence\nphos3,ACGTACGTACGT/5Phos/\ninside,ACGTAC/5Phos/ACGTAC\nsp3,ACGTACGTAC/iSpC3/\nunknown,ACGTAC/iQuasar/ACGTACG\nok,ACGTACGTACGTAC\n';
+    const dialog = renderImportDialog(text);
+    expect(dialog.rows.map((x) => [x.row, x.cells.import])).toEqual([
+      [2, "sequence (column 2): /5Phos/ is a 5' modification but is written at the 3' end"],
+      [3, 'sequence (column 2): /5Phos/ is written inside the sequence, but it is not an internal modification'],
+      [4, "sequence (column 2): /iSpC3/ is an internal modification but is written at the 3' end"],
+      [5, 'sequence (column 2): /iQuasar/ at position 7 is not an internal modification MolBioCraft knows, so it cannot tell whether it puts a base there or sits between two'],
+      [6, 'as ok'],
+    ]);
+    expect(runImportPrimers(text, {}).summary).toBe('Imported 1 primer (4 rows skipped)');
+  });
+
+  // Wrong tables: an entry's base changed (i2OMeU read as T), a code added or dropped unnoticed.
+  it('BG-01M7DTWB AC3 every table entry and its base is pinned', () => {
+    expect(Object.fromEntries(INTERNAL_MODIFICATIONS)).toEqual({
+      ibiodt: 'T', ifluort: 'T', iammc6t: 'T', 'i6-tamn': 'T', 'i6-famk': 'T', 'ime-dc': 'C',
+      i2omea: 'A', i2omec: 'C', i2omeg: 'G', i2omeu: 'U', ideoxyi: 'N',
+      izen: '', zen: '', itao: '', tao: '',
+      isp9: '', isp18: '', ispc3: '', idsp: '', isppc: '', icy3: '', icy5: '',
+    });
+    for (const [code, base] of INTERNAL_MODIFICATIONS) {
+      const n = normalizePrimerSequence(`ACGAC/${code}/GACG`);
+      expect([n.error, n.sequence, n.modifications[0].base], code).toEqual([null, `ACGAC${base}GACG`, base || null]);
+    }
+    expect(normalizePrimerSequence('ACGAC/i2OMeU/GACG').molecule).toBe('RNA');
+  });
+
+  // Wrong readings: a spacer, dye or quencher accepted at the 3' end, where it sits between nothing.
+  it("BG-01M7DTWB AC3 a spacer, dye or quencher at the 3' end is refused", () => {
+    for (const code of ['iSpC3', 'iCy5', 'iZEN', 'ZEN']) {
+      expect(normalizePrimerSequence(`ACGTACGTAC/${code}/`).error?.message, code).toBe(`/${code}/ is an internal modification but is written at the 3' end`);
+      expect(normalizePrimerSequence(`/${code}/ACGTACGTAC`).error?.message, code).toBe(`/${code}/ is an internal modification but is written at the 5' end`);
+    }
+  });
+
+  // Wrong readings: a vertical tab inside a quoted cell kept as U+000B; one in a name cell made a line
+  // break inside the document name.
+  it('BG-01M7DTWB AC3 a vertical tab inside a quoted cell is a line break; BG-01M7DTWB AC4 in a name it is a space', async () => {
+    const quoted = readPrimerSpreadsheet('name,sequence,notes\nM13F,GTAAAACGACGGCCAGT,"one\u000Btwo, three"\n');
+    expect(quoted.rows.map((x) => [x.description, x.warnings])).toEqual([['one\ntwo, three', []]]);
+    const named = 'name,sequence\n"M13\u000BF",GTAAAACGACGGCCAGT\nM13\u000BR,CAGGAAACAGCTATGAC\n"two\nlines",ACGTACGTACGTAC\n';
+    expect(readPrimerSpreadsheet(named).rows.map((x) => x.name)).toEqual(['M13 F', 'M13 R', 'two lines']);
+    const made = await renderImportDialog(named).run();
+    expect(made.flatMap((m) => m.created.map((d) => d.name))).toEqual(['M13 F', 'M13 R', 'two lines']);
   });
 });

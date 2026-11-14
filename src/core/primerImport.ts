@@ -90,7 +90,10 @@ export interface PrimerFieldError {
 export interface FaithfulPrimerRow {
   /** 1-based line the row starts on. */
   row: number;
-  /** The name cell as written (blank stays blank). */
+  /**
+   * The name cell as written (blank stays blank), except that a line break in it, from a vertical
+   * tab or a quoted line break, becomes a space: a primer name is one line (BG-01M7DTWB).
+   */
   name: string;
   /** The sequence cell as written. */
   original: string;
@@ -228,13 +231,23 @@ export function tokenizeSpreadsheet(input: string, separator?: PrimerSeparator):
 }
 
 /**
- * The internal IDT modifications read here, by lowercase code: the base each stands for, or '' for
- * one that sits between bases (a spacer or a dye). The base is never guessed from the code's
- * letters, so a code not listed is refused with its row rather than read as the wrong base.
+ * The internal IDT modifications read here, by lowercase code: the base each puts at its position,
+ * or '' for a non-nucleotide insert that sits between two bases and adds none. The base is never
+ * guessed from the code's letters, so a code not listed is refused with its row (BG-01M7DTWB).
+ *
+ * - A dT-linked label adds a T where it is written: biotin dT, fluorescein dT, amino C6 dT, and the
+ *   NHS-ester and azide dyes IDT attaches through a dT (/i6-TAMN/, /i6-FAMK/).
+ * - /iMe-dC/ is 5-methyl dC (a C), and the 2'-O-methyl RNA codes are their RNA base.
+ * - /ideoxyI/ is deoxyinosine, a nucleotide with no IUPAC letter of its own; it pairs with any base,
+ *   so it is read as N.
+ * - The ZEN and TAO quenchers of PrimeTime probes sit between two bases and add none; IDT writes
+ *   them /ZEN/ and /TAO/, and /iZEN/ and /iTAO/ are read the same. So are the spacers (C3, 9, 18,
+ *   abasic dSpacer, photocleavable) and the Cy3 and Cy5 inserts.
  */
 export const INTERNAL_MODIFICATIONS: ReadonlyMap<string, string> = new Map([
-  ['ibiodt', 'T'], ['ifluort', 'T'], ['iammc6t', 'T'], ['ime-dc', 'C'],
-  ['i2omea', 'A'], ['i2omec', 'C'], ['i2omeg', 'G'], ['i2omeu', 'U'],
+  ['ibiodt', 'T'], ['ifluort', 'T'], ['iammc6t', 'T'], ['i6-tamn', 'T'], ['i6-famk', 'T'], ['ime-dc', 'C'],
+  ['i2omea', 'A'], ['i2omec', 'C'], ['i2omeg', 'G'], ['i2omeu', 'U'], ['ideoxyi', 'N'],
+  ['izen', ''], ['zen', ''], ['itao', ''], ['tao', ''],
   ['isp9', ''], ['isp18', ''], ['ispc3', ''], ['idsp', ''], ['isppc', ''], ['icy3', ''], ['icy5', ''],
 ]);
 
@@ -250,9 +263,10 @@ export interface NormalizedPrimerSequence {
  * Normalizes one sequence cell without losing what it says. Letters are uppercased, and whitespace,
  * hyphens and 5'-/-3' marks are removed. A /slash/ modification is kept as text. A terminal one sits
  * at its end: one named for the other end (/5Phos/ written at the 3' end) or written inside the
- * sequence is refused. An internal one (/i.../) is read from INTERNAL_MODIFICATIONS: one that stands
- * for a base (/iBiodT/) keeps that base in the sequence at its position, a spacer or dye sits
- * between two bases, and a code not in the table is refused. IDT per-base prefixes are read before anything is uppercased: a lowercase
+ * sequence is refused. An internal one (/i.../, or a code in INTERNAL_MODIFICATIONS such as /ZEN/)
+ * is read from that table: one that puts a base there (/iBiodT/) keeps that base in the sequence at
+ * its position, a quencher, spacer or dye insert sits between two bases (an end is refused), and an
+ * /i.../ code not in the table is refused. IDT per-base prefixes are read before anything is uppercased: a lowercase
  * `r` (RNA) or `m` (2'-O-methyl) before an uppercase base, `+` (LNA) before a base, and `*` (a
  * phosphorothioate bond) between bases, one per bond; so rArUrG is RNA AUG, never the IUPAC codes RARURG. A record
  * with U, or whose every base carries an r or m prefix, is RNA and keeps U; one with T is DNA and
@@ -277,9 +291,10 @@ export function normalizePrimerSequence(input: string): NormalizedPrimerSequence
       i = j + 1;
       if (!text) continue;
       const written = `/${text}/`;
-      if (/^i/i.test(text)) {
-        const base = INTERNAL_MODIFICATIONS.get(text.toLowerCase());
-        if (base === undefined) return fail(`${written} at position ${at} is not an internal modification MolBioCraft knows, so the base it stands for cannot be kept`);
+      const known = INTERNAL_MODIFICATIONS.get(text.toLowerCase());
+      if (known !== undefined || /^i/i.test(text)) {
+        const base = known;
+        if (base === undefined) return fail(`${written} at position ${at} is not an internal modification MolBioCraft knows, so it cannot tell whether it puts a base there or sits between two`);
         if (base) {
           bases.push(base);
           prefixed.push(false);
@@ -412,7 +427,7 @@ export function readPrimerSpreadsheet(text: string, mapping: Partial<PrimerColum
       if (bad) warnings.push(`${fieldLabel(header, k + 1)}: character U+${bad[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')} is kept, but it is not readable text; save the sheet as UTF-8 CSV`);
     });
     rows.push({
-      row: rec.row, name: cell(map.name), original, sequence: norm.sequence, molecule: norm.molecule, modifications: norm.modifications,
+      row: rec.row, name: cell(map.name).replace(/[ \t]*\n[ \t]*/g, ' '), original, sequence: norm.sequence, molecule: norm.molecule, modifications: norm.modifications,
       description: cell(map.description), labels: splitLabels(cell(map.labels)), errors, warnings,
     });
   }
