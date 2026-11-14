@@ -94,6 +94,16 @@ describe('native menu ↔ dispatcher contract', () => {
     expect(mismatches).toEqual([]);
   });
 
+  it('lists Databases > Primers natively, routed without a session, beside the Databases items it had (US-01M7DQFS)', () => {
+    for (const id of ['tools:databases-explorer', 'tools:primer-database', 'tools:make-blast-db', 'tools:local-blast-dbs', 'tools:blast-setup']) {
+      expect(nativeIds.has(id), id).toBe(true);
+    }
+    expect(dispatcher.get('tools:primer-database')).toBe(false);
+    expect(NATIVE_MENU_SESSION_INDEPENDENT_IDS).toContain('tools:primer-database');
+    const noSession = buildNativeMenuState({ sessionActive: false, activeDoc: null, selection: null, undoDepth: 0, redoDepth: 0 });
+    expect(resolveNativeMenuItemEnabled('tools:primer-database', noSession)).toBe(true);
+  });
+
   it('only declares command rules for real dispatcher commands', () => {
     for (const id of Object.keys(NATIVE_MENU_COMMAND_RULES)) {
       expect(dispatcher.has(id), id).toBe(true);

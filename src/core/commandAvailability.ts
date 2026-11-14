@@ -230,6 +230,7 @@ export const NATIVE_MENU_SESSION_INDEPENDENT_IDS = [
   'tools:databases-explorer',
   'tools:local-blast-dbs',
   'tools:preferences',
+  'tools:primer-database',
   'view:search-tools',
   'view:toggle-sidebar',
 ];

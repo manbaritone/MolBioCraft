@@ -134,7 +134,7 @@ import {
 } from './core/paneSplit';
 import { StructureAlignmentDialog } from './components/StructureAlignmentDialog';
 import { hasStructure } from './core/structureModels';
-import { ExpressionLevelsDialog, StructuralVariantsDialog, MakeBlastDbDialog, CrisprEditingDialog, AnnotateByBlastDialog, AnnotateFromDocumentsDialog, DegeneratePrimersDialog, ImportPrimersDialog } from './components/SequenceAnalysisToolDialogs';
+import { ExpressionLevelsDialog, StructuralVariantsDialog, MakeBlastDbDialog, CrisprEditingDialog, AnnotateByBlastDialog, AnnotateFromDocumentsDialog, DegeneratePrimersDialog, ImportPrimersDialog, ImportPrimersToDatabaseDialog } from './components/SequenceAnalysisToolDialogs';
 import type { OptionValues } from './core/optionProfiles';
 import { allWorkflows } from './core/workflows';
 import {
@@ -335,6 +335,7 @@ import {
   PreferencesTabId,
   StaticModalDialog,
 } from './components/MenusPreferencesAndBlastModal';
+import { PrimerDatabaseWindow } from './components/PrimerDatabaseWindow';
 import {
   buildNcbiReferencePresetDocumentRust,
   ensureResidentSequenceRust,
@@ -1186,6 +1187,23 @@ export const App: React.FC = () => {
   const [expandedDocView, setExpandedDocView] = useState<boolean>(false);
   const [dbExplorerCategory, setDbExplorerCategory] =
     useState<ReferenceDatabaseCategoryId | null>(null);
+  // Databases > Primers (US-01M7DQFS): open with the element focus returns to when it closes.
+  const [primerDbWindow, setPrimerDbWindow] = useState<{ opener: HTMLElement | null } | null>(null);
+  // The window's Import: the primer import dialog with Primer Database chosen (US-01M7DQ0X).
+  const [primerDbImportOpen, setPrimerDbImportOpen] = useState(false);
+  const [primerDbRefresh, setPrimerDbRefresh] = useState(0);
+  const openPrimerDatabaseWindow = () => {
+    // The in-app opener is the menu bar or toolbar button whose menu is open; from the native
+    // menu, it is whatever held focus.
+    const trigger =
+      typeof document === 'undefined'
+        ? undefined
+        : Array.from(document.querySelectorAll<HTMLElement>('[aria-haspopup="menu"][aria-expanded="true"]')).find(
+            (el) => !el.closest('.desktop-menu-popup')
+          );
+    const active = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
+    setPrimerDbWindow({ opener: trigger ?? (active && active !== document.body ? active : null) });
+  };
   const [localBlastDbs, setLocalBlastDbs] = useState<LocalSequenceDbEntry[]>(() => [
     {
       id: 'local-db-project-all',
@@ -7124,6 +7142,9 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         case 'tools:databases-explorer':
           setDbExplorerCategory('ncbi-nucleotide');
           break;
+        case 'tools:primer-database':
+          openPrimerDatabaseWindow();
+          break;
         case 'align:expression-levels-dialog':
           requireActiveSession(() => setOperationDialog({ kind: 'expression-levels' }));
           break;
@@ -8260,6 +8281,12 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           id: `${idPrefix}-ncbi-uniprot`,
           label: 'NCBI & UniProt',
           onSelect: () => setDbExplorerCategory('ncbi-nucleotide'),
+        },
+        {
+          kind: 'command',
+          id: `${idPrefix}-primer-database`,
+          label: 'Primers',
+          onSelect: () => openPrimerDatabaseWindow(),
         },
       ],
     },
@@ -10402,6 +10429,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'tools-db-explorer',
             label: 'NCBI & UniProt',
             onSelect: () => setDbExplorerCategory('ncbi-nucleotide'),
+          },
+          {
+            kind: 'command',
+            id: 'tools-primer-database',
+            label: 'Primers',
+            onSelect: () => openPrimerDatabaseWindow(),
           },
           {
             kind: 'command',
@@ -17117,6 +17150,27 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           />
         );
       })()}
+
+      {primerDbWindow && (
+        <PrimerDatabaseWindow
+          returnFocusTo={primerDbWindow.opener}
+          refreshKey={primerDbRefresh}
+          onOpenImport={() => setPrimerDbImportOpen(true)}
+          onClose={() => setPrimerDbWindow(null)}
+        />
+      )}
+      {primerDbImportOpen && (
+        <ImportPrimersToDatabaseDialog
+          onSaved={(report) => {
+            setPrimerDbRefresh((n) => n + 1);
+            setStatusBanner(report);
+          }}
+          onClose={() => {
+            setPrimerDbImportOpen(false);
+            setPrimerDbRefresh((n) => n + 1);
+          }}
+        />
+      )}
 
       {dbExplorerCategory && (
         <React.Suspense fallback={null}>

@@ -23,6 +23,8 @@ import { InspectorSection, useInWorkbench } from './WorkbenchInspector';
 import { WorkbenchSmartTable } from './WorkbenchSmartTable';
 import { originSpanningSiteCount, primerSiteStatus } from '../core/primerSiteStatus';
 import { primerTmText } from './CircularPlasmidMap';
+import { openPrimerDatabase, type DatabasePrimerInput, type PrimerDatabase } from '../core/primerDatabase';
+import { usePrimerDatabaseSave } from './PrimerDatabaseWindow';
 
 /** How many of the candidate guides the CRISPR tab lists. */
 const CRISPR_GUIDES_LISTED = 25;
@@ -64,6 +66,8 @@ interface PrimerAndPCRStudioProps {
   /** Sub-tab requested by a menu command (CRISPR sites, saved primers, design). */
   initialSubTab?: 'design' | 'saved' | 'crispr';
   commandNonce?: number;
+  /** The Primer Database that Save to Primer Database writes to; the user's own store unless given. */
+  primerDatabase?: PrimerDatabase;
 }
 
 export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
@@ -75,6 +79,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   onJumpToCoordinate,
   initialSubTab = 'design',
   commandNonce,
+  primerDatabase,
 }) => {
   // In the workbench the conditions of each sub-tab sit in App's inspector; drawn on its own, the
   // studio keeps every setting where it sits in its card (US-01M6TAKD).
@@ -234,6 +239,40 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       `Bound primer pair "${designedPCR.forward.name}" & "${designedPCR.reverse.name}" (${regionStart.toLocaleString()}..${regionEnd.toLocaleString()} bp) to "${doc.name}"`
     );
   };
+
+  // Save to Primer Database (US-01M7DQFS AC4): a new record, under the duplicate policy; the
+  // document and its primers are never changed by it.
+  const primerDb = useMemo(() => primerDatabase ?? openPrimerDatabase(), [primerDatabase]);
+  const [dbSaveMessage, setDbSaveMessage] = useState<string | null>(null);
+  const dbSave = usePrimerDatabaseSave(primerDb, (message) => {
+    setDbSaveMessage(message);
+    onStatusNotice?.(message);
+  });
+  const saveToPrimerDatabase = (candidate: DatabasePrimerInput) => {
+    setDbSaveMessage(null);
+    dbSave.save(candidate);
+  };
+  /** A designed primer as ordered: the whole oligo 5'->3', tail included, the tail kept apart. */
+  const designedPrimerCandidate = (prm: PrimerRecord): DatabasePrimerInput => ({
+    name: prm.name,
+    sequence: prm.sequence,
+    molecule: 'DNA',
+    tail5Prime: prm.tail5Prime,
+    description: '',
+    labels: [],
+    provenance: `Designed in Primer & PCR Studio on ${doc.name} (document ${doc.id}): ${
+      prm.strand === 1 ? 'forward' : 'reverse'
+    } primer ${prm.name} for the design region ${regionStart}..${regionEnd}`,
+  });
+  const documentPrimerCandidate = (p: PrimerRecord): DatabasePrimerInput => ({
+    name: p.name,
+    sequence: p.sequence,
+    molecule: 'DNA',
+    tail5Prime: p.tail5Prime ?? '',
+    description: p.notes ?? '',
+    labels: [],
+    provenance: `Primer ${p.name} on ${doc.name} (document ${doc.id}), binding ${p.bindStart}..${p.bindEnd}`,
+  });
 
   const handleAnnotateCrisprGuide = (g: CrisprGuideRecord) => {
     const newFeat: SequenceFeature = {
@@ -559,6 +598,14 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                     {prm.tail5Prime && <span className="tail-highlight">{prm.tail5Prime}</span>}
                     <span>{prm.annealSequence}</span>-3&apos;
                   </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    aria-label={`Save ${prm.name} to Primer Database`}
+                    onClick={() => saveToPrimerDatabase(designedPrimerCandidate(prm))}
+                  >
+                    Save to Primer Database
+                  </button>
                   <div className="primer-metrics-strip">
                     <span>Length: {prm.length} nt</span>
                     <span>GC: {prm.gcPercent}%</span>
@@ -572,6 +619,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 </div>
               ))}
             </div>
+
+            {dbSave.panel}
+            {dbSaveMessage && <p role="status">{dbSaveMessage}</p>}
 
             <div className="cloning-action-row">
               <button className="btn-primary" disabled={!pcrRegionValid} onClick={handleSavePrimersToDoc}>
@@ -684,6 +734,14 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                         <div className="mono-cell" style={{ fontSize: 11, opacity: 0.85 }}>
                           5&apos;-{p.sequence}-3&apos;
                         </div>
+                        <button
+                          type="button"
+                          className="mbc-coord-jump-btn"
+                          aria-label={`Save ${p.name} to Primer Database`}
+                          onClick={() => saveToPrimerDatabase(documentPrimerCandidate(p))}
+                        >
+                          Save to Primer Database
+                        </button>
                       </td>
                       <td>
                         {p.length}-mer &middot; {p.gcPercent}% GC &middot; {mwDa} Da
