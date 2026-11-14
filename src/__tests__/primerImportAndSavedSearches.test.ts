@@ -9,7 +9,7 @@ import { normalizePrimerSequence, parsePrimerSpreadsheet, readPrimerSpreadsheet,
 import { ImportPrimersDialog } from '../components/SequenceAnalysisToolDialogs';
 import { searchFieldText, upsertSavedSearch } from '../core/savedSearches';
 import { evaluateTableRowFilters } from '../components/WorkbenchSmartTable';
-import { runAnnotateByBlast, runImportPrimers } from '../core/operationRunners';
+import { runAnnotateByBlast, runImportPrimers, type OperationResult } from '../core/operationRunners';
 import type { SequenceDocument } from '../types/bio';
 
 /**
@@ -17,7 +17,21 @@ import type { SequenceDocument } from '../types/bio';
  * be typed into it). These probes hand its own state the text a user would have pasted and the
  * columns they would have chosen; everything from there to the markup is the dialog's own code.
  */
-const probe = vi.hoisted(() => ({ texts: [] as string[], mapping: null as null | Partial<Record<string, number>> }));
+const probe = vi.hoisted(() => ({
+  texts: [] as string[],
+  mapping: null as null | Partial<Record<string, number>>,
+  /** The props the dialog gave the OperationDialog it rendered: its `onRun` is what Import calls. */
+  dialog: null as null | { onRun: (values: Record<string, unknown>, signal: AbortSignal) => unknown },
+}));
+vi.mock('../components/OperationDialog', async () => {
+  const actual = await vi.importActual<typeof import('../components/OperationDialog')>('../components/OperationDialog');
+  const R = await vi.importActual<typeof import('react')>('react');
+  const OperationDialog = (props: Parameters<typeof actual.OperationDialog>[0]) => {
+    probe.dialog = props as unknown as NonNullable<typeof probe.dialog>;
+    return R.createElement(actual.OperationDialog, props);
+  };
+  return { ...actual, OperationDialog };
+});
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react');
   const { NO_COLUMN_MAPPING } = await import('../core/primerImport');
@@ -108,7 +122,11 @@ interface PreviewRow { row: number; cells: Record<string, string> }
 function renderImportDialog(text: string, mapping?: Partial<PrimerColumnMapping>) {
   probe.texts = [text];
   probe.mapping = mapping ?? null;
-  const html = renderToStaticMarkup(React.createElement(ImportPrimersDialog, { onCreate: () => undefined, onClose: () => undefined }));
+  const created: OperationResult[] = [];
+  const html = renderToStaticMarkup(React.createElement(ImportPrimersDialog, { onCreate: (r: OperationResult) => created.push(r), onClose: () => undefined }));
+  const dialog = probe.dialog!;
+  /** Press Import: the dialog's own onRun, with the folder option at its default. */
+  const run = async () => { await dialog.onRun({ folder: 'Primers' }, new AbortController().signal); return created; };
   expect(probe.texts, 'the dialog read the pasted text').toEqual([]);
   const rows: PreviewRow[] = [...html.matchAll(/<tr data-ip-row="(\d+)">([\s\S]*?)<\/tr>/g)].map((m) => ({
     row: Number(m[1]),
@@ -120,7 +138,7 @@ function renderImportDialog(text: string, mapping?: Partial<PrimerColumnMapping>
     const opt = sel && /<option[^>]*selected=""[^>]*>([\s\S]*?)<\/option>/.exec(sel[1]);
     return opt ? decode(opt[1]) : null;
   };
-  return { html, rows, problem: problem ? decode(problem[1]) : null, selected };
+  return { html, rows, problem: problem ? decode(problem[1]) : null, selected, run };
 }
 
 const QUOTED_CSV = '\uFEFFName,Sequence,Description,Labels\r\nM13F,GTAAAACGACGGCCAGT,"universal, ""forward""\r\nsecond line","pcr;seq, sanger"\r\nM13R,CAGGAAACAGCTATGAC,reverse,\r\n';
@@ -163,7 +181,7 @@ describe('US-01M7DQHR primer sheet reading', () => {
     }
   });
 
-  it('US-01M7DQHR AC1 the user maps the name, sequence, description and label columns', () => {
+  it('US-01M7DQHR AC1 the user maps the name, sequence, description and label columns', async () => {
     const text = 'ACGTACGTACGTAA,X1,first note,lab1;lab2\nGGGGCCCCAAAATTTT,X2,second note,lab3\n';
     const mapping = { name: 1, sequence: 0, description: 2, labels: 3 };
     // Unmapped, the first two columns are name and sequence: the sequence column holds names.
@@ -179,9 +197,11 @@ describe('US-01M7DQHR primer sheet reading', () => {
       ['X2', 'GGGGCCCCAAAATTTT', 'lab3', 'as X2'],
     ]);
     expect([dialog.selected('name'), dialog.selected('sequence'), dialog.selected('description'), dialog.selected('labels')]).toEqual(['column 2', 'column 1', 'column 3', 'column 4']);
-    // The documents follow the same mapping.
+    // The documents follow the same mapping, from the runner and from the dialog's own Import.
     const made = runImportPrimers(text, {}, mapping);
     expect(made.created.map((d) => [d.name, d.sequence, d.description])).toEqual([['X1', 'ACGTACGTACGTAA', 'first note'], ['X2', 'GGGGCCCCAAAATTTT', 'second note']]);
+    const pressed = await dialog.run();
+    expect(pressed.flatMap((r) => r.created.map((d) => [d.name, d.sequence, d.description]))).toEqual([['X1', 'ACGTACGTACGTAA', 'first note'], ['X2', 'GGGGCCCCAAAATTTT', 'second note']]);
   });
 
   // Wrong readings: a quote never closed swallowing the rest of the sheet into one cell and importing
@@ -206,10 +226,33 @@ describe('US-01M7DQHR primer sheet reading', () => {
     const xlsx = 'PK\u0003\u0004\u0014\u0000\u0006\u0000[Content_Types].xml';
     expect(readPrimerSpreadsheet(xlsx).problem).toMatchObject({ row: 1, field: 1, message: expect.stringContaining('.xlsx') });
     expect(() => runImportPrimers(xlsx, {})).toThrow(/^Cannot read the spreadsheet: row 1, field 1: .*\.xlsx/);
+    expect(readPrimerSpreadsheet(xlsx).problem!.message).toContain('save the sheet as UTF-8 CSV');
     const binary = 'name,sequence\nM13F,GTAA\u0000CGGCCAGT\n';
-    expect(readPrimerSpreadsheet(binary).problem).toMatchObject({ row: 2, field: 2, message: expect.stringContaining('U+0000') });
+    expect(readPrimerSpreadsheet(binary).problem).toEqual({ row: 2, field: 2, message: 'the file holds binary data (a NUL byte), so it is not a text sheet; save the sheet as UTF-8 CSV' });
     expect(readPrimerSpreadsheet(binary).rows).toEqual([]);
-    expect(renderImportDialog(binary).problem).toMatch(/^Cannot read the spreadsheet: row 2, field 2: character U\+0000/);
+    expect(renderImportDialog(binary).problem).toBe('Cannot read the spreadsheet: row 2, field 2: the file holds binary data (a NUL byte), so it is not a text sheet; save the sheet as UTF-8 CSV.');
+  });
+
+  // Wrong readings (D0121): a whole sheet refused for one undecodable character in a note, as a
+  // Windows-1252 export gives, the character dropped or kept without a word, and a FileMaker vertical
+  // tab kept as a control character or read as the end of the row.
+  it('US-01M7DQHR AC1 a U+FFFD or control character is kept with a warning to save as UTF-8 CSV, and a vertical tab is a line break in its cell', async () => {
+    const text = 'name,sequence,notes\nM13F,GTAAAACGACGGCCAGT,25\uFFFDC anneal\nM13R,CAGGAAACAGCTATGAC,line one\u000Bline two\nF1,ACGTGACTGACTGATCGATG,form\u000Cfeed\n';
+    const r = readPrimerSpreadsheet(text);
+    expect(r.problem).toBeNull();
+    expect(r.rows.map((x) => [x.row, x.name, x.description, x.errors, x.warnings])).toEqual([
+      [2, 'M13F', '25\uFFFDC anneal', [], ['notes (column 3): character U+FFFD is kept, but it is not readable text; save the sheet as UTF-8 CSV']],
+      [3, 'M13R', 'line one\nline two', [], []],
+      [4, 'F1', 'form\u000Cfeed', [], ['notes (column 3): character U+000C is kept, but it is not readable text; save the sheet as UTF-8 CSV']],
+    ]);
+    const dialog = renderImportDialog(text);
+    expect(dialog.rows.map((x) => [x.row, x.cells.import])).toEqual([
+      [2, 'as M13F; warning: notes (column 3): character U+FFFD is kept, but it is not readable text; save the sheet as UTF-8 CSV'],
+      [3, 'as M13R'],
+      [4, 'as F1; warning: notes (column 3): character U+000C is kept, but it is not readable text; save the sheet as UTF-8 CSV'],
+    ]);
+    const made = await dialog.run();
+    expect(made.flatMap((m) => m.created.map((d) => [d.name, d.description]))).toEqual([['M13F', '25\uFFFDC anneal'], ['M13R', 'line one\nline two'], ['F1', 'form\u000Cfeed']]);
   });
 
   // Wrong readings: U written as T in the faithful row (an RNA record turned DNA), a T-and-U sequence
@@ -309,6 +352,50 @@ describe('US-01M7DQHR primer sheet reading', () => {
     expect(() => runImportPrimers('name,sequence\nbad,ACGTXACGT\n', {})).toThrow("No primers imported: line 2 not a nucleotide sequence: 'X' at position 5 is not a nucleotide or IUPAC code.");
   });
 
+  // Wrong readings: an uppercase R or M before a base read as an IDT prefix (ACGTRACGT losing its
+  // degenerate R to an RNA A), as a case-insensitive prefix test would.
+  it('US-01M7DQHR AC3 an uppercase R or M before A, C, G or T stays a degenerate IUPAC code', async () => {
+    for (const [input, expected] of [['ACGTRACGT', 'ACGTRACGT'], ['MACGTACGTA', 'MACGTACGTA'], ['RCGTMGAA', 'RCGTMGAA'], ['ACMTTARGCC', 'ACMTTARGCC'], ['acgtRACGTmACG', 'ACGTRACGTACG']] as const) {
+      const n = normalizePrimerSequence(input);
+      expect([n.sequence, n.molecule, n.error], input).toEqual([expected, 'DNA', null]);
+      expect(n.modifications.filter((m) => /^[rR]/.test(m.text)), `${input}: no R read as an RNA prefix`).toEqual([]);
+    }
+    expect(normalizePrimerSequence('acgtRACGTmACG').modifications.map((m) => [m.text, m.position])).toEqual([['mA', 10]]);
+    const text = 'name,sequence\nd1,ACGTRACGTMACG\nd2,MACGTACGTA\n';
+    const dialog = renderImportDialog(text);
+    expect(dialog.rows.map((x) => [x.cells.normalized, x.cells.molecule, x.cells.modifications])).toEqual([['ACGTRACGTMACG', 'DNA', ''], ['MACGTACGTA', 'DNA', '']]);
+    // The documents are the ones 77728aa made from these rows.
+    const made = await dialog.run();
+    expect(made.flatMap((m) => m.created.map((d) => [d.name, d.sequence]))).toEqual([['d1', 'ACGTRACGTMACG'], ['d2', 'MACGTACGTA']]);
+  });
+
+  // Wrong readings: an internal modification's base guessed from the last letter of its code
+  // (/iBiotinTEG/ gaining a G), a terminal code accepted at the wrong end or inside the sequence,
+  // two phosphorothioates at one bond, a spacer given a base, and a lowercase LNA base refused.
+  it('US-01M7DQHR AC2 internal modifications come from a table; an unknown or misplaced one is refused with its row', () => {
+    const text = 'name,sequence\nteg,ACGTAC/iBiotinTEG/ACGTACG\nphos3,ACGTACGTACGT/5Phos/\nphos5,/3Phos/ACGTACGTACGT\nmid,ACGTAC/5Phos/ACGTAC\nss,A*C**GTACGT\nsp,/iSpC3/ACGTAC\nok,ACGTAC/iSpC3/ACGTAC\n';
+    const r = readPrimerSpreadsheet(text);
+    expect(r.rows.map((x) => [x.row, x.errors.map((e) => e.message)])).toEqual([
+      [2, ['/iBiotinTEG/ at position 7 is not an internal modification MolBioCraft knows, so the base it stands for cannot be kept']],
+      [3, ["/5Phos/ is a 5' modification but is written at the 3' end"]],
+      [4, ["/3Phos/ is a 3' modification but is written at the 5' end"]],
+      [5, ['/5Phos/ is written inside the sequence, but it is not an internal modification']],
+      [6, ["'**' at position 4: one bond between two bases cannot hold two phosphorothioates"]],
+      [7, ["/iSpC3/ is an internal modification but is written at the 5' end"]],
+      [8, []],
+    ]);
+    expect(r.rows[6].modifications).toEqual([{ text: '/iSpC3/', placement: 'internal', position: 6, base: null, noThermodynamics: true }]);
+    for (const [code, base] of [['iBiodT', 'T'], ['iFluorT', 'T'], ['iAmMC6T', 'T'], ['iMe-dC', 'C'], ['i2OMeA', 'A'], ['iSp9', null], ['iSp18', null], ['idSp', null], ['iSpPC', null], ['iCy3', null]] as const) {
+      const n = normalizePrimerSequence(`ACGTAC/${code}/GACGT`);
+      expect([n.error, n.modifications[0].base, n.sequence], code).toEqual([null, base, `ACGTAC${base ?? ''}GACGT`]);
+    }
+    const lna = normalizePrimerSequence('+a+cgtacgt');
+    expect([lna.sequence, lna.error, lna.modifications.map((m) => m.text)]).toEqual(['ACGTACGT', null, ['+A', '+C']]);
+    const dialog = renderImportDialog(text);
+    expect(dialog.rows[0].cells.import).toBe('sequence (column 2): /iBiotinTEG/ at position 7 is not an internal modification MolBioCraft knows, so the base it stands for cannot be kept');
+    expect(parsePrimerSpreadsheet(text).skipped.map((x) => x.line)).toEqual([2, 3, 4, 5, 6, 7]);
+  });
+
   /**
    * What Import Primers made at 77728aa, captured by running that commit's runImportPrimers on each
    * sheet: [name, sequence, description, Tm (°C), GC %]. Every row here is on one line, and every
@@ -371,6 +458,29 @@ describe('US-01M7DQHR primer sheet reading', () => {
       expect([d.moleculeType, d.topology, d.documentKind, d.folder, d.docMetadata?.['Source Format']]).toEqual(['DNA', 'linear', 'primer', 'Primers', 'Primer spreadsheet']);
       expect(d.history.map((h) => [h.operation, h.description, h.lengthBp])).toEqual([['Import Primers', 'Imported from a primer spreadsheet', d.sequence.length]]);
     }
+  });
+
+  // Wrong readings (the review's probe, D0121): a first-line comment read as a one-cell header, so
+  // every row is refused as wider than it; a comment choosing the separator.
+  it('US-01M7DQHR AC4 a comment line before the rows or the header is never the header', async () => {
+    // At 77728aa: the same two documents.
+    const text = '# primer list\nM13F,GTAAAACGACGGCCAGT\nM13R,CAGGAAACAGCTATGAC\n';
+    const made = runImportPrimers(text, {});
+    expect(made.summary).toBe('Imported 2 primers');
+    expect(made.created.map((d) => [d.name, d.sequence, d.description, d.docMetadata?.['Tm (°C)'], d.docMetadata?.['GC %']])).toEqual([
+      ['M13F', 'GTAAAACGACGGCCAGT', 'Imported primer (17 nt)', 58.2, 52.9],
+      ['M13R', 'CAGGAAACAGCTATGAC', 'Imported primer (17 nt)', 52.6, 47.1],
+    ]);
+    const dialog = renderImportDialog(text);
+    expect(dialog.rows.map((x) => [x.row, x.cells.name, x.cells.import])).toEqual([[2, 'M13F', 'as M13F'], [3, 'M13R', 'as M13R']]);
+    expect((await dialog.run()).flatMap((m) => m.created.map((d) => d.name))).toEqual(['M13F', 'M13R']);
+    // A comment holding a semicolon does not make the sheet semicolon-separated.
+    expect(runImportPrimers('# oligo list; v2\nM13F,GTAAAACGACGGCCAGT\n', {}).created.map((d) => d.name)).toEqual(['M13F']);
+    // With a real header under the comment, the header is read: names, sequences and Tm as at
+    // 77728aa, and the notes column, which 77728aa missed by taking the comment as the header,
+    // becomes the description.
+    const headed = readPrimerSpreadsheet('# oligo list\nname,sequence,notes\nM13F,GTAAAACGACGGCCAGT,fwd\nM13R,CAGGAAACAGCTATGAC,rev\n');
+    expect([headed.header, headed.rows.map((x) => [x.row, x.name, x.sequence, x.description])]).toEqual([['name', 'sequence', 'notes'], [[3, 'M13F', 'GTAAAACGACGGCCAGT', 'fwd'], [4, 'M13R', 'CAGGAAACAGCTATGAC', 'rev']]]);
   });
 
   it('US-01M7DQHR AC4 a quoted description spanning lines is one row, not a broken row and a skipped one', () => {

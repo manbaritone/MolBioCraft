@@ -15,8 +15,8 @@
  *   duplicate names renamed `_2`, `_3`, a blank name `Primer_<n>`, U written as T, slash
  *   modifications removed with any base they stand for, and rows under 6 bases skipped.
  *
- * The first non-blank line picks the separator (a tab, else a semicolon when the line has no
- * comma, else a comma) and may be a header. Columns are found by name (name/primer/oligo/id,
+ * The first line that is neither blank nor a `#` comment picks the separator (a tab, else a
+ * semicolon when the line has no comma, else a comma) and may be a header; a comment never is. Columns are found by name (name/primer/oligo/id,
  * seq, then description/notes/comment/target/gene, then label/tag); without a header the first two
  * columns are name and sequence. The caller may map any column itself.
  */
@@ -30,7 +30,7 @@ export type PrimerSeparator = ',' | '\t' | ';';
 export interface SpreadsheetRecord {
   row: number;
   cells: string[];
-  /** A line starting with `#`: kept so the header test sees it, never read as a primer. */
+  /** A line starting with `#`: never read as a primer or as the header. */
   comment: boolean;
 }
 
@@ -101,6 +101,11 @@ export interface FaithfulPrimerRow {
   description: string;
   labels: string[];
   errors: PrimerFieldError[];
+  /**
+   * What is kept but suspect: a U+FFFD or control character in a cell, which a sheet saved in
+   * another encoding than UTF-8 produces (D0121). A warning never refuses the row.
+   */
+  warnings: string[];
 }
 
 export interface PrimerSpreadsheetReading {
@@ -118,9 +123,9 @@ const IUPAC = /^[ACGTURYSWKMBDHVN]$/;
 const VALID = /^[ACGTURYSWKMBDHVN]+$/;
 const PRIME = /['′’]/;
 
-/** The separator the first non-blank line uses. */
+/** The separator the first line that is neither blank nor a `#` comment uses. */
 export function detectSeparator(text: string): PrimerSeparator {
-  const first = text.split('\n').find((l) => l.trim()) ?? '';
+  const first = text.split('\n').find((l) => l.trim() && !l.trim().startsWith('#')) ?? '';
   return first.includes('\t') ? '\t' : first.includes(';') && !first.includes(',') ? ';' : ',';
 }
 
@@ -131,25 +136,32 @@ function rowAndField(text: string, at: number, sep: string): { row: number; fiel
   return { row: before.split('\n').length, field: before.slice(lineStart).split(sep).length };
 }
 
-/** A workbook or other binary file read as text: its zip signature, a control character or U+FFFD. */
+/**
+ * A workbook or other binary file read as text (D0121): the zip signature of an .xlsx workbook, or
+ * a NUL byte, which no text sheet holds. Any other unreadable character is kept with a warning on
+ * its row (see `readPrimerSpreadsheet`).
+ */
 function binaryProblem(text: string, sep: string): SpreadsheetProblem | null {
   if (text.startsWith('PK\u0003\u0004')) {
-    return { row: 1, field: 1, message: 'this is an Excel workbook (.xlsx) or other zip file, not text; save the sheet as CSV or tab-separated text' };
+    return { row: 1, field: 1, message: 'this is an Excel workbook (.xlsx) or other zip file, not text; save the sheet as UTF-8 CSV' };
   }
-  // eslint-disable-next-line no-control-regex
-  const m = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\uFFFD]/.exec(text);
-  if (!m) return null;
-  const code = `U+${m[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
-  return { ...rowAndField(text, m.index, sep), message: `character ${code} is binary data or not UTF-8 text (an .xls/.xlsx workbook?); save the sheet as CSV or tab-separated text` };
+  const nul = text.indexOf('\u0000');
+  if (nul < 0) return null;
+  return { ...rowAndField(text, nul, sep), message: 'the file holds binary data (a NUL byte), so it is not a text sheet; save the sheet as UTF-8 CSV' };
 }
+
+/** A character a UTF-8 text sheet should not hold: U+FFFD (an undecodable byte) or a control character. */
+// eslint-disable-next-line no-control-regex
+const UNREADABLE = /[\u0001-\u0008\u000C\u000E-\u001F\u007F\uFFFD]/;
 
 /**
  * Splits the sheet into records. A field that starts with a double quote (after any spaces) runs to
  * the closing quote, so it may hold the separator, a doubled quote `""` for one quote, and line
- * breaks. A UTF-8 byte-order mark is dropped, line ends may be LF, CRLF or CR, blank lines are
- * skipped, and every cell is trimmed. A quote never closed stops the reading at its row and field,
- * keeping the records before it; binary input (an .xlsx workbook, a control character, U+FFFD) is
- * refused whole, with the row and field of the first such character.
+ * breaks. A UTF-8 byte-order mark is dropped, line ends may be LF, CRLF or CR, a vertical tab
+ * (U+000B, a line break inside a FileMaker or Excel cell) is a line break inside its cell, blank
+ * lines are skipped, and every cell is trimmed. A quote never closed stops the reading at its row
+ * and field, keeping the records before it; binary input (an .xlsx workbook or a NUL byte) is
+ * refused whole, with the row and field where it shows.
  */
 export function tokenizeSpreadsheet(input: string, separator?: PrimerSeparator): TokenizedSpreadsheet {
   const text = input.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
@@ -191,7 +203,7 @@ export function tokenizeSpreadsheet(input: string, separator?: PrimerSeparator):
             break;
           }
           if (c === '\n') line++;
-          cur += c;
+          cur += c === '\u000B' ? '\n' : c;
           i++;
         }
         if (!closed) return { separator: sep, records, problem: { ...open, message: 'a quote opened here is never closed' } };
@@ -205,7 +217,7 @@ export function tokenizeSpreadsheet(input: string, separator?: PrimerSeparator):
         line++;
         i++;
       } else {
-        cur += ch;
+        cur += ch === '\u000B' ? '\n' : ch;
         i++;
       }
     }
@@ -215,12 +227,16 @@ export function tokenizeSpreadsheet(input: string, separator?: PrimerSeparator):
   return { separator: sep, records, problem: null };
 }
 
-/** The base an internal slash modification stands for (/iBiodT/ is T), or null for a spacer or dye. */
-function baseOfInternal(text: string): string | null {
-  if (!/^i/.test(text) || /^i(?:d?Sp|SpPC)/i.test(text)) return null;
-  const m = /([ACGTU])$/.exec(text);
-  return m ? m[1] : null;
-}
+/**
+ * The internal IDT modifications read here, by lowercase code: the base each stands for, or '' for
+ * one that sits between bases (a spacer or a dye). The base is never guessed from the code's
+ * letters, so a code not listed is refused with its row rather than read as the wrong base.
+ */
+export const INTERNAL_MODIFICATIONS: ReadonlyMap<string, string> = new Map([
+  ['ibiodt', 'T'], ['ifluort', 'T'], ['iammc6t', 'T'], ['ime-dc', 'C'],
+  ['i2omea', 'A'], ['i2omec', 'C'], ['i2omeg', 'G'], ['i2omeu', 'U'],
+  ['isp9', ''], ['isp18', ''], ['ispc3', ''], ['idsp', ''], ['isppc', ''], ['icy3', ''], ['icy5', ''],
+]);
 
 export interface NormalizedPrimerSequence {
   sequence: string;
@@ -232,11 +248,13 @@ export interface NormalizedPrimerSequence {
 
 /**
  * Normalizes one sequence cell without losing what it says. Letters are uppercased, and whitespace,
- * hyphens and 5'-/-3' marks are removed. A /slash/ modification is kept as text: at the 5' or 3' end
- * it is a terminal one, and an internal one that stands for a base (/iBiodT/) keeps that base in the
- * sequence at its position. IDT per-base prefixes are read before anything is uppercased: a lowercase
+ * hyphens and 5'-/-3' marks are removed. A /slash/ modification is kept as text. A terminal one sits
+ * at its end: one named for the other end (/5Phos/ written at the 3' end) or written inside the
+ * sequence is refused. An internal one (/i.../) is read from INTERNAL_MODIFICATIONS: one that stands
+ * for a base (/iBiodT/) keeps that base in the sequence at its position, a spacer or dye sits
+ * between two bases, and a code not in the table is refused. IDT per-base prefixes are read before anything is uppercased: a lowercase
  * `r` (RNA) or `m` (2'-O-methyl) before an uppercase base, `+` (LNA) before a base, and `*` (a
- * phosphorothioate bond) between bases; so rArUrG is RNA AUG, never the IUPAC codes RARURG. A record
+ * phosphorothioate bond) between bases, one per bond; so rArUrG is RNA AUG, never the IUPAC codes RARURG. A record
  * with U, or whose every base carries an r or m prefix, is RNA and keeps U; one with T is DNA and
  * keeps T; one with both is refused. An invalid character is refused and named.
  */
@@ -255,16 +273,25 @@ export function normalizePrimerSequence(input: string): NormalizedPrimerSequence
       const j = s.indexOf('/', i + 1);
       if (j < 0) return fail(`'/' at position ${i + 1} opens a modification that is never closed`, '/');
       const text = s.slice(i + 1, j);
+      const at = i + 1;
       i = j + 1;
       if (!text) continue;
-      const base = baseOfInternal(text);
-      if (base) {
-        bases.push(base);
-        prefixed.push(false);
-        mods.push({ text: `/${text}/`, placement: 'internal', position: bases.length, base, noThermodynamics: true, at: -1 });
-      } else {
-        mods.push({ text: `/${text}/`, placement: 'internal', position: 0, base: null, noThermodynamics: true, at: bases.length });
+      const written = `/${text}/`;
+      if (/^i/i.test(text)) {
+        const base = INTERNAL_MODIFICATIONS.get(text.toLowerCase());
+        if (base === undefined) return fail(`${written} at position ${at} is not an internal modification MolBioCraft knows, so the base it stands for cannot be kept`);
+        if (base) {
+          bases.push(base);
+          prefixed.push(false);
+          mods.push({ text: written, placement: 'internal', position: bases.length, base, noThermodynamics: true, at: -1 });
+        } else {
+          if (!bases.length) return fail(`${written} is an internal modification but is written at the 5' end`);
+          mods.push({ text: written, placement: 'internal', position: bases.length, base: null, noThermodynamics: true, at: -2 });
+        }
+        continue;
       }
+      // A terminal modification: where it sits is checked once the whole sequence is read.
+      mods.push({ text: written, placement: /^3/.test(text) ? "3'" : "5'", position: 0, base: null, noThermodynamics: true, at: bases.length });
       continue;
     }
     if (/\s/.test(ch) || ch === '-') { i++; continue; }
@@ -288,6 +315,8 @@ export function normalizePrimerSequence(input: string): NormalizedPrimerSequence
     }
     if (ch === '*') {
       if (!bases.length) return fail(`'*' at position ${i + 1} must sit between two bases (a phosphorothioate bond)`, '*');
+      const last = mods[mods.length - 1];
+      if (last && last.text === '*' && last.position === bases.length) return fail(`'**' at position ${i}: one bond between two bases cannot hold two phosphorothioates`, '*');
       mods.push({ text: '*', placement: 'internal', position: bases.length, base: null, noThermodynamics: true, at: -1 });
       i++;
       continue;
@@ -299,11 +328,19 @@ export function normalizePrimerSequence(input: string): NormalizedPrimerSequence
     i++;
   }
   const n = bases.length;
+  for (const m of mods) {
+    if (m.at === -2 && m.position === n) return fail(`${m.text} is an internal modification but is written at the 3' end`);
+    if (m.at < 0 || n === 0) continue;
+    // A code that names its end (5..., 3...) must sit at that end; one that names neither is read by where it sits.
+    const named = /^\/5/.test(m.text) ? "5'" : /^\/3/.test(m.text) ? "3'" : null;
+    const where = m.at === 0 && n > 0 ? "5'" : m.at === n && n > 0 ? "3'" : null;
+    if (!where) return fail(`${m.text} is written inside the sequence, but it is not an internal modification`);
+    if (named && named !== where) return fail(`${m.text} is a ${named} modification but is written at the ${where} end`);
+  }
   const modifications = mods.map(({ at, ...m }) => {
     if (at < 0) return m;
-    if (at === 0) return { ...m, placement: "5'" as const, position: Math.min(1, n) };
-    if (at === n) return { ...m, placement: "3'" as const, position: n };
-    return { ...m, position: at };
+    const fivePrime = at === 0;
+    return { ...m, placement: fivePrime ? "5'" as const : "3'" as const, position: fivePrime ? 1 : n };
   });
   const sequence = bases.join('');
   const hasT = sequence.includes('T');
@@ -351,13 +388,13 @@ export function fieldLabel(header: string[] | null, column: number): string {
  */
 export function readPrimerSpreadsheet(text: string, mapping: Partial<PrimerColumnMapping> = NO_COLUMN_MAPPING): PrimerSpreadsheetReading {
   const { separator, records, problem } = tokenizeSpreadsheet(text);
-  const first = records[0];
-  const firstCells = first ? (first.comment ? first.cells[0].split(separator).map((c) => c.trim()) : first.cells) : [];
-  const header = first && looksLikeHeader(firstCells) ? firstCells : null;
+  // A `#` comment line is never the header (D0121): the header test reads the first other record.
+  const first = records.find((r) => !r.comment);
+  const header = first && looksLikeHeader(first.cells) ? first.cells : null;
   const map = { ...headerMapping(header), ...mapping };
   const rows: FaithfulPrimerRow[] = [];
-  for (const rec of header ? records.slice(1) : records) {
-    if (rec.comment) continue;
+  for (const rec of records) {
+    if (rec.comment || (header && rec === first)) continue;
     const cell = (c: number) => (c >= 0 ? rec.cells[c] ?? '' : '');
     const errors: PrimerFieldError[] = [];
     if (header && rec.cells.length > header.length) {
@@ -369,9 +406,14 @@ export function readPrimerSpreadsheet(text: string, mapping: Partial<PrimerColum
     if (!original.trim()) errors.push({ field: 'sequence', column: map.sequence + 1, message: 'no sequence' });
     else if (norm.error) errors.push({ field: 'sequence', column: map.sequence + 1, message: norm.error.message, ...(norm.error.character !== undefined ? { character: norm.error.character } : {}) });
     else if (!norm.sequence) errors.push({ field: 'sequence', column: map.sequence + 1, message: 'no sequence' });
+    const warnings: string[] = [];
+    rec.cells.forEach((c, k) => {
+      const bad = UNREADABLE.exec(c);
+      if (bad) warnings.push(`${fieldLabel(header, k + 1)}: character U+${bad[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')} is kept, but it is not readable text; save the sheet as UTF-8 CSV`);
+    });
     rows.push({
       row: rec.row, name: cell(map.name), original, sequence: norm.sequence, molecule: norm.molecule, modifications: norm.modifications,
-      description: cell(map.description), labels: splitLabels(cell(map.labels)), errors,
+      description: cell(map.description), labels: splitLabels(cell(map.labels)), errors, warnings,
     });
   }
   const columnCount = Math.max(header?.length ?? 0, ...records.filter((r) => !r.comment).map((r) => r.cells.length));
@@ -397,7 +439,8 @@ export interface PrimerImportResult {
 
 /**
  * The sequence Import Primers writes for a faithful row: the bases an internal slash modification
- * stands for are dropped with it (as the documents path always has), and U is written as T.
+ * stands for are dropped with it (as the documents path always has; BG-01M7DS7G tracks keeping
+ * it), and U is written as T.
  */
 export function importedSequenceOf(row: FaithfulPrimerRow): string {
   const dropped = new Set(row.modifications.filter((m) => m.base && m.text.startsWith('/')).map((m) => m.position));

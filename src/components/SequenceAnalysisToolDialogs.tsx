@@ -338,6 +338,7 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
                               <td data-ip-col="import">
                                 {r.errors.map((e) => `${fieldLabel(reading.header, e.column)}: ${e.message}`).join('; ')}
                                 {!r.errors.length && !toDatabase && (made ? `as ${made.name}` : `skipped: ${skippedByRow.get(r.row) ?? ''}`)}
+                                {r.warnings.map((w) => `; warning: ${w}`).join('')}
                               </td>
                               {toDatabase && <td data-ip-col="class">{classByRow.has(r.row) ? DUPLICATE_CLASS_LABEL[classByRow.get(r.row)!.cls] : 'Rejected'}</td>}
                             </tr>
