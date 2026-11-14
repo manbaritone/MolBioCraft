@@ -3,6 +3,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { discoverRustRestApiEndpoint } from '../lib/tauriIpc';
+import { BRAND_EMBLEM_SRC } from './MolBioCraftLogo';
 
 export interface AppStartupSplashProps {
   /** Current application version displayed in the bottom-right corner */
@@ -15,8 +16,8 @@ export interface AppStartupSplashProps {
   onWindowChromeMouseDown?: (e: React.MouseEvent<HTMLElement>) => void;
 }
 
-/** Splash artwork, served from `public/splash/` so the static boot splash in index.html shares it. */
-const SPLASH_PHOENIX_SRC = '/splash/phoenix-details.webp';
+/** Splash artwork: the Phoenix emblem (index.html's static boot splash draws the same file) and the helix ribbon. */
+const SPLASH_PHOENIX_SRC = BRAND_EMBLEM_SRC;
 const SPLASH_HELIX_SRC = '/splash/dna-helix-protein-horizontal.svg';
 
 const STARTUP_STAGES: ReadonlyArray<{ progress: number; label: string }> = [
@@ -132,12 +133,12 @@ export const AppStartupSplash: React.FC<AppStartupSplashProps> = ({
         aria-label="Loading MolBioCraft Workbench"
         data-tauri-drag-region
       >
-        {/* Phoenix rising from a DNA double helix: the release artwork on the right half */}
+        {/* The Phoenix emblem cutout: the release artwork on the right half */}
         <img
           className="mbc-splash-phoenix"
           src={SPLASH_PHOENIX_SRC}
-          width={880}
-          height={880}
+          width={512}
+          height={512}
           alt=""
           aria-hidden="true"
           draggable={false}

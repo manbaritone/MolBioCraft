@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import { SequenceDocument } from '../types/bio';
-import { MolBioCraftLogo } from './MolBioCraftLogo';
+import { BRAND_EMBLEM_SRC } from './MolBioCraftLogo';
 import {
   MolBioMenuGlyph,
   MolBioSidebarNodeIcon,
@@ -274,7 +274,15 @@ export const ProjectFirstPageHome: React.FC<ProjectFirstPageHomeProps> = ({
           <div className="mbc-home-hero">
             <div className="mbc-home-brand-lockup">
               <div className="mbc-home-logo-halo">
-                <MolBioCraftLogo size={96} decorative={false} />
+                {/* The Phoenix emblem cutout: contain-fit and unrounded, so no wing is clipped. */}
+                <img
+                  src={BRAND_EMBLEM_SRC}
+                  width={96}
+                  height={96}
+                  alt="Phoenix in glasses working at a computer that shows a DNA sequence, a chromatogram, a phylogenetic tree and a protein structure"
+                  draggable={false}
+                  style={{ flex: 'none', objectFit: 'contain', pointerEvents: 'none' }}
+                />
               </div>
               <div className="mbc-home-brand-copy">
                 <div className="mbc-home-title-row">

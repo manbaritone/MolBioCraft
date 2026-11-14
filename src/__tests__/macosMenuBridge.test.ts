@@ -486,8 +486,9 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(aboutHtml).not.toContain('Software Languages');
     expect(aboutHtml).not.toContain('Runtime Architecture');
     expect(aboutHtml).not.toContain('Vector Library');
-    // The About hero shows the shipped application icon, not a second, separate mark.
-    expect(aboutHtml).toContain('src="/logo.svg"');
+    // The About hero shows the Phoenix emblem illustration, not the old engraving (US-01M7CC7X).
+    expect(aboutHtml).toContain('src="/brand/phoenix-emblem-512.png"');
+    expect(aboutHtml).not.toContain('src="/logo.svg"');
     expect(aboutHtml).not.toContain('modal-backdrop');
 
     // Verify Space Grotesk variable font asset is bundled for MolBioCraft logo wordmarks
@@ -496,9 +497,9 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     const logoHtml = renderToStaticMarkup(
       React.createElement(MolBioCraftLogo, { size: 54, decorative: false })
     );
-    // The brand mark is the shipped icon artwork itself, at the icon's own corner radius
-    // (108/512), so the in-app logo cannot drift away from the installed application icon.
-    expect(logoHtml).toContain('src="/logo.svg"');
+    // The brand mark is the Phoenix mascot tile, rounded at 1/5 of its size (rounded up), never
+    // inside the tile's own corner arc (US-01M7CC7X).
+    expect(logoHtml).toContain('src="/brand/phoenix-mascot-256.png"');
     expect(logoHtml).toContain('width="54"');
     expect(logoHtml).toContain('border-radius:11px');
     expect(logoHtml).toContain('alt="MolBioCraft');
@@ -1125,13 +1126,12 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
       expect(statSync(assetUrl).size).toBeGreaterThan(256);
     }
 
-    // The inline UI mark and the square application icons are one and the same artwork:
-    // the component renders public/logo.svg, which generate_icons.py writes alongside the
-    // .icns/.ico/.png set from the same master PNG.
+    // The inline UI mark is the Phoenix mascot derivative (US-01M7CC7X); public/logo.svg is still
+    // written by generate_icons.py beside the .icns/.ico/.png set, but nothing in the UI draws it.
     const inlineLogoHtml = renderToStaticMarkup(
       React.createElement(MolBioCraftLogo, { size: 20 })
     );
-    expect(inlineLogoHtml).toContain('src="/logo.svg"');
+    expect(inlineLogoHtml).toContain('src="/brand/phoenix-mascot-256.png"');
     expect(inlineLogoHtml).toContain('aria-hidden="true"');
     expect(publicSvg).toEqual(packagingSvg);
   });
@@ -1666,10 +1666,11 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(splashHtml).toContain('mbc-splash-helix-ribbon');
     expect(splashHtml).toContain('mbc-splash-progress');
 
-    // Both the React splash and the boot splash in index.html draw the shared phoenix and
-    // DNA/protein helix artwork from public/splash/, and no longer carry the old inline watermark.
+    // Both the React splash and the boot splash in index.html draw the shared Phoenix emblem
+    // (US-01M7CC7X) and the DNA/protein helix artwork, and no longer carry the old inline watermark.
     for (const markup of [splashHtml, indexHtmlText]) {
-      expect(markup).toContain('/splash/phoenix-details.webp');
+      expect(markup).toContain('/brand/phoenix-emblem-512.png');
+      expect(markup).not.toContain('/splash/phoenix-details.webp');
       expect(markup).toContain('/splash/dna-helix-protein-horizontal.svg');
       expect(markup).not.toContain('viewBox="212 100 88 308"');
       expect(markup).not.toContain('M 183.6 80.25 A 75 75 0 1 0 183.6 159.75');

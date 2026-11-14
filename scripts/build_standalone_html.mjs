@@ -3,6 +3,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { inlineBrandImages } from './standalone_brand_images.mjs';
 
 const distDir = path.resolve('dist');
 const assetsDir = path.join(distDir, 'assets');
@@ -41,12 +42,16 @@ const cssContent = rawCssContent.replace(
 
 // Escape closing style/script tags using callback replacers so $ patterns in minified bundles are never altered
 const safeCssContent = cssContent.replace(/<\/style>/gi, () => '<\\/style>');
-const safeJsContent = jsContent.replace(/<\/script>/gi, () => '<\\/script>');
+// Brand images (public/brand/, copied to dist/brand/) become data URIs: from file:// a
+// root-relative "/brand/..." path resolves nowhere.
+const safeJsContent = inlineBrandImages(jsContent, distDir).replace(/<\/script>/gi, () => '<\\/script>');
 
-const logoSvgPath = path.resolve('packaging', 'logo.svg');
-const faviconLinkTag = fs.existsSync(logoSvgPath)
-  ? `\n    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,${fs.readFileSync(logoSvgPath).toString('base64')}" />`
-  : '';
+// The favicon is the same Phoenix mascot derivative index.html names, inlined the same way.
+const BRAND_FAVICON_LINK = /<link rel="icon"[^>]*>/.exec(fs.readFileSync(path.join(distDir, 'index.html'), 'utf8'))?.[0];
+if (!BRAND_FAVICON_LINK) {
+  throw new Error('dist/index.html carries no <link rel="icon">; the standalone build has no favicon to inline.');
+}
+const faviconLinkTag = `\n    ${inlineBrandImages(BRAND_FAVICON_LINK, distDir)}`;
 
 const standaloneHtml = `<!doctype html>
 <html lang="en">

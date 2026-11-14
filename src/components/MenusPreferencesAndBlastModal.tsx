@@ -6,7 +6,7 @@ import { BlastHitRecord, SequenceDocument } from '../types/bio';
 import { TriangleAlert } from 'lucide-react';
 import { calculatePrimerMetrics, runLocalBlastSearch } from '../core/bioEngine';
 import { blastQueryCut, blastQueryCutNotice, blastQueryLetters, blastQueryTextWarnings } from '../core/operationRunners';
-import { MolBioCraftLogo } from './MolBioCraftLogo';
+import { BRAND_EMBLEM_SRC } from './MolBioCraftLogo';
 import { MolBioPrefsToggleIcon } from './MolBioIcons';
 import { FigureExportButton } from './FigureExportButton';
 import { WorkbenchSmartTable } from './WorkbenchSmartTable';
@@ -3489,7 +3489,17 @@ export const AboutMolBioCraftModal: React.FC<AboutMolBioCraftModalProps> = ({
           footer's Close button stay reachable in a small window or with enlarged text. */}
       <div className="about-single-page-body" style={ABOUT_BODY_SCROLL_STYLE}>
         <div className="about-hero-lockup">
-          <MolBioCraftLogo size={76} decorative={true} />
+          {/* The Phoenix emblem cutout, contain-fit and never rounded so its wings are not
+              clipped. Decorative: the dialog title and the wordmark beside it name the product. */}
+          <img
+            src={BRAND_EMBLEM_SRC}
+            width={112}
+            height={112}
+            alt=""
+            aria-hidden="true"
+            draggable={false}
+            style={{ flex: 'none', objectFit: 'contain', pointerEvents: 'none' }}
+          />
           <div className="about-hero-wordmark">
             <div className="about-hero-brand mbc-logo-wordmark">MolBioCraft</div>
             <div className="about-hero-sub">Workbench</div>
