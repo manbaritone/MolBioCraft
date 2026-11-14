@@ -250,6 +250,30 @@ describe('Primer Database: an edit keeps what it was not given (US-01M7DQVT AC2)
     expect(relabelled.changedFields).toEqual(['labels']);
     expect(relabelled.record.originalInput).toBe('/5Phos/CCCCGGGG');
   });
+
+  // Wrong implementation (BG-01M7DS6M): an edit that re-infers the molecule from the sequence instead
+  // of carrying the stored one. A sequence with no U then reads as DNA, so the RNA record turns DNA.
+  it('BG-01M7DS6M AC1 renaming an RNA record whose sequence holds no U keeps it RNA and changes only the name', () => {
+    const storage = new MemoryStorage();
+    const db = openPrimerDatabase(env(storage));
+    const rec = okValue(db.add({ name: 'guide', sequence: 'ACGG', molecule: 'RNA' }));
+    expect([rec.molecule, rec.sequence]).toEqual(['RNA', 'ACGG']);
+    const edited = okValue(db.edit(rec.id, { name: 'guide 2' }));
+    expect(edited.changedFields).toEqual(['name']);
+    expect(edited.record).toEqual({ ...rec, name: 'guide 2', modifiedAt: '2026-11-15T09:00:01.000Z' });
+    expect(storedRecords(storage)).toEqual([edited.record]);
+  });
+
+  // Wrong implementation: the carry-over hard-coded to RNA, which turns a DNA record with no T into RNA.
+  it('BG-01M7DS6M AC2 renaming a DNA record keeps it DNA and changes only the name', () => {
+    const storage = new MemoryStorage();
+    const db = openPrimerDatabase(env(storage));
+    for (const sequence of ['ACGG', 'ACGTACGT']) {
+      const rec = okValue(db.add({ name: `dna ${sequence}`, sequence, molecule: 'DNA' }));
+      const edited = okValue(db.edit(rec.id, { name: `renamed ${sequence}` }));
+      expect([edited.changedFields, edited.record.molecule, edited.record.sequence], sequence).toEqual([['name'], 'DNA', sequence]);
+    }
+  });
 });
 
 describe('Primer Database: validation (US-01M7DQVT AC3)', () => {
