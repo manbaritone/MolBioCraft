@@ -193,7 +193,12 @@ function validateInput(input: DatabasePrimerInput): { ok: true; value: Validated
   else if (/[\u0000-\u001f\u007f]/.test(name)) {
     fields.push({ field: 'name', reason: 'A primer name is one line, without tabs or line breaks.' });
   }
-  const seq = normalizePrimerSequence(String(input.sequence ?? ''), input.molecule);
+  let molecule = input.molecule;
+  if (molecule !== undefined && molecule !== 'DNA' && molecule !== 'RNA') {
+    fields.push({ field: 'molecule', reason: `The molecule must be DNA or RNA, not ${String(molecule)}.` });
+    molecule = undefined;
+  }
+  const seq = normalizePrimerSequence(String(input.sequence ?? ''), molecule);
   if (!seq.ok) fields.push({ field: 'sequence', reason: seq.reason });
   let tail = '';
   if (seq.ok && input.tail5Prime !== undefined && String(input.tail5Prime).trim() !== '') {
@@ -204,6 +209,9 @@ function validateInput(input: DatabasePrimerInput): { ok: true; value: Validated
     } else if (t.sequence.length >= seq.sequence.length) {
       fields.push({ field: 'tail5Prime', reason: "The 5' tail must leave an annealing portion after it." });
     } else tail = t.sequence;
+  }
+  if (input.labels !== undefined && (!Array.isArray(input.labels) || !input.labels.every((l) => typeof l === 'string'))) {
+    fields.push({ field: 'labels', reason: 'Labels must be a list of text.' });
   }
   if (fields.length > 0 || !seq.ok) {
     const what = fields.map((f) => f.field).join(', ');
@@ -242,7 +250,12 @@ const RECORD_FIELDS: Array<keyof DatabasePrimer> = [
   'provenance',
 ];
 
-/** Read one stored or backed-up record into canonical form, or say why it cannot be read. */
+/**
+ * Read one stored or backed-up record into canonical form, or say why it cannot be read. The
+ * sequence must already be normalized and the tail a strict prefix of it. `originalInput` is
+ * only required to be text: it is the input as typed, which may hold a modification code or
+ * other text normalization drops, so it is not required to normalize to the sequence.
+ */
 function readRecord(value: unknown, at: number): { ok: true; record: DatabasePrimer } | { ok: false; reason: string } {
   const where = `record ${at + 1}`;
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return { ok: false, reason: `${where} is not an object` };
@@ -451,9 +464,12 @@ export function openPrimerDatabase(env: PrimerDatabaseEnv = {}): PrimerDatabase 
         if (!found.ok) return found;
         const rec = found.record;
         if (rec.trashedAt !== undefined) return fail('trashed', `${rec.name} is in the trash; restore it before editing.`);
+        // Without a new sequence, validate the stored one and keep the stored input as it is:
+        // originalInput may hold what normalization never reads back (a /5Phos/ code, other text),
+        // and an edit changes only the fields the user changed.
         const valid = validateInput({
           name: changes.name ?? rec.name,
-          sequence: changes.sequence ?? rec.originalInput,
+          sequence: changes.sequence ?? rec.sequence,
           molecule: changes.molecule ?? rec.molecule,
           modifications: changes.modifications ?? rec.modifications,
           tail5Prime: changes.tail5Prime ?? rec.tail5Prime,
@@ -462,6 +478,7 @@ export function openPrimerDatabase(env: PrimerDatabaseEnv = {}): PrimerDatabase 
           provenance: changes.provenance ?? rec.provenance,
         });
         if (!valid.ok) return valid;
+        if (changes.sequence === undefined) valid.value.originalInput = rec.originalInput;
         const next = { ...rec } as Record<string, unknown>;
         const changedFields: Array<keyof DatabasePrimer> = [];
         for (const key of RECORD_FIELDS) {

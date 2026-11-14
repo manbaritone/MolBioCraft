@@ -121,6 +121,23 @@ describe('Primer Database: records (US-01M7DQVT AC1)', () => {
     expect(rna.molecule).toBe('RNA');
   });
 
+  it('US-01M7DQVT AC1 a 5\' or 3\' mark without a hyphen is removed, and labels and modification text are tidied', () => {
+    expect(normalizePrimerSequence("5'acgt3'")).toEqual({ ok: true, sequence: 'ACGT', molecule: 'DNA' });
+    expect(normalizePrimerSequence('5\u2019 ACGT 3\u2019')).toEqual({ ok: true, sequence: 'ACGT', molecule: 'DNA' });
+    const storage = new MemoryStorage();
+    const rec = okValue(
+      openPrimerDatabase(env(storage)).add({
+        name: 'tidy',
+        sequence: 'ACGTACGT',
+        modifications: "  5' FAM  ",
+        labels: [' cloning ', 'cloning', '', '  ', 'pUC19 '],
+      }),
+    );
+    // Wrong implementations: labels kept untrimmed, blanks kept, repeats kept, modification padded.
+    expect(rec.labels).toEqual(['cloning', 'pUC19']);
+    expect(rec.modifications).toBe("5' FAM");
+  });
+
   it('US-01M7DQVT AC1 a sequence holding both T and U is refused with a reason and is not stored', () => {
     const storage = new MemoryStorage();
     const result = openPrimerDatabase(env(storage)).add({ name: 'mixed', sequence: 'ACGTU' });
@@ -200,6 +217,41 @@ describe('Primer Database: add, edit, trash and restore (US-01M7DQVT AC2)', () =
   });
 });
 
+describe('Primer Database: an edit keeps what it was not given (US-01M7DQVT AC2)', () => {
+  /** A store holding one record whose input as typed is `originalInput` (as a restored backup may). */
+  function storeWith(sequence: string, originalInput: string) {
+    const storage = new MemoryStorage();
+    const db = openPrimerDatabase(env(storage));
+    const rec = okValue(db.add({ name: 'old name', sequence, labels: ['x'] }));
+    const stored: DatabasePrimer = { ...rec, originalInput };
+    storage.setItem(PRIMER_DATABASE_KEY, JSON.stringify({ schema: 1, records: [stored] }));
+    return { storage, db, stored };
+  }
+
+  it('US-01M7DQVT AC2 renaming a record whose input as typed differs from its sequence changes only the name', () => {
+    // Wrong implementation: an edit that re-validates from originalInput, which would set the
+    // sequence to AAAATTTT and report name and sequence as changed.
+    const { storage, db, stored } = storeWith('CCCCGGGG', 'AAAATTTT');
+    const edited = okValue(db.edit(stored.id, { name: 'new name' }));
+    expect(edited.changedFields).toEqual(['name']);
+    expect(edited.record).toEqual({ ...stored, name: 'new name', modifiedAt: '2026-11-15T09:00:01.000Z' });
+    expect(storedRecords(storage)).toEqual([edited.record]);
+  });
+
+  it('US-01M7DQVT AC2 renaming a record whose input as typed holds a modification code succeeds and keeps that input', () => {
+    // Wrong implementation: the same re-validation refuses the rename, because /5Phos/ is not a base.
+    const { db, stored } = storeWith('CCCCGGGG', '/5Phos/CCCCGGGG');
+    const edited = okValue(db.edit(stored.id, { name: 'phosphorylated' }));
+    expect(edited.changedFields).toEqual(['name']);
+    expect(edited.record.sequence).toBe('CCCCGGGG');
+    expect(edited.record.originalInput).toBe('/5Phos/CCCCGGGG');
+    // A labels-only edit keeps the sequence and the input as typed too.
+    const relabelled = okValue(db.edit(stored.id, { labels: ['y'] }));
+    expect(relabelled.changedFields).toEqual(['labels']);
+    expect(relabelled.record.originalInput).toBe('/5Phos/CCCCGGGG');
+  });
+});
+
 describe('Primer Database: validation (US-01M7DQVT AC3)', () => {
   it('US-01M7DQVT AC3 an invalid name is refused with a field-level reason and nothing is written', () => {
     const storage = new MemoryStorage();
@@ -233,6 +285,12 @@ describe('Primer Database: validation (US-01M7DQVT AC3)', () => {
     expect(!tail.ok && tail.error.fields).toEqual([{ field: 'tail5Prime', reason: expect.stringMatching(/start/) }]);
     const allTail = db.add({ name: 'tail', sequence: 'ACGTACGT', tail5Prime: 'acgtacgt' });
     expect(!allTail.ok && allTail.error.fields.map((f) => f.field)).toEqual(['tail5Prime']);
+    const molecule = db.add({ name: 'xna', sequence: 'ACGT', molecule: 'XNA' as unknown as 'DNA' });
+    expect(!molecule.ok && molecule.error.fields).toEqual([{ field: 'molecule', reason: expect.stringMatching(/DNA or RNA/) }]);
+    const labels = db.add({ name: 'labels', sequence: 'ACGT', labels: 'cloning' as unknown as string[] });
+    expect(!labels.ok && labels.error.fields).toEqual([{ field: 'labels', reason: expect.any(String) }]);
+    const labelNumbers = db.add({ name: 'labels', sequence: 'ACGT', labels: [1] as unknown as string[] });
+    expect(!labelNumbers.ok && labelNumbers.error.fields.map((f) => f.field)).toEqual(['labels']);
     // An edit to an invalid value is refused too, and the stored record is untouched.
     const badEdit = db.edit(kept.id, { sequence: 'ACGTU' });
     expect(!badEdit.ok && badEdit.error.fields.map((f) => f.field)).toEqual(['sequence']);
@@ -293,6 +351,20 @@ describe('Primer Database: backup (US-01M7DQVT AC4)', () => {
     expect(storedRecords(target)).toEqual([own, a, b, cTrashed]);
   });
 
+  it('US-01M7DQVT AC4 choosing to replace every conflict replaces only the conflicting records and still deletes nothing', () => {
+    const { db, a, b, cTrashed } = seeded();
+    const backup = okValue(db.exportBackup());
+    const target = new MemoryStorage();
+    const tdb = openPrimerDatabase(env(target, 'q'));
+    const own = okValue(tdb.add({ name: 'own', sequence: 'GGGGAAAACC' }));
+    const aEdited: DatabasePrimer = { ...a, labels: ['edited here'] };
+    const bEdited: DatabasePrimer = { ...b, description: 'edited here' };
+    target.setItem(PRIMER_DATABASE_KEY, JSON.stringify({ schema: 1, records: [own, aEdited, bEdited] }));
+    const summary = okValue(tdb.importBackup(backup, { replace: 'all' }));
+    expect(summary).toEqual({ added: [cTrashed.id], replaced: [a.id, b.id], unchanged: [], conflicts: [] });
+    expect(storedRecords(target)).toEqual([own, a, b, cTrashed]);
+  });
+
   it('US-01M7DQVT AC4 a malformed or future-schema backup is refused with a reason and leaves the store unchanged', () => {
     const { storage, db, a } = seeded();
     const raw = storage.getItem(PRIMER_DATABASE_KEY);
@@ -304,6 +376,15 @@ describe('Primer Database: backup (US-01M7DQVT AC4)', () => {
       [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, { id: 'x' }] }), 'malformed'],
       [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, { ...fresh, id: 'other', sequence: 'ACGTU' }] }), 'malformed'],
       [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, fresh] }), 'malformed'],
+      // Each record below breaks one rule a stored record keeps, beside a valid first record.
+      [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, { ...fresh, id: 'm1', tail5Prime: 'GG' }] }), 'malformed'],
+      [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, { ...fresh, id: 'm2', tail5Prime: fresh.sequence }] }), 'malformed'],
+      [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, { ...fresh, id: 'm3', sequence: fresh.sequence.toLowerCase(), tail5Prime: '' }] }), 'malformed'],
+      [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, { ...fresh, id: 'm4', trashedAt: 5 }] }), 'malformed'],
+      [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, { ...fresh, id: 'm5', labels: ['ok', 1] }] }), 'malformed'],
+      [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, { ...fresh, id: '' }] }), 'malformed'],
+      [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, records: [fresh, { ...fresh, id: 'm6', name: '  ' }] }), 'malformed'],
+      [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1.5, records: [fresh] }), 'malformed'],
       [JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 2, records: [fresh] }), 'futureSchema'],
     ];
     for (const [text, kind] of cases) {
@@ -422,6 +503,8 @@ describe('Primer Database: envelope, unreadable store and failed writes (US-01M7
     expect(!bread.ok && bread.error.kind).toBe('unavailable');
     const badd = bdb.add({ name: 'A', sequence: 'ACGT' });
     expect(!badd.ok && badd.error.kind).toBe('unavailable');
+    const bdiscard = bdb.discardUnreadable('anything');
+    expect(!bdiscard.ok && bdiscard.error.kind).toBe('unavailable');
     expect(blocked.writes).toBe(0);
   });
 });
