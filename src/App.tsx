@@ -344,6 +344,8 @@ import { MODULAR_VECTOR_PARTS, ModularVectorPart } from './data/modularVectorPar
 import { VECTOR_CATALOG } from './data/vectorCatalog';
 import {
   clearWorkbenchLocalAutosave,
+  createAutosaveFailureNotice,
+  describeAutosaveFailure,
   hasWorkbenchLocalAutosave,
   isMbcFileOrPayload,
   isMbcZipArchiveBytes,
@@ -353,11 +355,14 @@ import {
   MbcWorkbenchSnapshot,
   parseMbcFolderZip,
   parseMbcWorkbench,
-  saveWorkbenchToLocalAutosave,
+  readLocalStorageWorkbenchAutosave,
+  autosaveWorkbench,
   serializeMbcFolderZip,
   serializeMbcWorkbench,
   workbenchAutosaveNeedsRecovery,
   writeWorkbenchAutosaveDirtyFlag,
+  type WorkbenchAutosaveReadResult,
+  type WorkbenchAutosaveResult,
 } from './core/mbcSessionFormat';
 import {
   buildNativeMenuState,
@@ -4256,15 +4261,46 @@ export const App: React.FC = () => {
   const latestSnapshotRef = useRef<() => MbcWorkbenchSnapshot>(buildCurrentMbcSnapshot);
   latestSnapshotRef.current = buildCurrentMbcSnapshot;
 
-  const executeConfirmedAppQuit = (dontAskAgain: boolean) => {
+  /**
+   * Show an autosave failure to the user (kept on screen, once per run of failures) instead of
+   * swallowing it (BG-01M7CKYQ, LC-006); a success re-arms the notice.
+   */
+  const reportAutosaveResult = (result: WorkbenchAutosaveResult) => {
+    const notice = autosaveFailureNoticeRef.current(result);
+    setAutosaveFailure(result.ok ? null : describeAutosaveFailure(result));
+    if (!result.ok) Logger.warn('Autosave', 'Autosave failed', { reason: result.reason, detail: result.detail });
+    if (notice) setStatusBanner(notice, { keep: true });
+  };
+
+  const executeConfirmedAppQuit = async (dontAskAgain: boolean) => {
     if (dontAskAgain) {
       applyConfirmBeforeQuitPreference(false);
     }
     if (sessionActive && !autosavePendingRecoveryRef.current) {
-      if (saveWorkbenchToLocalAutosave(latestSnapshotRef.current())) {
+      // The autosave is asynchronous (IndexedDB); quit only once it has landed, and never
+      // quit silently over unsaved work it could not keep (BG-01M7CKYQ).
+      const result = await autosaveWorkbench(latestSnapshotRef.current());
+      if (result.ok) {
         writeWorkbenchAutosaveDirtyFlag(sessionHasUnsavedChangesRef.current);
+      } else if (sessionHasUnsavedChangesRef.current) {
+        setConfirmQuitModalOpen(false);
+        reportAutosaveResult(result);
+        setConfirmDialog({
+          title: 'Quit Without Saving?',
+          message: `${describeAutosaveFailure(result)} "${sessionName}" has unsaved changes that will be lost if you quit now.`,
+          confirmLabel: 'Quit Without Saving',
+          destructive: true,
+          onConfirm: () => quitAppNow(),
+          alternateLabel: 'Save Session…',
+          onAlternate: () => handleExportMbcRef.current(),
+        });
+        return;
       }
     }
+    quitAppNow();
+  };
+
+  const quitAppNow = () => {
     setConfirmQuitModalOpen(false);
     const handledNatively = performNativeAppQuit();
     if (!handledNatively) {
@@ -4296,7 +4332,7 @@ export const App: React.FC = () => {
         message: `"${sessionName}" has unsaved changes, and they cannot be autosaved because an earlier autosaved session has not been restored. Save the session first, or quit and lose these changes (the earlier autosave is kept).`,
         confirmLabel: 'Quit Without Saving',
         destructive: true,
-        onConfirm: () => executeConfirmedAppQuit(false),
+        onConfirm: () => void executeConfirmedAppQuit(false),
         alternateLabel: 'Save Session…',
         onAlternate: () => handleExportMbcRef.current(),
       });
@@ -4305,7 +4341,7 @@ export const App: React.FC = () => {
     if (confirmBeforeQuit) {
       setConfirmQuitModalOpen(true);
     } else {
-      executeConfirmedAppQuit(false);
+      void executeConfirmedAppQuit(false);
     }
   };
 
@@ -4325,8 +4361,11 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [confirmBeforeQuit, sessionActive]);
 
-  // Automatically keep a local autosave draft in localStorage only while a session is active
-  const autosaveFailureReportedRef = useRef(false);
+  // Automatically keep a local autosave draft (IndexedDB) only while a session is active.
+  const autosaveFailureNoticeRef = useRef(createAutosaveFailureNotice());
+  // The standing failure, shown in the status bar for as long as autosave keeps failing: the
+  // one-off notice can be replaced by the next action's banner before it is read.
+  const [autosaveFailure, setAutosaveFailure] = useState<string | null>(null);
   const autosavePausedReportedRef = useRef(false);
   useEffect(() => {
     if (!sessionActive) return;
@@ -4342,16 +4381,10 @@ export const App: React.FC = () => {
         }
         return;
       }
-      if (saveWorkbenchToLocalAutosave(latestSnapshotRef.current())) {
-        writeWorkbenchAutosaveDirtyFlag(sessionHasUnsavedChangesRef.current);
-        autosaveFailureReportedRef.current = false;
-      } else if (!autosaveFailureReportedRef.current) {
-        // Typically the browser storage quota (~5 MB) is exceeded by large sessions.
-        autosaveFailureReportedRef.current = true;
-        setStatusBanner(
-          'Autosave failed (session too large for local storage). Save the session with File › Save Session to keep your work.'
-        );
-      }
+      void autosaveWorkbench(latestSnapshotRef.current()).then((result) => {
+        if (result.ok) writeWorkbenchAutosaveDirtyFlag(sessionHasUnsavedChangesRef.current);
+        reportAutosaveResult(result);
+      });
     }, 500);
     return () => window.clearTimeout(timer);
   }, [
@@ -4596,7 +4629,7 @@ export const App: React.FC = () => {
     setSessionName(targetName);
     const snapshot = buildCurrentMbcSnapshot(targetName);
     const mbcPayload = serializeMbcWorkbench(snapshot);
-    if (!autosavePendingRecoveryRef.current) saveWorkbenchToLocalAutosave(snapshot);
+    if (!autosavePendingRecoveryRef.current) void autosaveWorkbench(snapshot).then(reportAutosaveResult);
     const outcome = handleDownloadFile(mbcPayload, `${targetName}.mbc`, MBC_MIME_TYPE);
     if (!outcome) return;
     if (outcome === 'native') {
@@ -4635,7 +4668,7 @@ export const App: React.FC = () => {
       .replace(/\.mbc$/i, '');
     const snapshot = buildCurrentMbcSnapshot(targetName);
     const jsonPayload = serializeMbcWorkbench(snapshot);
-    if (!autosavePendingRecoveryRef.current) saveWorkbenchToLocalAutosave(snapshot);
+    if (!autosavePendingRecoveryRef.current) void autosaveWorkbench(snapshot).then(reportAutosaveResult);
     const outcome = handleDownloadFile(jsonPayload, `${targetName}.mbc`, MBC_MIME_TYPE);
     if (!outcome) return;
     if (outcome === 'native') {
@@ -4707,11 +4740,25 @@ export const App: React.FC = () => {
   };
 
   const handleRestoreLocalAutosave = () => {
-    const cached = loadWorkbenchFromLocalAutosave();
-    if (!cached) {
+    // A localStorage autosave (an older build's, or the small-session fallback) is the newest copy
+    // and is restored at once; otherwise the autosave is read from IndexedDB.
+    const local = readLocalStorageWorkbenchAutosave();
+    if (local?.status === 'found') {
+      applyAutosaveReadResult(local);
+      return;
+    }
+    void loadWorkbenchFromLocalAutosave().then(applyAutosaveReadResult);
+  };
+  const applyAutosaveReadResult = (read: WorkbenchAutosaveReadResult) => {
+    if (read.status === 'missing') {
       setStatusBanner('No local autosaved .mbc workbench draft found in storage.');
       return;
     }
+    if (read.status === 'unreadable') {
+      setStatusBanner(`Could not read the autosaved session: ${read.detail}`, { keep: true });
+      return;
+    }
+    const cached = read.parsed;
     autosaveRestoreWasDirtyRef.current = workbenchAutosaveNeedsRecovery();
     try {
       applyParsedMbcSession(
@@ -4725,15 +4772,24 @@ export const App: React.FC = () => {
     }
   };
   handleRestoreLocalAutosaveRef.current = handleRestoreLocalAutosave;
+  const applyAutosaveReadResultRef = useRef(applyAutosaveReadResult);
+  applyAutosaveReadResultRef.current = applyAutosaveReadResult;
   // Preferences → Files: "Continue where you left off" restores the autosave at launch.
   useEffect(() => {
     if (startupPrefs.startup !== 'restore') return;
+    let cancelled = false;
     const t = window.setTimeout(() => {
-      if (!sessionActiveRef.current && autosavePendingRecoveryRef.current && loadWorkbenchFromLocalAutosave()) {
-        handleRestoreLocalAutosaveRef.current();
-      }
+      if (sessionActiveRef.current || !autosavePendingRecoveryRef.current) return;
+      void loadWorkbenchFromLocalAutosave().then((read) => {
+        if (cancelled || sessionActiveRef.current || !autosavePendingRecoveryRef.current) return;
+        // A missing autosave is not news at launch; an unreadable one is.
+        if (read.status !== 'missing') applyAutosaveReadResultRef.current(read);
+      });
     }, 0);
-    return () => window.clearTimeout(t);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -4742,7 +4798,7 @@ export const App: React.FC = () => {
   };
 
   const resetDefaultWorkbenchNow = () => {
-    clearWorkbenchLocalAutosave();
+    void clearWorkbenchLocalAutosave();
     initializeFreshSampleState('MolBioCraft_Sample_Session');
     setViewerTab('sequence-view');
     setSessionActive(true);
@@ -15887,6 +15943,19 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 Session: <strong>{sessionName}.mbc</strong> ({activeNonDeletedDocs.length} docs)
               </span>
               <span>•</span>
+              {autosaveFailure && (<>
+              <button
+                type="button"
+                className="statusbar-autosave-failed"
+                data-no-window-drag
+                onClick={() => handleSaveMbcWorkbench(true)}
+                title={autosaveFailure}
+                style={{ color: 'var(--mbc-danger, #b91c1c)', fontWeight: 600, background: 'none', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }}
+              >
+                Autosave failed: save the session
+              </button>
+              <span>•</span>
+              </>)}
               {activeDoc.id ? (<>
               <span>
                 Document: <strong>{activeDoc.name}</strong>{activeDoc.accession ? ` (${activeDoc.accession})` : ''}
@@ -16798,7 +16867,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {confirmQuitModalOpen && (
         <ConfirmQuitModal
           onCancel={() => setConfirmQuitModalOpen(false)}
-          onConfirmQuit={executeConfirmedAppQuit}
+          onConfirmQuit={(dontAskAgain) => void executeConfirmedAppQuit(dontAskAgain)}
         />
       )}
 

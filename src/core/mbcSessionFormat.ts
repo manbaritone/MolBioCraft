@@ -438,46 +438,307 @@ export function parseMbcFolderZip(
   return parseMbcWorkbench(serialized, cleanName);
 }
 
+/**
+ * The session autosave lives in IndexedDB (BG-01M7CKYQ): localStorage is capped at about 5 MB in
+ * WebKit, the engine of the macOS desktop app, and refused the Sample Project. The store is
+ * versioned (database version and a `recordVersion` on the row). An autosave written by an older
+ * build under LOCAL_AUTOSAVE_KEY is still read, and stays until a newer autosave reaches IndexedDB;
+ * localStorage is written only as a fallback, for a session small enough to fit, when IndexedDB
+ * cannot be used.
+ */
+export const AUTOSAVE_IDB_NAME = 'molbiocraft-autosave';
+export const AUTOSAVE_IDB_VERSION = 1;
+export const AUTOSAVE_IDB_STORE = 'workbench';
+const AUTOSAVE_IDB_RECORD_KEY = 'session';
+const AUTOSAVE_RECORD_VERSION = 1;
+/**
+ * Set to '1' once IndexedDB holds an autosave, so the synchronous launch-time checks
+ * (hasWorkbenchLocalAutosave, workbenchAutosaveNeedsRecovery) know about it without an async read.
+ */
+const LOCAL_AUTOSAVE_IDB_MARKER_KEY = 'molbiocraft.workbench.autosave.idb';
+
+interface WorkbenchAutosaveRecord {
+  recordVersion: number;
+  savedAt: string;
+  payload: string;
+}
+
+/** Where the autosave payload is kept; injectable so tests can substitute a fake. */
+export interface WorkbenchAutosaveStore {
+  read(): Promise<string | null>;
+  write(payload: string): Promise<void>;
+  remove(): Promise<void>;
+}
+
+export type WorkbenchAutosaveResult =
+  | { ok: true; location: 'indexeddb' | 'localStorage' }
+  | { ok: false; reason: 'quota' | 'unavailable' | 'error'; detail: string };
+
+export type WorkbenchAutosaveReadResult =
+  | { status: 'found'; location: 'indexeddb' | 'localStorage'; parsed: ParsedMbcWorkbenchResult }
+  | { status: 'missing' }
+  | { status: 'unreadable'; detail: string };
+
+function errorText(err: unknown): string {
+  if (err instanceof Error) return err.name && err.name !== 'Error' ? `${err.name}: ${err.message}` : err.message;
+  return String(err);
+}
+
+function isQuotaError(err: unknown): boolean {
+  const e = err as { name?: string; code?: number } | null;
+  return Boolean(
+    e &&
+      (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22 || e.code === 1014)
+  );
+}
+
+function storageOrNull(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null; // access itself can throw where storage is blocked
+  }
+}
+
+export function createIndexedDbAutosaveStore(factory: IDBFactory): WorkbenchAutosaveStore {
+  let opening: Promise<IDBDatabase> | null = null;
+  const open = (): Promise<IDBDatabase> => {
+    if (!opening) {
+      opening = new Promise<IDBDatabase>((resolve, reject) => {
+        const request = factory.open(AUTOSAVE_IDB_NAME, AUTOSAVE_IDB_VERSION);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains(AUTOSAVE_IDB_STORE)) db.createObjectStore(AUTOSAVE_IDB_STORE);
+        };
+        request.onsuccess = () => {
+          const db = request.result;
+          db.onversionchange = () => {
+            db.close();
+            opening = null;
+          };
+          resolve(db);
+        };
+        request.onerror = () => reject(request.error ?? new Error('IndexedDB could not be opened'));
+      });
+      // A failed open is retried on the next autosave rather than cached forever.
+      opening.catch(() => {
+        opening = null;
+      });
+    }
+    return opening;
+  };
+  const run = <T>(mode: IDBTransactionMode, op: (store: IDBObjectStore) => IDBRequest): Promise<T> =>
+    open().then(
+      (db) =>
+        new Promise<T>((resolve, reject) => {
+          const tx = db.transaction(AUTOSAVE_IDB_STORE, mode);
+          const request = op(tx.objectStore(AUTOSAVE_IDB_STORE));
+          tx.oncomplete = () => resolve(request.result as T);
+          tx.onerror = () => reject(tx.error ?? request.error ?? new Error('IndexedDB transaction failed'));
+          tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
+        })
+    );
+  return {
+    async read() {
+      const record = await run<WorkbenchAutosaveRecord | undefined>('readonly', (s) => s.get(AUTOSAVE_IDB_RECORD_KEY));
+      if (record === undefined) return null;
+      if (record?.recordVersion !== AUTOSAVE_RECORD_VERSION || typeof record.payload !== 'string') {
+        throw new Error(`the IndexedDB autosave has an unknown record version (${String(record?.recordVersion)})`);
+      }
+      return record.payload;
+    },
+    async write(payload) {
+      const record: WorkbenchAutosaveRecord = {
+        recordVersion: AUTOSAVE_RECORD_VERSION,
+        savedAt: new Date().toISOString(),
+        payload,
+      };
+      await run('readwrite', (s) => s.put(record, AUTOSAVE_IDB_RECORD_KEY));
+    },
+    async remove() {
+      await run('readwrite', (s) => s.delete(AUTOSAVE_IDB_RECORD_KEY));
+    },
+  };
+}
+
+let defaultAutosaveStore: WorkbenchAutosaveStore | null | undefined;
+/** The IndexedDB store of this window, or null where IndexedDB does not exist. */
+export function defaultWorkbenchAutosaveStore(): WorkbenchAutosaveStore | null {
+  if (defaultAutosaveStore === undefined) {
+    let factory: IDBFactory | undefined;
+    try {
+      factory = typeof indexedDB === 'undefined' ? undefined : indexedDB;
+    } catch {
+      factory = undefined;
+    }
+    defaultAutosaveStore = factory ? createIndexedDbAutosaveStore(factory) : null;
+  }
+  return defaultAutosaveStore;
+}
+
+/**
+ * Write `payload` to the localStorage autosave key: the fallback for a small session when
+ * IndexedDB cannot be used, and the format older builds wrote. Returns what happened.
+ */
+function writeLocalStorageAutosave(payload: string, idbError: unknown, triedIdb: boolean): WorkbenchAutosaveResult {
+  const idbNote = triedIdb ? `IndexedDB: ${errorText(idbError)}` : 'IndexedDB is not available';
+  const ls = storageOrNull();
+  if (!ls) {
+    return { ok: false, reason: isQuotaError(idbError) ? 'quota' : 'unavailable', detail: `${idbNote}; localStorage is not available` };
+  }
+  try {
+    ls.setItem(LOCAL_AUTOSAVE_KEY, payload);
+    return { ok: true, location: 'localStorage' };
+  } catch (err) {
+    const reason = isQuotaError(err) || isQuotaError(idbError) ? 'quota' : 'error';
+    return { ok: false, reason, detail: `${idbNote}; localStorage: ${errorText(err)}` };
+  }
+}
+
+/**
+ * Write the autosave the App keeps. Never throws and never reports a write that did not happen:
+ * a failure comes back as `{ ok: false, reason, detail }` for the caller to show (LC-006).
+ */
+export async function autosaveWorkbench(
+  snapshot: MbcWorkbenchSnapshot,
+  store: WorkbenchAutosaveStore | null = defaultWorkbenchAutosaveStore()
+): Promise<WorkbenchAutosaveResult> {
+  let payload: string;
+  try {
+    payload = serializeMbcWorkbench(snapshot);
+  } catch (err) {
+    return { ok: false, reason: 'error', detail: `the session could not be serialised (${errorText(err)})` };
+  }
+  if (!store) return writeLocalStorageAutosave(payload, null, false);
+  try {
+    await store.write(payload);
+  } catch (err) {
+    return writeLocalStorageAutosave(payload, err, true);
+  }
+  // The IndexedDB copy is now the newest: drop the superseded localStorage one (it also frees
+  // the quota) and record that IndexedDB holds an autosave.
+  const ls = storageOrNull();
+  try {
+    ls?.removeItem(LOCAL_AUTOSAVE_KEY);
+    ls?.setItem(LOCAL_AUTOSAVE_IDB_MARKER_KEY, '1');
+  } catch (err) {
+    return { ok: false, reason: 'error', detail: `the autosave was stored but could not be recorded in localStorage (${errorText(err)})` };
+  }
+  return { ok: true, location: 'indexeddb' };
+}
+
+/**
+ * Synchronous localStorage-only writer, kept for callers that need the autosave written before
+ * they continue (test fixtures restoring a session through the App). True only when written;
+ * the App itself writes through autosaveWorkbench, which says why a write failed.
+ */
 export function saveWorkbenchToLocalAutosave(snapshot: MbcWorkbenchSnapshot): boolean {
   try {
-    if (typeof localStorage === 'undefined') return false;
-    localStorage.setItem(LOCAL_AUTOSAVE_KEY, serializeMbcWorkbench(snapshot));
-    return true;
+    return writeLocalStorageAutosave(serializeMbcWorkbench(snapshot), null, false).ok;
   } catch {
     return false;
   }
 }
 
-export function loadWorkbenchFromLocalAutosave(): ParsedMbcWorkbenchResult | null {
+/**
+ * Read the localStorage autosave synchronously: the copy older builds wrote and the small-session
+ * fallback. Null when localStorage holds none (the autosave, if any, is in IndexedDB).
+ */
+export function readLocalStorageWorkbenchAutosave(): Exclude<WorkbenchAutosaveReadResult, { status: 'missing' }> | null {
+  let raw: string | null;
   try {
-    if (typeof localStorage === 'undefined') return null;
-    const raw = localStorage.getItem(LOCAL_AUTOSAVE_KEY);
-    if (!raw) return null;
-    return parseMbcWorkbench(raw, 'Autosaved_Session');
-  } catch {
-    return null;
+    raw = storageOrNull()?.getItem(LOCAL_AUTOSAVE_KEY) ?? null;
+  } catch (err) {
+    return { status: 'unreadable', detail: `localStorage: ${errorText(err)}` };
+  }
+  if (!raw) return null;
+  try {
+    return { status: 'found', location: 'localStorage', parsed: parseMbcWorkbench(raw, 'Autosaved_Session') };
+  } catch (err) {
+    return { status: 'unreadable', detail: `localStorage: ${errorText(err)}` };
   }
 }
 
-export function clearWorkbenchLocalAutosave(): void {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem(LOCAL_AUTOSAVE_KEY);
-      localStorage.removeItem(LOCAL_AUTOSAVE_DIRTY_KEY);
+/**
+ * Read the autosave. A localStorage copy is only ever newer than the IndexedDB one (a successful
+ * IndexedDB write removes it), so it is read first; IndexedDB is read when it is absent or cannot
+ * be parsed. Missing and unreadable are told apart.
+ */
+export async function loadWorkbenchFromLocalAutosave(
+  store: WorkbenchAutosaveStore | null = defaultWorkbenchAutosaveStore()
+): Promise<WorkbenchAutosaveReadResult> {
+  const problems: string[] = [];
+  const local = readLocalStorageWorkbenchAutosave();
+  if (local?.status === 'found') return local;
+  if (local?.status === 'unreadable') problems.push(local.detail);
+  if (store) {
+    try {
+      const raw = await store.read();
+      if (raw) return { status: 'found', location: 'indexeddb', parsed: parseMbcWorkbench(raw, 'Autosaved_Session') };
+    } catch (err) {
+      problems.push(`IndexedDB: ${errorText(err)}`);
     }
+  }
+  return problems.length ? { status: 'unreadable', detail: problems.join('; ') } : { status: 'missing' };
+}
+
+/** Removes the autosave from both stores; resolves once the IndexedDB delete has finished (a failed delete is logged). */
+export async function clearWorkbenchLocalAutosave(
+  store: WorkbenchAutosaveStore | null = defaultWorkbenchAutosaveStore()
+): Promise<void> {
+  try {
+    const ls = storageOrNull();
+    ls?.removeItem(LOCAL_AUTOSAVE_KEY);
+    ls?.removeItem(LOCAL_AUTOSAVE_DIRTY_KEY);
+    ls?.removeItem(LOCAL_AUTOSAVE_IDB_MARKER_KEY);
   } catch {
     // Ignore storage access errors in restricted environments
   }
+  if (store) {
+    try {
+      await store.remove();
+    } catch (err) {
+      console.warn(`[Autosave] Could not delete the IndexedDB autosave: ${errorText(err)}`);
+    }
+  }
 }
 
-/** Cheap existence check that does not parse the (potentially multi-MB) autosave payload. */
+/** Cheap existence check that does not read or parse the (potentially multi-MB) autosave payload. */
 export function hasWorkbenchLocalAutosave(): boolean {
   try {
     if (typeof localStorage === 'undefined') return false;
-    return Boolean(localStorage.getItem(LOCAL_AUTOSAVE_KEY));
+    return Boolean(localStorage.getItem(LOCAL_AUTOSAVE_KEY)) || localStorage.getItem(LOCAL_AUTOSAVE_IDB_MARKER_KEY) === '1';
   } catch {
     return false;
   }
+}
+
+/** The user-facing sentence for an autosave failure, with what to do about it. */
+export function describeAutosaveFailure(result: Extract<WorkbenchAutosaveResult, { ok: false }>): string {
+  const action = 'Save it with File › Save Session to keep your work.';
+  if (result.reason === 'quota') return `Autosave failed: the session is too large for browser storage. ${action}`;
+  if (result.reason === 'unavailable') return `Autosave failed: browser storage is not available here. ${action}`;
+  return `Autosave failed: ${result.detail.replace(/\.$/, '')}. ${action}`;
+}
+
+/**
+ * A gate for autosave results: returns the notice to show for the first failure of a run (or a
+ * failure of a different kind), and null while the same failure repeats on every autosave tick.
+ * A successful autosave re-arms it.
+ */
+export function createAutosaveFailureNotice(): (result: WorkbenchAutosaveResult) => string | null {
+  let reported: string | null = null;
+  return (result) => {
+    if (result.ok) {
+      reported = null;
+      return null;
+    }
+    const message = describeAutosaveFailure(result);
+    const kind = result.reason === 'error' ? message : result.reason;
+    if (kind === reported) return null;
+    reported = kind;
+    return message;
+  };
 }
 
 export function writeWorkbenchAutosaveDirtyFlag(dirty: boolean): void {
@@ -498,7 +759,7 @@ export function writeWorkbenchAutosaveDirtyFlag(dirty: boolean): void {
 export function workbenchAutosaveNeedsRecovery(): boolean {
   try {
     if (typeof localStorage === 'undefined') return false;
-    if (!localStorage.getItem(LOCAL_AUTOSAVE_KEY)) return false;
+    if (!hasWorkbenchLocalAutosave()) return false;
     return localStorage.getItem(LOCAL_AUTOSAVE_DIRTY_KEY) !== '0';
   } catch {
     return false;
