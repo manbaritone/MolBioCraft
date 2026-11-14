@@ -425,6 +425,45 @@ export interface PrimerRecord {
   tmNoAnswerReason?: string;
 }
 
+/** What a primer in the Primer Database is made of: DNA keeps T, RNA keeps U (US-01M7DQVT). */
+export type PrimerMolecule = 'DNA' | 'RNA';
+
+/**
+ * A reusable primer kept in the user's Primer Database (US-01M7DQVT, decision D0119), stored by
+ * `src/core/primerDatabase.ts`. It is not a document's `PrimerRecord`, which is one binding
+ * occurrence of a primer on one sequence.
+ */
+export interface DatabasePrimer {
+  /** Stable for the record's life: add, edit, trash, restore and backup keep it. */
+  id: string;
+  name: string;
+  /**
+   * The whole primer 5' -> 3', tail included, normalized: uppercase, without whitespace or
+   * 5'-/-3' marks. IUPAC ambiguity codes are kept.
+   */
+  sequence: string;
+  /** The sequence as it was entered or imported, before normalization. */
+  originalInput: string;
+  molecule: PrimerMolecule;
+  /** Free modification text (for example "5' FAM" or an IDT code such as /5Phos/); '' for none. */
+  modifications: string;
+  /**
+   * The 5' non-annealing tail, a strict prefix of `sequence`; '' when no tail is known. The
+   * annealing portion is the rest of `sequence`.
+   */
+  tail5Prime: string;
+  description: string;
+  /** Labels a lab files its primers under, standing in for project collections (D0120). */
+  labels: string[];
+  /** ISO 8601 times. */
+  createdAt: string;
+  modifiedAt: string;
+  /** Where the record came from, for example "Entered by hand". */
+  provenance: string;
+  /** ISO 8601 time the record was moved to the trash; absent while it is active. */
+  trashedAt?: string;
+}
+
 export interface HistoryTreeNode {
   id: string;
   timestamp: string;
