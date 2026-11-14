@@ -1039,7 +1039,7 @@ pub fn get_builtin_workflow_macros_rust() -> Vec<BuiltinWorkflowMacroDef> {
             name: "CRISPR-SpCas9 gRNA & PAM (NGG) Scanner".into(),
             category: "Genome Editing".into(),
             description: "Scans both strands for 20-nt SpCas9 protospacers preceding 5'-NGG-3' PAM motifs and ranks them by a GC/3'-G/poly-T heuristic.".into(),
-            code: "// Executed natively via Rust Doench 2016 CRISPR Engine (`find_crispr_guides`)\nfunction runPlugin(doc) {\n  return { macro: 'js-crispr-spcas9-scanner', sequenceLength: doc.sequence.length };\n}".into(),
+            code: "// Executed natively by the Rust CRISPR guide scan (`find_crispr_guides`): a GC/3'-G/poly-T heuristic rank and in-sequence seed matches\nfunction runPlugin(doc) {\n  return { macro: 'js-crispr-spcas9-scanner', sequenceLength: doc.sequence.length };\n}".into(),
         },
         BuiltinWorkflowMacroDef {
             id: "js-goldengate-domestication".into(),
@@ -1072,6 +1072,73 @@ pub fn get_builtin_workflow_macros_rust() -> Vec<BuiltinWorkflowMacroDef> {
 mod tests {
     use super::*;
     use crate::sample_library_data::get_sample_library;
+
+    /// US-01M7DVVR AC2: no pipeline, plugin or macro catalogue string names a model the engine never
+    /// runs. The pipeline catalogue was already checked (BG-01M6PWB5, `cloning_pipelines_buffers.rs`);
+    /// this extends the same guard to the built-in macro catalogue and to what each macro's plugin
+    /// replies with, and keeps the pipelines in it so all three are held to one list.
+    ///
+    /// Wrong implementations this fails on: the shipped plugin name "(Rust Doench 2016 Engine)" and
+    /// the macro code comment "Rust Doench 2016 CRISPR Engine"; a plugin reply whose total is the
+    /// length of the list it kept; a plugin reply that shows a score without saying what it is.
+    #[test]
+    fn us_01m7dvvr_ac2_no_pipeline_plugin_or_macro_string_names_an_unrun_model() {
+        const UNRUN_MODELS: [&str; 4] = ["Doench", "Hsu", "Zhang", "Rule Set"];
+        let samples = get_sample_library();
+        let doc = samples
+            .iter()
+            .find(|d| d.name.contains("pET-28a"))
+            .unwrap_or(&samples[0]);
+
+        let macros = get_builtin_workflow_macros_rust();
+        assert!(
+            macros.iter().any(|m| m.rust_macro_id == "js-crispr-spcas9-scanner"),
+            "the CRISPR macro is in the catalogue, so this check reads it"
+        );
+        for m in &macros {
+            let entry = serde_json::to_string(m).unwrap();
+            let reply = serde_json::to_string(
+                &crate::reaction_buffers::execute_builtin_rust_workflow_macro(&m.rust_macro_id, doc),
+            )
+            .unwrap();
+            for model in UNRUN_MODELS {
+                assert!(!entry.contains(model), "macro catalogue entry {} names {model}", m.id);
+                assert!(!reply.contains(model), "plugin reply of {} names {model}", m.id);
+            }
+        }
+        for def in &crate::bio_pipelines::get_bio_pipeline_catalog() {
+            let entry = serde_json::to_string(def).unwrap();
+            for model in UNRUN_MODELS {
+                assert!(!entry.contains(model), "pipeline catalogue entry {} names {model}", def.id);
+            }
+        }
+
+        // The CRISPR plugin says what its numbers are, and its total is the scan's own count.
+        let crispr = crate::reaction_buffers::execute_builtin_rust_workflow_macro(
+            "js-crispr-spcas9-scanner",
+            doc,
+        );
+        let scan = crate::cloning_crispr::scan_crispr_guides(&doc.sequence, "SpCas9 (NGG)", 25, None, false);
+        assert_eq!(crispr["totalCandidatesFound"], serde_json::json!(scan.candidate_count));
+        assert!(
+            scan.candidate_count > 25,
+            "the fixture holds more candidates than the 25 kept, so a list length would differ"
+        );
+        assert_eq!(crispr["guidesListed"], serde_json::json!(scan.guides.len()));
+        let models = &crispr["scoreModels"];
+        let rank = models["onTargetScore"].as_str().unwrap();
+        assert!(
+            rank.contains("GC content") && rank.contains("3' end") && rank.contains("TTTT"),
+            "{rank}"
+        );
+        assert!(rank.contains("not a measured or predicted cutting efficiency"), "{rank}");
+        let seed = models["seedMatches"].as_str().unwrap();
+        assert!(seed.contains("12-nt PAM-proximal seed") && seed.contains("both strands"), "{seed}");
+        assert!(seed.contains("not a genome-wide off-target count"), "{seed}");
+        let genome = models["genomeWideSpecificity"].as_str().unwrap();
+        assert!(genome.starts_with("Not evaluated"), "{genome}");
+        assert!(genome.contains("no reference genome or off-target search method is configured"), "{genome}");
+    }
 
     #[test]
     fn computes_single_pass_table_metrics_csv_interval_extract_and_petgraph_lineage_dag() {

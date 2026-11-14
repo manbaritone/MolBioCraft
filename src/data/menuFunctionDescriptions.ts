@@ -163,7 +163,7 @@ const MENU_LABEL_DESCRIPTIONS: Record<string, string> = {
   'Selection to Oligo': 'Extract the highlighted sequence span into a standalone oligonucleotide primer document',
   "Add 5' Overhang": 'Prepend a restriction site, Kozak motif, or assembly homology tail to the 5-prime end',
   'In-Silico PCR': 'Predict PCR amplicon products, sizes, and annealing temperatures from primer binding sites',
-  'Find CRISPR Sites': 'Locate SpCas9, SaCas9, or Cas12a PAM protospacers with on-target efficiency scores',
+  'Find CRISPR Sites': "Locate SpCas9 or Cas12a guide sites by their PAM, ranked by a GC/3'-G/poly-T heuristic, with exact seed matches counted in the sequence",
   'Primers & CRISPR': 'Open primer thermodynamics, in-silico PCR, and CRISPR guide RNA design tools',
   'Primer Preferences': 'Configure monovalent salt, Mg2+, oligo concentration, and thermodynamic Tm parameters',
 

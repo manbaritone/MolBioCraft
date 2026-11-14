@@ -319,6 +319,33 @@ pub fn analyze_gibson_overlap_junction(overlap_seq: &str) -> GibsonJunctionTherm
 }
 
 /// Executes built-in bioinformatics workflow macros natively in Rust via `aho-corasick`.
+/// What the CRISPR plugin's heuristic rank is (US-01M7DVVR): a rule of thumb over three features
+/// of the spacer, not a trained model or a measured activity.
+pub const CRISPR_HEURISTIC_RANK_DESCRIPTION: &str = "Heuristic rank (0-100), a rule of thumb over the spacer: GC content in 40-65 %, a G at the 3' end of the spacer, and no TTTT run. It ranks candidates; it is not a measured or predicted cutting efficiency.";
+
+/// What a genome-wide specificity would need and why this engine shows none (US-01M7DVVR AC3).
+pub const CRISPR_GENOME_WIDE_SPECIFICITY_NOT_EVALUATED: &str = "Not evaluated: no reference genome or off-target search method is configured, so no genome-wide specificity is computed.";
+
+/// What the CRISPR plugin's seed count counts (US-01M7DVVR AC3): the seed length, the range and
+/// both strands, read from the scan rather than assumed to be the whole sequence.
+pub fn crispr_seed_count_description(scanned_length_bp: usize, sequence_length_bp: usize) -> String {
+    let range = if scanned_length_bp < sequence_length_bp {
+        format!(
+            "bases 1 to {} of the {} bases of this sequence",
+            molbiocraft_core::format_thousands(scanned_length_bp),
+            molbiocraft_core::format_thousands(sequence_length_bp)
+        )
+    } else {
+        format!(
+            "all {} bases of this sequence",
+            molbiocraft_core::format_thousands(sequence_length_bp)
+        )
+    };
+    format!(
+        "Seed matches: other exact copies of the 12-nt PAM-proximal seed in {range}, on both strands. It is not a genome-wide off-target count."
+    )
+}
+
 pub fn execute_builtin_rust_workflow_macro(
     macro_id: &str,
     doc: &SequenceDocument,
@@ -410,7 +437,10 @@ pub fn execute_builtin_rust_workflow_macro(
             })
         }
         _ => {
-            let guides = crate::cloning_crispr::find_crispr_guides(&seq, "SpCas9 (NGG)", 25);
+            // The scan itself, so the candidate total is the scan's own count and not the length of
+            // the list it kept (US-01M7DVVR).
+            let scan = crate::cloning_crispr::scan_crispr_guides(&seq, "SpCas9 (NGG)", 25, None, false);
+            let guides = &scan.guides;
             let top: Vec<_> = guides
                 .iter()
                 .take(12)
@@ -432,9 +462,21 @@ pub fn execute_builtin_rust_workflow_macro(
                     })
                 })
                 .collect();
+            // Each number this plugin shows says what it is (US-01M7DVVR): the rule and features of
+            // the heuristic rank, the seed length, range and strands of the seed count, and a
+            // genome-wide specificity this engine does not compute, named as not evaluated.
             serde_json::json!({
-                "plugin": "CRISPR-SpCas9 gRNA Scanner (Rust Doench 2016 Engine)",
-                "totalCandidatesFound": guides.len(),
+                "plugin": "CRISPR-SpCas9 gRNA Scanner (GC/3'-G/poly-T heuristic rank, in-sequence seed matches)",
+                "totalCandidatesFound": scan.candidate_count,
+                "guidesListed": guides.len(),
+                "scannedLengthBp": scan.scanned_length_bp,
+                "sequenceLengthBp": scan.sequence_length_bp,
+                "scoreModels": {
+                    "onTargetScore": CRISPR_HEURISTIC_RANK_DESCRIPTION,
+                    "seedMatches": crispr_seed_count_description(scan.scanned_length_bp, scan.sequence_length_bp),
+                    "genomeWideSpecificity": CRISPR_GENOME_WIDE_SPECIFICITY_NOT_EVALUATED,
+                },
+                "warnings": scan.warnings,
                 "topGuides": top,
             })
         }

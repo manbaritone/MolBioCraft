@@ -34,6 +34,13 @@ import { usePrimerDatabaseSave } from './PrimerDatabaseWindow';
 /** How many of the candidate guides the CRISPR tab lists. */
 const CRISPR_GUIDES_LISTED = 25;
 
+/**
+ * Why no CRISPR row has a genome-wide specificity (US-01M7DVVR AC3): the scan counts seed copies in
+ * the range it read and searches no reference genome, so the number is not evaluated, never 0 or 100.
+ */
+const GENOME_WIDE_NOT_EVALUATED =
+  'Not evaluated — no reference genome or off-target search method is configured, so no genome-wide specificity is computed.';
+
 /** A count or a length as a researcher reads it, grouped like the engine's own sentences. */
 const bp = (n: number) => n.toLocaleString('en-US');
 
@@ -980,7 +987,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
               : crisprCandidates > crisprReturned
               ? `Lists the ${bp(crisprReturned)} highest-scoring of the ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`
               : `Lists all ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`}{' '}
-            <strong>Heuristic score</strong>: rule-of-thumb activity (GC 40–65 %, 3&apos; G, no TTTT) — not a trained Doench model.{' '}
+            <strong>Heuristic rank</strong>: a rule of thumb over the spacer (GC content in 40–65 %, a G at its 3&apos; end, no TTTT run) that orders the candidates; it is not a measured or predicted cutting efficiency, and not a trained Doench model.{' '}
             {crisprScan !== undefined && (
               <>
                 <strong>Seed matches</strong>:{' '}
@@ -989,7 +996,8 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                   : `other exact copies of the 12-nt PAM-proximal seed across ${crisprReadAs}`}{' '}
                 (no genome-wide off-target search).
               </>
-            )}
+            )}{' '}
+            <strong>Genome-wide specificity</strong>: {GENOME_WIDE_NOT_EVALUATED}
           </div>
 
           <ResultWarnings warnings={crisprScan?.warnings} label="CRISPR guide warnings" />
@@ -1009,8 +1017,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 <th>Region (Cut Site)</th>
                 <th>Nuclease (PAM side)</th>
                 <th>GC%</th>
-                <th>Heuristic Score</th>
-                <th>Hsu Specificity</th>
+                <th>Heuristic Rank (0–100)</th>
+                <th>Exact Seed Matches (range searched)</th>
+                <th>Genome-wide Specificity</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -1087,9 +1096,10 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                         color: g.specificityScore >= 80 ? '#0369a1' : '#92400e',
                       }}
                     >
-                      {g.offTargetCount === 0 ? 'Unique seed' : `${g.offTargetCount} seed match${g.offTargetCount > 1 ? 'es' : ''}`}
+                      {g.offTargetCount === 0 ? 'No other seed copy' : `${g.offTargetCount} seed match${g.offTargetCount > 1 ? 'es' : ''}`}
                     </span>
                   </td>
+                  <td title={GENOME_WIDE_NOT_EVALUATED}>Not evaluated</td>
                   <td>
                     <button
                       className="btn-secondary-sm"
