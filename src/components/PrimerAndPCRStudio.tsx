@@ -987,9 +987,12 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
               : crisprCandidates > crisprReturned
               ? `Lists the ${bp(crisprReturned)} highest-scoring of the ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`
               : `Lists all ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`}{' '}
-            <strong>Heuristic rank</strong>: a rule of thumb over the spacer (GC content in 40–65 %, a G at its 3&apos; end, no TTTT run) that orders the candidates; it is not a measured or predicted cutting efficiency, and not a trained Doench model.{' '}
+            <strong>Heuristic rank</strong>: a rule of thumb over the spacer and its PAM — from a base of 68, raised for GC content inside 40–65 % and lowered outside 30–75 %, raised for a G and lowered for a T at spacer position 20, raised for a C at position 16 and for an A or G at position 4, lowered for a TTTT run and for a PAM ending GGG, then held to 8 to 99. These are SpCas9 rules of thumb, read off a Cas12a spacer unchanged. It is not a measured or predicted cutting efficiency, and not a trained Doench model.{' '}
+            {/* What orders the list, and what the seed count counts, are both claims about a scan
+                that ran: an absent report says neither (US-01M7DVH2 AC5). */}
             {crisprScan !== undefined && (
               <>
+                <strong>Order</strong>: this rank plus the seed-match score, not the rank alone.{' '}
                 <strong>Seed matches</strong>:{' '}
                 {crisprScanIsPartial
                   ? `other exact copies of the 12-nt PAM-proximal seed in bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence — the range searched, on both strands — and no copy outside it`
@@ -1017,7 +1020,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 <th>Region (Cut Site)</th>
                 <th>Nuclease (PAM side)</th>
                 <th>GC%</th>
-                <th>Heuristic Rank (0–100)</th>
+                <th>Heuristic Rank (8–99)</th>
                 <th>Exact Seed Matches (range searched)</th>
                 <th>Genome-wide Specificity</th>
                 <th>Action</th>

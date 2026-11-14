@@ -321,7 +321,7 @@ pub fn analyze_gibson_overlap_junction(overlap_seq: &str) -> GibsonJunctionTherm
 /// Executes built-in bioinformatics workflow macros natively in Rust via `aho-corasick`.
 /// What the CRISPR plugin's heuristic rank is (US-01M7DVVR): a rule of thumb over three features
 /// of the spacer, not a trained model or a measured activity.
-pub const CRISPR_HEURISTIC_RANK_DESCRIPTION: &str = "Heuristic rank (0-100), a rule of thumb over the spacer: GC content in 40-65 %, a G at the 3' end of the spacer, and no TTTT run. It ranks candidates; it is not a measured or predicted cutting efficiency.";
+pub const CRISPR_HEURISTIC_RANK_DESCRIPTION: &str = "Heuristic rank (8 to 99), a rule of thumb over the spacer and its PAM: from a base of 68, raised for GC content inside 40-65 % and lowered outside 30-75 %, raised for a G and lowered for a T at spacer position 20, raised for a C at position 16 and for an A or G at position 4, lowered for a TTTT run and for a PAM ending GGG, then held to 8 to 99. These are SpCas9 rules of thumb, read off a Cas12a spacer unchanged. The list is ordered by this rank plus the seed-match score, not by the rank alone; it is not a measured or predicted cutting efficiency.";
 
 /// What a genome-wide specificity would need and why this engine shows none (US-01M7DVVR AC3).
 pub const CRISPR_GENOME_WIDE_SPECIFICITY_NOT_EVALUATED: &str = "Not evaluated: no reference genome or off-target search method is configured, so no genome-wide specificity is computed.";

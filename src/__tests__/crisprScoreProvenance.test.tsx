@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 /**
- * US-01M7DVVR: every CRISPR number says what it is. The candidate list is discovery, the 0-100
- * number is a named heuristic rank over three spacer features, the seed count is exact copies of
- * the 12-nt PAM-proximal seed in the range searched, and genome-wide specificity - which no
+ * US-01M7DVVR: every CRISPR number says what it is. The candidate list is discovery, the 8-99
+ * number is a heuristic rank whose description is the rule the engine runs - every feature it
+ * reads, its real bounds, and the rank-plus-seed-matches order of the list - the seed count is
+ * exact copies of the 12-nt PAM-proximal seed in the range searched, and genome-wide specificity -
+ * which no
  * reference genome or method is configured to compute - is shown as "Not evaluated".
  *
  * Every surface is read as shipped: the CRISPR tab rendered on the server through the studio's own
@@ -17,7 +19,9 @@
  * - a seed column named "specificity", which reads as genome-wide;
  * - a heuristic described as activity or efficiency;
  * - genome-wide specificity shown as a number (0 or 100) instead of "Not evaluated" with the reason;
- * - a menu description naming SaCas9, which no preset scans for, or an efficiency model.
+ * - a menu description naming SaCas9, which no preset scans for, or an efficiency model;
+ * - a rank described as three spacer features over 0-100 when the scorer reads six and a PAM and
+ *   can only report 8 to 99, or a rank said to order a list the seed count also orders.
  */
 
 import React from 'react';
@@ -144,10 +148,25 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
   it('US-01M7DVVR AC3 each score names its model and inputs, and genome-wide specificity is Not evaluated with the reason', () => {
     const html = crisprTab();
     const shown = callout(html);
-    // The heuristic rank names the rule and the three features it reads.
-    expect(shown).toContain(
-      "Heuristic rank : a rule of thumb over the spacer (GC content in 40–65 %, a G at its 3' end, no TTTT run) that orders the candidates"
-    );
+    // The heuristic rank names the rule, every feature it reads, its real bounds, what orders the
+    // list and that these SpCas9 rules of thumb are read off a Cas12a spacer unchanged. A rank
+    // described as three features and a 0–100 range is not the rule the engine runs.
+    for (const phrase of [
+      'GC content',
+      '40–65 %',
+      '30–75 %',
+      'position 20',
+      'position 16',
+      'position 4',
+      'TTTT run',
+      'GGG',
+      '8 to 99',
+      'seed-match',
+      'Cas12a',
+    ]) {
+      expect(shown, `the rank callout does not name ${phrase}`).toContain(phrase);
+    }
+    expect(shown).not.toContain('0–100');
     // The seed count names the seed length, the range and the strands.
     expect(shown).toContain(
       'other exact copies of the 12-nt PAM-proximal seed across all 3,000 bases of this linear sequence, on both strands'
@@ -157,7 +176,7 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
       'Genome-wide specificity : Not evaluated — no reference genome or off-target search method is configured, so no genome-wide specificity is computed.'
     );
     const { headers, rows } = guideTable(html);
-    expect(headers).toEqual(expect.arrayContaining(['Heuristic Rank (0–100)', 'Genome-wide Specificity']));
+    expect(headers).toEqual(expect.arrayContaining(['Heuristic Rank (8–99)', 'Genome-wide Specificity']));
     const genomeColumn = headers.indexOf('Genome-wide Specificity');
     for (const row of rows) expect(row[genomeColumn]).toBe('Not evaluated');
     // The reason travels with every cell, not with the callout alone.
@@ -171,7 +190,9 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
       totalCandidatesFound: number;
       guidesListed: number;
     };
-    expect(plugin.scoreModels.onTargetScore).toContain("GC content in 40-65 %, a G at the 3' end of the spacer, and no TTTT run");
+    for (const phrase of ['GC content', '40-65 %', '30-75 %', 'position 20', 'position 16', 'position 4', 'TTTT', 'GGG', '8 to 99', 'seed-match', 'Cas12a']) {
+      expect(plugin.scoreModels.onTargetScore, `the plugin's rank model does not name ${phrase}`).toContain(phrase);
+    }
     expect(plugin.scoreModels.seedMatches).toContain('12-nt PAM-proximal seed in all 3,000 bases of this sequence, on both strands');
     expect(plugin.scoreModels.genomeWideSpecificity).toMatch(/^Not evaluated: no reference genome or off-target search method is configured/);
     // The candidate total is the scan's, not the length of the list it kept.

@@ -1038,8 +1038,8 @@ pub fn get_builtin_workflow_macros_rust() -> Vec<BuiltinWorkflowMacroDef> {
             rust_macro_id: "js-crispr-spcas9-scanner".into(),
             name: "CRISPR-SpCas9 gRNA & PAM (NGG) Scanner".into(),
             category: "Genome Editing".into(),
-            description: "Scans both strands for 20-nt SpCas9 protospacers preceding 5'-NGG-3' PAM motifs and ranks them by a GC/3'-G/poly-T heuristic.".into(),
-            code: "// Executed natively by the Rust CRISPR guide scan (`find_crispr_guides`): a GC/3'-G/poly-T heuristic rank and in-sequence seed matches\nfunction runPlugin(doc) {\n  return { macro: 'js-crispr-spcas9-scanner', sequenceLength: doc.sequence.length };\n}".into(),
+            description: "Scans both strands for 20-nt SpCas9 protospacers preceding 5'-NGG-3' PAM motifs and ranks them by a rule-of-thumb heuristic over the spacer's GC content, the bases at positions 4, 16 and 20, a poly-T run and the PAM.".into(),
+            code: "// Executed natively by the Rust CRISPR guide scan (`scan_crispr_guides`): a rule-of-thumb heuristic rank over the spacer and PAM, and in-sequence seed matches\nfunction runPlugin(doc) {\n  return { macro: 'js-crispr-spcas9-scanner', sequenceLength: doc.sequence.length };\n}".into(),
         },
         BuiltinWorkflowMacroDef {
             id: "js-goldengate-domestication".into(),
@@ -1127,17 +1127,111 @@ mod tests {
         assert_eq!(crispr["guidesListed"], serde_json::json!(scan.guides.len()));
         let models = &crispr["scoreModels"];
         let rank = models["onTargetScore"].as_str().unwrap();
-        assert!(
-            rank.contains("GC content") && rank.contains("3' end") && rank.contains("TTTT"),
-            "{rank}"
-        );
         assert!(rank.contains("not a measured or predicted cutting efficiency"), "{rank}");
+        assert_rank_description_is_the_rule_the_engine_runs(rank);
         let seed = models["seedMatches"].as_str().unwrap();
         assert!(seed.contains("12-nt PAM-proximal seed") && seed.contains("both strands"), "{seed}");
         assert!(seed.contains("not a genome-wide off-target count"), "{seed}");
         let genome = models["genomeWideSpecificity"].as_str().unwrap();
         assert!(genome.starts_with("Not evaluated"), "{genome}");
         assert!(genome.contains("no reference genome or off-target search method is configured"), "{genome}");
+    }
+
+    /// The rank's description, held to the rule `score_guide` actually runs (US-01M7DVVR AC3).
+    ///
+    /// A description is only provenance if it is the rule: the shipped text named three features
+    /// ("GC content in 40-65 %, a G at the 3' end of the spacer, and no TTTT run") and a 0-100
+    /// range, while the scorer reads six features and a PAM and can only ever report 8 to 99. It
+    /// also said the rank orders the list, which the rank alone does not - the list is ordered by
+    /// the rank plus the seed-match score. This holds every surface that describes the rank to the
+    /// code, by naming each feature and by re-deriving the score from the description's own words.
+    fn assert_rank_description_is_the_rule_the_engine_runs(desc: &str) {
+        // The bounds it names are the bounds the clamp allows.
+        assert!(desc.contains("8 to 99") || desc.contains("8-99"), "the rank description does not name its real bounds: {desc}");
+        assert!(!desc.contains("0-100") && !desc.contains("0–100"), "the rank description still claims 0-100: {desc}");
+        // Every feature the scorer reads is named, including the three the shipped text omitted.
+        for feature in [
+            "GC content", "40-65", "30-75", "position 20", "position 16", "position 4", "TTTT", "GGG",
+        ] {
+            assert!(desc.contains(feature), "the rank description does not name {feature}: {desc}");
+        }
+        // What orders the list, and that these are SpCas9 rules of thumb read off a Cas12a spacer too.
+        assert!(desc.contains("seed-match"), "the rank description does not say what orders the list: {desc}");
+        assert!(desc.contains("Cas12a"), "the rank description does not say it is applied to Cas12a unchanged: {desc}");
+    }
+
+    /// US-01M7DVVR AC3 by execution: the rank the engine reports is the rule the description above
+    /// describes, for both presets, and the list is in the order the description claims.
+    #[test]
+    fn us_01m7dvvr_ac2_the_rank_the_engine_reports_is_the_rule_its_description_names() {
+        // The rule, written out from the description's own words and nothing else.
+        let rank_from_the_description = |spacer: &str, pam: &str| -> i32 {
+            let s = spacer.as_bytes();
+            let gc = s.iter().filter(|&&b| b == b'G' || b == b'C').count() as f64 / s.len() as f64 * 100.0;
+            let mut r = 68i32;
+            if (40.0..=65.0).contains(&gc) {
+                r += 14;
+            } else if !(30.0..=75.0).contains(&gc) {
+                r -= 22;
+            }
+            if s.len() >= 20 {
+                if s[19] == b'G' {
+                    r += 8;
+                } else if s[19] == b'T' {
+                    r -= 6;
+                }
+                if s[15] == b'C' {
+                    r += 5;
+                }
+                if s[3] == b'A' || s[3] == b'G' {
+                    r += 3;
+                }
+            }
+            if s.windows(4).any(|w| w == b"TTTT") {
+                r -= 30;
+            }
+            if pam.as_bytes().ends_with(b"GGG") {
+                r -= 5;
+            }
+            r.clamp(8, 99)
+        };
+
+        let samples = get_sample_library();
+        let doc = samples
+            .iter()
+            .find(|d| d.name.contains("pET-28a"))
+            .unwrap_or(&samples[0]);
+        for nuclease in ["SpCas9 (NGG)", "Cas12a / Cpf1 (TTTV)"] {
+            let scan = crate::cloning_crispr::scan_crispr_guides(&doc.sequence, nuclease, 40, None, false);
+            assert!(!scan.guides.is_empty(), "{nuclease} finds candidates in the fixture");
+            for g in &scan.guides {
+                assert_eq!(
+                    g.on_target_score,
+                    rank_from_the_description(&g.spacer_seq, &g.pam_seq),
+                    "{nuclease} guide {} ({}+{}) scores {} where the description's rule gives {}",
+                    g.id,
+                    g.spacer_seq,
+                    g.pam_seq,
+                    g.on_target_score,
+                    rank_from_the_description(&g.spacer_seq, &g.pam_seq)
+                );
+                assert!(
+                    (8..=99).contains(&g.on_target_score),
+                    "a rank outside the bounds the description names: {}",
+                    g.on_target_score
+                );
+            }
+            // Best first, by the rank plus the seed-match score - what the description says orders it.
+            let keys: Vec<i32> = scan
+                .guides
+                .iter()
+                .map(|g| g.on_target_score + g.specificity_score)
+                .collect();
+            assert!(
+                keys.windows(2).all(|w| w[0] >= w[1]),
+                "{nuclease} guides are not in the order the description claims: {keys:?}"
+            );
+        }
     }
 
     #[test]
