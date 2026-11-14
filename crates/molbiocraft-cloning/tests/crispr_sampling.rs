@@ -17,7 +17,8 @@
 //! guides sit in the ranges each strand's old scan never reached.
 
 use molbiocraft_cloning::cloning_crispr::{
-    find_crispr_guides, scan_crispr_guides, CrisprGuideRecord, GUIDE_SCAN_MAX_BP,
+    find_crispr_guides, resolve_nuclease_preset, scan_crispr_guides, supported_nuclease_presets,
+    CrisprGuideRecord, GUIDE_SCAN_MAX_BP,
 };
 
 // ───────────────────────────── fixtures, from a fixed seed ─────────────────────────────
@@ -1175,5 +1176,231 @@ fn a_circular_seed_count_reads_the_closing_12_mers_across_the_origin() {
             "{}'s specificity does not follow its own count",
             guide.name
         );
+    }
+}
+
+
+// ───────────── US-01M7DV29: each preset's own site rule, cut convention and ambiguity ─────────────
+//
+// The engine used to pick its model with `!nuclease.contains("Cas12a")`, so every unknown name was
+// scanned by SpCas9's rule and labelled "SpCas9 (NGG)". The presets below are read as the facts they
+// are: the PAM on its own side of the spacer, the spacer's length, and where the cut falls by the
+// convention the record names (D0131).
+//
+// Every fixture holds A and T only but for the site planted in it, so the candidate list is known
+// exactly and a rule read off the wrong side of the spacer has nowhere to hide.
+
+/// A 20-nt spacer free of GG and CC: one candidate per planted site, and no accidental PAM.
+const SPACER20: &str = "GACGTTACCGATTGCAATCG";
+
+/// The one guide of `scan`, or a panic naming what came back instead.
+fn only_guide(scan: &molbiocraft_cloning::cloning_crispr::CrisprGuideScan) -> &CrisprGuideRecord {
+    assert_eq!(
+        scan.guides.len(),
+        1,
+        "one site was planted; the scan returned {} guides and {} candidates, warnings {:?}",
+        scan.guides.len(),
+        scan.candidate_count,
+        scan.warnings
+    );
+    &scan.guides[0]
+}
+
+#[test]
+fn us_01m7dv29_ac3_spcas9_reads_its_spacer_pam_and_blunt_cut_on_both_strands() {
+    // 5' ... TTTTT [spacer 20] AGG TTTTT ... 3': the spacer at 6..25, its PAM at 26..28.
+    let seq = format!("TTTTT{SPACER20}AGGTTTTT");
+    let preset = resolve_nuclease_preset("SpCas9 (NGG)").expect("a supported preset");
+    assert_eq!(
+        (preset.pam_side.as_str(), preset.pam_pattern.as_str(), preset.spacer_length_bp, preset.site_span_bp),
+        ("3'", "NGG", 20, 23)
+    );
+
+    let scan = scan_crispr_guides(&seq, "SpCas9 (NGG)", 25, None, false);
+    let g = only_guide(&scan);
+    // The spacer is the 20 bases 5' of the PAM, and the PAM is those three bases.
+    assert_eq!(g.spacer_seq, SPACER20);
+    assert_eq!(g.pam_seq, "AGG");
+    assert_eq!(&seq[g.start - 1..g.start - 1 + 20], SPACER20);
+    assert_eq!(&seq[g.start + 19..g.start + 22], "AGG");
+    assert_eq!((g.start, g.end, g.strand), (6, 28, 1));
+    // Blunt, 3 bp 5' of the PAM: the cut follows base 22, between spacer nt 17 and nt 18.
+    assert_eq!(g.cut_position, 22);
+    assert_eq!(g.cut_position, g.start + 20 - 1 - 3, "3 bp 5' of the PAM");
+    assert_eq!(g.cut_position_target_strand, None, "SpCas9 cuts bluntly, so there is no second cut");
+    assert!(
+        g.cut_convention.contains("Blunt") && g.cut_convention.contains("nt 17 and nt 18"),
+        "{}",
+        g.cut_convention
+    );
+    assert_eq!((g.nuclease.as_str(), g.pam_side.as_str()), ("SpCas9 (NGG)", "3'"));
+
+    // The same site read on the reverse strand: the mirrored base, by the same rule.
+    let rc = molbiocraft_core::reverse_complement_iupac(&seq, false);
+    let rscan = scan_crispr_guides(&rc, "SpCas9 (NGG)", 25, None, false);
+    let r = only_guide(&rscan);
+    assert_eq!((r.spacer_seq.as_str(), r.pam_seq.as_str(), r.strand), (SPACER20, "AGG", -1));
+    assert_eq!(r.cut_position, seq.len() - 22, "the plus-strand coordinate of the mirrored cut");
+    assert_eq!(r.cut_position_target_strand, None);
+}
+
+#[test]
+fn us_01m7dv29_ac4_cas12a_reads_its_five_prime_pam_and_both_staggered_cuts() {
+    // 5' ... TTTTT TTTA [spacer 20] TTTTT ... 3': the PAM at 6..9, the spacer at 10..29.
+    let seq = format!("TTTTTTTTA{SPACER20}TTTTT");
+    let preset = resolve_nuclease_preset("Cas12a / Cpf1 (TTTV)").expect("a supported preset");
+    assert_eq!(
+        (preset.pam_side.as_str(), preset.pam_pattern.as_str(), preset.spacer_length_bp, preset.site_span_bp),
+        ("5'", "TTTV", 20, 24)
+    );
+
+    let scan = scan_crispr_guides(&seq, "Cas12a / Cpf1 (TTTV)", 25, None, false);
+    let g = only_guide(&scan);
+    // The PAM is the four TTTV bases 5' of the spacer, and the spacer the 20 bases that follow.
+    assert_eq!(g.pam_seq, "TTTA");
+    assert_eq!(g.spacer_seq, SPACER20);
+    assert_eq!(&seq[g.start - 1..g.start + 3], "TTTA");
+    assert_eq!(&seq[g.start + 3..g.start + 23], SPACER20);
+    assert_eq!((g.start, g.end, g.strand), (6, 29, 1));
+    // The reported cut is the PAM strand's, after spacer nt 18: site base 22, record base 27.
+    // The site's PAM is 4 bases, so spacer nt 18 is the record's base `start + 4 + 18 - 1`.
+    assert_eq!(g.cut_position, g.start + 4 + 18 - 1, "after spacer nt 18 on the PAM strand");
+    assert_eq!(g.cut_position, 27);
+    // The staggered target-strand cut is a field of its own, after spacer nt 23 - five bases on.
+    assert_eq!(g.cut_position_target_strand, Some(32));
+    assert_eq!(
+        g.cut_position_target_strand.unwrap() - g.cut_position,
+        5,
+        "a 5-nt 5' overhang"
+    );
+    // And it is labelled as the convention it is, not as a measured value.
+    assert!(
+        g.cut_convention.contains("Staggered")
+            && g.cut_convention.contains("5-nt 5' overhang")
+            && g.cut_convention.contains("AsCas12a/LbCas12a")
+            && g.cut_convention.contains("not a measured value"),
+        "{}",
+        g.cut_convention
+    );
+    assert_eq!((g.nuclease.as_str(), g.pam_side.as_str()), ("Cas12a / Cpf1 (TTTV)", "5'"));
+    // The PAM is not read off SpCas9's side: the same bases hold no SpCas9 candidate at all.
+    assert_eq!(
+        scan_crispr_guides(&seq, "SpCas9 (NGG)", 25, None, false).candidate_count,
+        0,
+        "the Cas12a fixture spells no NGG, so a scan by SpCas9's rule finds nothing"
+    );
+}
+
+#[test]
+fn us_01m7dv29_ac5_ambiguity_is_screened_where_the_pam_constrains_it_and_marked_where_it_does_not() {
+    // A spacer holding one N: no guide, and the window is not a candidate.
+    let ambiguous_spacer = format!("TTTTT{}NAGGTTTTT", &SPACER20[..19]);
+    let spacer_scan = scan_crispr_guides(&ambiguous_spacer, "SpCas9 (NGG)", 25, None, false);
+    assert_eq!(
+        (spacer_scan.guides.len(), spacer_scan.candidate_count),
+        (0, 0),
+        "a spacer base that is not A, C, G or T cannot be scored or counted"
+    );
+
+    // A constrained PAM base as an ambiguity letter: not a PAM match. SpCas9's PAM constrains its
+    // last two bases, so an ambiguity letter in either is no match. None of these planted PAMs
+    // spells a `GG` of its own, so the fixture holds no other candidate to be found instead.
+    for pam in ["AGN", "ANG", "NNN"] {
+        let seq = format!("TTTTT{SPACER20}{pam}TTTTT");
+        let scan = scan_crispr_guides(&seq, "SpCas9 (NGG)", 25, None, false);
+        assert_eq!(
+            (scan.guides.len(), scan.candidate_count),
+            (0, 0),
+            "{pam} does not match NGG's constrained G G"
+        );
+    }
+    // Cas12a's PAM constrains all four of its bases.
+    for pam in ["TTTN", "TTNA", "NTTA"] {
+        let seq = format!("TTTTT{pam}{SPACER20}TTTTT");
+        let scan = scan_crispr_guides(&seq, "Cas12a / Cpf1 (TTTV)", 25, None, false);
+        assert_eq!(
+            (scan.guides.len(), scan.candidate_count),
+            (0, 0),
+            "{pam} does not match TTTV's constrained bases"
+        );
+    }
+
+    // A region of nothing but such bases is reported as searched, with 0 candidates: an absence of
+    // candidates in unreadable bases is not an absence of sites.
+    let unreadable = "N".repeat(200);
+    let scan = scan_crispr_guides(&unreadable, "SpCas9 (NGG)", 25, None, false);
+    assert_eq!(
+        (scan.candidate_count, scan.scanned_length_bp, scan.sequence_length_bp),
+        (0, 200, 200),
+        "the range was read; it holds no candidate"
+    );
+    assert_eq!(scan.guides.len(), 0);
+    assert_eq!(scan.warnings, Vec::<String>::new(), "a region read whole warns about nothing");
+
+    // An ambiguity letter where the PAM is unconstrained - SpCas9's first base - is returned, and
+    // the record marks it, so the N is never shown as a confirmed base.
+    let unconstrained = format!("TTTTT{SPACER20}NGGTTTTT");
+    let scan = scan_crispr_guides(&unconstrained, "SpCas9 (NGG)", 25, None, false);
+    let g = only_guide(&scan);
+    assert_eq!(g.pam_seq, "NGG");
+    let note = g
+        .pam_ambiguity_note
+        .as_deref()
+        .expect("the N in the PAM is marked");
+    assert!(
+        note.contains("N at PAM position 1") && note.contains("not known"),
+        "{note}"
+    );
+    // A PAM read base by base carries no such mark.
+    let plain = scan_crispr_guides(&format!("TTTTT{SPACER20}AGGTTTTT"), "SpCas9 (NGG)", 25, None, false);
+    assert_eq!(only_guide(&plain).pam_ambiguity_note, None);
+}
+
+#[test]
+fn us_01m7dv29_ac3_every_preset_is_scanned_by_its_own_rule() {
+    // Each fixture holds one planted site of its own nuclease. The flanks alternate A and C, so
+    // neither strand spells a run of three T - and so no second site of either nuclease is planted
+    // by accident; an incidental site elsewhere in the bases is not what this check is about, so it
+    // asks about the planted spacer itself.
+    let sites = [
+        ("SpCas9 (NGG)", format!("ACACA{SPACER20}AGGACACA")),
+        ("Cas12a / Cpf1 (TTTV)", format!("ACACATTTA{SPACER20}ACACA")),
+    ];
+    for preset in supported_nuclease_presets() {
+        for (owner, seq) in &sites {
+            let scan = scan_crispr_guides(seq, &preset.id, 25, None, false);
+            let planted: Vec<&CrisprGuideRecord> = scan
+                .guides
+                .iter()
+                .filter(|g| g.spacer_seq == SPACER20)
+                .collect();
+            if &preset.id == owner {
+                assert_eq!(planted.len(), 1, "{} on its own site: {:?}", preset.id, scan.guides);
+                let g = planted[0];
+                assert_eq!(g.nuclease, preset.id);
+                assert_eq!(g.pam_side, preset.pam_side);
+                assert_eq!(g.pam_pattern, preset.pam_pattern);
+                assert_eq!(g.spacer_seq.len(), preset.spacer_length_bp);
+                assert_eq!(
+                    g.end + 1 - g.start,
+                    preset.site_span_bp,
+                    "{} site span",
+                    preset.id
+                );
+                assert_eq!(
+                    g.cut_position_target_strand.is_some(),
+                    preset.cut_convention.contains("Staggered"),
+                    "{}: a staggered cut carries its second coordinate and a blunt one does not",
+                    preset.id
+                );
+            } else {
+                assert!(
+                    planted.is_empty(),
+                    "{} reported the {owner} site as its own: {:?}",
+                    preset.id,
+                    planted
+                );
+            }
+        }
     }
 }

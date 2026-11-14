@@ -14,6 +14,7 @@ import {
   databasePrimerCandidate,
   designPCRPrimers,
   documentPrimerCandidate as screeningCandidateOf,
+  crisprNucleasePresets,
   scanCrisprGuides,
   findPrimerBindings,
   primerMatchSettingsText,
@@ -112,10 +113,13 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   // Test with Saved Primers state
   const [maxAllowedMismatches, setMaxAllowedMismatches] = useState<number>(2);
 
-  // CRISPR Guide Finder state
-  const [crisprNuclease, setCrisprNuclease] = useState<
-    'SpCas9 (NGG)' | 'Cas12a / Cpf1 (TTTV)'
-  >('SpCas9 (NGG)');
+  // CRISPR Guide Finder state. The nucleases on offer are the engine's own presets
+  // (US-01M7DV29 AC1), so this tab cannot ask for one the engine does not scan for.
+  const nucleasePresets = useMemo(() => crisprNucleasePresets(), []);
+  const [crisprNuclease, setCrisprNuclease] = useState<string>(
+    () => crisprNucleasePresets()[0]?.id ?? 'SpCas9 (NGG)'
+  );
+  const chosenPreset = nucleasePresets.find((n) => n.id === crisprNuclease);
 
   const fwdTailSeq = useMemo(() => {
     if (fwdTailEnz === 'None') return '';
@@ -492,19 +496,30 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   );
   const MISMATCH_LABEL = "Max 5' Mismatches Allowed (3' 5-nt Clamp Required):";
 
+  /** How a preset's site reads, 5' -> 3': the PAM on its own side of the spacer. */
+  const presetSiteText = (n: { pamSide: string; pamPattern: string; spacerLengthBp: number }) =>
+    n.pamSide === "5'"
+      ? `5'-${n.pamPattern}-N${n.spacerLengthBp}-3'`
+      : `5'-N${n.spacerLengthBp}-${n.pamPattern}-3'`;
   const nucleaseSelect = (
-    <select
-      aria-label="Nuclease / PAM:"
-      value={crisprNuclease}
-      onChange={(e) =>
-        setCrisprNuclease(e.target.value as 'SpCas9 (NGG)' | 'Cas12a / Cpf1 (TTTV)')
-      }
-    >
-      <option value="SpCas9 (NGG)">SpCas9 — 5&apos;-N20-NGG-3&apos; (3&apos; PAM)</option>
-      <option value="Cas12a / Cpf1 (TTTV)">
-        LbCas12a / Cpf1 — 5&apos;-TTTV-N20-3&apos; (5&apos; PAM)
-      </option>
-    </select>
+    <>
+      <select
+        aria-label="Nuclease / PAM:"
+        value={crisprNuclease}
+        onChange={(e) => setCrisprNuclease(e.target.value)}
+      >
+        {nucleasePresets.map((n) => (
+          <option key={n.id} value={n.id}>
+            {`${n.id} — ${presetSiteText(n)} (${n.pamSide} PAM, ${n.spacerLengthBp}-nt spacer, ${n.siteSpanBp}-bp site)`}
+          </option>
+        ))}
+      </select>
+      {chosenPreset && (
+        <span className="mbc-opdlg-muted" data-nuclease-facts={chosenPreset.id}>
+          {`PAM ${chosenPreset.pamPattern} on the ${chosenPreset.pamSide} side, ${chosenPreset.spacerLengthBp}-nt spacer, ${chosenPreset.siteSpanBp}-bp site. ${chosenPreset.cutConvention}`}
+        </span>
+      )}
+    </>
   );
 
   return (
@@ -992,6 +1007,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 <th>PAM</th>
                 <th>Strand</th>
                 <th>Region (Cut Site)</th>
+                <th>Nuclease (PAM side)</th>
                 <th>GC%</th>
                 <th>Heuristic Score</th>
                 <th>Hsu Specificity</th>
@@ -1007,6 +1023,12 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                   <td className="mono-cell">{g.spacerSeq}</td>
                   <td className="mono-cell">
                     <strong>{g.pamSeq}</strong>
+                    {g.pamAmbiguityNote && (
+                      <span title={g.pamAmbiguityNote}>
+                        {' '}
+                        (ambiguity code, base not read)
+                      </span>
+                    )}
                   </td>
                   <td>{g.strand === 1 ? 'Forward (+)' : 'Reverse (-)'}</td>
                   <td>
@@ -1026,6 +1048,11 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                         {guideRange(g)} (DSB @ {bp(g.cutPosition)})
                       </>
                     )}
+                  </td>
+                  <td title={g.cutConvention}>
+                    {g.nuclease} ({g.pamSide} PAM)
+                    {g.cutPositionTargetStrand !== undefined &&
+                      ` — staggered cut, target strand @ ${bp(g.cutPositionTargetStrand)}`}
                   </td>
                   <td>{g.gcPercent}%</td>
                   <td>

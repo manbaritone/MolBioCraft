@@ -451,6 +451,46 @@ export function buildUPGMANewick(names: string[], alignedSeqs: string[]): string
  * `span - 1` start positions of each strand — 22 for SpCas9's 23-base site, 23 for Cas12a's 24-base
  * one — so pass the document's own topology.
  */
+/**
+ * A nuclease the engine can scan for (US-01M7DV29 AC1): what its site looks like and where it cuts.
+ * The list comes from the engine, so no surface offers a nuclease the engine does not scan for.
+ */
+export interface CrisprNucleasePreset {
+  /** The id sent in the `nuclease` payload key, and the label a guide carries. */
+  id: string;
+  /** The side of the spacer the PAM sits on, as a reader says it: `5'` or `3'`. */
+  pamSide: string;
+  /** The PAM pattern in IUPAC letters, 5' -> 3'. */
+  pamPattern: string;
+  spacerLengthBp: number;
+  /** The bases the whole site occupies, PAM and spacer together. */
+  siteSpanBp: number;
+  /** Where this nuclease cuts, in words, naming the convention a position follows (D0131). */
+  cutConvention: string;
+}
+
+/** Every nuclease a scan can be asked for, in the order a chooser offers them. */
+export function crisprNucleasePresets(): CrisprNucleasePreset[] {
+  return invokeRustBioSync<CrisprNucleasePreset[]>('crispr_nuclease_presets', {});
+}
+
+/**
+ * A guide as the scan returns it: the record with the preset facts that say which nuclease found it
+ * (US-01M7DV29 AC6) and how it cuts (D0131). `src/types/bio.ts` names the fields every guide has
+ * had; these are the scan's own.
+ */
+export interface CrisprScanGuide extends CrisprGuideRecord {
+  /** `5'` or `3'`: the side of the spacer this nuclease's PAM sits on. */
+  pamSide: string;
+  pamPattern: string;
+  /** Where the cut falls, in words, naming the convention `cutPosition` follows. */
+  cutConvention: string;
+  /** The staggered second cut as a plus-strand coordinate (Cas12a); absent for a blunt cutter. */
+  cutPositionTargetStrand?: number;
+  /** Which bases of `pamSeq` are an ambiguity letter rather than a base the scan read; absent where none are. */
+  pamAmbiguityNote?: string;
+}
+
 /** The scan's own report (US-01M7DVH2): what a CRISPR guide scan searched and what it found. */
 export interface CrisprScanReport {
   /** Every candidate guide over the range read, kept or not. */
@@ -474,7 +514,7 @@ export interface CrisprScanReport {
  * is never an empty one: 0 candidates is a scan that ran and found none.
  */
 export interface CrisprScanResult {
-  guides: CrisprGuideRecord[];
+  guides: CrisprScanGuide[];
   report?: CrisprScanReport;
   reportUnavailableReason?: string;
 }
@@ -505,7 +545,8 @@ function isCrisprScanReport(value: unknown): value is CrisprScanReport & { guide
  */
 export function scanCrisprGuides(
   rawSeq: string,
-  nuclease: 'SpCas9 (NGG)' | 'Cas12a / Cpf1 (TTTV)' = 'SpCas9 (NGG)',
+  /** A preset id from {@link crisprNucleasePresets}; the engine refuses any other (D0130). */
+  nuclease = 'SpCas9 (NGG)',
   maxResults = 30,
   circular = false
 ): CrisprScanResult {
@@ -524,7 +565,7 @@ export function scanCrisprGuides(
     };
   }
   const guides = Array.isArray((reply as { guides?: unknown } | null)?.guides)
-    ? ((reply as { guides: CrisprGuideRecord[] }).guides ?? [])
+    ? ((reply as { guides: CrisprScanGuide[] }).guides ?? [])
     : [];
   if (!isCrisprScanReport(reply)) {
     return { guides, reportUnavailableReason: 'the engine returned no scan report' };

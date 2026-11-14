@@ -506,3 +506,110 @@ fn us_01m7dvh2_ac1_the_scan_op_returns_the_report_as_an_envelope() {
     );
     assert_eq!(defaulted.as_array().unwrap().len(), 12, "{defaulted}");
 }
+
+/// The op's reply and whether it is an error: `wasm_reply` asserts success, so a refusal is read here.
+fn wasm_reply_or_error(op: &str, payload: &Value) -> Result<Value, String> {
+    use molbiocraft_wasm::{
+        mbc_wasm_invoke_scratch, mbc_wasm_last_is_err, mbc_wasm_last_len, mbc_wasm_scratch_ptr,
+    };
+    let body = serde_json::to_vec(payload).unwrap();
+    let ptr = mbc_wasm_scratch_ptr(op.len() + body.len() + 16);
+    // SAFETY: the scratch buffer holds at least the bytes requested above.
+    unsafe {
+        std::ptr::copy_nonoverlapping(op.as_ptr(), ptr, op.len());
+        std::ptr::copy_nonoverlapping(body.as_ptr(), ptr.add(op.len()), body.len());
+    }
+    let out = mbc_wasm_invoke_scratch(op.len(), body.len());
+    // SAFETY: the reply is `mbc_wasm_last_len` bytes at `out`, valid until the next call.
+    let text = unsafe { std::slice::from_raw_parts(out, mbc_wasm_last_len()) }.to_vec();
+    let body = String::from_utf8_lossy(&text).to_string();
+    if mbc_wasm_last_is_err() != 0 {
+        return Err(body);
+    }
+    Ok(serde_json::from_str(&body).expect("JSON reply"))
+}
+
+/// US-01M7DV29 AC2: a nuclease id that is not a preset, and an empty one, are refused at the op with
+/// the id and the supported ids and no guides, while a payload with no `nuclease` key keeps the
+/// documented SpCas9 default and the reply names that preset (D0130).
+///
+/// Wrong implementations this fails on: the shipped `!nuclease.contains("Cas12a")`, which answers
+/// "SaCas9 (NNGRRT)" and "" with SpCas9's guides labelled "SpCas9 (NGG)"; a name holding "Cas12a"
+/// answered with Cas12a's; a refusal that returns an empty reply without naming the id or the
+/// supported ids; a missing key refused instead of defaulted.
+#[test]
+fn us_01m7dv29_ac2_an_unknown_nuclease_is_refused_with_the_supported_ids() {
+    // One SpCas9 site and one Cas12a site, so a reply for the wrong nuclease would carry guides.
+    let seq = format!("TTTT{}{}", "ATCGTACTGATCAGTCATGAAGG", "AAAATTTAGACGTTACCGATTGCAATCGTT");
+
+    for bad in ["SaCas9 (NNGRRT)", "", "   ", "Cas12a", "spcas9", "SpCas9", "NGG"] {
+        for op in ["scan_crispr_guides", "find_crispr_guides"] {
+            let reply = wasm_reply_or_error(
+                op,
+                &json!({ "seq": seq, "nuclease": bad, "maxResults": 25 }),
+            );
+            let message = match reply {
+                Err(message) => message,
+                Ok(value) => panic!("{op} answered the unsupported nuclease {bad:?}: {value}"),
+            };
+            // The id as given, and the ids this engine does scan for.
+            assert!(message.contains(bad), "{op} for {bad:?}: {message}");
+            assert!(
+                message.contains("\"SpCas9 (NGG)\"") && message.contains("\"Cas12a / Cpf1 (TTTV)\""),
+                "{op} for {bad:?} does not name the supported ids: {message}"
+            );
+            // And no guide of any nuclease came back with it.
+            assert!(
+                !message.contains("spacerSeq") && !message.contains("gRNA"),
+                "{op} for {bad:?} returned guides: {message}"
+            );
+        }
+    }
+
+    // In process, the same refusal: the scan returns no guide and says why, rather than SpCas9's.
+    let refused = molbiocraft_cloning::cloning_crispr::scan_crispr_guides(
+        &seq,
+        "SaCas9 (NNGRRT)",
+        25,
+        None,
+        false,
+    );
+    assert_eq!(refused.guides.len(), 0, "{:?}", refused.warnings);
+    assert_eq!(refused.candidate_count, 0);
+    assert!(
+        refused.warnings[0].contains("SaCas9 (NNGRRT)")
+            && refused.warnings[0].contains("\"SpCas9 (NGG)\""),
+        "{:?}",
+        refused.warnings
+    );
+
+    // No `nuclease` key: the documented default, named in the reply as the preset it is.
+    let defaulted = wasm_reply("scan_crispr_guides", &json!({ "seq": seq, "maxResults": 25 }));
+    assert!(
+        defaulted["candidateCount"].as_u64().unwrap() >= 1,
+        "{defaulted}"
+    );
+    assert_eq!(defaulted["guides"][0]["nuclease"], json!("SpCas9 (NGG)"), "{defaulted}");
+    assert_eq!(defaulted["guides"][0]["pamSide"], json!("3'"), "{defaulted}");
+
+    // The preset list the chooser is offered, from the engine.
+    let presets = wasm_reply("crispr_nuclease_presets", &json!({}));
+    assert_eq!(
+        presets
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["SpCas9 (NGG)", "Cas12a / Cpf1 (TTTV)"],
+        "{presets}"
+    );
+    // Every preset's id resolves, so the list and the scan agree on what is supported.
+    for p in presets.as_array().unwrap() {
+        let id = p["id"].as_str().unwrap();
+        assert!(
+            wasm_reply_or_error("scan_crispr_guides", &json!({ "seq": seq, "nuclease": id, "maxResults": 1 })).is_ok(),
+            "the list offers {id}, which the scan refuses"
+        );
+    }
+}

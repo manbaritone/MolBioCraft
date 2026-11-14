@@ -55,7 +55,8 @@ use molbiocraft_cloning::{
     ModularAssemblySpec, ModularVectorPart, SelectionRange1Based,
 };
 use molbiocraft_cloning::cloning_crispr::{
-    audit_sequence_alerts_for_scan, find_crispr_guides_for_topology, scan_crispr_guides,
+    audit_sequence_alerts_for_scan, find_crispr_guides_for_topology, resolve_nuclease_preset,
+    scan_crispr_guides, supported_nuclease_presets,
 };
 use molbiocraft_cloning::rebase_catalog::{
     scan_restriction_sites, RestrictionPositionLimit, RESTRICTION_POSITIONS_PER_ENZYME,
@@ -1051,9 +1052,17 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let new_origin = usize_arg(&payload, "newOrigin1Based", 1);
             to_val(set_circular_origin(&doc, new_origin))
         }
+        // The nucleases a scan can be asked for, each with its PAM side, PAM pattern, spacer
+        // length, site span and cut convention (US-01M7DV29 AC1): the list a chooser offers, read
+        // from the engine so no surface can offer a nuclease the engine does not scan for.
+        "crispr_nuclease_presets" => to_val(supported_nuclease_presets()),
         "find_crispr_guides" => {
             let seq = str_arg(&payload, "seq", "");
+            // A missing key is the documented default; a value that is not a preset is a caller
+            // error, answered with the id and the supported ids rather than another nuclease's
+            // guides (US-01M7DV29 AC2, D0130).
             let nuclease = str_arg(&payload, "nuclease", "SpCas9 (NGG)");
+            resolve_nuclease_preset(nuclease)?;
             let max_results = usize_arg(&payload, "maxResults", 30);
             // A plasmid is read as the circle it is, so the guides across its origin are in the
             // reply (BG-01M6T6GQ). Older callers send no topology and get the straight read they
@@ -1073,7 +1082,10 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         // them when the scan found no guide. `maxResults` 0 asks for that report with no rows.
         "scan_crispr_guides" => {
             let seq = str_arg(&payload, "seq", "");
+            // As `find_crispr_guides`: the default for a missing key, a refusal for an id that is
+            // not a preset (US-01M7DV29 AC2, D0130).
             let nuclease = str_arg(&payload, "nuclease", "SpCas9 (NGG)");
+            resolve_nuclease_preset(nuclease)?;
             let max_results = usize_arg(&payload, "maxResults", 30);
             let circular = bool_arg(&payload, "circular", false);
             to_val(scan_crispr_guides(seq, nuclease, max_results, None, circular))

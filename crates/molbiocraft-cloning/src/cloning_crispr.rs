@@ -23,6 +23,128 @@ pub struct CloningOutcome {
     pub warnings: Vec<String>,
 }
 
+/// A nuclease this engine can scan for (US-01M7DV29): what its site looks like and where it cuts.
+/// The scan reads these facts rather than a name, so no sequence is screened by a rule the caller
+/// did not ask for and no result is labelled with a nuclease that did not produce it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NucleasePreset {
+    /// The id a caller sends in the `nuclease` payload key, and the label a result carries.
+    pub id: String,
+    /// The side of the spacer the PAM sits on, as a reader says it: `5'` or `3'`.
+    pub pam_side: String,
+    /// The PAM pattern in IUPAC letters, 5' -> 3' (`NGG`, `TTTV`).
+    pub pam_pattern: String,
+    /// The bases of the spacer.
+    pub spacer_length_bp: usize,
+    /// The bases the whole site occupies, PAM and spacer together.
+    pub site_span_bp: usize,
+    /// Where this nuclease cuts, in words, naming the convention a position follows (D0131).
+    pub cut_convention: String,
+}
+
+/// The one place the presets are written down: id, PAM side, PAM pattern, spacer length, the
+/// 1-based site base the reported cut follows, the second staggered cut (Cas12a, D0131) and the
+/// convention in words. `site_span_bp` is the PAM and the spacer together.
+const NUCLEASE_PRESETS: &[(&str, &str, &str, usize, usize, Option<usize>, &str)] = &[
+    (
+        "SpCas9 (NGG)",
+        "3'",
+        "NGG",
+        20,
+        17,
+        None,
+        "Blunt cut 3 bp 5' of the PAM, between spacer nt 17 and nt 18 (SpCas9 convention); the reported position is the last base 5' of the cut on each strand.",
+    ),
+    (
+        "Cas12a / Cpf1 (TTTV)",
+        "5'",
+        "TTTV",
+        20,
+        22,
+        Some(27),
+        "Staggered cut leaving a 5-nt 5' overhang, by the AsCas12a/LbCas12a convention: the PAM strand is cut after spacer nt 18 and the target strand after nt 23. Both positions are this convention, not a measured value for the ortholog in hand.",
+    ),
+];
+
+fn preset_of(row: &(&str, &str, &str, usize, usize, Option<usize>, &str)) -> NucleasePreset {
+    NucleasePreset {
+        id: row.0.to_string(),
+        pam_side: row.1.to_string(),
+        pam_pattern: row.2.to_string(),
+        spacer_length_bp: row.3,
+        site_span_bp: row.2.len() + row.3,
+        cut_convention: row.6.to_string(),
+    }
+}
+
+/// Which bases of a returned `pam` are an IUPAC ambiguity letter, and so were never read as a base
+/// (US-01M7DV29 AC5). A pattern's constrained positions are screened by the scan, so only an
+/// unconstrained one - SpCas9's `N` - can hold such a letter; naming the position and the letter
+/// keeps an `N` in the record from reading as a confirmed base. `None` where the PAM is all A, C,
+/// G and T.
+fn pam_ambiguity_note(pam: &[u8], pattern: &str) -> Option<String> {
+    let flagged: Vec<String> = pam
+        .iter()
+        .enumerate()
+        .filter(|(_, &b)| !matches!(b.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T'))
+        .map(|(i, &b)| {
+            format!(
+                "{} at PAM position {} ({} in {})",
+                (b as char).to_ascii_uppercase(),
+                i + 1,
+                pattern.chars().nth(i).unwrap_or('N'),
+                pattern
+            )
+        })
+        .collect();
+    if flagged.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "The sequence holds an IUPAC ambiguity letter where this PAM is unconstrained, so the base there is not known: {}.",
+        flagged.join("; ")
+    ))
+}
+
+/// Every nuclease a scan can be asked for, in the order a chooser offers them (US-01M7DV29 AC1).
+pub fn supported_nuclease_presets() -> Vec<NucleasePreset> {
+    NUCLEASE_PRESETS.iter().map(preset_of).collect()
+}
+
+/// The preset `id` names, or why it names none: an id that is not a preset, and an empty one, are
+/// refused with the id as given and the supported ids (D0130). An id is matched without regard to
+/// surrounding space or letter case, and to nothing else: a name that merely holds "Cas12a" is not
+/// a preset, which is how an unknown nuclease used to be scanned as SpCas9 and labelled as it.
+pub fn resolve_nuclease_preset(id: &str) -> Result<NucleasePreset, String> {
+    let wanted = id.trim();
+    if let Some(row) = NUCLEASE_PRESETS
+        .iter()
+        .find(|row| row.0.eq_ignore_ascii_case(wanted))
+    {
+        return Ok(preset_of(row));
+    }
+    let supported = NUCLEASE_PRESETS
+        .iter()
+        .map(|row| format!("\"{}\"", row.0))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "Unsupported nuclease \"{id}\": this engine scans for {supported} only, so no guide was searched for. Ask for one of those ids, or leave the nuclease out for the default \"{}\".",
+        NUCLEASE_PRESETS[0].0
+    ))
+}
+
+/// The cut offsets of a preset: the reported cut, and the second staggered one where the nuclease
+/// has one. Both are 1-based bases of the site, counted from its first base.
+fn cut_offsets(id: &str) -> (usize, Option<usize>) {
+    NUCLEASE_PRESETS
+        .iter()
+        .find(|row| row.0 == id)
+        .map(|row| (row.4, row.5))
+        .unwrap_or((17, None))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CrisprGuideRecord {
@@ -68,6 +190,28 @@ pub struct CrisprGuideRecord {
     /// list the scan could not report whole.
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// The side of the spacer this nuclease's PAM sits on, `5'` or `3'` (US-01M7DV29 AC6), so a
+    /// 5'-PAM and a 3'-PAM guide are told apart without reading the bases. Absent on a record saved
+    /// before it.
+    #[serde(default)]
+    pub pam_side: String,
+    /// The preset's PAM pattern in IUPAC letters (`NGG`, `TTTV`).
+    #[serde(default)]
+    pub pam_pattern: String,
+    /// Where this nuclease cuts, in words, naming the convention `cut_position` follows (D0131).
+    #[serde(default)]
+    pub cut_convention: String,
+    /// The second cut of a staggered nuclease, as a plus-strand coordinate: Cas12a's target-strand
+    /// cut after spacer nt 23, beside `cut_position`'s PAM-strand cut after nt 18 (D0131). `None`
+    /// for a blunt cutter, so a single position is never read as a staggered one or the other way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_position_target_strand: Option<usize>,
+    /// Which bases of `pam_seq` are an IUPAC ambiguity letter rather than a base this scan read as
+    /// A, C, G or T (US-01M7DV29 AC5): the pattern's unconstrained positions are not screened, so an
+    /// `N` there is reported as the letter it is and never as a confirmed base. `None` where every
+    /// base of the PAM is one of A, C, G and T.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pam_ambiguity_note: Option<String>,
 }
 
 /// A CRISPR guide scan: the guides it kept, how many candidates it found, and the range of the
@@ -295,11 +439,30 @@ pub fn scan_crispr_guides(
             Vec::new()
         }
     };
-    let is_spcas9 = !nuclease.contains("Cas12a");
+    // The nuclease asked for, as a preset rather than a name (US-01M7DV29): an id that is not a
+    // preset is refused here with the supported ids, and no sequence is screened by another
+    // nuclease's rule. The refusal is this scan's own warning and an error at the op, so an
+    // in-process caller is never handed SpCas9's guides for a name it did not send (D0130).
+    let preset = match resolve_nuclease_preset(nuclease) {
+        Ok(p) => p,
+        Err(reason) => {
+            return CrisprGuideScan {
+                guides: Vec::new(),
+                candidate_count: 0,
+                scanned_length_bp: 0,
+                sequence_length_bp: seq_len,
+                scanned_circular: false,
+                origin_span_bp: 0,
+                warnings: vec![reason],
+            }
+        }
+    };
+    let is_spcas9 = preset.pam_side == "3'";
+    let (cut_offset, cut_offset_target) = cut_offsets(&preset.id);
     // SpCas9: 20-nt spacer then a 3-nt PAM. Cas12a: a 4-nt PAM then a 20-nt spacer. The bases a
     // candidate occupies, and so the last start position each strand has: the loop once read
     // `0..=(len - 24)` for both, which never examined SpCas9's last start (BG-01M6T6GQ).
-    let span = if is_spcas9 { 23usize } else { 24 };
+    let span = preset.site_span_bp;
     if scanned < span {
         return CrisprGuideScan {
             guides: Vec::new(),
@@ -312,11 +475,7 @@ pub fn scan_crispr_guides(
         };
     }
     let limit = max_results;
-    let nuc_label = if is_spcas9 {
-        "SpCas9 (NGG)"
-    } else {
-        "Cas12a / Cpf1 (TTTV)"
-    };
+    let nuc_label = preset.id.clone();
     // A circular record is read as a circle only when the whole of it was read: bases 1 to a bound
     // shorter than the sequence do not meet, so that range is read straight.
     let wraps = circular && scanned == seq_len;
@@ -499,27 +658,32 @@ pub fn scan_crispr_guides(
     // How long the ranking list may grow before it is trimmed back to `limit`: bounded, so a
     // megabase scan with hundreds of thousands of candidates holds only the best of them at once.
     let trim_at = limit.saturating_mul(2).max(64);
-    // SpCas9 cuts bluntly 3 bp 5' of the PAM; Cas12a after spacer nt 18 on the PAM strand
-    // (staggered; 23 on the target strand). Reported as the 1-based base it cuts after.
-    let cut_offset = if is_spcas9 { 17 } else { 22 };
+    // Where the reported cut falls, and the staggered second one where the preset has it: both are
+    // the preset's own offsets (D0131), never a rule chosen from the nuclease's name.
     // Where a candidate at `offset` on `strand` sits in the record: `(start, end, cut)`, 1-based and
     // inside 1..scanned. A circular scan reads offsets past the last base, so every position is
     // taken modulo the record: a site across the origin reads `start > end`, the convention this
     // workbench already uses for a primer binding site that straddles the origin. On a linear scan
     // no offset reaches the modulus, so the three numbers are the ones a straight read gives.
+    // The plus-strand coordinate of the base `cut_off` into the site, by the same mirror as the
+    // site's own ends: a cut read on the reverse strand is reported where it falls on the plus one.
+    let cut_at = |offset: u32, strand: i8, cut_off: usize| -> usize {
+        let i = offset as usize;
+        if strand == 1 {
+            (i + cut_off - 1) % scanned + 1
+        } else {
+            scanned - (i + cut_off) % scanned
+        }
+    };
     let coords = |offset: u32, strand: i8| -> (usize, usize, usize) {
         let i = offset as usize;
         if strand == 1 {
-            (
-                i % scanned + 1,
-                (i + span - 1) % scanned + 1,
-                (i + cut_offset - 1) % scanned + 1,
-            )
+            (i % scanned + 1, (i + span - 1) % scanned + 1, cut_at(offset, strand, cut_offset))
         } else {
             // The 1-based plus-strand coordinate of reverse-strand position `j`: the two strands run
             // in opposite directions, so the site's last base is its lowest plus coordinate.
             let plus = |j: usize| scanned - j % scanned;
-            (plus(i + span - 1), plus(i), plus(i + cut_offset))
+            (plus(i + span - 1), plus(i), cut_at(offset, strand, cut_offset))
         }
     };
     let mut ranking: Vec<Ranked> = Vec::new();
@@ -577,7 +741,7 @@ pub fn scan_crispr_guides(
                 ),
                 spacer_seq: String::from_utf8_lossy(spacer).to_string(),
                 pam_seq: String::from_utf8_lossy(pam).to_string(),
-                nuclease: nuc_label.to_string(),
+                nuclease: nuc_label.clone(),
                 start: r.start,
                 end: end1,
                 cut_position: cut_pos,
@@ -592,6 +756,12 @@ pub fn scan_crispr_guides(
                 scanned_circular: wraps,
                 origin_span_bp: if wraps { span - 1 } else { 0 },
                 warnings: warnings.clone(),
+                pam_side: preset.pam_side.clone(),
+                pam_pattern: preset.pam_pattern.clone(),
+                cut_convention: preset.cut_convention.clone(),
+                cut_position_target_strand: cut_offset_target
+                    .map(|off| cut_at(r.offset, r.strand, off)),
+                pam_ambiguity_note: pam_ambiguity_note(pam, &preset.pam_pattern),
             }
         })
         .collect();
@@ -769,16 +939,18 @@ mod crispr_tests {
 
     #[test]
     fn spcas9_cut_is_three_bp_upstream_of_the_pam_on_both_strands() {
+        // The nuclease is named by its preset id: a name that is not a preset is refused rather
+        // than scanned as SpCas9 (US-01M7DV29, D0130).
         // forward protospacer at 6..25 with AGG PAM at 26..28 → cut after base 22
         let spacer = "GACGTTACCGATTGCAATCG";
         let seq = format!("TTTTT{spacer}AGGTTTTT");
-        let g = find_crispr_guides(&seq, "SpCas9", 50);
+        let g = find_crispr_guides(&seq, "SpCas9 (NGG)", 50);
         let f = g.iter().find(|g| g.strand == 1 && g.spacer_seq == spacer).unwrap();
         assert_eq!((f.start, f.cut_position), (6, 22));
         assert_eq!(&seq[f.cut_position - 3..f.cut_position + 3], &format!("{}{}", &spacer[14..17], &spacer[17..20]));
         // the same site on the reverse strand: cut after base len - 22
         let rc = reverse_complement_iupac(&seq, false);
-        let r = find_crispr_guides(&rc, "SpCas9", 50);
+        let r = find_crispr_guides(&rc, "SpCas9 (NGG)", 50);
         let rg = r.iter().find(|g| g.strand == -1 && g.spacer_seq == spacer).unwrap();
         assert_eq!(rg.cut_position, seq.len() - 22);
     }
