@@ -14,7 +14,7 @@ import {
   Topology,
 } from '../types/bio';
 import { getResidentTrackOverviewRust } from '../lib/rustBioEngine';
-import { cutSiteDisplayPosition } from '../core/restrictionDisplay';
+import { applySiteVisibility, cutSiteDisplayPosition, type SiteVisibility } from '../core/restrictionDisplay';
 import { formatIntervalLabel, intervalUnit, normaliseInterval, selectionInterval } from '../core/activeInterval';
 import {
   WHEEL_NOTCH_PX,
@@ -47,6 +47,12 @@ interface CircularPlasmidMapProps {
   showOrfs: boolean;
   showPrimers: boolean;
   showUniqueCuttersOnly: boolean;
+  /**
+   * Which of `cutSites` the user chose to display (US-01M7CCGA), with the revision of the scanned
+   * molecule its choices are keyed by; absent, every site is displayed. `cutSites` stays the whole
+   * scan: the map draws, counts and labels only the displayed sites, and says how many it hides.
+   */
+  siteVisibility?: { state: SiteVisibility; revision: string } | null;
   /** What `cutSites` cover when it is not the whole molecule; absent, they are the molecule's. */
   restrictionScope?: RestrictionScanScope | null;
   /**
@@ -641,8 +647,24 @@ export function restrictionScopeWords(
  * 60,000 bp scanned", then, where neither fits or nothing is left out, the scope alone ("Cut
  * sites: first 60,000 bp only"), which is drawn at any width.
  */
-export function circularCalloutNote(sites: number, annotations: number, maxChars: number, scope?: string | null): string | null {
+export function circularCalloutNote(
+  sites: number,
+  annotations: number,
+  maxChars: number,
+  scope?: string | null,
+  hiddenByUser = 0
+): string | null {
   const scopeOnly = scope ? `Cut sites: ${scope} only` : null;
+  // Sites the user hid (US-01M7CCGA) are told apart from labels left out for space.
+  if (hiddenByUser > 0) {
+    const hidden = `${hiddenByUser.toLocaleString()} ${hiddenByUser === 1 ? 'site' : 'sites'} hidden by you`;
+    const omitted = circularCalloutNote(sites, annotations, Infinity, scope);
+    const full = omitted ? `${omitted}; ${hidden}` : hidden;
+    if (full.length <= maxChars) return full;
+    const short = sites + annotations > 0 ? `${(sites + annotations).toLocaleString()} not shown for space; ${hidden}` : hidden;
+    if (short.length <= maxChars) return short;
+    return sites + annotations > 0 ? `${(sites + annotations).toLocaleString()} not shown, ${hiddenByUser.toLocaleString()} hidden` : hidden;
+  }
   if (sites <= 0 && annotations <= 0) return scopeOnly;
   const plural = (n: number, word: string) => `${n.toLocaleString()} more ${word}${n === 1 ? '' : 's'}`;
   const restrictionList = scope ? `Restriction Analysis (${scope})` : 'Restriction Analysis';
@@ -941,6 +963,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   doc,
   cutSites,
   siteCounts,
+  siteVisibility = null,
   orfs,
   orfScope = null,
   selectedRange,
@@ -1114,11 +1137,30 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     return counts;
   }, [cutSites, siteCounts]);
 
+  // The sites the user displays (US-01M7CCGA), and how many sites the map is set to show that the
+  // user hid: in the single-cutter view, the hidden single cutters; otherwise every hidden site,
+  // the sites of a hidden enzyme past the scan's kept positions included (they follow the enzyme).
+  const { userShownCuts, hiddenByUser } = useMemo(() => {
+    if (isProtein || !siteVisibility) return { userShownCuts: cutSites, hiddenByUser: 0 };
+    const shown = applySiteVisibility(cutSites, siteVisibility.revision, siteVisibility.state, { uniqueCuttersOnly: false }).displayed;
+    if (showUniqueCuttersOnly) {
+      const once = (list: readonly RestrictionCutSite[]) => list.filter((c) => enzymeCounts[c.enzyme.name] === 1).length;
+      return { userShownCuts: shown, hiddenByUser: once(cutSites) - once(shown) };
+    }
+    const kept: Record<string, number> = {};
+    for (const c of cutSites) kept[c.enzyme.name] = (kept[c.enzyme.name] ?? 0) + 1;
+    const unkept = siteVisibility.state.hiddenEnzymes.reduce(
+      (n, name) => n + (kept[name] ? Math.max(0, (enzymeCounts[name] ?? 0) - kept[name]) : 0),
+      0
+    );
+    return { userShownCuts: shown, hiddenByUser: cutSites.length - shown.length + unkept };
+  }, [cutSites, siteVisibility, showUniqueCuttersOnly, enzymeCounts, isProtein]);
+
   const displayedCuts = useMemo(() => {
     if (isProtein) return [];
     const filtered = showUniqueCuttersOnly
-      ? cutSites.filter((c) => enzymeCounts[c.enzyme.name] === 1)
-      : cutSites;
+      ? userShownCuts.filter((c) => enzymeCounts[c.enzyme.name] === 1)
+      : userShownCuts;
     return [...filtered]
       .sort((a, b) => {
         const ua = enzymeCounts[a.enzyme.name] === 1 ? 0 : 1;
@@ -1126,16 +1168,17 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
         return ua - ub || a.position - b.position;
       })
       .slice(0, 32);
-  }, [cutSites, enzymeCounts, showUniqueCuttersOnly, isProtein]);
+  }, [userShownCuts, enzymeCounts, showUniqueCuttersOnly, isProtein]);
 
   // The identity plate counts every cut site the map is set to show (all, or the single cutters
   // only), the count the Restriction Analysis list gives, not the 32 at most it offers the callouts.
   // With complete counts, every site is counted, kept or not (BG-01M6S1K2).
   const plateSiteCount = useMemo(() => {
     if (isProtein) return 0;
-    if (showUniqueCuttersOnly) return cutSites.filter((c) => enzymeCounts[c.enzyme.name] === 1).length;
-    return siteCounts ? Object.values(siteCounts).reduce((n, k) => n + k, 0) : cutSites.length;
-  }, [cutSites, siteCounts, enzymeCounts, showUniqueCuttersOnly, isProtein]);
+    // The sites the user hid are not among them (US-01M7CCGA): the map's note counts those apart.
+    if (showUniqueCuttersOnly) return userShownCuts.filter((c) => enzymeCounts[c.enzyme.name] === 1).length;
+    return (siteCounts ? Object.values(siteCounts).reduce((n, k) => n + k, 0) : cutSites.length) - hiddenByUser;
+  }, [cutSites, userShownCuts, hiddenByUser, siteCounts, enzymeCounts, showUniqueCuttersOnly, isProtein]);
   // What a partial or reduced scan covered (BG-01M6RPWR): the map's note names it at every size.
   const scopeWords = isProtein ? null : restrictionScopeWords(restrictionScope, seqLen);
   // A scan of the first bases only cannot tell that an enzyme cuts the molecule once, so the map
@@ -1353,7 +1396,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     const missing = leftOut(placed);
     // A partial or reduced scan always has a note, since it names the scope (the plate, which
     // does not fit a small map, cannot carry it).
-    if (missing.sites + missing.annotations > 0 || scopeWords) {
+    if (missing.sites + missing.annotations > 0 || scopeWords || hiddenByUser > 0) {
       // The note sits in the bottom-left corner of the frame, below both columns, at the caption
       // size on screen; the columns end above it, which can leave out one more callout each.
       const fontSize = Number(units(Math.max(CALLOUT_NOTE_PX, CALLOUT_NOTE_PX / renderScale)));
@@ -1368,7 +1411,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
         final.sites,
         final.annotations,
         Math.floor((viewWidth - 36) / (size * CALLOUT_CHAR_EM)),
-        scopeWords?.short
+        scopeWords?.short,
+        hiddenByUser
       );
       if (text) note = { text, x: 18, y: viewHeight - 6 - size / 2, fontSize: size, pinned: Boolean(scopeWords) };
     }
@@ -1395,6 +1439,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     isProtein,
     cutSites,
     displayedCuts,
+    hiddenByUser,
     enzymeCounts,
     plateSiteCount,
     seqLen,

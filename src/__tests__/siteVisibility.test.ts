@@ -7,12 +7,15 @@
  * over public/molbiocraft_wasm.wasm), and every digest the engine's own (simulateRestrictionDigest);
  * the identity tests copy one record with one field changed to show which fields the id reads.
  */
-import { describe, expect, it } from 'vitest';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it, vi } from 'vitest';
 import { restrictionSiteCountsByName, scanRestrictionSites, simulateRestrictionDigest } from '../core/bioEngine';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import {
   applySiteVisibility,
+  cutSiteDisplayPosition,
   emptySiteVisibility,
   reconcileSiteVisibility,
   sequenceRevision,
@@ -21,7 +24,11 @@ import {
   siteOccurrenceId,
   type SiteVisibility,
 } from '../core/restrictionDisplay';
-import type { RestrictionCutSite } from '../types/bio';
+import type { RestrictionCutSite, SequenceDocument } from '../types/bio';
+import { CircularPlasmidMap, circularCalloutNote } from '../components/CircularPlasmidMap';
+import { LinearSequenceView } from '../components/LinearSequenceView';
+import { mountApp } from './appHarness';
+import type { LiveElement } from './liveDom';
 
 const ENZYMES = ['EcoRI', 'BamHI', 'BsaI-HFv2'].map((n) => {
   const e = REBASE_ENZYMES.find((x) => x.name === n);
@@ -299,5 +306,268 @@ describe('US-01M7CC0W AC4: an edit or rescan drops stale ids and never moves a c
     const next = reconcileSiteVisibility(state, scan(edited).sites, sequenceRevision(edited, 'circular'));
     expect(next).not.toBe(state);
     expect(Object.keys(state.occurrences)).toHaveLength(1);
+  });
+});
+
+// ─── US-01M7CCGA: the maps and their exports draw only the displayed sites ───
+
+const MAP_DOC: SequenceDocument = {
+  ...SAMPLE_LIBRARY.find((d) => d.moleculeType === 'DNA')!,
+  id: 'site-visibility-map-doc',
+  name: 'Site visibility probe',
+  sequence: SEQ,
+  topology: 'circular',
+  features: [],
+  primers: [],
+};
+const MAP_SCAN = scan(SEQ);
+const MAP_REV = sequenceRevision(SEQ, 'circular');
+const [MAP_ECO1, MAP_ECO2] = sitesOf(MAP_SCAN.sites, 'EcoRI').sort((a, b) => a.position - b.position);
+const cutAfter = (s: RestrictionCutSite) => cutSiteDisplayPosition(s.cutTop, SEQ.length, true);
+
+/** The circular map's markup with `state` (none: no choices passed). */
+const circularMarkup = (state?: SiteVisibility, uniqueOnly = false, doc = MAP_DOC, sites = MAP_SCAN.sites, counts = restrictionSiteCountsByName(MAP_SCAN), rev = MAP_REV) =>
+  renderToStaticMarkup(
+    React.createElement(CircularPlasmidMap, {
+      doc, cutSites: sites, siteCounts: counts, orfs: [], selectedRange: null, onSelectRange: () => {},
+      showOrfs: false, showPrimers: false, showUniqueCuttersOnly: uniqueOnly, restrictionScope: null,
+      siteVisibility: state ? { state, revision: rev } : null,
+    })
+  );
+/** Every cut-site callout the circular map draws, as `enzyme@cut-after`. */
+const circularCuts = (html: string) => [...html.matchAll(/<title>(\S+) \([A-Z]+\) cuts after (\d+)/g)].map((m) => `${m[1]}@${m[2]}`).sort();
+const notesOf = (html: string) => [...html.matchAll(/class="circular-callout-note"[^>]*>([^<]*)</g)].map((m) => m[1]);
+/** The linear view's markup with `state`. */
+const linearMarkup = (state?: SiteVisibility) =>
+  renderToStaticMarkup(
+    React.createElement(LinearSequenceView, {
+      doc: MAP_DOC, cutSites: MAP_SCAN.sites, selectedRange: null, onSelectRange: () => {}, onUpdateDocument: () => {},
+      siteVisibility: state ? { state, revision: MAP_REV } : null,
+    })
+  );
+/** Every cut pill of the base rows, as `enzyme@cut-after`. */
+const linearCuts = (html: string) => [...html.matchAll(/▼ (\S+) \((\d+)\)/g)].map((m) => `${m[1]}@${m[2]}`).sort();
+
+describe('US-01M7CCGA AC1: a hidden site has no marker or label on either map', () => {
+  const all = ['BamHI@97', 'BsaI-HFv2@' + cutAfter(sitesOf(MAP_SCAN.sites, 'BsaI-HFv2')[0]), `EcoRI@${cutAfter(MAP_ECO1)}`, `EcoRI@${cutAfter(MAP_ECO2)}`].sort();
+
+  it('US-01M7CCGA AC1 the fixture draws every site on both maps when nothing is hidden', () => {
+    expect(circularCuts(circularMarkup())).toEqual(all);
+    expect(linearCuts(linearMarkup())).toEqual(all);
+    expect(circularMarkup(emptySiteVisibility(MAP_REV))).toBe(circularMarkup());
+  });
+
+  it('US-01M7CCGA AC1 a hidden enzyme and a hidden occurrence leave the circular map, the base rows and the plate count', () => {
+    const state = setOccurrenceVisibility(setEnzymeVisibility(emptySiteVisibility(MAP_REV), 'BamHI', false), MAP_ECO1, false);
+    const html = circularMarkup(state);
+    const expected = all.filter((k) => k !== 'BamHI@97' && k !== `EcoRI@${cutAfter(MAP_ECO1)}`);
+    expect(circularCuts(html)).toEqual(expected);
+    expect(html).not.toMatch(/BamHI/);
+    expect(html).toContain('0 annotations · 2 sites');
+    expect(linearCuts(linearMarkup(state))).toEqual(expected);
+    expect(linearMarkup(state)).not.toMatch(/BamHI/);
+  });
+
+  it('US-01M7CCGA AC1 a site shown again is drawn exactly where and as it was', () => {
+    let state = setOccurrenceVisibility(setEnzymeVisibility(emptySiteVisibility(MAP_REV), 'BamHI', false), MAP_ECO1, false);
+    state = setOccurrenceVisibility(setEnzymeVisibility(state, 'BamHI', true), MAP_ECO1, true);
+    expect(circularMarkup(state)).toBe(circularMarkup());
+    expect(linearMarkup(state)).toBe(linearMarkup());
+  });
+
+  it('US-01M7CCGA AC1 a choice of another revision hides nothing on the maps', () => {
+    const old = sequenceRevision('A' + SEQ, 'circular');
+    const stale = setEnzymeVisibility(setOccurrenceVisibility(emptySiteVisibility(old), MAP_ECO1, false), 'NotAnEnzyme', false);
+    expect(circularCuts(circularMarkup(stale))).toEqual(all);
+    expect(linearCuts(linearMarkup(stale))).toEqual(all);
+  });
+});
+
+describe('US-01M7CCGA AC2: the note tells sites the user hid apart from labels left out for space', () => {
+  it('US-01M7CCGA AC2 the note words: hidden sites apart, at every length', () => {
+    expect(circularCalloutNote(0, 0, 200, null, 0)).toBeNull();
+    expect(circularCalloutNote(0, 0, 200, null, 3)).toBe('3 sites hidden by you');
+    expect(circularCalloutNote(5, 2, 200, null, 1)).toBe('5 more sites in Restriction Analysis, 2 in Annotations; 1 site hidden by you');
+    expect(circularCalloutNote(5, 2, 45, null, 1)).toBe('7 not shown for space; 1 site hidden by you');
+    expect(circularCalloutNote(5, 2, 20, null, 1)).toBe('7 not shown, 1 hidden');
+    expect(circularCalloutNote(5, 0, 200, 'first 60,000 bp', 2)).toBe('5 more sites in Restriction Analysis (first 60,000 bp); 2 sites hidden by you');
+    // With nothing hidden the words are those the map always gave.
+    expect(circularCalloutNote(5, 2, 200, null)).toBe('5 more sites in Restriction Analysis, 2 in Annotations');
+  });
+
+  it('US-01M7CCGA AC2 on a crowded map, the hidden sites are counted apart and never as left out for space', () => {
+    const plasmid = SAMPLE_LIBRARY.find((d) => d.moleculeType === 'DNA' && d.topology === 'circular' && d.sequence.length > 2000)!;
+    const full = scanRestrictionSites(plasmid.sequence, 'circular');
+    const counts = restrictionSiteCountsByName(full);
+    const rev = sequenceRevision(plasmid.sequence, 'circular');
+    const total = full.siteCounts.reduce((n, c) => n + c.sites, 0);
+    // An enzyme cutting several times, all of its sites kept by the scan.
+    const multi = [...new Set(full.sites.map((s) => s.enzyme.name))].find((n) => counts[n] >= 3 && full.sites.filter((s) => s.enzyme.name === n).length === counts[n])!;
+    const draw = (state?: SiteVisibility) => circularMarkup(state, false, plasmid, full.sites, counts, rev);
+    const before = draw();
+    const omittedBefore = Number(/^(\d[\d,]*) more sites/.exec(notesOf(before)[0])![1].replace(/,/g, ''));
+    expect(before).toContain(`· ${total.toLocaleString()} sites`);
+    const after = draw(setEnzymeVisibility(emptySiteVisibility(rev), multi, false));
+    const note = notesOf(after)[0];
+    expect(note).toMatch(new RegExp(`; ${counts[multi]} sites hidden by you$`));
+    expect(after).toContain(`· ${(total - counts[multi]).toLocaleString()} sites`);
+    const omittedAfter = Number(/^(\d[\d,]*) (?:more sites|not shown)/.exec(note)![1].replace(/,/g, ''));
+    const placed = (html: string) => circularCuts(html).length;
+    expect(omittedAfter + placed(after) + counts[multi]).toBe(total);
+    expect(omittedBefore + placed(before)).toBe(total);
+    expect(circularCuts(after).some((k) => k.startsWith(`${multi}@`))).toBe(false);
+  });
+
+  it('US-01M7CCGA AC2 a hidden enzyme\'s sites past the scan\'s kept positions are counted as hidden too', () => {
+    // A scan that kept one of EcoRI's two sites, with its complete count: hiding EcoRI hides both.
+    const kept = MAP_SCAN.sites.filter((s) => s !== MAP_ECO2);
+    const counts = restrictionSiteCountsByName(MAP_SCAN);
+    const html = circularMarkup(setEnzymeVisibility(emptySiteVisibility(MAP_REV), 'EcoRI', false), false, MAP_DOC, kept, counts);
+    expect(notesOf(html)).toEqual(['2 sites hidden by you']);
+    expect(html).toContain('0 annotations · 2 sites');
+  });
+
+  it('US-01M7CCGA AC2 in the single-cutter view, a hidden single cutter is counted as hidden', () => {
+    const html = circularMarkup(setEnzymeVisibility(emptySiteVisibility(MAP_REV), 'BamHI', false), true);
+    expect(circularCuts(html)).toEqual(['BsaI-HFv2@' + cutAfter(sitesOf(MAP_SCAN.sites, 'BsaI-HFv2')[0])]);
+    expect(notesOf(html)).toEqual(['1 site hidden by you']);
+    expect(html).toContain('0 annotations · 1 unique sites');
+  });
+});
+
+describe('US-01M7CCGA AC3: a figure export draws the displayed sites only', () => {
+  const state = setEnzymeVisibility(emptySiteVisibility(MAP_REV), 'BamHI', false);
+
+  it('US-01M7CCGA AC3 the exported figures carry no hidden site', () => {
+    // A figure export clones the figure's live SVG (FigureExportButton: its target or the
+    // [data-mbc-figure] it sits in): the circular map's svg, and the linear map's schematic.
+    const circ = circularMarkup(state);
+    const svg = /<svg[^>]*class="[^"]*plasmid-svg[\s\S]*?<\/svg>/.exec(circ)![0];
+    expect(svg).not.toMatch(/BamHI/);
+    expect(circularCuts(svg).length).toBe(3);
+    const lin = linearMarkup(state);
+    const at = lin.indexOf('class="mbc-schematic-header"');
+    expect(at).toBeGreaterThan(0);
+    const schematic = lin.slice(at, lin.indexOf('</svg>', at));
+    expect(schematic).not.toMatch(/BamHI|EcoRI|BsaI/);
+  });
+
+  it('US-01M7CCGA AC3 every digest, fragment and cloning path keeps the whole scan: the displayed subset reaches only the maps\' drawing', async () => {
+    const fs = await vi.importActual<{ readFileSync: (p: URL, e: string) => string; readdirSync: (p: URL) => string[] }>('node:fs');
+    const app = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+    // Every list of sites the App hands on is the whole scan.
+    const handed = [...app.matchAll(/cutSites=\{([^}]+)\}/g)].map((m) => m[1]);
+    expect(handed.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(handed)).toEqual(new Set(['cutSites', 'cockpitCutSites']));
+    expect(app).toMatch(/const cutSites = restrictionScan\.sites;/);
+    expect(app).toMatch(/const cockpitCutSites = useMemo\(\(\) => \(restrictionScope\?\.firstBp \? \[\] : cutSites\)/);
+    // The choices go only to the maps' siteVisibility props and the panel.
+    const uses = [...app.matchAll(/\bmapSiteVisibility\b/g)].length;
+    expect([...app.matchAll(/siteVisibility=\{mapSiteVisibility\}/g)].length).toBe(2);
+    expect(uses).toBe(2 + 1);
+    // In src/, src/core and src/components, no module but the model, the panel and the two maps makes the displayed subset.
+    const dirs = ['../core/', '../components/', '../'];
+    const makers: string[] = [];
+    for (const d of dirs) {
+      for (const f of fs.readdirSync(new URL(d, import.meta.url))) {
+        if (!/\.tsx?$/.test(f)) continue;
+        if (fs.readFileSync(new URL(d + f, import.meta.url), 'utf8').match(/applySiteVisibility\(/)) makers.push(f);
+      }
+    }
+    expect(makers.sort()).toEqual(['CircularPlasmidMap.tsx', 'DisplayedSitesPanel.tsx', 'LinearSequenceView.tsx', 'restrictionDisplay.ts'].sort());
+    // With every enzyme hidden on the map, a digest by them still cuts at every scanned site.
+    const names = [...new Set(MAP_SCAN.sites.map((s) => s.enzyme.name))];
+    const hidden = names.reduce((st, n) => setEnzymeVisibility(st, n, false), emptySiteVisibility(MAP_REV));
+    expect(circularCuts(circularMarkup(hidden))).toEqual([]);
+    expect(simulateRestrictionDigest(MAP_DOC, names)).toHaveLength(MAP_SCAN.sites.length);
+  });
+});
+
+describe('US-01M7CCGA AC4: choices outlive a document switch, a layout change and zoom, per document', () => {
+  vi.setConfig({ testTimeout: 120_000 });
+  const TWIN: SequenceDocument = { ...MAP_DOC, id: 'site-visibility-twin', name: 'Site visibility twin' };
+
+  it('US-01M7CCGA AC4 in the App, hidden sites stay hidden through back and forward, layouts and zoom, and only on their document', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({
+        documents: [TWIN, MAP_DOC],
+        activeDocId: MAP_DOC.id,
+        viewerTab: 'sequence-view',
+        workspace: {
+          navHistory: [TWIN.id, MAP_DOC.id],
+          navIndex: 1,
+          mapLayoutMode: 'split',
+          zoomLevel: 100,
+          displaySettings: {
+            showOrfs: false, minOrfAa: 50, allowAltStartCodons: false, showPrimers: true, showTranslation: false,
+            showGcGraph: false, showHydropathyGraph: false, showUniqueCuttersOnly: false,
+          },
+        },
+      });
+      await app.settle();
+      const text = (el: LiveElement) => el.textContent ?? '';
+      const mapCuts = () =>
+        app.all('svg.plasmid-svg title').map(text).map((t) => /^(\S+) \([A-Z]+\) cuts after (\d+)/.exec(t)).filter(Boolean).map((m) => `${m![1]}@${m![2]}`).sort();
+      const pillCuts = () => app.all('.cut-pill').map(text).map((t) => /▼ (\S+) \((\d+)\)/.exec(t)).filter(Boolean).map((m) => `${m![1]}@${m![2]}`).sort();
+      const box = (label: string) => app.one(`input[aria-label="${label}"]`, label);
+      // The App scans with the whole catalogue: every site it draws, the fixture's among them.
+      const all = mapCuts();
+      for (const k of ['BamHI@97', `EcoRI@${cutAfter(MAP_ECO1)}`, `EcoRI@${cutAfter(MAP_ECO2)}`]) expect(all).toContain(k);
+      expect(pillCuts()).toEqual(all);
+
+      // Open the preview of the first EcoRI site, then hide BamHI and that EcoRI site from the panel.
+      const eco1Pill = app.all('.cut-pill').find((b) => text(b).includes(`EcoRI (${cutAfter(MAP_ECO1)})`))!;
+      await app.click(eco1Pill);
+      expect(app.all('section.mbc-cleavage-preview')).toHaveLength(1);
+      await app.change(box('Show BamHI sites on the maps'), false);
+      await app.click(app.one('button[aria-label="Expand the 2 sites of EcoRI"]'));
+      await app.change(box(`Show EcoRI at ${cutAfter(MAP_ECO1)}, forward strand`), false);
+      const shown = all.filter((k) => k !== 'BamHI@97' && k !== `EcoRI@${cutAfter(MAP_ECO1)}`);
+      expect(mapCuts()).toEqual(shown);
+      expect(pillCuts()).toEqual(shown);
+      // The preview of a site the user hides closes, and stays closed when it is shown again.
+      expect(app.all('section.mbc-cleavage-preview')).toHaveLength(0);
+      const notes = app.all('svg.plasmid-svg text.circular-callout-note').map(text);
+      expect(notes).toEqual(['2 sites hidden by you']);
+      // Shown again at once: its pill is back, its preview stays closed; then hidden again.
+      await app.change(box(`Show EcoRI at ${cutAfter(MAP_ECO1)}, forward strand`), true);
+      expect(pillCuts()).toContain(`EcoRI@${cutAfter(MAP_ECO1)}`);
+      expect(app.all('section.mbc-cleavage-preview')).toHaveLength(0);
+      await app.change(box(`Show EcoRI at ${cutAfter(MAP_ECO1)}, forward strand`), false);
+      expect(pillCuts()).toEqual(shown);
+
+      // Back to the twin (the same sequence, another document): nothing is hidden there.
+      await app.menu('view:back');
+      await app.settle();
+      expect(mapCuts()).toEqual(all);
+      expect(pillCuts()).toEqual(all);
+      expect(box('Show BamHI sites on the maps').checked).toBe(true);
+      // Forward again: the choices are as they were.
+      await app.menu('view:forward');
+      await app.settle();
+      expect(mapCuts()).toEqual(shown);
+      expect(pillCuts()).toEqual(shown);
+      // A layout change and back, and zoom.
+      await app.menu('view:layout-linear');
+      await app.settle();
+      expect(pillCuts()).toEqual(shown);
+      await app.menu('view:layout-circular');
+      await app.settle();
+      expect(mapCuts()).toEqual(shown);
+      await app.menu('view:layout-split');
+      await app.menu('view:zoom-in');
+      await app.settle();
+      expect(mapCuts()).toEqual(shown);
+      expect(pillCuts()).toEqual(shown);
+      // Shown again: back where it was, and its preview stays closed. (The panel opens each document
+      // with its enzymes collapsed.)
+      await app.click(app.one('button[aria-label="Expand the 2 sites of EcoRI"]'));
+      await app.change(box(`Show EcoRI at ${cutAfter(MAP_ECO1)}, forward strand`), true);
+      expect(pillCuts()).toEqual(all.filter((k) => k !== 'BamHI@97'));
+      expect(app.all('section.mbc-cleavage-preview')).toHaveLength(0);
+    } finally {
+      app.unmount();
+    }
   });
 });

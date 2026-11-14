@@ -34,7 +34,7 @@ import {
   sliceResidentViewportRust,
   type ResidentMotifSearchResult,
 } from '../lib/rustBioEngine';
-import { cleavagePicture, cutSiteDisplayPosition, type CleavageCut } from '../core/restrictionDisplay';
+import { applySiteVisibility, cleavagePicture, cutSiteDisplayPosition, type CleavageCut, type SiteVisibility } from '../core/restrictionDisplay';
 import { chartMaxWidth } from '../core/chartLayout';
 import { FigureExportButton } from './FigureExportButton';
 import { ResultWarnings } from './ResultWarnings';
@@ -44,6 +44,12 @@ import { meanGcWords, subsetNote, type RestrictionScanScope } from './CircularPl
 interface LinearSequenceViewProps {
   doc: SequenceDocument;
   cutSites: RestrictionCutSite[];
+  /**
+   * Which of `cutSites` the user chose to display (US-01M7CCGA), with the scanned molecule's
+   * revision; absent, every site is displayed. The base rows draw, and a marker opens, only a
+   * displayed site; a preview of a site the user then hides closes.
+   */
+  siteVisibility?: { state: SiteVisibility; revision: string } | null;
   /** What `cutSites` cover when the caller scanned only part of the molecule; absent, the view gives no coverage note. */
   restrictionScope?: RestrictionScanScope | null;
   selectedRange: { start: number; end: number; label?: string } | null;
@@ -1664,6 +1670,7 @@ function useQuickbarActions(actions: readonly QuickbarAction[]): React.Component
 export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   doc,
   cutSites,
+  siteVisibility = null,
   restrictionScope = null,
   selectedRange,
   onSelectRange,
@@ -2324,7 +2331,15 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     setPreviewCutId(null);
     previewMarkerRef.current?.focus();
   };
-  const previewCut = previewCutId === null ? undefined : cutSites.find((c) => c.id === previewCutId);
+  const displayedCutSites = useMemo(
+    () => (siteVisibility ? applySiteVisibility(cutSites, siteVisibility.revision, siteVisibility.state, { uniqueCuttersOnly: false }).displayed : cutSites),
+    [cutSites, siteVisibility]
+  );
+  const previewCut = previewCutId === null ? undefined : displayedCutSites.find((c) => c.id === previewCutId);
+  // A preview whose site is hidden (or gone in a rescan) closes, and stays closed if it is shown again.
+  useEffect(() => {
+    if (previewCutId !== null && !previewCut) setPreviewCutId(null);
+  }, [previewCutId, previewCut]);
   const previewDomId = `cleavage-preview-${doc.id}`;
   /** The previewed site's two-strand picture, whose cuts the base rows mark where the preview draws them. */
   const previewPicture = useMemo(
@@ -2374,8 +2389,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     () =>
       isProtein
         ? []
-        : cutSites.filter((c) => c.position >= pageStartPos && c.position <= pageEndPos),
-    [cutSites, isProtein, pageStartPos, pageEndPos]
+        : displayedCutSites.filter((c) => c.position >= pageStartPos && c.position <= pageEndPos),
+    [displayedCutSites, isProtein, pageStartPos, pageEndPos]
   );
   // A partial cut-site scan says where it stops (BG-01M6RRSV): on every page that reaches past the
   // scanned range, and on every page of a scan with a reduced catalog, so a stretch with no sites

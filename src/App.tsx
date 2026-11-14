@@ -2397,6 +2397,12 @@ export const App: React.FC = () => {
     setSiteVisibilityByDoc((prev) => ({ ...prev, [activeDoc.id]: activeSiteVisibility }));
     if (cleared > 0) setStatusBanner(clearedChoicesNotice(cleared));
   }, [storedSiteVisibility, activeSiteVisibility, activeDoc.id, setStatusBanner]);
+  // The maps draw only the displayed sites (US-01M7CCGA): they are handed the whole scan with these
+  // choices and filter what they draw; every digest, fragment and cloning path keeps the whole scan.
+  const mapSiteVisibility = useMemo(
+    () => (restrictionMolecule && activeSiteVisibility ? { state: activeSiteVisibility, revision: restrictionMolecule.revision } : null),
+    [restrictionMolecule, activeSiteVisibility]
+  );
   // A visibility change only records the document's choices: it never moves the view or the selection.
   const handleSiteVisibilityChange = useCallback(
     (next: SiteVisibility) => setSiteVisibilityByDoc((prev) => ({ ...prev, [activeDoc.id]: next })),
@@ -15068,6 +15074,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             doc={activeDoc}
                             cutSites={cutSites}
                             siteCounts={restrictionSiteCounts}
+                            siteVisibility={mapSiteVisibility}
                             orfs={orfs}
                             selectedRange={selectedRange}
                             onSelectRange={setSelectedRange}
@@ -15085,6 +15092,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           <LinearSequenceView
                             doc={activeDoc}
                             cutSites={cutSites}
+                            siteVisibility={mapSiteVisibility}
                             restrictionScope={restrictionScope}
                             selectedRange={selectedRange}
                             onSelectRange={setSelectedRange}
