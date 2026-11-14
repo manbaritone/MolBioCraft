@@ -20,19 +20,37 @@ const probe = vi.hoisted(() => ({
   texts: [] as string[],
   classChoices: null as null | Partial<Record<string, string>>,
   rowChoices: null as null | Record<number, string>,
-  dialog: null as null | { onRun: (values: Record<string, unknown>, signal: AbortSignal) => unknown; validate?: (values: Record<string, unknown>) => string | null },
+  reviewBasis: null as null | { records: unknown[] | null },
+  /** What the dialog's own setters were called with, applied to the state they were called on. */
+  classSets: [] as unknown[],
+  rowSets: [] as unknown[],
+  reviewSets: [] as unknown[],
+  dialog: null as null | {
+    onRun: (values: Record<string, unknown>, signal: AbortSignal) => unknown;
+    validate?: (values: Record<string, unknown>) => string | null;
+    renderOptions: (values: Record<string, unknown>, set: (k: string, v: unknown) => void) => unknown;
+  },
 }));
 
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react');
-  const { DEFAULT_DUPLICATE_CHOICES, NO_ROW_CHOICES } = await import('../core/primerImport');
-  const useState = ((initial: unknown) => actual.useState(() => {
-    const v = typeof initial === 'function' ? (initial as () => unknown)() : initial;
-    if (v === '' && probe.texts.length) return probe.texts.shift();
-    if (v === DEFAULT_DUPLICATE_CHOICES && probe.classChoices) return { ...DEFAULT_DUPLICATE_CHOICES, ...probe.classChoices };
-    if (v === NO_ROW_CHOICES && probe.rowChoices) return probe.rowChoices;
-    return v;
-  })) as typeof actual.useState;
+  const { DEFAULT_DUPLICATE_CHOICES, NO_ROW_CHOICES, REVIEW_AT_OPEN } = await import('../core/primerImport');
+  const useState = ((initial: unknown) => {
+    const marker = typeof initial === 'function' ? undefined : initial;
+    const [value, set] = actual.useState(() => {
+      const v = typeof initial === 'function' ? (initial as () => unknown)() : initial;
+      if (v === '' && probe.texts.length) return probe.texts.shift();
+      if (v === DEFAULT_DUPLICATE_CHOICES && probe.classChoices) return { ...DEFAULT_DUPLICATE_CHOICES, ...probe.classChoices };
+      if (v === NO_ROW_CHOICES && probe.rowChoices) return probe.rowChoices;
+      if (v === REVIEW_AT_OPEN && probe.reviewBasis) return probe.reviewBasis;
+      return v;
+    });
+    // A static render cannot re-render, so the dialog's own setters are recorded, applied to the
+    // value they were called on, rather than run.
+    const log = marker === DEFAULT_DUPLICATE_CHOICES ? probe.classSets : marker === NO_ROW_CHOICES ? probe.rowSets : marker === REVIEW_AT_OPEN ? probe.reviewSets : null;
+    if (!log) return [value, set];
+    return [value, (u: unknown) => log.push(typeof u === 'function' ? (u as (v: unknown) => unknown)(value) : u)];
+  }) as typeof actual.useState;
   return { ...actual, default: { ...actual, useState }, useState };
 });
 
@@ -49,11 +67,15 @@ vi.mock('../components/OperationDialog', async () => {
 const { ImportPrimersDialog, ImportPrimersToDatabaseDialog } = await import('../components/SequenceAnalysisToolDialogs');
 const { openPrimerDatabase, PRIMER_DATABASE_KEY } = await import('../core/primerDatabase');
 const { runImportPrimers } = await import('../core/operationRunners');
-const { classifyPrimerRows, readPrimerSpreadsheet } = await import('../core/primerImport');
+const { classifyPrimerRows, DEFAULT_DUPLICATE_CHOICES, readPrimerSpreadsheet } = await import('../core/primerImport');
 type PrimerDatabase = import('../core/primerDatabase').PrimerDatabase;
 type DatabasePrimer = import('../types/bio').DatabasePrimer;
 
 afterEach(() => {
+  probe.reviewBasis = null;
+  probe.classSets = [];
+  probe.rowSets = [];
+  probe.reviewSets = [];
   probe.texts = [];
   probe.classChoices = null;
   probe.rowChoices = null;
@@ -196,8 +218,11 @@ describe('US-01M7DQ0X Import Primers into the Primer Database', () => {
     const storage = new MemoryStorage();
     const db = seededStore(storage);
     const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={() => undefined} onClose={() => undefined} />, SHEET);
-    for (const cls of ['exact', 'sameName', 'sameOligo']) expect(d.options(`opdlg-ip-class-${cls}`)).toEqual(['Skip (every row)', 'Keep separately (every row)', 'Merge metadata (every row)']);
-    for (const row of [2, 3, 4, 9, 10, 11]) expect(d.options(`opdlg-ip-row-${row}`)).toEqual(['Skip', 'Keep separately', 'Merge metadata']);
+    // Merge only where the oligo matches (D0122): a same-name row with another oligo can be skipped or kept.
+    for (const cls of ['exact', 'sameOligo']) expect(d.options(`opdlg-ip-class-${cls}`)).toEqual(['Skip (every row)', 'Keep separately (every row)', 'Merge metadata (every row)']);
+    expect(d.options('opdlg-ip-class-sameName')).toEqual(['Skip (every row)', 'Keep separately (every row)']);
+    for (const row of [2, 4, 9, 10]) expect(d.options(`opdlg-ip-row-${row}`)).toEqual(['Skip', 'Keep separately', 'Merge metadata']);
+    for (const row of [3, 11]) expect(d.options(`opdlg-ip-row-${row}`)).toEqual(['Skip', 'Keep separately']);
     for (const row of [5, 6, 7, 8]) expect(d.options(`opdlg-ip-row-${row}`), `new row ${row} offers no choice`).toEqual([]);
     expect([d.selected('opdlg-ip-class-exact'), d.selected('opdlg-ip-row-2'), d.selected('opdlg-ip-row-9')]).toEqual(['Skip (every row)', 'Skip', 'Skip']);
 
@@ -237,12 +262,12 @@ describe('US-01M7DQ0X Import Primers into the Primer Database', () => {
   it('US-01M7DQ0X AC2 a merge into a row that is not saved is skipped with the reason', async () => {
     const storage = new MemoryStorage();
     const db = seededStore(storage);
-    // Row 2 has T7's oligo (skipped by default); row 3 has row 2's name and another oligo.
-    const sheet = 'name,sequence,labels\nX,TAATACGACTCACTATAGGG,\nx,CCCCGGGGAAAATTTT,a\nY,ACGTACGTACGTAAAA,\n';
+    // Row 2 has M13F's name and a new oligo (skipped by choice); row 3 has row 2's oligo under another name.
+    const sheet = 'name,sequence,labels\nM13F,CCCCGGGGAAAATTTT,\nZ,CCCCGGGGAAAATTTT,a\nY,ACGTACGTACGTAAAA,\n';
     const reports: string[] = [];
-    const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={(r) => reports.push(r)} onClose={() => undefined} />, sheet, { byClass: { sameName: 'merge' } });
-    expect([...d.classCell.entries()]).toEqual([[2, 'Same oligo, different name'], [3, 'Same name, different oligo'], [4, 'New']]);
-    expect(d.text('data-ip-outcome-row=')).toEqual(['Row 2 X: skipped: same oligo, different name', 'Row 3 x: not merged: row 2 it matches is not saved']);
+    const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={(r) => reports.push(r)} onClose={() => undefined} />, sheet, { byClass: { sameName: 'skip', sameOligo: 'merge' } });
+    expect([...d.classCell.entries()]).toEqual([[2, 'Same name, different oligo'], [3, 'Same oligo, different name'], [4, 'New']]);
+    expect(d.text('data-ip-outcome-row=')).toEqual(['Row 2 M13F: skipped: same name, different oligo', 'Row 3 Z: not merged: row 2 it matches is not saved']);
     await d.run();
     expect(records(storage).map((r) => r.name)).toEqual(['M13F', 'T7', 'GC1', 'Y']);
     expect(reports).toEqual(['Saved to the Primer Database: 1 imported (1 new, 0 merged), 2 skipped, 0 rejected.']);
@@ -346,5 +371,140 @@ describe('US-01M7DQ0X an RNA oligo written with r prefixes', () => {
       'name,sequence\nGC1 again,rGrGrGrCrCrCrArArArGrGrGrCrCrCrA\nchimera,GTAAAACGACGGCCrAGT\n');
     // The chimera has M13F's letters, but its RNA base makes it another oligo.
     expect([...d.classCell.entries()]).toEqual([[2, 'Same oligo, different name'], [3, 'New']]);
+  });
+});
+
+/** Every element in a React element tree (props.children followed, function components not called). */
+function elementsOf(node: unknown): React.ReactElement[] {
+  if (Array.isArray(node)) return node.flatMap(elementsOf);
+  if (!React.isValidElement(node)) return [];
+  const props = node.props as { children?: unknown };
+  return [node, ...elementsOf(props.children)];
+}
+
+/** Reads that run `race` once, just before answering the `at`-th read after `arm()`, as another window writing would. */
+class RacingStorage extends MemoryStorage {
+  private armed = -1;
+  private race: (() => void) | null = null;
+  arm(at: number, race: () => void) { this.armed = at; this.race = race; }
+  getItem(key: string): string | null {
+    if (this.armed > 0 && --this.armed === 0 && this.race) { const r = this.race; this.race = null; r(); }
+    return super.getItem(key);
+  }
+}
+
+describe('US-01M7DQ0X duplicates under D0122', () => {
+  // Wrong merges (the review's probes): a same-name row with another oligo merged into the stored
+  // record, writing its /5Phos/ or /iBiodT/ onto it, as merge on a name match did; merge offered for
+  // that class; a forced merge choice on it followed rather than refused.
+  it('US-01M7DQ0X AC2 a same-name row with another oligo never changes the stored primer: merge is not offered and it is kept beside it', async () => {
+    for (const [seq, mods] of [['/5Phos/GTAAAACGACGGCCAGT', '/5Phos/'], ['ACGTAC/iBiodT/ACGTACG', '/iBiodT/@7']] as const) {
+      const storage = new MemoryStorage();
+      const db = seededStore(storage);
+      const before = records(storage)[0];
+      expect([before.name, before.modifications, before.description]).toEqual(['M13F', '', '']);
+      const reports: string[] = [];
+      const sheet = `name,sequence,description,labels\nM13F,${seq},a row with a modification,mod\n`;
+      // The row's own choice is set to merge, as no menu offers it: it falls back to the class's default, keep.
+      const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={(r) => reports.push(r)} onClose={() => undefined} />, sheet, { byRow: { 2: 'merge' } });
+      expect(d.classCell.get(2), seq).toBe('Same name, different oligo');
+      expect(d.options('opdlg-ip-row-2')).toEqual(['Skip', 'Keep separately']);
+      expect(d.selected('opdlg-ip-row-2')).toBe('Keep separately');
+      await d.run();
+      const after = records(storage);
+      expect(after[0], 'the stored M13F is untouched').toEqual(before);
+      expect(after.slice(3).map((r) => [r.name, r.modifications, r.description, r.labels])).toEqual([['M13F', mods, 'a row with a modification', ['mod']]]);
+      expect(reports).toEqual(['Saved to the Primer Database: 1 imported (1 new, 0 merged), 0 skipped, 0 rejected.']);
+    }
+  });
+
+  // Wrong classifications: a row with one record's name and another's oligo classed as same name only
+  // (its oligo match lost, and kept by default as a second copy of T7 under M13F's name).
+  it('US-01M7DQ0X AC1 a row matching one record by name and another by oligo shows both and defaults to skip', async () => {
+    const storage = new MemoryStorage();
+    const db = seededStore(storage);
+    const sheet = 'name,sequence\nM13F,TAATACGACTCACTATAGGG\n';
+    const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={() => undefined} onClose={() => undefined} />, sheet);
+    expect(d.classCell.get(2)).toBe('Matches two primers');
+    expect(d.classRows('both')).toEqual([2]);
+    expect(d.text('data-ip-dup-row=')).toEqual([expect.stringMatching(/^Row 2 M13F: matches M13F in the database by name and T7 in the database by oligo/)]);
+    expect([d.options('opdlg-ip-class-both'), d.selected('opdlg-ip-row-2')]).toEqual([['Skip (every row)', 'Keep separately (every row)'], 'Skip']);
+    expect(d.validate()).toBe('Nothing to import into the Primer Database: 0 imported (0 new, 0 merged), 1 skipped, 0 rejected.');
+    const core = classifyPrimerRows(readPrimerSpreadsheet(sheet).rows, records(storage)).classified[0];
+    expect([core.cls, core.nameMatch, core.oligoMatch]).toEqual(['both', { kind: 'database', id: 'seed-1', name: 'M13F' }, { kind: 'database', id: 'seed-2', name: 'T7' }]);
+  });
+
+  // Wrong classification: a trashed record matched as if it were active.
+  it('US-01M7DQ0X AC1 a trashed record is never matched', () => {
+    const storage = new MemoryStorage();
+    const db = seededStore(storage);
+    expect(db.trash('seed-2').ok).toBe(true);
+    const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={() => undefined} onClose={() => undefined} />, 'name,sequence\nT7,TAATACGACTCACTATAGGG\n');
+    expect(d.classCell.get(2)).toBe('New');
+  });
+
+  // Wrong saves: the save planned against the open-time read, so a record another window added or
+  // deleted meanwhile goes unseen and the reviewed choices are applied to rows whose class changed.
+  it('US-01M7DQ0X AC3 at save the rows are classed again; a changed class is shown again for review and nothing is written', async () => {
+    for (const [what, change, row, now] of [
+      ['added', (other: PrimerDatabase) => expect(other.add({ name: 'Elsewhere', sequence: 'CCCCGGGGAAAATTTT' }).ok).toBe(true), 8, 'same oligo, different name (Elsewhere in the database)'],
+      ['deleted', (other: PrimerDatabase) => { expect(other.trash('seed-1').ok).toBe(true); expect(other.emptyTrash().ok).toBe(true); }, 2, 'new'],
+    ] as const) {
+      probe.reviewSets = [];
+      const storage = new MemoryStorage();
+      const db = seededStore(storage);
+      const reports: string[] = [];
+      const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={(r) => reports.push(r)} onClose={() => undefined} />, SHEET);
+      change(openPrimerDatabase({ storage }));
+      const stored = storage.map.get(PRIMER_DATABASE_KEY);
+      const writes = storage.writes;
+      const failure = await d.run().then(() => null, (e: Error) => e.message);
+      expect(failure, what).toMatch(/^Nothing was saved to the Primer Database: it changed since you reviewed the rows \(.*\)\. They are shown again with their classes now; review them and import again\.$/);
+      expect(failure, what).toContain(`row ${row}: `);
+      expect(failure, what).toContain(` → ${now}`);
+      expect([storage.writes, storage.map.get(PRIMER_DATABASE_KEY), reports], what).toEqual([writes, stored, []]);
+      // The dialog moves its review to the store as it stands, and shows the row's class now.
+      expect(probe.reviewSets, what).toEqual([{ records: records(storage) }]);
+      const again = render(<ImportPrimersToDatabaseDialog database={db} onSaved={() => undefined} onClose={() => undefined} />, SHEET);
+      expect(again.classCell.get(row)).toBe(now === 'new' ? 'New' : 'Same oligo, different name');
+      expect(failure, 'a row whose match moved to another record is shown too').toContain(what === 'added' ? 'row 10: same oligo, different name (Fresh on row 8) → same oligo, different name (Elsewhere in the database)' : 'row 2: exact duplicate (M13F in the database) → new');
+      probe.reviewBasis = probe.reviewSets[0] as { records: unknown[] };
+      const reviewed = render(<ImportPrimersToDatabaseDialog database={db} onSaved={(r) => reports.push(r)} onClose={() => undefined} />, SHEET);
+      probe.reviewBasis = null;
+      await reviewed.run();
+      expect(reports, what).toEqual([expect.stringMatching(/^Saved to the Primer Database: /)]);
+    }
+  });
+
+  // Wrong class-wide choice: the class's own row choices left in place, so the rows the user had set
+  // one by one ignore the choice made for their whole class.
+  it("US-01M7DQ0X AC2 a choice for a whole class replaces that class's row choices", () => {
+    const storage = new MemoryStorage();
+    const db = seededStore(storage);
+    render(<ImportPrimersToDatabaseDialog database={db} onSaved={() => undefined} onClose={() => undefined} />, SHEET, { byRow: { 2: 'keep', 9: 'merge', 3: 'skip' } });
+    const tree = elementsOf(probe.dialog!.renderOptions({ folder: 'Primers' }, () => undefined));
+    const select = tree.find((e) => (e.props as { id?: string }).id === 'opdlg-ip-class-exact')!;
+    (select.props as { onChange: (e: { target: { value: string } }) => void }).onChange({ target: { value: 'merge' } });
+    expect(probe.classSets).toEqual([{ ...DEFAULT_DUPLICATE_CHOICES, exact: 'merge' }]);
+    // Rows 2 and 9 are exact duplicates: their own choices go; row 3's (same name) stays.
+    expect(probe.rowSets).toEqual([{ 3: 'skip' }]);
+  });
+
+  // Wrong post-write check: a save the store took differently from the review (a merged record
+  // deleted by another window between the dialog's read and the store's own, so it was added back)
+  // reported as the planned save.
+  it('US-01M7DQ0X AC3 a save the store took differently from the review says so', async () => {
+    const storage = new RacingStorage();
+    const db = seededStore(storage);
+    const reports: string[] = [];
+    const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={(r) => reports.push(r)} onClose={() => undefined} />, 'name,sequence,labels\nT7 copy,TAATACGACTCACTATAGGG,t7\n', { byClass: { sameOligo: 'merge' } });
+    // The dialog's save-time read (1) sees T7; another window deletes it before the store's own read (2).
+    storage.arm(2, () => {
+      const env = JSON.parse(storage.map.get(PRIMER_DATABASE_KEY)!) as { records: DatabasePrimer[] };
+      storage.map.set(PRIMER_DATABASE_KEY, JSON.stringify({ ...env, records: env.records.filter((r) => r.name !== 'T7') }));
+    });
+    await d.run();
+    expect(reports).toEqual(['Saved to the Primer Database, but not as reviewed: 1 new and 0 merged records were saved where 0 and 1 were planned; another window changed the database meanwhile, so check it.']);
+    expect(records(storage).map((r) => [r.name, r.labels])).toEqual([['M13F', ['seq']], ['GC1', []], ['T7', ['t7']]]);
   });
 });

@@ -12,10 +12,11 @@ import { alignmentRowsOf, runCalculateExpressionLevels, runFindStructuralVariant
 import { featuresTooLongToTransfer, MAX_TRANSFERRED_FEATURE_BP } from '../core/annotateFromDocuments';
 import {
   choiceFor, classifyPrimerRows, countsOf, DEFAULT_DUPLICATE_CHOICES, describeImportCounts, describeSpreadsheetProblem, DUPLICATE_CLASS_LABEL, fieldLabel, importedRowsOf,
-  NO_COLUMN_MAPPING, NO_ROW_CHOICES, planPrimerDatabaseImport, readPrimerSpreadsheet, savePrimerDatabaseImport,
+  classChanges, DUPLICATE_CHOICES_FOR, NO_COLUMN_MAPPING, NO_ROW_CHOICES, planFromClassified, planPrimerDatabaseImport, readPrimerSpreadsheet, REVIEW_AT_OPEN, savePrimerDatabaseImport,
+  describeMatch, type ReviewBasis,
   type DuplicateChoice, type DuplicateChoices, type PrimerColumnMapping,
 } from '../core/primerImport';
-import { openPrimerDatabase, type PrimerDatabase } from '../core/primerDatabase';
+import { openPrimerDatabase, type PrimerDatabase, type PrimerDbRead } from '../core/primerDatabase';
 import type { LocalSequenceDbEntry } from '../core/localBlastDb';
 import { DEGENERATE_DEFAULTS } from '../core/degeneratePrimers';
 import type { SequenceDocument } from '../types/bio';
@@ -222,6 +223,7 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
   const [destination, setDestination] = useState<PrimerImportDestination>(initialDestination && offered.includes(initialDestination) ? initialDestination : offered[0] ?? 'documents');
   const [classChoices, setClassChoices] = useState<Readonly<DuplicateChoices>>(DEFAULT_DUPLICATE_CHOICES);
   const [rowChoices, setRowChoices] = useState<Readonly<Record<number, DuplicateChoice>>>(NO_ROW_CHOICES);
+  const [reviewBasis, setReviewBasis] = useState<Readonly<ReviewBasis>>(REVIEW_AT_OPEN);
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState('');
   const [mapping, setMapping] = useState<Partial<PrimerColumnMapping>>(NO_COLUMN_MAPPING);
@@ -233,7 +235,10 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
   // The Primer Database destination: the store as it stands, read (never assumed empty) before
   // anything is classified, and the save the user's choices would make.
   const store = useMemo(() => (destination === 'database' ? database ?? openPrimerDatabase() : null), [destination, database]);
-  const dbRead = useMemo(() => store?.read() ?? null, [store]);
+  const openRead = useMemo(() => store?.read() ?? null, [store]);
+  // What the rows are reviewed against: the read made at open, or the one a save made when it found
+  // that a row's class had changed (D0122).
+  const dbRead = useMemo<PrimerDbRead | null>(() => (reviewBasis.records ? { ok: true, records: reviewBasis.records, stored: true } : openRead), [reviewBasis, openRead]);
   const plan = useMemo(() => {
     if (!reading || reading.problem || !dbRead?.ok) return null;
     let k = 0;
@@ -363,7 +368,7 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
             <OptionRow label="Duplicates:">
               <div style={{ display: 'grid', gap: 6, width: '100%' }}>
                 <div className="mbc-opdlg-muted" data-ip-db-counts="">If saved: {describeImportCounts(countsOf(plan))}.</div>
-                {(['exact', 'sameName', 'sameOligo'] as const).map((cls) => {
+                {(['exact', 'both', 'sameName', 'sameOligo'] as const).map((cls) => {
                   const rows = classified.filter((c) => c.cls === cls);
                   if (!rows.length) return null;
                   return (
@@ -377,17 +382,19 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
                             // A choice for the whole class replaces the choices made row by row.
                             setRowChoices((r) => Object.fromEntries(Object.entries(r).filter(([row]) => classByRow.get(Number(row))?.cls !== cls)));
                           }}>
-                          {(['skip', 'keep', 'merge'] as const).map((ch) => <option key={ch} value={ch}>{CHOICE_LABEL[ch]} (every row)</option>)}
+                          {DUPLICATE_CHOICES_FOR[cls].map((ch) => <option key={ch} value={ch}>{CHOICE_LABEL[ch]} (every row)</option>)}
                         </select>
                       </label>
                       {rows.map((c) => {
-                        const match = c.cls === 'sameName' ? c.nameMatch : c.oligoMatch;
+                        const what = describeMatch;
+                        const matches = c.cls === 'exact' ? what(c.nameMatch) : c.cls === 'both' ? `${what(c.nameMatch)} by name and ${what(c.oligoMatch)} by oligo`
+                          : c.cls === 'sameName' ? `${what(c.nameMatch)} by name` : `${what(c.oligoMatch)} by oligo`;
                         return (
                           <label key={c.row.row} data-ip-dup-row={c.row.row} style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                            <span>Row {c.row.row} {c.row.name}: matches {match ? (match.kind === 'database' ? `${match.name} in the database` : `${match.name} on row ${match.row}`) : '-'}</span>
+                            <span>Row {c.row.row} {c.row.name}: matches {matches}</span>
                             <select id={`opdlg-ip-row-${c.row.row}`} aria-label={`Row ${c.row.row}`} value={choiceFor(c, classChoices, rowChoices) ?? 'keep'}
                               onChange={(e) => setRowChoices((r) => ({ ...r, [c.row.row]: e.target.value as DuplicateChoice }))}>
-                              {(['skip', 'keep', 'merge'] as const).map((ch) => <option key={ch} value={ch}>{CHOICE_LABEL[ch]}</option>)}
+                              {DUPLICATE_CHOICES_FOR[c.cls as Exclude<typeof c.cls, 'new'>].map((ch) => <option key={ch} value={ch}>{CHOICE_LABEL[ch]}</option>)}
                             </select>
                           </label>
                         );
@@ -411,11 +418,19 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
         }
         if (!store || !onDatabaseSaved) throw new Error('Nothing was saved: this window does not import into the Primer Database.');
         if (!reading || reading.problem) throw new Error(`Nothing was saved to the Primer Database: ${reading?.problem ? describeSpreadsheetProblem(reading.problem) : 'paste primer rows or choose a file'}.`);
-        // Read the store again at save time: the plan is made against what it holds now.
+        // Read the store again at save time and class the rows against what it holds now. A row
+        // whose class or matched record changed since the review is shown again, and nothing is
+        // written until the user has reviewed it (D0122).
         const current = store.read();
         if (!current.ok) throw new Error(`Nothing was saved to the Primer Database: ${current.error.message}`);
+        const reclassified = classifyPrimerRows(reading.rows, current.records);
+        const changed = classChanges(classified, reclassified.classified);
+        if (changed.length) {
+          setReviewBasis({ records: current.records });
+          throw new Error(`Nothing was saved to the Primer Database: it changed since you reviewed the rows (${changed.join('; ')}). They are shown again with their classes now; review them and import again.`);
+        }
         const now = new Date().toISOString();
-        const saving = planPrimerDatabaseImport(reading, current.records, classChoices, rowChoices, { now, newId: newPrimerId, source: fileName || 'a pasted primer list' });
+        const saving = planFromClassified(reclassified, current.records, classChoices, rowChoices, { now, newId: newPrimerId, source: fileName || 'a pasted primer list' });
         const saved = savePrimerDatabaseImport(store, saving, now);
         if (!saved.ok) throw new Error(saved.message);
         onDatabaseSaved(saved.message);
