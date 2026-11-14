@@ -40,6 +40,7 @@ import {
 import type { MbcWorkbenchFileEnvelope } from '../core/mbcSessionFormat';
 import { mountApp, releaseLeakedMount, type AppHarness } from './appHarness';
 import { appCssRules, cascaded, gridTracks } from './cssCascade';
+import { paneSplitStyle } from '../core/paneSplit';
 import { dispatchLiveEvent, type LiveElement } from './liveDom';
 
 vi.mock('../lib/tauriIpc', async (importOriginal) => (await import('./appHarness')).tauriIpcMock(await importOriginal<object>()));
@@ -81,20 +82,46 @@ const divider = (app: AppHarness) => app.one('.map-seq-split > .map-seq-divider'
 const dividers = (app: AppHarness) => app.all('.map-seq-divider');
 const named = (app: AppHarness, label: string) => app.one(`button[aria-label="${label}"]`, `"${label}" button`);
 const ratioOf = (app: AppHarness) => Number(frame(app).style.getPropertyValue('--mbc-split-ratio'));
-/** The Split grid's columns as App.css gives them, and the pane widths they come to in the frame. */
-function columns(app: AppHarness): { tracks: string[]; circle: number; linear: number } {
+/**
+ * The Split grid's columns as App.css gives them in a frame `width` wide, and the pane widths they
+ * come to: two flexible tracks, each held at its minimum when its share would fall below it (the CSS
+ * grid algorithm for two `minmax(<px>, <fr>)` tracks).
+ */
+function columns(app: AppHarness, width = FRAME): { tracks: string[]; circle: number; linear: number } {
+  const view = { ...VIEW, canvas: width };
   const grid = app.one('.map-seq-grid.mode-split');
-  const tracks = gridTracks(cascaded(grid, 'grid-template-columns', VIEW)!);
+  const tracks = gridTracks(cascaded(grid, 'grid-template-columns', view)!);
   const fr = (t: string) => {
     const v = /var\((--[\w-]+)\)/.exec(t)?.[1];
-    const raw = v ? cascaded(frame(app), v, VIEW)! : /(\d+(?:\.\d+)?)fr/.exec(t)![1] + 'fr';
+    const raw = v ? cascaded(frame(app), v, view)! : /(\d+(?:\.\d+)?)fr/.exec(t)![1] + 'fr';
     return Number(/^([\d.]+)fr$/.exec(raw.trim())![1]);
   };
   if (tracks.length === 1) return { tracks, circle: NaN, linear: NaN };
   const [a, b] = tracks.map(fr);
-  const min = Number(/^minmax\((\d+)px/.exec(tracks[0])![1]);
-  const circle = Math.max(min, (cols(FRAME) * a) / (a + b));
-  return { tracks, circle, linear: cols(FRAME) - circle };
+  const [minC, minL] = tracks.map((t) => Number(/^minmax\((\d+)(?:px)?,/.exec(t)![1]));
+  const c = cols(width);
+  let circle = (c * a) / (a + b);
+  if (circle < minC) circle = minC;
+  else if (c - circle < minL) circle = c - minL;
+  return { tracks, circle, linear: c - circle };
+}
+/** Evaluates a declared `left: calc(...)` the way the browser does, in a containing block `pct` px wide. */
+function evalLength(expr: string, pct: number, vars: Record<string, string>): number {
+  let s = expr.replace(/var\((--[\w-]+)(?:,\s*([^()]+))?\)/g, (_m, n: string, d?: string) => {
+    const v = vars[n] ?? d;
+    if (v === undefined) throw new Error(`${n} is not set`);
+    return v.trim();
+  });
+  s = s.replace(/(\d+(?:\.\d+)?)%/g, (_m, n: string) => String((pct * Number(n)) / 100)).replace(/(\d+(?:\.\d+)?)px/g, '$1').replace(/\bcalc\(/g, '(');
+  if (/[a-z]/i.test(s.replace(/\b(clamp|max|min)\b/g, ''))) throw new Error(`cannot evaluate "${expr}"`);
+  return Function('clamp', 'max', 'min', `return ${s};`)((lo: number, v: number, hi: number) => Math.max(lo, Math.min(v, hi)), Math.max, Math.min) as number;
+}
+/** The centre of an absolutely placed element in the frame, from its declared left and width. */
+function centreOf(app: AppHarness, el: LiveElement, width: number): number {
+  const view = { ...VIEW, canvas: width };
+  const vars = Object.fromEntries(['--mbc-split-ratio'].map((n) => [n, cascaded(frame(app), n, view) ?? '']).filter(([, v]) => v));
+  const left = evalLength(cascaded(el, 'left', view)!, width, vars);
+  return left + Number(/^(\d+)px$/.exec(cascaded(el, 'width', view)!)![1]) / 2;
 }
 
 async function act(app: AppHarness, fn: () => void) {
@@ -511,5 +538,125 @@ describe('US-01M7CCRP AC2: the divider is saved with the workspace and restored 
       await act(app, () => {});
       expect(ratioOf(app), 'clamped at 879px').toBeCloseTo(1 - PANE_MIN_PX.linear / W, 3);
     }, () => width);
+  });
+});
+
+// ─── US-01M7CCT5 round 2: both floors at any width, the divider on the boundary, a visible line ───
+
+describe('US-01M7CCT5 AC1: both expanded panes keep their minimum at any canvas width', () => {
+  it('US-01M7CCT5 AC1 holds the 320px and 300px floors in the stylesheet at every frame width and ratio, with the divider on the boundary', async () => {
+    let width = FRAME;
+    await withSplit(async (app) => {
+      // A dragged ratio, so the frame carries its own tracks (is-resized).
+      await drag(app, [xForCircle(520)]);
+      expect(frame(app).classList.contains('is-resized')).toBe(true);
+      // App.css's floors are the helper's.
+      const t = columns(app).tracks;
+      expect(t.map((x) => Number(/^minmax\((\d+)px,/.exec(x)?.[1]))).toEqual([PANE_MIN_PX.circular, PANE_MIN_PX.linear]);
+      // Whatever ratio the frame holds (a stale one the state has not re-clamped yet, or one written
+      // mid-drag), and whatever width the canvas gives it from the 760px breakpoint up, both cards keep
+      // their floor and the divider and its buttons sit on the boundary between them.
+      for (const w of [760, 775, 790, 830, 879, 1000, 1400]) {
+        width = w;
+        for (const r of [0.02, 0.2, 0.37, 0.5, 0.62, 0.66, 0.8, 0.98]) {
+          for (const [k, v] of Object.entries(paneSplitStyle(r))) frame(app).style.setProperty(k, v);
+          const c = columns(app, w);
+          const at = `${w}px frame, ratio ${r}`;
+          expect(c.circle, at).toBeGreaterThanOrEqual(PANE_MIN_PX.circular - 1e-9);
+          expect(c.linear, at).toBeGreaterThanOrEqual(PANE_MIN_PX.linear - 1e-9);
+          expect(c.circle + c.linear, at).toBeCloseTo(cols(w), 9);
+          // Inside the floors the circle takes the ratio's share.
+          const free = r * cols(w);
+          if (free >= PANE_MIN_PX.circular && cols(w) - free >= PANE_MIN_PX.linear) expect(c.circle, at).toBeCloseTo(free, 6);
+          const boundary = c.circle + PANE_SPLIT_GAP_PX / 2;
+          expect(centreOf(app, divider(app), w), `divider, ${at}`).toBeCloseTo(boundary, 6);
+          expect(centreOf(app, app.one('.map-seq-divider-controls'), w), `collapse buttons, ${at}`).toBeCloseTo(boundary, 6);
+        }
+      }
+      // The default ratio's own 4fr : 5fr tracks hold both floors from the breakpoint up as well.
+      await dblclick(app, divider(app));
+      for (const w of [760, 879, 1400]) {
+        const c = columns(app, w);
+        expect(c.tracks).toEqual(['minmax(320px, 4fr)', 'minmax(0, 5fr)']);
+        expect(c.circle).toBeGreaterThanOrEqual(PANE_MIN_PX.circular);
+        expect(c.linear, `${w}px default`).toBeGreaterThanOrEqual(PANE_MIN_PX.linear);
+        expect(Math.abs(centreOf(app, divider(app), w) - (c.circle + PANE_SPLIT_GAP_PX / 2)), 'the 4-decimal ratio puts it within 0.1px').toBeLessThan(0.1);
+      }
+      // Below the breakpoint the maps stack: one column, no divider shown.
+      expect(gridTracks(cascaded(app.one('.map-seq-grid.mode-split'), 'grid-template-columns', { ...VIEW, canvas: 759 })!)).toEqual(['minmax(0, 1fr)']);
+      expect(cascaded(divider(app), 'display', { ...VIEW, canvas: 759 })).toBe('none');
+    }, () => width);
+  });
+
+  it('US-01M7CCT5 AC1 keeps the linear map at 300px when the inspector or explorer widens after a drag to its minimum', async () => {
+    // The frame is the 1440px window less the explorer, the inspector and 28px of chrome: 879px at
+    // the defaults (245px explorer, 288px inspector), as measured.
+    let ref: AppHarness | null = null;
+    const frameWidth = () => {
+      if (!ref) return FRAME;
+      try {
+        const inspector = Number(ref.one('.mbc-inspector-resizer').getAttribute('aria-valuenow'));
+        const explorer = Number(ref.one('.mbc-sidebar-resizer').getAttribute('aria-valuenow'));
+        return WINDOW - 28 - explorer - inspector;
+      } catch { return FRAME; }
+    };
+    await withSplit(async (app) => {
+      ref = app;
+      expect(frameWidth()).toBe(FRAME);
+      await drag(app, [FRAME - PANE_SPLIT_GAP_PX / 2 - 200]);
+      expect(columns(app).linear, 'dragged to the linear minimum').toBeCloseTo(PANE_MIN_PX.linear, 0);
+      const keep = async (what: string) => {
+        const w = frameWidth();
+        const c = columns(app, w);
+        expect(c.linear, `${what}: ${w}px frame`).toBeGreaterThanOrEqual(PANE_MIN_PX.linear - 0.5);
+        expect(c.circle, `${what}: ${w}px frame`).toBeGreaterThanOrEqual(PANE_MIN_PX.circular - 0.5);
+        expect(Math.abs(centreOf(app, divider(app), w) - (c.circle + PANE_SPLIT_GAP_PX / 2)), `${what}: the divider on the boundary`).toBeLessThan(0.1);
+        // The state follows too: the ratio itself is held to the floors (re-clamped on the resize).
+        expect(ratioOf(app), `${what}: the stored ratio`).toBeLessThanOrEqual(1 - PANE_MIN_PX.linear / cols(w) + 1e-4);
+        return w;
+      };
+      // The inspector widened by keyboard, 16px a press.
+      await act(app, () => { app.one('.mbc-inspector-resizer').focus(); });
+      for (let i = 0; i < 4; i++) await app.press('ArrowLeft');
+      expect(await keep('inspector +64px')).toBe(FRAME - 64);
+      // The explorer widened too.
+      await act(app, () => { app.one('.mbc-sidebar-resizer').focus(); });
+      for (let i = 0; i < 2; i++) await app.press('ArrowRight');
+      expect(await keep('explorer +32px')).toBe(FRAME - 96);
+      await act(app, () => { app.one('.mbc-inspector-resizer').focus(); });
+      await app.press('ArrowLeft');
+      expect(await keep('inspector +80px')).toBe(FRAME - 112);
+      // Past the point where the canvas holds both maps side by side, they stack: the fallback.
+      await act(app, () => { app.one('.mbc-sidebar-resizer').focus(); });
+      await app.press('ArrowRight');
+      expect(frameWidth()).toBe(FRAME - 128);
+      expect(columns(app, FRAME - 128).tracks, 'stacked below a 760px canvas').toEqual(['minmax(0, 1fr)']);
+    }, frameWidth);
+  });
+
+  it('US-01M7CCT5 AC1 draws a visible resting line on the divider', () => {
+    const rest = appCssRules().filter((r) => r.at.length === 0 && r.selectorText.trim() === '.map-seq-divider::after');
+    expect(rest, 'one resting rule for the divider line').toHaveLength(1);
+    const decl = (n: string) => rest[0].decls.find((d) => d.name === n)?.value.trim();
+    expect(decl('background'), 'the line has a colour at rest').toMatch(/^var\(--mbc-border-strong\)$/);
+    expect(Number(/^(\d+)px$/.exec(decl('width') ?? '')?.[1])).toBeGreaterThanOrEqual(2);
+    expect(decl('top')).toBe('0');
+    expect(decl('bottom')).toBe('0');
+  });
+});
+
+describe('US-01M7CCT5 AC3: the Collapse controls show in the side-by-side Split layout', () => {
+  it('US-01M7CCT5 AC3 shows both Collapse buttons, beside the divider, in Split', async () => {
+    await withSplit(async (app) => {
+      const controls = app.one('.map-seq-divider-controls');
+      expect(cascaded(controls, 'display', VIEW)).toBe('flex');
+      for (const label of ['Collapse circular map', 'Collapse linear map']) {
+        const b = named(app, label);
+        expect(b.parentElement).toBe(controls);
+        expect(cascaded(b, 'display', VIEW), label).not.toBe('none');
+        expect(Number(/^(\d+)px$/.exec(cascaded(b, 'width', VIEW) ?? '')?.[1]), label).toBeGreaterThan(0);
+      }
+      expect(centreOf(app, controls, FRAME)).toBeCloseTo(columns(app).circle + PANE_SPLIT_GAP_PX / 2, 1);
+    });
   });
 });

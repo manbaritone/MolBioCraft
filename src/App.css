@@ -2282,8 +2282,9 @@ fieldset > legend,
 }
 
 /* The divider sits in the 10px gap between the cards (centred on it, 1px into each card's border),
-   where the circle's track ends: its share of the columns, never under the track's 320px floor. Its
-   collapse buttons sit at its top, over the cards' header strips. Only side by side. */
+   where the circle's track ends: its share of the columns, held between the circle's 320px floor and
+   the linear map's 300px floor, as the tracks are. Its collapse buttons sit at its top, over the
+   cards' header strips. Only side by side; a resting line shows where it is. */
 .map-seq-divider,
 .map-seq-divider-controls {
   display: none;
@@ -2293,7 +2294,7 @@ fieldset > legend,
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(max(320px, (100% - 10px) * var(--mbc-split-ratio, 0.4444)) + 5px - 6px);
+  left: calc(clamp(320px, (100% - 10px) * var(--mbc-split-ratio, 0.4444), 100% - 10px - 300px) + 5px - 6px);
   width: 12px;
   cursor: col-resize;
   touch-action: none;
@@ -2309,7 +2310,7 @@ fieldset > legend,
   left: 5px;
   width: 2px;
   border-radius: var(--mbc-radius-xs);
-  background: transparent;
+  background: var(--mbc-border-strong);
   transition: background-color var(--mbc-duration-fast) var(--mbc-ease-standard);
 }
 
@@ -2325,7 +2326,7 @@ fieldset > legend,
 .map-seq-divider-controls {
   position: absolute;
   top: 8px;
-  left: calc(max(320px, (100% - 10px) * var(--mbc-split-ratio, 0.4444)) + 5px - 7px);
+  left: calc(clamp(320px, (100% - 10px) * var(--mbc-split-ratio, 0.4444), 100% - 10px - 300px) + 5px - 7px);
   width: 14px;
   flex-direction: column;
   gap: 2px;
@@ -2392,9 +2393,12 @@ fieldset > legend,
     min-block-size: 320px;
   }
 
-  /* A dragged ratio: each card's flex share, the circle still on its 320px floor. */
+  /* A dragged ratio: each card's flex share, each on its floor (320px circle, 300px linear) at any
+     canvas width, whatever ratio the state holds. Both floors and the gap (630px) always fit: the maps
+     only sit side by side from a 760px canvas, and below it they stack (the rule above). At the default
+     ratio the 4fr : 5fr tracks give the linear map over 400px there. */
   .map-seq-split.is-resized > .map-seq-grid.mode-split {
-    grid-template-columns: minmax(320px, var(--mbc-split-circle)) minmax(0, var(--mbc-split-linear));
+    grid-template-columns: minmax(320px, var(--mbc-split-circle)) minmax(300px, var(--mbc-split-linear));
   }
 
   .map-seq-split.collapsed-circular > .map-seq-grid.mode-split,
