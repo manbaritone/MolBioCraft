@@ -29,6 +29,55 @@ const topWithCut = (p: CleavagePicture) => split(p.top, p.topCut.boundary);
 const bottomWithCut = (p: CleavagePicture) => split(p.bottom, p.bottomCut.boundary);
 const reverse = (s: string) => [...s].reverse().join('');
 
+/** The enzymes the engine-agreement sweeps plant: short-, long-reach Type IIS and Type II. */
+const SWEEP_ENZYMES = ['BsaI-HFv2', 'AcuI', 'BsgI', 'BsmFI', 'EcoRI', 'PstI', 'SmaI', 'AciI'];
+const COMPLEMENT: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
+const revComp = (s: string) => [...s].reverse().map((b) => COMPLEMENT[b]).join('');
+
+/**
+ * Deterministic test molecules of `len` bases: a pseudo-random background with each sweep enzyme's
+ * motif planted forward in one and reverse-complemented in another, at the start, middle and end.
+ */
+function sweepMolecules(len: number): string[] {
+  let state = len * 7919 + 17;
+  const background = () =>
+    Array.from({ length: len }, () => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return 'ACGT'[(state >> 16) & 3];
+    }).join('');
+  const out: string[] = [];
+  for (const name of SWEEP_ENZYMES) {
+    const motif = REBASE_ENZYMES.find((e) => e.name === name)!.recognitionSeq;
+    for (const planted of [motif, revComp(motif)]) {
+      for (const at of [0, Math.floor((len - motif.length) / 2), len - motif.length]) {
+        const bg = background();
+        out.push(bg.slice(0, at) + planted + bg.slice(at + motif.length));
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The independent oracle: a site's unwrapped 0-based top and bottom cut boundaries from the
+ * enzyme's published offsets (crates/molbiocraft-cloning rebase_catalog.rs raw_cut_offsets).
+ */
+function oracleCuts(site: RestrictionCutSite): { top: number; bottom: number } {
+  const idx = site.position - 1;
+  const m = site.enzyme.recognitionSeq.length;
+  return site.strand === 1
+    ? { top: idx + site.enzyme.cutFwd, bottom: idx + site.enzyme.cutRev }
+    : { top: idx + m - site.enzyme.cutRev, bottom: idx + m - site.enzyme.cutFwd };
+}
+
+/** Every engine record of the sweep enzymes over molecules of each length in `lengths`. */
+function sweepRecords(topology: 'circular' | 'linear', lengths: number[]) {
+  const enzymes = SWEEP_ENZYMES.map((n) => REBASE_ENZYMES.find((e) => e.name === n)!);
+  return lengths.flatMap((len) =>
+    sweepMolecules(len).flatMap((seq) => findRestrictionCutSites(seq, topology, enzymes).map((site) => ({ seq, site })))
+  );
+}
+
 describe('US-01M7CC6K AC1 cut boundaries, end type and overhang of AciI, EcoRI, PstI and SmaI', () => {
   const cases = [
     { enzyme: 'AciI', seq: 'TTTTCCGCTTTT', top: 'TTC^CGCTT', bottom: 'AAGGC^GAA', end: '5prime', len: 2, oh: 'CG' },
@@ -57,6 +106,24 @@ describe('US-01M7CC6K AC1 cut boundaries, end type and overhang of AciI, EcoRI, 
       expect(p.coordinates[p.motif.start]).toBe(site.position);
     });
   }
+
+  it('agrees with the engine on end type and overhang for every linear record of eight enzymes', () => {
+    const records = sweepRecords('linear', [20, 30, 34, 36, 50, 80]);
+    const names = new Set(records.map((r) => r.site.enzyme.name));
+    expect(names).toEqual(new Set(SWEEP_ENZYMES));
+    expect(records.some((r) => r.site.strand === -1 && r.site.enzyme.isTypeIIS)).toBe(true);
+    expect(records.length).toBeGreaterThan(100);
+    for (const { seq, site } of records) {
+      const p = cleavagePicture(site, seq, false);
+      const label = `${site.id} on ${seq.length} bp`;
+      expect(p.endType, label).toBe(site.overhangType);
+      expect(p.overhangSeq, label).toBe(site.overhangSeq);
+      expect(p.topCut.available && p.bottomCut.available, label).toBe(true);
+      const o = oracleCuts(site);
+      expect(p.topCut.boundary - p.motif.start, label).toBe(o.top - (site.position - 1));
+      expect(p.bottomCut.boundary - p.motif.start, label).toBe(o.bottom - (site.position - 1));
+    }
+  });
 });
 
 describe('US-01M7CC6K AC2 a reverse-strand match is read on the bottom strand', () => {
@@ -198,23 +265,98 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
     expect(p.topCut.available).toBe(true);
   });
 
-  it('a cut past the end of a linear molecule is unavailable, never wrapped onto its start', () => {
-    // The circular scan's BsaI site cuts across the origin; read on the same molecule made linear,
-    // its cuts fall past base 24 and there is nothing there to show.
-    const seq = 'CAAAAAAAAAAAAAAAAAGGTCTC';
-    const site = engineSite(seq, 'circular', 'BsaI-HFv2');
-    expect(site.cutTop).toBe(2);
+  it('a long-reach AcuI site on a short linear oligo keeps both cuts after its motif', () => {
+    const seq = 'ATGCTGAAGCGCTGCATCTGTCTTGACCGTGACGCA'; // 36 bp, AcuI CTGAAG(16/14) at base 4
+    const site = engineSite(seq, 'linear', 'AcuI');
+    expect([site.cutTop, site.cutBottom, site.overhangType, site.overhangSeq]).toEqual([26, 24, '3prime', 'TG']);
     const p = cleavagePicture(site, seq, false, 1);
-    expect(p.crossesOrigin).toBe(false);
-    expect(p.topCut.available).toBe(false);
-    expect(p.bottomCut.available).toBe(false);
-    expect(p.topCut.position).toBeNull();
-    expect(p.topCut.firstBaseAfter).toBeNull();
-    expect(p.overhangSeq).toBeNull();
-    expect(p.overhangLength).toBe(4);
-    expect(p.top.slice(p.motif.end)).toMatch(/^ +$/);
-    expect(p.coordinates.slice(p.motif.end).every((c) => c === null)).toBe(true);
-    expect(p.unavailableFlank.right).toBe(p.top.length - p.motif.end);
+    expect(p.endType).toBe(site.overhangType);
+    expect(p.overhangSeq).toBe(site.overhangSeq);
+    expect(p.overhangLength).toBe(2);
+    expect(p.topCut.available).toBe(true);
+    expect(p.bottomCut.available).toBe(true);
+    expect(p.topCut.gapFromMotif).toBe(16);
+    expect(p.bottomCut.gapFromMotif).toBe(14);
+    expect(p.topCut.position).toBe(25);
+    expect(p.bottomCut.position).toBe(23);
+    expect(p.unavailableFlank).toEqual({ left: 0, right: 0 });
+  });
+
+  it('a long-reach BsgI site on a 34-nt linear primer keeps both cuts in the molecule', () => {
+    const seq = 'TAGTGCAGT' + 'T'.repeat(25); // BsgI GTGCAG(16/14) at base 3
+    const site = engineSite(seq, 'linear', 'BsgI');
+    expect([site.cutTop, site.cutBottom, site.overhangType, site.overhangSeq]).toEqual([25, 23, '3prime', 'TT']);
+    const p = cleavagePicture(site, seq, false, 2);
+    expect(p.endType).toBe('3prime');
+    expect(p.overhangSeq).toBe('TT');
+    expect(p.topCut.available && p.bottomCut.available).toBe(true);
+    expect(p.topCut.firstBaseAfter).toBe(25);
+    expect(p.bottomCut.firstBaseAfter).toBe(23);
+    expect(p.topCut.boundary).toBeGreaterThan(p.motif.end);
+  });
+
+  it('a reverse BsmFI site on a 28-bp circle cuts behind its motif, across base 1', () => {
+    // BsmFI GGGAC(10/14) read as GTCCC at base 4: its cuts lie 10 and 14 nt before the motif.
+    const seq = 'AAAGTCCC' + 'TTTTTTTTT' + 'ACGT' + 'TTTTTAA';
+    const site = engineSite(seq, 'circular', 'BsmFI');
+    expect([site.position, site.strand, site.cutTop, site.cutBottom, site.overhangType]).toEqual([4, -1, 18, 22, '5prime']);
+    const p = cleavagePicture(site, seq, true, 1);
+    expect(p.topCut.boundary).toBeLessThan(p.motif.start);
+    expect(p.bottomCut.boundary).toBeLessThan(p.motif.start);
+    expect(p.topCut.gapFromMotif).toBe(14);
+    expect(p.bottomCut.gapFromMotif).toBe(10);
+    expect(p.endType).toBe('5prime');
+    expect(p.overhangSeq).toBe('ACGT');
+    expect(p.crossesOrigin).toBe(true);
+    expect(p.topCut.position).toBe(17);
+    expect(p.bottomCut.position).toBe(21);
+  });
+
+  it('places every circular record of eight enzymes where the enzyme cuts, small circles included', () => {
+    const records = sweepRecords('circular', [24, 28, 30, 36, 50]);
+    expect(new Set(records.map((r) => r.site.enzyme.name))).toEqual(new Set(SWEEP_ENZYMES));
+    let compared = 0;
+    for (const { seq, site } of records) {
+      const p = cleavagePicture(site, seq, true);
+      const o = oracleCuts(site);
+      const label = `${site.id} on a ${seq.length}-bp circle`;
+      expect(p.topCut.boundary - p.motif.start, label).toBe(o.top - (site.position - 1));
+      expect(p.bottomCut.boundary - p.motif.start, label).toBe(o.bottom - (site.position - 1));
+      expect(p.endType, label).toBe(site.overhangType);
+      // BG-01M7CDFB: the engine's overhangSeq is empty when a cut falls before base 1.
+      if (Math.min(o.top, o.bottom) >= 0) {
+        expect(p.overhangSeq, label).toBe(site.overhangSeq);
+        compared++;
+      }
+    }
+    expect(compared).toBeGreaterThan(50);
+  });
+
+  it('rests on every catalogue enzyme cutting at or after its motif start on the recognition strand', () => {
+    for (const e of REBASE_ENZYMES) {
+      expect(e.cutFwd, e.name).toBeGreaterThanOrEqual(0);
+      expect(e.cutRev, e.name).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('a cut exactly at the junction of the last base and base 1 sits on the origin without crossing it', () => {
+    // NlaIII CATG^ ending at the last base: its top cut is the junction, its motif and overhang before it.
+    const atEnd = 'TTTTTTTTCATG';
+    const end = engineSite(atEnd, 'circular', 'NlaIII');
+    expect(end.cutTop).toBe(1);
+    const pe = cleavagePicture(end, atEnd, true, 2);
+    expect(pe.crossesOrigin).toBe(false);
+    expect(pe.topCut.position).toBe(12);
+    expect(topWithCut(pe)).toBe('TTCATG^TT');
+    expect(pe.coordinates).toEqual([7, 8, 9, 10, 11, 12, 1, 2]);
+    expect(pe.overhangSeq).toBe('CATG');
+    // NlaIII starting at base 1: its bottom cut is the junction.
+    const atStart = 'CATGTTTTTTTT';
+    const start = engineSite(atStart, 'circular', 'NlaIII');
+    const ps = cleavagePicture(start, atStart, true, 2);
+    expect(ps.crossesOrigin).toBe(false);
+    expect(ps.bottomCut.position).toBe(12);
+    expect(bottomWithCut(ps)).toBe('AA^GTACAA');
   });
   it('a cut after the last base of a linear molecule is numbered by that base, with no base after it', () => {
     // NlaIII CATG^ at the end of a linear fragment: the engine's cutTop wraps to 1.

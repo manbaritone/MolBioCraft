@@ -19,14 +19,17 @@ export function cutSiteDisplayPosition(cutTop: number, seqLen: number, circular 
 export interface CleavageCut {
   /** The cut as a 0-based boundary into the window: it falls between columns `boundary - 1` and `boundary`. */
   boundary: number;
-  /** False when the cut falls past an end of a linear molecule, where there is no DNA to cut. */
+  /**
+   * Whether the cut lies in the molecule. Always true for an engine record: the engine reports no
+   * linear site whose cut falls past an end, and a circle has none.
+   */
   available: boolean;
   /**
    * The 1-based last base before the cut, the number the site list shows (as {@link cutSiteDisplayPosition},
-   * save that a cut after a linear molecule's last base is numbered by that base, not 0); null when unavailable.
+   * save that a cut after a linear molecule's last base is numbered by that base, not 0).
    */
   position: number | null;
-  /** The 1-based first base after the cut (the engine's `cutTop` / `cutBottom`); null when unavailable or past a linear end. */
+  /** The 1-based first base after the cut (the engine's `cutTop` / `cutBottom`); null after a linear molecule's last base. */
   firstBaseAfter: number | null;
   /** Bases between the cut and the nearer edge of the recognition motif; 0 for a cut within or at the edge of it. */
   gapFromMotif: number;
@@ -51,10 +54,14 @@ export interface CleavagePicture {
   bottomCut: CleavageCut;
   endType: RestrictionCutSite['overhangType'];
   overhangLength: number;
-  /** The top-strand bases between the two cuts, 5'->3'; null when any of them lies past a linear end. */
+  /** The top-strand bases between the two cuts, 5'->3'. Never null for an engine record, whose cuts lie in the molecule. */
   overhangSeq: string | null;
   typeIIS: boolean;
-  /** Whether the motif or a cut runs across base 1 of a circular molecule. */
+  /**
+   * Whether the motif or the overhang between the cuts runs across the junction of the last base
+   * and base 1 of a circular molecule. A cut exactly at that junction, with the motif and overhang
+   * on one side of it, sits on the origin without crossing it: false.
+   */
   crossesOrigin: boolean;
   /** How many window columns lie past each end of a linear molecule. */
   unavailableFlank: { left: number; right: number };
@@ -70,13 +77,25 @@ const distanceToMotif = (b: number, motifStart: number, motifEnd: number) =>
 
 /**
  * The engine's 1-based `cut` (first base after the cut, taken modulo the molecule's length) as an
- * unwrapped 0-based boundary: the representative nearest the motif `[motifStart, motifEnd]`.
+ * unwrapped 0-based boundary. On a linear molecule it is `cut - 1`, save that the engine wraps a cut
+ * after the last base to 1 (BG-01M7CDM1), so a cut of 1 is base 1's start or the molecule's end,
+ * whichever lies nearer the motif. On a circle it is the representative on the side the enzyme cuts:
+ * every catalogue enzyme's offsets are >= 0 from the motif start on its recognition strand, so a
+ * forward site's cuts lie at or after `motifStart` and a reverse site's at or before `motifEnd`.
  */
-function unwrapCut(cut: number, seqLen: number, motifStart: number, motifEnd: number): number {
-  const distance = (b: number) => distanceToMotif(b, motifStart, motifEnd);
-  const k = Math.round((motifStart - (cut - 1)) / seqLen);
-  const options = [k - 1, k, k + 1].map((i) => cut - 1 + i * seqLen);
-  return options.reduce((best, b) => (distance(b) < distance(best) ? b : best));
+function unwrapCut(
+  cut: number,
+  seqLen: number,
+  motifStart: number,
+  motifEnd: number,
+  strand: 1 | -1,
+  circular: boolean
+): number {
+  if (!circular) {
+    if (cut !== 1) return cut - 1;
+    return distanceToMotif(seqLen, motifStart, motifEnd) < distanceToMotif(0, motifStart, motifEnd) ? seqLen : 0;
+  }
+  return strand === 1 ? motifStart + mod(cut - 1 - motifStart, seqLen) : motifEnd - mod(motifEnd - (cut - 1), seqLen);
 }
 
 /**
@@ -94,8 +113,8 @@ export function cleavagePicture(
   const len = sequence.length;
   const motifStart = site.position - 1;
   const motifEnd = motifStart + site.enzyme.recognitionSeq.length;
-  const topRaw = unwrapCut(site.cutTop, len, motifStart, motifEnd);
-  const bottomRaw = unwrapCut(site.cutBottom, len, motifStart, motifEnd);
+  const topRaw = unwrapCut(site.cutTop, len, motifStart, motifEnd, site.strand, circular);
+  const bottomRaw = unwrapCut(site.cutBottom, len, motifStart, motifEnd, site.strand, circular);
   const spanLo = Math.min(motifStart, topRaw, bottomRaw);
   const spanHi = Math.max(motifEnd, topRaw, bottomRaw);
   const lo = spanLo - flank;
@@ -109,21 +128,15 @@ export function cleavagePicture(
     top += inMolecule(i) ? sequence[mod(i, len)] : ' ';
   }
 
-  const gap = (raw: number) => distanceToMotif(raw, motifStart, motifEnd);
-  const cut = (raw: number): CleavageCut => {
-    if (!circular && (raw < 0 || raw > len)) {
-      return { boundary: raw - lo, available: false, position: null, firstBaseAfter: null, gapFromMotif: gap(raw) };
-    }
-    // A linear molecule's cut after its last base: the engine's cut wraps to 1 there, but no base
-    // follows it and the last base before it is the molecule's last, not "before base 1".
-    return {
-      boundary: raw - lo,
-      available: true,
-      position: circular ? cutSiteDisplayPosition(mod(raw, len) + 1, len, true) : raw,
-      firstBaseAfter: circular ? mod(raw, len) + 1 : raw < len ? raw + 1 : null,
-      gapFromMotif: gap(raw),
-    };
-  };
+  // A linear molecule's cut after its last base: the engine's cut wraps to 1 there, but no base
+  // follows it and the last base before it is the molecule's last, not "before base 1".
+  const cut = (raw: number): CleavageCut => ({
+    boundary: raw - lo,
+    available: true,
+    position: circular ? cutSiteDisplayPosition(mod(raw, len) + 1, len, true) : raw,
+    firstBaseAfter: circular ? mod(raw, len) + 1 : raw < len ? raw + 1 : null,
+    gapFromMotif: distanceToMotif(raw, motifStart, motifEnd),
+  });
   const topCut = cut(topRaw);
   const bottomCut = cut(bottomRaw);
 
@@ -142,7 +155,7 @@ export function cleavagePicture(
     bottomCut,
     endType: topRaw < bottomRaw ? '5prime' : topRaw > bottomRaw ? '3prime' : 'blunt',
     overhangLength: ohHi - ohLo,
-    overhangSeq: overhang.includes(' ') ? null : overhang,
+    overhangSeq: overhang,
     typeIIS: site.enzyme.isTypeIIS ?? false,
     crossesOrigin: circular && (spanLo < 0 || spanHi > len),
     unavailableFlank: circular ? { left: 0, right: 0 } : { left: Math.max(0, -lo), right: Math.max(0, hi - len) },
