@@ -11,7 +11,7 @@ import { runValidatedAlignment } from './alignmentExecution';
 import { computeAlignmentConsensusAndIdentity } from './alignmentAnalysis';
 import { addSequencesToAlignment, columnRuns, columnsToMask, stripColumns, translationAlign, type MaskContent, type MaskOptions } from './alignmentTools';
 import { calculatePrimerMetrics, findORFs, mapReadAndCallVariants, runLocalBlastSearch, simulateRestrictionDigest, testSavedPrimersOnSequence } from './bioEngine';
-import { parsePrimerSpreadsheet } from './primerImport';
+import { describeSpreadsheetProblem, parsePrimerSpreadsheet, type PrimerColumnMapping } from './primerImport';
 import { analyzeEditing } from './crisprEditing';
 import { differentialExpression, type CountTable } from './expression';
 import { queryCentricRows } from './localBlastDb';
@@ -1508,8 +1508,16 @@ export function runAnnotateFromDocuments(targets: SequenceDocument[], references
 
 // ───────────────────────────── primer import, annotate by BLAST ─────────────────────────────
 
-export function runImportPrimers(text: string, v: OptionValues): OperationResult {
-  const { rows, skipped } = parsePrimerSpreadsheet(text);
+/**
+ * Import Primers: one primer document per row the sheet's faithful reading accepts
+ * (parsePrimerSpreadsheet, US-01M7DQHR). A single-line row read the same way as before is named,
+ * sequenced and described as it was at 77728aa (AC4 pins this). A sheet that cannot be read (a
+ * quote never closed, a workbook or other binary file) is refused with its row and field rather than
+ * imported in part. `mapping` is the columns the user chose.
+ */
+export function runImportPrimers(text: string, v: OptionValues, mapping?: Partial<PrimerColumnMapping>): OperationResult {
+  const { rows, skipped, problem } = parsePrimerSpreadsheet(text, mapping);
+  if (problem) throw new Error(`Cannot read the spreadsheet: ${describeSpreadsheetProblem(problem)}.`);
   if (!rows.length) throw new Error(skipped.length ? `No primers imported: ${skipped.slice(0, 3).map((s) => `line ${s.line} ${s.reason}`).join('; ')}.` : 'Paste or choose a spreadsheet with primer names and sequences.');
   const t = now();
   const folder = (String(v.folder ?? '').trim() || 'Primers') as SequenceDocument['folder'];

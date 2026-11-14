@@ -10,7 +10,7 @@ import React, { useMemo, useState } from 'react';
 import { OperationDialog, OptionRow } from './OperationDialog';
 import { alignmentRowsOf, runCalculateExpressionLevels, runFindStructuralVariants, runCrisprEditing, runAnnotateByBlast, runAnnotateFromDocuments, runDesignDegeneratePrimers, runImportPrimers, type OperationResult } from '../core/operationRunners';
 import { featuresTooLongToTransfer, MAX_TRANSFERRED_FEATURE_BP } from '../core/annotateFromDocuments';
-import { parsePrimerSpreadsheet } from '../core/primerImport';
+import { describeSpreadsheetProblem, fieldLabel, importedRowsOf, NO_COLUMN_MAPPING, readPrimerSpreadsheet, type PrimerColumnMapping } from '../core/primerImport';
 import type { LocalSequenceDbEntry } from '../core/localBlastDb';
 import { DEGENERATE_DEFAULTS } from '../core/degeneratePrimers';
 import type { SequenceDocument } from '../types/bio';
@@ -189,10 +189,29 @@ export interface ImportPrimersDialogProps {
   onClose: () => void;
 }
 
+/** Rows the preview table draws, so a sheet of thousands of oligos does not stall the dialog. */
+const PREVIEW_ROW_LIMIT = 200;
+
 export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCreate, onClose }) => {
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState('');
-  const preview = useMemo(() => (text.trim() ? parsePrimerSpreadsheet(text) : null), [text]);
+  const [mapping, setMapping] = useState<Partial<PrimerColumnMapping>>(NO_COLUMN_MAPPING);
+  // The faithful reading (US-01M7DQHR) and what Import Primers makes of it, row by row.
+  const reading = useMemo(() => (text.trim() ? readPrimerSpreadsheet(text, mapping) : null), [text, mapping]);
+  const preview = useMemo(() => (reading ? importedRowsOf(reading) : null), [reading]);
+  const importedByRow = useMemo(() => new Map((preview?.rows ?? []).map((r) => [r.row, r] as const)), [preview]);
+  const skippedByRow = useMemo(() => new Map((preview?.skipped ?? []).map((s) => [s.line, s.reason] as const)), [preview]);
+  const columnChoices = reading ? Array.from({ length: reading.columnCount }, (_x, c) => ({ value: c, label: fieldLabel(reading.header, c + 1) })) : [];
+  const mapSelect = (key: keyof PrimerColumnMapping, label: string, optional: boolean) => reading && (
+    <label key={key} style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+      {label}
+      <select id={`opdlg-ip-map-${key}`} aria-label={`${label} column`} value={reading.mapping[key]}
+        onChange={(e) => setMapping((m) => ({ ...m, [key]: Number(e.target.value) }))}>
+        {optional && <option value={-1}>(none)</option>}
+        {columnChoices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+      </select>
+    </label>
+  );
   return (
     <OperationDialog
       operationId="import-primers"
@@ -200,8 +219,8 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
       runLabel="Import"
       transientKeys={[]}
       defaults={{ folder: 'Primers' }}
-      summary={<span>Paste rows or choose a CSV / TSV file: a name column and a sequence column (a header row is optional; extra columns such as notes become the description).</span>}
-      validate={() => (!preview ? 'Paste primer rows or choose a file.' : !preview.rows.length ? 'No valid primer rows found.' : null)}
+      summary={<span>Paste rows or choose a CSV, TSV or semicolon-separated file saved as text: a name column and a sequence column (a header row is optional; a notes column becomes the description). Quoted cells may hold separators and line breaks.</span>}
+      validate={() => (!preview ? 'Paste primer rows or choose a file.' : preview.problem ? `Cannot read the spreadsheet: ${describeSpreadsheetProblem(preview.problem)}.` : !preview.rows.length ? 'No valid primer rows found.' : null)}
       renderOptions={(v, set) => (
         <>
           <OptionRow label="Primer list:" htmlFor="opdlg-ip-text">
@@ -216,6 +235,7 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
                       const f = e.target.files?.[0];
                       if (!f) return;
                       setFileName(f.name);
+                      setMapping(NO_COLUMN_MAPPING);
                       void f.text().then(setText);
                     }} />
                 </label>
@@ -223,12 +243,57 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
               </div>
             </div>
           </OptionRow>
-          {preview && (
+          {reading && (
+            <OptionRow label="Columns:">
+              <div className="prefs-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                {mapSelect('name', 'Name', false)}
+                {mapSelect('sequence', 'Sequence', false)}
+                {mapSelect('description', 'Description', true)}
+                {mapSelect('labels', 'Labels', true)}
+              </div>
+            </OptionRow>
+          )}
+          {reading && preview && (
             <OptionRow label="Preview:">
-              <div className="mbc-opdlg-muted" style={{ paddingTop: 4 }}>
-                {preview.rows.length} primer{preview.rows.length === 1 ? '' : 's'}
-                {preview.rows.length ? ` (${preview.rows.slice(0, 3).map((r) => r.name).join(', ')}${preview.rows.length > 3 ? ', …' : ''})` : ''}
-                {preview.skipped.length ? ` · ${preview.skipped.length} skipped: ${preview.skipped.slice(0, 3).map((s) => `line ${s.line} ${s.reason}`).join('; ')}` : ''}
+              <div style={{ display: 'grid', gap: 4, width: '100%' }}>
+                {preview.problem && <div className="mbc-opdlg-notice" role="alert" data-ip-problem="">Cannot read the spreadsheet: {describeSpreadsheetProblem(preview.problem)}.</div>}
+                <div className="mbc-opdlg-muted" style={{ paddingTop: 4 }}>
+                  {preview.rows.length} primer{preview.rows.length === 1 ? '' : 's'}
+                  {preview.rows.length ? ` (${preview.rows.slice(0, 3).map((r) => r.name).join(', ')}${preview.rows.length > 3 ? ', …' : ''})` : ''}
+                  {preview.skipped.length ? ` · ${preview.skipped.length} skipped: ${preview.skipped.slice(0, 3).map((s) => `line ${s.line} ${s.reason}`).join('; ')}` : ''}
+                </div>
+                {reading.rows.length > PREVIEW_ROW_LIMIT && (
+                  <div className="mbc-opdlg-muted">The first {PREVIEW_ROW_LIMIT} of {reading.rows.length} rows are shown; the count above covers every row.</div>
+                )}
+                {reading.rows.length > 0 && (
+                  <div style={{ maxHeight: 220, overflow: 'auto' }}>
+                    <table className="mbc-opdlg-ip-preview" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr><th>Row</th><th>Name</th><th>Original</th><th>Normalized</th><th>Molecule</th><th>Modifications</th><th>Labels</th><th>Import</th></tr>
+                      </thead>
+                      <tbody>
+                        {reading.rows.slice(0, PREVIEW_ROW_LIMIT).map((r) => {
+                          const made = importedByRow.get(r.row);
+                          return (
+                            <tr key={r.row} data-ip-row={r.row}>
+                              <td>{r.row}</td>
+                              <td data-ip-col="name">{r.name}</td>
+                              <td data-ip-col="original" style={{ fontFamily: 'var(--font-mono, monospace)' }}>{r.original}</td>
+                              <td data-ip-col="normalized" style={{ fontFamily: 'var(--font-mono, monospace)' }}>{r.sequence}</td>
+                              <td data-ip-col="molecule">{r.molecule}</td>
+                              <td data-ip-col="modifications">{r.modifications.map((m) => `${m.text} ${m.placement === 'internal' ? `at ${m.position}${m.base ? ` (${m.base})` : ''}` : `${m.placement} end`}, no Tm calculation`).join('; ')}</td>
+                              <td data-ip-col="labels">{r.labels.join(', ')}</td>
+                              <td data-ip-col="import">
+                                {r.errors.map((e) => `${fieldLabel(reading.header, e.column)}: ${e.message}`).join('; ')}
+                                {!r.errors.length && (made ? `as ${made.name}` : `skipped: ${skippedByRow.get(r.row) ?? ''}`)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </OptionRow>
           )}
@@ -237,7 +302,7 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
           </OptionRow>
         </>
       )}
-      onRun={(v) => onCreate(runImportPrimers(text, v))}
+      onRun={(v) => onCreate(runImportPrimers(text, v, mapping))}
       onClose={onClose}
     />
   );
