@@ -414,21 +414,17 @@ describe('Split view side by side (US-01M6Q1CC)', () => {
     // A session's value: kept inside the range, clamped outside it.
     expect([125, 30, 400].map(clampSequenceZoom)).toEqual([125, 65, 260]);
 
-    // ── The map keeps no zoom of its own: a ⌘/Ctrl/⌥ wheel and a double-click are reported to the
-    // caller, a plain wheel is not, and the circle is drawn at the caller's zoom alone. The map's
-    // own handlers are called while it renders, so any state they set would show in this render.
+    // ── The map keeps no zoom of its own: a double-click is reported to the caller, and the circle
+    // is drawn at the caller's zoom alone. The map's own handlers are called while it renders, so
+    // any state they set would show in this render. Its wheel is a non-passive DOM listener, not a
+    // React onWheel (US-01M7CC6H; circularMapWheelZoom.test.tsx drives it).
     const reports: ((z: number) => number)[] = [];
     let driven = false;
     probe.onElement = (type, props) => {
       if (driven || type !== 'div' || props.className !== 'plasmid-canvas-scroll') return;
       driven = true;
-      const wheel = props.onWheel as (e: object) => void;
-      const ev = (mods: object, deltaY: number) => ({ ctrlKey: false, metaKey: false, altKey: false, ...mods, deltaY, preventDefault() {} });
-      wheel(ev({}, -100));
+      expect(props.onWheel, 'no passive React wheel handler').toBeUndefined();
       (props.onDoubleClick as (e: object) => void)({});
-      wheel(ev({ ctrlKey: true }, -100));
-      wheel(ev({ metaKey: true }, 100));
-      wheel(ev({ altKey: true }, -100));
     };
     const drawMap = (zoomLevel: number) => parseMarkup(renderToStaticMarkup(
       <CircularPlasmidMap doc={puc19} cutSites={puc19Cuts} orfs={[]} selectedRange={null} onSelectRange={() => {}}
@@ -437,12 +433,8 @@ describe('Split view side by side (US-01M6Q1CC)', () => {
     const at150 = drawMap(150);
     probe.onElement = null;
     expect(driven, 'the map handed its view its wheel and double-click handlers').toBe(true);
-    expect(reports.length, 'double-click and three modified wheel notches were reported').toBe(4);
-    expect(reports.map((u) => u(150))).toEqual([100, wheelSequenceZoom(150, -100), wheelSequenceZoom(150, 100), wheelSequenceZoom(150, -100)]);
-    expect(reports.map((u) => u(150))).toEqual([100, 162, 139, 162]);
-    // At the ends the map's reports stay inside the range.
-    expect(reports[1](260)).toBe(260);
-    expect(reports[2](65)).toBe(65);
+    expect(reports.length, 'the double-click was reported').toBe(1);
+    expect(reports.map((u) => u(150))).toEqual([100]);
     expect(circleScale(at150), 'drawn at the caller zoom, with no multiplier of its own').toBeCloseTo(1.5, 4);
     expect(circleScale(drawMap(65))).toBeCloseTo(0.65, 4);
     expect(circleScale(drawMap(260))).toBeCloseTo(2.6, 4);

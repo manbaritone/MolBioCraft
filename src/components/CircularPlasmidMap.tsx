@@ -14,7 +14,16 @@ import {
 } from '../types/bio';
 import { getResidentTrackOverviewRust } from '../lib/rustBioEngine';
 import { cutSiteDisplayPosition } from '../core/restrictionDisplay';
-import { WHEEL_NOTCH_PX, wheelZoomScale } from '../core/wheelZoom';
+import {
+  WHEEL_NOTCH_PX,
+  anchoredOffset,
+  classifyWheelGesture,
+  normalizeWheelDelta,
+  wheelZoomScale,
+  zoomAnchorPoint,
+  type Point,
+  type WheelGestureLike,
+} from '../core/wheelZoom';
 
 interface CircularPlasmidMapProps {
   doc: SequenceDocument;
@@ -47,8 +56,8 @@ interface CircularPlasmidMapProps {
   /** The sequence map's one zoom, in percent (see SEQUENCE_ZOOM_MIN..SEQUENCE_ZOOM_MAX). */
   zoomLevel?: number;
   /**
-   * Reports a zoom change made on the map (⌘/Ctrl/⌥+wheel, double-click), as an update of the
-   * caller's zoom; the map keeps no zoom of its own.
+   * Reports a zoom change made on the map (a wheel or pinch over it, double-click), as an update
+   * of the caller's zoom; the map keeps no zoom of its own.
    */
   onZoomChange?: (update: (current: number) => number) => void;
   /**
@@ -60,8 +69,9 @@ interface CircularPlasmidMapProps {
 
 /**
  * The sequence map's one zoom, in percent of the fitted size. The viewer header's − / % / +
- * buttons, ⌘= / ⌘- / ⌘0 and View › Zoom, ⌘/Ctrl/⌥+wheel and double-click on the circle all move
- * this one value, and a restored session is held to the same range.
+ * buttons, ⌘= / ⌘- / ⌘0 and View › Zoom, a wheel or pinch over the circle and double-click on it
+ * all move this one value, and a restored session is held to the same range. The value keeps its
+ * fraction (a trackpad moves it by fractions of a percent); the readout shows it rounded.
  */
 export const SEQUENCE_ZOOM_MIN = 65;
 export const SEQUENCE_ZOOM_MAX = 260;
@@ -96,6 +106,192 @@ export function wheelSequenceZoom(percent: number, deltaY: number): number {
     zoomOutPerNotch: 0.925,
   });
   return clampSequenceZoom(Math.round(scaled));
+}
+
+/** The zoom readout: the zoom's rounded percentage (`sequenceZoomLabel(137.6)` is "138%"). */
+export function sequenceZoomLabel(percent: number): string {
+  return `${Math.round(clampSequenceZoom(percent))}%`;
+}
+
+/** The svg's box on screen, as `getBoundingClientRect` gives it. */
+export interface CircularMapRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** What a wheel or pinch acts on: the zoom (percent), the pan (map units) and the svg's box. */
+export interface CircularMapView {
+  zoom: number;
+  pan: Point;
+  rect: CircularMapRect | null;
+}
+
+export interface CircularMapWheelEvent extends WheelGestureLike {
+  deltaMode?: number;
+  clientX: number;
+  clientY: number;
+}
+
+export interface CircularMapWheelStep {
+  /** Whether the map takes this gesture (and so prevents its default). */
+  handled: boolean;
+  zoom: number;
+  pan: Point;
+}
+
+/**
+ * A client point in the frame the map's pan lives in: map units from the view centre (340, 270),
+ * through the svg's "xMidYMid meet" fit of the 680x540 view into `rect`. Undefined when the box is
+ * not laid out or the point is not a number.
+ */
+function circularMapPointer(clientX: number, clientY: number, rect: CircularMapRect | null): Point | undefined {
+  if (!rect) return undefined;
+  const k = fitCircularMapScale(rect.width, rect.height);
+  if (!(k > 0) || !Number.isFinite(k)) return undefined;
+  const x = (clientX - rect.left - (rect.width - 680 * k) / 2) / k - 340;
+  const y = (clientY - rect.top - (rect.height - 540 * k) / 2) / k - 270;
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined;
+}
+
+/**
+ * The view after zooming `view` to `zoom` about a client point: the map point under the pointer
+ * stays where it is on screen. The map draws its view group at translate(340 + pan) scale(zoom/100)
+ * translate(-340, -270), so with points measured from the view centre, screen = point × scale +
+ * pan, the frame `anchoredOffset` works in. With no usable pointer it zooms about the view centre.
+ */
+export function circularMapZoomTo(view: CircularMapView, zoom: number, clientX: number, clientY: number): { zoom: number; pan: Point } {
+  const from = clampSequenceZoom(view.zoom);
+  const to = clampSequenceZoom(zoom);
+  const pointer = zoomAnchorPoint({
+    pointer: circularMapPointer(clientX, clientY, view.rect),
+    viewport: { x: -340, y: -270, width: 680, height: 540 },
+  });
+  return { zoom: to, pan: anchoredOffset({ pointer, offset: view.pan, fromScale: from / 100, toScale: to / 100 }) };
+}
+
+/**
+ * One wheel event over the circle (CR-01M7CCSD's policy for a canvas): a vertical wheel, plain or
+ * with Ctrl, Cmd or Alt, and a Chromium trackpad pinch (a ctrl-flagged wheel), zoom by the shared
+ * multiplicative step about the pointer, unrounded; a mostly horizontal or empty wheel is not the
+ * map's and is left to the page.
+ */
+export function circularMapWheelStep(event: CircularMapWheelEvent, view: CircularMapView): CircularMapWheelStep {
+  if (classifyWheelGesture(event, 'canvas') !== 'zoom') return { handled: false, zoom: view.zoom, pan: view.pan };
+  const from = clampSequenceZoom(view.zoom);
+  const zoom = wheelZoomScale(from, normalizeWheelDelta(event).y, {
+    min: SEQUENCE_ZOOM_MIN,
+    max: SEQUENCE_ZOOM_MAX,
+    zoomInPerNotch: 1.08,
+  });
+  return { handled: true, ...circularMapZoomTo(view, zoom, event.clientX, event.clientY) };
+}
+
+type AnyListener = (event: Event) => void;
+/** The part of an element `bindCircularMapWheel` needs. */
+export interface WheelListenerTarget {
+  addEventListener(type: string, listener: AnyListener, options?: AddEventListenerOptions): void;
+  removeEventListener(type: string, listener: AnyListener): void;
+}
+
+export interface CircularMapWheelHooks {
+  /** The view as it stands now. */
+  read(): CircularMapView;
+  /** Takes a new zoom and pan. */
+  apply(next: { zoom: number; pan: Point }): void;
+}
+
+interface GestureLike {
+  scale?: number;
+  clientX?: number;
+  clientY?: number;
+  preventDefault(): void;
+}
+
+/**
+ * Listens for wheels and WebKit pinches on `target`, non-passively, so that a gesture the map
+ * takes has its default (page scroll, page zoom) prevented and one that is not the map's (a
+ * horizontal scroll) keeps it. The wheel deltas of one animation frame are summed into one step.
+ * A WebKit pinch (gesturestart / gesturechange, as WKWebView and Safari send it) zooms to the
+ * gesture's start zoom times its `scale`; the ctrl-flagged wheels a pinch may also send while a
+ * gesture is under way are prevented but not applied, so the pinch zooms the map once. Returns the
+ * function that removes every listener and cancels a queued frame.
+ */
+export function bindCircularMapWheel(target: WheelListenerTarget, hooks: CircularMapWheelHooks): () => void {
+  const options: AddEventListenerOptions = { passive: false };
+  let pending: CircularMapWheelEvent | null = null;
+  let frame: number | null = null;
+  let gestureFrom: number | null = null;
+
+  const flush = () => {
+    frame = null;
+    const event = pending;
+    pending = null;
+    if (!event) return;
+    const view = hooks.read();
+    const step = circularMapWheelStep(event, view);
+    if (step.handled && (step.zoom !== view.zoom || step.pan.x !== view.pan.x || step.pan.y !== view.pan.y)) {
+      hooks.apply({ zoom: step.zoom, pan: step.pan });
+    }
+  };
+  const schedule = () => {
+    if (frame !== null) return;
+    if (typeof requestAnimationFrame === 'function') {
+      frame = requestAnimationFrame(flush);
+    } else {
+      frame = -1;
+      flush();
+    }
+  };
+
+  const onWheel = (event: WheelEvent | (CircularMapWheelEvent & { preventDefault(): void })) => {
+    if (classifyWheelGesture(event, 'canvas') !== 'zoom') return;
+    event.preventDefault();
+    if (gestureFrom !== null) return;
+    const deltaY = normalizeWheelDelta(event).y;
+    pending = {
+      deltaX: 0,
+      deltaY: (pending?.deltaY ?? 0) + deltaY,
+      deltaMode: 0,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    schedule();
+  };
+  const onGestureStart = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = hooks.read().zoom;
+    pending = null;
+  };
+  const onGestureChange = (event: GestureLike) => {
+    event.preventDefault();
+    if (gestureFrom === null || !(Number(event.scale) > 0)) return;
+    const view = hooks.read();
+    const next = circularMapZoomTo(view, gestureFrom * Number(event.scale), Number(event.clientX), Number(event.clientY));
+    if (next.zoom !== view.zoom) hooks.apply(next);
+  };
+  const onGestureEnd = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = null;
+  };
+
+  const listeners: [string, AnyListener][] = [
+    ['wheel', onWheel as unknown as AnyListener],
+    ['gesturestart', onGestureStart as unknown as AnyListener],
+    ['gesturechange', onGestureChange as unknown as AnyListener],
+    ['gestureend', onGestureEnd as unknown as AnyListener],
+  ];
+  for (const [type, listener] of listeners) target.addEventListener(type, listener, options);
+  return () => {
+    for (const [type, listener] of listeners) target.removeEventListener(type, listener);
+    if (frame !== null && frame !== -1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    frame = null;
+    pending = null;
+  };
 }
 
 /**
@@ -220,7 +416,7 @@ function normalizeAngle(deg: number): number {
 
 // The reset hint leads: where the footer is one line (Split side by side), the end is what is cut.
 const CIRCULAR_MAP_TIP =
-  'Tip: Double-click to reset • Drag to pan • ⌘/Ctrl+Wheel to zoom • Click any feature, ORF, or site to jump';
+  'Tip: Double-click to reset • Drag to pan • Wheel or pinch to zoom • Click any feature, ORF, or site to jump';
 
 /** The most ORFs the ORF ring draws, the longest first (the ORF list comes longest first). */
 const ORF_RING_ARCS = 8;
@@ -675,6 +871,11 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     measuredBox ? fitCircularMapScale(measuredBox.width, measuredBox.height) : 1
   );
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  // The view a wheel or pinch starts from: the last render's, or what the last wheel set, should
+  // another arrive before the caller's zoom comes back as a render.
+  const wheelViewRef = useRef({ zoom: zoomLevel, pan: panOffset, onZoomChange });
+  wheelViewRef.current = { zoom: zoomLevel, pan: panOffset, onZoomChange };
   const dragStateRef = useRef<{
     dragging: boolean;
     pointerId: number;
@@ -711,6 +912,26 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   useEffect(() => {
     setPanOffset({ x: 0, y: 0 });
   }, [doc.id]);
+
+  // A wheel or pinch over the circle zooms it about the pointer (US-01M7CC6H). React's own onWheel
+  // is passive, so it could not stop a pinch zooming the page: the listener is the DOM's own.
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return undefined;
+    return bindCircularMapWheel(pane, {
+      read: () => {
+        const box = svgRef.current?.getBoundingClientRect();
+        const { zoom, pan } = wheelViewRef.current;
+        return { zoom, pan, rect: box ? { left: box.left, top: box.top, width: box.width, height: box.height } : null };
+      },
+      apply: ({ zoom, pan }) => {
+        const { onZoomChange: report } = wheelViewRef.current;
+        wheelViewRef.current = { ...wheelViewRef.current, zoom, pan };
+        setPanOffset(pan);
+        report?.(() => zoom);
+      },
+    });
+  }, []);
 
   // A restore by the caller recentres the circle, as its zoom returns to 100%.
   const [restoredFor, setRestoredFor] = useState(viewRestoreKey);
@@ -1177,16 +1398,12 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
       )}
       <div
         className="plasmid-canvas-scroll"
+        ref={paneRef}
         onDoubleClick={() => {
-          setPanOffset({ x: 0, y: 0 });
+          const centred = { x: 0, y: 0 };
+          wheelViewRef.current = { ...wheelViewRef.current, zoom: SEQUENCE_ZOOM_DEFAULT, pan: centred };
+          setPanOffset(centred);
           onZoomChange?.(() => SEQUENCE_ZOOM_DEFAULT);
-        }}
-        onWheel={(e) => {
-          if (e.ctrlKey || e.metaKey || e.altKey) {
-            e.preventDefault();
-            const deltaY = e.deltaY;
-            onZoomChange?.((z) => wheelSequenceZoom(z, deltaY));
-          }
         }}
         onPointerDown={(e) => {
           if (dragStateRef.current.dragging) return;
@@ -1216,9 +1433,14 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
           }
           const dx = e.clientX - dragStateRef.current.startX;
           const dy = e.clientY - dragStateRef.current.startY;
+          // A wheel zoomed about the pointer may have panned past the drag's own bounds; a drag
+          // from there keeps its pan rather than snapping back inside them.
+          const { origX, origY } = dragStateRef.current;
+          const limitX = Math.max(240, Math.abs(origX));
+          const limitY = Math.max(200, Math.abs(origY));
           setPanOffset({
-            x: Math.max(-240, Math.min(240, dragStateRef.current.origX + dx)),
-            y: Math.max(-200, Math.min(200, dragStateRef.current.origY + dy)),
+            x: Math.max(-limitX, Math.min(limitX, origX + dx)),
+            y: Math.max(-limitY, Math.min(limitY, origY + dy)),
           });
         }}
         onPointerUp={(e) => {

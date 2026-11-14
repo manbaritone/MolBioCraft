@@ -285,6 +285,7 @@ import {
   restrictionScopeWords,
   SEQUENCE_ZOOM_DEFAULT,
   stepSequenceZoom,
+  sequenceZoomLabel,
 } from './components/CircularPlasmidMap';
 import { AppStartupSplash } from './components/AppStartupSplash';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -14637,7 +14638,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     aria-keyshortcuts={circularMapShown ? ariaSc('0') : undefined}
                     title={circularMapShown ? `Reset Zoom to 100% (${sc('0')})` : CIRCULAR_ONLY_HINT}
                   >
-                    {zoomLevel}%
+                    {sequenceZoomLabel(zoomLevel)}
                   </button>
                   <button
                     type="button"
