@@ -4,6 +4,29 @@
 export type Topology = 'circular' | 'linear';
 export type MoleculeType = 'DNA' | 'RNA' | 'Protein';
 
+/**
+ * The one active interval on a molecule (MB-NAV-01), in 1-based inclusive coordinates - the
+ * same `{ start, end }` the App passes to every viewer as `selectedRange`. On a linear molecule
+ * `start <= end` always; on a circular molecule `start > end` means the interval crosses the
+ * origin and covers `start..length` then `1..end`. See `src/core/activeInterval.ts`.
+ */
+export interface ActiveInterval {
+  start: number;
+  end: number;
+}
+
+/** Which edge of an {@link ActiveInterval} a resize moves. */
+export type IntervalEdge = 'start' | 'end';
+
+/**
+ * A 0-based, half-open render boundary: the bases `sequence.slice(startIndex, endExclusive)`
+ * covers. A crossing interval yields two of these.
+ */
+export interface IntervalRenderSegment {
+  startIndex: number;
+  endExclusive: number;
+}
+
 export type FeatureType =
   | 'CDS'
   | 'promoter'
