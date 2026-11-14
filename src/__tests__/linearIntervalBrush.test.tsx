@@ -17,6 +17,7 @@
  */
 
 import React from 'react';
+import nodeFs from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -67,6 +68,8 @@ const {
   clearNativeTextSelection,
   firstVisibleRowStart,
   selectionFollowPage,
+  SELECTION_QUICKBAR_HEIGHT_PX,
+  SELECTION_QUICKBAR_SLOT_STYLE,
 } = await import('../components/LinearSequenceView');
 const { CircularPlasmidMap } = await import('../components/CircularPlasmidMap');
 const { findRestrictionCutSites } = await import('../core/bioEngine');
@@ -856,7 +859,7 @@ interface RowsDrive {
  */
 function renderRows(
   doc: SequenceDocument,
-  selectedRange: { start: number; end: number } | null,
+  selectedRange: { start: number; end: number; label?: string } | null,
   act: ((d: RowsDrive) => void) | null,
   /** Act only on a pass that draws this base (a pass before the view has turned to its page is skipped). */
   onPassWith?: number,
@@ -1093,6 +1096,119 @@ describe('US-01M7CCJC AC1 a drag across bases selects exactly the bases under it
     });
     expect(drag.selections).toEqual([{ start: 70, end: 75 }, { start: 70, end: 70 }]);
     expect(stopped).toBe(1);
+  });
+
+  // BG-01M7CMT6: the first selection a drag made changed what the quickbar above the rows read, and
+  // with it the bar's height (none -> 36 px, or 61 px when a long readout wrapped to two lines), and
+  // the construct cockpit's selection row wrapped the same way; the rows moved 26-58 px under a
+  // pointer that had not moved, so the rest of the drag read the bases of another line. Two wrong
+  // implementations are named here: a bar whose height still follows what it reads (drawn only
+  // with a selection, or free to wrap), and a drag that maps the pointer through where the rows
+  // were at the press rather than where they are drawn now.
+  it('the quickbar holds one fixed height whatever a drag makes it read, drawn with or without a selection (BG-01M7CMT6)', () => {
+    const doc = docOf('ACGTTGCAAT'.repeat(607), {
+      features: [{ id: 'egfp', name: 'eGFP', type: 'CDS', start: 5179, end: 5898, strand: 1, color: FEATURE_COLOR }] as SequenceDocument['features'],
+    });
+    // The selections a drag from 5164 makes as it travels to 5199, its content changing mid-drag.
+    const s = fakeScroller();
+    const dragged = renderRows(doc, { start: 5179, end: 5898, label: 'eGFP (CDS)' }, (d) => {
+      attach(d, s);
+      rowsHandler(d, 'onPointerDown')(rowEvent(s, 5164, 100, 100));
+      for (const [pos, x] of [[5168, 140], [5175, 210], [5199, 450]] as const) rowsHandler(d, 'onPointerMove')(rowEvent(s, pos, x, 100));
+      rowsHandler(d, 'onPointerUp')(rowEvent(s, 5199, 450, 100));
+    }).selections;
+    expect(dragged.map((r) => `${r.start}..${r.end}`)).toEqual(['5164..5168', '5164..5175', '5164..5199']);
+    const states: ({ start: number; end: number; label?: string } | null)[] = [
+      null, // before the drag's first selection: the slot is already there
+      { start: 5179, end: 5898, label: 'eGFP (CDS)' }, // the 2-line readout of the review
+      ...dragged,
+      { start: 1, end: 6070 },
+    ];
+    for (const sel of states) {
+      const slots: Record<string, unknown>[] = [];
+      probe.onElement = (type, props) => {
+        if (type === 'div' && /(^|\s)seq-selection-quickbar(\s|$)/.test(String(props.className ?? ''))) slots.push(props);
+      };
+      const html = renderToStaticMarkup(
+        <LinearSequenceView doc={doc} cutSites={[]} selectedRange={sel} onSelectRange={() => {}} onUpdateDocument={() => {}}
+          onClearSelection={() => {}} onExtractSelection={() => {}} onConvertSelectionToOligo={() => {}} />,
+      );
+      probe.onElement = null;
+      const what = sel ? `${sel.label ?? ''} ${sel.start}..${sel.end}` : 'no selection';
+      // One slot a pass (a pass that turns to the selection's page renders the view again).
+      expect(slots.length, `${what}: a quickbar slot above the rows`).toBeGreaterThan(0);
+      const slot = slots[slots.length - 1];
+      expect(new Set(slots.map((p) => p.style)).size, `${what}: the same slot on every pass`).toBe(1);
+      const style = slot.style as React.CSSProperties;
+      expect(style, `${what}: the one slot style`).toEqual(SELECTION_QUICKBAR_SLOT_STYLE);
+      expect([style.height, style.minHeight, style.maxHeight], `${what}: a fixed height`).toEqual([
+        SELECTION_QUICKBAR_HEIGHT_PX, SELECTION_QUICKBAR_HEIGHT_PX, SELECTION_QUICKBAR_HEIGHT_PX,
+      ]);
+      expect([style.flexWrap, style.overflow, style.flex, style.boxSizing], `${what}: one line that neither wraps nor grows`).toEqual([
+        'nowrap', 'hidden', '0 0 auto', 'border-box',
+      ]);
+      if (sel) {
+        // The readout may be cut short on screen; the bar's title gives it whole.
+        const summary = /<div class="seq-selection-quickbar-summary">([\s\S]*?)<\/div>/.exec(html)?.[1] ?? '';
+        // The range and its composition are set apart on screen by a margin, in the title by a space.
+        const words = summary.replace(/<!--[\s\S]*?-->/g, '').replace(/<\/strong>/g, ' ').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+        expect(words, `${what}: the readout`).toMatch(/\d\.\.\d/);
+        expect(slot.title, `${what}: the whole readout in the title`).toBe(words);
+      }
+    }
+  });
+
+  it('the readouts above the rows keep fixed heights: the quickbar one line cut short, the cockpit two lines (BG-01M7CMT6)', () => {
+    const css = nodeFs.readFileSync(new URL('../App.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const decls = (selector: string) => {
+      const found: Record<string, string> = {};
+      const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      for (const m of css.matchAll(new RegExp(`(?:^|\\n)${esc}\\s*\\{([^}]*)\\}`, 'g'))) {
+        for (const d of m[1].split(';')) {
+          const i = d.indexOf(':');
+          if (i > 0) found[d.slice(0, i).trim()] = d.slice(i + 1).trim();
+        }
+      }
+      expect(Object.keys(found).length, `a ${selector} rule in App.css`).toBeGreaterThan(0);
+      return found;
+    };
+    const summary = decls('.seq-selection-quickbar-summary');
+    expect([summary['white-space'], summary['text-overflow'], summary.overflow, summary['min-width']]).toEqual(['nowrap', 'ellipsis', 'hidden', '0']);
+    expect(decls('.seq-selection-quickbar-actions')['flex-wrap']).toBe('nowrap');
+    // The cockpit's selection row keeps the two lines a long readout took, whatever it reads.
+    const cockpit = decls('.mbc-cockpit-row-bottom');
+    expect(cockpit['block-size'], 'the cockpit selection row has a fixed height').toMatch(/^\d+px$/);
+    expect(cockpit['min-block-size']).toBe(cockpit['block-size']);
+    expect(parseInt(cockpit['block-size'], 10), 'two lines of 24 px controls').toBeGreaterThanOrEqual(2 * 24 + 8);
+    expect(cockpit['overflow-y'], 'more than two lines scrolls inside it').toBe('auto');
+  });
+
+  it('the drag reads the base under the pointer from the rows as drawn at each event, not where they were at the press (BG-01M7CMT6)', () => {
+    // Rows of 60 bases, 40 px high, 10 px a base, their first row's top at `layout.top`.
+    const layout = { top: 100 };
+    const baseAtPoint = (x: number, y: number) => {
+      const row = Math.floor((y - layout.top) / 40);
+      const col = Math.floor(x / 10);
+      return row >= 0 && col >= 0 && col < 60 ? row * 60 + col + 1 : null;
+    };
+    const elementFromPoint = vi.fn((x: number, y: number) => baseTarget(baseAtPoint(x, y)));
+    // The scroller's box moves with its rows, as it did when the bar above it changed height.
+    const s = Object.assign(fakeScroller(), {
+      getBoundingClientRect: () => ({ top: layout.top, bottom: layout.top + 160, left: 0, right: 1000, width: 1000, height: 160 }),
+    });
+    const v = renderRows(docOf(SEQ3000), null, (d) => {
+      vi.stubGlobal('document', { elementFromPoint });
+      attach(d, s);
+      rowsHandler(d, 'onPointerDown')(rowEvent(s, baseAtPoint(95, 115), 95, 115)); // base 10
+      // Captured, the events' target is the rows' scroller, never a base: only the point says which.
+      layout.top = 158; // the rows moved 58 px down under the pointer
+      rowsHandler(d, 'onPointerMove')(rowEvent(s, null, 305, 195)); // drawn now: row 0, base 31 (at the press: 151)
+      layout.top = 42; // and back up past where they were
+      rowsHandler(d, 'onPointerMove')(rowEvent(s, null, 205, 175)); // drawn now: row 3, base 201 (at the press: 141)
+      rowsHandler(d, 'onPointerUp')(rowEvent(s, null, 205, 175));
+    });
+    expect(v.selections.map((r) => `${r.start}..${r.end}`)).toEqual(['10..31', '10..201']);
+    expect(elementFromPoint.mock.calls, 'each event is read at its own point').toEqual([[95, 115], [305, 195], [205, 175], [205, 175]]);
   });
 
   it('the overview and the rows show the interval a drag selected, base for base', () => {

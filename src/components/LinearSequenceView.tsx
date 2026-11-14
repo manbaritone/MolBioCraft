@@ -561,6 +561,38 @@ export type RowDrag =
 
 export const ROW_DRAG_IDLE: RowDrag = { phase: 'idle' };
 
+/**
+ * The selection quickbar's slot above the rows (BG-01M7CMT6): one line of a fixed height, drawn
+ * with or without a selection, that neither wraps nor grows. A drag selects at every step, and the
+ * bar's readout changes with it; a bar that appeared, or wrapped to a second line, at that moment
+ * moved the rows 26-58 px under a pointer that had not moved, so the drag read the base of another
+ * line. A readout too long for the line is cut short on screen and given whole in the bar's title.
+ */
+export const SELECTION_QUICKBAR_HEIGHT_PX = 32;
+export const SELECTION_QUICKBAR_SLOT_STYLE: Readonly<React.CSSProperties> = Object.freeze({
+  height: SELECTION_QUICKBAR_HEIGHT_PX,
+  minHeight: SELECTION_QUICKBAR_HEIGHT_PX,
+  maxHeight: SELECTION_QUICKBAR_HEIGHT_PX,
+  boxSizing: 'border-box',
+  flex: '0 0 auto',
+  flexWrap: 'nowrap',
+  overflow: 'hidden',
+});
+
+/** The quickbar's readout as one line of text, for its title (the bar may cut it short on screen). */
+export function selectionQuickbarReadout(
+  label: string | undefined,
+  stats: { start: number; end: number; length: number; gcPercent: number | null; tmBasicC: number | null },
+  unitLabel: string,
+): string {
+  const tm = stats.tmBasicC === null ? 'n/a' : `${stats.tmBasicC.toFixed(1)} °C`;
+  const composition = stats.gcPercent === null ? '' : ` · GC ${stats.gcPercent.toFixed(1)}% · Tm ${tm}`;
+  return (
+    `${label ? `${label} · ` : ''}${stats.start.toLocaleString()}..${stats.end.toLocaleString()} ` +
+    `(${stats.length.toLocaleString()} ${unitLabel}${composition})`
+  );
+}
+
 /** A pointer event over the rows: `pos` is the 1-based base under it (its data-pos), or null over no base. */
 export type RowDragInput =
   | { type: 'down'; pos: number; x: number; y: number; pointerId: number }
@@ -3010,12 +3042,20 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
         </div>
       </div>
 
-      {/* Contextual Selection Quick-Action Bar */}
+      {/* Contextual Selection Quick-Action Bar: a slot of one fixed height, held with or without a
+          selection, so what it reads never moves the rows under a drag (BG-01M7CMT6). */}
+      {!selectionQuickStats && (
+        <div className="seq-selection-quickbar seq-selection-quickbar--empty" style={SELECTION_QUICKBAR_SLOT_STYLE}>
+          <span className="seq-selection-quickbar-hint">Click a base, or drag across bases, to select them.</span>
+        </div>
+      )}
       {selectionQuickStats && (
         <div
           className="seq-selection-quickbar"
           role="region"
           aria-label="Selected Sequence Region Actions"
+          style={SELECTION_QUICKBAR_SLOT_STYLE}
+          title={selectionQuickbarReadout(selectedRange?.label, selectionQuickStats, unitLabel)}
         >
           <div className="seq-selection-quickbar-summary">
             <strong>

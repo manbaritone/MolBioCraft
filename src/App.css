@@ -9592,18 +9592,54 @@ dialog.prefs-modal-window:focus-visible,
   font-size: var(--font-size-label);
 }
 
+/* BG-01M7CMT6: one line of a fixed height (SELECTION_QUICKBAR_SLOT_STYLE in LinearSequenceView),
+   so its readout can change under a drag without moving the rows: the readout is cut short with an
+   ellipsis (whole in the bar's title) and the actions scroll sideways when the line is narrow. */
+.seq-selection-quickbar {
+  padding-block: 0;
+}
+
+.seq-selection-quickbar--empty {
+  border-style: dashed;
+  border-color: var(--mbc-border);
+  background: transparent;
+  color: var(--mbc-text-muted);
+}
+
+.seq-selection-quickbar-hint {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .seq-selection-quickbar-summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
+}
+
+.seq-selection-quickbar-summary > span {
+  margin-inline-start: 8px;
 }
 
 .seq-selection-quickbar-actions {
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
   gap: 5px;
+}
+
+.seq-selection-quickbar-actions > .seq-quick-pill-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .seq-quick-pill-btn {
@@ -9629,6 +9665,20 @@ dialog.prefs-modal-window:focus-visible,
 .mbc-dark-mode .seq-selection-quickbar {
   background: rgba(26, 115, 232, 0.16);
   border-color: var(--mbc-blue);
+}
+
+.seq-selection-quickbar-actions::-webkit-scrollbar {
+  height: 4px;
+}
+
+.seq-selection-quickbar-actions::-webkit-scrollbar-thumb {
+  border-radius: var(--mbc-radius-xs);
+  background: var(--mbc-border-strong);
+}
+
+.mbc-dark-mode .seq-selection-quickbar--empty {
+  background: transparent;
+  border-color: var(--mbc-border);
 }
 
 .mbc-dark-mode .seq-quick-pill-btn {
@@ -13689,11 +13739,18 @@ table,
   line-height: 1.35;
 }
 
+/* BG-01M7CMT6: the selection's readout holds two lines of a fixed height whatever it reads (the
+   height a long readout took before; more scrolls inside it), so a drag's selection never changes
+   its height and moves the base rows below it under the pointer. */
 .mbc-cockpit-row-bottom {
   display: flex;
   align-items: center;
+  align-content: center;
   justify-content: space-between;
   flex-wrap: wrap;
+  block-size: 56px;
+  min-block-size: 56px;
+  overflow-y: auto;
   gap: 8px;
 }
 
