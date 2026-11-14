@@ -3,12 +3,16 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { downloadSummarySequence } from '../core/contigSummary';
+import { moveInterval, normaliseInterval, renderSegments, resizeIntervalBy } from '../core/activeInterval';
 import {
+  ActiveInterval,
   FeatureType,
+  IntervalEdge,
   NucleotideColorScheme,
   RestrictionCutSite,
   SequenceDocument,
   SequenceFeature,
+  Topology,
 } from '../types/bio';
 import { analyzeProteinSequence, CODON_TABLE, reverseComplement, tmNoAnswerSentence } from '../core/bioEngine';
 import { basicTmHasNoAnswer } from './ConstructCockpitBar';
@@ -135,6 +139,198 @@ const cutMark = (strand: 'top' | 'bottom') => (
 const SCHEMATIC_X0 = 38;
 const SCHEMATIC_X1 = 762;
 const SCHEMATIC_W = SCHEMATIC_X1 - SCHEMATIC_X0;
+
+// ─── The linear overview's interval brush (US-01M7CCFQ, MB-NAV-01) ───
+
+/** Width of each edge handle's hit target in screen (CSS) pixels, whatever the overview's scale. */
+export const BRUSH_HANDLE_HIT_PX = 10;
+/** Screen pixels a press must travel before it is a drag; less, and it stays a click. */
+export const BRUSH_DRAG_THRESHOLD_PX = 3;
+
+/**
+ * The overview's scale, in SVG user units: base b (1-based) covers [x0 + (b-1)·width/length,
+ * x0 + b·width/length), the same scale the schematic draws its ruler and feature pills with.
+ * `unitsPerPx` converts screen pixels to SVG units (1 when the 800-unit SVG is 800 px wide).
+ */
+export interface BrushLayout {
+  x0: number;
+  width: number;
+  length: number;
+  unitsPerPx: number;
+}
+
+/** A drag in progress: `pending` until it travels BRUSH_DRAG_THRESHOLD_PX, then `active`. */
+export type BrushDrag =
+  | { phase: 'idle' }
+  | {
+      phase: 'pending' | 'active';
+      mode: 'create' | 'move' | 'resize';
+      edge: IntervalEdge | null;
+      pointerId: number;
+      downX: number;
+      /** The selection when the press began: what a move or resize starts from and a cancel puts back. */
+      before: ActiveInterval | null;
+      /** The last interval this drag selected (null: none yet). */
+      last: ActiveInterval | null;
+    };
+
+export type BrushInput =
+  | { type: 'down'; x: number; pointerId: number; edge?: IntervalEdge | null }
+  | { type: 'move' | 'up'; x: number; pointerId: number }
+  | { type: 'cancel'; pointerId: number };
+
+export interface BrushStepResult {
+  drag: BrushDrag;
+  /** Select exactly these bases (1-based inclusive, never start > end). */
+  select?: ActiveInterval;
+  /** The drag was cancelled after it selected: put back `restore` (null: clear the selection). */
+  cancelled?: { restore: ActiveInterval | null };
+}
+
+export const BRUSH_IDLE: BrushDrag = { phase: 'idle' };
+
+/**
+ * The base under SVG x-coordinate `x`: floor((x - x0) · length / width) + 1, clamped to
+ * 1..length. A cell boundary belongs to the base on its right; a point past either end is the
+ * first or the last base.
+ */
+export function schematicBaseAt(x: number, layout: BrushLayout): number {
+  const b = Math.floor(((x - layout.x0) * layout.length) / layout.width) + 1;
+  return Math.min(layout.length, Math.max(1, b));
+}
+
+/** The SVG x of an interval's start edge (left boundary of `start`) and end edge (right boundary of `end`). */
+function brushEdgeXs(interval: ActiveInterval, layout: BrushLayout): { startX: number; endX: number } {
+  const per = layout.width / layout.length;
+  return { startX: layout.x0 + (interval.start - 1) * per, endX: layout.x0 + interval.end * per };
+}
+
+/**
+ * What a press at `x` does: within BRUSH_HANDLE_HIT_PX / 2 screen pixels of an edge it resizes
+ * the nearer edge; inside the interval it moves it; anywhere else (or with no interval, or an
+ * interval across a circle's origin, which the overview never drags) it creates a new one.
+ */
+export function brushHitTest(
+  x: number,
+  interval: ActiveInterval | null,
+  layout: BrushLayout
+): { mode: 'create' } | { mode: 'move' } | { mode: 'resize'; edge: IntervalEdge } {
+  if (!interval || interval.start > interval.end) return { mode: 'create' };
+  const { startX, endX } = brushEdgeXs(interval, layout);
+  const half = (BRUSH_HANDLE_HIT_PX / 2) * layout.unitsPerPx;
+  const dStart = Math.abs(x - startX);
+  const dEnd = Math.abs(x - endX);
+  if (Math.min(dStart, dEnd) < half) {
+    if (dStart < dEnd) return { mode: 'resize', edge: 'start' };
+    if (dEnd < dStart) return { mode: 'resize', edge: 'end' };
+    return { mode: 'resize', edge: x < startX ? 'start' : 'end' };
+  }
+  return x > startX && x < endX ? { mode: 'move' } : { mode: 'create' };
+}
+
+const sameInterval = (a: ActiveInterval | null, b: ActiveInterval | null) =>
+  a === b || (a !== null && b !== null && a.start === b.start && a.end === b.end);
+
+/**
+ * The interval a drag at `x` covers. Create: from the base under the press to the base under
+ * the pointer, both included. Move and resize: the pointer's travel rounded to whole bases
+ * (Math.round of travel · length / width), applied with moveInterval / resizeIntervalBy on the
+ * LINEAR model - so the overview never wraps through the ends and never makes an interval
+ * across the origin, on either topology.
+ */
+function brushIntervalAt(drag: Exclude<BrushDrag, { phase: 'idle' }>, x: number, layout: BrushLayout): ActiveInterval {
+  if (drag.mode === 'create' || !drag.before) {
+    const a = schematicBaseAt(drag.downX, layout);
+    const b = schematicBaseAt(x, layout);
+    return { start: Math.min(a, b), end: Math.max(a, b) };
+  }
+  const d = Math.round(((x - drag.downX) * layout.length) / layout.width);
+  return drag.mode === 'move'
+    ? moveInterval(drag.before, d, layout.length, 'linear')
+    : resizeIntervalBy(drag.before, drag.edge ?? 'end', d, layout.length, 'linear');
+}
+
+/**
+ * One pointer event of the overview brush, as a pure step: the next drag state and what to
+ * select. `current` is the selection when the event arrives (read only on the press); every
+ * selected interval is 1-based inclusive with start <= end, inside 1..layout.length. The
+ * topology is not consulted: on the linear overview a drag stays linear on a circle too, and an
+ * interval across a circle's origin (start > end, made on the circular map) is never dragged -
+ * a press on it starts a new interval - because no consumer of the selection reads start > end yet.
+ * Non-finite positions, another pointer's events and a layout without bases are ignored.
+ */
+export function brushStep(
+  drag: BrushDrag,
+  input: BrushInput,
+  ctx: { current: ActiveInterval | null; layout: BrushLayout; topology: Topology }
+): BrushStepResult {
+  const { layout } = ctx;
+  if (!(layout.length >= 1) || !(layout.width > 0) || !Number.isFinite(layout.unitsPerPx)) return { drag: BRUSH_IDLE };
+  if (input.type === 'down') {
+    if (!Number.isFinite(input.x)) return { drag };
+    const current =
+      ctx.current && Number.isFinite(ctx.current.start) && Number.isFinite(ctx.current.end) ? ctx.current : null;
+    const crossing = current !== null && current.start > current.end;
+    const hit = brushHitTest(input.x, current, layout);
+    const mode = crossing ? 'create' : input.edge ? 'resize' : hit.mode;
+    const edge = mode === 'resize' ? input.edge ?? (hit.mode === 'resize' ? hit.edge : 'end') : null;
+    return {
+      drag: { phase: 'pending', mode, edge, pointerId: input.pointerId, downX: input.x, before: current, last: null },
+    };
+  }
+  if (drag.phase === 'idle' || input.pointerId !== drag.pointerId) return { drag };
+  if (input.type === 'cancel') {
+    const result: BrushStepResult = { drag: BRUSH_IDLE };
+    if (drag.phase === 'active' && drag.last !== null && !sameInterval(drag.last, drag.before)) {
+      result.cancelled = { restore: drag.before };
+    }
+    return result;
+  }
+  if (!Number.isFinite(input.x)) return { drag };
+  const travelled = Math.abs(input.x - drag.downX) >= BRUSH_DRAG_THRESHOLD_PX * layout.unitsPerPx;
+  if (drag.phase === 'pending' && !travelled) return { drag: input.type === 'up' ? BRUSH_IDLE : drag };
+  const next = brushIntervalAt(drag, input.x, layout);
+  const changed = !sameInterval(next, drag.last ?? (drag.mode === 'create' ? null : drag.before));
+  const nextDrag: BrushDrag = input.type === 'up' ? BRUSH_IDLE : { ...drag, phase: 'active', last: changed ? next : drag.last };
+  return changed ? { drag: nextDrag, select: next } : { drag: nextDrag };
+}
+
+/**
+ * An arrow key on an edge handle: one base (ten with Shift) towards higher coordinates for
+ * ArrowRight / ArrowUp, lower for ArrowLeft / ArrowDown, with resizeIntervalBy on the linear
+ * model (clamped to 1..length). When the edge passes the other one they swap, and `edge` names
+ * the handle that now carries the moved base. Any other key gives null.
+ */
+export function brushKeyStep(
+  interval: ActiveInterval,
+  edge: IntervalEdge,
+  key: string,
+  shift: boolean,
+  length: number,
+  _topology: Topology
+): { interval: ActiveInterval; edge: IntervalEdge } | null {
+  const dir = key === 'ArrowRight' || key === 'ArrowUp' ? 1 : key === 'ArrowLeft' || key === 'ArrowDown' ? -1 : 0;
+  if (dir === 0 || !(length >= 1) || interval.start > interval.end) return null;
+  const next = resizeIntervalBy(interval, edge, dir * (shift ? 10 : 1), length, 'linear');
+  const other: IntervalEdge = edge === 'start' ? 'end' : 'start';
+  const swapped = next[other] !== interval[other];
+  return { interval: next, edge: swapped ? other : edge };
+}
+
+/**
+ * A pointer's clientX in the overview SVG's user units, through its screen transform (or, without
+ * one, its box against the 800-unit viewBox), and the SVG units one screen pixel spans there.
+ */
+function overviewPoint(
+  svg: Pick<SVGSVGElement, 'getBoundingClientRect'> & { getScreenCTM?: () => { a: number; e: number } | null },
+  clientX: number
+): { x: number; unitsPerPx: number } {
+  const ctm = svg.getScreenCTM?.();
+  if (ctm && Number.isFinite(ctm.a) && ctm.a > 0) return { x: (clientX - ctm.e) / ctm.a, unitsPerPx: 1 / ctm.a };
+  const box = svg.getBoundingClientRect();
+  const k = box.width > 0 ? 800 / box.width : 1;
+  return { x: (clientX - box.left) * k, unitsPerPx: k };
+}
 
 function isDarkFillHex(hex: string): boolean {
   const clean = hex.replace('#', '');
@@ -1015,6 +1211,134 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   // The schematic draws the longest features when there are more than it holds, and says so (BG-01M6S1AA).
   const schematicCoverage = subsetNote('The map draws', schematicLayout.placed.length, doc.features.length, 'features', 'longest');
 
+  // ─── The overview's one active interval and its brush (US-01M7CCFQ) ───
+  // The overview draws on the declared length, as its ruler and pills do; so does the brush.
+  const overviewLen = Math.max(1, Math.round(declaredLen) || 1);
+  const overviewInterval: ActiveInterval | null = useMemo(() => {
+    if (!selectedRange) return null;
+    try {
+      return normaliseInterval(selectedRange, overviewLen, doc.topology === 'circular' ? 'circular' : 'linear');
+    } catch {
+      return null; // a non-finite selection draws nothing rather than a wrong range
+    }
+  }, [selectedRange, overviewLen, doc.topology]);
+  /** SVG units per screen pixel of the overview, measured when drawn, so handles stay 10 px wide. */
+  const [overviewUnitsPerPx, setOverviewUnitsPerPx] = useState(1);
+  const overviewResizeRef = useRef<ResizeObserver | null>(null);
+  const attachOverview = useCallback((svg: SVGSVGElement | null) => {
+    overviewResizeRef.current?.disconnect();
+    overviewResizeRef.current = null;
+    if (!svg) return;
+    const measure = () => {
+      const w = svg.getBoundingClientRect().width;
+      if (w > 0) setOverviewUnitsPerPx(800 / w);
+    };
+    measure();
+    if (typeof ResizeObserver !== 'undefined') {
+      overviewResizeRef.current = new ResizeObserver(measure);
+      overviewResizeRef.current.observe(svg);
+    }
+  }, []);
+  const brushDragRef = useRef<BrushDrag>(BRUSH_IDLE);
+  const brushLayoutRef = useRef<BrushLayout | null>(null);
+  /** The newest pointer position not yet worked: the drag does its work once per animation frame. */
+  const brushPendingRef = useRef<{ x: number; pointerId: number; frame: number } | null>(null);
+  const brushSuppressClickRef = useRef(false);
+  const handleRefs = useRef<Record<IntervalEdge, SVGRectElement | null>>({ start: null, end: null });
+
+  const applyBrush = (input: BrushInput): BrushStepResult | null => {
+    const layout = brushLayoutRef.current;
+    if (!layout) return null;
+    const r = brushStep(brushDragRef.current, input, { current: overviewInterval, layout, topology: doc.topology });
+    brushDragRef.current = r.drag;
+    if (r.select) onSelectRange({ start: r.select.start, end: r.select.end });
+    if (r.cancelled) {
+      if (r.cancelled.restore) onSelectRange({ start: r.cancelled.restore.start, end: r.cancelled.restore.end });
+      else onClearSelection?.();
+    }
+    return r;
+  };
+  const dropBrushFrame = () => {
+    const pending = brushPendingRef.current;
+    brushPendingRef.current = null;
+    if (pending && pending.frame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(pending.frame);
+  };
+  const releaseBrush = (svg: Element, pointerId: number) => {
+    try {
+      svg.releasePointerCapture?.(pointerId);
+    } catch {
+      // The capture is already gone.
+    }
+  };
+  const onOverviewPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    const svg = e.currentTarget;
+    const p = overviewPoint(svg, e.clientX);
+    brushLayoutRef.current = { x0: SCHEMATIC_X0, width: SCHEMATIC_W, length: overviewLen, unitsPerPx: p.unitsPerPx };
+    brushSuppressClickRef.current = false;
+    dropBrushFrame();
+    brushDragRef.current = BRUSH_IDLE;
+    const hint = (e.target as Element | null)?.getAttribute?.('data-interval-handle');
+    applyBrush({ type: 'down', x: p.x, pointerId: e.pointerId, edge: hint === 'start' || hint === 'end' ? hint : null });
+  };
+  const onOverviewPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const drag = brushDragRef.current;
+    if (drag.phase === 'idle') return;
+    const { x, unitsPerPx } = overviewPoint(e.currentTarget, e.clientX);
+    // The pointer is captured only once the press has become a drag: captured from the press, a
+    // plain click would land on the overview instead of the feature pill under it.
+    if (drag.phase === 'pending' && Math.abs(x - drag.downX) >= BRUSH_DRAG_THRESHOLD_PX * unitsPerPx) {
+      try {
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+      } catch {
+        // Without capture the drag still follows the pointer while it is over the overview.
+      }
+    }
+    if (typeof requestAnimationFrame !== 'function') {
+      applyBrush({ type: 'move', x, pointerId: e.pointerId });
+      return;
+    }
+    if (brushPendingRef.current) {
+      brushPendingRef.current = { ...brushPendingRef.current, x, pointerId: e.pointerId };
+      return;
+    }
+    const pending = { x, pointerId: e.pointerId, frame: 0 };
+    brushPendingRef.current = pending;
+    pending.frame = requestAnimationFrame(() => {
+      const latest = brushPendingRef.current;
+      brushPendingRef.current = null;
+      if (latest) applyBrush({ type: 'move', x: latest.x, pointerId: latest.pointerId });
+    });
+  };
+  const onOverviewPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    const before = brushDragRef.current;
+    if (before.phase === 'idle') return;
+    dropBrushFrame();
+    const r = applyBrush({ type: 'up', x: overviewPoint(e.currentTarget, e.clientX).x, pointerId: e.pointerId });
+    // A drag ends in a click on whatever it was released over; that click is the drag's, not a pill's.
+    brushSuppressClickRef.current = before.phase === 'active' || Boolean(r?.select);
+    releaseBrush(e.currentTarget, e.pointerId);
+  };
+  const onOverviewPointerCancel = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (brushDragRef.current.phase === 'idle') return;
+    dropBrushFrame();
+    applyBrush({ type: 'cancel', pointerId: e.pointerId });
+    releaseBrush(e.currentTarget, e.pointerId);
+  };
+  const onOverviewClickCapture = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!brushSuppressClickRef.current) return;
+    brushSuppressClickRef.current = false;
+    e.stopPropagation();
+  };
+  const onHandleKeyDown = (edge: IntervalEdge) => (e: React.KeyboardEvent<SVGRectElement>) => {
+    if (!overviewInterval) return;
+    const r = brushKeyStep(overviewInterval, edge, e.key, e.shiftKey, overviewLen, doc.topology);
+    if (!r) return;
+    e.preventDefault();
+    onSelectRange({ start: r.interval.start, end: r.interval.end });
+    if (r.edge !== edge) handleRefs.current[r.edge]?.focus();
+  };
+
   // Resident Rust sequence store track overview (cached 180-bin GC%, AT%, cumulative GC-skew, oriC/terC)
   const trackOverview = useMemo(
     () => getResidentTrackOverviewRust(doc, 180),
@@ -1464,10 +1788,18 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       )}
       <div className="mbc-schematic-header" data-mbc-figure ref={schematicRef}>
         <svg
+          ref={attachOverview}
           viewBox={`0 0 800 ${schematicHeight}`}
           className="schematic-overview-svg"
-          role="img"
+          role="group"
           aria-label={`Linear schematic overview of ${doc.name}`}
+          style={{ touchAction: 'none', userSelect: 'none', cursor: 'crosshair' }}
+          onPointerDown={onOverviewPointerDown}
+          onPointerMove={onOverviewPointerMove}
+          onPointerUp={onOverviewPointerUp}
+          onPointerCancel={onOverviewPointerCancel}
+          onLostPointerCapture={onOverviewPointerCancel}
+          onClickCapture={onOverviewClickCapture}
         >
           <rect x="0" y="0" width="800" height={schematicHeight} fill="var(--mbc-bg-panel)" />
           <line
@@ -1530,29 +1862,30 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             </>
           )}
 
-          {/* Current Viewport Box */}
-          <rect
-            x={
-              declaredLen > seqLen
-                ? SCHEMATIC_X0 + ((startRow * basesPerRow) / declaredLen) * SCHEMATIC_W
-                : SCHEMATIC_X0 + ((startRow * basesPerRow) / seqLen) * SCHEMATIC_W
-            }
-            y={4}
-            width={Math.max(
-              14,
-              Math.min(
-                SCHEMATIC_W,
-                declaredLen > seqLen
-                  ? (((endRow - startRow) * basesPerRow) / declaredLen) * SCHEMATIC_W
-                  : (((endRow - startRow) * basesPerRow) / seqLen) * SCHEMATIC_W
-              )
-            )}
-            height={schematicHeight - 8}
-            fill="rgba(26, 115, 232, 0.09)"
-            stroke="var(--mbc-blue)"
-            strokeWidth="1.15"
-            strokeDasharray="3 2"
-          />
+          {/* The one active interval (MB-NAV-01): the selection, on the schematic's own scale. There is
+              no page rectangle beside it; where the base rows start is the caret below, a point. */}
+          {overviewInterval &&
+            renderSegments(overviewInterval, overviewLen).map((seg) => (
+              <rect
+                key={`active-${seg.startIndex}`}
+                data-active-interval={`${overviewInterval.start}..${overviewInterval.end}`}
+                x={SCHEMATIC_X0 + (seg.startIndex / overviewLen) * SCHEMATIC_W}
+                y={4}
+                width={Math.max(2, ((seg.endExclusive - seg.startIndex) / overviewLen) * SCHEMATIC_W)}
+                height={schematicHeight - 8}
+                fill="rgba(26, 115, 232, 0.16)"
+                stroke="var(--mbc-blue)"
+                strokeWidth="1.2"
+                pointerEvents="none"
+              />
+            ))}
+          <path
+            data-page-tick={pageStartPos}
+            d={`M ${SCHEMATIC_X0 + ((pageStartPos - 1) / overviewLen) * SCHEMATIC_W} 24 l 4 6 h -8 z`}
+            fill="var(--mbc-text-muted)"
+          >
+            <title>{`The base rows start at ${pageStartPos.toLocaleString()} ${unitLabel}`}</title>
+          </path>
 
           {/* Multi-Lane Non-Overlapping Schematic Feature Pills */}
           {schematicLayout.placed.map((item) => {
@@ -1641,6 +1974,42 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               </g>
             );
           })}
+
+          {/* Edge handles of the interval: 10 screen pixels wide, focusable sliders (US-01M7CCFQ AC4). */}
+          {overviewInterval &&
+            overviewInterval.start <= overviewInterval.end &&
+            (['start', 'end'] as const).map((edge) => {
+              const per = SCHEMATIC_W / overviewLen;
+              const edgeX = SCHEMATIC_X0 + (edge === 'start' ? overviewInterval.start - 1 : overviewInterval.end) * per;
+              const w = BRUSH_HANDLE_HIT_PX * overviewUnitsPerPx;
+              const base = overviewInterval[edge];
+              return (
+                <g key={`handle-${edge}`}>
+                  <line x1={edgeX} x2={edgeX} y1={4} y2={schematicHeight - 4} stroke="var(--mbc-blue)" strokeWidth="2.4" pointerEvents="none" />
+                  <rect
+                    ref={(el) => {
+                      handleRefs.current[edge] = el;
+                    }}
+                    data-interval-handle={edge}
+                    x={edgeX - w / 2}
+                    y={4}
+                    width={w}
+                    height={schematicHeight - 8}
+                    fill="transparent"
+                    style={{ cursor: 'ew-resize' }}
+                    tabIndex={0}
+                    role="slider"
+                    aria-label={edge === 'start' ? 'Selection start' : 'Selection end'}
+                    aria-orientation="horizontal"
+                    aria-valuemin={1}
+                    aria-valuemax={overviewLen}
+                    aria-valuenow={base}
+                    aria-valuetext={`${edge === 'start' ? 'Start' : 'End'} at ${base.toLocaleString()} ${unitLabel}`}
+                    onKeyDown={onHandleKeyDown(edge)}
+                  />
+                </g>
+              );
+            })}
         </svg>
 
         {/* Multi-Row Wrapped Linear Genome Map for Complete Viral & Organelle Genomes */}
