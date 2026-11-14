@@ -365,8 +365,10 @@ import {
   MbcWorkbenchSnapshot,
   parseMbcFolderZip,
   parseMbcWorkbench,
-  readLocalStorageWorkbenchAutosave,
   autosaveWorkbench,
+  autosaveWorkbenchWithin,
+  QUIT_AUTOSAVE_TIMEOUT_MS,
+  readNewestLocalStorageWorkbenchAutosave,
   serializeMbcFolderZip,
   serializeMbcWorkbench,
   workbenchAutosaveNeedsRecovery,
@@ -4439,7 +4441,9 @@ export const App: React.FC = () => {
    */
   const reportAutosaveResult = (result: WorkbenchAutosaveResult) => {
     const notice = autosaveFailureNoticeRef.current(result);
-    setAutosaveFailure(result.ok ? null : describeAutosaveFailure(result));
+    // The sentence names the failure in plain words; the marker's tooltip also carries the
+    // technical detail, as the log does (BG-01M7CPTZ).
+    setAutosaveFailure(result.ok ? null : `${describeAutosaveFailure(result)}\n\nDetail: ${result.detail}`);
     if (!result.ok) Logger.warn('Autosave', 'Autosave failed', { reason: result.reason, detail: result.detail });
     if (notice) setStatusBanner(notice, { keep: true });
   };
@@ -4450,11 +4454,12 @@ export const App: React.FC = () => {
     }
     if (sessionActive && !autosavePendingRecoveryRef.current) {
       // The autosave is asynchronous (IndexedDB); quit only once it has landed, and never
-      // quit silently over unsaved work it could not keep (BG-01M7CKYQ).
-      const result = await autosaveWorkbench(latestSnapshotRef.current());
-      if (result.ok) {
-        writeWorkbenchAutosaveDirtyFlag(sessionHasUnsavedChangesRef.current);
-      } else if (sessionHasUnsavedChangesRef.current) {
+      // quit silently over unsaved work it could not keep (BG-01M7CKYQ). A write that hangs is
+      // given up after QUIT_AUTOSAVE_TIMEOUT_MS, so the quit always goes on: to this guard when there
+      // are unsaved changes, else to the quit itself (BG-01M7CPTZ).
+      const saved = await autosaveWorkbenchWithin(latestSnapshotRef.current(), QUIT_AUTOSAVE_TIMEOUT_MS);
+      const result = saved.ok ? writeWorkbenchAutosaveDirtyFlag(sessionHasUnsavedChangesRef.current) : saved;
+      if (!result.ok && sessionHasUnsavedChangesRef.current) {
         setConfirmQuitModalOpen(false);
         reportAutosaveResult(result);
         setConfirmDialog({
@@ -4554,8 +4559,7 @@ export const App: React.FC = () => {
         return;
       }
       void autosaveWorkbench(latestSnapshotRef.current()).then((result) => {
-        if (result.ok) writeWorkbenchAutosaveDirtyFlag(sessionHasUnsavedChangesRef.current);
-        reportAutosaveResult(result);
+        reportAutosaveResult(result.ok ? writeWorkbenchAutosaveDirtyFlag(sessionHasUnsavedChangesRef.current) : result);
       });
     }, 500);
     return () => window.clearTimeout(timer);
@@ -4912,10 +4916,11 @@ export const App: React.FC = () => {
   };
 
   const handleRestoreLocalAutosave = () => {
-    // A localStorage autosave (an older build's, or the small-session fallback) is the newest copy
-    // and is restored at once; otherwise the autosave is read from IndexedDB.
-    const local = readLocalStorageWorkbenchAutosave();
-    if (local?.status === 'found') {
+    // A localStorage copy that is certainly the newest (no time, or no IndexedDB autosave recorded)
+    // is restored at once. When both stores may hold one, the newer by its saved time is restored
+    // (BG-01M7CPTZ), and loadWorkbenchFromLocalAutosave reads IndexedDB to decide.
+    const local = readNewestLocalStorageWorkbenchAutosave();
+    if (local) {
       applyAutosaveReadResult(local);
       return;
     }
@@ -4970,7 +4975,11 @@ export const App: React.FC = () => {
   };
 
   const resetDefaultWorkbenchNow = () => {
-    void clearWorkbenchLocalAutosave();
+    void clearWorkbenchLocalAutosave().then((cleared) => {
+      if (cleared.ok) return;
+      Logger.warn('Autosave', 'The previous autosave could not be deleted', { detail: cleared.detail });
+      setStatusBanner('The previous autosave could not be deleted, so it may be offered again at the next launch.', { keep: true });
+    });
     initializeFreshSampleState('MolBioCraft_Sample_Session');
     setViewerTab('sequence-view');
     setSessionActive(true);
