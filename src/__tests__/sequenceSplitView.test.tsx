@@ -1090,7 +1090,8 @@ describe('The linear card folds from what it measures, and its panels open, clos
    * measured at 1366x768 (title 33px, quickbar 32px with 2px under it, floors 64px and 120px) and a
    * toolbar of 135px whole or 65px folded; `card` sets the card's inner height.
    */
-  async function mountView() {
+  async function mountView(opts: { formOverlays?: boolean } = {}) {
+    const formOverlays = opts.formOverlays ?? true;
     const liveDom = await import('./liveDom');
     const doc = new liveDom.LiveDocument();
     const win = new liveDom.LiveWindow(doc, { width: 1366, height: 768 });
@@ -1106,11 +1107,12 @@ describe('The linear card folds from what it measures, and its panels open, clos
       if (has(el, 'mbc-schematic-header')) return box(64);
       if (has(el, 'sequence-blocks-scroll')) return box(120);
       if (has(el, 'linear-toolbar-more') || has(el, 'linear-search-hits-btn')) return { width: 58, height: 24 };
+      if (has(el, 'add-feature-drawer')) return { width: 439, height: 72 };
       return { width: 0, height: 0 };
     };
     // The cascade as App.css gives it for the strips the view reads (the live DOM computes no CSS).
     const computed = (el: { classList: { contains(c: string): boolean } }) => ({
-      display: 'block', position: has(el, 'add-feature-drawer') ? 'absolute' : 'static',
+      display: 'block', position: has(el, 'add-feature-drawer') && formOverlays ? 'absolute' : 'static',
       minBlockSize: has(el, 'mbc-schematic-header') ? '64px' : has(el, 'sequence-blocks-scroll') ? '120px' : '0px',
       marginTop: '0px', marginBottom: has(el, 'seq-selection-quickbar') ? '2px' : '0px',
     });
@@ -1243,6 +1245,51 @@ describe('The linear card folds from what it measures, and its panels open, clos
       expect(v.doc.activeElement, 'and leaves focus on the count').toBe(count);
     } finally {
       v.unmount();
+    }
+  });
+
+  // BG-01M7DGBF: with the new-annotation form open over the rows, every row still scrolls into view.
+  it('pads the rows\' scroll area by the form it lies under, and only while it lies over them (BG-01M7DGBF)', async () => {
+    const CARD = `${SPLIT} > .linear-seq-container`;
+    // Wrong implementations this catches: no reserve (the last 49-52px of a page's last row stayed
+    // under the form at every side-by-side size); a fixed reserve that is not the form's height; a
+    // reserve kept after the form closes; and a reserve where the form sits in flow below the rows.
+    const ROWS_PAD = 8;
+    expect(cascaded('.sequence-blocks-scroll', 'padding', 1377)?.value, "the rows' own padding").toBe(`${ROWS_PAD}px 10px`);
+    // The form lies over the rows' foot, flush with the card's bottom, as tall as it draws.
+    expect(cascaded(`${CARD} > .add-feature-drawer`, 'inset-block-end', 1377)?.value).toBe('0');
+    const reach = (style: string, form: number) => {
+      const m = /padding-block-end: calc\((\d+)px \+ (\d+)px\)/.exec(style);
+      // The scroll area ends `pad` below the last row; the form covers `form` of the visible foot, so
+      // the last row's bottom is reachable when the extra padding is at least the form's height.
+      return m ? Number(m[1]) === ROWS_PAD && Number(m[2]) >= form : false;
+    };
+    const v = await mountView();
+    try {
+      const rows = () => v.q('.sequence-blocks-scroll')!;
+      expect(rows().getAttribute('data-form-reserve'), 'nothing reserved with the form shut').toBeNull();
+      v.click(v.q('.linear-toolbar-more'));
+      v.click(v.q('[data-tool="add-annotation"]'));
+      expect(v.q('.add-feature-drawer'), 'the form is open').not.toBeNull();
+      expect(rows().getAttribute('data-form-reserve'), "the form's height").toBe('72');
+      expect(reach(rows().style.cssText, 72), `the last row clears the form: ${rows().style.cssText}`).toBe(true);
+      expect(rows().style.cssText).toContain('scroll-padding-block-end: 72px');
+      v.click(v.q('.linear-toolbar-more'));
+      v.click(v.q('[data-tool="add-annotation"]'));
+      expect(v.q('.add-feature-drawer'), 'the form is shut again').toBeNull();
+      expect(rows().getAttribute('data-form-reserve'), 'and its reserve goes with it').toBeNull();
+      expect(rows().style.cssText).not.toContain('padding-block-end');
+    } finally {
+      v.unmount();
+    }
+    const stacked = await mountView({ formOverlays: false });
+    try {
+      stacked.click(stacked.q('.linear-toolbar-more'));
+      stacked.click(stacked.q('[data-tool="add-annotation"]'));
+      expect(stacked.q('.add-feature-drawer'), 'the form is open').not.toBeNull();
+      expect(stacked.q('.sequence-blocks-scroll')!.getAttribute('data-form-reserve'), 'a form in flow below the rows reserves nothing').toBeNull();
+    } finally {
+      stacked.unmount();
     }
   });
 });

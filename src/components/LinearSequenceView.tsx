@@ -1764,6 +1764,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   const [panelAt, setPanelAt] = useState<{ top: number; left: number } | null>(null);
   /** Where focus goes once a panel closes on a choice: its button, the opened form or the dialog. */
   const [focusAfter, setFocusAfter] = useState<null | 'tools' | 'hits' | 'form' | 'dialog'>(null);
+  /** The height the new-annotation form covers at the foot of the rows while it lies over them. */
+  const [formReserve, setFormReserve] = useState(0);
   const toolsOpen = openPanel === 'tools';
   const hitsOpen = openPanel === 'hits';
 
@@ -2977,6 +2979,24 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   useEffect(() => {
     if (!toolsFolded || (openPanel === 'hits' && !hasSearchResults)) setOpenPanel(null);
   }, [toolsFolded, openPanel, hasSearchResults]);
+  // BG-01M7DGBF: beside the circle the new-annotation form lies over the foot of the rows (App.css), so
+  // the rows' scroll area is padded by its height while it is open: the last row scrolls up above it.
+  useEffect(() => {
+    const form = addFormRef.current;
+    if (!showAddFeature || !form || typeof getComputedStyle !== 'function') {
+      setFormReserve(0);
+      return;
+    }
+    const measure = () => {
+      const over = getComputedStyle(form).position === 'absolute';
+      setFormReserve(over ? Math.ceil(form.getBoundingClientRect().height) : 0);
+    };
+    measure();
+    if (typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(form);
+    return () => observer.disconnect();
+  }, [showAddFeature]);
   useEffect(() => {
     if (!focusAfter) return;
     const target: HTMLElement | null | undefined =
@@ -3680,6 +3700,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       <div
         ref={attachRowsScroll}
         className="sequence-blocks-scroll"
+        data-form-reserve={formReserve || undefined}
+        style={formReserve ? { paddingBlockEnd: `calc(8px + ${formReserve}px)`, scrollPaddingBlockEnd: formReserve } : undefined}
         tabIndex={0}
         onPointerDown={onRowsPointerDown}
         onPointerMove={onRowsPointerMove}
