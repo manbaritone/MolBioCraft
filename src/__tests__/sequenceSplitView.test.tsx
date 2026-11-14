@@ -1091,7 +1091,9 @@ describe('The linear card folds from what it measures, and its panels open, clos
    * toolbar of 135px whole or 65px folded; `card` sets the card's inner height.
    */
   async function mountView(opts: { formOverlays?: boolean } = {}) {
-    const formOverlays = opts.formOverlays ?? true;
+    // The form's drawn height and whether App.css lays it over the rows (beside the circle) or in flow
+    // below them (stacked); `resizeForm` changes either, as widening the window does.
+    const formBox = { height: 72, overlays: opts.formOverlays ?? true };
     const liveDom = await import('./liveDom');
     const doc = new liveDom.LiveDocument();
     const win = new liveDom.LiveWindow(doc, { width: 1366, height: 768 });
@@ -1107,12 +1109,12 @@ describe('The linear card folds from what it measures, and its panels open, clos
       if (has(el, 'mbc-schematic-header')) return box(64);
       if (has(el, 'sequence-blocks-scroll')) return box(120);
       if (has(el, 'linear-toolbar-more') || has(el, 'linear-search-hits-btn')) return { width: 58, height: 24 };
-      if (has(el, 'add-feature-drawer')) return { width: 439, height: 72 };
+      if (has(el, 'add-feature-drawer')) return { width: 439, height: formBox.height };
       return { width: 0, height: 0 };
     };
     // The cascade as App.css gives it for the strips the view reads (the live DOM computes no CSS).
     const computed = (el: { classList: { contains(c: string): boolean } }) => ({
-      display: 'block', position: has(el, 'add-feature-drawer') && formOverlays ? 'absolute' : 'static',
+      display: 'block', position: has(el, 'add-feature-drawer') && formBox.overlays ? 'absolute' : 'static',
       minBlockSize: has(el, 'mbc-schematic-header') ? '64px' : has(el, 'sequence-blocks-scroll') ? '120px' : '0px',
       marginTop: '0px', marginBottom: has(el, 'seq-selection-quickbar') ? '2px' : '0px',
     });
@@ -1147,6 +1149,7 @@ describe('The linear card folds from what it measures, and its panels open, clos
     const q = (sel: string) => container.querySelector(sel) as InstanceType<typeof liveDom.LiveElement> | null;
     const folded = () => Boolean(q('.linear-toolbar')?.classList.contains('is-folded'));
     const resize = (card: number) => { size.card = card; settle(); };
+    const resizeForm = (height: number, overlays = formBox.overlays) => { formBox.height = height; formBox.overlays = overlays; settle(); };
     const click = (el: InstanceType<typeof liveDom.LiveElement> | null) => { expect(el, 'the control is drawn').not.toBeNull(); liveDom.userClick(el!, {}, step); settle(); };
     const press = (key: string) => { liveDom.userPress(doc, key, {}, step); settle(); };
     // React DOM was loaded by this file before the live DOM existed, so it does not hear a text
@@ -1159,7 +1162,7 @@ describe('The linear card folds from what it measures, and its panels open, clos
       settle();
     };
     const unmount = () => { step(() => root.unmount()); restore(); vi.resetModules(); };
-    return { doc, q, folded, resize, click, press, type, step, unmount, body: doc.body };
+    return { doc, q, folded, resize, resizeForm, click, press, type, step, unmount, body: doc.body };
   }
 
   it('folds from the toolbar it measures unfolded, against the card and every other floor', async () => {
@@ -1290,6 +1293,29 @@ describe('The linear card folds from what it measures, and its panels open, clos
       expect(stacked.q('.sequence-blocks-scroll')!.getAttribute('data-form-reserve'), 'a form in flow below the rows reserves nothing').toBeNull();
     } finally {
       stacked.unmount();
+    }
+  });
+
+  // BG-01M7DGBF round 2: the reserve follows the form as the window changes under it.
+  it('re-measures the form\'s reserve when the form resizes, as when a stacked window is widened beside the circle (BG-01M7DGBF)', async () => {
+    // Wrong implementation this catches: a reserve measured only when the form opens (no
+    // ResizeObserver on the form). Opened while stacked it reserved 0, so after widening the window
+    // the form lay over the rows and the last row went back under it.
+    const v = await mountView({ formOverlays: false });
+    try {
+      const reserve = () => v.q('.sequence-blocks-scroll')!.getAttribute('data-form-reserve');
+      v.click(v.q('.linear-toolbar-more'));
+      v.click(v.q('[data-tool="add-annotation"]'));
+      expect(v.q('.add-feature-drawer'), 'the form is open').not.toBeNull();
+      expect(reserve(), 'stacked: the form is in flow and reserves nothing').toBeNull();
+      v.resizeForm(69, true);
+      expect(reserve(), 'widened beside the circle: the form now lies over the rows').toBe('69');
+      v.resizeForm(96);
+      expect(reserve(), 'the form grows (a wrapped field): the reserve grows with it').toBe('96');
+      v.resizeForm(80, false);
+      expect(reserve(), 'narrowed back to stacked: nothing reserved').toBeNull();
+    } finally {
+      v.unmount();
     }
   });
 });
