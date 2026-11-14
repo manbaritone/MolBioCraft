@@ -784,6 +784,8 @@ describe('BG-01M7DHM0 AC1: site visibility is saved with the session and restore
       expect(app.one('input[aria-label="Show EcoRI sites on the maps"]').checked).toBe(true);
       // Dropped on the way in, so the reopened session says it was restored and nothing was cleared.
       expect(app.doc.body.textContent).toContain('Restored workbench');
+      // A choice dropped at restore is never reported as cleared (the App would append that notice).
+      expect(app.doc.body.textContent).not.toContain('per-site display');
     } finally {
       app.unmount();
     }
