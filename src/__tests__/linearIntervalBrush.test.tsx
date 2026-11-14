@@ -466,7 +466,129 @@ describe('US-01M7CCFQ AC2 the overview draws one highlighted interval, the selec
 
 // ═══ AC3 ═══
 
+/**
+ * The element a click at SVG point (x, y) reaches in the drawn overview: the last-painted `<rect>`
+ * whose box holds the point and that takes pointer events (pointer-events not none, fill not
+ * none) - the browser's hit-test over this schematic, whose clickable shapes are all rects.
+ * `pill` is the 0-based index of the feature pill group (g.clickable-arc) the rect is drawn in.
+ */
+function hitAt(svg: string, x: number, y: number) {
+  let top: { tag: string; pill: number | null; handle: string | null; fill: string | undefined } | null = null;
+  const pillStack: (number | null)[] = [];
+  let pills = 0;
+  for (const m of svg.matchAll(/<(\/?)(g|rect)\b([^>]*?)(\/?)>/g)) {
+    const [, closing, tag, attrs, selfClosing] = m;
+    const tagText = `<${tag}${attrs}>`;
+    if (tag === 'g') {
+      if (closing) pillStack.pop();
+      else if (!selfClosing) pillStack.push(/class="clickable-arc"/.test(attrs) ? pills++ : (pillStack[pillStack.length - 1] ?? null));
+      continue;
+    }
+    if (closing) continue;
+    const rx = Number(attr(tagText, 'x') ?? 0);
+    const ry = Number(attr(tagText, 'y') ?? 0);
+    const rw = Number(attr(tagText, 'width'));
+    const rh = Number(attr(tagText, 'height'));
+    if (attr(tagText, 'pointer-events') === 'none' || attr(tagText, 'fill') === 'none') continue;
+    if (x >= rx && x <= rx + rw && y >= ry && y <= ry + rh) {
+      top = { tag, pill: pillStack[pillStack.length - 1] ?? null, handle: attr(tagText, 'data-interval-handle') ?? null, fill: attr(tagText, 'fill') };
+    }
+  }
+  return top;
+}
+
+/** pET-28a(+)-eGFP's neighbourhood of the selection edges: the T7 tag pill 5131..5163 and eGFP 5179..5898 selected. */
+const T7_COLOR = '#7b61ff';
+const nearEdgeDoc = docOf('ACGTTGCAAT'.repeat(606) + 'A', {
+  topology: 'circular',
+  features: [
+    { id: 't7', name: 'T7 tag', type: 'tag', start: 5131, end: 5163, strand: 1, color: T7_COLOR },
+    { id: 'egfp', name: 'eGFP', type: 'CDS', start: 5179, end: 5898, strand: 1, color: '#34a853' },
+    { id: 'his', name: '6xHis', type: 'tag', start: 5893, end: 5910, strand: 1, color: '#fbbc04' },
+    { id: 'kan', name: 'KanR', type: 'CDS', start: 400, end: 1200, strand: -1, color: '#ea4335' },
+  ] as SequenceDocument['features'],
+});
+const titleOf = (props: Record<string, unknown>) =>
+  ([props.children].flat(3) as { type?: unknown; props?: { children?: unknown } }[]).find((c) => c?.type === 'title')?.props?.children as string | undefined;
+
 describe('US-01M7CCFQ AC3 feature and restriction-site clicks still select their coordinates', () => {
+  it('a click on a pill near a selection edge reaches the pill, not the edge handle (drawn geometry)', () => {
+    const N6061 = 6061;
+    const per = W / N6061;
+    const sel = { start: 5179, end: 5898 };
+    stubFrames();
+    const fsvg = fakeSvg();
+    let hit: ReturnType<typeof hitAt> = null;
+    const v = renderView(nearEdgeDoc, sel, null);
+    const svg = schematicSvg(v.html);
+    // The T7 tag pill: 8 units wide (its minimum), centred 1.7 units left of the start edge.
+    const t7 = rectsOf(svg).find((r) => attr(r, 'fill') === T7_COLOR)!;
+    const cx = Number(attr(t7, 'x')) + Number(attr(t7, 'width')) / 2;
+    const cy = Number(attr(t7, 'y')) + 8;
+    const startEdge = X0 + (sel.start - 1) * per;
+    expect(Math.abs(cx - startEdge), 'the pill centre is inside the start handle\'s 10 px').toBeLessThan(BRUSH_HANDLE_HIT_PX / 2);
+    hit = hitAt(svg, cx, cy);
+    expect(hit?.handle, 'the handle is not on top of the pill').toBeNull();
+    expect(hit?.pill, 'the click reaches a pill').not.toBeNull();
+    expect(hit?.fill, 'the T7 tag pill').toBe(T7_COLOR);
+    // The whole gesture: press and release there with no travel, then the click on what was hit.
+    const run = renderView(nearEdgeDoc, sel, (d) => {
+      handler(d.svg, 'onPointerDown')(pev(fsvg, cx, hit?.handle ?? null));
+      handler(d.svg, 'onPointerUp')(pev(fsvg, cx, hit?.handle ?? null));
+      let stopped = false;
+      handler(d.svg, 'onClickCapture')({ stopPropagation: () => { stopped = true; } });
+      expect(stopped).toBe(false);
+      const pill = d.pills.find((p) => /^T7 tag/.test(titleOf(p) ?? ''));
+      expect(pill, 'the T7 tag pill').toBeDefined();
+      (pill!.onClick as () => void)();
+    });
+    expect(run.selections.map(({ start, end }) => ({ start, end }))).toEqual([{ start: 5131, end: 5163 }]);
+  });
+
+  it('every point of every pill, near either edge or not, reaches its pill; off the pills the edges keep their handles', () => {
+    for (const sel of [{ start: 5179, end: 5898 }, { start: 5140, end: 5150 }, { start: 5160, end: 5900 }, { start: 1, end: 6061 }]) {
+      const svg = schematicSvg(renderView(nearEdgeDoc, sel, null).html);
+      const pills = rectsOf(svg).filter((r) => ['#7b61ff', '#34a853', '#fbbc04', '#ea4335'].includes(attr(r, 'fill') ?? ''));
+      expect(pills).toHaveLength(4);
+      for (const r of pills) {
+        const x = Number(attr(r, 'x'));
+        const y = Number(attr(r, 'y'));
+        const w = Number(attr(r, 'width'));
+        for (let dx = 0.25; dx < w; dx += 0.5) {
+          const h = hitAt(svg, x + dx, y + 8);
+          expect(h?.handle ?? null, `${sel.start}..${sel.end}: ${attr(r, 'fill')} at +${dx}`).toBeNull();
+          expect(h?.pill, `${sel.start}..${sel.end}: ${attr(r, 'fill')} at +${dx}`).not.toBeNull();
+        }
+      }
+      // In the ruler band, above the pills, each edge is still a 10-unit handle.
+      // (Edges closer than one handle width share the overlap; the end handle is drawn last.)
+      const sx = X0 + (sel.start - 1) * (W / 6061);
+      const ex = X0 + sel.end * (W / 6061);
+      for (const [edge, at] of [['start', sx], ['end', ex]] as const) {
+        for (const off of [-4.9, 0, 4.9]) {
+          const h = hitAt(svg, at + off, 20)?.handle;
+          if (ex - sx >= BRUSH_HANDLE_HIT_PX) expect(h, `${edge} ${off}`).toBe(edge);
+          else expect(h, `${edge} ${off}`).toMatch(/^(start|end)$/);
+        }
+      }
+    }
+  });
+
+  it('a press on a pill near an edge that travels into a drag still resizes that edge', () => {
+    stubFrames();
+    const fsvg = fakeSvg();
+    const per = W / 6061;
+    const sel = { start: 5179, end: 5898 };
+    const svg = schematicSvg(renderView(nearEdgeDoc, sel, null).html);
+    const t7 = rectsOf(svg).find((r) => attr(r, 'fill') === T7_COLOR)!;
+    const cx = Number(attr(t7, 'x')) + Number(attr(t7, 'width')) / 2;
+    const v = renderView(nearEdgeDoc, sel, (d) => {
+      handler(d.svg, 'onPointerDown')(pev(fsvg, cx));
+      handler(d.svg, 'onPointerUp')(pev(fsvg, cx + 40 * per));
+    });
+    expect(v.selections).toEqual([{ start: 5219, end: 5898 }]);
+  });
+
   it('clicking a feature pill on the overview selects the feature', () => {
     const v = renderView(featureDoc, null, (d) => {
       expect(d.pills).toHaveLength(1);
@@ -503,7 +625,8 @@ describe('US-01M7CCFQ AC3 feature and restriction-site clicks still select their
     expect(stopped).toBe(1);
   });
 
-  it('clicking a restriction marker of the linear map selects the recognition site', () => {
+  it('the overview draws no restriction sites; the base rows\' cut marker still selects the recognition site', () => {
+    expect(schematicSvg(renderView(docOf('TTTTGAATTCTTTT'), null, null).html)).not.toMatch(/EcoRI|cut-pill/);
     const seq = 'TTTTGAATTCTTTT';
     const ecoRI = REBASE_ENZYMES.find((e) => e.name === 'EcoRI')!;
     const sites = findRestrictionCutSites(seq, 'linear', [ecoRI]);
@@ -572,6 +695,24 @@ describe('US-01M7CCFQ AC4 focusable 10 px edge handles, arrow keys, and pointerc
     expect(k('end', 'ArrowLeft', false, { start: 50, end: 50 })).toEqual({ interval: { start: 49, end: 50 }, edge: 'start' });
     expect(k('start', 'Enter')).toBeNull();
     expect(k('start', 'a')).toBeNull();
+  });
+
+  it('the view: when a key moves an edge past the other, focus moves to the handle that now carries it', () => {
+    const focus = { start: vi.fn(), end: vi.fn() };
+    const v = renderView(docOf(SEQ100), { start: 50, end: 50 }, (d) => {
+      for (const edge of ['start', 'end'] as const) (d.handles[edge].ref as (el: unknown) => void)({ focus: focus[edge] });
+      handler(d.handles.end, 'onKeyDown')({ key: 'ArrowLeft', shiftKey: false, preventDefault() {}, stopPropagation() {} });
+    });
+    expect(v.selections).toEqual([{ start: 49, end: 50 }]);
+    expect(focus.start).toHaveBeenCalledTimes(1);
+    expect(focus.end).not.toHaveBeenCalled();
+    const noSwap = { start: vi.fn(), end: vi.fn() };
+    renderView(docOf(SEQ100), { start: 30, end: 39 }, (d) => {
+      for (const edge of ['start', 'end'] as const) (d.handles[edge].ref as (el: unknown) => void)({ focus: noSwap[edge] });
+      handler(d.handles.end, 'onKeyDown')({ key: 'ArrowRight', shiftKey: false, preventDefault() {}, stopPropagation() {} });
+    });
+    expect(noSwap.start).not.toHaveBeenCalled();
+    expect(noSwap.end).not.toHaveBeenCalled();
   });
 
   it('the view: an arrow key on a handle selects the moved interval and keeps the page from scrolling', () => {

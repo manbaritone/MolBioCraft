@@ -2176,6 +2176,45 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             <title>{`The base rows show from ${settledViewportStartPos.toLocaleString()} ${unitLabel}`}</title>
           </path>
 
+          {/* Edge handles of the interval: 10 screen pixels wide, focusable sliders (US-01M7CCFQ AC4).
+              Drawn BELOW the feature pills, so a pill near an edge still takes its own click; a press
+              there that becomes a drag still resizes, since the brush hit-tests the edge in screen
+              pixels whatever element the press landed on (brushHitTest). */}
+          {overviewInterval &&
+            overviewInterval.start <= overviewInterval.end &&
+            (['start', 'end'] as const).map((edge) => {
+              const per = SCHEMATIC_W / overviewLen;
+              const edgeX = SCHEMATIC_X0 + (edge === 'start' ? overviewInterval.start - 1 : overviewInterval.end) * per;
+              const w = BRUSH_HANDLE_HIT_PX * overviewUnitsPerPx;
+              const base = overviewInterval[edge];
+              return (
+                <g key={`handle-${edge}`}>
+                  <line x1={edgeX} x2={edgeX} y1={4} y2={schematicHeight - 4} stroke="var(--mbc-blue)" strokeWidth="2.4" pointerEvents="none" />
+                  <rect
+                    ref={(el) => {
+                      handleRefs.current[edge] = el;
+                    }}
+                    data-interval-handle={edge}
+                    x={edgeX - w / 2}
+                    y={4}
+                    width={w}
+                    height={schematicHeight - 8}
+                    fill="transparent"
+                    style={{ cursor: 'ew-resize' }}
+                    tabIndex={0}
+                    role="slider"
+                    aria-label={edge === 'start' ? 'Selection start' : 'Selection end'}
+                    aria-orientation="horizontal"
+                    aria-valuemin={1}
+                    aria-valuemax={overviewLen}
+                    aria-valuenow={base}
+                    aria-valuetext={`${edge === 'start' ? 'Start' : 'End'} at ${base.toLocaleString()} ${unitLabel}`}
+                    onKeyDown={onHandleKeyDown(edge)}
+                  />
+                </g>
+              );
+            })}
+
           {/* Multi-Lane Non-Overlapping Schematic Feature Pills */}
           {schematicLayout.placed.map((item) => {
             const f = item.feature;
@@ -2264,41 +2303,6 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             );
           })}
 
-          {/* Edge handles of the interval: 10 screen pixels wide, focusable sliders (US-01M7CCFQ AC4). */}
-          {overviewInterval &&
-            overviewInterval.start <= overviewInterval.end &&
-            (['start', 'end'] as const).map((edge) => {
-              const per = SCHEMATIC_W / overviewLen;
-              const edgeX = SCHEMATIC_X0 + (edge === 'start' ? overviewInterval.start - 1 : overviewInterval.end) * per;
-              const w = BRUSH_HANDLE_HIT_PX * overviewUnitsPerPx;
-              const base = overviewInterval[edge];
-              return (
-                <g key={`handle-${edge}`}>
-                  <line x1={edgeX} x2={edgeX} y1={4} y2={schematicHeight - 4} stroke="var(--mbc-blue)" strokeWidth="2.4" pointerEvents="none" />
-                  <rect
-                    ref={(el) => {
-                      handleRefs.current[edge] = el;
-                    }}
-                    data-interval-handle={edge}
-                    x={edgeX - w / 2}
-                    y={4}
-                    width={w}
-                    height={schematicHeight - 8}
-                    fill="transparent"
-                    style={{ cursor: 'ew-resize' }}
-                    tabIndex={0}
-                    role="slider"
-                    aria-label={edge === 'start' ? 'Selection start' : 'Selection end'}
-                    aria-orientation="horizontal"
-                    aria-valuemin={1}
-                    aria-valuemax={overviewLen}
-                    aria-valuenow={base}
-                    aria-valuetext={`${edge === 'start' ? 'Start' : 'End'} at ${base.toLocaleString()} ${unitLabel}`}
-                    onKeyDown={onHandleKeyDown(edge)}
-                  />
-                </g>
-              );
-            })}
         </svg>
 
         {/* Multi-Row Wrapped Linear Genome Map for Complete Viral & Organelle Genomes */}
