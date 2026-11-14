@@ -1319,3 +1319,92 @@ describe('The linear card folds from what it measures, and its panels open, clos
     }
   });
 });
+
+// ─── BG-01M7DHNR: Linear View Only takes the same floors and fold ───
+
+describe('Linear View Only keeps every strip of the card in view on a laptop (BG-01M7DHNR)', () => {
+  const LINEAR = '.map-seq-grid.mode-linear';
+  const CARD = `${LINEAR} > .linear-seq-container`;
+  const BAR = `${LINEAR} .linear-toolbar.is-folded`;
+  // The canvas inline sizes Linear View Only runs at: 1366x768 and 1280x800 (803px, 717px), 1440 (877px),
+  // 1920x1200 (1357px) and a 1000x800 window (437px, under the side-by-side breakpoint): the card is held
+  // to the viewer's height at every one of them, so every rule below must apply at every one.
+  const WIDTHS = [437, 717, 803, 877, 1357];
+  // The card at 1366x768 (and 1280x800) with the table shown, measured 2026-11-15 in Chromium and
+  // WebKit: 358px inside its borders, where the rows had fallen to 16px and the card still clipped 26px
+  // (scrollHeight 384).
+  const COLUMN_LINEAR_1366 = 358;
+  const ROOT = new Map(CSS_RULES.filter((r) => r.at.length === 0 && r.selectors.includes(':root')).flatMap((r) => [...r.decls].map(([k, v]) => [k, v.value] as const)));
+  const px = (value: string | undefined): number => {
+    if (value === undefined) return NaN;
+    let v = value;
+    for (let i = 0; i < 5 && /var\(/.test(v); i++) v = v.replace(/var\((--[\w-]+)\)/g, (_m, name: string) => ROOT.get(name) ?? 'NaN');
+    const body = /^calc\((.*)\)$/.exec(v.trim())?.[1] ?? v;
+    const terms = body.trim().split(/\s+([+-])\s+/);
+    let sum = 0;
+    for (let i = 0; i < terms.length; i += 2) {
+      const n = /^([\d.]+)px$/.exec(terms[i].trim());
+      if (!n) return NaN;
+      sum += (i > 0 && terms[i - 1] === '-' ? -1 : 1) * Number(n[1]);
+    }
+    return sum;
+  };
+  const val = (sel: string, prop: string, width: number) => cascaded(sel, prop, width)?.value;
+  const shrinkOf = (sel: string, width: number) => Number(val(sel, 'flex', width)?.split(/\s+/)[1] ?? 1);
+
+  it('gives the overview, the rows and the toolbar floors that fit the 358px card at 1366x768', () => {
+    // Wrong implementations this catches (each fails on main, where Linear View Only had none of
+    // these): an overview that never gives (194px held while the rows fell to 16px); rows with no
+    // floor; a toolbar that neither gives nor folds; a title row that wraps; rules gated to the
+    // side-by-side breakpoint, which a 1000x800 window never reaches; and floors that do not fit.
+    for (const width of WIDTHS) {
+      expect(val(`${CARD} > .mbc-schematic-header`, 'min-block-size', width), `the overview's floor at ${width}px`).toBe('64px');
+      expect(shrinkOf(`${CARD} > .mbc-schematic-header`, width), 'the overview gives first').toBeGreaterThanOrEqual(1000);
+      expect(val(`${CARD} > .mbc-schematic-header`, 'overflow-y', width)).toBe('auto');
+      expect(val(`${CARD} > .sequence-blocks-scroll`, 'min-block-size', width), `the rows' floor at ${width}px`).toBe('120px');
+      expect(shrinkOf(`${CARD} > .sequence-blocks-scroll`, width)).toBeGreaterThan(0);
+      expect(shrinkOf(`${CARD} > .linear-toolbar`, width), 'the toolbar gives the rest').toBeGreaterThanOrEqual(1);
+      expect(val(`${CARD} > .linear-toolbar`, 'overflow-y', width)).toBe('auto');
+      expect(val(`${CARD} > .studio-card-header`, 'flex-wrap', width), 'one title line').toBe('nowrap');
+      expect(val(`${CARD} > .studio-card-header > h4`, 'text-overflow', width)).toBe('ellipsis');
+      expect(val(`${CARD} > .studio-card-header > h4`, 'white-space', width)).toBe('nowrap');
+      expect(val(CARD, 'justify-content', width), 'the strips stack from the top').toBe('flex-start');
+
+      const title = px('var(--mbc-control-h-md)') + px(val(`${CARD} > .studio-card-header`, 'padding-block-end', width)) + 1;
+      const quickbar = linearView.SELECTION_QUICKBAR_HEIGHT_PX + px(val(`${CARD} > .seq-selection-quickbar`, 'margin-block-end', width));
+      const folded = px(val(`${CARD} > .linear-toolbar.is-folded`, 'min-block-size', width));
+      expect(folded, 'the folded toolbar holds its search and pager lines').toBeGreaterThanOrEqual(px('var(--mbc-control-h-md)') + px('var(--mbc-control-h-sm)') + 13);
+      const floors = title + 64 + folded + quickbar + 120;
+      expect(floors, `every floor fits the Linear View Only card at 1366x768 (${width}px)`).toBeLessThanOrEqual(COLUMN_LINEAR_1366);
+    }
+  });
+
+  it('folds the toolbar to its search and pager lines, with the tools and the hits a click away', () => {
+    // Wrong implementations this catches: a folded toolbar in Linear View Only that still draws its
+    // tools inline (wrapping the pager away), hides Tools or the hit count, or leaves the hits under
+    // the pager; and a form that takes a strip from a card on its floors.
+    for (const width of WIDTHS) {
+      expect(val(`${BAR} .linear-toolbar-left-pills`, 'display', width)).toBe('none');
+      expect(val(`${BAR} .linear-toolbar-more`, 'display', width)).toBe('inline-flex');
+      expect(val(`${BAR} .linear-search-hits-btn`, 'display', width)).toBe('inline-flex');
+      expect(val(`${BAR} .search-results`, 'display', width)).toBe('none');
+      expect(val(`${BAR} > .linear-toolbar-actions`, 'flex-wrap', width)).toBe('nowrap');
+      expect(val(`${BAR} .linear-toolbar-left-pills.is-open`, 'position', width)).toBe('fixed');
+      expect(val(`${BAR} .search-results.is-open`, 'position', width)).toBe('fixed');
+      expect(val(CARD, 'position', width), 'the card holds the form').toBe('relative');
+      expect(val(`${CARD} > .add-feature-drawer`, 'position', width), 'which lies over the rows (the view pads them by it)').toBe('absolute');
+    }
+    // Unfolded, the toolbar keeps its own layout: no Linear View Only rule wraps or flattens it.
+    for (const sel of [`${LINEAR} .linear-toolbar-actions`, `${LINEAR} .linear-toolbar-left-pills`]) {
+      expect(CSS_RULES.filter((r) => r.selectors.includes(sel)), sel).toEqual([]);
+    }
+    // The fold, from the strips measured in Linear View Only (title 33, quickbar 32 + 2, floors 64 and
+    // 120): the 101px toolbar fits the 358px card at 1366x768; a search's hits (122px) do not; nor does
+    // the 211px toolbar of a 437px column at 1000x800.
+    const folds = (card: number, toolbarFull: number) => linearView.linearToolbarFolds({ card, fixed: 67, overviewFloor: 64, rowsFloor: 120, toolbarFull });
+    expect(folds(COLUMN_LINEAR_1366, 101), '1366x768').toBe(false);
+    expect(folds(COLUMN_LINEAR_1366, 122), '1366x768 with a search').toBe(true);
+    expect(folds(COLUMN_LINEAR_1366, 211), '1000x800').toBe(true);
+    expect(folds(723, 94), '1920x1200 with a search').toBe(false);
+  });
+});

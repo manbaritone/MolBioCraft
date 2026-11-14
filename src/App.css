@@ -2527,6 +2527,164 @@ fieldset > legend,
   }
 }
 
+/* BG-01M7DHNR: Linear View Only holds the card to the viewer's height at every width, so it takes the
+   same floors and fold as the card beside the circle: a one-line title, the overview down to 64px,
+   the rows down to 120px, the toolbar folding to its search and pager lines when its lines do not fit
+   (the view measures this), and the new-annotation form over the foot of the rows. Unfolded, its
+   toolbar keeps its own layout. (At 1366x768 with the table shown the rows had fallen to 16px and
+   the card still clipped 26px.) */
+.map-seq-grid.mode-linear > .linear-seq-container {
+  min-block-size: 0;
+  justify-content: flex-start;
+  position: relative;
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .add-feature-drawer {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  z-index: 5;
+  max-block-size: 50%;
+  overflow-y: auto;
+  border-top: 1px solid #a8c7fa;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .add-feature-drawer > input[type='text'] {
+  inline-size: 120px;
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .add-feature-drawer input[type='number'] {
+  inline-size: 72px;
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .mbc-schematic-header {
+  flex: 0 1000 auto;
+  min-block-size: 64px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .sequence-blocks-scroll {
+  flex: 1 100 160px;
+  min-block-size: 120px;
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .linear-toolbar {
+  flex: 0 1 auto;
+  min-block-size: calc(var(--mbc-control-h-md) + 12px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .studio-card-header {
+  flex-wrap: nowrap;
+  padding-block-end: var(--mbc-space-1);
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .seq-selection-quickbar {
+  margin-block-end: 2px;
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .studio-card-header > * {
+  flex-shrink: 0;
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .studio-card-header > h4 {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-seq-grid.mode-linear > .linear-seq-container > .linear-toolbar.is-folded {
+  min-block-size: calc(var(--mbc-control-h-md) + var(--mbc-control-h-sm) + 13px);
+  padding-block: 4px;
+  gap: 4px;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .search-results {
+  display: none;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .linear-search-hits-btn {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded > .linear-toolbar-actions {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .linear-toolbar-more {
+  display: inline-flex;
+  align-items: center;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .linear-toolbar-more,
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .btn-page {
+  flex-shrink: 0;
+  block-size: var(--mbc-control-h-sm);
+  padding-block: 0;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .btn-page {
+  padding-inline: 6px;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .pagination-group {
+  min-inline-size: 0;
+  gap: 4px;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .page-indicator {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .linear-toolbar-left-pills {
+  display: none;
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .search-results.is-open {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mbc-space-1);
+  position: fixed;
+  z-index: 1000;
+  inline-size: min(340px, calc(100vw - 16px));
+  max-block-size: min(240px, 50vh);
+  overflow-y: auto;
+  padding: var(--mbc-space-2);
+  border: 1px solid var(--mbc-border-strong);
+  border-radius: var(--mbc-radius-sm);
+  background: var(--mbc-bg-elevated);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+  font-size: var(--font-size-label);
+}
+
+.map-seq-grid.mode-linear .linear-toolbar.is-folded .linear-toolbar-left-pills.is-open {
+  display: flex;
+  position: fixed;
+  z-index: 1000;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mbc-space-2);
+  max-inline-size: min(340px, calc(100vw - 16px));
+  padding: var(--mbc-space-2);
+  border: 1px solid var(--mbc-border-strong);
+  border-radius: var(--mbc-radius-sm);
+  background: var(--mbc-bg-elevated);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+  font-size: var(--font-size-label);
+}
+
 /* US-01M7CCT5: the Split frame holds the map grid, the divider between its two cards, and the
    restore button a collapsed card leaves. It takes the grid's place in the viewer canvas's column, so
    the grid's own sizing still applies inside it. The App sets --mbc-split-ratio (the circle's share
