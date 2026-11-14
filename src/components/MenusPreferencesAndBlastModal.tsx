@@ -3443,6 +3443,34 @@ export const NewSequenceModal: React.FC<NewSequenceModalProps> = ({
   );
 };
 
+// Inline because the About rule in App.css clips its body (overflow: hidden, centred column).
+const ABOUT_BODY_SCROLL_STYLE: React.CSSProperties = {
+  overflowY: 'auto',
+  maxHeight: 'calc(100vh - 200px)',
+  minHeight: 0,
+  flex: '1 1 auto',
+  justifyContent: 'flex-start',
+};
+
+// The app body turns text selection off (App.css `body { user-select: none }`);
+// the credited names are plain text a reader can select and copy.
+const ABOUT_CREDITS_SELECTABLE_STYLE: React.CSSProperties = {
+  WebkitUserSelect: 'text',
+  userSelect: 'text',
+};
+
+// A neutral heading at body size, matching the version line's weight.
+const ABOUT_CREDITS_HEADING_STYLE: React.CSSProperties = {
+  margin: 0,
+  fontSize: 'inherit',
+};
+
+const ABOUT_CREDITS_LIST_STYLE: React.CSSProperties = {
+  listStyle: 'none',
+  margin: 0,
+  padding: 0,
+};
+
 interface AboutMolBioCraftModalProps {
   onClose: () => void;
 }
@@ -3457,7 +3485,9 @@ export const AboutMolBioCraftModal: React.FC<AboutMolBioCraftModalProps> = ({
       sizeClass="modal-size-about"
       onClose={onClose}
     >
-      <div className="about-single-page-body">
+      {/* The body scrolls inside the dialog's bounded height, so the credits and the
+          footer's Close button stay reachable in a small window or with enlarged text. */}
+      <div className="about-single-page-body" style={ABOUT_BODY_SCROLL_STYLE}>
         <div className="about-hero-lockup">
           <MolBioCraftLogo size={76} decorative={true} />
           <div className="about-hero-wordmark">
@@ -3479,6 +3509,24 @@ export const AboutMolBioCraftModal: React.FC<AboutMolBioCraftModalProps> = ({
             </div>
             <div>CC BY-NC 4.0 (SPDX: CC-BY-NC-4.0) — Open-Source Research Workbench</div>
           </div>
+
+          <section
+            className="about-info-group"
+            aria-labelledby="mbc-about-credits-heading"
+            style={ABOUT_CREDITS_SELECTABLE_STYLE}
+          >
+            <h3
+              id="mbc-about-credits-heading"
+              className="about-version-line"
+              style={ABOUT_CREDITS_HEADING_STYLE}
+            >
+              Credits
+            </h3>
+            <ul style={ABOUT_CREDITS_LIST_STYLE}>
+              <li className="about-credit-name">Thanakrit Wongsatit</li>
+              <li className="about-credit-name">Krittanai Trisakulwattana</li>
+            </ul>
+          </section>
 
           <div className="about-info-group">
             <div>
