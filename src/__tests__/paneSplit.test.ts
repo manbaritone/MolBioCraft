@@ -33,6 +33,7 @@ import {
   paneSplitRatioAt,
   paneSplitValueNow,
   parsePaneSplit,
+  renderedPaneSplitRatio,
   resetPaneSplit,
   restorePanes,
   stepPaneSplit,
@@ -611,8 +612,8 @@ describe('US-01M7CCT5 AC1: both expanded panes keep their minimum at any canvas 
         expect(c.linear, `${what}: ${w}px frame`).toBeGreaterThanOrEqual(PANE_MIN_PX.linear - 0.5);
         expect(c.circle, `${what}: ${w}px frame`).toBeGreaterThanOrEqual(PANE_MIN_PX.circular - 0.5);
         expect(Math.abs(centreOf(app, divider(app), w) - (c.circle + PANE_SPLIT_GAP_PX / 2)), `${what}: the divider on the boundary`).toBeLessThan(0.1);
-        // The state follows too: the ratio itself is held to the floors (re-clamped on the resize).
-        expect(ratioOf(app), `${what}: the stored ratio`).toBeLessThanOrEqual(1 - PANE_MIN_PX.linear / cols(w) + 1e-4);
+        // The rendered ratio follows too: the frame's ratio is held to the floors at the new width.
+        expect(ratioOf(app), `${what}: the rendered ratio`).toBeLessThanOrEqual(1 - PANE_MIN_PX.linear / cols(w) + 1e-4);
         return w;
       };
       // The inspector widened by keyboard, 16px a press.
@@ -657,6 +658,137 @@ describe('US-01M7CCT5 AC3: the Collapse controls show in the side-by-side Split 
         expect(Number(/^(\d+)px$/.exec(cascaded(b, 'width', VIEW) ?? '')?.[1]), label).toBeGreaterThan(0);
       }
       expect(centreOf(app, controls, FRAME)).toBeCloseTo(columns(app).circle + PANE_SPLIT_GAP_PX / 2, 1);
+    });
+  });
+});
+
+// ─── BG-01M7CKN7: the ratio the user chose is kept; only the rendered layout is clamped ───
+
+describe('BG-01M7CKN7 AC1: narrowing and widening the window restores the divider to the ratio the user dragged to', () => {
+  it('BG-01M7CKN7 AC1 clamps only the rendered ratio, side by side, and steps from where the divider is drawn', () => {
+    for (const w of [760, 800, 879, 1400]) {
+      for (const r of [0.05, 0.3, 4 / 9, 0.6548, 0.95]) {
+        expect(renderedPaneSplitRatio(r, w), `${w}px, ${r}`).toBe(clampPaneSplitRatio(r, w));
+      }
+    }
+    // Stacked (below 760px) or with no width measured, the chosen ratio is kept for when the maps are side by side.
+    for (const w of [null, 0, 400, 759]) expect(renderedPaneSplitRatio(0.95, w), String(w)).toBe(0.95);
+    // A key press after a clamp moves from the drawn divider, not from the ratio the window cannot hold.
+    const hi = 1 - PANE_MIN_PX.linear / cols(800);
+    const wide = { ratio: 569 / cols(FRAME), collapsed: null };
+    expect(wide.ratio).toBeGreaterThan(hi);
+    expect(stepPaneSplit(wide, -16, 800).ratio).toBeCloseTo(hi - 16 / cols(800), 12);
+    expect(stepPaneSplit(wide, 16, 800).ratio).toBeCloseTo(hi, 12);
+  });
+
+  it('BG-01M7CKN7 AC1 returns a dragged split after the window narrows and widens, and saves the chosen ratio', async () => {
+    let width = FRAME;
+    await withSplit(async (app) => {
+      const W = cols(FRAME);
+      // Dragged to the linear map's minimum at 879px: 569 / 300.
+      await drag(app, [FRAME - PANE_SPLIT_GAP_PX / 2 - PANE_MIN_PX.linear]);
+      expect(columns(app).circle).toBeCloseTo(569, 0);
+      expect(columns(app).linear).toBeCloseTo(PANE_MIN_PX.linear, 0);
+      for (const narrow of [800, 760, 700]) {
+        width = narrow;
+        await act(app, () => {});
+        if (narrow >= 760) {
+          expect(ratioOf(app), `${narrow}px: drawn clamped`).toBeCloseTo(1 - PANE_MIN_PX.linear / cols(narrow), 4);
+          expect(columns(app, narrow).linear, `${narrow}px`).toBeGreaterThanOrEqual(PANE_MIN_PX.linear - 0.5);
+          expect(divider(app).getAttribute('aria-valuenow'), `${narrow}px: announces the drawn ratio`)
+            .toBe(String(Math.round((1 - PANE_MIN_PX.linear / cols(narrow)) * 100)));
+        }
+        // The session keeps the ratio the user chose, not the one this width can hold.
+        const env = await autosaved(app);
+        expect(env.workspace.paneSplit?.ratio, `${narrow}px: saved`).toBeCloseTo(569 / W, 6);
+        width = FRAME;
+        await act(app, () => {});
+        expect(ratioOf(app), `back from ${narrow}px`).toBeCloseTo(569 / W, 4);
+        expect(columns(app).circle, `back from ${narrow}px`).toBeCloseTo(569, 0);
+      }
+
+      // Reopened at a narrow width, a saved session draws clamped and returns to its ratio when there is room.
+      const env = await autosaved(app);
+      await dblclick(app, divider(app));
+      width = 800;
+      await reopen(app, env, { ratio: 569 / W, collapsed: null });
+      expect(ratioOf(app)).toBeCloseTo(1 - PANE_MIN_PX.linear / cols(800), 4);
+      expect((await autosaved(app)).workspace.paneSplit?.ratio, 'reopened narrow, saved as chosen').toBeCloseTo(569 / W, 6);
+      width = FRAME;
+      await act(app, () => {});
+      expect(ratioOf(app), 'reopened, then widened').toBeCloseTo(569 / W, 4);
+
+      // Collapse and restore at a narrow width keep the chosen ratio too.
+      width = 800;
+      await act(app, () => {});
+      await app.click(named(app, 'Collapse linear map'));
+      expect((await autosaved(app)).workspace.paneSplit).toEqual({ ratio: expect.closeTo(569 / W, 6), collapsed: 'linear' });
+      width = FRAME;
+      await act(app, () => {});
+      await app.click(named(app, 'Restore linear map'));
+      expect(ratioOf(app), 'restored at the chosen ratio').toBeCloseTo(569 / W, 4);
+
+      // A cancelled drag at a narrow width puts back the drawn (clamped) divider, not the unclamped ratio.
+      width = 800;
+      await act(app, () => {});
+      const drawn = 1 - PANE_MIN_PX.linear / cols(800);
+      await drag(app, [xForCircle(400)], 'pointercancel', xForCircle(drawn * cols(800)));
+      expect(ratioOf(app), 'cancel at 800px').toBeCloseTo(drawn, 4);
+      width = FRAME;
+      await act(app, () => {});
+      expect(ratioOf(app), 'a cancel keeps the chosen ratio').toBeCloseTo(569 / W, 4);
+    }, () => width);
+  });
+
+  it('BG-01M7CKN7 AC1 steps from the drawn divider after a clamp, and that becomes the ratio kept', async () => {
+    let width = FRAME;
+    await withSplit(async (app) => {
+      await drag(app, [FRAME - PANE_SPLIT_GAP_PX / 2 - PANE_MIN_PX.linear]);
+      width = 800;
+      await act(app, () => {});
+      const drawn = 1 - PANE_MIN_PX.linear / cols(800);
+      expect(ratioOf(app)).toBeCloseTo(drawn, 4);
+      await focusDivider(app);
+      await press(app, 'ArrowLeft');
+      expect(ratioOf(app), 'one press moves 16px from where the divider is drawn').toBeCloseTo(drawn - 16 / cols(800), 4);
+      const kept = drawn - 16 / cols(800);
+      expect((await autosaved(app)).workspace.paneSplit?.ratio).toBeCloseTo(kept, 6);
+      // Widened again, the divider stays where the key put it: the press chose a new ratio.
+      width = FRAME;
+      await act(app, () => {});
+      expect(ratioOf(app)).toBeCloseTo(kept, 4);
+    }, () => width);
+  });
+
+  it('BG-01M7CKN7 AC1 fades the pane a release would fold away, and selects no text while dragging', async () => {
+    await withSplit(async (app) => {
+      const el = divider(app);
+      const start = xForCircle(ratioOf(app) * cols(FRAME));
+      await act(app, () => { dispatchLiveEvent(el, 'pointerdown', { pointerId: 9, button: 0, buttons: 1, clientX: start, isPrimary: true }); });
+      expect(frame(app).classList.contains('dragging')).toBe(true);
+      expect(frame(app).hasAttribute('data-collapse-preview'), 'no preview before a threshold').toBe(false);
+      await act(app, () => { dispatchLiveEvent(el, 'pointermove', { pointerId: 9, buttons: 1, clientX: FRAME - 20 }); });
+      expect(frame(app).getAttribute('data-collapse-preview')).toBe('linear');
+      await act(app, () => { dispatchLiveEvent(el, 'pointermove', { pointerId: 9, buttons: 1, clientX: 20 }); });
+      expect(frame(app).getAttribute('data-collapse-preview')).toBe('circular');
+      await act(app, () => { dispatchLiveEvent(el, 'pointermove', { pointerId: 9, buttons: 1, clientX: start }); });
+      expect(frame(app).hasAttribute('data-collapse-preview'), 'back inside, no preview').toBe(false);
+      await act(app, () => { dispatchLiveEvent(el, 'pointermove', { pointerId: 9, buttons: 1, clientX: FRAME - 20 }); });
+      await act(app, () => { dispatchLiveEvent(el, 'pointerup', { pointerId: 9, clientX: FRAME - 20 }); });
+      expect(frame(app).classList.contains('collapsed-linear')).toBe(true);
+      expect(frame(app).hasAttribute('data-collapse-preview'), 'the release clears the preview').toBe(false);
+      expect(frame(app).classList.contains('dragging')).toBe(false);
+      // App.css: the dragging frame selects no text, and the previewed card fades.
+      const view = VIEW;
+      const dragging = appCssRules().filter((r) => r.selectorText.split(',').some((x) => x.trim() === '.map-seq-split.dragging'));
+      const decl = (n: string) => dragging.flatMap((r) => r.decls).find((d) => d.name === n)?.value.trim();
+      expect([decl('user-select'), decl('-webkit-user-select')]).toEqual(['none', 'none']);
+      for (const [pane, card] of [['circular', '.plasmid-map-wrapper'], ['linear', '.linear-seq-container']] as const) {
+        frame(app).setAttribute('data-collapse-preview', pane);
+        expect(Number(cascaded(app.one(`.map-seq-grid > ${card}`), 'opacity', view)), pane).toBeLessThan(1);
+        frame(app).removeAttribute('data-collapse-preview');
+        expect(cascaded(app.one(`.map-seq-grid > ${card}`), 'opacity', view), `${pane} at rest`).not.toBe('0.35');
+      }
     });
   });
 });

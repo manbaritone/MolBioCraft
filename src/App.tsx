@@ -119,8 +119,6 @@ import {
   DEFAULT_PANE_SPLIT,
   PANE_SPLIT_KEY_STEP_LARGE_PX,
   PANE_SPLIT_KEY_STEP_PX,
-  PANE_SPLIT_SIDE_BY_SIDE_PX,
-  clampPaneSplitRatio,
   collapsePane,
   dragPaneSplit,
   paneSplitIsDefault,
@@ -128,6 +126,7 @@ import {
   paneSplitStyle,
   paneSplitValueNow,
   parsePaneSplit,
+  renderedPaneSplitRatio,
   resetPaneSplit,
   restorePanes,
   stepPaneSplit,
@@ -1587,8 +1586,11 @@ export const App: React.FC = () => {
     frame: HTMLElement;
   } | null>(null);
   // US-01M7CCRP: the Split frame, observed so a ratio restored from a session (or kept across a window
-  // resize) is clamped to the width the maps now have.
+  // resize) is drawn clamped to the width the maps now have. BG-01M7CKN7: the width is kept apart from
+  // `paneSplit`, which holds the ratio the user chose and is what the session saves, so a narrowing
+  // clamps only what is drawn and widening again brings the chosen split back.
   const [paneSplitFrame, setPaneSplitFrame] = useState<HTMLDivElement | null>(null);
+  const [paneSplitWidth, setPaneSplitWidth] = useState<number | null>(null);
   // Restoring the sequence map (⌘0, View › Actual Size, the header's % readout) returns its zoom to
   // 100% and counts up its restore key, on which the circle recentres a pan.
   const [sequenceViewRestores, setSequenceViewRestores] = useState(0);
@@ -2122,32 +2124,31 @@ export const App: React.FC = () => {
   // US-01M7CCT5: the circle / linear divider exists only in Split; elsewhere nothing is collapsed.
   const paneSplitShown = effectiveMapLayoutMode === 'split';
   const paneSplitCollapsed = paneSplitShown ? paneSplit.collapsed : null;
+  // The ratio drawn: the chosen one, clamped to the frame while the maps are side by side.
+  const paneSplitDrawn: PaneSplitState = { ...paneSplit, ratio: renderedPaneSplitRatio(paneSplit.ratio, paneSplitWidth) };
   /** Writes a ratio, and the pane a release would collapse, straight onto the Split frame mid-drag. */
   const showPaneSplitOnFrame = (frame: HTMLElement, ratio: number, preview: PaneSplitState['collapsed']) => {
     for (const [k, v] of Object.entries(paneSplitStyle(ratio))) frame.style.setProperty(k, v);
     if (preview) frame.setAttribute('data-collapse-preview', preview);
     else frame.removeAttribute('data-collapse-preview');
   };
-  // A ratio the maps side by side cannot hold (a restored session, a narrower window) is clamped to
-  // the frame's width; a stacked layout keeps the ratio for when the maps are side by side again.
+  // A ratio the maps side by side cannot hold (a restored session, a narrower window) is drawn clamped
+  // to the frame's width; a stacked layout draws the ratio unclamped. The frame's width is measured
+  // here, and the chosen ratio in `paneSplit` is never rewritten by it (BG-01M7CKN7).
   useEffect(() => {
     const frame = paneSplitFrame;
     // A host without layout (a test's bare DOM) gives no width to clamp to.
-    if (!frame || typeof frame.getBoundingClientRect !== 'function') return;
-    const clampToFrame = () => {
-      const width = frame.getBoundingClientRect().width;
-      if (width < PANE_SPLIT_SIDE_BY_SIDE_PX || paneSplitDragRef.current) return;
-      setPaneSplit((s) => {
-        const ratio = clampPaneSplitRatio(s.ratio, width);
-        return ratio === s.ratio ? s : { ...s, ratio };
-      });
-    };
-    clampToFrame();
+    if (!frame || typeof frame.getBoundingClientRect !== 'function') {
+      setPaneSplitWidth(null);
+      return;
+    }
+    const measure = () => setPaneSplitWidth(frame.getBoundingClientRect().width);
+    measure();
     if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(clampToFrame);
+    const observer = new ResizeObserver(measure);
     observer.observe(frame);
     return () => observer.disconnect();
-  }, [paneSplitFrame, paneSplit.ratio]);
+  }, [paneSplitFrame]);
   /** Ends the divider drag: a release commits where it got to, a cancel puts the old state back. */
   const finishPaneSplitDrag = (commit: boolean) => {
     const drag = paneSplitDragRef.current;
@@ -2159,7 +2160,8 @@ export const App: React.FC = () => {
     } catch {
       // The pointer has already gone.
     }
-    showPaneSplitOnFrame(drag.frame, next.ratio, null);
+    // The frame shows what React will draw (a cancel's chosen ratio may not fit this width).
+    showPaneSplitOnFrame(drag.frame, renderedPaneSplitRatio(next.ratio, drag.width), null);
     setPaneSplit(next);
     setPaneSplitDragging(false);
   };
@@ -14973,7 +14975,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       }${paneSplitShown && (paneSplitDragging || !paneSplitIsDefault(paneSplit)) ? ' is-resized' : ''}${
                         paneSplitDragging ? ' dragging' : ''
                       }`}
-                      style={paneSplitStyle(paneSplit.ratio) as React.CSSProperties}
+                      style={paneSplitStyle(paneSplitDrawn.ratio) as React.CSSProperties}
                       ref={setPaneSplitFrame}
                     >
                       {paneSplitCollapsed === 'circular' && (
@@ -15036,7 +15038,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             tabIndex={0}
                             aria-orientation="vertical"
                             aria-label="Resize the circular and linear maps"
-                            aria-valuenow={paneSplitValueNow(paneSplit)}
+                            aria-valuenow={paneSplitValueNow(paneSplitDrawn)}
                             aria-valuemin={0}
                             aria-valuemax={100}
                             aria-valuetext={
@@ -15044,7 +15046,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                                 ? 'Circular map collapsed'
                                 : paneSplit.collapsed === 'linear'
                                   ? 'Linear map collapsed'
-                                  : `Circular map ${paneSplitValueNow(paneSplit)}%, linear map ${100 - paneSplitValueNow(paneSplit)}%`
+                                  : `Circular map ${paneSplitValueNow(paneSplitDrawn)}%, linear map ${100 - paneSplitValueNow(paneSplitDrawn)}%`
                             }
                             title={`Drag, or press Left/Right Arrow (${PANE_SPLIT_KEY_STEP_PX}px; Shift ${PANE_SPLIT_KEY_STEP_LARGE_PX}px), to resize the circular and linear maps • Home/End or a drag to an edge collapses one, Enter restores • Double-click to reset`}
                             onKeyDown={(e) => {

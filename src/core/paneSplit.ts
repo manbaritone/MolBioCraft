@@ -14,7 +14,11 @@ export type SplitPane = 'circular' | 'linear';
 
 /** The Split grid's state: the circle's share while both panes show, and which pane is folded away. */
 export interface PaneSplitState {
-  /** The circle's share of the columns, 0..1. Kept unchanged while a pane is collapsed. */
+  /**
+   * The circle's share of the columns the user chose, 0..1. Kept unchanged while a pane is collapsed,
+   * and never re-clamped to a narrower window (BG-01M7CKN7): only the rendered layout is clamped, by
+   * `renderedPaneSplitRatio`, so the split returns when the window is wide enough again.
+   */
   ratio: number;
   collapsed: SplitPane | null;
 }
@@ -113,14 +117,28 @@ export const PANE_SPLIT_KEY_STEP_LARGE_PX = 80;
 export const PANE_SPLIT_SIDE_BY_SIDE_PX = 760;
 
 /**
+ * BG-01M7CKN7: the ratio the Split frame draws for the chosen `ratio` in a frame `widthPx` wide. Side
+ * by side it is clamped to both minimums; stacked (below the breakpoint) or with no width measured
+ * (`null`) the chosen ratio is kept as it is, for when the maps are side by side again.
+ */
+export function renderedPaneSplitRatio(ratio: number, widthPx: number | null): number {
+  if (widthPx === null || widthPx < PANE_SPLIT_SIDE_BY_SIDE_PX) return ratio;
+  return clampPaneSplitRatio(ratio, widthPx);
+}
+
+/**
  * The divider moved `deltaPx` (negative: towards the circle) in a grid `widthPx` wide, clamped to
- * both minimums. A collapsed pane is left as it is: restoring it is its own key.
+ * both minimums. It moves from where the divider is drawn: a chosen ratio this width cannot hold is
+ * clamped first (BG-01M7CKN7), so the first press after a narrowing moves the visible divider, and
+ * the ratio it lands on becomes the chosen one. A collapsed pane is left as it is: restoring it is
+ * its own key.
  */
 export function stepPaneSplit(state: PaneSplitState, deltaPx: number, widthPx: number): PaneSplitState {
   if (state.collapsed) return state;
   const cols = columnsOf(widthPx);
   if (cols <= 0) return state;
-  return { ratio: clampPaneSplitRatio(state.ratio + deltaPx / cols, widthPx), collapsed: null };
+  const from = clampPaneSplitRatio(state.ratio, widthPx);
+  return { ratio: clampPaneSplitRatio(from + deltaPx / cols, widthPx), collapsed: null };
 }
 
 /** The circle's share as the separator announces it, 0..100: 0 with the circle collapsed, 100 with the linear map collapsed. */
