@@ -2199,6 +2199,189 @@ fieldset > legend,
   }
 }
 
+/* US-01M7CCT5: the Split frame holds the map grid, the divider between its two cards, and the
+   restore button a collapsed card leaves. It takes the grid's place in the viewer canvas's column, so
+   the grid's own sizing still applies inside it. The App sets --mbc-split-ratio (the circle's share
+   of the two columns) and each card's flex share on the frame. */
+.map-seq-split {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.map-seq-split.mode-circular,
+.map-seq-split.mode-linear {
+  flex: 1;
+}
+
+.map-seq-split.dragging {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* A collapsed card is hidden, not unmounted, so its view comes back as it was; the other card takes
+   the one column, and a rail at that edge holds the restore button. */
+.map-seq-split.collapsed-circular > .map-seq-grid.mode-split,
+.map-seq-split.collapsed-linear > .map-seq-grid.mode-split {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.map-seq-split.collapsed-circular > .map-seq-grid.mode-split > .plasmid-map-wrapper,
+.map-seq-split.collapsed-linear > .map-seq-grid.mode-split > .linear-seq-container {
+  display: none;
+}
+
+.map-seq-split.collapsed-circular {
+  padding-inline-start: 30px;
+}
+
+.map-seq-split.collapsed-linear {
+  padding-inline-end: 30px;
+}
+
+.map-seq-restore {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--mbc-space-2);
+  padding: var(--mbc-space-2) 0;
+  border: 1px solid var(--mbc-border);
+  border-radius: var(--mbc-radius-md);
+  background: var(--mbc-bg-panel);
+  color: var(--mbc-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.map-seq-restore.restore-circular {
+  left: 0;
+}
+
+.map-seq-restore.restore-linear {
+  right: 0;
+}
+
+.map-seq-restore > span {
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+}
+
+.map-seq-restore:hover,
+.map-seq-restore:focus-visible {
+  color: var(--mbc-blue-text);
+  border-color: var(--mbc-blue);
+}
+
+/* The divider sits in the 10px gap between the cards (centred on it, 1px into each card's border),
+   where the circle's track ends: its share of the columns, never under the track's 320px floor. Its
+   collapse buttons sit at its top, over the cards' header strips. Only side by side. */
+.map-seq-divider,
+.map-seq-divider-controls {
+  display: none;
+}
+
+.map-seq-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(max(320px, (100% - 10px) * var(--mbc-split-ratio, 0.4444)) + 5px - 6px);
+  width: 12px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  z-index: 2;
+}
+
+.map-seq-divider::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  border-radius: var(--mbc-radius-xs);
+  background: transparent;
+  transition: background-color var(--mbc-duration-fast) var(--mbc-ease-standard);
+}
+
+.map-seq-divider:hover::after,
+.map-seq-split.dragging > .map-seq-divider::after {
+  background: var(--mbc-blue);
+}
+
+.map-seq-split.dragging > .map-seq-divider::after {
+  transition: none;
+}
+
+.map-seq-divider-controls {
+  position: absolute;
+  top: 8px;
+  left: calc(max(320px, (100% - 10px) * var(--mbc-split-ratio, 0.4444)) + 5px - 7px);
+  width: 14px;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 3;
+}
+
+.map-seq-divider-controls > button {
+  width: 14px;
+  height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--mbc-border);
+  border-radius: var(--mbc-radius-xs);
+  background: var(--mbc-bg-panel);
+  color: var(--mbc-text-secondary);
+  cursor: pointer;
+}
+
+.map-seq-divider-controls > button:hover,
+.map-seq-divider-controls > button:focus-visible {
+  color: var(--mbc-blue-text);
+  border-color: var(--mbc-blue);
+}
+
+/* Mid-drag past the collapse threshold: the card a release would fold away fades. */
+.map-seq-split[data-collapse-preview='circular'] > .map-seq-grid > .plasmid-map-wrapper,
+.map-seq-split[data-collapse-preview='linear'] > .map-seq-grid > .linear-seq-container {
+  opacity: 0.35;
+}
+
+@container viewer-canvas (min-width: 760px) {
+  .map-seq-split.mode-split {
+    flex: 1 1 0;
+    min-block-size: 320px;
+  }
+
+  /* A dragged ratio: each card's flex share, the circle still on its 320px floor. */
+  .map-seq-split.is-resized > .map-seq-grid.mode-split {
+    grid-template-columns: minmax(320px, var(--mbc-split-circle)) minmax(0, var(--mbc-split-linear));
+  }
+
+  .map-seq-split.collapsed-circular > .map-seq-grid.mode-split,
+  .map-seq-split.collapsed-linear > .map-seq-grid.mode-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .map-seq-split.mode-split > .map-seq-divider {
+    display: block;
+  }
+
+  .map-seq-split.mode-split > .map-seq-divider-controls {
+    display: flex;
+  }
+}
+
 /* A scrollbar coming or going never changes how many bases fit in a row. */
 .map-seq-grid .sequence-blocks-scroll {
   scrollbar-gutter: stable;

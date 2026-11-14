@@ -11,6 +11,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Database,
   FileSpreadsheet,
@@ -114,6 +115,17 @@ import { contigDocument, fragmentDocumentFromFsa, mapOptionsOf, runQueryCentricA
 import { exportReadsToFastq, fastqToReadDocuments, samToContigs, vcfToFeatures } from './core/importFormats';
 import { parseAlignedFasta, parseTextAlignment, splitFlatfileRecords, textAlignmentToDocument } from './core/alignmentFormats';
 import { SplitDocumentPane } from './components/SplitDocumentPane';
+import {
+  DEFAULT_PANE_SPLIT,
+  collapsePane,
+  dragPaneSplit,
+  paneSplitIsDefault,
+  paneSplitRatioAt,
+  paneSplitStyle,
+  resetPaneSplit,
+  restorePanes,
+  type PaneSplitState,
+} from './core/paneSplit';
 import { StructureAlignmentDialog } from './components/StructureAlignmentDialog';
 import { hasStructure } from './core/structureModels';
 import { ExpressionLevelsDialog, StructuralVariantsDialog, MakeBlastDbDialog, CrisprEditingDialog, AnnotateByBlastDialog, AnnotateFromDocumentsDialog, DegeneratePrimersDialog, ImportPrimersDialog } from './components/SequenceAnalysisToolDialogs';
@@ -1377,6 +1389,20 @@ export const App: React.FC = () => {
 
   const [mapLayoutMode, setMapLayoutMode] = useState<'split' | 'circular' | 'linear'>('split');
   const [zoomLevel, setZoomLevel] = useState<number>(SEQUENCE_ZOOM_DEFAULT);
+  // US-01M7CCT5: the divider between the circle and the linear map in Split. Its own state, apart from
+  // the inspector, explorer and split-document widths. A drag writes the frame's custom properties as
+  // the pointer moves and commits the state on release (or puts the old one back on a cancel).
+  const [paneSplit, setPaneSplit] = useState<PaneSplitState>(DEFAULT_PANE_SPLIT);
+  const [paneSplitDragging, setPaneSplitDragging] = useState<boolean>(false);
+  const paneSplitDragRef = useRef<{
+    pointerId: number;
+    left: number;
+    width: number;
+    start: PaneSplitState;
+    pending: PaneSplitState;
+    handle: HTMLElement;
+    frame: HTMLElement;
+  } | null>(null);
   // Restoring the sequence map (⌘0, View › Actual Size, the header's % readout) returns its zoom to
   // 100% and counts up its restore key, on which the circle recentres a pan.
   const [sequenceViewRestores, setSequenceViewRestores] = useState(0);
@@ -1907,6 +1933,30 @@ export const App: React.FC = () => {
   // Zoom and the primer / ORF / unique-cutter toggles only drive the circular
   // map; with no circular map shown they changed a readout and nothing else.
   const circularMapShown = effectiveMapLayoutMode !== 'linear';
+  // US-01M7CCT5: the circle / linear divider exists only in Split; elsewhere nothing is collapsed.
+  const paneSplitShown = effectiveMapLayoutMode === 'split';
+  const paneSplitCollapsed = paneSplitShown ? paneSplit.collapsed : null;
+  /** Writes a ratio, and the pane a release would collapse, straight onto the Split frame mid-drag. */
+  const showPaneSplitOnFrame = (frame: HTMLElement, ratio: number, preview: PaneSplitState['collapsed']) => {
+    for (const [k, v] of Object.entries(paneSplitStyle(ratio))) frame.style.setProperty(k, v);
+    if (preview) frame.setAttribute('data-collapse-preview', preview);
+    else frame.removeAttribute('data-collapse-preview');
+  };
+  /** Ends the divider drag: a release commits where it got to, a cancel puts the old state back. */
+  const finishPaneSplitDrag = (commit: boolean) => {
+    const drag = paneSplitDragRef.current;
+    if (!drag) return;
+    paneSplitDragRef.current = null;
+    const next = commit ? drag.pending : drag.start;
+    try {
+      if (drag.handle.hasPointerCapture(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
+    } catch {
+      // The pointer has already gone.
+    }
+    showPaneSplitOnFrame(drag.frame, next.ratio, null);
+    setPaneSplit(next);
+    setPaneSplitDragging(false);
+  };
   const CIRCULAR_ONLY_HINT = 'Applies to the circular map (switch View › Map Layout to Circular or Split)';
 
   // Statistics are the whole sequence's at any length (BG-01M6RRSV): the engine counts it in one
@@ -14655,43 +14705,146 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       onExtractSelection={handleExtractSelectedRegion}
                       colorblindSafe={colorScheme === 'colorblind-safe'}
                     />
-                    <div className={`map-seq-grid mode-${effectiveMapLayoutMode}`}>
-                      {(effectiveMapLayoutMode === 'split' || effectiveMapLayoutMode === 'circular') && (
-                        <CircularPlasmidMap
-                          doc={activeDoc}
-                          cutSites={cutSites}
-                          siteCounts={restrictionSiteCounts}
-                          orfs={orfs}
-                          selectedRange={selectedRange}
-                          onSelectRange={setSelectedRange}
-                          showOrfs={showOrfs}
-                          orfScope={orfScope}
-                          showPrimers={showPrimers}
-                          showUniqueCuttersOnly={showUniqueCuttersOnly}
-                          restrictionScope={restrictionScope}
-                          zoomLevel={zoomLevel}
-                          onZoomChange={setZoomLevel}
-                          viewRestoreKey={sequenceViewRestores}
-                        />
+                    <div
+                      className={`map-seq-split mode-${effectiveMapLayoutMode}${
+                        paneSplitCollapsed ? ` collapsed-${paneSplitCollapsed}` : ''
+                      }${paneSplitShown && (paneSplitDragging || !paneSplitIsDefault(paneSplit)) ? ' is-resized' : ''}${
+                        paneSplitDragging ? ' dragging' : ''
+                      }`}
+                      style={paneSplitStyle(paneSplit.ratio) as React.CSSProperties}
+                    >
+                      {paneSplitCollapsed === 'circular' && (
+                        <button
+                          type="button"
+                          className="map-seq-restore restore-circular"
+                          aria-label="Restore circular map"
+                          title="Restore the circular map beside the linear map"
+                          onClick={() => setPaneSplit(restorePanes)}
+                        >
+                          <ChevronRight size={14} aria-hidden="true" />
+                          <span>Circular map</span>
+                        </button>
                       )}
-                      {(effectiveMapLayoutMode === 'split' || effectiveMapLayoutMode === 'linear') && (
-                        <LinearSequenceView
-                          doc={activeDoc}
-                          cutSites={cutSites}
-                          restrictionScope={restrictionScope}
-                          selectedRange={selectedRange}
-                          onSelectRange={setSelectedRange}
-                          onUpdateDocument={handleUpdateDocument}
-                          showTranslation={showTranslation}
-                          showGcGraph={showGcGraph}
-                          showHydropathyGraph={showHydropathyGraph}
-                          colorScheme={colorScheme}
-                          onLoadBenchmarkDocument={handleLoadBenchmarkDocument}
-                          onClearSelection={() => setSelectedRange(null)}
-                          onExtractSelection={handleExtractSelectedRegion}
-                          onConvertSelectionToOligo={handleConvertSelectionToOligo}
-                          onStatusNotice={setStatusBanner}
-                        />
+                      <div className={`map-seq-grid mode-${effectiveMapLayoutMode}`}>
+                        {(effectiveMapLayoutMode === 'split' || effectiveMapLayoutMode === 'circular') && (
+                          <CircularPlasmidMap
+                            doc={activeDoc}
+                            cutSites={cutSites}
+                            siteCounts={restrictionSiteCounts}
+                            orfs={orfs}
+                            selectedRange={selectedRange}
+                            onSelectRange={setSelectedRange}
+                            showOrfs={showOrfs}
+                            orfScope={orfScope}
+                            showPrimers={showPrimers}
+                            showUniqueCuttersOnly={showUniqueCuttersOnly}
+                            restrictionScope={restrictionScope}
+                            zoomLevel={zoomLevel}
+                            onZoomChange={setZoomLevel}
+                            viewRestoreKey={sequenceViewRestores}
+                          />
+                        )}
+                        {(effectiveMapLayoutMode === 'split' || effectiveMapLayoutMode === 'linear') && (
+                          <LinearSequenceView
+                            doc={activeDoc}
+                            cutSites={cutSites}
+                            restrictionScope={restrictionScope}
+                            selectedRange={selectedRange}
+                            onSelectRange={setSelectedRange}
+                            onUpdateDocument={handleUpdateDocument}
+                            showTranslation={showTranslation}
+                            showGcGraph={showGcGraph}
+                            showHydropathyGraph={showHydropathyGraph}
+                            colorScheme={colorScheme}
+                            onLoadBenchmarkDocument={handleLoadBenchmarkDocument}
+                            onClearSelection={() => setSelectedRange(null)}
+                            onExtractSelection={handleExtractSelectedRegion}
+                            onConvertSelectionToOligo={handleConvertSelectionToOligo}
+                            onStatusNotice={setStatusBanner}
+                          />
+                        )}
+                      </div>
+                      {paneSplitShown && !paneSplitCollapsed && (
+                        <>
+                          <div
+                            className="map-seq-divider"
+                            role="separator"
+                            aria-orientation="vertical"
+                            aria-label="Resize the circular and linear maps"
+                            title="Drag to resize the circular and linear maps; drag to an edge to collapse one • Double-click to reset"
+                            onPointerDown={(e) => {
+                              if (e.button !== 0 || paneSplitDragRef.current) return;
+                              const handle = e.currentTarget;
+                              const frame = handle.parentElement;
+                              if (!frame) return;
+                              // No text selection starts, and the captured pointer never reaches the map.
+                              e.preventDefault();
+                              const box = frame.getBoundingClientRect();
+                              try {
+                                handle.setPointerCapture(e.pointerId);
+                              } catch {
+                                // The pointer has already gone.
+                              }
+                              paneSplitDragRef.current = {
+                                pointerId: e.pointerId,
+                                left: box.left,
+                                width: box.width,
+                                start: paneSplit,
+                                pending: paneSplit,
+                                handle,
+                                frame,
+                              };
+                              setPaneSplitDragging(true);
+                            }}
+                            onPointerMove={(e) => {
+                              const drag = paneSplitDragRef.current;
+                              if (!drag || e.pointerId !== drag.pointerId) return;
+                              const x = e.clientX - drag.left;
+                              drag.pending = dragPaneSplit(drag.start, x, drag.width);
+                              showPaneSplitOnFrame(drag.frame, paneSplitRatioAt(x, drag.width), drag.pending.collapsed);
+                            }}
+                            onPointerUp={(e) => {
+                              if (paneSplitDragRef.current?.pointerId === e.pointerId) finishPaneSplitDrag(true);
+                            }}
+                            onPointerCancel={(e) => {
+                              if (paneSplitDragRef.current?.pointerId === e.pointerId) finishPaneSplitDrag(false);
+                            }}
+                            onLostPointerCapture={(e) => {
+                              if (paneSplitDragRef.current?.pointerId === e.pointerId) finishPaneSplitDrag(true);
+                            }}
+                            onDoubleClick={() => setPaneSplit(resetPaneSplit())}
+                          />
+                          <div className="map-seq-divider-controls">
+                            <button
+                              type="button"
+                              aria-label="Collapse circular map"
+                              title="Collapse the circular map; the linear map takes its space"
+                              onClick={() => setPaneSplit((s) => collapsePane(s, 'circular'))}
+                            >
+                              <ChevronLeft size={12} aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Collapse linear map"
+                              title="Collapse the linear map; the circular map takes its space"
+                              onClick={() => setPaneSplit((s) => collapsePane(s, 'linear'))}
+                            >
+                              <ChevronRight size={12} aria-hidden="true" />
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      {paneSplitCollapsed === 'linear' && (
+                        <button
+                          type="button"
+                          className="map-seq-restore restore-linear"
+                          aria-label="Restore linear map"
+                          title="Restore the linear map beside the circular map"
+                          onClick={() => setPaneSplit(restorePanes)}
+                        >
+                          <ChevronLeft size={14} aria-hidden="true" />
+                          <span>Linear map</span>
+                        </button>
                       )}
                     </div>
                   </>
