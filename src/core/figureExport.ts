@@ -78,6 +78,11 @@ export const INLINED_SVG_PROPERTIES: readonly string[] = [
 /**
  * Replace every `var(--token)` with the value the token currently resolves to. An exported file is
  * read outside the app, where the custom properties that carry the theme do not exist.
+ *
+ * The markup is already serialized, so a resolved value is escaped before it goes in: WebKit
+ * reports font tokens with double quotes, and pasted in raw they closed the `style="..."` they sat
+ * in, which left a file no image decoder would open (BG-01M7CC8J). A fallback is taken from the
+ * markup itself, so it is escaped already.
  */
 export function resolveCssVariables(markup: string, resolve: (name: string) => string): string {
   // Innermost first, so a var() used as another var()'s fallback is resolved too.
@@ -86,7 +91,7 @@ export function resolveCssVariables(markup: string, resolve: (name: string) => s
     const next = out.replace(
       /var\(\s*(--[A-Za-z0-9_-]+)\s*(?:,\s*([^()]*))?\)/g,
       (_match, name: string, fallback?: string) =>
-        resolve(name).trim() || (fallback ?? '').trim() || 'currentColor'
+        escapeXml(resolve(name).trim()) || (fallback ?? '').trim() || 'currentColor'
     );
     if (next === out) break;
     out = next;

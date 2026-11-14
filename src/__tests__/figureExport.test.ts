@@ -47,6 +47,20 @@ describe('exporting a figure', () => {
       expect(out).toBe('<a fill="#f59e0b"/>');
     });
 
+    it('keeps a quoted font list inside its attribute, so the file is still valid XML (BG-01M7CC8J)', () => {
+      // WebKit returns font tokens with double quotes; pasted in raw they closed style="..." early,
+      // the image never loaded, and PNG, JPEG and PDF of the circular map saved nothing.
+      const out = resolveCssVariables(
+        '<svg xmlns="http://www.w3.org/2000/svg"><text style="font-family: var(--font-mono)">A&amp;B</text></svg>',
+        (name) => (name === '--font-mono' ? ' "Google Sans Code", ui-monospace, "SF Mono" & <x>' : '')
+      );
+      expect(out).toContain('font-family: &quot;Google Sans Code&quot;, ui-monospace, &quot;SF Mono&quot; &amp; &lt;x&gt;');
+      // The attribute closes where it should, and nothing in it is a raw quote, '<' or bare '&'.
+      const attr = out.match(/^<svg xmlns="[^"]*"><text style="([^"]*)">A&amp;B<\/text><\/svg>$/);
+      expect(attr).not.toBeNull();
+      expect(attr![1]).not.toMatch(/[<>]|&(?!(?:amp|lt|gt|quot);)/);
+    });
+
     it('gives the file a namespace, a real pixel size and an opaque background', () => {
       const out = finalizeSvgMarkup('<svg width="100%" height="100%" viewBox="0 0 1180 300"><g/></svg>', {
         width: 1180,
