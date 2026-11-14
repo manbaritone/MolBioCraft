@@ -9606,7 +9606,9 @@ dialog.prefs-modal-window:focus-visible,
 
 /* BG-01M7CMT6: one line of a fixed height (SELECTION_QUICKBAR_SLOT_STYLE in LinearSequenceView),
    so its readout can change under a drag without moving the rows: the readout is cut short with an
-   ellipsis (whole in the bar's title) and the actions scroll sideways when the line is narrow. */
+   ellipsis (whole in the bar's title and accessible description), and the actions that do not fit
+   the line move into the More menu (quickbarInlineCount), never to a second line or a sideways
+   scroll. */
 .seq-selection-quickbar {
   padding-block: 0;
 }
@@ -9625,7 +9627,8 @@ dialog.prefs-modal-window:focus-visible,
 }
 
 .seq-selection-quickbar-summary {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
+  max-width: 55%;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -9638,15 +9641,65 @@ dialog.prefs-modal-window:focus-visible,
 }
 
 .seq-selection-quickbar-actions {
-  display: inline-flex;
+  position: relative;
+  display: flex;
   align-items: center;
-  flex: 0 1 auto;
+  justify-content: flex-end;
+  flex: 1 1 0;
   flex-wrap: nowrap;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
+  overflow: hidden;
   gap: 5px;
+}
+
+/* Off screen: the width of each action and of More, read to count what fits inline. */
+.seq-quick-measure {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: flex;
+  gap: 5px;
+  width: max-content;
+  block-size: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.seq-quick-measure > .seq-quick-pill-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.seq-quick-more-menu {
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--mbc-border-strong);
+  border-radius: var(--mbc-radius-sm);
+  background: var(--mbc-bg-elevated);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+}
+
+.seq-quick-more-item {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: var(--mbc-radius-xs);
+  background: transparent;
+  color: var(--mbc-text-main);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  text-align: start;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.seq-quick-more-item:hover,
+.seq-quick-more-item:focus-visible {
+  background: var(--mbc-bg-selected-soft);
+  color: var(--mbc-blue);
 }
 
 .seq-selection-quickbar-actions > .seq-quick-pill-btn {
@@ -9677,15 +9730,6 @@ dialog.prefs-modal-window:focus-visible,
 .mbc-dark-mode .seq-selection-quickbar {
   background: rgba(26, 115, 232, 0.16);
   border-color: var(--mbc-blue);
-}
-
-.seq-selection-quickbar-actions::-webkit-scrollbar {
-  height: 4px;
-}
-
-.seq-selection-quickbar-actions::-webkit-scrollbar-thumb {
-  border-radius: var(--mbc-radius-xs);
-  background: var(--mbc-border-strong);
 }
 
 .mbc-dark-mode .seq-selection-quickbar--empty {
@@ -13752,12 +13796,14 @@ table,
 }
 
 /* BG-01M7CMT6: the selection's readout holds two lines of a fixed height whatever it reads (the
-   height a long readout took before; more scrolls inside it), so a drag's selection never changes
-   its height and moves the base rows below it under the pointer. */
+   height a long readout took before), so a drag's selection never changes its height and moves the
+   base rows below it under the pointer. Its lines start at the top of the row, so the first line
+   (the selection and its Reset) always shows, and what does not fit scrolls down inside it; centred
+   lines taller than the row were pushed above it, out of reach of the scroll. */
 .mbc-cockpit-row-bottom {
   display: flex;
   align-items: center;
-  align-content: center;
+  align-content: flex-start;
   justify-content: space-between;
   flex-wrap: wrap;
   block-size: 56px;

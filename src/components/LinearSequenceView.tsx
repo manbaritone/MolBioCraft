@@ -1,7 +1,7 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ZoomIn, ZoomOut } from 'lucide-react';
 import { downloadSummarySequence } from '../core/contigSummary';
 import { moveInterval, normaliseInterval, renderSegments, resizeIntervalBy } from '../core/activeInterval';
@@ -1420,6 +1420,247 @@ export function revealSelectedRow(scroller: HTMLElement, rowStart: number): void
   scroller.scrollTop += row.getBoundingClientRect().top - view.top - padTop;
 }
 
+/** One action of the selection quickbar: shown inline when it fits, else in the bar's More menu. */
+export interface QuickbarAction {
+  key: string;
+  label: string;
+  title: string;
+  run: () => void;
+}
+
+/** The gap between the quickbar's action buttons, in px (App.css .seq-selection-quickbar-actions). */
+export const QUICKBAR_ACTION_GAP_PX = 5;
+
+/**
+ * How many of the quickbar's actions are shown inline in `available` px (BG-01M7CMT6): all of them
+ * when they fit, else as many from the front as fit beside the More button that holds the rest.
+ * The bar stays one line of a fixed height, so the actions that do not fit are never wrapped to a
+ * second line or hidden behind a sideways scroll.
+ */
+export function quickbarInlineCount(widths: readonly number[], available: number, moreWidth: number, gap = QUICKBAR_ACTION_GAP_PX): number {
+  const span = (n: number) => widths.slice(0, n).reduce((a, w) => a + w, 0) + Math.max(0, n - 1) * gap;
+  if (!(available >= 0)) return 0;
+  if (span(widths.length) <= available) return widths.length;
+  let n = widths.length - 1;
+  while (n > 0 && span(n) + gap + moreWidth > available) n--;
+  return n;
+}
+
+/** The More menu's keys: the item to focus next, or that the menu closes (and focus returns to More). */
+export function quickbarMenuKey(key: string, index: number, count: number): { focus?: number; close?: boolean } | null {
+  if (count <= 0) return key === 'Escape' || key === 'Tab' ? { close: true } : null;
+  switch (key) {
+    case 'ArrowDown':
+      return { focus: (index + 1) % count };
+    case 'ArrowUp':
+      return { focus: (index - 1 + count) % count };
+    case 'Home':
+      return { focus: 0 };
+    case 'End':
+      return { focus: count - 1 };
+    case 'Escape':
+    case 'Tab':
+      return { close: true };
+    default:
+      return null;
+  }
+}
+
+/** The quickbar's actions as drawn: the first `inlineCount` inline, the rest in the More menu. */
+export function QuickbarActionStrip({
+  actions,
+  inlineCount,
+  menuOpen,
+  menuId,
+  menuAt,
+  onToggleMenu,
+  onMoreKeyDown,
+  onItemKeyDown,
+  onItem,
+  stripRef,
+  measureRef,
+  moreRef,
+  itemRefs,
+}: {
+  actions: readonly QuickbarAction[];
+  inlineCount: number;
+  menuOpen: boolean;
+  menuId: string;
+  /** Where the open menu sits on screen (it is drawn fixed, so the bar's clipping never hides it). */
+  menuAt?: { top: number; right: number } | null;
+  onToggleMenu?: () => void;
+  onMoreKeyDown?: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
+  onItemKeyDown?: (index: number) => (e: React.KeyboardEvent<HTMLButtonElement>) => void;
+  onItem?: (action: QuickbarAction) => void;
+  stripRef?: React.Ref<HTMLDivElement>;
+  measureRef?: React.Ref<HTMLDivElement>;
+  moreRef?: React.Ref<HTMLButtonElement>;
+  itemRefs?: React.MutableRefObject<(HTMLButtonElement | null)[]>;
+}) {
+  const n = Math.max(0, Math.min(actions.length, inlineCount));
+  const rest = actions.slice(n);
+  return (
+    <div className="seq-selection-quickbar-actions" ref={stripRef}>
+      {actions.slice(0, n).map((a) => (
+        <button key={a.key} type="button" className="seq-quick-pill-btn" onClick={a.run} title={a.title}>
+          {a.label}
+        </button>
+      ))}
+      {rest.length > 0 && (
+        <button
+          ref={moreRef}
+          type="button"
+          className="seq-quick-pill-btn seq-quick-more-btn"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-controls={menuId}
+          aria-label={`More selection actions (${rest.length})`}
+          title={`More: ${rest.map((a) => a.label).join(', ')}`}
+          onClick={onToggleMenu}
+          onKeyDown={onMoreKeyDown}
+        >
+          More ▾
+        </button>
+      )}
+      {rest.length > 0 && menuOpen && (
+        <div
+          id={menuId}
+          role="menu"
+          aria-label="More selection actions"
+          className="seq-quick-more-menu"
+          style={menuAt ? { position: 'fixed', top: menuAt.top, right: menuAt.right } : undefined}
+        >
+          {rest.map((a, i) => (
+            <button
+              key={a.key}
+              ref={(el) => {
+                if (itemRefs) itemRefs.current[i] = el;
+              }}
+              type="button"
+              role="menuitem"
+              className="seq-quick-more-item"
+              title={a.title}
+              tabIndex={-1}
+              onClick={() => onItem?.(a)}
+              onKeyDown={onItemKeyDown?.(i)}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {/* The width of each action and of More, measured off screen to count what fits. */}
+      <div className="seq-quick-measure" aria-hidden="true" ref={measureRef}>
+        {actions.map((a) => (
+          <span key={a.key} className="seq-quick-pill-btn">
+            {a.label}
+          </span>
+        ))}
+        <span className="seq-quick-pill-btn seq-quick-more-btn">More ▾</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The quickbar's actions, fitted to the bar's width as it changes (ResizeObserver): the props of
+ * its QuickbarActionStrip. A hook of the view, not a component of its own, so the strip's buttons
+ * are drawn in the view's render, as they were before the strip.
+ */
+function useQuickbarActions(actions: readonly QuickbarAction[]): React.ComponentProps<typeof QuickbarActionStrip> {
+  /** How many actions fit inline; all of them until the strip has been measured. */
+  const [fitCount, setFitCount] = useState<number | null>(null);
+  const inlineCount = fitCount ?? actions.length;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAt, setMenuAt] = useState<{ top: number; right: number } | null>(null);
+  const menuId = useId();
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const measureRef = useRef<HTMLDivElement | null>(null);
+  const moreRef = useRef<HTMLButtonElement | null>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const keys = actions.map((a) => a.key).join('|');
+  useEffect(() => {
+    const strip = stripRef.current;
+    const measure = measureRef.current;
+    if (!strip || !measure) return;
+    const fit = () => {
+      const spans = Array.from(measure.children) as HTMLElement[];
+      const widths = spans.map((el) => el.getBoundingClientRect().width);
+      const more = widths.pop() ?? 0;
+      setFitCount(quickbarInlineCount(widths.map(Math.ceil), Math.floor(strip.clientWidth), Math.ceil(more)));
+    };
+    fit();
+    if (typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(fit);
+    observer.observe(strip);
+    return () => observer.disconnect();
+  }, [keys]);
+  const rest = actions.length - Math.min(actions.length, inlineCount);
+  useEffect(() => {
+    if (rest === 0) setMenuOpen(false);
+  }, [rest]);
+  useEffect(() => {
+    if (!menuOpen || typeof document === 'undefined') return;
+    const close = (e: Event) => {
+      const t = e.target as Node | null;
+      if (t && (stripRef.current?.contains(t) ?? false)) return;
+      setMenuOpen(false);
+    };
+    const shut = () => setMenuOpen(false);
+    document.addEventListener('pointerdown', close, true);
+    window.addEventListener('resize', shut);
+    window.addEventListener('scroll', shut, true);
+    return () => {
+      document.removeEventListener('pointerdown', close, true);
+      window.removeEventListener('resize', shut);
+      window.removeEventListener('scroll', shut, true);
+    };
+  }, [menuOpen]);
+  const open = (focusFirst: boolean) => {
+    const r = moreRef.current?.getBoundingClientRect?.();
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
+    setMenuAt(r ? { top: r.bottom + 4, right: Math.max(0, vw - r.right) } : null);
+    setMenuOpen(true);
+    if (focusFirst) requestAnimationFrame(() => itemRefs.current[0]?.focus());
+  };
+  const shutAndFocusMore = () => {
+    setMenuOpen(false);
+    moreRef.current?.focus();
+  };
+  return {
+    actions,
+    inlineCount,
+    menuOpen,
+    menuId,
+    menuAt,
+    stripRef,
+    measureRef,
+    moreRef,
+    itemRefs,
+    onToggleMenu: () => (menuOpen ? setMenuOpen(false) : open(false)),
+    onMoreKeyDown: (e) => {
+      if (e.key === 'ArrowDown' || ((e.key === 'Enter' || e.key === ' ') && !menuOpen)) {
+        e.preventDefault();
+        open(true);
+      } else if (e.key === 'Escape' && menuOpen) {
+        e.preventDefault();
+        setMenuOpen(false);
+      }
+    },
+    onItemKeyDown: (i) => (e) => {
+      const r = quickbarMenuKey(e.key, i, rest);
+      if (!r) return;
+      if (e.key !== 'Tab') e.preventDefault();
+      if (r.close) shutAndFocusMore();
+      else if (r.focus !== undefined) itemRefs.current[r.focus]?.focus();
+    },
+    onItem: (a) => {
+      shutAndFocusMore();
+      a.run();
+    },
+  };
+}
+
 export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   doc,
   cutSites,
@@ -2255,6 +2496,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       ? Math.min(pageEndPos, Math.max(pageStartPos, settledRows.base))
       : pageStartPos;
 
+  /** The quickbar's whole readout, as the bar's accessible description (it may be cut short on screen). */
+  const quickbarReadoutId = useId();
   const selectionQuickStats = useMemo(() => {
     if (!selectedRange || rawLen === 0) return null;
     const start = Math.max(1, Math.min(seqLen, Math.min(selectedRange.start, selectedRange.end)));
@@ -2307,6 +2550,63 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       tmNoAnswerReason,
     };
   }, [selectedRange, rawLen, seqLen, isProtein, doc.sequence]);
+
+  /** The quickbar's actions, in order; those that do not fit its one line go to its More menu. */
+  const quickbarActions: QuickbarAction[] = [];
+  const stats = selectionQuickStats;
+  if (stats) {
+    quickbarActions.push(
+      {
+        key: 'copy',
+        label: isProtein ? 'Copy AA' : "Copy 5'→3'",
+        title: isProtein ? 'Copy selected amino acid sequence' : "Copy selected 5'→3' sequence",
+        run: () => {
+          const sub = doc.sequence.slice(stats.start - 1, stats.end);
+          navigator.clipboard?.writeText(sub);
+          onStatusNotice?.(
+            `Copied ${sub.length.toLocaleString()} ${unitLabel} (${stats.start}..${stats.end}) to clipboard.`
+          );
+        },
+      },
+      ...(!isProtein
+        ? [
+            {
+              key: 'revcomp',
+              label: 'Copy RevComp',
+              title: 'Copy Reverse Complement of selected region',
+              run: () => {
+                const sub = doc.sequence.slice(stats.start - 1, stats.end);
+                const rc = reverseComplement(sub);
+                navigator.clipboard?.writeText(rc);
+                onStatusNotice?.(
+                  `Copied Reverse Complement (${rc.length.toLocaleString()} bp, ${stats.start}..${stats.end}) to clipboard.`
+                );
+              },
+            },
+          ]
+        : []),
+      {
+        key: 'annotate',
+        label: '+ Annotate',
+        title: 'Create a new feature annotation spanning the active selection',
+        run: () => {
+          setNewFeatStart(stats.start);
+          setNewFeatEnd(stats.end);
+          setShowAddFeature(true);
+        },
+      },
+      ...(onExtractSelection
+        ? [{ key: 'extract', label: 'Extract Region', title: 'Extract selected region into a new sequence document', run: onExtractSelection }]
+        : []),
+      ...(!isProtein && stats.length >= 12 && stats.length <= 80 && onConvertSelectionToOligo
+        ? [{ key: 'oligo', label: '+ Save Oligo', title: 'Save selected 12–80 bp region as a primer/oligo', run: onConvertSelectionToOligo }]
+        : []),
+      ...(onClearSelection
+        ? [{ key: 'clear', label: 'Clear', title: 'Clear active sequence selection', run: onClearSelection }]
+        : []),
+    );
+  }
+  const quickbarStrip = useQuickbarActions(quickbarActions);
 
   /**
    * The overview's drawing in `view` (US-01M7CCG9). On screen (`live`) it is drawn in the current
@@ -3056,6 +3356,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
           aria-label="Selected Sequence Region Actions"
           style={SELECTION_QUICKBAR_SLOT_STYLE}
           title={selectionQuickbarReadout(selectedRange?.label, selectionQuickStats, unitLabel)}
+          aria-describedby={quickbarReadoutId}
         >
           <div className="seq-selection-quickbar-summary">
             <strong>
@@ -3077,84 +3378,10 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               )
             </span>
           </div>
-          <div className="seq-selection-quickbar-actions">
-            <button
-              type="button"
-              className="seq-quick-pill-btn"
-              onClick={() => {
-                const sub = doc.sequence.slice(selectionQuickStats.start - 1, selectionQuickStats.end);
-                navigator.clipboard?.writeText(sub);
-                onStatusNotice?.(
-                  `Copied ${sub.length.toLocaleString()} ${unitLabel} (${selectionQuickStats.start}..${selectionQuickStats.end}) to clipboard.`
-                );
-              }}
-              title={isProtein ? 'Copy selected amino acid sequence' : "Copy selected 5'→3' sequence"}
-            >
-              {isProtein ? 'Copy AA' : "Copy 5'→3'"}
-            </button>
-            {!isProtein && (
-              <button
-                type="button"
-                className="seq-quick-pill-btn"
-                onClick={() => {
-                  const sub = doc.sequence.slice(selectionQuickStats.start - 1, selectionQuickStats.end);
-                  const rc = reverseComplement(sub);
-                  navigator.clipboard?.writeText(rc);
-                  onStatusNotice?.(
-                    `Copied Reverse Complement (${rc.length.toLocaleString()} bp, ${selectionQuickStats.start}..${selectionQuickStats.end}) to clipboard.`
-                  );
-                }}
-                title="Copy Reverse Complement of selected region"
-              >
-                Copy RevComp
-              </button>
-            )}
-            <button
-              type="button"
-              className="seq-quick-pill-btn"
-              onClick={() => {
-                setNewFeatStart(selectionQuickStats.start);
-                setNewFeatEnd(selectionQuickStats.end);
-                setShowAddFeature(true);
-              }}
-              title="Create a new feature annotation spanning the active selection"
-            >
-              + Annotate
-            </button>
-            {onExtractSelection && (
-              <button
-                type="button"
-                className="seq-quick-pill-btn"
-                onClick={onExtractSelection}
-                title="Extract selected region into a new sequence document"
-              >
-                Extract Region
-              </button>
-            )}
-            {!isProtein &&
-              selectionQuickStats.length >= 12 &&
-              selectionQuickStats.length <= 80 &&
-              onConvertSelectionToOligo && (
-                <button
-                  type="button"
-                  className="seq-quick-pill-btn"
-                  onClick={onConvertSelectionToOligo}
-                  title="Save selected 12–80 bp region as a primer/oligo"
-                >
-                  + Save Oligo
-                </button>
-              )}
-            {onClearSelection && (
-              <button
-                type="button"
-                className="seq-quick-pill-btn"
-                onClick={onClearSelection}
-                title="Clear active sequence selection"
-              >
-                Clear
-              </button>
-            )}
-          </div>
+          <span id={quickbarReadoutId} className="mbc-sr-only">
+            {selectionQuickbarReadout(selectedRange?.label, selectionQuickStats, unitLabel)}
+          </span>
+          {QuickbarActionStrip(quickbarStrip)}
         </div>
       )}
 

@@ -70,6 +70,10 @@ const {
   selectionFollowPage,
   SELECTION_QUICKBAR_HEIGHT_PX,
   SELECTION_QUICKBAR_SLOT_STYLE,
+  QUICKBAR_ACTION_GAP_PX,
+  QuickbarActionStrip,
+  quickbarInlineCount,
+  quickbarMenuKey,
 } = await import('../components/LinearSequenceView');
 const { CircularPlasmidMap } = await import('../components/CircularPlasmidMap');
 const { findRestrictionCutSites } = await import('../core/bioEngine');
@@ -1158,7 +1162,7 @@ describe('US-01M7CCJC AC1 a drag across bases selects exactly the bases under it
     }
   });
 
-  it('the readouts above the rows keep fixed heights: the quickbar one line cut short, the cockpit two lines (BG-01M7CMT6)', () => {
+  it('the readouts above the rows keep fixed heights: the quickbar one line cut short, the cockpit two lines from the top (BG-01M7CMT6)', () => {
     const css = nodeFs.readFileSync(new URL('../App.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     const decls = (selector: string) => {
       const found: Record<string, string> = {};
@@ -1174,13 +1178,138 @@ describe('US-01M7CCJC AC1 a drag across bases selects exactly the bases under it
     };
     const summary = decls('.seq-selection-quickbar-summary');
     expect([summary['white-space'], summary['text-overflow'], summary.overflow, summary['min-width']]).toEqual(['nowrap', 'ellipsis', 'hidden', '0']);
-    expect(decls('.seq-selection-quickbar-actions')['flex-wrap']).toBe('nowrap');
+    const actions = decls('.seq-selection-quickbar-actions');
+    // The actions never wrap and never scroll sideways: what does not fit goes to the More menu.
+    expect([actions['flex-wrap'], actions.overflow, actions['overflow-x']]).toEqual(['nowrap', 'hidden', undefined]);
     // The cockpit's selection row keeps the two lines a long readout took, whatever it reads.
     const cockpit = decls('.mbc-cockpit-row-bottom');
     expect(cockpit['block-size'], 'the cockpit selection row has a fixed height').toMatch(/^\d+px$/);
     expect(cockpit['min-block-size']).toBe(cockpit['block-size']);
     expect(parseInt(cockpit['block-size'], 10), 'two lines of 24 px controls').toBeGreaterThanOrEqual(2 * 24 + 8);
     expect(cockpit['overflow-y'], 'more than two lines scrolls inside it').toBe('auto');
+    // Its lines start at the row's top: centred lines taller than the row were pushed above it,
+    // where no scroll reaches (the selection and its Reset, at 1440x900).
+    expect(cockpit['flex-wrap'], 'a row of lines, which align-content places').toBe('wrap');
+    expect(['flex-start', 'start', 'safe center'], 'the first line at the top of the row').toContain(cockpit['align-content']);
+  });
+
+  // BG-01M7CMT6 round 3: the one-line quickbar hid its last actions behind a sideways scroll. The
+  // wrong implementations named: an action that is neither inline nor in the More menu (or in
+  // both), a fit that overruns the line or leaves out an action that fits, and a More button
+  // without menu semantics or keys.
+  const SIX = ["Copy 5'→3'", 'Copy RevComp', '+ Annotate', 'Extract Region', '+ Save Oligo', 'Clear'];
+  const sixActions = (ran: string[] = []) =>
+    SIX.map((label, i) => ({ key: `k${i}`, label, title: `${label} title`, run: () => ran.push(label) }));
+  const WIDTHS = [78, 98, 80, 102, 92, 46];
+
+  it('the actions that fit the line are inline, the rest go to More, and the fit is the largest that fits (BG-01M7CMT6)', () => {
+    const span = (n: number) => WIDTHS.slice(0, n).reduce((a, w) => a + w, 0) + Math.max(0, n - 1) * QUICKBAR_ACTION_GAP_PX;
+    for (let available = 0; available <= 620; available++) {
+      const n = quickbarInlineCount(WIDTHS, available, 60);
+      const used = span(n) + (n < WIDTHS.length ? (n > 0 ? QUICKBAR_ACTION_GAP_PX : 0) + 60 : 0);
+      if (n === WIDTHS.length) expect(span(n), `${available}: all inline fit`).toBeLessThanOrEqual(available);
+      else if (n > 0) expect(used, `${available}: ${n} inline and More fit`).toBeLessThanOrEqual(available);
+      if (n < WIDTHS.length && span(WIDTHS.length) <= available) throw new Error(`${available}: all fit, yet ${n} inline`);
+      if (n < WIDTHS.length - 1) {
+        expect(span(n + 1) + QUICKBAR_ACTION_GAP_PX + 60, `${available}: one more would not fit`).toBeGreaterThan(available);
+      }
+    }
+    expect(quickbarInlineCount(WIDTHS, 1000, 60)).toBe(6);
+    expect(quickbarInlineCount(WIDTHS, span(6), 60), 'exactly the width of all six').toBe(6);
+    expect(quickbarInlineCount(WIDTHS, span(6) - 1, 60), 'a pixel short: Clear goes to More').toBeLessThan(6);
+    expect(quickbarInlineCount(WIDTHS, Number.NaN, 60)).toBe(0);
+  });
+
+  it('every action is reachable once, inline or as a labelled item of the More menu, at every fit (BG-01M7CMT6)', () => {
+    for (let n = 0; n <= SIX.length; n++) {
+      const ran: string[] = [];
+      const buttons: Record<string, unknown>[] = [];
+      let menu: Record<string, unknown> | null = null;
+      probe.onElement = (type, props) => {
+        if (type === 'button') buttons.push(props);
+        if (props.role === 'menu') menu = props;
+      };
+      const html = renderToStaticMarkup(
+        <QuickbarActionStrip actions={sixActions(ran)} inlineCount={n} menuOpen menuId="qb-menu" onItem={(a) => a.run()} />,
+      );
+      probe.onElement = null;
+      const label = (b: Record<string, unknown>) => [b.children].flat().join('');
+      const inline = buttons.filter((b) => b.role !== 'menuitem' && b['aria-haspopup'] === undefined);
+      const items = buttons.filter((b) => b.role === 'menuitem');
+      const more = buttons.filter((b) => b['aria-haspopup'] === 'menu');
+      expect(inline.map(label), `${n} inline`).toEqual(SIX.slice(0, n));
+      expect(items.map(label), `${n} inline: the rest in More`).toEqual(SIX.slice(n));
+      expect([...inline, ...items].map(label).sort(), `${n} inline: each action once`).toEqual([...SIX].sort());
+      if (n === SIX.length) {
+        expect(more, 'all inline: no More').toHaveLength(0);
+        expect(menu).toBeNull();
+      } else {
+        expect(more, `${n} inline: one More button`).toHaveLength(1);
+        expect(more[0]['aria-expanded']).toBe(true);
+        expect(more[0]['aria-controls']).toBe('qb-menu');
+        expect(String(more[0]['aria-label'])).toMatch(/^More selection actions/);
+        expect(menu).not.toBeNull();
+        expect(menu!.id).toBe('qb-menu');
+        expect(menu!['aria-label']).toBe('More selection actions');
+        for (const it of items) expect(it.title, `${label(it)} has its title`).toBe(`${label(it)} title`);
+        // Each item runs its own action.
+        for (const it of items) (it.onClick as () => void)();
+        expect(ran).toEqual(SIX.slice(n));
+      }
+      // Inline buttons run their own action too.
+      ran.length = 0;
+      for (const b of inline) (b.onClick as () => void)();
+      expect(ran, `${n} inline: each runs its own action`).toEqual(SIX.slice(0, n));
+      expect(html.match(/role="menuitem"/g)?.length ?? 0).toBe(SIX.length - n);
+    }
+  });
+
+  it('the More menu answers the keys of a menu: arrows cycle, Home and End jump, Escape and Tab close (BG-01M7CMT6)', () => {
+    expect(quickbarMenuKey('ArrowDown', 0, 3)).toEqual({ focus: 1 });
+    expect(quickbarMenuKey('ArrowDown', 2, 3)).toEqual({ focus: 0 });
+    expect(quickbarMenuKey('ArrowUp', 0, 3)).toEqual({ focus: 2 });
+    expect(quickbarMenuKey('Home', 2, 3)).toEqual({ focus: 0 });
+    expect(quickbarMenuKey('End', 0, 3)).toEqual({ focus: 2 });
+    expect(quickbarMenuKey('Escape', 1, 3)).toEqual({ close: true });
+    expect(quickbarMenuKey('Tab', 1, 3)).toEqual({ close: true });
+    expect(quickbarMenuKey('a', 1, 3)).toBeNull();
+  });
+
+  it('the view: the quickbar offers every action it has, keeps its height whichever it has, and describes its whole readout (BG-01M7CMT6)', () => {
+    const doc = docOf('ACGTTGCAAT'.repeat(607));
+    for (const extra of [{}, { onExtractSelection: () => {}, onConvertSelectionToOligo: () => {}, onClearSelection: () => {} }]) {
+      for (const sel of [{ start: 100, end: 135, label: 'Oligo Candidate' }, { start: 5164, end: 5168 }]) {
+        let slot: Record<string, unknown> | null = null;
+        let inline: Record<string, unknown>[] = [];
+        let lastPass: Record<string, unknown>[] = [];
+        probe.onElement = (type, props) => {
+          if (type === 'div' && /(^|\s)seq-selection-quickbar(\s|$)/.test(String(props.className ?? ''))) {
+            // A bar's buttons are made before the bar itself: these are this pass's.
+            slot = props;
+            lastPass = inline;
+            inline = [];
+          }
+          // Before the strip is measured every action is inline (a narrow strip then moves the rest to More).
+          if (type === 'button' && props.className === 'seq-quick-pill-btn') inline.push(props);
+        };
+        const html = renderToStaticMarkup(
+          <LinearSequenceView doc={doc} cutSites={[]} selectedRange={sel} onSelectRange={() => {}} onUpdateDocument={() => {}} {...extra} />,
+        );
+        probe.onElement = null;
+        expect(slot!.style, 'the one fixed slot, whatever actions it has').toEqual(SELECTION_QUICKBAR_SLOT_STYLE);
+        const actions = lastPass.map((b) => [b.children].flat().join(''));
+        const want = ["Copy 5'→3'", 'Copy RevComp', '+ Annotate'];
+        if ('onExtractSelection' in extra) want.push('Extract Region');
+        if ('onConvertSelectionToOligo' in extra && sel.end - sel.start + 1 >= 12) want.push('+ Save Oligo');
+        if ('onClearSelection' in extra) want.push('Clear');
+        expect(actions).toEqual(want);
+        // The readout is described in full: the bar names a node that holds the whole of it.
+        const id = String(slot!['aria-describedby']);
+        const described = new RegExp(`<span id="${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>([^<]*)</span>`).exec(html)?.[1];
+        expect(described, 'the description node').toBeDefined();
+        expect(described!.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&')).toBe(slot!.title);
+      }
+    }
   });
 
   it('the drag reads the base under the pointer from the rows as drawn at each event, not where they were at the press (BG-01M7CMT6)', () => {
