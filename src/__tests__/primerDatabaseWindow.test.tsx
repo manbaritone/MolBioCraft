@@ -312,6 +312,38 @@ describe('The window lists, searches and backs up the store (US-01M7DQFS AC2)', 
     });
   });
 
+  // Wrong restores (BG-01M7DT7A): a ticked record another window trashed before the commit brought
+  // out of the trash, or left out of the result without a word.
+  it('BG-01M7DT7A AC3 Restore from Backup names a ticked record trashed before the commit as not replaced, with the reason', async () => {
+    const source = seededStorage([ECORI_FWD, GUIDE]);
+    const backupText = JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: 1, exportedAt: 'x', records: source.records });
+    const [eco, guide] = source.records;
+    const editedEco: DatabasePrimer = { ...eco, labels: ['edited here'] };
+    const editedGuide: DatabasePrimer = { ...guide, labels: ['edited too'] };
+    const storage = memoryStorage({ [PRIMER_DATABASE_KEY]: JSON.stringify({ schema: 1, records: [editedEco, editedGuide] }) });
+    await withApp(storage, async (app) => {
+      await app.menu('tools:primer-database');
+      const input = openWindow(app).querySelectorAll('input[type="file"]')[0];
+      (input as unknown as { files: unknown[] }).files = [{ text: async () => backupText }];
+      await act(async () => {
+        dispatchLiveEvent(input, 'change');
+      });
+      await app.settle();
+      const conflicts = app.one('[role="group"][aria-label="Backup conflicts"]');
+      const ticks = conflicts.querySelectorAll('input[type="checkbox"]');
+      expect(ticks).toHaveLength(2);
+      for (const t of ticks) await app.change(t, true);
+      // Another window trashes guide-rna before the user presses Replace Chosen.
+      expect(openPrimerDatabase({ storage }).trash(guide.id).ok).toBe(true);
+      const trashed = storedRecords(storage).find((r) => r.id === guide.id)!;
+      await app.click(button(openWindow(app), 'Replace Chosen'));
+      const alert = openWindow(app).querySelectorAll('[role="alert"]').map((a) => words(a.textContent)).join(' ');
+      expect(alert).toBe(`Restored the backup: 0 added, 1 replaced, 0 unchanged, 0 kept as stored, 1 not replaced: guide-rna (${guide.id}) is in the trash.`);
+      // EcoRI-fwd is replaced; guide-rna stays in the trash as it was.
+      expect(storedRecords(storage)).toEqual([eco, trashed]);
+    });
+  });
+
   it('US-01M7DQFS AC2 an unreadable store is named, never listed as empty, and discarded only on an explicit choice', async () => {
     for (const [stored, name] of [
       ['{"schema":1,"records":[', 'malformed'],

@@ -101,17 +101,38 @@ export interface PrimerImportConflict {
   incoming: DatabasePrimer;
 }
 
+/** A record the caller asked to replace that the store, as it stands at commit, cannot replace. */
+export interface PrimerNotReplaced {
+  id: string;
+  /** "M13F (id) is in the trash" or "M13F (id) is no longer in the database". */
+  reason: string;
+}
+
 export interface PrimerImportSummary {
   added: string[];
   replaced: string[];
   unchanged: string[];
   /** Records whose id exists and differs, kept as stored. */
   conflicts: PrimerImportConflict[];
+  /**
+   * Records named in `replace` that are trashed, or no longer stored, when the restore commits
+   * (BG-01M7DT7A): left as they are, never re-added or brought out of the trash. Present only
+   * when there is one, so a summary without any keeps its earlier shape.
+   */
+  notReplaced?: PrimerNotReplaced[];
 }
 
 export interface PrimerImportOptions {
-  /** The conflicting ids the user chose to replace with the backup's record. */
+  /**
+   * The conflicting ids the user chose to replace with the backup's record. A named id must still
+   * be stored and active when the restore commits, else it is listed in `notReplaced`.
+   */
   replace?: string[] | 'all';
+  /**
+   * When a replace is refused (see `notReplaced`), write nothing and fail with `stale` instead of
+   * restoring the rest: for a caller whose records only make sense together, such as an import.
+   */
+  allOrNothing?: boolean;
 }
 
 function fail(kind: PrimerDbErrorKind, message: string, extra: Partial<PrimerDbError> = {}): { ok: false; error: PrimerDbError } {
@@ -352,7 +373,8 @@ export interface PrimerDatabase {
   exportBackup(): PrimerDbResult<string>;
   /**
    * Restore a backup: new ids are added, an existing id that differs is listed as a conflict and
-   * kept as stored unless `replace` names it, and nothing is deleted. A malformed or
+   * kept as stored unless `replace` names it, and nothing is deleted. An id `replace` names that is
+   * trashed or gone when the restore commits is listed in `notReplaced` and left as it is. A malformed or
    * future-schema backup is refused and the store is left unchanged.
    */
   importBackup(text: string, options?: PrimerImportOptions): PrimerDbResult<PrimerImportSummary>;
@@ -547,9 +569,21 @@ export function openPrimerDatabase(env: PrimerDatabaseEnv = {}): PrimerDatabase 
       const replace = options.replace ?? [];
       return commit((records) => {
         const summary: PrimerImportSummary = { added: [], replaced: [], unchanged: [], conflicts: [] };
+        const notReplaced: PrimerNotReplaced[] = [];
         const next = [...records];
         for (const incoming of migrated.records) {
           const index = next.findIndex((r) => r.id === incoming.id);
+          // The commit-time precondition of a replace (BG-01M7DT7A): the record must still be
+          // stored and out of the trash, as the caller saw it when it chose to replace it.
+          const named = replace === 'all' ? index >= 0 : replace.includes(incoming.id);
+          if (named && index < 0) {
+            notReplaced.push({ id: incoming.id, reason: `${incoming.name} (${incoming.id}) is no longer in the database` });
+            continue;
+          }
+          if (named && next[index].trashedAt !== undefined && !sameRecord(next[index], incoming)) {
+            notReplaced.push({ id: incoming.id, reason: `${next[index].name} (${incoming.id}) is in the trash` });
+            continue;
+          }
           if (index < 0) {
             next.push(incoming);
             summary.added.push(incoming.id);
@@ -561,6 +595,10 @@ export function openPrimerDatabase(env: PrimerDatabaseEnv = {}): PrimerDatabase 
           } else {
             summary.conflicts.push({ id: incoming.id, stored: next[index], incoming });
           }
+        }
+        if (notReplaced.length) {
+          if (options.allOrNothing) return fail('stale', `The change was not saved: ${notReplaced.map((n) => n.reason).join('; ')}. The primer database is as it was.`);
+          summary.notReplaced = notReplaced;
         }
         const changed = summary.added.length > 0 || summary.replaced.length > 0;
         return { ok: true, records: changed ? next : null, value: summary };

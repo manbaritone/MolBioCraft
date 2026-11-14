@@ -777,19 +777,20 @@ export function describeImportCounts(n: PrimerDatabaseImportCounts): string {
  * restore, which re-reads the store, adds the new ids and replaces the merged ones together, and
  * writes once, so either every row is saved or none is.
  *
- * The restore re-reads the store itself, so a merged record deleted by another window after the
- * caller's own read is added back rather than replaced. The write still happened, so the result is
- * `ok`, but its message says the database took the import differently from the review.
+ * The restore re-reads the store itself, and a merged record that another window trashed or
+ * deleted after the caller's own read fails its commit-time precondition (BG-01M7DT7A): nothing is
+ * written, and the result is `stale`, so the caller can show the rows again for review. With that
+ * precondition the store can no longer take the import differently from the plan, so the earlier
+ * "saved, but not as reviewed" check is gone.
  */
-export function savePrimerDatabaseImport(db: PrimerDatabase, plan: PrimerDatabaseImportPlan, now: string): { ok: true; message: string } | { ok: false; message: string } {
+export function savePrimerDatabaseImport(db: PrimerDatabase, plan: PrimerDatabaseImportPlan, now: string): { ok: true; message: string } | { ok: false; message: string; stale: boolean } {
   const counts = countsOf(plan);
-  if (!plan.added.length && !plan.merged.length) return { ok: false, message: `Nothing was saved to the Primer Database: no row is left to import (${describeImportCounts(counts)}).` };
+  if (!plan.added.length && !plan.merged.length) return { ok: false, stale: false, message: `Nothing was saved to the Primer Database: no row is left to import (${describeImportCounts(counts)}).` };
   const backup = JSON.stringify({ format: PRIMER_BACKUP_FORMAT, schema: PRIMER_DATABASE_SCHEMA, exportedAt: now, records: [...plan.added, ...plan.merged] });
-  const result = db.importBackup(backup, { replace: plan.merged.map((r) => r.id) });
-  if (!result.ok) return { ok: false, message: `Nothing was saved to the Primer Database: ${result.error.message}` };
-  const s = result.value;
-  if (s.added.length !== plan.added.length || s.replaced.length !== plan.merged.length) {
-    return { ok: true, message: `Saved to the Primer Database, but not as reviewed: ${s.added.length} new and ${s.replaced.length} merged records were saved where ${plan.added.length} and ${plan.merged.length} were planned; another window changed the database meanwhile, so check it.` };
+  const result = db.importBackup(backup, { replace: plan.merged.map((r) => r.id), allOrNothing: true });
+  if (!result.ok) {
+    const stale = result.error.kind === 'stale';
+    return { ok: false, stale, message: `Nothing was saved to the Primer Database: ${stale ? `another window changed a record this import merges into. ${result.error.message}` : result.error.message}` };
   }
   return { ok: true, message: `Saved to the Primer Database: ${describeImportCounts(counts)}.` };
 }

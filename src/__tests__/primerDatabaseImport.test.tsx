@@ -490,21 +490,76 @@ describe('US-01M7DQ0X duplicates under D0122', () => {
     expect(probe.rowSets).toEqual([{ 3: 'skip' }]);
   });
 
-  // Wrong post-write check: a save the store took differently from the review (a merged record
-  // deleted by another window between the dialog's read and the store's own, so it was added back)
-  // reported as the planned save.
-  it('US-01M7DQ0X AC3 a save the store took differently from the review says so', async () => {
-    const storage = new RacingStorage();
-    const db = seededStore(storage);
-    const reports: string[] = [];
-    const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={(r) => reports.push(r)} onClose={() => undefined} />, 'name,sequence,labels\nT7 copy,TAATACGACTCACTATAGGG,t7\n', { byClass: { sameOligo: 'merge' } });
-    // The dialog's save-time read (1) sees T7; another window deletes it before the store's own read (2).
-    storage.arm(2, () => {
-      const env = JSON.parse(storage.map.get(PRIMER_DATABASE_KEY)!) as { records: DatabasePrimer[] };
-      storage.map.set(PRIMER_DATABASE_KEY, JSON.stringify({ ...env, records: env.records.filter((r) => r.name !== 'T7') }));
+  // Wrong saves (BG-01M7DT7A): a merge target another window trashes or deletes between the
+  // dialog's save-time read and the store's commit is brought back by the replace (the trash
+  // undone, or the deleted record written back), and the import is reported as saved.
+  for (const [ac, what, change, reason, nowClass] of [
+    ['AC1', 'trashed', (env: { records: DatabasePrimer[] }) => ({ ...env, records: env.records.map((r) => (r.name === 'T7' ? { ...r, trashedAt: '2026-11-16T00:00:00.000Z' } : r)) }), 'T7 (seed-2) is in the trash', 'New'],
+    ['AC2', 'deleted', (env: { records: DatabasePrimer[] }) => ({ ...env, records: env.records.filter((r) => r.name !== 'T7') }), 'T7 (seed-2) is no longer in the database', 'New'],
+  ] as const) {
+    it(`BG-01M7DT7A ${ac} an import merging into a record another window ${what} between the two reads writes nothing and shows the rows again`, async () => {
+      const storage = new RacingStorage();
+      const db = seededStore(storage);
+      const reports: string[] = [];
+      const sheet = 'name,sequence,labels\nT7 copy,TAATACGACTCACTATAGGG,t7\nNew one,ACGTACGTACGTAAAA,\n';
+      const d = render(<ImportPrimersToDatabaseDialog database={db} onSaved={(r) => reports.push(r)} onClose={() => undefined} />, sheet, { byClass: { sameOligo: 'merge' } });
+      expect(d.classCell.get(2)).toBe('Same oligo, different name');
+      // The dialog's save-time read (1) sees T7; the other window changes it before the store's own read (2).
+      storage.arm(2, () => storage.map.set(PRIMER_DATABASE_KEY, JSON.stringify(change(JSON.parse(storage.map.get(PRIMER_DATABASE_KEY)!) as { records: DatabasePrimer[] }))));
+      const writes = storage.writes;
+      const failure = await d.run().then(() => null, (e: Error) => e.message);
+      expect(failure).toBe(`Nothing was saved to the Primer Database: another window changed a record this import merges into. The change was not saved: ${reason}. The primer database is as it was. The rows are shown again with their classes now; review them and import again.`);
+      const after = storage.map.get(PRIMER_DATABASE_KEY)!;
+      expect(storage.writes, 'nothing written, not even the new row').toBe(writes);
+      expect(reports).toEqual([]);
+      const stored = records(storage);
+      expect(stored.map((r) => r.name)).toEqual(what === 'trashed' ? ['M13F', 'T7', 'GC1'] : ['M13F', 'GC1']);
+      if (what === 'trashed') expect([stored[1].trashedAt, stored[1].labels], 'T7 stays trashed and unmerged').toEqual(['2026-11-16T00:00:00.000Z', []]);
+      // The dialog moves its review to the store as it stands, where row 2 no longer matches T7.
+      expect(probe.reviewSets).toEqual([{ records: JSON.parse(after).records }]);
+      probe.reviewBasis = probe.reviewSets[0] as { records: unknown[] };
+      const again = render(<ImportPrimersToDatabaseDialog database={db} onSaved={(r) => reports.push(r)} onClose={() => undefined} />, sheet, { byClass: { sameOligo: 'merge' } });
+      probe.reviewBasis = null;
+      expect(again.classCell.get(2)).toBe(nowClass);
     });
-    await d.run();
-    expect(reports).toEqual(['Saved to the Primer Database, but not as reviewed: 1 new and 0 merged records were saved where 0 and 1 were planned; another window changed the database meanwhile, so check it.']);
-    expect(records(storage).map((r) => [r.name, r.labels])).toEqual([['M13F', ['seq']], ['GC1', []], ['T7', ['t7']]]);
+  }
+
+  // Wrong restores (BG-01M7DT7A): a ticked record trashed or deleted since the restore was shown
+  // brought out of the trash or written back, or dropped without a word; the other ticked records
+  // left unreplaced.
+  it('BG-01M7DT7A AC3 Restore from Backup lists a ticked record that is trashed or gone as not replaced, with the reason, and replaces the rest', () => {
+    const storage = new MemoryStorage();
+    const db = seededStore(storage);
+    const before = records(storage);
+    const backup = JSON.stringify({ format: 'molbiocraft-primer-database-backup', schema: 1, exportedAt: '2026-11-16T00:00:00.000Z',
+      records: before.map((r) => ({ ...r, description: `${r.name} from the backup` })) });
+    const shown = db.importBackup(backup);
+    expect(shown.ok && shown.value.conflicts.map((c) => c.id)).toEqual(['seed-1', 'seed-2', 'seed-3']);
+    // Another window trashes T7 and deletes GC1 before the user presses Replace Chosen.
+    const other = openPrimerDatabase({ storage });
+    expect([other.trash('seed-3').ok, other.emptyTrash().ok, other.trash('seed-2').ok]).toEqual([true, true, true]);
+    const trashedT7 = records(storage).find((r) => r.id === 'seed-2')!;
+    const result = db.importBackup(backup, { replace: ['seed-1', 'seed-2', 'seed-3'] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.replaced).toEqual(['seed-1']);
+    expect(result.value.added).toEqual([]);
+    expect(result.value.notReplaced).toEqual([
+      { id: 'seed-2', reason: 'T7 (seed-2) is in the trash' },
+      { id: 'seed-3', reason: 'GC1 (seed-3) is no longer in the database' },
+    ]);
+    const stored = records(storage);
+    expect(stored.map((r) => [r.id, r.description])).toEqual([['seed-1', 'M13F from the backup'], ['seed-2', 'T7 promoter']]);
+    expect(stored[1]).toEqual(trashedT7);
+    // Asked for all-or-nothing, as the import asks, the same restore writes nothing.
+    const writes = storage.writes;
+    const strict = db.importBackup(backup, { replace: ['seed-1', 'seed-2'], allOrNothing: true });
+    expect(strict.ok ? null : [strict.error.kind, strict.error.message]).toEqual(['stale', 'The change was not saved: T7 (seed-2) is in the trash. The primer database is as it was.']);
+    expect(storage.writes).toBe(writes);
+    // "Replace all" names every stored id: the trashed T7 stays trashed and is listed; GC1, gone from
+    // the store, is not named by "all" and is restored as a new id, as a restore always adds one.
+    const all = db.importBackup(backup, { replace: 'all' });
+    expect(all.ok && [all.value.added, all.value.notReplaced]).toEqual([['seed-3'], [{ id: 'seed-2', reason: 'T7 (seed-2) is in the trash' }]]);
+    expect(records(storage).find((r) => r.id === 'seed-2')).toEqual(trashedT7);
   });
 });

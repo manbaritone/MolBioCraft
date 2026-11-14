@@ -473,8 +473,12 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
       return reportError(result.error);
     }
     const s = result.value;
+    // A ticked record trashed or gone when the restore committed is left as it is (BG-01M7DT7A).
+    const missed = s.notReplaced ?? [];
     report(
-      `Restored the backup: ${s.added.length} added, ${s.replaced.length} replaced, ${s.unchanged.length} unchanged, ${s.conflicts.length} kept as stored.`,
+      `Restored the backup: ${s.added.length} added, ${s.replaced.length} replaced, ${s.unchanged.length} unchanged, ${s.conflicts.length} kept as stored${
+        missed.length ? `, ${missed.length} not replaced: ${missed.map((n) => n.reason).join('; ')}` : ''}.`,
+      missed.length ? 'error' : 'info',
     );
     setRestore(s.conflicts.length ? { text, summary: s, replace: [] } : null);
   };

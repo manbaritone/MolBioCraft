@@ -432,6 +432,12 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
         const now = new Date().toISOString();
         const saving = planFromClassified(reclassified, current.records, classChoices, rowChoices, { now, newId: newPrimerId, source: fileName || 'a pasted primer list' });
         const saved = savePrimerDatabaseImport(store, saving, now);
+        if (!saved.ok && saved.stale) {
+          // A record changed between this read and the store's commit (BG-01M7DT7A): review again.
+          const after = store.read();
+          if (after.ok) setReviewBasis({ records: after.records });
+          throw new Error(`${saved.message} The rows are shown again with their classes now; review them and import again.`);
+        }
         if (!saved.ok) throw new Error(saved.message);
         onDatabaseSaved(saved.message);
       }}
