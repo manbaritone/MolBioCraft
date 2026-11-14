@@ -90,6 +90,7 @@ pub const CORE_CATALOG_LEN: usize = 28;
 pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
     vec![
         // ─── Core 28 Standard Cloning, Blunt, & Type IIS Enzymes (Indices 0..28) ───
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GAATTC, REBASE: impaired by an overlapping CpG, 5-50% cleaved on M.SssI-methylated DNA (msget?EcoRI).
         enz("EcoRI", "GAATTC", 1, 5, false, &["NEB", "Thermo", "Takara", "Promega"], &["CpG"], "rCutSmart / NEBuffer EcoRI", 37),
         enz("BamHI", "GGATCC", 1, 5, false, &["NEB", "Thermo", "Takara", "Promega"], &[], "rCutSmart / NEBuffer r3.1", 37),
         enz("HindIII", "AAGCTT", 1, 5, false, &["NEB", "Thermo", "Takara", "Promega"], &[], "rCutSmart / NEBuffer r2.1", 37),
@@ -107,6 +108,7 @@ pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
         enz("EcoRV", "GATATC", 3, 3, false, &["NEB", "Thermo", "Takara"], &[], "rCutSmart / NEBuffer r3.1", 37),
         enz("PvuII", "CAGCTG", 3, 3, false, &["NEB", "Thermo", "Takara"], &[], "rCutSmart", 37),
         enz("BglII", "AGATCT", 1, 5, false, &["NEB", "Thermo", "Takara"], &[], "rCutSmart / NEBuffer r3.1", 37),
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GCTAGC, REBASE: blocked by an overlapping CpG, not cut on M.SssI-methylated pACYC184 (msget?NheI).
         enz("NheI", "GCTAGC", 1, 5, false, &["NEB", "Thermo"], &["CpG"], "rCutSmart", 37),
         enz("AgeI", "ACCGGT", 1, 5, false, &["NEB", "Thermo"], &["CpG"], "rCutSmart", 37),
         enz("MluI", "ACGCGT", 1, 5, false, &["NEB", "Thermo"], &["CpG"], "rCutSmart / NEBuffer r3.1", 37),
@@ -116,6 +118,7 @@ pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
         enz("ClaI", "ATCGAT", 2, 4, false, &["NEB", "Thermo"], &["Dam", "CpG"], "rCutSmart", 37),
         // DpnI *requires* Dam-methylated GATC (template DNA from dam+ E. coli); it is not blocked by it.
         enz("DpnI", "GATC", 2, 2, false, &["NEB", "Thermo"], &[], "rCutSmart (cuts only Dam-methylated GA(m6)TC)", 37),
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GGTCTC, REBASE: blocked by an overlapping CpG, not cut on M.SssI-methylated lambda and Ad2 (msget?BsaI).
         enz("BsaI-HFv2", "GGTCTC", 7, 11, true, &["NEB"], &["Dcm", "CpG"], "rCutSmart (Golden Gate Type IIS)", 37),
         enz("BsmBI-v2", "CGTCTC", 7, 11, true, &["NEB", "Thermo"], &["CpG"], "NEBuffer r3.1 (Golden Gate Type IIS)", 55),
         enz("BbsI-HF", "GAAGAC", 8, 12, true, &["NEB", "Thermo"], &[], "rCutSmart (Golden Gate Type IIS)", 37),
@@ -135,8 +138,10 @@ pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
         // BsaXI cuts on both sides, (9/12)ACNNNNNCTCC(10/7); only the downstream cut is modelled.
         enz("BsaXI", "ACNNNNNCTCC", 21, 18, true, &["NEB"], &[], "rCutSmart (Type IIB; downstream cut only)", 37),
         enz("BsgI", "GTGCAG", 22, 20, true, &["NEB"], &[], "rCutSmart (Type IIS)", 37),
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GTCTC, REBASE: blocked by an overlapping CpG, not cut on M.SssI-methylated lambda (msget?BsmAI).
         enz("BsmAI", "GTCTC", 6, 10, true, &["NEB"], &["CpG"], "rCutSmart (Type IIS)", 55),
-        enz("BsmFI", "GGGAC", 15, 19, true, &["NEB"], &["Dcm", "CpG"], "rCutSmart (Type IIS)", 65),
+        // No CG inside GGGAC, so not tagged "CpG" (BG-01M7DHG2, D0116): REBASE holds no CpG test of it.
+        enz("BsmFI", "GGGAC", 15, 19, true, &["NEB"], &["Dcm"], "rCutSmart (Type IIS)", 65),
         enz("BspCNI", "CTCAG", 14, 12, true, &["NEB"], &[], "rCutSmart (Type IIS)", 25),
         enz("BsrDI", "GCAATG", 8, 6, true, &["NEB"], &[], "NEBuffer r2.1 (Type IIS)", 65),
         enz("BtsI-v2", "GCAGTG", 8, 6, true, &["NEB"], &[], "rCutSmart (Type IIS)", 37),
@@ -160,8 +165,11 @@ pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
         enz("PI-SceI", "ATCTATGTCGGGTGCGGAGAAAGAGGTAAT", 15, 11, false, &["NEB"], &[], "NEBuffer PI-SceI (Intein Homing)", 37),
         enz("PI-PspI", "TGGCAAACAGCTATTATGGGTATTATGGGT", 17, 13, false, &["NEB"], &[], "NEBuffer PI-PspI (Homing Endonuclease)", 65),
         // ─── Standard 6-bp Cohesive & Blunt Type II Laboratory Enzymes ───
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GGGCCC, REBASE: impaired or blocked by an overlapping CpG, 50% cleaved to not cut on M.SssI-methylated DNA (msget?ApaI).
         enz("ApaI", "GGGCCC", 5, 1, false, &["NEB", "Thermo", "Takara", "Promega"], &["Dcm", "CpG"], "rCutSmart", 25),
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GGGCCC, REBASE: blocked by an overlapping CpG, not cut on M.SssI-methylated Ad2 (msget?PspOMI).
         enz("PspOMI", "GGGCCC", 1, 5, false, &["NEB"], &["Dcm", "CpG"], "rCutSmart (5'-overhang ApaI neoschizomer)", 37),
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GTGCAC, REBASE: blocked by an overlapping CpG (GTGCACG), not cut on M.SssI-methylated lambda (msget?ApaLI).
         enz("ApaLI", "GTGCAC", 1, 5, false, &["NEB", "Takara"], &["CpG"], "rCutSmart", 37),
         enz("AflII", "CTTAAG", 1, 5, false, &["NEB", "Thermo", "Takara"], &[], "rCutSmart", 37),
         enz("AfeI", "AGCGCT", 3, 3, false, &["NEB"], &["CpG"], "rCutSmart (Blunt)", 37),
@@ -176,7 +184,8 @@ pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
         enz("BglI", "GCCNNNNNGGC", 7, 4, false, &["NEB", "Thermo", "Takara"], &["CpG"], "NEBuffer r3.1", 37),
         enz("BlpI", "GCTNAGC", 2, 5, false, &["NEB"], &[], "rCutSmart", 37),
         enz("BmgBI", "CACGTC", 3, 3, false, &["NEB"], &["CpG"], "NEBuffer r3.1 (Blunt)", 37),
-        enz("BmtI-HF", "GCTAGC", 5, 1, false, &["NEB"], &["CpG"], "rCutSmart (3'-overhang NheI neoschizomer)", 37),
+        // No CG inside GCTAGC, so not tagged "CpG" (BG-01M7DHG2, D0116): REBASE holds no CpG test of it; its isoschizomer NheI is blocked by an overlapping CpG.
+        enz("BmtI-HF", "GCTAGC", 5, 1, false, &["NEB"], &[], "rCutSmart (3'-overhang NheI neoschizomer)", 37),
         enz("Bpu10I", "CCTNAGC", 2, 5, false, &["NEB", "Thermo"], &[], "NEBuffer r3.1", 37),
         enz("BsaAI", "YACGTR", 3, 3, false, &["NEB"], &["CpG"], "rCutSmart (Blunt)", 37),
         enz("BsaBI", "GATNNNNATC", 5, 5, false, &["NEB"], &["Dam"], "rCutSmart (Blunt)", 60),
@@ -197,6 +206,7 @@ pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
         enz("BstEII-HF", "GGTNACC", 1, 6, false, &["NEB"], &[], "rCutSmart", 37),
         enz("BstXI", "CCANNNNNNTGG", 8, 4, false, &["NEB", "Thermo", "Takara"], &["Dcm"], "NEBuffer r3.1", 37),
         enz("BstYI", "RGATCY", 1, 5, false, &["NEB"], &[], "rCutSmart", 60),
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GTATAC, REBASE: blocked by an overlapping CpG (GTATACG), not cut when both strands are M.SssI-methylated (msget?BstZ17I).
         enz("BstZ17I-HF", "GTATAC", 3, 3, false, &["NEB"], &["CpG"], "rCutSmart (Blunt)", 37),
         enz("Bsu36I", "CCTNAGG", 2, 5, false, &["NEB", "Thermo"], &[], "rCutSmart", 37),
         enz("DraI", "TTTAAA", 3, 3, false, &["NEB", "Thermo", "Takara"], &[], "rCutSmart (Blunt)", 37),
@@ -209,6 +219,7 @@ pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
         enz("FspI", "TGCGCA", 3, 3, false, &["NEB"], &["CpG"], "rCutSmart (Blunt)", 37),
         enz("HaeII", "RGCGCY", 5, 1, false, &["NEB"], &["CpG"], "rCutSmart", 37),
         enz("HincII", "GTYRAC", 3, 3, false, &["NEB", "Thermo", "Takara"], &["CpG"], "rCutSmart (Blunt)", 37),
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GTTAAC, REBASE: blocked by an overlapping CpG (GTTAACG), not cut when both strands are methylated (msget?HpaI).
         enz("HpaI", "GTTAAC", 3, 3, false, &["NEB", "Thermo", "Takara"], &["CpG"], "rCutSmart (Blunt)", 37),
         enz("KasI", "GGCGCC", 1, 5, false, &["NEB"], &["CpG"], "rCutSmart (NarI/PluTI neoschizomer)", 37),
         enz("MfeI-HF", "CAATTG", 1, 5, false, &["NEB", "Thermo"], &[], "rCutSmart (EcoRI-compatible AATT)", 37),
@@ -249,6 +260,7 @@ pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
         enz("AluI", "AGCT", 2, 2, false, &["NEB", "Thermo", "Takara", "Promega"], &[], "rCutSmart", 37),
         enz("HaeIII", "GGCC", 2, 2, false, &["NEB", "Thermo", "Takara", "Promega"], &[], "rCutSmart", 37),
         enz("MboI", "GATC", 0, 4, false, &["NEB", "Thermo", "Takara"], &["Dam"], "rCutSmart (blocked by Dam methylation)", 37),
+        // CpG tag covers an overlapping CpG, as Dam/Dcm do (D0116): no CG inside GATC, REBASE: blocked by an overlapping CpG (GATCG), not cut on M.SssI-methylated pACYC184 (msget?Sau3AI).
         enz("Sau3AI", "GATC", 0, 4, false, &["NEB", "Thermo", "Takara", "Promega"], &["CpG"], "rCutSmart (not blocked by Dam)", 37),
         enz("DpnII", "GATC", 0, 4, false, &["NEB"], &["Dam"], "NEBuffer DpnII (blocked by Dam methylation)", 37),
         enz("TaqI-v2", "TCGA", 1, 3, false, &["NEB", "Thermo", "Promega"], &["Dam"], "rCutSmart", 65),
@@ -1893,5 +1905,62 @@ mod rebase_validation {
         let mut blocked = blocked;
         blocked.sort();
         assert_eq!(blocked, want, "the planted sites of {}", circles[0]);
+    }
+    /// BG-01M7DHG2 (D0116): the "CpG" tag, like Dam and Dcm, covers methylation in the site or
+    /// overlapping it. An enzyme whose site can hold no CG (no adjacent pair of IUPAC codes allowing
+    /// C then G) may carry it only with a recorded REBASE ruling that an overlapping CpG blocks or
+    /// impairs it; one REBASE holds no CpG data for carries none.
+    #[test]
+    fn a_cpg_tag_on_a_site_without_cg_is_backed_by_a_rebase_overlap_ruling() {
+        fn bases(code: u8) -> &'static [u8] {
+            match code {
+                b'A' => b"A", b'C' => b"C", b'G' => b"G", b'T' => b"T",
+                b'R' => b"AG", b'Y' => b"CT", b'S' => b"CG", b'W' => b"AT", b'K' => b"GT", b'M' => b"AC",
+                b'B' => b"CGT", b'D' => b"AGT", b'H' => b"ACT", b'V' => b"ACG", b'N' => b"ACGT",
+                other => panic!("not an IUPAC base code: {}", other as char),
+            }
+        }
+        let can_hold_cg = |site: &str| site.as_bytes().windows(2).any(|w| bases(w[0]).contains(&b'C') && bases(w[1]).contains(&b'G'));
+        assert!(can_hold_cg("ATCGAT") && can_hold_cg("GTYRAC") && can_hold_cg("CACNNNGTG") && can_hold_cg("GGYRCC"));
+        assert!(!can_hold_cg("GAATTC") && !can_hold_cg("GATC") && !can_hold_cg("GGTCTC"));
+        // The recorded REBASE rulings (http://rebase.neb.com/cgi-bin/msget?<name>, M.SssI rows):
+        // each enzyme is blocked or impaired by a CpG overlapping its site.
+        const OVERLAP_RULINGS: &[(&str, &str)] = &[
+            ("EcoRI", "impaired, 5-50% cleaved on M.SssI-methylated DNA"),
+            ("HpaI", "blocked when both strands are methylated (GTTAACG)"),
+            ("ApaLI", "blocked on M.SssI-methylated lambda (GTGCACG)"),
+            ("BstZ17I-HF", "blocked when both strands are methylated (msget?BstZ17I)"),
+            ("Sau3AI", "blocked on M.SssI-methylated pACYC184 (GATCG)"),
+            ("NheI", "blocked on M.SssI-methylated pACYC184"),
+            ("BsaI-HFv2", "blocked on M.SssI-methylated lambda and Ad2 (msget?BsaI)"),
+            ("BsmAI", "blocked on M.SssI-methylated lambda"),
+            ("ApaI", "impaired to blocked on M.SssI-methylated Ad2 and lambda"),
+            ("PspOMI", "blocked on M.SssI-methylated Ad2"),
+        ];
+        let ruled = |name: &str| OVERLAP_RULINGS.iter().any(|(n, _)| *n == name);
+        let catalog = get_rebase_enzymes();
+        let tagged = |name: &str| {
+            let e = catalog.iter().find(|e| e.name == name).unwrap_or_else(|| panic!("the catalogue holds {name}"));
+            e.methylation_sensitivity.iter().any(|m| m == "CpG")
+        };
+        let unbacked: Vec<String> = catalog
+            .iter()
+            .filter(|e| e.methylation_sensitivity.iter().any(|m| m == "CpG") && !can_hold_cg(&e.recognition_seq) && !ruled(&e.name))
+            .map(|e| format!("{} {}", e.name, e.recognition_seq))
+            .collect();
+        assert!(unbacked.is_empty(), "tagged CpG with no CG in the site and no REBASE overlap ruling: {unbacked:?}");
+        // Every ruled enzyme is in the catalogue with no CG in its site, and keeps the tag (D0116).
+        for (name, _) in OVERLAP_RULINGS {
+            let e = catalog.iter().find(|e| e.name == *name).unwrap_or_else(|| panic!("the catalogue holds {name}"));
+            assert!(!can_hold_cg(&e.recognition_seq), "{name}'s site can hold a CG: it needs no overlap ruling");
+            assert!(tagged(name), "{name} has a REBASE overlap ruling but lost its CpG tag");
+        }
+        // The five the review named keep the tag; the two REBASE holds no CpG data for carry none.
+        for name in ["EcoRI", "HpaI", "ApaLI", "BstZ17I-HF", "Sau3AI"] {
+            assert!(tagged(name), "{name} lost its CpG tag");
+        }
+        for name in ["BsmFI", "BmtI-HF"] {
+            assert!(!tagged(name), "{name} is tagged CpG with no REBASE CpG data");
+        }
     }
 }
