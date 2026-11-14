@@ -102,7 +102,8 @@ import { CloningOperationDialog, DeNovoOperationDialog, FindOrfsOperationDialog,
 import { BatchRenameDialog, FindDuplicatesDialog } from './components/DocumentManagementDialogs';
 import { AddToAlignmentDialog, ConsensusDialog, MaskAlignmentDialog, TranslationAlignDialog } from './components/AlignmentToolDialogs';
 import { ManageWorkflowsDialog, RunWorkflowDialog } from './components/WorkflowDialogs';
-import { BackTranslateDialog, CompareAnnotationsDialog, MergePairsDialog, ReadQcDialog, TestSavedPrimersDialog, TrimEndsDialog } from './components/PrimerReadDialogs';
+import { BackTranslateDialog, CompareAnnotationsDialog, MergePairsDialog, PrimerBindingDialog, ReadQcDialog, TestSavedPrimersDialog, TrimEndsDialog } from './components/PrimerReadDialogs';
+import { openPrimerDatabase } from './core/primerDatabase';
 import { MetadataImportDialog } from './components/MetadataImportDialog';
 import { ComputeDistancesDialog, CondenseTreeDialog, EvolutionAnalysisDialog, TimetreeDialog, ExamplesDialog, GeneDuplicationDialog, HighlightSitesDialog } from './components/EvolutionAnalysisDialogs';
 import type { EvoAnalysis } from './core/evolutionAnalyses';
@@ -649,6 +650,8 @@ interface DocumentUndoSnapshot {
   prevDoc: SequenceDocument;
   nextDoc: SequenceDocument;
   label: string;
+  /** The other documents one step changed (US-01M7DQMY AC3): undo and redo apply them with this one. */
+  also?: Array<{ docId: string; prevDoc: SequenceDocument; nextDoc: SequenceDocument }>;
 }
 
 /**
@@ -1055,6 +1058,7 @@ export const App: React.FC = () => {
     | { kind: 'consensus' }
     | { kind: 'consensus-tree' }
     | { kind: 'saved-primers' }
+    | { kind: 'primer-db-binding'; primerIds?: string[] }
     | { kind: 'trim' }
     | { kind: 'backtranslate' }
     | { kind: 'add-to-alignment' }
@@ -1083,6 +1087,15 @@ export const App: React.FC = () => {
     | { kind: 'align-structures' }
     | null
   >(null);
+  // The Primer Database as it is when a primer dialog opens (US-01M7DQMY): read once per opening,
+  // so its records stay put while the dialog is open.
+  const primerDbReadForDialog = useMemo(
+    () =>
+      operationDialog?.kind === 'saved-primers' || operationDialog?.kind === 'primer-db-binding'
+        ? openPrimerDatabase().read()
+        : undefined,
+    [operationDialog]
+  );
   // Workflows → Manage Workflows… / Run Workflow…
   const [manageWorkflowsOpen, setManageWorkflowsOpen] = useState(false);
   const [runWorkflowFor, setRunWorkflowFor] = useState<{ workflowId?: string } | null>(null);
@@ -2501,6 +2514,30 @@ export const App: React.FC = () => {
     );
   };
 
+  /**
+   * Several documents changed by one action, recorded as one undoable step (US-01M7DQMY AC3):
+   * undo and redo restore or reapply every one of them together.
+   */
+  const handleUpdateDocuments = (updatedDocs: SequenceDocument[], actionLabel: string) => {
+    const stamp = new Date().toISOString();
+    const steps = updatedDocs.flatMap((u) => {
+      const prevDoc = documents.find((d) => d.id === u.id);
+      return prevDoc ? [{ docId: u.id, prevDoc, nextDoc: stampEngineTimestamps(u, stamp, prevDoc) }] : [];
+    });
+    if (!steps.length) {
+      setStatusBanner(`${actionLabel}: the documents are no longer in the project.`);
+      return;
+    }
+    const [first, ...rest] = steps;
+    setUndoStack((prev) => [
+      ...prev.slice(-(MAX_UNDO_STEPS - 1)),
+      { ...first, label: actionLabel, ...(rest.length ? { also: rest } : {}) },
+    ]);
+    setRedoStack([]);
+    const next = new Map(steps.map((st) => [st.docId, st.nextDoc]));
+    setDocuments((prev) => prev.map((d) => next.get(d.id) ?? d));
+  };
+
   const handleUndoDocumentEdit = () => {
     if (!sessionActive) {
       setStatusBanner('No active session — nothing to undo.');
@@ -2519,9 +2556,8 @@ export const App: React.FC = () => {
       return;
     }
     setRedoStack((prev) => [...prev.slice(-(MAX_UNDO_STEPS - 1)), entry]);
-    setDocuments((prev) =>
-      prev.map((d) => (d.id === entry.docId ? applyHistorySnapshot(d, entry.prevDoc) : d))
-    );
+    const undone = new Map([[entry.docId, entry.prevDoc], ...(entry.also ?? []).map((o) => [o.docId, o.prevDoc] as const)]);
+    setDocuments((prev) => prev.map((d) => (undone.has(d.id) ? applyHistorySnapshot(d, undone.get(d.id)!) : d)));
     focusDocumentAfterHistoryStep(entry.docId, entry.prevDoc.sequence.length);
     setStatusBanner(`Undid ${entry.label} on "${entry.prevDoc.name}"`);
   };
@@ -2554,9 +2590,8 @@ export const App: React.FC = () => {
       return;
     }
     setUndoStack((prev) => [...prev.slice(-(MAX_UNDO_STEPS - 1)), entry]);
-    setDocuments((prev) =>
-      prev.map((d) => (d.id === entry.docId ? applyHistorySnapshot(d, entry.nextDoc) : d))
-    );
+    const redone = new Map([[entry.docId, entry.nextDoc], ...(entry.also ?? []).map((o) => [o.docId, o.nextDoc] as const)]);
+    setDocuments((prev) => prev.map((d) => (redone.has(d.id) ? applyHistorySnapshot(d, redone.get(d.id)!) : d)));
     focusDocumentAfterHistoryStep(entry.docId, entry.nextDoc.sequence.length);
     setStatusBanner(`Redid ${entry.label} on "${entry.nextDoc.name}"`);
   };
@@ -9930,6 +9965,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           },
           {
             kind: 'command',
+            id: 'prm-db-binding-dialog',
+            label: 'Find Where Stored Primers Bind…',
+            onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'primer-db-binding' })),
+          },
+          {
+            kind: 'command',
             id: 'prm-add',
             label: 'Add Primer',
             onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
@@ -11895,6 +11936,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'tb-pr-test-saved',
             label: 'Test with Saved Primers…',
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'saved-primers' })),
+          },
+          {
+            kind: 'command',
+            id: 'tb-pr-db-binding',
+            label: 'Find Where Stored Primers Bind…',
+            onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'primer-db-binding' })),
           },
           {
             kind: 'command',
@@ -16627,10 +16674,26 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         <TestSavedPrimersDialog
           targets={selectedAnalysisDocuments.length ? selectedAnalysisDocuments : activeDoc.id ? [activeDoc] : []}
           primerDocs={catalogNonDeletedDocs.filter((d) => d.documentKind === 'primer' && d.sequence.length > 0)}
+          databaseRead={primerDbReadForDialog}
           onDownload={(content, name) => void handleDownloadFile(content, name, 'application/json')}
           onApply={(r) => {
             for (const d of r.updated) handleUpdateDocument(d, 'Test with Saved Primers');
             setStatusBanner(r.summary);
+          }}
+          onClose={() => setOperationDialog(null)}
+        />
+      )}
+      {operationDialog?.kind === 'primer-db-binding' && (
+        <PrimerBindingDialog
+          databaseRead={primerDbReadForDialog ?? openPrimerDatabase().read()}
+          documents={catalogNonDeletedDocs}
+          initialPrimerIds={operationDialog.primerIds}
+          initialTargetIds={(selectedAnalysisDocuments.length ? selectedAnalysisDocuments : activeDoc.id ? [activeDoc] : []).map((d) => d.id)}
+          onDownload={(content, name) => void handleDownloadFile(content, name, 'application/json')}
+          onAdd={(updated, summary) => {
+            // One undoable step for every target (US-01M7DQMY AC3).
+            handleUpdateDocuments(updated, 'Add Primer Binding Sites');
+            setStatusBanner(summary);
           }}
           onClose={() => setOperationDialog(null)}
         />
@@ -17156,6 +17219,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           returnFocusTo={primerDbWindow.opener}
           refreshKey={primerDbRefresh}
           onOpenImport={() => setPrimerDbImportOpen(true)}
+          onFindBindings={(primerIds) =>
+            requireActiveSession(() => setOperationDialog({ kind: 'primer-db-binding', primerIds }))
+          }
           onClose={() => setPrimerDbWindow(null)}
         />
       )}

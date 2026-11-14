@@ -11,8 +11,12 @@ import {
 } from '../types/bio';
 import {
   calculatePrimerMetrics,
+  databasePrimerCandidate,
   designPCRPrimers,
+  documentPrimerCandidate as screeningCandidateOf,
   findCrisprGuides,
+  findPrimerBindings,
+  primerMatchSettingsText,
   testSavedPrimersOnSequence,
 } from '../core/bioEngine';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
@@ -23,7 +27,7 @@ import { InspectorSection, useInWorkbench } from './WorkbenchInspector';
 import { WorkbenchSmartTable } from './WorkbenchSmartTable';
 import { originSpanningSiteCount, primerSiteStatus } from '../core/primerSiteStatus';
 import { primerTmText } from './CircularPlasmidMap';
-import { openPrimerDatabase, type DatabasePrimerInput, type PrimerDatabase } from '../core/primerDatabase';
+import { activePrimers, openPrimerDatabase, type DatabasePrimerInput, type PrimerDatabase } from '../core/primerDatabase';
 import { usePrimerDatabaseSave } from './PrimerDatabaseWindow';
 
 /** How many of the candidate guides the CRISPR tab lists. */
@@ -164,8 +168,18 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     [customOligo, naMm, mgMm, primerNm]
   );
 
-  // Collect all saved primers across workspace documents + standard universal sequencing primers
-  const savedPrimerCatalog = useMemo(() => {
+  // Save to Primer Database (US-01M7DQFS AC4): a new record, under the duplicate policy; the
+  // document and its primers are never changed by it.
+  const primerDb = useMemo(() => primerDatabase ?? openPrimerDatabase(), [primerDatabase]);
+  const [dbSaveMessage, setDbSaveMessage] = useState<string | null>(null);
+  const dbSave = usePrimerDatabaseSave(primerDb, (message) => {
+    setDbSaveMessage(message);
+    onStatusNotice?.(message);
+  });
+  // The documents' primers, one per name as before, so each is screened as it was; the Primer
+  // Database's active records join them keyed by source and id (US-01M7DQMY AC2), so a record and a
+  // document primer of one name are both listed.
+  const documentPrimerCatalog = useMemo(() => {
     const map = new Map<string, PrimerRecord>();
     for (const d of [doc, ...allDocuments]) {
       for (const p of d.primers) {
@@ -175,10 +189,25 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     return Array.from(map.values());
   }, [doc, allDocuments]);
 
-  const savedPrimerHits = useMemo(
-    () => testSavedPrimersOnSequence(doc.sequence, savedPrimerCatalog, maxAllowedMismatches),
-    [doc.sequence, savedPrimerCatalog, maxAllowedMismatches]
+  // Read when the tab opens and after a save to the database; an unreadable store is named, never
+  // read as one without primers.
+  const databaseCatalog = useMemo(() => {
+    const read = primerDb.read();
+    if (!read.ok) return { candidates: [], error: `The Primer Database cannot be read, so its primers are not screened: ${read.error.message}` };
+    return { candidates: activePrimers(read.records).map(databasePrimerCandidate), error: null as string | null };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primerDb, subTab, dbSaveMessage]);
+
+  const savedPrimerCatalog = useMemo(
+    () => [...documentPrimerCatalog.map(screeningCandidateOf), ...databaseCatalog.candidates],
+    [documentPrimerCatalog, databaseCatalog]
   );
+
+  const savedPrimerSearch = useMemo(
+    () => findPrimerBindings([doc], savedPrimerCatalog, maxAllowedMismatches),
+    [doc, savedPrimerCatalog, maxAllowedMismatches]
+  );
+  const savedPrimerHits = savedPrimerSearch.occurrences;
 
   // Per-primer binding multiplicity & specificity alerts on active template
   const docPrimerSiteCounts = useMemo(() => {
@@ -240,14 +269,6 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     );
   };
 
-  // Save to Primer Database (US-01M7DQFS AC4): a new record, under the duplicate policy; the
-  // document and its primers are never changed by it.
-  const primerDb = useMemo(() => primerDatabase ?? openPrimerDatabase(), [primerDatabase]);
-  const [dbSaveMessage, setDbSaveMessage] = useState<string | null>(null);
-  const dbSave = usePrimerDatabaseSave(primerDb, (message) => {
-    setDbSaveMessage(message);
-    onStatusNotice?.(message);
-  });
   const saveToPrimerDatabase = (candidate: DatabasePrimerInput, opener: HTMLElement) => {
     setDbSaveMessage(null);
     // The Save button: focus returns to it when a duplicate panel closes (BG-01M7DVJJ).
@@ -807,8 +828,8 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
           )}
           <div className="studio-card-header">
             <h3>
-              Test with Saved Primers — Screening {savedPrimerCatalog.length} Database Primers against{' '}
-              {doc.name}
+              Test with Saved Primers — Screening {savedPrimerCatalog.length} Primers ({databaseCatalog.candidates.length} from the
+              Primer Database, {documentPrimerCatalog.length} from documents) against {doc.name}
             </h3>
             {!inWorkbench && (
               <div className="gel-controls-inline">
@@ -831,7 +852,22 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
               Test with Saved Primers
             </strong>{' '}
             screens your primer collection for binding sites on both strands of <strong>{doc.name}</strong> ({doc.sequence.length.toLocaleString()} bp) requiring a 3&apos; pentamer clamp.
+            <div className="mbc-opdlg-muted" data-match-settings="">{primerMatchSettingsText(maxAllowedMismatches)}</div>
           </div>
+          {databaseCatalog.error && (
+            <div className="info-callout" role="alert">
+              {databaseCatalog.error}
+            </div>
+          )}
+          {savedPrimerSearch.notSearched.length > 0 && (
+            <ul className="info-callout" aria-label="Primers not searched">
+              {savedPrimerSearch.notSearched.map(({ candidate, reason }) => (
+                <li key={candidate.key}>
+                  <strong>{candidate.name}</strong> ({candidate.sourceLabel}): {reason}
+                </li>
+              ))}
+            </ul>
+          )}
 
           <WorkbenchSmartTable
             tableId="primer-studio-saved-screening"
@@ -841,6 +877,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             <thead>
               <tr>
                 <th>Primer Name</th>
+                <th>Source</th>
                 <th>Sequence (5&apos;→3&apos;)</th>
                 <th>Strand</th>
                 <th>Binding Coordinates</th>
@@ -851,26 +888,27 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             <tbody>
               {savedPrimerHits.length === 0 ? (
                 <tr>
-                  <td colSpan={6}>
-                    No saved primers bound within {maxAllowedMismatches} mismatches. Try increasing mismatch tolerance or designing new primers.
+                  <td colSpan={7}>
+                    No searched primer bound within {maxAllowedMismatches} mismatches{savedPrimerSearch.notSearched.length ? ' (the primers listed as not searched were not looked for)' : ''}. Try increasing mismatch tolerance or designing new primers.
                   </td>
                 </tr>
               ) : (
-                savedPrimerHits.map((hit, idx) => (
-                  <tr key={idx}>
+                savedPrimerHits.map((hit) => (
+                  <tr key={hit.key} data-primer-key={hit.candidate.key}>
                     <td>
-                      <strong>{hit.primer.name}</strong>
+                      <strong>{hit.candidate.name}</strong>
                     </td>
-                    <td className="mono-cell">{hit.primer.sequence}</td>
+                    <td>{hit.candidate.sourceLabel}</td>
+                    <td className="mono-cell">{hit.candidate.record.sequence}</td>
                     <td>{hit.strand === 1 ? 'Forward (+)' : 'Reverse (-)'}</td>
                     <td>
                       {onJumpToCoordinate ? (
                         <button
                           type="button"
                           className="mbc-coord-jump-btn"
-                          title={`Jump to ${hit.primer.name} (${hit.bindStart}..${hit.bindEnd} bp) in Sequence view`}
+                          title={`Jump to ${hit.candidate.name} (${hit.bindStart}..${hit.bindEnd} bp) in Sequence view`}
                           onClick={() =>
-                            onJumpToCoordinate(hit.bindStart, hit.bindEnd, hit.primer.name)
+                            onJumpToCoordinate(hit.bindStart, hit.bindEnd, hit.candidate.name)
                           }
                         >
                           {hit.bindStart}..{hit.bindEnd}
@@ -886,7 +924,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                         {hit.mismatches} mm
                       </span>
                     </td>
-                    <td>{hit.effectiveTmC} °C</td>
+                    <td>{hit.effectiveTmC === null ? `n/a: ${hit.tmUnavailableReason}` : `${hit.effectiveTmC} °C`}</td>
                   </tr>
                 ))
               )}

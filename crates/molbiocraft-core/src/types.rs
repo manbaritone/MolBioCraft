@@ -93,6 +93,44 @@ pub struct PrimerRecord {
     /// answer. Absent for an A/C/G/T primer, and for a record saved before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tm_no_answer_reason: Option<String>,
+    /// Where the primer came from when it was added from the Primer Database (US-01M7DQMY): the
+    /// record's id and a copy of the record as it was then, never a link to it. Absent for a primer
+    /// added any other way and for a record saved before it, which still loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<PrimerSourceSnapshot>,
+}
+
+/// How a binding site was found: the engine's match rule and the settings it ran with (US-01M7DQMY).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrimerMatchConditions {
+    pub method: String,
+    pub max_mismatches: usize,
+    pub clamp3_prime_bases: usize,
+    pub mismatches: usize,
+    /// The conditions of the effective Tm; absent where the Tm is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tm_conditions: Option<String>,
+}
+
+/// A document primer's copy of the Primer Database record it was added from (US-01M7DQMY, D0119).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrimerSourceSnapshot {
+    /// "primerDatabase".
+    pub kind: String,
+    pub record_id: String,
+    pub name: String,
+    pub sequence: String,
+    pub tail5_prime: String,
+    pub molecule: String,
+    pub modifications: String,
+    /// The sequence revision of the target the primer was found on.
+    pub sequence_revision: String,
+    pub r#match: PrimerMatchConditions,
+    /// Why the engine computes no Tm or ΔG for the record (RNA or a modification).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thermo_unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,4 +341,38 @@ pub struct AlignmentOutput {
     pub mismatches: i32,
     pub gaps: i32,
     pub identity_pct: f64,
+}
+
+#[cfg(test)]
+mod us_01m7dqmy_tests {
+    use super::*;
+
+    const WITH_SOURCE: &str = r#"{"id":"p1","name":"Fwd-tailed","sequence":"GGATCCAAAAACGTACGTACGTACGTACGT","annealSequence":"ACGTACGTACGTACGTACGT","tail5Prime":"GGATCCAAAA","bindStart":51,"bindEnd":70,"strand":1,"length":30,"gcPercent":50.0,"tmAnnealC":0.0,"tmFullC":0.0,"deltaG37":0.0,"hairpinDeltaG":0.0,"selfDimerDeltaG":0.0,"gcClamp3Prime":true,"tmNoAnswerReason":"Tm and ΔG unavailable: it is RNA.","source":{"kind":"primerDatabase","recordId":"seed-1","name":"Fwd-tailed","sequence":"GGATCCAAAAACGTACGTACGTACGTACGT","tail5Prime":"GGATCCAAAA","molecule":"RNA","modifications":"/5Phos/","sequenceRevision":"l400.abc","match":{"method":"Test with Saved Primers engine","maxMismatches":1,"clamp3PrimeBases":5,"mismatches":0},"thermoUnavailableReason":"Tm and ΔG unavailable: it is RNA."}}"#;
+
+    #[test]
+    fn us_01m7dqmy_ac4_primer_source_survives_a_serde_round_trip() {
+        let p: PrimerRecord = serde_json::from_str(WITH_SOURCE).expect("parses");
+        let src = p.source.clone().expect("source kept");
+        assert_eq!(src.record_id, "seed-1");
+        assert_eq!(src.name, "Fwd-tailed");
+        assert_eq!(src.tail5_prime, "GGATCCAAAA");
+        assert_eq!(src.sequence_revision, "l400.abc");
+        assert_eq!(src.r#match.clamp3_prime_bases, 5);
+        assert_eq!(src.r#match.tm_conditions, None);
+        let back: serde_json::Value = serde_json::to_value(&p).unwrap();
+        let original: serde_json::Value = serde_json::from_str(WITH_SOURCE).unwrap();
+        assert_eq!(back["source"], original["source"]);
+        let again: PrimerRecord = serde_json::from_value(back).unwrap();
+        assert_eq!(again.source, p.source);
+    }
+
+    #[test]
+    fn us_01m7dqmy_ac4_a_primer_saved_without_source_still_loads_and_writes_none() {
+        let mut v: serde_json::Value = serde_json::from_str(WITH_SOURCE).unwrap();
+        v.as_object_mut().unwrap().remove("source");
+        let p: PrimerRecord = serde_json::from_value(v).expect("an older primer loads");
+        assert!(p.source.is_none());
+        let out = serde_json::to_value(&p).unwrap();
+        assert!(out.get("source").is_none(), "no source key is written for a primer without one");
+    }
 }

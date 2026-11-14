@@ -247,6 +247,7 @@ pub fn build_catalog_vector_document(entry: &CatalogVectorEntry) -> SequenceDocu
         gc_clamp3_prime: true,
         notes: Some("Universal vector verification primer".to_string()),
         tm_no_answer_reason: None,
+        source: None,
     }];
 
     let src_prefix: String = entry
@@ -1592,6 +1593,7 @@ pub fn build_cloning_action_vector_document(
             gc_clamp3_prime: true,
             notes: Some("Universal forward sequencing primer".to_string()),
             tm_no_answer_reason: None,
+            source: None,
         },
         PrimerRecord {
             id: format!("{}-prm-m13r", preset.id),
@@ -1612,6 +1614,7 @@ pub fn build_cloning_action_vector_document(
             gc_clamp3_prime: true,
             notes: Some("Universal reverse sequencing primer".to_string()),
             tm_no_answer_reason: None,
+            source: None,
         },
     ];
 

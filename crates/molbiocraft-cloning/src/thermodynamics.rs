@@ -607,6 +607,7 @@ pub fn design_pcr_primers_with_slack(
         gc_clamp3_prime: fwd_anneal_m.gc_clamp3_prime,
         notes: None,
         tm_no_answer_reason: fwd_anneal_m.tm_no_answer_reason.clone(),
+        source: None,
     };
 
     let reverse = PrimerRecord {
@@ -628,6 +629,7 @@ pub fn design_pcr_primers_with_slack(
         gc_clamp3_prime: rev_anneal_m.gc_clamp3_prime,
         notes: None,
         tm_no_answer_reason: rev_anneal_m.tm_no_answer_reason.clone(),
+        source: None,
     };
 
     PcrPrimerDesignResult {

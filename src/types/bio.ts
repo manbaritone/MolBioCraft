@@ -423,6 +423,47 @@ export interface PrimerRecord {
    * reader of it throws. Absent for an A/C/G/T primer and for a record saved before it.
    */
   tmNoAnswerReason?: string;
+  /**
+   * Where the primer came from when it was added from the Primer Database (US-01M7DQMY): the
+   * record's id and a copy of what it was then, never a link to it, so editing or trashing the
+   * record leaves this primer as it was added. Absent for a primer added any other way.
+   */
+  source?: PrimerSourceSnapshot;
+}
+
+/** How a binding site was found: the engine's match rule and the settings it ran with (US-01M7DQMY). */
+export interface PrimerMatchConditions {
+  /** The match rule, in words. */
+  method: string;
+  /** The most mismatches the search allowed outside the 3' clamp. */
+  maxMismatches: number;
+  /** The 3'-terminal bases that had to match exactly. */
+  clamp3PrimeBases: number;
+  /** The mismatches this binding site has. */
+  mismatches: number;
+  /**
+   * The conditions of the effective Tm, in words; absent where the Tm is unavailable
+   * (`PrimerSourceSnapshot.thermoUnavailableReason`).
+   */
+  tmConditions?: string;
+}
+
+/** A document primer's copy of the Primer Database record it was added from (US-01M7DQMY, D0119). */
+export interface PrimerSourceSnapshot {
+  kind: 'primerDatabase';
+  /** The database record's id. */
+  recordId: string;
+  /** The record's name, sequence (5' -> 3', tail included), 5' tail, molecule and modification text when it was added. */
+  name: string;
+  sequence: string;
+  tail5Prime: string;
+  molecule: PrimerMolecule;
+  modifications: string;
+  /** The `sequenceRevision` of the target the primer was found on. */
+  sequenceRevision: string;
+  match: PrimerMatchConditions;
+  /** Why the engine computes no Tm or ΔG for this record (RNA or a modification); absent when it does. */
+  thermoUnavailableReason?: string;
 }
 
 /** What a primer in the Primer Database is made of: DNA keeps T, RNA keeps U (US-01M7DQVT). */

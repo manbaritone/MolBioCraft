@@ -9,12 +9,14 @@
 
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { invokeRustBioSync } from '../lib/rustBioEngine';
+import { sequenceRevision } from './restrictionDisplay';
 import type {
   AnnealedOligoResult,
   BlastHitRecord,
   CloningMethodType,
   CommonFeatureTemplate,
   CrisprGuideRecord,
+  DatabasePrimer,
   DigestFragment,
   DnaLigationCalculations,
   DotplotHit,
@@ -22,6 +24,7 @@ import type {
   MutagenesisSimulationResult,
   ORFRecord,
   PairwiseAlignmentResult,
+  PrimerMatchConditions,
   PrimerRecord,
   ProteinAnalysisReport,
   RestrictionCutSite,
@@ -709,3 +712,279 @@ export function invertSequenceCoordinates(
   return { features, primers };
 }
 
+
+// ───────────── Where stored primers bind (US-01M7DQMY) ─────────────
+//
+// The search is the engine's Test with Saved Primers (`test_saved_primers`, PRD F08): it binds on a
+// primer's annealing portion, needs the 3'-terminal bases to match exactly, counts mismatches in the
+// rest, and compares bases byte for byte, so an IUPAC ambiguity code never matches. The functions
+// below choose what the engine is given and say what it cannot answer; every hit comes from it.
+
+/** The 3'-terminal bases the engine requires to match exactly. */
+export const PRIMER_BINDING_CLAMP_BASES = 5;
+/** The match rule of `test_saved_primers`, in words. */
+export const PRIMER_BINDING_METHOD =
+  "Test with Saved Primers engine: the annealing portion is compared base by base on both strands; the 3'-terminal 5 bases must match exactly and mismatches are counted in the rest";
+/** The conditions `test_saved_primers` computes its effective Tm under. */
+export const PRIMER_BINDING_TM_CONDITIONS =
+  'DNA nearest-neighbour Tm at 50 mM Na+, 1.5 mM Mg2+ and 250 nM oligo, less 2.4 °C per mismatch';
+
+/** The match rule and settings of one binding site. */
+export function primerMatchConditions(maxMismatches: number, mismatches: number, tmAvailable: boolean): PrimerMatchConditions {
+  return {
+    method: PRIMER_BINDING_METHOD,
+    maxMismatches,
+    clamp3PrimeBases: PRIMER_BINDING_CLAMP_BASES,
+    mismatches,
+    ...(tmAvailable ? { tmConditions: PRIMER_BINDING_TM_CONDITIONS } : {}),
+  };
+}
+
+/** The settings line a surface shows with its binding sites. */
+export function primerMatchSettingsText(maxMismatches: number): string {
+  return `Match: up to ${maxMismatches} mismatch${maxMismatches === 1 ? '' : 'es'} outside an exact 3' clamp of ${PRIMER_BINDING_CLAMP_BASES} bases. ${PRIMER_BINDING_METHOD}. Effective Tm: ${PRIMER_BINDING_TM_CONDITIONS}.`;
+}
+
+export type PrimerCandidateSource = 'database' | 'document';
+
+/** A primer a search screens, from the Primer Database or a document, keyed by its source and id. */
+export interface PrimerCandidate {
+  /** `database:<record id>` or `document:<primer id>`: two candidates of one name never share it. */
+  key: string;
+  source: PrimerCandidateSource;
+  sourceLabel: 'Primer Database' | 'Document';
+  name: string;
+  /** What the engine screens: the document primer as it is, or the record as a primer. */
+  record: PrimerRecord;
+  /** The database record, for a database candidate. */
+  database?: DatabasePrimer;
+  /** Why the engine computes no Tm or ΔG for it (an RNA record or one with a modification), or null. */
+  thermoUnavailableReason: string | null;
+  /** Why it is not searched at all (a degenerate or too-short annealing portion), or null. */
+  notSearchedReason: string | null;
+}
+
+const ACGTU = /^[ACGTU]*$/;
+
+/** Why the engine has no Tm or ΔG for a database record, or null where it computes them. */
+export function thermoUnavailableReasonFor(rec: Pick<DatabasePrimer, 'molecule' | 'modifications'>): string | null {
+  const reasons: string[] = [];
+  if (rec.molecule === 'RNA') {
+    reasons.push('it is RNA, and the engine computes DNA nearest-neighbour values only');
+  }
+  if (rec.modifications.trim() !== '') {
+    reasons.push(`it carries the modification "${rec.modifications.trim()}", which the engine has no parameters for`);
+  }
+  return reasons.length ? `Tm and ΔG unavailable: ${reasons.join('; ')}.` : null;
+}
+
+/** Why the engine cannot search a database record's annealing portion, or null where it can. */
+export function notSearchedReasonFor(anneal: string): string | null {
+  const codes = [...new Set(anneal.replace(/[ACGTU]/g, ''))];
+  if (!ACGTU.test(anneal)) {
+    return `Not searched: the annealing portion holds the IUPAC ambiguity code${codes.length === 1 ? '' : 's'} ${codes.join(', ')}, and the engine matches A, C, G and T exactly, so it cannot say where this primer binds.`;
+  }
+  if (anneal.length < 12) {
+    return `Not searched: the annealing portion is ${anneal.length} bases, and the engine searches primers of 12 bases or more.`;
+  }
+  return null;
+}
+
+/** A Primer Database record as a candidate: the engine binds it on its annealing portion. */
+export function databasePrimerCandidate(rec: DatabasePrimer): PrimerCandidate {
+  const anneal = rec.sequence.slice(rec.tail5Prime.length);
+  return {
+    key: `database:${rec.id}`,
+    source: 'database',
+    sourceLabel: 'Primer Database',
+    name: rec.name,
+    record: {
+      id: rec.id,
+      name: rec.name,
+      sequence: rec.sequence,
+      annealSequence: anneal,
+      tail5Prime: rec.tail5Prime,
+      bindStart: 0,
+      bindEnd: 0,
+      strand: 1,
+      length: rec.sequence.length,
+      gcPercent: 0,
+      tmAnnealC: 0,
+      tmFullC: 0,
+      deltaG37: 0,
+      hairpinDeltaG: 0,
+      selfDimerDeltaG: 0,
+      gcClamp3Prime: false,
+    },
+    database: rec,
+    thermoUnavailableReason: thermoUnavailableReasonFor(rec),
+    notSearchedReason: notSearchedReasonFor(anneal),
+  };
+}
+
+/** A document's primer as a candidate, screened exactly as before. */
+export function documentPrimerCandidate(p: PrimerRecord): PrimerCandidate {
+  return {
+    key: `document:${p.id}`,
+    source: 'document',
+    sourceLabel: 'Document',
+    name: p.name,
+    record: p,
+    thermoUnavailableReason: null,
+    notSearchedReason: null,
+  };
+}
+
+/** One place a candidate binds on one target. */
+export interface PrimerBindingOccurrence {
+  /** The candidate's key, the target's id and the site: unique within one search. */
+  key: string;
+  candidate: PrimerCandidate;
+  targetId: string;
+  targetName: string;
+  bindStart: number;
+  bindEnd: number;
+  strand: 1 | -1;
+  mismatches: number;
+  /** The engine's effective Tm, or null where it is unavailable (`tmUnavailableReason`). */
+  effectiveTmC: number | null;
+  tmUnavailableReason: string | null;
+  conditions: PrimerMatchConditions;
+}
+
+export interface PrimerBindingSearch {
+  occurrences: PrimerBindingOccurrence[];
+  /** The candidates the engine was not given, each with its reason. */
+  notSearched: Array<{ candidate: PrimerCandidate; reason: string }>;
+}
+
+/**
+ * Screen `candidates` on each target through the engine's `test_saved_primers`. A candidate with a
+ * `notSearchedReason` is listed with it and never reported as binding nowhere. Each engine hit is
+ * mapped back to its candidate by position, so two candidates of one name stay apart.
+ */
+export function findPrimerBindings(
+  targets: SequenceDocument[],
+  candidates: PrimerCandidate[],
+  maxMismatches: number
+): PrimerBindingSearch {
+  const searched = candidates.filter((c) => c.notSearchedReason === null);
+  const notSearched = candidates
+    .filter((c) => c.notSearchedReason !== null)
+    .map((candidate) => ({ candidate, reason: candidate.notSearchedReason as string }));
+  const occurrences: PrimerBindingOccurrence[] = [];
+  if (!searched.length) return { occurrences, notSearched };
+  const engineRecords = searched.map((c, i) => ({ ...c.record, id: `cand-${i}` }));
+  for (const target of targets) {
+    const hits = testSavedPrimersOnSequence(target.sequence, engineRecords, maxMismatches);
+    for (const h of hits) {
+      const candidate = searched[Number(h.primer.id.slice('cand-'.length))];
+      const unavailable = candidate.thermoUnavailableReason ?? h.primer.tmNoAnswerReason ?? null;
+      occurrences.push({
+        key: `${candidate.key}@${target.id}:${h.bindStart}..${h.bindEnd}${h.strand === 1 ? '+' : '-'}`,
+        candidate,
+        targetId: target.id,
+        targetName: target.name,
+        bindStart: h.bindStart,
+        bindEnd: h.bindEnd,
+        strand: h.strand,
+        mismatches: h.mismatches,
+        effectiveTmC: unavailable ? null : h.effectiveTmC,
+        tmUnavailableReason: unavailable,
+        conditions: primerMatchConditions(maxMismatches, h.mismatches, !unavailable),
+      });
+    }
+  }
+  return { occurrences, notSearched };
+}
+
+/**
+ * The document primer a database binding site becomes: the record's oligo placed where it binds,
+ * with the record's id and a copy of the record, the target's sequence revision and how it was
+ * matched (US-01M7DQMY AC4). Tm and ΔG come from the engine. For an RNA or modified record the
+ * engine is not asked: the numbers are 0 placeholders, and `tmNoAnswerReason` and
+ * `source.thermoUnavailableReason` say why there is no value.
+ */
+export function primerFromDatabaseOccurrence(occ: PrimerBindingOccurrence, target: SequenceDocument, id: string): PrimerRecord {
+  const rec = occ.candidate.database;
+  if (!rec) throw new Error(`${occ.candidate.name} is not a Primer Database record.`);
+  const anneal = occ.candidate.record.annealSequence;
+  const unavailable = occ.candidate.thermoUnavailableReason;
+  const annealM = unavailable ? null : calculatePrimerMetrics(anneal, 50, 1.5, 250);
+  const fullM = unavailable ? null : calculatePrimerMetrics(rec.sequence, 50, 1.5, 250);
+  const gc = rec.sequence.length ? (100 * (rec.sequence.match(/[GCS]/g)?.length ?? 0)) / rec.sequence.length : 0;
+  const tmReason = unavailable ?? annealM?.tmNoAnswerReason;
+  return {
+    id,
+    name: rec.name,
+    sequence: rec.sequence,
+    annealSequence: anneal,
+    tail5Prime: rec.tail5Prime,
+    bindStart: occ.bindStart,
+    bindEnd: occ.bindEnd,
+    strand: occ.strand,
+    length: rec.sequence.length,
+    gcPercent: fullM?.gcPercent ?? Math.round(gc * 10) / 10,
+    tmAnnealC: annealM?.tmC ?? 0,
+    tmFullC: fullM?.tmC ?? 0,
+    deltaG37: fullM?.deltaG37 ?? 0,
+    hairpinDeltaG: fullM?.hairpinDeltaG ?? 0,
+    selfDimerDeltaG: fullM?.selfDimerDeltaG ?? 0,
+    gcClamp3Prime: annealM?.gcClamp3Prime ?? /[GC]$/.test(anneal),
+    notes: `Added from the Primer Database: ${occ.mismatches} mismatch${occ.mismatches === 1 ? '' : 'es'}, effective Tm ${
+      occ.effectiveTmC === null ? `unavailable (${occ.tmUnavailableReason})` : `${occ.effectiveTmC.toFixed(1)} °C`
+    }`,
+    ...(tmReason ? { tmNoAnswerReason: tmReason } : {}),
+    source: {
+      kind: 'primerDatabase',
+      recordId: rec.id,
+      name: rec.name,
+      sequence: rec.sequence,
+      tail5Prime: rec.tail5Prime,
+      molecule: rec.molecule,
+      modifications: rec.modifications,
+      sequenceRevision: sequenceRevision(target.sequence, target.topology === 'circular' ? 'circular' : 'linear'),
+      match: { ...occ.conditions },
+      ...(unavailable ? { thermoUnavailableReason: unavailable } : {}),
+    },
+  };
+}
+
+/**
+ * Add the chosen database binding sites to their targets as primers. Only `primers`, the history
+ * and `updatedAt` change: each target's bases, features and every other field are kept as they are.
+ */
+export function addPrimerBindings(
+  targets: SequenceDocument[],
+  chosen: PrimerBindingOccurrence[],
+  stamp: string,
+  newId: (n: number) => string
+): SequenceDocument[] {
+  const updated: SequenceDocument[] = [];
+  let n = 0;
+  for (const target of targets) {
+    const mine = chosen.filter((o) => o.targetId === target.id && o.candidate.database);
+    if (!mine.length) continue;
+    const added = mine.map((o) => primerFromDatabaseOccurrence(o, target, newId(n++)));
+    updated.push({
+      ...target,
+      primers: [...target.primers, ...added],
+      updatedAt: stamp,
+      history: [
+        ...target.history,
+        {
+          id: newId(n++),
+          timestamp: stamp,
+          operation: 'Add Primer Binding Sites',
+          description: `${added.length} primer binding site${added.length === 1 ? '' : 's'} from the Primer Database (${added
+            .map((p) => p.name)
+            .join(', ')})`,
+          parentIds: [target.id],
+          lengthBp: target.sequence.length,
+          topology: target.topology,
+        },
+      ],
+    });
+  }
+  return updated;
+}

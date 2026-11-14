@@ -465,6 +465,11 @@ export interface PrimerDatabaseWindowProps {
   duplicatePolicy?: PrimerDuplicatePolicy | null;
   /** Saves a file through the platform save path; defaults to saveWorkbenchFile. */
   saveFile?: (filename: string, content: string) => Promise<PlatformSaveResult>;
+  /**
+   * Opens Find Where Stored Primers Bind with these record ids chosen (US-01M7DQMY AC1): the active
+   * primers the window lists, narrowed by the search. Absent where there is no binding search.
+   */
+  onFindBindings?: (recordIds: string[]) => void;
 }
 
 export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
@@ -475,6 +480,7 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
   database,
   duplicatePolicy = primerDuplicatePolicy,
   saveFile = savePlatformFile,
+  onFindBindings,
 }) => {
   const db = useMemo(() => database ?? openPrimerDatabase(), [database]);
   const [version, setVersion] = useState(0);
@@ -783,6 +789,17 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
           >
             {view === 'trash' ? 'Show Primers' : `Trash (${trashCount})`}
           </button>
+          {onFindBindings && (
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={unreadable || view !== 'active' || listed.length === 0}
+              title={`Find where the ${listed.length} listed primer${listed.length === 1 ? '' : 's'} bind; search to narrow the list`}
+              onClick={() => onFindBindings(listed.map((r) => r.id))}
+            >
+              Find Where These Bind…
+            </button>
+          )}
         </div>
 
         {restore && (

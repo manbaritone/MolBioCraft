@@ -505,6 +505,7 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
                     gc_clamp3_prime: true,
                     notes: Some("Universal T7 forward sequencing primer".to_string()),
                     tm_no_answer_reason: None,
+                    source: None,
                 },
                 PrimerRecord {
                     id: "p-t7-rev".to_string(),
@@ -525,6 +526,7 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
                     gc_clamp3_prime: true,
                     notes: Some("Universal T7 reverse sequencing primer".to_string()),
                     tm_no_answer_reason: None,
+                    source: None,
                 }
             ],
             history: vec![
@@ -691,6 +693,7 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
                     gc_clamp3_prime: false,
                     notes: None,
                     tm_no_answer_reason: None,
+                    source: None,
                 },
                 PrimerRecord {
                     id: "p-m13-rev".to_string(),
@@ -711,6 +714,7 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
                     gc_clamp3_prime: true,
                     notes: None,
                     tm_no_answer_reason: None,
+                    source: None,
                 }
             ],
             history: vec![
@@ -1062,6 +1066,7 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
                     gc_clamp3_prime: true,
                     notes: Some("Universal vector verification primer".to_string()),
                     tm_no_answer_reason: None,
+                    source: None,
                 }
             ],
             history: vec![
@@ -1206,6 +1211,7 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
                     gc_clamp3_prime: true,
                     notes: Some("Universal vector verification primer".to_string()),
                     tm_no_answer_reason: None,
+                    source: None,
                 }
             ],
             history: vec![
@@ -1376,6 +1382,7 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
                     gc_clamp3_prime: true,
                     notes: Some("Universal vector verification primer".to_string()),
                     tm_no_answer_reason: None,
+                    source: None,
                 }
             ],
             history: vec![
@@ -1611,6 +1618,7 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
                     gc_clamp3_prime: true,
                     notes: Some("Universal vector verification primer".to_string()),
                     tm_no_answer_reason: None,
+                    source: None,
                 }
             ],
             history: vec![
@@ -1807,6 +1815,7 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
                     gc_clamp3_prime: true,
                     notes: Some("Universal vector verification primer".to_string()),
                     tm_no_answer_reason: None,
+                    source: None,
                 }
             ],
             history: vec![

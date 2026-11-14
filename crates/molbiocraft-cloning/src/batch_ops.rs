@@ -832,6 +832,7 @@ pub fn convert_selection_to_oligo_primer(
         )),
         // An oligo holding N has no Tm; the record says why beside its number (BG-01M6SHQ0).
         tm_no_answer_reason: metrics.tm_no_answer_reason,
+        source: None,
     };
 
     let mut updated_doc = doc.clone();
