@@ -10,6 +10,13 @@
  * (the probe), scanned with the definition as the one enzyme, and the engine's site at the planted
  * position is drawn by the Enzymes view's own {@link CleavageDrawing}. A site the engine does not
  * report is not drawn, never stood in for by a record built here.
+ *
+ * The window is also the caller of the store's backup and failure paths (US-01M7GJ5R): Export saves
+ * the versioned JSON backup through the platform save path and says Exported only for a file the
+ * platform says it wrote; Import adds the new ids and holds each differing id, and each built-in
+ * name the store reports as unconfirmed, for a per-id choice; a refused file is named with its
+ * reason; an unreadable store is named, never listed as empty, and discarded only on an explicit
+ * choice; a write the storage refuses is reported as nothing saved.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -24,10 +31,13 @@ import {
   validateFields,
   type CustomEnzymeInput,
   type EnzymeDatabase,
+  type EnzymeDbError,
   type EnzymeField,
   type EnzymeFieldError,
+  type EnzymeImportSummary,
 } from '../core/enzymeDatabase';
 import { CleavageDrawing } from './CleavagePreview';
+import { savePlatformFile, type PlatformSaveResult } from './PrimerDatabaseWindow';
 
 // ─── The probe ───
 
@@ -252,6 +262,40 @@ const FIELD_LABELS: ReadonlyArray<readonly [keyof FormState & EnzymeField, strin
   ['notes', 'Notes'],
 ];
 
+/** How the window names a store it cannot read, by the store's own error kind. */
+const UNREADABLE_NAME: Readonly<Record<string, string>> = {
+  malformed: 'unreadable data (malformed)',
+  futureSchema: 'a newer format than this version reads (futureSchema)',
+  unavailable: 'storage unavailable (unavailable)',
+};
+
+/** What a save reports: a success only for a file the platform says it wrote. */
+function describeSave(result: PlatformSaveResult, what: string, filename: string, saved: (where: string) => string): { text: string; kind: 'info' | 'error' } {
+  switch (result.kind) {
+    case 'saved':
+      return { text: saved(result.where), kind: 'info' };
+    case 'cancelled':
+      return { text: `${what} cancelled: no file was saved.`, kind: 'info' };
+    case 'unconfirmed':
+      return result.how === 'downloaded'
+        ? { text: `${what}: handed to your browser to download as ${filename}; the browser does not say whether it was kept.`, kind: 'info' }
+        : { text: `${what}: sent to the save dialog as ${filename}; this build is not told whether it was saved.`, kind: 'info' };
+    case 'failed':
+      return { text: `${what} failed: ${result.message}. No file was saved.`, kind: 'error' };
+    default:
+      return { text: `${what} is not possible here: this window has no save path.`, kind: 'error' };
+  }
+}
+
+/** A backup file whose import left choices open: the ids that differ and the unconfirmed built-in names. */
+interface PendingImport {
+  file: string;
+  text: string;
+  summary: EnzymeImportSummary;
+  replace: string[];
+  confirm: string[];
+}
+
 export interface EnzymeDatabaseWindowProps {
   onClose: () => void;
   /** The element focus returns to when the window closes (its opener). */
@@ -268,6 +312,8 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
   const [submitErrors, setSubmitErrors] = useState<EnzymeFieldError[]>([]);
   const [pendingClash, setPendingClash] = useState<{ builtIn: string; message: string } | null>(null);
   const [notice, setNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
+  const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [circular, setCircular] = useState(false);
   // The user's flank lengths; null follows the default (the reach plus the context bases).
   const [flankChoice, setFlankChoice] = useState<{ left: number | null; right: number | null }>({ left: null, right: null });
@@ -437,6 +483,58 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
 
   const cutText = (e: { cutFwd: number; cutRev: number }) => `${e.cutFwd}/${e.cutRev}`;
 
+  const exportBackup = async () => {
+    const backup = db.exportBackup();
+    if (!backup.ok) return setNotice({ kind: 'error', text: backup.error.message });
+    const filename = `enzyme-database-${new Date().toISOString().slice(0, 10)}.json`;
+    const said = describeSave(await savePlatformFile(filename, backup.value), 'Export', filename, (where) => `Exported the custom enzyme backup to ${where}.`);
+    setNotice({ kind: said.kind, text: said.text });
+  };
+
+  /** Imports a backup's text with the user's choices so far; a refusal names the file and changes nothing. */
+  const importBackup = (file: string, text: string, replace: string[], confirm: string[]) => {
+    const r = db.importBackup(text, { replace, confirmClashes: confirm });
+    setVersion((n) => n + 1);
+    if (!r.ok) {
+      setPendingImport(null);
+      const failed = (e: EnzymeDbError) => (e.kind === 'notSaved' ? e.message : `${e.message} Nothing was changed.`);
+      return setNotice({ kind: 'error', text: `${file} was not imported. ${failed(r.error)}` });
+    }
+    const s = r.value;
+    setNotice({
+      kind: 'info',
+      text: `Imported ${file}: ${s.added.length} added, ${s.replaced.length} replaced, ${s.unchanged.length} unchanged, ${s.conflicts.length} kept as stored, ${s.clashes.length} held back as a built-in name.`,
+    });
+    setPendingImport(s.conflicts.length > 0 || s.clashes.length > 0 ? { file, text, summary: s, replace: [], confirm: [] } : null);
+  };
+
+  const onBackupFile = async (file: File | undefined) => {
+    if (!file) return;
+    let text: string;
+    try {
+      text = await file.text();
+    } catch (err) {
+      setPendingImport(null);
+      return setNotice({ kind: 'error', text: `${file.name} was not imported: it could not be read (${err instanceof Error ? err.message : String(err)}). Nothing was changed.` });
+    }
+    importBackup(file.name, text, [], []);
+  };
+
+  const discardUnreadable = (storedValue: string) => {
+    setConfirmDiscard(false);
+    const r = db.discardUnreadable(storedValue);
+    setVersion((n) => n + 1);
+    setNotice(r.ok ? { kind: 'info', text: 'Discarded the unreadable custom enzyme store; it is now empty.' } : { kind: 'error', text: r.error.message });
+  };
+
+  const saveUnreadable = async (storedValue: string) => {
+    const filename = 'enzyme-database-unreadable.json';
+    const said = describeSave(await savePlatformFile(filename, storedValue), 'Copy of the unreadable data', filename, (where) => `Copy of the unreadable data saved to ${where}.`);
+    setNotice({ kind: said.kind, text: said.text });
+  };
+
+  const toggle = (list: string[], id: string, on: boolean) => (on ? [...list.filter((x) => x !== id), id] : list.filter((x) => x !== id));
+
   return (
     <div className="mbc-dialog-overlay" style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(15, 23, 42, 0.35)' }}>
       <div
@@ -466,9 +564,33 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
           </p>
         )}
         {!read.ok && (
-          <p role="alert" className="warn-tag">
-            {read.error.message}
-          </p>
+          <div role="alert" className="primer-db-unreadable">
+            <p>
+              <strong>The custom enzymes cannot be shown: {UNREADABLE_NAME[read.error.kind] ?? read.error.kind}.</strong> {read.error.message}
+            </p>
+            <p>Nothing has been changed. Your custom enzymes are not shown as empty, and nothing is written until you choose.</p>
+            {read.error.storedValue !== undefined && (
+              <div className="cloning-action-row">
+                <button type="button" className="btn-secondary" onClick={() => void saveUnreadable(read.error.storedValue ?? '')}>
+                  Save Unreadable Data…
+                </button>
+                {confirmDiscard ? (
+                  <>
+                    <button type="button" className="btn-danger" onClick={() => discardUnreadable(read.error.storedValue ?? '')}>
+                      Discard and Start Empty
+                    </button>
+                    <button type="button" className="btn-secondary" onClick={() => setConfirmDiscard(false)}>
+                      Keep It
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="btn-secondary" onClick={() => setConfirmDiscard(true)}>
+                    Discard Unreadable Store…
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         <div className="cloning-action-row" role="toolbar" aria-label="Restriction Enzymes actions">
@@ -479,7 +601,85 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
           <button type="button" className="btn-primary" aria-label="Add custom enzyme" disabled={!read.ok} onClick={(e) => openForm({ ...EMPTY_FORM }, e.currentTarget)}>
             Add
           </button>
+          <button type="button" className="btn-secondary" disabled={!read.ok} onClick={() => void exportBackup()}>
+            Export Backup…
+          </button>
+          <label className="form-field">
+            <span>Import a backup (.json)</span>
+            <input
+              type="file"
+              accept=".json,application/json"
+              aria-label="Import backup file"
+              disabled={!read.ok}
+              onChange={(e) => {
+                void onBackupFile(e.target.files?.[0]);
+                e.target.value = '';
+              }}
+            />
+          </label>
         </div>
+
+        {pendingImport && (
+          <section aria-label="Import choices" className="primer-db-conflicts">
+            {pendingImport.summary.conflicts.length > 0 && (
+              <div role="group" aria-label="Backup conflicts">
+                <p>
+                  {`${plural(pendingImport.summary.conflicts.length, 'custom enzyme')} in ${pendingImport.file} differ from the stored definition with the same id and were kept as stored. Choose any to replace with the backup's version.`}
+                </p>
+                <ul>
+                  {pendingImport.summary.conflicts.map((c) => (
+                    <li key={c.id}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          aria-label={`Replace stored ${c.stored.name} (${c.id}) with the backup's ${c.incoming.name}`}
+                          checked={pendingImport.replace.includes(c.id)}
+                          onChange={(e) => setPendingImport({ ...pendingImport, replace: toggle(pendingImport.replace, c.id, e.target.checked) })}
+                        />{' '}
+                        {`Replace stored ${c.stored.name} (${c.id}, ${c.stored.recognitionSeq} ${cutText(c.stored)}) with the backup's ${c.incoming.name} (${c.incoming.recognitionSeq} ${cutText(c.incoming)})`}
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {pendingImport.summary.clashes.length > 0 && (
+              <div role="group" aria-label="Built-in name clashes">
+                <p>
+                  {`${plural(pendingImport.summary.clashes.length, 'custom enzyme')} in ${pendingImport.file} ${pendingImport.summary.clashes.length === 1 ? 'was' : 'were'} held back: the backup records no confirmation of a built-in enzyme's name. Choose any to import as a separate custom enzyme beside the built-in.`}
+                </p>
+                <ul>
+                  {pendingImport.summary.clashes.map((k) => (
+                    <li key={k.id}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          aria-label={`Import ${k.name} (${k.id}) beside the built-in ${k.builtIn}`}
+                          checked={pendingImport.confirm.includes(k.id)}
+                          onChange={(e) => setPendingImport({ ...pendingImport, confirm: toggle(pendingImport.confirm, k.id, e.target.checked) })}
+                        />{' '}
+                        {`${k.name} (${k.id}) is the name of the built-in enzyme ${k.builtIn}.`}
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="cloning-action-row">
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={pendingImport.replace.length === 0 && pendingImport.confirm.length === 0}
+                onClick={() => importBackup(pendingImport.file, pendingImport.text, pendingImport.replace, pendingImport.confirm)}
+              >
+                Import Chosen
+              </button>
+              <button type="button" className="btn-secondary" onClick={() => setPendingImport(null)}>
+                Keep All as Stored
+              </button>
+            </div>
+          </section>
+        )}
 
         {form && input && (
           <form
