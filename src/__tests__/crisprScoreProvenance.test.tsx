@@ -22,8 +22,9 @@
  * - genome-wide specificity shown as a number (0 or 100) instead of "Not evaluated" with the reason;
  * - a menu description naming SaCas9, which no preset scans for, or an efficiency model;
  * - a rank described as three spacer features over 0-100 when the scorer reads six and a PAM and
- *   can only report the range it clamps to, or a rank said to order a list the seed count also
- *   orders;
+ *   reports only inside CRISPR_HEURISTIC_RANK_RANGE — whose floor the scorer clamps and whose
+ *   ceiling is its arithmetic, every raise at once, held by a test rather than by a clamp
+ *   (BG-01M7E69W AC1) — or a rank said to order a list the seed count also orders;
  * - a rank printed "/ 100" under a header stating a range it can never reach (BG-01M7E61C AC1).
  */
 

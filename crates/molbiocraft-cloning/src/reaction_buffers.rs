@@ -318,7 +318,6 @@ pub fn analyze_gibson_overlap_junction(overlap_seq: &str) -> GibsonJunctionTherm
     }
 }
 
-/// Executes built-in bioinformatics workflow macros natively in Rust via `aho-corasick`.
 /// What the CRISPR plugin's heuristic rank is (US-01M7DVVR): a rule of thumb over the spacer and
 /// its PAM, not a trained model or a measured activity - and the range it can report, read from
 /// the scorer that reports it ([`crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE`]) instead of
@@ -353,6 +352,7 @@ pub fn crispr_seed_count_description(scanned_length_bp: usize, sequence_length_b
     )
 }
 
+/// Executes built-in bioinformatics workflow macros natively in Rust via `aho-corasick`.
 pub fn execute_builtin_rust_workflow_macro(
     macro_id: &str,
     doc: &SequenceDocument,

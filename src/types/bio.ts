@@ -303,7 +303,10 @@ export interface CrisprGuideRecord {
   cutPosition: number;     // 1-based DSB cleavage coordinate
   strand: 1 | -1;
   gcPercent: number;
-  onTargetScore: number;   // rule-of-thumb activity heuristic (0-100), not a Doench model
+  // Heuristic rank: a rule of thumb over six features of the spacer and its PAM, inside the
+  // engine's own CRISPR_HEURISTIC_RANK_RANGE (cloning_crispr.rs) — not a Doench model and not a
+  // measured or predicted cutting efficiency.
+  onTargetScore: number;
   specificityScore: number;// 100 / (1 + exact seed matches in this sequence)
   offTargetCount: number;
 }
