@@ -309,14 +309,19 @@ const isIdent = (c) => c !== undefined && /[A-Za-z0-9_]/.test(c);
  * string literal to `"` (newlines kept, so offsets and line numbers still hold), with its text
  * kept aside by the offset it starts at. A brace or a macro name inside a comment or a literal is
  * therefore never read as code. Lifetimes and labels (`'a`) are code; `'x'`, `'\n'`, `'\u{..}'`,
- * `b'x'` are literals; `"..."`, `b"..."` and raw `r#"..."#` strings are literals.
+ * `b'x'` are literals; `"..."`, `b"..."` and raw `r#"..."#` strings are literals. A block comment
+ * or a string that never closes - which rustc refuses - is refused here too, at the line it opens,
+ * rather than read as swallowing the rest of the file.
  *
  * @param {string} text the source
+ * @param {string} file its repo-relative path, for a refusal
  * @returns {{ code: string, literals: Map<number, { text: string, end: number, raw: boolean }> }}
  *   each string literal by the offset of its first character: its text between the quotes, the
  *   offset just past it, and whether it is raw (so its backslashes are not escapes)
  */
-function rustCode(text) {
+function rustCode(text, file) {
+  const unterminated = (what, at) =>
+    new Error(`${file}:${lineOf(text, at)}: ${what} opened here never closes, so the engine inputs after it cannot be read`);
   const out = text.split('');
   const literals = new Map();
   const blank = (from, to, fill = ' ') => {
@@ -338,19 +343,21 @@ function rustCode(text) {
         else if (text[j] === '*' && text[j + 1] === '/') (depth--, (j += 2));
         else j++;
       }
+      if (depth > 0) throw unterminated('the block comment', i);
       blank(i, j);
       i = j;
     } else if ((c === 'r' || c === 'b' || c === 'c') && !isIdent(text[i - 1]) && /^(?:[bc]?r)(#*)"/.test(text.slice(i, i + 260))) {
       const [opener, hashes] = /^(?:[bc]?r)(#*)"/.exec(text.slice(i, i + 260));
       const close = `"${hashes}`;
       const end = text.indexOf(close, i + opener.length);
-      if (end < 0) throw new Error(`an unterminated raw string literal at offset ${i}`);
+      if (end < 0) throw unterminated('the raw string literal', i);
       literals.set(i, { text: text.slice(i + opener.length, end), end: end + close.length, raw: true });
       blank(i, end + close.length, '"');
       i = end + close.length;
     } else if (c === '"') {
       let j = i + 1;
       while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      if (j >= text.length) throw unterminated('the string literal', i);
       literals.set(i, { text: text.slice(i + 1, j), end: j + 1, raw: false });
       blank(i, j + 1, '"');
       i = j + 1;
@@ -398,37 +405,41 @@ function testModuleSpans(code, file) {
 
 /**
  * The files one Rust source pulls into its crate by `include_str!`, `include_bytes!` or `include!`,
- * resolved as rustc resolves them (relative to the including file's directory), outside any
- * `#[cfg(test)]` module. A site rustc could follow but this cannot - an argument that is not one
- * string literal, a target missing from the tree or outside the checkout - is refused by name
- * rather than left out of the record.
+ * written with any of the three delimiters rustc accepts for a macro call - `(...)`, `[...]` or
+ * `{...}` (BG-01M7FQN5) - resolved as rustc resolves them (relative to the including file's
+ * directory), outside any `#[cfg(test)]` module. A site rustc could follow but this cannot - an
+ * argument that is not one string literal closed by its own delimiter, a target missing from the
+ * tree or outside the checkout - is refused by file and line rather than left out of the record.
  *
- * @returns {{ path: string, rust: boolean }[]} absolute paths; `rust` for an `include!` target
+ * @returns {{ path: string, rust: boolean, bytes: boolean }[]} absolute paths; `rust` for an
+ *   `include!` target, `bytes` for an `include_bytes!` one
  */
 function includedFiles(rootDir, abs) {
   const file = toRel(rootDir, abs);
   const text = fs.readFileSync(abs, 'utf8');
-  const { code, literals } = rustCode(text);
+  const { code, literals } = rustCode(text, file);
   const spans = testModuleSpans(code, file);
   const found = [];
-  const site = /(?<![A-Za-z0-9_])(include_str|include_bytes|include)\s*!\s*\(\s*/g;
+  const site = /(?<![A-Za-z0-9_])(include_str|include_bytes|include)\s*!\s*([([{])\s*/g;
+  const closer = { '(': ')', '[': ']', '{': '}' };
   for (let m; (m = site.exec(code)) !== null; ) {
     if (spans.some(([from, to]) => m.index >= from && m.index < to)) continue;
     const at = `${file}:${lineOf(text, m.index)}`;
     const literal = literals.get(m.index + m[0].length);
-    const plain = literal !== undefined && /^\s*,?\s*\)/.test(code.slice(literal.end)) && (literal.raw || !/\\(?![\\"])/.test(literal.text));
+    const closed = literal !== undefined && code.slice(literal.end).replace(/^\s*,?\s*/, '').startsWith(closer[m[2]]);
+    const plain = closed && (literal.raw || !/\\(?![\\"])/.test(literal.text));
     if (!plain) {
       throw new Error(`${at}: ${m[1]}! takes something other than one plain string literal, so the engine input it reads cannot be recorded`);
     }
     const target = path.resolve(path.dirname(abs), literal.raw ? literal.text : literal.text.replace(/\\([\\"])/g, '$1'));
     const rel = toRel(rootDir, target);
     if (rel.startsWith('../') || path.isAbsolute(rel)) {
-      throw new Error(`${at}: ${m[1]}!("${literal.text}") reads ${target}, outside this checkout, so it cannot be recorded`);
+      throw new Error(`${at}: ${m[1]}!${m[2]}"${literal.text}"${closer[m[2]]} reads ${target}, outside this checkout, so it cannot be recorded`);
     }
     if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
-      throw new Error(`${at}: ${m[1]}!("${literal.text}") reads ${rel}, which is not a file in this tree`);
+      throw new Error(`${at}: ${m[1]}!${m[2]}"${literal.text}"${closer[m[2]]} reads ${rel}, which is not a file in this tree`);
     }
-    found.push({ path: target, rust: m[1] === 'include' });
+    found.push({ path: target, rust: m[1] === 'include', bytes: m[1] === 'include_bytes' });
   }
   return found;
 }
@@ -446,11 +457,15 @@ function includedFiles(rootDir, abs) {
  *   includes in turn;
  * - every crate's `Cargo.toml` (its dependencies and features), and the WORKSPACE_MANIFESTS.
  * A crate is a directory under `crates/` holding a `Cargo.toml`. A missing workspace manifest is
- * refused by name rather than left out.
+ * refused by name rather than left out. `raw` names the inputs to digest over their exact bytes:
+ * every `include_bytes!` target, which the engine embeds byte for byte (BG-01M7FQN4) - including a
+ * file some other site also reads with `include_str!`, since one digest per path must be the one
+ * that misses no change. Every other input is text (rustc reads `.rs`, `include_str!` and
+ * `include!` targets only as UTF-8, and the manifests are TOML).
  *
  * @param {string} rootDir the checkout root
- * @returns {{ files: string[], crates: string[] }} repo-relative, forward-slash paths and crate
- *   directory names, each sorted
+ * @returns {{ files: string[], crates: string[], raw: string[] }} repo-relative, forward-slash
+ *   paths, crate directory names, and the paths of `files` to digest as bytes, each sorted
  */
 export function engineInputs(rootDir) {
   const found = new Set();
@@ -480,6 +495,7 @@ export function engineInputs(rootDir) {
     found.add(at);
   }
   const lexed = new Set();
+  const raw = new Set();
   while (rust.length > 0) {
     const abs = rust.pop();
     if (lexed.has(abs)) continue;
@@ -488,9 +504,11 @@ export function engineInputs(rootDir) {
     for (const included of includedFiles(rootDir, abs)) {
       found.add(included.path);
       if (included.rust) rust.push(included.path);
+      if (included.bytes) raw.add(included.path);
     }
   }
-  return { files: [...found].map((p) => toRel(rootDir, p)).sort(), crates: crates.sort() };
+  const rel = (paths) => [...paths].map((p) => toRel(rootDir, p)).sort();
+  return { files: rel(found), crates: crates.sort(), raw: rel(raw) };
 }
 
 /**
@@ -503,19 +521,32 @@ export function engineInputs(rootDir) {
 export const sourceDigest = (text) => createHash('sha256').update(text.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
 
 /**
+ * The sha256 of an `include_bytes!` target over its exact bytes - no UTF-8 decode, which would turn
+ * any two invalid sequences into the same character, and no line-ending fold, which would drop a CR
+ * the engine embeds (BG-01M7FQN4).
+ *
+ * @param {Uint8Array} bytes the file
+ * @returns {string} hex
+ */
+export const rawDigest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+/**
  * The sidecar's text for a checkout: a `# ` header, then one `<sha256>  <path>` line per input
- * `engineInputs` discovers, sorted by path. Refuses to write a manifest with no `.rs` source, which
+ * `engineInputs` discovers, sorted by path - `rawDigest` for its `raw` inputs, `sourceDigest` for
+ * the rest. Refuses to write a manifest with no `.rs` source, which
  * would make the digest a constant and the guard vacuous.
  *
  * @param {string} rootDir the checkout root
  * @returns {string}
  */
 export function sourceDigestManifest(rootDir) {
-  const { files } = engineInputs(rootDir);
+  const { files, raw } = engineInputs(rootDir);
   if (!files.some((file) => file.endsWith('.rs'))) {
     throw new Error(`no .rs source found under ${path.join(rootDir, 'crates')}/*/src: refusing to write an empty ${SOURCE_DIGEST_SIDECAR}`);
   }
-  const lines = files.map((rel) => `${sourceDigest(fs.readFileSync(path.join(rootDir, rel), 'utf8'))}  ${rel}`);
+  const digestOf = (rel) =>
+    raw.includes(rel) ? rawDigest(fs.readFileSync(path.join(rootDir, rel))) : sourceDigest(fs.readFileSync(path.join(rootDir, rel), 'utf8'));
+  const lines = files.map((rel) => `${digestOf(rel)}  ${rel}`);
   return [
     `# The inputs public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80, BG-01M7FGTR):`,
     `# every .rs under crates/*/src, each file they include_str!/include_bytes!/include! outside a`,

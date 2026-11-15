@@ -504,7 +504,7 @@ const nodeOsSpec = 'node:os';
 const nodeUrlSpec = 'node:url';
 const { createHash } = (await import(/* @vite-ignore */ nodeCryptoSpec)) as {
   createHash: (algorithm: 'sha256') => {
-    update: (data: string, encoding: 'utf8') => { digest: (encoding: 'hex') => string };
+    update: (data: string | Uint8Array, encoding?: 'utf8') => { digest: (encoding: 'hex') => string };
   };
 };
 const { tmpdir } = (await import(/* @vite-ignore */ nodeOsSpec)) as { tmpdir: () => string };
@@ -513,13 +513,13 @@ const { pathToFileURL, fileURLToPath } = (await import(/* @vite-ignore */ nodeUr
   fileURLToPath: (url: URL) => string;
 };
 const nodeFs = (await import(/* @vite-ignore */ nodeFsSpec)) as {
-  readFileSync: (path: URL, encoding: 'utf8') => string;
+  readFileSync: { (path: URL, encoding: 'utf8'): string; (path: URL): Uint8Array };
   readdirSync: (
     path: URL,
     options: { withFileTypes: true }
   ) => Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
   existsSync: (path: URL) => boolean;
-  writeFileSync: (path: string, data: string, encoding: 'utf8') => void;
+  writeFileSync: (path: string, data: string | Uint8Array, encoding?: 'utf8') => void;
   mkdirSync: (path: string, options: { recursive: true }) => void;
   mkdtempSync: (prefix: string) => string;
   rmSync: (path: string, options: { recursive: true; force: true }) => void;
@@ -556,16 +556,28 @@ const digestOfAll = (digests: Map<string, string>) =>
  * here: two walkers over one tree can disagree about what counts as an input, and the record and
  * its check would then each be right about a different set (BG-01M7FGTR).
  */
-const walkEngineInputs = (root: URL = REPO_ROOT): { files: string[]; crates: string[] } =>
+const walkEngineInputs = (root: URL = REPO_ROOT): { files: string[]; crates: string[]; raw: string[] } =>
   engineInputs(fileURLToPath(root));
 
 /** Each walked source, as the tree holds it now. */
 const readCrateSources = (files: string[]) =>
   new Map(files.map((file) => [file, nodeFs.readFileSync(new URL(file, REPO_ROOT), 'utf8')] as const));
 
-/** The digest of each walked source, as the tree holds it now. */
-const currentSourceDigests = (sources: Map<string, string>) =>
-  new Map([...sources].map(([file, text]) => [file, digestOf(text)] as const));
+/**
+ * The digest of every input a walk found, as the tree holds it now: an `include_bytes!` target (the
+ * walk's `raw`) over its exact bytes, since the engine embeds exactly those and a lossy text read
+ * would let two different binaries agree; every other input as text, CRLF folded (BG-01M7FGTR).
+ */
+const currentInputDigests = (walked: { files: string[]; raw: string[] }, root: URL = REPO_ROOT) =>
+  new Map(
+    walked.files.map((file) => {
+      const at = new URL(file, root);
+      const digest = walked.raw.includes(file)
+        ? createHash('sha256').update(nodeFs.readFileSync(at)).digest('hex')
+        : digestOf(nodeFs.readFileSync(at, 'utf8'));
+      return [file, digest] as const;
+    })
+  );
 
 /**
  * The record beside the engine, parsed. A missing, unreadable, empty, unparseable or entry-less
@@ -627,8 +639,9 @@ const staleMessage = (differ: string[]) =>
 
 describe('the committed engine carries the sources it was built from (BG-01M7FA80)', () => {
   it('BG-01M7FA80 AC1 a changed Rust compute source without a rebuild fails by name', () => {
-    const { files } = walkEngineInputs();
-    const current = currentSourceDigests(readCrateSources(files));
+    const walked = walkEngineInputs();
+    const { files } = walked;
+    const current = currentInputDigests(walked);
     const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
 
     // The engine beside the record was built from the sources this checkout holds.
@@ -718,8 +731,7 @@ describe('the committed engine carries the sources it was built from (BG-01M7FA8
   it('BG-01M7FA80 AC3 a clean tree passes and an unreadable digest refuses by name', () => {
     // Silent on a clean tree, and it reports the digest it matched.
     const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
-    const { files } = walkEngineInputs();
-    const current = currentSourceDigests(readCrateSources(files));
+    const current = currentInputDigests(walkEngineInputs());
     expect(recorded.digest).toMatch(/^[0-9a-f]{64}$/);
     expect(digestOfAll(current)).toBe(recorded.digest);
     console.info(
@@ -764,12 +776,12 @@ describe('the committed engine carries the sources it was built from (BG-01M7FA8
 
 describe('the record covers every input the engine is built from (BG-01M7FGTR)', () => {
   /** A throwaway checkout holding `files`, handed to `use`, then removed whatever `use` did. */
-  const onTree = (prefix: string, files: ReadonlyArray<readonly [string, string]>, use: (tree: string) => void) => {
+  const onTree = (prefix: string, files: ReadonlyArray<readonly [string, string | Uint8Array]>, use: (tree: string) => void) => {
     const tree = nodeFs.mkdtempSync(`${tmpdir()}/${prefix}-`);
     try {
       for (const [file, text] of files) {
         if (file.includes('/')) nodeFs.mkdirSync(`${tree}/${file.slice(0, file.lastIndexOf('/'))}`, { recursive: true });
-        nodeFs.writeFileSync(`${tree}/${file}`, text, 'utf8');
+        nodeFs.writeFileSync(`${tree}/${file}`, text);
       }
       use(tree);
     } finally {
@@ -907,6 +919,22 @@ describe('the record covers every input the engine is built from (BG-01M7FGTR)',
         files: [...WORKSPACE, ['crates/c/src/lib.rs', 'pub fn f() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n']],
         names: /crates\/c\/src\/lib\.rs:2: the #\[cfg\(test\)\] module opened here never closes/,
       },
+      {
+        // rustc refuses each of these; read as code, each would swallow the include after it.
+        as: 'a block comment that never closes',
+        files: [...WORKSPACE, ['crates/c/src/lib.rs', 'pub fn f() {}\n/* open\nconst G: &str = include_str!("g.txt");\n']],
+        names: /crates\/c\/src\/lib\.rs:2: the block comment opened here never closes/,
+      },
+      {
+        as: 'a string that never closes',
+        files: [...WORKSPACE, ['crates/c/src/lib.rs', 'pub fn f() {}\nconst S: &str = "open;\nconst G: &str = include_str!(g.txt);\n']],
+        names: /crates\/c\/src\/lib\.rs:2: the string literal opened here never closes/,
+      },
+      {
+        as: 'a raw string that never closes',
+        files: [...WORKSPACE, ['crates/c/src/lib.rs', 'pub fn f() {}\nconst S: &str = r#"open";\n']],
+        names: /crates\/c\/src\/lib\.rs:2: the raw string literal opened here never closes/,
+      },
     ];
     for (const { as, files, names } of cases) {
       onTree('BG01M7FGTR-refuse', files, (tree) => {
@@ -923,9 +951,10 @@ describe('the record covers every input the engine is built from (BG-01M7FGTR)',
   });
 
   it('BG-01M7FGTR AC2 an edited .pdb or lockfile fails the guard and names that file', () => {
-    const { files } = walkEngineInputs();
+    const walked = walkEngineInputs();
+    const { files } = walked;
     const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
-    const current = currentSourceDigests(readCrateSources(files));
+    const current = currentInputDigests(walked);
     expect(differingSources(recorded.digests, current), 'the tree is not clean to begin with').toEqual([]);
     const pdb = files.find((file) => file.startsWith(SAMPLE_STRUCTURES) && file.endsWith('.pdb'));
     expect(pdb, `no .pdb under ${SAMPLE_STRUCTURES} is walked`).toBeDefined();
@@ -935,6 +964,149 @@ describe('the record covers every input the engine is built from (BG-01M7FGTR)',
       expect(named).toEqual([`${input} (changed since the engine was built)`]);
       expect(staleMessage(named)).toContain(input.slice(input.lastIndexOf('/') + 1));
     }
+  });
+  /** What a walk of `tree` answered, or the message it refused with - either arm, never both. */
+  const walkOrRefusal = (tree: string): { walked?: { files: string[]; raw: string[] }; message: string } => {
+    try {
+      return { walked: walkEngineInputs(pathToFileURL(`${tree}/`)), message: '' };
+    } catch (cause) {
+      return { message: cause instanceof Error ? cause.message : String(cause) };
+    }
+  };
+
+  it('BG-01M7FGTR AC4 an include written with brackets or braces is recorded like the parenthesised form', () => {
+    // rustc compiles a macro call with any of its three delimiters, so each spelling below embeds
+    // its file in the engine; a walk that knows only `(` would leave six of these nine out.
+    const lib = [
+      'pub const P: &str = include_str!("p.txt");',
+      'pub const S: &str = include_str!["s.txt"];',
+      'pub const C: &str = include_str! { "c.txt" };',
+      'pub const BP: &[u8] = include_bytes!("bp.bin");',
+      'pub const BS: &[u8] = include_bytes![ "bs.bin", ];',
+      'pub const BC: &[u8] = include_bytes!{"bc.bin"};',
+      'include!("gen_p.in");',
+      'include!["gen_s.in"];',
+      'include!{"gen_c.in"}',
+      '',
+    ].join('\n');
+    const targets = ['p.txt', 's.txt', 'c.txt', 'bp.bin', 'bs.bin', 'bc.bin', 'd.txt', 'e.txt', 'f.txt'];
+    onTree(
+      'BG01M7FGTR-delimiters',
+      [
+        ...WORKSPACE,
+        ['crates/c/src/lib.rs', lib],
+        ['crates/c/src/gen_p.in', 'pub const D: &str = include_str!("d.txt");\n'],
+        ['crates/c/src/gen_s.in', 'pub const E: &str = include_str!["e.txt"];\n'],
+        ['crates/c/src/gen_c.in', 'pub const F: &str = include_str!{"f.txt"};\n'],
+        ...targets.map((name) => [`crates/c/src/${name}`, `${name}\n`] as const),
+      ],
+      (tree) => {
+        const { walked, message } = walkOrRefusal(tree);
+        expect(message, 'a delimiter rustc accepts must not be refused').toBe('');
+        expect(walked!.files).toEqual(
+          [
+            'Cargo.lock',
+            'Cargo.toml',
+            'crates/c/Cargo.toml',
+            'crates/c/src/lib.rs',
+            'crates/c/src/gen_c.in',
+            'crates/c/src/gen_p.in',
+            'crates/c/src/gen_s.in',
+            ...targets.map((name) => `crates/c/src/${name}`),
+          ].sort()
+        );
+        // And each bytes form is read as bytes, whichever delimiter it was written with.
+        expect(walked!.raw).toEqual(['crates/c/src/bc.bin', 'crates/c/src/bp.bin', 'crates/c/src/bs.bin']);
+      }
+    );
+
+    // A form the walk cannot follow is refused at its file and line in every delimiter, never left
+    // out - including a closer that does not match its opener, which rustc refuses too.
+    for (const [as, site] of [
+      ['a bracketed non-literal', 'const G: &str = include_str![concat!("g", ".txt")];'],
+      ['a braced non-literal', 'const G: &[u8] = include_bytes!{env!("G")};'],
+      ['a bracketed include! of an identifier', 'include![G];'],
+      ['a mismatched closer', 'const G: &str = include_str!("g.txt"];'],
+    ] as const) {
+      onTree(
+        'BG01M7FGTR-delimiter-refuse',
+        [...WORKSPACE, ['crates/c/src/lib.rs', `pub fn f() {}\n${site}\n`], ['crates/c/src/g.txt', 'g\n']],
+        (tree) => {
+          const { walked, message } = walkOrRefusal(tree);
+          expect(message, `${as} must be refused by name, not answered with ${JSON.stringify(walked?.files)}`).toMatch(
+            /crates\/c\/src\/lib\.rs:2: include(_str|_bytes)?! takes something other than one plain string literal/
+          );
+        }
+      );
+    }
+  });
+
+  it('BG-01M7FGTR AC5 an include_bytes target is hashed over its raw bytes', () => {
+    const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+    const lib = [
+      'pub const BLOB: &[u8] = include_bytes!("blob.bin");',
+      'pub const LINES: &[u8] = include_bytes!("lines.bin");',
+      'pub const TEXT: &str = include_str!("text.txt");',
+      'pub const BOTH_STR: &str = include_str!("both.dat");',
+      'pub const BOTH_BYTES: &[u8] = include_bytes!("both.dat");',
+      '',
+    ].join('\n');
+    /** The record the build writes for a tree with these bytes and texts, as path -> digest. */
+    const recordFor = (blob: number[], lines: number[], text: string, both: string) => {
+      let got = new Map<string, string>();
+      let raw: string[] = [];
+      let guard = new Map<string, string>();
+      onTree(
+        'BG01M7FGTR-raw',
+        [
+          ...WORKSPACE,
+          ['crates/c/src/lib.rs', lib],
+          ['crates/c/src/blob.bin', new Uint8Array(blob)],
+          ['crates/c/src/lines.bin', new Uint8Array(lines)],
+          ['crates/c/src/text.txt', text],
+          ['crates/c/src/both.dat', both],
+        ],
+        (tree) => {
+          got = new Map(
+            sourceDigestManifest(tree)
+              .split('\n')
+              .filter((line) => line !== '' && !line.startsWith('#'))
+              .map((line) => [line.slice(66), line.slice(0, 64)] as const)
+          );
+          const walked = walkEngineInputs(pathToFileURL(`${tree}/`));
+          raw = walked.raw;
+          guard = currentInputDigests(walked, pathToFileURL(`${tree}/`));
+        }
+      );
+      return { got, raw, guard };
+    };
+    const BLOB = 'crates/c/src/blob.bin';
+    const LINES = 'crates/c/src/lines.bin';
+    const TEXT = 'crates/c/src/text.txt';
+    const BOTH = 'crates/c/src/both.dat';
+
+    const base = recordFor([0x00, 0xff, 0x41], [0x41, 0x0d, 0x0a], 'a\r\nb\n', 'x\r\n');
+    // Read as bytes: the include_bytes! targets, and a file included both ways (the engine embeds
+    // its exact bytes through the bytes site, so that is the reading that can miss nothing).
+    expect(base.raw).toEqual([BLOB, BOTH, LINES]);
+    expect(base.got.get(BLOB), 'the digest is of the exact bytes').toBe(sha(new Uint8Array([0x00, 0xff, 0x41])));
+    expect(base.got.get(LINES)).toBe(sha(new Uint8Array([0x41, 0x0d, 0x0a])));
+    // The guard reads the tree exactly as the record was written, so a clean tree is clean.
+    expect(base.guard).toEqual(base.got);
+
+    // Any changed byte changes the digest - two bytes a lossy UTF-8 read turns into one character,
+    // and a CR a line-ending fold would drop.
+    const otherByte = recordFor([0x00, 0xfe, 0x41], [0x41, 0x0d, 0x0a], 'a\r\nb\n', 'x\r\n');
+    expect(otherByte.got.get(BLOB), '00 FF 41 and 00 FE 41 must not digest alike').not.toBe(base.got.get(BLOB));
+    expect(differingSources(base.got, otherByte.guard)).toEqual([`${BLOB} (changed since the engine was built)`]);
+    const noCr = recordFor([0x00, 0xff, 0x41], [0x41, 0x0a], 'a\r\nb\n', 'x\n');
+    expect(noCr.got.get(LINES), 'a binary with its CR removed is a different binary').not.toBe(base.got.get(LINES));
+    expect(noCr.got.get(BOTH), 'a file included as bytes anywhere is read as bytes').not.toBe(base.got.get(BOTH));
+
+    // Text inputs keep the fold that makes the record the same on every platform's checkout.
+    const lf = recordFor([0x00, 0xff, 0x41], [0x41, 0x0d, 0x0a], 'a\nb\n', 'x\r\n');
+    expect(lf.got.get(TEXT), 'an include_str! target with CRLF and with LF is one text').toBe(base.got.get(TEXT));
+    expect(lf.got.get(TEXT)).toBe(digestOf('a\nb\n'));
   });
 });
 
