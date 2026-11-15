@@ -22,6 +22,13 @@ import {
   testSavedPrimersOnSequence,
   type CrisprScanGuide,
 } from '../core/bioEngine';
+import {
+  crisprGuideExportTable,
+  crisprHeuristicRuleText,
+  crisprSpacerAndPamCopyText,
+  crisprSpacerCopyText,
+} from '../core/crisprGuideText';
+import type { FigureTable } from '../core/figureExport';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { MolBioMenuGlyph } from './MolBioIcons';
 import { ResultWarnings } from './ResultWarnings';
@@ -441,6 +448,38 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       : crisprCandidates > crisprReturned
       ? `top ${bp(crisprReturned)} of ${bp(crisprCandidates)} Guides`
       : `${bp(crisprReturned)} Guides`;
+  /**
+   * The guide rows ticked for export (US-01M7DV5P AC4), by guide id. A scan that ran again lists
+   * other guides, so a tick on a row that is gone exports nothing: only ids the table still holds
+   * are read.
+   */
+  const [crisprSelectedIds, setCrisprSelectedIds] = useState<string[]>([]);
+  useEffect(() => {
+    setCrisprSelectedIds([]);
+  }, [doc.id, crisprNuclease, crisprScope]);
+  const crisprSelected = useMemo(() => new Set(crisprSelectedIds), [crisprSelectedIds]);
+  const crisprSelectedShown = crisprGuides.filter((g) => crisprSelected.has(g.id)).length;
+  /**
+   * The guide table's own export (US-01M7DV5P AC4): the rows ticked, or every row the table shows
+   * where none is ticked, each written with the coordinates, scores and provenance the cells on
+   * screen cannot carry. The table hands over the ids of the rows it shows now, in its own order, so
+   * a filtered or sorted table exports what it shows and nothing else.
+   */
+  const crisprExportTable = (shownIds: string[]): FigureTable | null => {
+    const byId = new Map(crisprGuides.map((g) => [g.id, g]));
+    const shown = shownIds.map((id) => byId.get(id)).filter((g): g is CrisprScanGuide => g !== undefined);
+    if (shown.length === 0) return null;
+    const selected = shown.filter((g) => crisprSelected.has(g.id));
+    return crisprGuideExportTable({
+      guides: selected.length > 0 ? selected : shown,
+      document: doc,
+      ...(chosenPreset ? { preset: chosenPreset } : {}),
+      ...(crisprScan ? { scan: crisprScan } : {}),
+      // The rank's rule in the engine's own words, never restated here (BG-01M7E61C).
+      heuristicRule: crisprHeuristicRuleText(doc),
+      scope: { selectedCount: selected.length, shownCount: shown.length },
+    });
+  };
 
   const handleSavePrimersToDoc = () => {
     const updatedPrimers: PrimerRecord[] = [
@@ -456,6 +495,48 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     onStatusNotice?.(
       `Bound primer pair "${designedPCR.forward.name}" & "${designedPCR.reverse.name}" (${regionStart.toLocaleString()}..${regionEnd.toLocaleString()} bp) to "${doc.name}"`
     );
+  };
+
+  /**
+   * One copy out of the guide table, as it went (US-01M7DV5P AC1-AC3): what was copied, whether the
+   * clipboard took it, and the text itself - which stays on screen either way, so a refused copy
+   * still leaves the researcher the bases to take by hand (PRD F31, LC-006).
+   */
+  const [crisprCopy, setCrisprCopy] = useState<{
+    copied: boolean;
+    detail: string;
+    text: string;
+  } | null>(null);
+  /** What a refused copy tells the reader to do with the text left on screen. */
+  const COPY_BY_HAND = 'The text is below — select it and copy it by hand.';
+
+  /**
+   * Writes `text` to the clipboard and reports what really happened. A build with no clipboard at
+   * all and a clipboard that refused the write are told apart (LC-006), and neither is ever
+   * reported as a copy.
+   */
+  const copyCrisprText = async (what: string, text: string): Promise<void> => {
+    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== 'function') {
+      const detail = `${what} was not written: this build provides no clipboard to write to. ${COPY_BY_HAND}`;
+      setCrisprCopy({ copied: false, detail, text });
+      onStatusNotice?.(
+        `Nothing was copied: ${what} was not written, because this build provides no clipboard; the text is shown in the CRISPR tab to take by hand.`
+      );
+      return;
+    }
+    try {
+      await clipboard.writeText(text);
+      setCrisprCopy({ copied: true, detail: `${what} is on the clipboard.`, text });
+      onStatusNotice?.(`Copied ${what} to the clipboard.`);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      const detail = `${what} was not written: the clipboard refused it (${why}). ${COPY_BY_HAND}`;
+      setCrisprCopy({ copied: false, detail, text });
+      onStatusNotice?.(
+        `Nothing was copied: ${what} was not written, because the clipboard refused it (${why}); the text is shown in the CRISPR tab to take by hand.`
+      );
+    }
   };
 
   const saveToPrimerDatabase = (candidate: DatabasePrimerInput, opener: HTMLElement) => {
@@ -1268,11 +1349,32 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
 
           <ResultWarnings warnings={crisprScan?.warnings} label="CRISPR guide warnings" />
 
+          {/* The last copy, as it went (US-01M7DV5P AC3): a copy the environment refused says
+              nothing was copied and leaves the text here to take by hand. */}
+          {crisprCopy && (
+            <div
+              className="info-callout"
+              role="status"
+              data-crispr-copy-status={crisprCopy.copied ? 'copied' : 'not-copied'}
+            >
+              <strong>{crisprCopy.copied ? 'Copied' : 'Nothing was copied'}</strong>: {crisprCopy.detail}
+              <pre className="mono-cell" data-crispr-copy-text="">
+                {crisprCopy.text}
+              </pre>
+            </div>
+          )}
+
           <WorkbenchSmartTable
             tableId="primer-studio-crispr-guides"
             tableLabel="CRISPR Guide Candidates Table"
             regionMaxHeight={340}
             className="bio-table"
+            selectionSummary={
+              crisprSelectedShown > 0
+                ? `${bp(crisprSelectedShown)} of ${bp(crisprReturned)} rows selected for export`
+                : undefined
+            }
+            exportTable={crisprExportTable}
           >
             <thead>
               <tr>
@@ -1287,6 +1389,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 <th>Exact Seed Matches (range searched)</th>
                 <th>Genome-wide Specificity</th>
                 <th>Action</th>
+                <th title="Tick the guides to export; with none ticked the export writes every row the table shows">
+                  Export
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -1308,6 +1413,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 <tr
                   key={g.id}
                   data-crispr-guide-row={g.id}
+                  // The id the table hands its export, so the file holds the rows on screen
+                  // (US-01M7DV5P AC4).
+                  data-mbc-row-id={g.id}
                   className={showGuide ? 'mbc-row-clickable' : undefined}
                   title={
                     showGuide
@@ -1415,6 +1523,52 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                     >
                       + Annotate
                     </button>
+                    {/* The spacer alone, as it is ordered (AC1), and the spacer with its PAM
+                        labelled in the order this nuclease reads them (AC2). */}
+                    <button
+                      className="btn-secondary-sm"
+                      data-crispr-copy-spacer={g.id}
+                      title={`Copy the ${bp(g.spacerSeq.length)}-nt spacer of ${g.name} alone, 5'→3', with no PAM and no label`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void copyCrisprText(
+                          `the spacer of ${g.name} (${bp(g.spacerSeq.length)} nt)`,
+                          crisprSpacerCopyText(g)
+                        );
+                      }}
+                    >
+                      Copy spacer
+                    </button>
+                    <button
+                      className="btn-secondary-sm"
+                      data-crispr-copy-spacer-pam={g.id}
+                      title={`Copy the spacer of ${g.name} and its ${g.pamSide} PAM, each labelled and marked 5'→3', in the order ${g.nuclease} reads them`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void copyCrisprText(
+                          `the spacer and ${g.pamSide} PAM of ${g.name}, labelled`,
+                          crisprSpacerAndPamCopyText(g)
+                        );
+                      }}
+                    >
+                      Copy spacer + PAM
+                    </button>
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      data-crispr-select={g.id}
+                      aria-label={`Select ${g.name} for export`}
+                      checked={crisprSelected.has(g.id)}
+                      // Ticking a row is not showing it: the row's own click stays where it is.
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setCrisprSelectedIds((prev) =>
+                          on ? [...prev.filter((id) => id !== g.id), g.id] : prev.filter((id) => id !== g.id)
+                        );
+                      }}
+                    />
                   </td>
                 </tr>
                 );

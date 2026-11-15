@@ -7,6 +7,7 @@ import {
   parseSortableNumericValue,
   sortColumnsAsciiAlphabetical,
 } from '../core/workbenchBatchOperations';
+import type { FigureTable } from '../core/figureExport';
 import { SequenceDocument, SequenceDocumentIconKind } from '../types/bio';
 import { FigureExportButton } from './FigureExportButton';
 import { MolBioDocTypeIcon } from './MolBioIcons';
@@ -698,6 +699,14 @@ export interface WorkbenchSmartTableProps
   wrapperStyle?: React.CSSProperties;
   regionMaxHeight?: number | string;
   compactToolbar?: boolean;
+  /**
+   * Values to export instead of the cells on screen, for a table whose rows carry more than they
+   * show (US-01M7DV5P): it is called with the ids of the rows the table shows right now, in the
+   * order it draws them, read from each row's own `data-mbc-row-id`. Returning `null` exports the
+   * visible cells as ever. The export path itself - its formats, its serializer and its filename -
+   * is the shared one either way.
+   */
+  exportTable?: (shownRowIds: string[]) => FigureTable | null;
 }
 
 interface ExtractedColMeta {
@@ -718,6 +727,7 @@ export const WorkbenchSmartTable: React.FC<WorkbenchSmartTableProps> = ({
   wrapperStyle,
   regionMaxHeight,
   compactToolbar = true,
+  exportTable,
   className,
   style,
   children,
@@ -1025,13 +1035,22 @@ export const WorkbenchSmartTable: React.FC<WorkbenchSmartTableProps> = ({
             baseName={tableLabel ?? tableId}
             title={tableLabel ?? tableId}
             delimitedWriter={exportDelimitedTableViaRust}
-            table={() => ({
-              headers: orderedVisibleCols.map((c) => c.label),
-              rows: filteredAndSortedRows
-                .filter((r) => !r.isFullSpanRow)
-                .map((r) => orderedVisibleCols.map((c) => r.textByColId[c.id] ?? '')),
-              caption: tableLabel ?? tableId,
-            })}
+            table={() => {
+              const shown = filteredAndSortedRows.filter((r) => !r.isFullSpanRow);
+              // A host that carries more per row than the row shows writes the file itself, from
+              // the rows on screen now (US-01M7DV5P AC4); everything else exports its cells.
+              const own = exportTable?.(
+                shown.map(
+                  (r) => String((r.tr.props as { 'data-mbc-row-id'?: unknown })['data-mbc-row-id'] ?? '')
+                )
+              );
+              if (own) return own;
+              return {
+                headers: orderedVisibleCols.map((c) => c.label),
+                rows: shown.map((r) => orderedVisibleCols.map((c) => r.textByColId[c.id] ?? '')),
+                caption: tableLabel ?? tableId,
+              };
+            }}
           />
         }
       />
