@@ -448,6 +448,20 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       : crisprScanWrapped
       ? `all ${bp(crisprSequenceBp!)} bases of this circular sequence, including the ${bp(crisprScan!.originSpanBp)} across its origin, on both strands`
       : `all ${bp(crisprSequenceBp ?? 0)} bases of this linear sequence, on both strands`;
+  /**
+   * What a seed count covered, as an annotation of the document has to say it (BG-01M7EQAA AC1):
+   * the same words `crisprReadAs` gives the callout and the no-guide line, read from the scan's own
+   * report — never from whether a selection exists, so a count taken over a chosen interval says
+   * which bases it was measured over in the copy that outlives the session and travels in a GenBank
+   * export. A scan that sent no report says the scope is unknown rather than claiming the whole
+   * sequence [LC-006].
+   */
+  const crisprSeedScopeWords =
+    crisprScan === undefined
+      ? 'scope unavailable: the engine sent no scan report, so which bases this count covered is not known'
+      : crisprSearchedInterval !== undefined
+      ? `counted over ${crisprReadAs} — an interval specificity, not one over the whole ${bp(crisprSequenceBp ?? 0)} bases`
+      : `counted over ${crisprReadAs}`;
   const crisprTabCount =
     crisprCandidates === undefined
       ? 'scan report unavailable'
@@ -574,15 +588,14 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   });
 
   /**
-   * Annotate one guide (US-01M7DVA6 AC4): the spacer and its PAM as two features of their own
-   * spans, written in one `onUpdateDocument` call and so in one undoable step - a single undo takes
-   * both away, never the spacer alone. Both carry the strand, the nuclease preset and the cut
-   * position, in a note and in qualifiers an export can carry, so the PAM is never read as bases of
-   * the spacer to order.
+   * One guide as the two features it is annotated as (US-01M7DVA6 AC4): the spacer and its PAM over
+   * their own spans, taken from `crisprGuideParts` once. Both the row's Annotate and `+ Annotate Top
+   * 5 Guides` write this, so one document holds one shape of `crispr_guide` annotation however it
+   * was made (BG-01M7EQAA AC2). Neither span is clipped to the range the scan searched: a guide
+   * whose PAM lies outside a selected interval is annotated over its whole site (AC3).
    */
-  const handleAnnotateCrisprGuide = (g: CrisprScanGuide) => {
+  const crisprGuideAnnotation = (g: CrisprScanGuide, stamp: number) => {
     const parts = crisprGuideParts(g, doc.sequence.length);
-    const stamp = Date.now();
     const cutWords = `Cut @ ${g.cutPosition}${
       g.cutPositionTargetStrand !== undefined
         ? `, target strand @ ${g.cutPositionTargetStrand}`
@@ -611,7 +624,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
         start: parts.spacer.start,
         end: parts.spacer.end,
         color: g.onTargetScore >= 70 ? '#16a34a' : g.onTargetScore >= 50 ? '#d97706' : '#dc2626',
-        notes: `${g.nuclease} spacer ${g.spacerSeq} (${g.strand === 1 ? 'forward' : 'reverse'} strand) | ${cutWords} | Heuristic=${g.onTargetScore}, seed matches=${g.offTargetCount}`,
+        notes: `${g.nuclease} spacer ${g.spacerSeq} (${g.strand === 1 ? 'forward' : 'reverse'} strand) | ${cutWords} | Heuristic=${g.onTargetScore}, seed matches=${g.offTargetCount}, ${crisprSeedScopeWords}`,
       },
       {
         ...shared('PAM'),
@@ -623,9 +636,18 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
         notes: `${g.nuclease} ${g.pamSide} PAM ${g.pamSeq} of ${g.name} (${g.strand === 1 ? 'forward' : 'reverse'} strand): read by the nuclease, not part of the spacer ordered | ${cutWords}`,
       },
     ];
+    return { parts, features: newFeats };
+  };
+
+  /**
+   * Annotate one guide (US-01M7DVA6 AC4): its spacer and its PAM written in one `onUpdateDocument`
+   * call and so in one undoable step - a single undo takes both away, never the spacer alone.
+   */
+  const handleAnnotateCrisprGuide = (g: CrisprScanGuide) => {
+    const { parts, features } = crisprGuideAnnotation(g, Date.now());
     onUpdateDocument({
       ...doc,
-      features: [...doc.features, ...newFeats],
+      features: [...doc.features, ...features],
       updatedAt: new Date().toISOString(),
     });
     onStatusNotice?.(
@@ -633,24 +655,21 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     );
   };
 
+  /**
+   * The top five guides annotated at once: each as the same spacer feature and PAM feature the row's
+   * own Annotate writes (BG-01M7EQAA AC2), in one undoable step.
+   */
   const handleAnnotateTop5Crispr = () => {
-    const top5: SequenceFeature[] = crisprGuides.slice(0, 5).map((g, idx) => ({
-      id: `feat-top-${g.id}-${Date.now()}-${idx}`,
-      name: `${g.name} (${g.pamSeq})`,
-      type: 'crispr_guide',
-      start: g.start,
-      end: g.end,
-      strand: g.strand,
-      color: g.onTargetScore >= 70 ? '#16a34a' : '#d97706',
-      notes: `${g.nuclease} spacer ${g.spacerSeq} | Heuristic=${g.onTargetScore}, seed matches=${g.offTargetCount}`,
-    }));
+    const stamp = Date.now();
+    const annotated = crisprGuides.slice(0, 5);
+    const top5: SequenceFeature[] = annotated.flatMap((g) => crisprGuideAnnotation(g, stamp).features);
     onUpdateDocument({
       ...doc,
       features: [...doc.features, ...top5],
       updatedAt: new Date().toISOString(),
     });
     onStatusNotice?.(
-      `Annotated top ${top5.length} CRISPR guides onto "${doc.name}"`
+      `Annotated top ${annotated.length} CRISPR guides onto "${doc.name}", each as its spacer and its PAM`
     );
   };
 

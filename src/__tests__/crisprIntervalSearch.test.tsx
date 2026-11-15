@@ -31,14 +31,26 @@
  * - the bases of PAM context read outside the interval left unsaid;
  * - a base of context read on both sides of an interval that nearly closes on itself counted once
  *   per side, which claimed 4 bases outside a 120-bp circle that leaves only 2 outside it.
+ *
+ * BG-01M7EQAA AC1 is the annotation: `+ Annotate Top 5 Guides` wrote `seed matches=N` into each
+ * guide feature's note with nothing saying what N counted, so the default path since D0135 (a
+ * selected span, preferred by the chooser) persisted an interval specificity as a bare number into
+ * the document and into its GenBank export. The note now carries the scope in the words the callout
+ * above the table already uses, read from the scan's own report. That case runs the real App over
+ * the live DOM (the US-01M6TB6G harness), presses the tab's own button and reads the note back out
+ * of the document the App saves, so a scope that reaches no writer fails here (LC-003). Wrong
+ * implementations it kills: the bare count; a scope inferred from whether a selection exists (the
+ * third case selects a span and then asks for the whole sequence); a note whose words have drifted
+ * from the callout's (the scope sentence is asserted to be text that is on screen, not a literal
+ * written out here). A scan that sent no report is said to have no known scope rather than read as a
+ * whole-sequence scan (LC-006), in the writer itself; no case here reaches that branch.
  */
 
 import React from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
-import { PrimerAndPCRStudio } from '../components/PrimerAndPCRStudio';
+import { describe, expect, it, vi } from 'vitest';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import type { SequenceDocument } from '../types/bio';
+import { mountApp, type AppHarness } from './appHarness';
 
 /** Seeded pseudo-random DNA (LCG), so every run reads the same bases. */
 function randomDna(length: number, seed: number): string {
@@ -76,9 +88,20 @@ const text = (html: string) =>
     .replace(/&#x2F;/g, '/')
     .replace(/\s+/g, ' ');
 
-/** The CRISPR tab of the studio, rendered on `doc` with the selection the App holds (or none). */
-const crisprTab = (doc: SequenceDocument, selectedRange?: { start: number; end: number } | null) =>
-  renderToStaticMarkup(
+/**
+ * The CRISPR tab of the studio, rendered on `doc` with the selection the App holds (or none).
+ *
+ * React DOM and the studio are loaded on demand, never at module scope: the live-DOM harness the
+ * BG-01M7EQAA case mounts the real App with refuses a process that has already loaded React DOM,
+ * and that case runs first in this file.
+ */
+const crisprTab = async (
+  doc: SequenceDocument,
+  selectedRange?: { start: number; end: number } | null
+): Promise<string> => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { PrimerAndPCRStudio } = await import('../components/PrimerAndPCRStudio');
+  return renderToStaticMarkup(
     <PrimerAndPCRStudio
       doc={doc}
       allDocuments={[doc]}
@@ -88,6 +111,7 @@ const crisprTab = (doc: SequenceDocument, selectedRange?: { start: number; end: 
       selectedRange={selectedRange ?? null}
     />
   );
+};
 
 /** The scopes the search-range chooser offers, in order, as `value` and the words beside it. */
 const rangeOptions = (html: string): { value: string; label: string }[] => {
@@ -122,9 +146,179 @@ const circular400 = dnaDoc('Crispr_Interval_Circular', randomDna(400, 0x15_7b02)
 /** A circle an interval can nearly close: 118 of its 120 bases are searched, two lie outside. */
 const circular120 = dnaDoc('Crispr_Interval_Near_Full_Circle', randomDna(120, 0x15_7c03), 'circular');
 
+// ─── BG-01M7EQAA AC1: what the Top 5 annotation says its seed count covered ───
+
+// This criterion launches the App afresh, with the real WASM engine behind it.
+vi.setConfig({ testTimeout: 120_000 });
+
+/** The CRISPR tab of the real App on `doc`, with `selectedRange` held as the App holds a selection. */
+async function appOnCrisprTab(
+  app: AppHarness,
+  doc: SequenceDocument,
+  selectedRange?: { start: number; end: number }
+): Promise<void> {
+  await app.restoreSession({
+    documents: [doc],
+    activeDocId: doc.id,
+    viewerTab: 'primers-pcr',
+    ...(selectedRange ? { workspace: { selectedRange: { label: 'Selection', ...selectedRange } } } : {}),
+  });
+  await app.menu('primers:crispr');
+}
+
+/** This launch's engine (loaded after the App, one module at a time, as the harness requires). */
+async function engineScan(doc: SequenceDocument, interval?: { start: number; end: number }) {
+  const { scanCrisprGuides } = await import('../core/bioEngine');
+  return scanCrisprGuides(
+    doc.sequence,
+    'SpCas9 (NGG)',
+    25,
+    doc.topology === 'circular',
+    interval ?? null
+  );
+}
+
+/** The guide table's own info callout - the one that says what a seed count counts - as it reads. */
+const calloutWords = (app: AppHarness): string => {
+  const found = app
+    .all('.info-callout')
+    .map((el) => el.textContent.replace(/\s+/g, ' ').trim())
+    .filter((said) => said.includes('12-nt PAM-proximal seed'));
+  if (found.length !== 1) {
+    throw new Error(`the CRISPR tab shows ${found.length} callouts about the seed count, not one`);
+  }
+  return found[0];
+};
+
+/** Presses the tab's own `+ Annotate Top 5 Guides` button. */
+async function annotateTop5(app: AppHarness): Promise<void> {
+  const buttons = app
+    .all('button')
+    .filter((b) => b.textContent.replace(/\s+/g, ' ').includes('+ Annotate Top 5 Guides'));
+  if (buttons.length !== 1) {
+    throw new Error(`the CRISPR tab shows ${buttons.length} "+ Annotate Top 5 Guides" buttons, not one`);
+  }
+  await app.click(buttons[0]);
+}
+
+/** Chooses `value` in the tab's own search-range chooser, opening the inspector that holds it if need be. */
+async function chooseSearchRange(app: AppHarness, value: 'interval' | 'whole'): Promise<void> {
+  if (app.all('select[aria-label="Search range:"]').length === 0) {
+    const toggle = app.inspectorButton();
+    if (!toggle) throw new Error('the CRISPR tab offers no search-range chooser and no inspector to open');
+    await app.click(toggle);
+  }
+  await app.change(app.one('select[aria-label="Search range:"]', 'the search-range chooser'), value);
+}
+
+/** The features of `docId` in the document the App saves (File > Save Session), as it saves them. */
+async function savedFeatures(
+  app: AppHarness,
+  docId: string
+): Promise<{ name: string; notes?: string; qualifiers?: Record<string, string> }[]> {
+  const before = app.downloads().length;
+  await app.menu('file:save-session');
+  const files = app.downloads();
+  if (files.length !== before + 1) {
+    throw new Error(`File > Save Session saved ${files.length - before} files, not one`);
+  }
+  const payload = JSON.parse(await files[files.length - 1].text()) as {
+    documents: { id: string; features: { name: string; notes?: string; qualifiers?: Record<string, string> }[] }[];
+  };
+  const found = payload.documents.find((d) => d.id === docId);
+  if (!found) throw new Error(`the saved session holds no document "${docId}"`);
+  return found.features;
+}
+
+/** Every seed-count sentence the annotations hold: `seed matches=N` and everything said after it. */
+function seedNotes(features: { name: string; notes?: string }[]): string[] {
+  return features
+    .map((f) => /seed matches=[\s\S]*/.exec(f.notes ?? '')?.[0] ?? '')
+    .filter((s) => s.length > 0);
+}
+
+describe('BG-01M7EQAA AC1: the Top 5 annotation carries the scope of the count it states', () => {
+  it('the Top 5 annotation note says which bases its seed count covered', async () => {
+    const app = await mountApp();
+    try {
+      // (a) The default path since D0135: a span is selected, so the scan reads that interval.
+      await appOnCrisprTab(app, linear300, { start: 101, end: 200 });
+      const intervalScan = await engineScan(linear300, { start: 101, end: 200 });
+      expect(intervalScan.report?.searchedInterval?.start, 'the engine searched the selected span').toBe(101);
+      expect(intervalScan.guides.length, 'the selected span holds guides to annotate').toBeGreaterThan(0);
+      const intervalSaid = calloutWords(app);
+      await annotateTop5(app);
+      const intervalNotes = seedNotes(await savedFeatures(app, linear300.id));
+      expect(intervalNotes.length, 'one seed count stated per guide annotated').toBe(
+        Math.min(5, intervalScan.guides.length)
+      );
+      for (const note of intervalNotes) {
+        // The bases the count covered, and that it is an interval specificity - not a bare number.
+        expect(note, 'the note names the interval the count was measured over').toContain('101..200');
+        expect(note).toContain('100 bp interval searched');
+        expect(note).toContain('an interval specificity');
+        expect(note, 'the count is not left as a bare number').not.toMatch(/seed matches=\d+\s*$/);
+        // The same words the surfaces on screen use: the scope sentence is text the callout holds,
+        // so a note whose wording drifts from the row's fails here.
+        const scope = /seed matches=\d+[,.]?\s*(.*?)(?: — an interval specificity|$)/.exec(note)?.[1] ?? '';
+        expect(scope.length, 'the note says something about the scope').toBeGreaterThan(20);
+        expect(intervalSaid, 'the scope is stated in the words the callout uses').toContain(
+          scope.replace(/^counted over /, '')
+        );
+      }
+      // Each count is the engine's own number for that guide, not one of them repeated.
+      const annotated = await savedFeatures(app, linear300.id);
+      for (const g of intervalScan.guides.slice(0, 5)) {
+        const spacerFeat = annotated.find((f) => f.name === `${g.name} spacer`);
+        expect(spacerFeat, `an annotation for ${g.name}`).toBeTruthy();
+        expect(spacerFeat!.notes ?? '').toContain(`seed matches=${g.offTargetCount}`);
+      }
+
+      // (b) A whole-sequence scan says so, in the same place.
+      await appOnCrisprTab(app, linear300);
+      const wholeScan = await engineScan(linear300);
+      expect(wholeScan.report?.searchedInterval, 'no interval was searched').toBeUndefined();
+      const wholeSaid = calloutWords(app);
+      await annotateTop5(app);
+      const wholeNotes = seedNotes(await savedFeatures(app, linear300.id));
+      expect(wholeNotes.length, 'the whole-sequence scan annotated guides too').toBeGreaterThan(0);
+      for (const note of wholeNotes) {
+        expect(note).toContain('all 300 bases of this linear sequence');
+        expect(note, 'no interval is claimed where none was searched').not.toContain('interval searched');
+        expect(note, 'a sequence-wide count is not called an interval specificity').not.toContain(
+          'an interval specificity'
+        );
+        expect(note, 'the count is not left as a bare number').not.toMatch(/seed matches=\d+\s*$/);
+        expect(wholeSaid, 'the scope is stated in the words the callout uses').toContain(
+          'all 300 bases of this linear sequence'
+        );
+      }
+
+      // (c) The scope is the scan's, not the selection's: a span is selected and the whole sequence
+      // is asked for, so the note says the whole sequence.
+      await appOnCrisprTab(app, linear300, { start: 101, end: 200 });
+      await chooseSearchRange(app, 'whole');
+      await annotateTop5(app);
+      const chosenNotes = seedNotes(await savedFeatures(app, linear300.id));
+      expect(chosenNotes.length, 'the whole-sequence scan annotated guides').toBeGreaterThan(0);
+      for (const note of chosenNotes) {
+        expect(note, 'the scope is read from the scan, not from the selection').toContain(
+          'all 300 bases of this linear sequence'
+        );
+        expect(note).not.toContain('101..200');
+        expect(note, 'the count asked for over the whole sequence is not an interval specificity').not.toContain(
+          'an interval specificity'
+        );
+      }
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
 describe('US-01M7DVAS AC1: Find CRISPR Sites offers the whole sequence or the interval on screen', () => {
-  it('offers both scopes, naming the selected interval by its own 1-based bounds', () => {
-    const html = crisprTab(linear300, { start: 101, end: 200 });
+  it('offers both scopes, naming the selected interval by its own 1-based bounds', async () => {
+    const html = await crisprTab(linear300, { start: 101, end: 200 });
     const options = rangeOptions(html);
     expect(options.map((o) => o.value)).toEqual(['interval', 'whole']);
     const [interval, whole] = options;
@@ -134,8 +328,8 @@ describe('US-01M7DVAS AC1: Find CRISPR Sites offers the whole sequence or the in
     expect(rangeNote(html)).toBe('');
   });
 
-  it('names an origin-crossing selection as the interval it is, counting both sides of the origin', () => {
-    const html = crisprTab(circular400, { start: 380, end: 140 });
+  it('names an origin-crossing selection as the interval it is, counting both sides of the origin', async () => {
+    const html = await crisprTab(circular400, { start: 380, end: 140 });
     const interval = rangeOptions(html).find((o) => o.value === 'interval');
     expect(interval).toBeDefined();
     // 400 - 380 + 1 + 140 = 161 bases, not 140 - 380.
@@ -144,8 +338,8 @@ describe('US-01M7DVAS AC1: Find CRISPR Sites offers the whole sequence or the in
     expect(interval!.label).toContain('across the origin');
   });
 
-  it('offers only the whole sequence when there is no selection, and says so', () => {
-    const html = crisprTab(linear300, null);
+  it('offers only the whole sequence when there is no selection, and says so', async () => {
+    const html = await crisprTab(linear300, null);
     expect(rangeOptions(html).map((o) => o.value)).toEqual(['whole']);
     const note = rangeNote(html);
     expect(note).toMatch(/no (bases are selected|selection)/i);
@@ -154,8 +348,8 @@ describe('US-01M7DVAS AC1: Find CRISPR Sites offers the whole sequence or the in
     expect(callout(html)).not.toContain('interval');
   });
 
-  it('never reads a selection outside the sequence as the whole sequence or as an empty interval', () => {
-    const outside = crisprTab(linear300, { start: 280, end: 400 });
+  it('never reads a selection outside the sequence as the whole sequence or as an empty interval', async () => {
+    const outside = await crisprTab(linear300, { start: 280, end: 400 });
     expect(rangeOptions(outside).map((o) => o.value)).toEqual(['whole']);
     const note = rangeNote(outside);
     expect(note).toContain('280..400');
@@ -165,14 +359,14 @@ describe('US-01M7DVAS AC1: Find CRISPR Sites offers the whole sequence or the in
     expect(callout(outside)).toContain('all 300 bases of this linear sequence');
 
     // Reversed on a linear record: an interval across the origin, which a line has not.
-    const reversed = crisprTab(linear300, { start: 200, end: 101 });
+    const reversed = await crisprTab(linear300, { start: 200, end: 101 });
     expect(rangeOptions(reversed).map((o) => o.value)).toEqual(['whole']);
     expect(rangeNote(reversed)).toContain('200..101');
     expect(rangeNote(reversed)).toMatch(/linear|origin/i);
   });
 
-  it('never offers a selection shorter than the nuclease site it would be searched for', () => {
-    const html = crisprTab(linear300, { start: 10, end: 20 });
+  it('never offers a selection shorter than the nuclease site it would be searched for', async () => {
+    const html = await crisprTab(linear300, { start: 10, end: 20 });
     expect(rangeOptions(html).map((o) => o.value)).toEqual(['whole']);
     const note = rangeNote(html);
     expect(note).toContain('10..20');
@@ -182,8 +376,8 @@ describe('US-01M7DVAS AC1: Find CRISPR Sites offers the whole sequence or the in
 });
 
 describe('US-01M7DVAS AC4: the scan report names the interval searched, never the whole sequence', () => {
-  it('names the interval, its length, the sequence length and the context read outside it', () => {
-    const html = crisprTab(linear300, { start: 101, end: 200 });
+  it('names the interval, its length, the sequence length and the context read outside it', async () => {
+    const html = await crisprTab(linear300, { start: 101, end: 200 });
     const said = callout(html);
     expect(said).toContain('101..200');
     expect(said).toContain('100 bp');
@@ -201,8 +395,8 @@ describe('US-01M7DVAS AC4: the scan report names the interval searched, never th
     expect(warnings(html).join(' | ')).toMatch(/bases 101\.\.200 — the 100 bp interval asked for/);
   });
 
-  it('says an origin-crossing interval runs across the origin, with both sides counted', () => {
-    const html = crisprTab(circular400, { start: 380, end: 140 });
+  it('says an origin-crossing interval runs across the origin, with both sides counted', async () => {
+    const html = await crisprTab(circular400, { start: 380, end: 140 });
     const said = callout(html);
     expect(said).toContain('380..140');
     expect(said).toContain('161 bp');
@@ -211,12 +405,12 @@ describe('US-01M7DVAS AC4: the scan report names the interval searched, never th
     expect(said).not.toContain('all 400 bases of this circular sequence');
   });
 
-  it('counts a base of context read on both sides of a near-full-circle interval once', () => {
+  it('counts a base of context read on both sides of a near-full-circle interval once', async () => {
     // 118 of these 120 bases are the interval searched, so bases 1 and 2 are the only ones outside
     // it - and each of them is read twice, once as the PAM context off either bound of an interval
     // that nearly closes on itself. Two bases of this sequence were read outside the interval, not
     // four: the number says what was read, not how often it was read.
-    const html = crisprTab(circular120, { start: 3, end: 120 });
+    const html = await crisprTab(circular120, { start: 3, end: 120 });
     const said = callout(html);
     expect(said).toContain('3..120');
     expect(said).toContain('118 bp');
@@ -228,8 +422,8 @@ describe('US-01M7DVAS AC4: the scan report names the interval searched, never th
     );
   });
 
-  it('keeps the whole-sequence wording, and claims no interval, when the whole sequence was searched', () => {
-    const said = callout(crisprTab(circular400, null));
+  it('keeps the whole-sequence wording, and claims no interval, when the whole sequence was searched', async () => {
+    const said = callout(await crisprTab(circular400, null));
     expect(said).toContain('all 400 bases of this circular sequence');
     expect(said).toContain('across its origin');
     expect(said).not.toContain('interval');

@@ -441,3 +441,176 @@ describe('CRISPR guide spacer and PAM overlay (US-01M7DVA6)', () => {
     });
   });
 });
+
+/**
+ * BG-01M7EQAA AC2 and AC3: `+ Annotate Top 5 Guides` wrote one feature per guide spanning the
+ * spacer and its PAM together, so one document could hold two shapes of `crispr_guide` annotation
+ * depending on which button was pressed, and a downstream reader could not tell a whole-site
+ * annotation from a spacer-only one without inspecting its span. Both buttons now write the same two
+ * features per guide, through `crisprGuideParts`.
+ *
+ * Wrong implementations these kill:
+ * - AC2: the one-feature-per-guide shape; a Top 5 pair that agrees with the single-guide button but
+ *   not with the document's bases (every span and name here is asserted against the bases too, not
+ *   only against the other button, which two callers of one helper agree on by construction); a
+ *   qualifier left off the Top 5 pair; a pair written for only the first of the guides.
+ * - AC3: either feature intersected with the interval searched, which clips the PAM of a guide whose
+ *   spacer is inside the selection and whose PAM is not (the selection here ends at the spacer's
+ *   last base, so a clipped PAM is 3 bases short, empty or clamped to the bound).
+ */
+
+/** One forward SpCas9 site at 41..63 of a 240-bp line: spacer 41..60, PAM 61..63, nothing else. */
+const EDGE_SITE = { start: 41, spacer: 'TTACGATCATCAGATCGATA', pam: 'TGG' };
+const edgeSeq = `${filler(40)}${EDGE_SITE.spacer}${EDGE_SITE.pam}${filler(177)}`;
+const EDGE_DOC = dnaDoc('eqaa-edge', 'pEQAA_Edge', edgeSeq, 'linear');
+/** The selection that holds the whole spacer and not one base of its PAM. */
+const EDGE_SELECTION = { start: 1, end: 60 };
+
+/** The CRISPR tab on `doc`, with `selectedRange` held as the App holds a selection. */
+const onCrisprTabWithSelection = async (
+  app: AppHarness,
+  doc: SequenceDocument,
+  selectedRange: { start: number; end: number }
+) => {
+  await app.restoreSession({
+    documents: [doc],
+    activeDocId: doc.id,
+    viewerTab: 'primers-pcr',
+    workspace: { selectedRange: { label: 'Selection', ...selectedRange } },
+  });
+  await app.menu('primers:crispr');
+};
+
+/** This launch's engine over `interval` alone, as the tab asks it when a span is selected. */
+async function engineGuidesIn(doc: SequenceDocument, interval: { start: number; end: number }) {
+  const { scanCrisprGuides } = await import('../core/bioEngine');
+  return scanCrisprGuides(doc.sequence, 'SpCas9 (NGG)', 25, doc.topology === 'circular', interval);
+}
+
+/** Presses the tab's own `+ Annotate Top 5 Guides` button. */
+async function annotateTop5(app: AppHarness): Promise<void> {
+  const buttons = app
+    .all('button')
+    .filter((b) => b.textContent.replace(/\s+/g, ' ').includes('+ Annotate Top 5 Guides'));
+  if (buttons.length !== 1) {
+    throw new Error(`the CRISPR tab shows ${buttons.length} "+ Annotate Top 5 Guides" buttons, not one`);
+  }
+  await app.click(buttons[0]);
+}
+
+/** An annotation as a downstream reader of the document reads it: everything but its id. */
+type WrittenFeature = {
+  id: string; name: string; type: string; start: number; end: number; strand: number;
+  color?: string; notes?: string; qualifiers?: Record<string, string>;
+};
+const withoutId = (f: WrittenFeature) => {
+  const { id: _id, ...rest } = f;
+  return rest;
+};
+
+describe('CRISPR Top 5 annotation shape (BG-01M7EQAA)', () => {
+  it('BG-01M7EQAA AC2: Annotate Top 5 writes the same annotation shape as the single-guide button', async () => {
+    await withApp(async (app) => {
+      await onCrisprTab(app, PLASMID);
+      const scan = await engineGuides(PLASMID);
+      const listed = listedGuideIds(app);
+      expect(listed.length, 'the fixture lists its three guides').toBe(3);
+      // Never the first row: a pair written for the top-ranked guide alone would pass that by luck.
+      const guide = scan.guides.find((g) => g.id === listed[listed.length - 1])!;
+      expect(guide, 'the engine\'s record for the row driven').toBeTruthy();
+      const parts = partsByBases(PLASMID.sequence, guide);
+      const fixtureFeatures = (await savedDocument(app, PLASMID.id)).features as WrittenFeature[];
+      expect(fixtureFeatures.length, 'the fixture carries its one CDS annotation').toBe(1);
+
+      // The single-guide button's pair for that guide.
+      await app.click(app.one(`[data-crispr-annotate="${guide.id}"]`, `the Annotate button for ${guide.id}`));
+      const single = ((await savedDocument(app, PLASMID.id)).features as WrittenFeature[]).filter(
+        (f) => f.type === 'crispr_guide'
+      );
+      expect(single.length, 'one guide, annotated as its spacer and its PAM').toBe(2);
+      await app.menu('edit:undo');
+      expect(((await savedDocument(app, PLASMID.id)).features as WrittenFeature[]).length, 'undone').toBe(1);
+
+      // The Top 5 button's pairs: two features per guide listed, none of them the old whole-site one.
+      await annotateTop5(app);
+      const top = ((await savedDocument(app, PLASMID.id)).features as WrittenFeature[]).filter(
+        (f) => f.type === 'crispr_guide'
+      );
+      expect(top.length, 'a spacer feature and a PAM feature for each of the guides').toBe(
+        2 * Math.min(5, listed.length)
+      );
+      for (const g of scan.guides.slice(0, 5)) {
+        const pair = top.filter((f) => f.qualifiers?.guide_name === g.name);
+        expect(pair.length, `${g.name} is annotated as two features`).toBe(2);
+        expect(pair.map((f) => f.qualifiers?.guide_part).sort()).toEqual(['PAM', 'spacer']);
+      }
+
+      // The shape itself, read from the document's bases - not only from the other button, which
+      // two callers of one helper agree with by construction.
+      const spacerFeat = top.find((f) => f.qualifiers?.guide_name === guide.name && f.qualifiers?.guide_part === 'spacer')!;
+      const pamFeat = top.find((f) => f.qualifiers?.guide_name === guide.name && f.qualifiers?.guide_part === 'PAM')!;
+      expect(spacerFeat.name).toBe(`${guide.name} spacer`);
+      expect(pamFeat.name).toBe(`${guide.name} PAM (${guide.pamSeq})`);
+      expect([spacerFeat.start, spacerFeat.end]).toEqual([parts.spacer.start, parts.spacer.end]);
+      expect([pamFeat.start, pamFeat.end]).toEqual([parts.pam.start, parts.pam.end]);
+      for (const f of [spacerFeat, pamFeat]) {
+        expect(f.strand, `${f.name} carries the guide's strand`).toBe(guide.strand);
+        expect(f.qualifiers, `${f.name} carries the guide's qualifiers`).toMatchObject({
+          guide_name: guide.name,
+          nuclease: guide.nuclease,
+          pam_side: guide.pamSide,
+          spacer_span: `${parts.spacer.start}..${parts.spacer.end}`,
+          pam_span: `${parts.pam.start}..${parts.pam.end}`,
+          cut_position: String(guide.cutPosition),
+        });
+      }
+
+      // And the two buttons agree, down to every field but the feature's own id.
+      const sortByName = (fs: WrittenFeature[]) => [...fs].sort((a, b) => a.name.localeCompare(b.name));
+      expect(
+        sortByName(top.filter((f) => f.qualifiers?.guide_name === guide.name)).map(withoutId),
+        'the two buttons write one shape for the same guide'
+      ).toEqual(sortByName(single).map(withoutId));
+    });
+  });
+
+  it('BG-01M7EQAA AC3: a guide whose PAM lies outside the selection is annotated over its whole site', async () => {
+    await withApp(async (app) => {
+      await onCrisprTabWithSelection(app, EDGE_DOC, EDGE_SELECTION);
+      const scan = await engineGuidesIn(EDGE_DOC, EDGE_SELECTION);
+      expect(scan.report?.searchedInterval?.end, 'the scan read the selected span').toBe(EDGE_SELECTION.end);
+      expect(scan.guides.length, 'the span holds the planted site and nothing else').toBe(1);
+      const guide = scan.guides[0];
+      const parts = partsByBases(EDGE_DOC.sequence, guide);
+      expect(parts.spacer.end, 'the spacer ends on the selection\'s last base').toBe(EDGE_SELECTION.end);
+      expect(parts.pam.start, 'the PAM lies outside the selection').toBeGreaterThan(EDGE_SELECTION.end);
+
+      await annotateTop5(app);
+      const written = ((await savedDocument(app, EDGE_DOC.id)).features as WrittenFeature[]).filter(
+        (f) => f.type === 'crispr_guide'
+      );
+      const spacerFeat = written.find((f) => f.qualifiers?.guide_part === 'spacer')!;
+      const pamFeat = written.find((f) => f.qualifiers?.guide_part === 'PAM')!;
+      expect(spacerFeat, 'the spacer annotation').toBeTruthy();
+      expect(pamFeat, 'the PAM annotation').toBeTruthy();
+      // Neither feature is clipped to the interval searched: the PAM is written where it is.
+      expect([pamFeat.start, pamFeat.end], 'the PAM is annotated past the selection, whole').toEqual([
+        parts.pam.start,
+        parts.pam.end,
+      ]);
+      expect(pamFeat.end, 'the PAM feature extends past the selection').toBeGreaterThan(EDGE_SELECTION.end);
+      expect(pamFeat.end - pamFeat.start + 1, 'all of the PAM is annotated').toBe(guide.pamSeq.length);
+      expect([spacerFeat.start, spacerFeat.end]).toEqual([parts.spacer.start, parts.spacer.end]);
+      expect(pamFeat.qualifiers?.pam_span).toBe(`${parts.pam.start}..${parts.pam.end}`);
+
+      // The row's own Annotate is held to the same site, so neither writer may clip it.
+      await app.menu('edit:undo');
+      await app.click(app.one(`[data-crispr-annotate="${guide.id}"]`, `the Annotate button for ${guide.id}`));
+      const fromRow = ((await savedDocument(app, EDGE_DOC.id)).features as WrittenFeature[]).filter(
+        (f) => f.type === 'crispr_guide'
+      );
+      const rowPam = fromRow.find((f) => f.qualifiers?.guide_part === 'PAM')!;
+      expect([rowPam.start, rowPam.end]).toEqual([parts.pam.start, parts.pam.end]);
+    });
+  });
+});
