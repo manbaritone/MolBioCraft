@@ -431,11 +431,11 @@ pub fn set_circular_origin(
 }
 
 /// SpCas9 (NGG) and Cas12a (TTTV) guide finder, over the whole sequence. The on-target value is a
-/// rule-of-thumb rank over six features of the spacer (its GC content, a G or a T at position 20,
-/// a C at position 16, an A or a G at position 4, a TTTT run) and over its PAM (one ending GGG),
-/// reported inside [`CRISPR_HEURISTIC_RANK_RANGE`] (a clamped floor, an arithmetic ceiling — see
-/// `score_guide`) — not a trained Doench score, and not a measured or predicted cutting
-/// efficiency. [`crate::reaction_buffers::crispr_heuristic_rank_description`] is
+/// rule-of-thumb rank over five features of the spacer (its GC content, a G or a T at position 20,
+/// a C at position 16, an A or a G at position 4, a TTTT run) and one of its PAM (one ending GGG),
+/// six in all, reported inside [`CRISPR_HEURISTIC_RANK_RANGE`] (a clamped floor, an arithmetic
+/// ceiling — see `score_guide`) — not a trained Doench score, and not a measured or predicted
+/// cutting efficiency. [`crate::reaction_buffers::crispr_heuristic_rank_description`] is
 /// the same rule in the words a label shows, so read the two together. Specificity reflects only
 /// exact matches of the 12-nt PAM-proximal seed elsewhere in the same sequence, not a genome-wide
 /// search.
@@ -950,10 +950,10 @@ fn scan_guides(
         // The heuristic rank in full, and the engine's only scorer of it: from a base of 68, raised
         // for GC content inside 40–65 % and lowered outside 30–75 %, raised for a G and lowered for
         // a T at spacer position 20, raised for a C at position 16 and for an A or a G at position
-        // 4, lowered for a TTTT run (Pol III terminator) and for a PAM ending GGG. Six features of
-        // the spacer and one of the PAM — SpCas9 rules of thumb, read off a Cas12a spacer
-        // unchanged. NOT Doench Rule Set 1/2, which are trained models, and not a measured or
-        // predicted cutting efficiency. Every line below must stay the rule that
+        // 4, lowered for a TTTT run (Pol III terminator) and for a PAM ending GGG — five features
+        // of the spacer and one of its PAM, six in all. SpCas9 rules of thumb, read off a Cas12a
+        // spacer unchanged. NOT Doench Rule Set 1/2, which are trained models, and not a measured
+        // or predicted cutting efficiency. Every line below must stay the rule that
         // [`crate::reaction_buffers::crispr_heuristic_rank_description`] states in words, which is
         // what the user reads: the oracle in `workbench_table_and_lineage.rs`
         // (`us_01m7dvvr_ac2_the_rank_the_engine_reports_is_the_rule_its_description_names`)

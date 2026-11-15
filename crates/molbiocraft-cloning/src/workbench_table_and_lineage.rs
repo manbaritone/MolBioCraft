@@ -1141,8 +1141,9 @@ mod tests {
     ///
     /// A description is only provenance if it is the rule: the shipped text named three features
     /// ("GC content in 40-65 %, a G at the 3' end of the spacer, and no TTTT run") and a 0-100
-    /// range, while the scorer reads six features and a PAM and can only ever report the range it
-    /// states ([`crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE`], BG-01M7E61C). It
+    /// range, while the scorer reads five features of the spacer and one of its PAM, six in all,
+    /// and can only ever report the range it states
+    /// ([`crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE`], BG-01M7E61C). It
     /// also said the rank orders the list, which the rank alone does not - the list is ordered by
     /// the rank plus the seed-match score. This holds every surface that describes the rank to the
     /// code, by naming each feature and by re-deriving the score from the description's own words.
@@ -1251,6 +1252,238 @@ mod tests {
                 keys.windows(2).all(|w| w[0] >= w[1]),
                 "{nuclease} guides are not in the order the description claims: {keys:?}"
             );
+        }
+    }
+
+    /// BG01M7F18J AC2: how many properties the rank reads is *derived* from the rule's one
+    /// reachable statement — [`crate::reaction_buffers::crispr_heuristic_rank_description`], which
+    /// BG-01M7EYED made the one statement of the rule the app reads — and every comment that states
+    /// number is held to the derived value, in the engine's own spelling of it.
+    ///
+    /// Two drifts produced this bug, and this test fails on both. A stated count edited while the
+    /// rule stands still: nothing below writes the number, so a comment that disagrees with the
+    /// enumeration fails. A property added to the rule while every stated count stands still: the
+    /// derivation counts the distinct subjects the enumeration names, so the expected spelling
+    /// moves and the unchanged comments fail. `4cb4b5e` (US-01M7DVVR) is the precedent — the unit
+    /// that set out to correct an under-description replaced the count with one wrong in the other
+    /// direction, and every gate stayed green.
+    ///
+    /// The derivation refuses to guess (LC-006): a clause whose subject it cannot classify fails
+    /// the test by naming the clause, rather than being counted as nothing — a silent undercount
+    /// is precisely the defect this guard exists to catch.
+    #[test]
+    fn bg_01m7f18j_ac2_the_feature_count_is_derived_from_the_rules_one_statement() {
+        use std::collections::BTreeSet;
+
+        let desc = crate::reaction_buffers::crispr_heuristic_rank_description();
+        const OPENS: &str = "a rule of thumb over the spacer and its PAM: ";
+        const CLOSES: &str = ", then held to";
+        let from = desc.find(OPENS).unwrap_or_else(|| {
+            panic!("the rule's one statement no longer opens its enumeration with {OPENS:?}, so no count can be read from it: {desc}")
+        }) + OPENS.len();
+        let tail = &desc[from..];
+        let to = tail.find(CLOSES).unwrap_or_else(|| {
+            panic!("the rule's one statement no longer closes its enumeration with {CLOSES:?}, so no count can be read from it: {desc}")
+        });
+        let enumeration = &tail[..to];
+
+        // The distinct subjects the enumeration names, counted — not asserted.
+        let mut spacer: BTreeSet<String> = BTreeSet::new();
+        let mut pam: BTreeSet<String> = BTreeSet::new();
+        let words: Vec<&str> = enumeration
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '(' | ')')))
+            .filter(|w| !w.is_empty())
+            .collect();
+        let is_count = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit());
+        let is_bases = |w: &str| !w.is_empty() && w.chars().all(|c| matches!(c, 'A' | 'C' | 'G' | 'T'));
+        let is_span = |w: &str| {
+            let mut parts = w.split(|c| c == '-' || c == '–');
+            match (parts.next(), parts.next(), parts.next()) {
+                (Some(lo), Some(hi), None) => is_count(lo) && is_count(hi),
+                _ => false,
+            }
+        };
+        // Connectives, directions and the base letters a clause names as a value: vocabulary that
+        // introduces no property of its own. Anything outside it is an unclassified subject.
+        const CONNECTIVES: &[&str] = &[
+            "from", "of", "raised", "lowered", "for", "and", "a", "an", "at", "or", "inside",
+            "outside", "spacer", "then", "the", "its",
+        ];
+        // Each "raised" or "lowered" is one adjustment the scorer must make, and a subject named
+        // with no direction of its own inherits the one before it ("... and for an A or G at
+        // position 4"), so it is one adjustment too. The sum is how many arms `score_guide` owes.
+        let mut directions = 0usize;
+        let mut inherited = 0usize;
+        let mut directed_since_subject = false;
+        let mut i = 0usize;
+        while i < words.len() {
+            let w = words[i];
+            let mut subject_here = true;
+            if w == "base" && words.get(i + 1) == Some(&"of") && words.get(i + 2).is_some_and(|n| is_count(n)) {
+                subject_here = false;
+                i += 3; // the base the adjustments move, not one of them
+            } else if w == "GC" && words.get(i + 1) == Some(&"content") {
+                spacer.insert("GC content".to_string());
+                i += 2;
+            } else if is_span(w) && words.get(i + 1) == Some(&"%") {
+                // A bound on a composition already named, not a property of its own.
+                assert!(
+                    spacer.contains("GC content"),
+                    "the rule bounds a percentage ({w} %) before saying what it is a percentage of, so its subject cannot be counted: {enumeration}"
+                );
+                subject_here = false;
+                i += 2;
+            } else if w == "position" && words.get(i + 1).is_some_and(|n| is_count(n)) {
+                let subject = format!("position {}", words[i + 1]);
+                if i > 0 && words[i - 1] == "PAM" {
+                    pam.insert(subject);
+                } else {
+                    spacer.insert(subject);
+                }
+                i += 2;
+            } else if is_bases(w) && w.len() > 1 && words.get(i + 1) == Some(&"run") {
+                spacer.insert(format!("{w} run"));
+                i += 2;
+            } else if w == "PAM"
+                && words.get(i + 1) == Some(&"ending")
+                && words.get(i + 2).is_some_and(|b| is_bases(b))
+            {
+                pam.insert(format!("PAM ending {}", words[i + 2]));
+                i += 3;
+            } else if CONNECTIVES.contains(&w) || (is_bases(w) && w.len() == 1) {
+                if w == "raised" || w == "lowered" {
+                    directions += 1;
+                    directed_since_subject = true;
+                }
+                subject_here = false;
+                i += 1;
+            } else {
+                panic!(
+                    "the rule names a property this derivation cannot classify, at {w:?} in {enumeration:?}: teach it the new property instead of letting it count the rank's features short"
+                );
+            }
+            if subject_here {
+                if !directed_since_subject {
+                    inherited += 1;
+                }
+                directed_since_subject = false;
+            }
+        }
+        assert!(
+            !spacer.is_empty() && !pam.is_empty(),
+            "the rule names {} properties of the spacer and {} of its PAM, so one of the two was read as nothing: {enumeration:?}",
+            spacer.len(),
+            pam.len()
+        );
+
+        // The adjustments the enumeration states are the arms `score_guide` runs. This is the other
+        // half of the drift AC2 names: a property added to the scorer while every stated count
+        // stands still. The arms are counted in the scorer's own body, between its binding and the
+        // floor it ends with, so a sixth spacer arm arrives here as the scorer and the sentence
+        // that is its only statement having parted.
+        let adjustments = directions + inherited;
+        const SCORER: &str = include_str!("cloning_crispr.rs");
+        const OPENS_SCORER: &str = "let score_guide = |spacer: &[u8], pam: &[u8]|";
+        const CLOSES_SCORER: &str = "// The scorer's own floor";
+        let body_from = SCORER.find(OPENS_SCORER).unwrap_or_else(|| {
+            panic!("cloning_crispr.rs no longer binds the scorer as {OPENS_SCORER:?}, so its arms cannot be counted against the rule")
+        });
+        let body = &SCORER[body_from..];
+        let body_to = body.find(CLOSES_SCORER).unwrap_or_else(|| {
+            panic!("cloning_crispr.rs no longer ends the scorer's arms at {CLOSES_SCORER:?}, so its arms cannot be counted against the rule")
+        });
+        let arms = body[..body_to].matches("on_target +=").count()
+            + body[..body_to].matches("on_target -=").count();
+        assert_eq!(
+            arms, adjustments,
+            "the rule's one statement names {adjustments} adjustments ({directions} with a direction of their own, {inherited} inheriting the direction before them) while `score_guide` runs {arms}: the scorer and the sentence that is its only statement have parted, so one of the two moved without the other"
+        );
+
+        // English for the derived numbers. The spelling is a lookup; the numbers themselves are
+        // the derivation's own answer, never written out here.
+        const SPELLED: &[&str] = &[
+            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        ];
+        let spell = |n: usize| -> &'static str {
+            SPELLED
+                .get(n)
+                .copied()
+                .unwrap_or_else(|| panic!("the rule now names {n} properties, beyond what this guard can spell"))
+        };
+        let spacer_word = spell(spacer.len());
+        let pam_word = spell(pam.len());
+        let total_word = spell(spacer.len() + pam.len());
+
+        // The four sites AC1 names, read as the text they are, with the count each must state.
+        const SITES: &[(&str, &str, usize)] = &[
+            ("crates/molbiocraft-cloning/src/cloning_crispr.rs", include_str!("cloning_crispr.rs"), 2),
+            (
+                "crates/molbiocraft-cloning/src/workbench_table_and_lineage.rs",
+                include_str!("workbench_table_and_lineage.rs"),
+                1,
+            ),
+            ("src/types/bio.ts", include_str!("../../../src/types/bio.ts"), 1),
+        ];
+        // Prose as prose: comment markers and line wrapping gone, so a count split over two lines
+        // is still read as the phrase it is.
+        let as_prose = |text: &str| -> String {
+            let flat: String = text
+                .chars()
+                .map(|c| {
+                    if c == '/' || c == '*' || c.is_whitespace() {
+                        ' '
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                })
+                .collect();
+            flat.split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        // The shapes in which a count of the spacer's features has been stated here, including the
+        // two spellings that carried the wrong number ("... and a PAM", "... and its PAM").
+        const SHAPES: &[&str] = &[
+            "features of the spacer",
+            "features and a pam",
+            "features and its pam",
+            "features and the pam",
+            "features of it",
+        ];
+        for &(path, text, sites) in SITES {
+            let prose = as_prose(text);
+            for (stated, expected) in [
+                (format!("{spacer_word} features of the spacer"), spacer_word),
+                (format!("{pam_word} of its pam"), pam_word),
+                (format!("{total_word} in all"), total_word),
+            ] {
+                assert_eq!(
+                    prose.matches(&stated).count(),
+                    sites,
+                    "{path} must say {stated:?} — the count {expected:?} the rule's own enumeration gives — at each of its {sites} site(s)"
+                );
+            }
+            for (n, spelling) in SPELLED.iter().enumerate() {
+                for shape in SHAPES {
+                    let worded = format!("{spelling} {shape}");
+                    assert!(
+                        *spelling == spacer_word || !prose.contains(&worded),
+                        "{path} says {worded:?} where the rule's own enumeration names {spacer_word:?} properties of the spacer"
+                    );
+                    let digits = format!("{n} {shape}");
+                    assert!(
+                        !prose.contains(&digits),
+                        "{path} states a count as the numeral in {digits:?}; these comments state it in words, which is what the guard reads"
+                    );
+                }
+                assert!(
+                    *spelling == pam_word || !prose.contains(&format!("{spelling} of its pam")),
+                    "{path} says {spelling:?} of its PAM where the rule's own enumeration names {pam_word:?}"
+                );
+                assert!(
+                    *spelling == total_word || !prose.contains(&format!("{spelling} in all")),
+                    "{path} says {spelling:?} in all where the rule's own enumeration names {total_word:?} properties altogether"
+                );
+            }
         }
     }
 
