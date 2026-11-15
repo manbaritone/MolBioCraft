@@ -457,6 +457,15 @@ describe('CRISPR guide spacer and PAM overlay (US-01M7DVA6)', () => {
  * - AC3: either feature intersected with the interval searched, which clips the PAM of a guide whose
  *   spacer is inside the selection and whose PAM is not (the selection here ends at the spacer's
  *   last base, so a clipped PAM is 3 bases short, empty or clamped to the bound).
+ * - AC5: the two intersects AC3's fixture could not reach, because it put the PAM *entirely* outside
+ *   the selection: an intersect guarded by a disjointness test, and one that falls back to the whole
+ *   span only where the clip comes out empty - the defensive form someone writes to avoid an empty
+ *   feature. Both are invisible until a boundary falls *inside* a part, which is what the AC5
+ *   selections do, on each strand: the trailing PAM of a forward guide straddles the selection's
+ *   last base, and the leading PAM of a reverse guide straddles its first (`crisprGuideParts` swaps
+ *   which part leads, so one case cannot carry the other). Each written span is asserted against the
+ *   document's own bases and against the feature's own `pam_span` qualifier, so a clip that moves the
+ *   span while leaving the qualifier behind - the shape a downstream reader is misled by - fails.
  */
 
 /** One forward SpCas9 site at 41..63 of a 240-bp line: spacer 41..60, PAM 61..63, nothing else. */
@@ -612,6 +621,97 @@ describe('CRISPR Top 5 annotation shape (BG-01M7EQAA)', () => {
       const rowPam = fromRow.find((f) => f.qualifiers?.guide_part === 'PAM')!;
       expect([rowPam.start, rowPam.end]).toEqual([parts.pam.start, parts.pam.end]);
     });
+  });
+
+  it('BG-01M7EQAA AC5: a guide whose PAM straddles the selection boundary is annotated over its whole PAM', async () => {
+    /**
+     * One case per strand, because `crisprGuideParts` swaps which part leads: a forward guide's PAM
+     * trails its spacer and straddles the selection's **last** base, a reverse guide's PAM leads and
+     * straddles its **first**. Each selection holds the whole spacer, so the engine lists the guide.
+     */
+    const cases = [
+      {
+        what: 'a forward guide whose trailing PAM runs past the selection\'s last base',
+        doc: EDGE_DOC,
+        // The PAM is 61..63 and the selection ends at 62: one base of it is outside.
+        selection: { start: 1, end: 62 },
+        strand: 1 as const,
+      },
+      {
+        what: 'a reverse guide whose leading PAM starts before the selection\'s first base',
+        doc: REVERSE_DOC,
+        // The PAM is 41..43 and the selection starts at 42: one base of it is outside.
+        selection: { start: 42, end: REVERSE_DOC.sequence.length },
+        strand: -1 as const,
+      },
+    ];
+
+    for (const { what, doc, selection, strand } of cases) {
+      await withApp(async (app) => {
+        await onCrisprTabWithSelection(app, doc, selection);
+        const scan = await engineGuidesIn(doc, selection);
+        expect(scan.report?.searchedInterval?.start, `${what}: the scan read the selected span`).toBe(
+          selection.start
+        );
+        expect(scan.report?.searchedInterval?.end, `${what}: to its last base`).toBe(selection.end);
+        expect(scan.guides.length, `${what}: the span holds the planted site and nothing else`).toBe(1);
+        const guide = scan.guides[0];
+        expect(guide.strand, `${what}: on the strand this case is about`).toBe(strand);
+        const parts = partsByBases(doc.sequence, guide);
+
+        // The fixture is only a fixture for this criterion if the boundary falls *inside* the PAM:
+        // some of it is inside the selection and some of it is not. AC3's fixture had none inside.
+        const boundary = strand === 1 ? selection.end : selection.start;
+        expect(parts.pam.start, `${what}: the PAM opens at or before the boundary`).toBeLessThanOrEqual(
+          boundary
+        );
+        expect(parts.pam.end, `${what}: and closes at or after it`).toBeGreaterThanOrEqual(boundary);
+        const outside = strand === 1 ? parts.pam.end - selection.end : selection.start - parts.pam.start;
+        expect(outside, `${what}: so the PAM straddles the boundary`).toBeGreaterThan(0);
+        expect(
+          outside,
+          `${what}: with bases of it inside the selection too, which is what a clip would keep`
+        ).toBeLessThan(guide.pamSeq.length);
+
+        for (const writer of ['the Top 5 button', 'the row\'s own Annotate'] as const) {
+          if (writer === 'the Top 5 button') {
+            await annotateTop5(app);
+          } else {
+            await app.menu('edit:undo');
+            await app.click(app.one(`[data-crispr-annotate="${guide.id}"]`, `the Annotate button for ${guide.id}`));
+          }
+          const written = ((await savedDocument(app, doc.id)).features as WrittenFeature[]).filter(
+            (f) => f.type === 'crispr_guide'
+          );
+          const pamFeat = written.find((f) => f.qualifiers?.guide_part === 'PAM')!;
+          const spacerFeat = written.find((f) => f.qualifiers?.guide_part === 'spacer')!;
+          expect(pamFeat, `${what}: ${writer} writes the PAM annotation`).toBeTruthy();
+          // The whole PAM, where the document's own bases say it is - not the part of it the
+          // selection happened to cover.
+          expect([pamFeat.start, pamFeat.end], `${what}: ${writer} writes the whole PAM`).toEqual([
+            parts.pam.start,
+            parts.pam.end,
+          ]);
+          expect(
+            pamFeat.end - pamFeat.start + 1,
+            `${what}: ${writer} writes every base of the PAM`
+          ).toBe(guide.pamSeq.length);
+          // And the feature agrees with its own qualifier: a clip that moves the span while leaving
+          // `pam_span` behind leaves a reader two different answers for one PAM.
+          expect(
+            pamFeat.qualifiers?.pam_span,
+            `${what}: ${writer} leaves no span and qualifier disagreeing`
+          ).toBe(`${pamFeat.start}..${pamFeat.end}`);
+          expect(pamFeat.qualifiers?.pam_span).toBe(`${parts.pam.start}..${parts.pam.end}`);
+          // The spacer is held to the same rule: this selection clips neither part.
+          expect([spacerFeat.start, spacerFeat.end], `${what}: ${writer} writes the whole spacer`).toEqual([
+            parts.spacer.start,
+            parts.spacer.end,
+          ]);
+          expect(spacerFeat.qualifiers?.spacer_span).toBe(`${spacerFeat.start}..${spacerFeat.end}`);
+        }
+      });
+    }
   });
 });
 

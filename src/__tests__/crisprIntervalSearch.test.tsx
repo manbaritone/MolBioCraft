@@ -44,6 +44,22 @@
  * from the callout's (the scope sentence is asserted to be text that is on screen, not a literal
  * written out here). A scan that sent no report is said to have no known scope rather than read as a
  * whole-sequence scan (LC-006), in the writer itself; no case here reaches that branch.
+ *
+ * BG-01M7EQAA AC4 is the topology: AC1's only whole-sequence fixture was `linear300`, so of the four
+ * branches of `crisprReadAs` the notes exercised two - the interval and the linear whole - and a
+ * hand-written "all N bases of this linear sequence" in the note's place passed all of AC1 while
+ * writing "linear" onto a plasmid. The AC4 case runs the same button on a circular record read whole
+ * and on a record longer than the engine reads, and asserts each note against the branch's own
+ * words. Wrong implementations it kills: the scope sentence hand-written in any one branch's words
+ * rather than read from the one formatter the callout reads (the circular case then says "linear",
+ * the bounded case claims all 8,000,100 bases); the origin bases dropped from the circular wording;
+ * a bounded prefix described as the whole sequence. Every number in the wording asserted is built
+ * from the scan report's own (`originSpanBp`, `scannedLengthBp`, `sequenceLengthBp`) rather than
+ * written out - the literals here are the engine's bound, asserted as a precondition, and the
+ * whole-sequence claim the bounded note must not make. On the circular branch the note's scope is
+ * asserted to be text the callout holds, so the two surfaces cannot drift apart; on the bounded
+ * branch the callout wraps the range in a sentence of its own (US-01M7DVAS AC4), so what the two
+ * share is the range, and the note is held to the formatter's full branch wording instead.
  */
 
 import React from 'react';
@@ -314,6 +330,103 @@ describe('BG-01M7EQAA AC1: the Top 5 annotation carries the scope of the count i
       app.unmount();
     }
   });
+});
+
+// ─── BG-01M7EQAA AC4: the scope sentence on a circle, and on a record read in part ───
+
+/**
+ * 100 bases past `GUIDE_SCAN_MAX_BP` (8,000,000, the largest range the engine reads): the only shape
+ * in which the shipped studio sees a scan that covered less than its sequence, and so the only
+ * fixture that reaches the bounded-prefix branch of the scope sentence.
+ */
+const pastTheBound = dnaDoc('Crispr_Interval_Past_Bound', randomDna(8_000_100, 0x15_7d04));
+
+/** The scope sentence a note states, as the note states it: everything after `seed matches=N, `. */
+const scopeOf = (note: string) =>
+  /seed matches=\d+[,.]?\s*counted over ([\s\S]*?)(?: — an interval specificity|$)/.exec(note)?.[1] ?? '';
+
+describe('BG-01M7EQAA AC4: the note states the scope of the branch the scan actually took', () => {
+  it('the Top 5 annotation note names the topology and the origin bases the callout names', async () => {
+    const app = await mountApp();
+    try {
+      // (a) A plasmid read whole: the note says the circle it is, and names the bases across its
+      // origin that only a circular read covers. AC1's linear fixture reached neither.
+      await appOnCrisprTab(app, circular400);
+      const circularScan = await engineScan(circular400);
+      expect(circularScan.report?.searchedInterval, 'the whole plasmid was read').toBeUndefined();
+      expect(circularScan.report?.scannedCircular, 'and read as the circle it is').toBe(true);
+      const originBp = circularScan.report?.originSpanBp ?? 0;
+      expect(originBp, 'so bases across its origin were read').toBeGreaterThan(0);
+      expect(circularScan.guides.length, 'the plasmid holds guides to annotate').toBeGreaterThan(0);
+      const circularWords = `all 400 bases of this circular sequence, including the ${originBp} across its origin`;
+      const circularSaid = calloutWords(app);
+      expect(circularSaid, 'the callout names the circle and its origin bases').toContain(circularWords);
+
+      await annotateTop5(app);
+      const circularNotes = seedNotes(await savedFeatures(app, circular400.id));
+      expect(circularNotes.length, 'one seed count stated per guide annotated').toBe(
+        Math.min(5, circularScan.guides.length)
+      );
+      for (const note of circularNotes) {
+        expect(note, 'the note names the topology, and the origin bases, the callout names').toContain(
+          circularWords
+        );
+        expect(note, 'a plasmid read whole is never called a linear sequence').not.toContain('linear sequence');
+        expect(note, 'no interval is claimed where none was searched').not.toContain('interval searched');
+        expect(note, 'a sequence-wide count is not called an interval specificity').not.toContain(
+          'an interval specificity'
+        );
+        // The words are the callout's own on this branch too, so the two surfaces cannot diverge.
+        const scope = scopeOf(note);
+        expect(scope.length, 'the note says what the count covered').toBeGreaterThan(20);
+        expect(circularSaid, 'in the words the callout uses').toContain(scope);
+      }
+
+      // (b) A record longer than the engine reads: the note names the prefix that was read, never
+      // the whole sequence and never a topology in place of the range.
+      await appOnCrisprTab(app, pastTheBound);
+      const boundedScan = await engineScan(pastTheBound);
+      expect(
+        [boundedScan.report?.scannedLengthBp, boundedScan.report?.sequenceLengthBp],
+        'the fixture is longer than the engine reads, so this scan stopped short'
+      ).toEqual([8_000_000, 8_000_100]);
+      expect(boundedScan.report?.searchedInterval, 'no interval was asked for').toBeUndefined();
+      expect(boundedScan.guides.length, 'the prefix read holds guides to annotate').toBeGreaterThan(0);
+      // The range as the scan reports it, and the whole branch wording the one formatter gives it —
+      // both built from the report's own numbers, neither copied out of the component.
+      const boundedRange = `bases 1 to ${boundedScan.report!.scannedLengthBp.toLocaleString('en-US')} of the ${boundedScan.report!.sequenceLengthBp.toLocaleString('en-US')} bases of this sequence`;
+      const boundedWords = `${boundedRange}, on both strands`;
+      const boundedSaid = calloutWords(app);
+      // The callout's seed sentence wraps this range in words of its own ("— the range searched …
+      // and no copy outside it", US-01M7DVAS AC4), so the range is what the two surfaces share.
+      expect(boundedSaid, 'the callout names the range read').toContain(boundedRange);
+      expect(boundedSaid, 'and claims none of the bases past it').not.toContain('all 8,000,100 bases');
+
+      await annotateTop5(app);
+      const boundedNotes = seedNotes(await savedFeatures(app, pastTheBound.id));
+      expect(boundedNotes.length, 'one seed count stated per guide annotated').toBe(
+        Math.min(5, boundedScan.guides.length)
+      );
+      for (const note of boundedNotes) {
+        // The formatter's own wording for this branch, in full: a note that states its scope in any
+        // other branch's words fails here even where the range happens to be named.
+        expect(note, 'the note states the prefix read in the formatter\'s own words').toContain(
+          `counted over ${boundedWords}`
+        );
+        expect(note, 'a scan that read part of the record claims none of the rest').not.toContain(
+          'all 8,000,100 bases'
+        );
+        expect(note, 'and does not call a bounded prefix a whole sequence of either topology').not.toMatch(
+          /this (linear|circular) sequence/
+        );
+        expect(note, 'no interval is claimed where none was searched').not.toContain('interval searched');
+        const scope = scopeOf(note);
+        expect(scope, 'the scope sentence is the branch wording and nothing else').toBe(boundedWords);
+      }
+    } finally {
+      app.unmount();
+    }
+  }, 600_000);
 });
 
 describe('US-01M7DVAS AC1: Find CRISPR Sites offers the whole sequence or the interval on screen', () => {
