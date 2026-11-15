@@ -325,6 +325,16 @@ pub const GUIDE_SCAN_MAX_BP: usize = 8_000_000;
 /// therefore red on a developer's machine, not only in CI where the wasm build runs before vitest
 /// (BG-01M7EKMJ AC1). The header literal is then edited by hand.
 ///
+/// That guard reads one declaration, so every other line of this file - the scorer's own weights
+/// among them - still reached no test without a rebuild: `on_target += 14` below became `+= 9` for
+/// that fix's own reviewer, with no rebuild and 7 tests green. So the build now records the sha256
+/// of every source under `crates/*/src` beside the engine it emits
+/// (`public/molbiocraft_wasm.wasm.sources.sha256`, written by `scripts/build_rust_wasm.mjs`), and
+/// the same vitest walks that tree again and names every file whose digest differs (BG-01M7FA80).
+/// Any edit here without `npm run wasm:build` is therefore red; for one that cannot alter codegen -
+/// a comment such as this one - `node scripts/build_rust_wasm.mjs --sources-only` re-records the
+/// sources without a 1.5 GiB rebuild.
+///
 /// The floor is enforced and the ceiling is arithmetic. The top is the sum of every raise the scorer
 /// can apply at once - 68 + 14 (GC inside 40-65 %) + 8 (G at spacer position 20) + 5 (C at position
 /// 16) + 3 (A or G at position 4) = 98 - so no score ever needs capping and `score_guide` has no

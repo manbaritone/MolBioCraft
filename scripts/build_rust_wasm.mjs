@@ -15,6 +15,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -280,8 +281,99 @@ export function droppedConfigRustflags({ cwd, cargoHome, env }) {
   return dropped;
 }
 
+/**
+ * The sidecar, beside the emitted engine, that records the Rust sources it was built from
+ * (BG-01M7FA80). `src/__tests__/crisprScoreProvenance.test.tsx` walks the tree again at test time
+ * and fails naming every file whose digest differs, so a compute change with no rebuild is red on a
+ * developer's machine instead of leaving a stale artifact that agrees with itself (LC-009).
+ */
+export const SOURCE_DIGEST_SIDECAR = 'public/molbiocraft_wasm.wasm.sources.sha256';
+
+/**
+ * Every Rust source the engine is built from, discovered by walking `crates/<crate>/src` - not an
+ * enumeration, so a file added tomorrow is covered the day it is added. Each crate's `src` tree is
+ * walked to any depth; every crate here happens to keep its sources flat today (the one directory
+ * below a `src`, `molbiocraft-cloning/src/sample_structures`, holds .pdb fixtures), so the descent
+ * is held by a tree the vitest builds rather than by this checkout. `tests/` and `benches/` are
+ * left out: cargo compiles them as their own targets, not into the cdylib.
+ *
+ * @param {string} rootDir the checkout root
+ * @returns {string[]} repo-relative, forward-slash paths, sorted
+ */
+export function crateSourceFiles(rootDir) {
+  const found = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith('.rs')) found.push(full);
+    }
+  };
+  const cratesDir = path.join(rootDir, 'crates');
+  for (const crate of fs.readdirSync(cratesDir, { withFileTypes: true })) {
+    if (!crate.isDirectory()) continue;
+    const src = path.join(cratesDir, crate.name, 'src');
+    if (fs.existsSync(src)) walk(src);
+  }
+  return found.map((p) => path.relative(rootDir, p).split(path.sep).join('/')).sort();
+}
+
+/**
+ * The sha256 of one source, with CRLF collapsed to LF so the digest is the same on every platform
+ * whatever a checkout did to the line endings (.gitattributes asks for LF; this does not rely on it).
+ *
+ * @param {string} text the file, as UTF-8
+ * @returns {string} hex
+ */
+export const sourceDigest = (text) => createHash('sha256').update(text.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
+
+/**
+ * The sidecar's text for a checkout: a `# ` header, then one `<sha256>  <path>` line per discovered
+ * source, sorted by path. Refuses to write a manifest with no entries, which would make the digest
+ * a constant and the guard vacuous.
+ *
+ * @param {string} rootDir the checkout root
+ * @returns {string}
+ */
+export function sourceDigestManifest(rootDir) {
+  const files = crateSourceFiles(rootDir);
+  if (files.length === 0) {
+    throw new Error(`no .rs source found under ${path.join(rootDir, 'crates')}/*/src: refusing to write an empty ${SOURCE_DIGEST_SIDECAR}`);
+  }
+  const lines = files.map((rel) => `${sourceDigest(fs.readFileSync(path.join(rootDir, rel), 'utf8'))}  ${rel}`);
+  return [
+    `# The Rust sources public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80).`,
+    `# Written by \`npm run wasm:build\`; checked by src/__tests__/crisprScoreProvenance.test.tsx,`,
+    `# which walks crates/*/src again and names every file that differs. Do not edit by hand.`,
+    ...lines,
+    '',
+  ].join('\n');
+}
+
+/**
+ * Writes the sidecar beside the engine and returns what it wrote.
+ *
+ * @param {string} rootDir the checkout root
+ * @returns {{ path: string, files: number }}
+ */
+export function writeSourceDigestSidecar(rootDir) {
+  const manifest = sourceDigestManifest(rootDir);
+  const out = path.join(rootDir, ...SOURCE_DIGEST_SIDECAR.split('/'));
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, manifest, 'utf8');
+  return { path: out, files: manifest.split('\n').filter((l) => !l.startsWith('#') && l !== '').length };
+}
+
 function main() {
   const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+  // `--sources-only` rewrites the provenance sidecar alone, for a change that cannot alter codegen
+  // (a comment, a doc line) where a full rebuild is not worth 1.5 GiB of target/.
+  if (process.argv.includes('--sources-only')) {
+    const { path: out, files } = writeSourceDigestSidecar(ROOT_DIR);
+    console.log(`[MolBioCraft WASM] Recorded ${files} Rust sources -> ${path.relative(ROOT_DIR, out)}`);
+    return;
+  }
   const LOCAL_RUSTUP = path.join(ROOT_DIR, '.toolchain', 'rustup');
   const LOCAL_CARGO = path.join(ROOT_DIR, '.toolchain', 'cargo');
   const LOCAL_CARGO_BIN = path.join(LOCAL_CARGO, 'bin', 'cargo');
@@ -384,6 +476,13 @@ function main() {
   const outWasmPath = path.join(publicDir, 'molbiocraft_wasm.wasm');
   fs.copyFileSync(wasmPath, outWasmPath);
 
+  // The engine's provenance, beside the engine: the sources this build compiled (BG-01M7FA80). An
+  // `--emit-only` run compiled nothing (it re-emits whatever target/ already holds, which is how
+  // src/__tests__/buildRustWasmGuard.test.ts drives this script over a fixture tree with no
+  // crates/), so it records nothing rather than claim a provenance it did not establish: the check
+  // then stays red until a real build, or `--sources-only`, writes it.
+  const sidecar = skipCargo ? null : writeSourceDigestSidecar(ROOT_DIR);
+
   // Clean up legacy generated TS base64 file if present
   const legacyTsDir = path.join(ROOT_DIR, 'src', 'wasm');
   if (fs.existsSync(legacyTsDir)) {
@@ -391,7 +490,7 @@ function main() {
   }
 
   console.log(
-    `[MolBioCraft WASM] Verified 0 imports, no build-machine paths & smoke-tested RPC! Wrote ${(wasmBytes.length / 1024).toFixed(1)} KiB WASM -> ${path.relative(ROOT_DIR, outWasmPath)}`
+    `[MolBioCraft WASM] Verified 0 imports, no build-machine paths & smoke-tested RPC! Wrote ${(wasmBytes.length / 1024).toFixed(1)} KiB WASM -> ${path.relative(ROOT_DIR, outWasmPath)}${sidecar === null ? '' : ` (+ ${sidecar.files} source digests -> ${path.relative(ROOT_DIR, sidecar.path)})`}`
   );
 }
 

@@ -453,3 +453,298 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
     expect(String(plugin.scoreModels.genomeWideSpecificity)).not.toMatch(/^\s*(0|100)\b/);
   }, 55_000);
 });
+
+/* ------------------------------------------------------------------------------------------------
+ * BG-01M7FA80: the committed engine carries the sources it was built from.
+ *
+ * Every check above reads its numbers from the engine the frontend has - the prebuilt
+ * `public/molbiocraft_wasm.wasm` behind `virtual:molbiocraft-wasm-bytes` - never from this
+ * checkout's Rust. BG-01M7EKMJ AC1 closed one keyhole in that wall by reading
+ * `CRISPR_HEURISTIC_RANK_RANGE` out of the source and asserting the artifact agrees; its own
+ * reviewer then changed `on_target += 14` to `+= 9` in `cloning_crispr.rs` and a label, skipped
+ * `npm run wasm:build`, and watched 7 tests pass. A guard whose firing depends on a stale artifact
+ * is LC-009 one step removed.
+ *
+ * So the build records a digest of every Rust source it compiled beside the engine it emits
+ * (`public/molbiocraft_wasm.wasm.sources.sha256`, written by `scripts/build_rust_wasm.mjs`), and
+ * this suite walks `crates/<crate>/src` again here and names every file that differs.
+ *
+ * Wrong implementations this kills:
+ * - digesting only the files some criterion happens to name (today's keyhole): the set is walked,
+ *   and the record must cover exactly what the walk finds, so a file nobody named is still covered;
+ * - digesting the wasm bytes alone, which agree with themselves whatever the source says: nothing
+ *   here reads the engine's bytes;
+ * - comparing modification times, which a fresh checkout reorders: nothing here reads an mtime;
+ * - a glob that matches nothing, which makes the digest a constant and the guard vacuous;
+ * - a missing, empty or unparseable record read as "the artifact is current" (LC-006).
+ */
+
+const nodeCryptoSpec = 'node:crypto';
+const nodeOsSpec = 'node:os';
+const nodeUrlSpec = 'node:url';
+const { createHash } = (await import(/* @vite-ignore */ nodeCryptoSpec)) as {
+  createHash: (algorithm: 'sha256') => {
+    update: (data: string, encoding: 'utf8') => { digest: (encoding: 'hex') => string };
+  };
+};
+const { tmpdir } = (await import(/* @vite-ignore */ nodeOsSpec)) as { tmpdir: () => string };
+const { pathToFileURL } = (await import(/* @vite-ignore */ nodeUrlSpec)) as {
+  pathToFileURL: (path: string) => URL;
+};
+const nodeFs = (await import(/* @vite-ignore */ nodeFsSpec)) as {
+  readFileSync: (path: URL, encoding: 'utf8') => string;
+  readdirSync: (
+    path: URL,
+    options: { withFileTypes: true }
+  ) => Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
+  existsSync: (path: URL) => boolean;
+  writeFileSync: (path: string, data: string, encoding: 'utf8') => void;
+  mkdirSync: (path: string, options: { recursive: true }) => void;
+  mkdtempSync: (prefix: string) => string;
+  rmSync: (path: string, options: { recursive: true; force: true }) => void;
+};
+
+/** This checkout's root, from this file's own location. */
+const REPO_ROOT = new URL('../../', import.meta.url);
+
+/** The record the build writes beside the engine (`scripts/build_rust_wasm.mjs`). */
+const SOURCE_DIGEST_SIDECAR = 'public/molbiocraft_wasm.wasm.sources.sha256';
+
+/** What every failure here asks for, and the only thing that rewrites the record. */
+const REBUILD = 'npm run wasm:build';
+
+/**
+ * The sha256 of one source, with CRLF collapsed to LF, so the digest is the same on every platform
+ * whatever a checkout did to the line endings. The same rule the build writes with.
+ */
+const digestOf = (text: string) => createHash('sha256').update(text.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
+
+/** The digest of a whole set of sources: its `<sha256>  <path>` lines, sorted. */
+const digestOfAll = (digests: Map<string, string>) =>
+  digestOf(
+    [...digests]
+      .map(([file, digest]) => `${digest}  ${file}`)
+      .sort()
+      .join('\n') + '\n'
+  );
+
+/**
+ * Every Rust source the engine is built from, discovered by walking the tree at test time - so a
+ * compute file added tomorrow is covered the day it is added, and no list is maintained anywhere.
+ * Each crate's `src` is walked to any depth; `tests/` and `benches/` are not compiled into the
+ * cdylib and are left out.
+ */
+function walkCrateSources(root: URL = REPO_ROOT): { files: string[]; crates: string[] } {
+  const files: string[] = [];
+  const crates: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of nodeFs.readdirSync(new URL(dir, root), { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(`${dir}${entry.name}/`);
+      else if (entry.isFile() && entry.name.endsWith('.rs')) files.push(`${dir}${entry.name}`);
+    }
+  };
+  for (const entry of nodeFs.readdirSync(new URL('crates/', root), { withFileTypes: true })) {
+    if (!entry.isDirectory() || !nodeFs.existsSync(new URL(`crates/${entry.name}/Cargo.toml`, root))) continue;
+    crates.push(entry.name);
+    if (nodeFs.existsSync(new URL(`crates/${entry.name}/src/`, root))) walk(`crates/${entry.name}/src/`);
+  }
+  return { files: files.sort(), crates: crates.sort() };
+}
+
+/** Each walked source, as the tree holds it now. */
+const readCrateSources = (files: string[]) =>
+  new Map(files.map((file) => [file, nodeFs.readFileSync(new URL(file, REPO_ROOT), 'utf8')] as const));
+
+/** The digest of each walked source, as the tree holds it now. */
+const currentSourceDigests = (sources: Map<string, string>) =>
+  new Map([...sources].map(([file, text]) => [file, digestOf(text)] as const));
+
+/**
+ * The record beside the engine, parsed. A missing, unreadable, empty, unparseable or entry-less
+ * record is told apart from an answer and named, and none of them may read as "the artifact is
+ * current" (LC-006, and the shape BG-01M7EKMJ AC1's own reader was written to avoid).
+ */
+function readRecordedSourceDigests(at: URL, label = SOURCE_DIGEST_SIDECAR): {
+  digests: Map<string, string>;
+  digest: string;
+} {
+  const refuse = (why: string) =>
+    new Error(
+      `the Rust sources recorded beside public/molbiocraft_wasm.wasm are ${why}. ` +
+        `This suite cannot tell whether the committed engine is the one this checkout's Rust says it is; ` +
+        `run \`${REBUILD}\` to record them. An unreadable record is not "the artifact is current".`
+    );
+  let text: string;
+  try {
+    text = nodeFs.readFileSync(at, 'utf8');
+  } catch (cause) {
+    const code = (cause as { code?: string }).code;
+    throw refuse(`${code === 'ENOENT' ? 'missing' : `unreadable (${code ?? String(cause)})`}: ${label}`);
+  }
+  if (text.trim() === '') throw refuse(`empty: ${label}`);
+  const digests = new Map<string, string>();
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '' || line.startsWith('#')) continue;
+    const entry = /^([0-9a-f]{64}) {2}(\S.*)$/.exec(line);
+    if (entry === null) {
+      throw refuse(`unparseable: ${label} line ${i + 1} is not \`<sha256>  <path>\` but "${line}"`);
+    }
+    digests.set(entry[2], entry[1]);
+  }
+  if (digests.size === 0) throw refuse(`unparseable: ${label} records no source at all`);
+  return { digests, digest: digestOfAll(digests) };
+}
+
+/** Every source whose current content the record does not account for, each said one way. */
+function differingSources(recorded: Map<string, string>, current: Map<string, string>): string[] {
+  const differ: string[] = [];
+  for (const [file, digest] of current) {
+    const was = recorded.get(file);
+    if (was === undefined) differ.push(`${file} (added since the engine was built)`);
+    else if (was !== digest) differ.push(`${file} (changed since the engine was built)`);
+  }
+  for (const file of recorded.keys()) {
+    if (!current.has(file)) differ.push(`${file} (recorded, but no longer in the tree)`);
+  }
+  return differ.sort();
+}
+
+/** What a reader is told when the engine lags its sources: which files, and what to run. */
+const staleMessage = (differ: string[]) =>
+  `public/molbiocraft_wasm.wasm was built from Rust sources this checkout no longer holds, so every ` +
+  `number this suite reads from the engine is the old code's. ${differ.length} file(s) differ:\n  ` +
+  `${differ.join('\n  ')}\nRun \`${REBUILD}\` (and commit the engine with the change), or ` +
+  `\`node scripts/build_rust_wasm.mjs --sources-only\` for a change that cannot alter codegen.`;
+
+describe('the committed engine carries the sources it was built from (BG-01M7FA80)', () => {
+  it('BG-01M7FA80 AC1 a changed Rust compute source without a rebuild fails by name', () => {
+    const { files } = walkCrateSources();
+    const current = currentSourceDigests(readCrateSources(files));
+    const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
+
+    // The engine beside the record was built from the sources this checkout holds.
+    const differ = differingSources(recorded.digests, current);
+    expect(differ, staleMessage(differ)).toEqual([]);
+
+    // And this is the failure a changed compute source gets: the file named, and the rebuild to
+    // run. The scorer's own weight - the mutation (`on_target += 14` to `+= 9`) that left 7 tests
+    // green for BG-01M7EKMJ's reviewer - is one line of one of these files, so changing it changes
+    // that file's digest and nothing else can absorb it.
+    const scorer = 'crates/molbiocraft-cloning/src/cloning_crispr.rs';
+    expect(current.has(scorer), `${scorer} is not among the ${files.length} digested sources`).toBe(true);
+    expect(readCrateSources([scorer]).get(scorer)).toContain('on_target += 14;');
+    const mutated = new Map(current).set(
+      scorer,
+      digestOf((readCrateSources([scorer]).get(scorer) ?? '').replace('on_target += 14;', 'on_target += 9;'))
+    );
+    const named = differingSources(recorded.digests, mutated);
+    expect(named).toEqual([`${scorer} (changed since the engine was built)`]);
+    expect(staleMessage(named)).toContain(scorer);
+    expect(staleMessage(named)).toContain(REBUILD);
+  });
+
+  it('BG-01M7FA80 AC2 the digested source set is discovered by walking crates', () => {
+    const { files, crates } = walkCrateSources();
+    const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
+
+    // A walk that matched nothing would make the digest a constant and the guard vacuous.
+    expect(crates.length, 'the walk found no crate under crates/').toBeGreaterThan(0);
+    expect(files.length, 'the walk found no .rs source: the digest would be a constant').toBeGreaterThan(0);
+
+    // Every crate the tree holds contributes, so an enumeration that named four of seven
+    // (BG-01M7FC2X) cannot pass: the crates are the walk's, not a list written here.
+    for (const crate of crates) {
+      const ofCrate = files.filter((file) => file.startsWith(`crates/${crate}/src/`));
+      expect(ofCrate.length, `no source of crates/${crate} is digested`).toBeGreaterThan(0);
+    }
+    // The walk is a walk, shown on a tree built here, because this checkout happens to keep every
+    // crate's sources flat (its one directory below a `src` holds .pdb fixtures) - so the real tree
+    // cannot tell a recursive walk from a single readdir, and a crate added tomorrow with its
+    // modules in directories would be digested by one and missed by the other.
+    const tree = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FA80-walk-`);
+    try {
+      for (const [file, text] of [
+        ['crates/new-crate/Cargo.toml', '[package]\nname = "new-crate"\n'],
+        ['crates/new-crate/src/lib.rs', 'pub mod deep;\n'],
+        ['crates/new-crate/src/deep/mod.rs', 'pub mod deeper;\n'],
+        ['crates/new-crate/src/deep/deeper/compute.rs', 'pub fn rank() -> i32 { 68 }\n'],
+        ['crates/new-crate/src/notes.md', 'not a source\n'],
+        ['crates/new-crate/tests/integration.rs', '#[test] fn t() {}\n'],
+        ['crates/not-a-crate/src/lib.rs', 'pub fn stray() {}\n'],
+      ] as const) {
+        nodeFs.mkdirSync(`${tree}/${file.slice(0, file.lastIndexOf('/'))}`, { recursive: true });
+        nodeFs.writeFileSync(`${tree}/${file}`, text, 'utf8');
+      }
+      const walked = walkCrateSources(pathToFileURL(`${tree}/`));
+      expect(walked.crates, 'a directory with no Cargo.toml is not a crate').toEqual(['new-crate']);
+      expect(walked.files, 'the walk digests every .rs below a crate\'s src/, and only those').toEqual([
+        'crates/new-crate/src/deep/deeper/compute.rs',
+        'crates/new-crate/src/deep/mod.rs',
+        'crates/new-crate/src/lib.rs',
+      ]);
+    } finally {
+      nodeFs.rmSync(tree, { recursive: true, force: true });
+    }
+
+    // The crates the rank is computed in, found in what the walk read rather than named one by one.
+    const sources = readCrateSources(files);
+    for (const symbol of ['CRISPR_HEURISTIC_RANK_RANGE', 'crispr_heuristic_rank_description', 'on_target +=']) {
+      const holders = [...sources].filter(([, text]) => text.includes(symbol)).map(([file]) => file);
+      expect(holders.length, `no digested source names ${symbol}`).toBeGreaterThan(0);
+      for (const file of holders) {
+        expect(recorded.digests.has(file), `${file} names ${symbol} but is not in ${SOURCE_DIGEST_SIDECAR}`).toBe(true);
+      }
+    }
+
+    // And the record covers exactly the walk - neither side may be a hand-written list.
+    expect([...recorded.digests.keys()].sort()).toEqual(files);
+  });
+
+  it('BG-01M7FA80 AC3 a clean tree passes and an unreadable digest refuses by name', () => {
+    // Silent on a clean tree, and it reports the digest it matched.
+    const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
+    const { files } = walkCrateSources();
+    const current = currentSourceDigests(readCrateSources(files));
+    expect(recorded.digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(digestOfAll(current)).toBe(recorded.digest);
+    console.info(
+      `BG-01M7FA80: public/molbiocraft_wasm.wasm matches sha256 ${recorded.digest} over ${recorded.digests.size} Rust sources`
+    );
+
+    // And it refuses, by name, rather than agreeing when it cannot tell.
+    const dir = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FA80-provenance-`);
+    try {
+      const cases: Array<{ as: string; file: string; text: string | null; names: RegExp }> = [
+        { as: 'missing', file: 'absent.sha256', text: null, names: /are missing: / },
+        { as: 'empty', file: 'empty.sha256', text: '', names: /are empty: / },
+        { as: 'whitespace only', file: 'blank.sha256', text: '\n  \n\n', names: /are empty: / },
+        {
+          as: 'unparseable',
+          file: 'garbled.sha256',
+          text: '# a header\nnot-a-digest crates/molbiocraft-core/src/lib.rs\n',
+          names: /are unparseable: .* line 2 is not /,
+        },
+        { as: 'entry-less', file: 'comments.sha256', text: '# a header and nothing else\n', names: /records no source at all/ },
+      ];
+      for (const { as, file, text, names } of cases) {
+        const path = `${dir}/${file}`;
+        if (text !== null) nodeFs.writeFileSync(path, text, 'utf8');
+        let thrown: unknown;
+        try {
+          readRecordedSourceDigests(pathToFileURL(path), file);
+        } catch (cause) {
+          thrown = cause;
+        }
+        const message = thrown instanceof Error ? thrown.message : `nothing was thrown: ${String(thrown)}`;
+        // Named as what it is, never defaulted into agreement, and it says how to fix it.
+        expect(message, `a ${as} record must refuse by name`).toMatch(names);
+        expect(message, `a ${as} record must not read as agreement`).toContain(REBUILD);
+        expect(message, `a ${as} record must not be answered with a default`).not.toMatch(/nothing was thrown/);
+      }
+    } finally {
+      nodeFs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
