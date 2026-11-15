@@ -15565,6 +15565,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       doc={activeDoc}
                       initialSubTab={primersInitialSubTab}
                       commandNonce={studioCommandNonce}
+                      /* The one active interval (PRD F03): the bases on screen, which Find CRISPR
+                         Sites offers as the range to search beside the whole sequence
+                         (US-01M7DVAS). */
+                      selectedRange={selectedRange}
                       primerDatabaseRevision={primerDbRefresh}
                       allDocuments={documents}
                       onUpdateDocument={handleUpdateDocument}

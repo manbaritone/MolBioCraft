@@ -280,6 +280,10 @@ describe('a CRISPR scan reports its own numbers even with no guide (US-01M7DVH2)
       sequenceLengthBp: 36,
       scannedCircular: false,
       originSpanBp: 0,
+      // A whole-sequence scan read no base outside an interval, because it searched none
+      // (US-01M7DVAS): the field is 0 rather than absent, and `searchedInterval` is absent rather
+      // than a pair of zeroes, so this envelope still claims no interval at all.
+      contextOutsideIntervalBp: 0,
       warnings: [],
     });
 

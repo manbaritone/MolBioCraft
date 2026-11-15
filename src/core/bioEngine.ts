@@ -491,6 +491,28 @@ export interface CrisprScanGuide extends CrisprGuideRecord {
   cutPositionTargetStrandNote?: string;
   /** Which bases of `pamSeq` are an ambiguity letter rather than a base the scan read; absent where none are. */
   pamAmbiguityNote?: string;
+  /** The interval this guide was searched for in; absent where the scan read the whole sequence. */
+  searchedInterval?: CrisprSearchedInterval;
+  /**
+   * What this guide read outside the interval searched (US-01M7DVAS AC2): its spacer is inside the
+   * interval, so only its PAM can be outside, and the sentence names that PAM's own bases. Absent
+   * for a whole-sequence scan and for a site wholly inside the interval.
+   */
+  intervalContextNote?: string;
+}
+
+/**
+ * The 1-based inclusive interval a scan searched (US-01M7DVAS). On a circular record `start > end`
+ * runs across the origin - the convention the active-interval model uses (`crossesOrigin`) - and
+ * `lengthBp` counts both sides of it, so a reader never takes `end - start` for the length
+ * (BG-01M7CG2W). It is the interval really searched, which is not always the one asked for: one
+ * longer than the engine's scan bound is searched from its start for that many bases.
+ */
+export interface CrisprSearchedInterval {
+  start: number;
+  end: number;
+  lengthBp: number;
+  crossesOrigin: boolean;
 }
 
 /** The scan's own report (US-01M7DVH2): what a CRISPR guide scan searched and what it found. */
@@ -505,6 +527,20 @@ export interface CrisprScanReport {
   scannedCircular: boolean;
   /** The bases across the origin a circular scan read, or 0 when it did not wrap. */
   originSpanBp: number;
+  /**
+   * The interval searched (US-01M7DVAS), or absent where the scan read the whole sequence or a
+   * prefix bound of it. Present is what says `scannedLengthBp` counts an interval, so a reader
+   * never prints an interval scan as a scan of bases 1 to N - or of the whole sequence.
+   */
+  searchedInterval?: CrisprSearchedInterval;
+  /**
+   * Why no interval was searched although one was asked for: bounds outside the sequence, an
+   * interval shorter than the nuclease's site span, or an across-origin interval on a linear
+   * record. Such a scan searched nothing and claims no range.
+   */
+  intervalRefusal?: string;
+  /** The bases outside the interval the scan read as PAM context, and for nothing else. */
+  contextOutsideIntervalBp: number;
   /** One plain sentence per range or list the scan could not report whole (D0005). */
   warnings: string[];
 }
@@ -532,7 +568,23 @@ function isCrisprScanReport(value: unknown): value is CrisprScanReport & { guide
     typeof v.sequenceLengthBp === 'number' &&
     typeof v.scannedCircular === 'boolean' &&
     typeof v.originSpanBp === 'number' &&
+    // US-01M7DVAS: an engine that cannot say how many bases outside the interval it read cannot be
+    // asked for an interval at all, so its reply is no report rather than one read as zeroes.
+    typeof v.contextOutsideIntervalBp === 'number' &&
     Array.isArray(v.warnings)
+  );
+}
+
+/** Whether `value` is the engine's interval shape, with the type each field must have. */
+function isSearchedInterval(value: unknown): value is CrisprSearchedInterval {
+  const v = value as Record<string, unknown> | null;
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    typeof v.start === 'number' &&
+    typeof v.end === 'number' &&
+    typeof v.lengthBp === 'number' &&
+    typeof v.crossesOrigin === 'boolean'
   );
 }
 
@@ -544,13 +596,20 @@ function isCrisprScanReport(value: unknown): value is CrisprScanReport & { guide
  *
  * A reply without the report, and a call that threw, both come back with `report` absent and
  * `reportUnavailableReason` set; neither is turned into zeroes.
+ *
+ * `interval` searches one arc of the record instead of all of it (US-01M7DVAS): 1-based and
+ * inclusive, `start > end` running across the origin of a circular record. The engine refuses an
+ * interval it cannot search - bounds outside the sequence, shorter than the nuclease's site span, or
+ * across the origin of a linear record - and the report then carries `intervalRefusal` with the
+ * reason and no range; it is never widened to the whole sequence on the caller's behalf.
  */
 export function scanCrisprGuides(
   rawSeq: string,
   /** A preset id from {@link crisprNucleasePresets}; the engine refuses any other (D0130). */
   nuclease = 'SpCas9 (NGG)',
   maxResults = 30,
-  circular = false
+  circular = false,
+  interval?: { start: number; end: number } | null
 ): CrisprScanResult {
   let reply: unknown;
   try {
@@ -559,6 +618,9 @@ export function scanCrisprGuides(
       nuclease,
       maxResults,
       circular,
+      // Both bounds or neither: the engine refuses one alone rather than reading it as the whole
+      // sequence.
+      ...(interval ? { start1Based: interval.start, end1Based: interval.end } : {}),
     });
   } catch (e) {
     return {
@@ -572,6 +634,18 @@ export function scanCrisprGuides(
   if (!isCrisprScanReport(reply)) {
     return { guides, reportUnavailableReason: 'the engine returned no scan report' };
   }
+  const searched = (reply as { searchedInterval?: unknown }).searchedInterval;
+  const refusal = (reply as { intervalRefusal?: unknown }).intervalRefusal;
+  // An interval this reader cannot read is no report at all: dropping it would leave
+  // `scannedLengthBp` counting an interval under a report that claims none, which reads as a scan of
+  // the whole sequence - the one thing an interval scan must never be shown as (US-01M7DVAS AC4).
+  if (searched !== undefined && !isSearchedInterval(searched)) {
+    return {
+      guides,
+      reportUnavailableReason:
+        'the engine reported an interval in a shape this reader does not know, so what it searched cannot be stated',
+    };
+  }
   return {
     guides,
     report: {
@@ -580,6 +654,9 @@ export function scanCrisprGuides(
       sequenceLengthBp: reply.sequenceLengthBp,
       scannedCircular: reply.scannedCircular,
       originSpanBp: reply.originSpanBp,
+      contextOutsideIntervalBp: reply.contextOutsideIntervalBp,
+      ...(isSearchedInterval(searched) ? { searchedInterval: searched } : {}),
+      ...(typeof refusal === 'string' ? { intervalRefusal: refusal } : {}),
       warnings: reply.warnings,
     },
   };

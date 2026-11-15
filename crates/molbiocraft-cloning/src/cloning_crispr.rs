@@ -145,6 +145,23 @@ fn cut_offsets(id: &str) -> (usize, Option<usize>) {
         .unwrap_or((17, None))
 }
 
+/// The 1-based inclusive interval a scan searched (US-01M7DVAS), as a reader reads it: on a
+/// circular record `start > end` runs across the origin — the convention this workbench already
+/// uses for a site that straddles it — and `length_bp` then counts both sides of the origin. It is
+/// the interval that was really searched, which is not always the one asked for: an interval longer
+/// than [`GUIDE_SCAN_MAX_BP`] is searched from its start for that many bases, and this names the
+/// shorter one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchedInterval {
+    pub start: usize,
+    pub end: usize,
+    /// The bases the interval holds, counting both bounds and both sides of the origin.
+    pub length_bp: usize,
+    /// Whether the interval runs across the origin of a circular record (`start > end`).
+    pub crosses_origin: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CrisprGuideRecord {
@@ -218,6 +235,18 @@ pub struct CrisprGuideRecord {
     /// base of the PAM is one of A, C, G and T.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pam_ambiguity_note: Option<String>,
+    /// The interval this guide was searched for in (US-01M7DVAS), or `None` where the scan read the
+    /// whole sequence (or a prefix bound of it, which `scanned_length_bp` names). It is what says
+    /// that the specificity on this row was counted over an interval and is an interval
+    /// specificity, never a sequence-wide one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searched_interval: Option<SearchedInterval>,
+    /// What this guide read outside the interval searched (US-01M7DVAS AC2): its spacer is inside
+    /// the interval — nothing else is returned — so only its PAM can be outside, and this names
+    /// that PAM's own bases. `None` for a whole-sequence scan, and for a site that lies wholly
+    /// inside the interval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_context_note: Option<String>,
 }
 
 /// A CRISPR guide scan: the guides it kept, how many candidates it found, and the range of the
@@ -240,6 +269,21 @@ pub struct CrisprGuideScan {
     /// The bases across the origin a circular scan read, or 0 when it did not wrap.
     #[serde(default)]
     pub origin_span_bp: usize,
+    /// The interval this scan searched, or `None` where it read the whole sequence or a prefix bound
+    /// of it (US-01M7DVAS): the range `scanned_length_bp` counts, and what says that the seed counts
+    /// behind these specificities cover an interval alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searched_interval: Option<SearchedInterval>,
+    /// Why no interval was searched although one was asked for (US-01M7DVAS AC6): bounds outside
+    /// the sequence, an interval shorter than the nuclease's site span, or an across-origin interval
+    /// on a linear record. The reason echoes the interval as it was asked for, and such a scan
+    /// returns no guide and claims no range (`scanned_length_bp` is 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_refusal: Option<String>,
+    /// The bases outside the interval the scan read as PAM context, and for nothing else; 0 for a
+    /// whole-sequence scan and for an interval that is the whole of a circle.
+    #[serde(default)]
+    pub context_outside_interval_bp: usize,
     /// One plain sentence per range or list this scan could not report whole (D0005).
     #[serde(default)]
     pub warnings: Vec<String>,
@@ -448,6 +492,10 @@ pub fn find_crispr_guides_for_topology(
 /// the origin reads `start > end`, and no site is listed twice. A bound shorter than the sequence
 /// cannot wrap — bases 1 to `scanned` are not a circle — so such a scan reads the range straight and
 /// reports it in `warnings`; `scanned_circular` says which of the two happened.
+///
+/// This reads the sequence from base 1 and no other arc of it. Call
+/// [`scan_crispr_guides_in_interval`] to search the interval on screen instead (US-01M7DVAS),
+/// including one that runs across the origin of a plasmid.
 pub fn scan_crispr_guides(
     raw_seq: &str,
     nuclease: &str,
@@ -455,11 +503,180 @@ pub fn scan_crispr_guides(
     scan_limit_bp: Option<usize>,
     circular: bool,
 ) -> CrisprGuideScan {
+    scan_guides(raw_seq, nuclease, max_results, scan_limit_bp, None, circular)
+}
+
+/// [`scan_crispr_guides`] over one interval of the record rather than all of it (US-01M7DVAS): the
+/// 1-based inclusive `interval` Adaeze has on screen, which on a circular record may run
+/// `start > end` across the origin. `None` is the whole sequence, exactly as [`scan_crispr_guides`]
+/// reads it.
+///
+/// What an interval changes, and what it does not:
+///
+/// - A candidate is returned only when its **whole spacer** lies inside the interval. A candidate
+///   whose spacer is inside but whose PAM is not is returned and carries
+///   [`CrisprGuideRecord::interval_context_note`], which names the PAM's own bases: the PAM was read
+///   from `pam_pattern.len()` bases of context either side of the interval, which are read for a PAM
+///   and for nothing else. A candidate whose spacer crosses a bound is not a candidate of that
+///   interval at all.
+/// - Seed matches are counted over the interval alone, on both strands, so the specificity of a
+///   guide found this way is an **interval** specificity. `searched_interval` is what says so, and
+///   the scan's `warnings` say it in words.
+/// - Coordinates do not move: every start, end and cut position is in `1..=length` of the whole
+///   record, and a site across the origin reads `start > end` — the same guide, in either scope.
+/// - [`GUIDE_SCAN_MAX_BP`] still bounds the bases an interval asks for; an interval longer than it
+///   is read from its start for that many bases, and `searched_interval` then names the shorter
+///   interval that was really searched.
+/// - An interval that is not inside the sequence, that is shorter than the nuclease's site span, or
+///   that runs `start > end` on a linear record (which has no origin to run across) is refused:
+///   `interval_refusal` and `warnings` carry the reason with the interval echoed, no guide is
+///   returned, and `scanned_length_bp` is 0 — a refused scan claims no range.
+pub fn scan_crispr_guides_in_interval(
+    raw_seq: &str,
+    nuclease: &str,
+    max_results: usize,
+    interval: Option<(usize, usize)>,
+    circular: bool,
+) -> CrisprGuideScan {
+    scan_guides(raw_seq, nuclease, max_results, None, interval, circular)
+}
+
+/// The interval a scan may search, or why it may search none (US-01M7DVAS AC3, AC6). Every refusal
+/// echoes the interval as it was asked for, so a reader is never left guessing which bounds were
+/// rejected. `max_bp` is the cap the caller applies ([`GUIDE_SCAN_MAX_BP`] in the scan itself): an
+/// interval longer than it is searched from its start for that many bases, and the plan then names
+/// the shorter interval rather than the one asked for.
+fn plan_interval(
+    start: usize,
+    end: usize,
+    seq_len: usize,
+    circular: bool,
+    span: usize,
+    nuclease: &str,
+    max_bp: usize,
+) -> Result<IntervalPlan, String> {
+    let asked = format!(
+        "{}..{}",
+        format_thousands(start),
+        format_thousands(end)
+    );
+    if start < 1 || end < 1 || start > seq_len || end > seq_len {
+        return Err(format!(
+            "The interval {asked} is not inside this sequence: both bounds must be between 1 and {}, so no guide was searched for.",
+            format_thousands(seq_len)
+        ));
+    }
+    let crosses_origin = start > end;
+    if crosses_origin && !circular {
+        return Err(format!(
+            "The interval {asked} runs from a start past its end, which is an interval across the origin of a circle; this sequence is linear and has no origin to run across, so no guide was searched for. Ask for {asked_low}..{} or 1..{} instead.",
+            format_thousands(seq_len),
+            format_thousands(end),
+            asked_low = format_thousands(start)
+        ));
+    }
+    let length_bp = if crosses_origin {
+        seq_len - start + 1 + end
+    } else {
+        end - start + 1
+    };
+    if length_bp < span {
+        return Err(format!(
+            "The interval {asked} is {} bp, shorter than the {}-bp site of {nuclease}, so it holds no whole site and no guide was searched for.",
+            format_thousands(length_bp),
+            format_thousands(span)
+        ));
+    }
+    if length_bp > max_bp {
+        let capped_end = (start - 1 + max_bp - 1) % seq_len + 1;
+        return Ok(IntervalPlan {
+            interval: SearchedInterval {
+                start,
+                end: capped_end,
+                length_bp: max_bp,
+                crosses_origin: start > capped_end,
+            },
+            cap_note: Some(format!(
+                "The interval {asked} asks for {} bases, more than the {} a guide scan reads at once, so guides were searched for in bases {}..{} — its first {} bases — on both strands, and seed matches counted there.",
+                format_thousands(length_bp),
+                format_thousands(max_bp),
+                format_thousands(start),
+                format_thousands(capped_end),
+                format_thousands(max_bp)
+            )),
+        });
+    }
+    Ok(IntervalPlan {
+        interval: SearchedInterval {
+            start,
+            end,
+            length_bp,
+            crosses_origin,
+        },
+        cap_note: None,
+    })
+}
+
+/// A planned interval: the interval that will really be searched, and the sentence owed where that
+/// is not the one asked for.
+struct IntervalPlan {
+    interval: SearchedInterval,
+    cap_note: Option<String>,
+}
+
+/// [`scan_crispr_guides`] and [`scan_crispr_guides_in_interval`] are this one scan: `scan_limit_bp`
+/// bounds a whole-sequence scan from base 1, `interval` searches one arc of the record, and the two
+/// are not combined — an interval carries its own bound ([`GUIDE_SCAN_MAX_BP`]).
+fn scan_guides(
+    raw_seq: &str,
+    nuclease: &str,
+    max_results: usize,
+    scan_limit_bp: Option<usize>,
+    interval: Option<(usize, usize)>,
+    circular: bool,
+) -> CrisprGuideScan {
     let s = clean_alpha_sequence(raw_seq).replace('U', "T");
     let seq_len = s.len();
-    let scanned = seq_len.min(scan_limit_bp.unwrap_or(GUIDE_SCAN_MAX_BP));
+    // The nuclease asked for, as a preset rather than a name (US-01M7DV29): an id that is not a
+    // preset is refused here with the supported ids, and no sequence is screened by another
+    // nuclease's rule. The refusal is this scan's own warning and an error at the op, so an
+    // in-process caller is never handed SpCas9's guides for a name it did not send (D0130). It is
+    // resolved before the interval is planned, because the refusal of an interval shorter than a
+    // whole site names that nuclease's own span.
+    let preset = match resolve_nuclease_preset(nuclease) {
+        Ok(p) => p,
+        Err(reason) => return refused_scan(seq_len, reason, None),
+    };
+    let is_spcas9 = preset.pam_side == "3'";
+    let (cut_offset, cut_offset_target) = cut_offsets(&preset.id);
+    // SpCas9: 20-nt spacer then a 3-nt PAM. Cas12a: a 4-nt PAM then a 20-nt spacer. The bases a
+    // candidate occupies, and so the last start position each strand has: the loop once read
+    // `0..=(len - 24)` for both, which never examined SpCas9's last start (BG-01M6T6GQ).
+    let span = preset.site_span_bp;
+    let spacer_len = preset.spacer_length_bp;
+    let pam_len = span - spacer_len;
+
+    // The interval asked for, as the interval that can be searched — or the refusal, which returns
+    // no guides and claims no range (US-01M7DVAS AC6).
+    let plan = match interval {
+        None => None,
+        Some((from, to)) => {
+            match plan_interval(from, to, seq_len, circular, span, &preset.id, GUIDE_SCAN_MAX_BP) {
+                Ok(plan) => Some(plan),
+                Err(reason) => return refused_scan(seq_len, reason.clone(), Some(reason)),
+            }
+        }
+    };
+    let searched_interval = plan.as_ref().map(|p| p.interval);
+    // The bases searched: an interval's own, or the prefix bound's.
+    let scanned = match &plan {
+        Some(p) => p.interval.length_bp,
+        None => seq_len.min(scan_limit_bp.unwrap_or(GUIDE_SCAN_MAX_BP)),
+    };
+    // A prefix bound shorter than the sequence is named in `warnings`; an interval has its own
+    // sentence below, so this one is never raised for it (it would read as bases 1 to N).
     let bounded_warning = |scanned: usize| -> Vec<String> {
-        if scanned < seq_len {
+        if plan.is_none() && scanned < seq_len {
             vec![format!(
                 "Guides were searched for in bases 1 to {} of the {} bases of this sequence, on both strands, and seed matches counted there: a guide or a seed match outside that range is not in this result.",
                 format_thousands(scanned),
@@ -469,30 +686,6 @@ pub fn scan_crispr_guides(
             Vec::new()
         }
     };
-    // The nuclease asked for, as a preset rather than a name (US-01M7DV29): an id that is not a
-    // preset is refused here with the supported ids, and no sequence is screened by another
-    // nuclease's rule. The refusal is this scan's own warning and an error at the op, so an
-    // in-process caller is never handed SpCas9's guides for a name it did not send (D0130).
-    let preset = match resolve_nuclease_preset(nuclease) {
-        Ok(p) => p,
-        Err(reason) => {
-            return CrisprGuideScan {
-                guides: Vec::new(),
-                candidate_count: 0,
-                scanned_length_bp: 0,
-                sequence_length_bp: seq_len,
-                scanned_circular: false,
-                origin_span_bp: 0,
-                warnings: vec![reason],
-            }
-        }
-    };
-    let is_spcas9 = preset.pam_side == "3'";
-    let (cut_offset, cut_offset_target) = cut_offsets(&preset.id);
-    // SpCas9: 20-nt spacer then a 3-nt PAM. Cas12a: a 4-nt PAM then a 20-nt spacer. The bases a
-    // candidate occupies, and so the last start position each strand has: the loop once read
-    // `0..=(len - 24)` for both, which never examined SpCas9's last start (BG-01M6T6GQ).
-    let span = preset.site_span_bp;
     if scanned < span {
         return CrisprGuideScan {
             guides: Vec::new(),
@@ -501,20 +694,59 @@ pub fn scan_crispr_guides(
             sequence_length_bp: seq_len,
             scanned_circular: false,
             origin_span_bp: 0,
+            searched_interval,
+            interval_refusal: None,
+            context_outside_interval_bp: 0,
             warnings: bounded_warning(scanned),
         };
     }
     let limit = max_results;
     let nuc_label = preset.id.clone();
-    // A circular record is read as a circle only when the whole of it was read: bases 1 to a bound
-    // shorter than the sequence do not meet, so that range is read straight.
+    // A circular record is read as a circle only where the searched range closes on itself: bases 1
+    // to a bound shorter than the sequence do not meet, and neither do the ends of a proper arc, so
+    // such a range is read straight.
     let wraps = circular && scanned == seq_len;
+    // An interval that is a proper arc may read `pam_len` bases either side of it as PAM context,
+    // and for nothing else (US-01M7DVAS AC2). The count is clamped so that no base of the interval
+    // is read as context as well, and on a linear record so that nothing past either end is read at
+    // all (AC3): a line has no base before its first or after its last.
+    let (ctx_left, ctx_right) = match &plan {
+        Some(p) if !wraps => {
+            if circular {
+                let outside = seq_len - p.interval.length_bp;
+                (pam_len.min(outside), pam_len.min(outside))
+            } else {
+                (
+                    pam_len.min(p.interval.start - 1),
+                    pam_len.min(seq_len - p.interval.end),
+                )
+            }
+        }
+        _ => (0, 0),
+    };
+    // Where the searched range begins, as a 1-based coordinate of the whole record: base 1 for a
+    // whole-sequence scan, the interval's own start for an interval.
+    let core_start = plan.as_ref().map(|p| p.interval.start).unwrap_or(1);
 
-    // Both strands of the same range. The reverse complement is taken of the scanned bases only, so
-    // a bounded scan reads the first `scanned` bases of each strand — not the first of one and the
-    // last of the other, which left a forward guide past the bound and a reverse guide before it
-    // invisible.
-    let top = &s[..scanned];
+    // Both strands of the same bases. For a whole-sequence scan those are the first `scanned` bases
+    // of each strand — the reverse complement is taken of the scanned bases only, so a bounded scan
+    // does not read the first of one strand and the last of the other, which left a forward guide
+    // past the bound and a reverse guide before it invisible. For an interval they are the
+    // interval's own bases with its context either side of them, read round the origin where the
+    // interval runs across it.
+    let interval_bases: Option<String> = plan.as_ref().map(|_| {
+        let bytes = s.as_bytes();
+        let first =
+            (core_start as isize - 1 - ctx_left as isize).rem_euclid(seq_len as isize) as usize;
+        let read: Vec<u8> = (0..ctx_left + scanned + ctx_right)
+            .map(|k| bytes[(first + k) % seq_len])
+            .collect();
+        String::from_utf8(read).expect("a cleaned sequence is ASCII")
+    });
+    let top: &str = match &interval_bases {
+        Some(bases) => bases.as_str(),
+        None => &s[..scanned],
+    };
     let rc = reverse_complement_iupac(top, false);
     // Reading a circle: each strand is followed by a copy of its own first `span - 1` bases, so a
     // window that runs off the last base continues at base 1 — on the reverse strand too, whose own
@@ -534,9 +766,16 @@ pub fn scan_crispr_guides(
     let rc_ext = extended(rc.as_bytes(), wraps, span);
     let s_bytes: &[u8] = &s_ext;
     let rc_bytes: &[u8] = &rc_ext;
-    // Every start position of each strand: all `scanned` of them on a circle, where every base
-    // begins a site, and `scanned - span + 1` on a line, where the last site ends at the last base.
-    let starts = if wraps { scanned } else { scanned - span + 1 };
+    // The bases read on each strand before any circular copy: the searched range, plus an
+    // interval's context either side of it.
+    let base_len = top.len();
+    // Where the searched range sits inside them, and how long it is.
+    let core_at = ctx_left;
+    let core_len = scanned;
+    // Every start position of each strand: all `core_len` of them on a circle read whole, where
+    // every base begins a site, and `base_len - span + 1` on a range read straight, where the last
+    // site ends at its last base.
+    let starts = if wraps { core_len } else { base_len - span + 1 };
 
     /// A candidate guide's spacer and PAM on one strand, by the rule of the chosen nuclease, or
     /// `None` where that strand carries no candidate at `i` (no PAM, or an ambiguity code in the
@@ -574,11 +813,50 @@ pub fn scan_crispr_guides(
         }
     }
 
+    // Where a candidate's own bases sit among the bases read, as an offset from the first base of
+    // the searched range: negative inside the context before it, `core_len` or more inside the
+    // context after it or across the origin of a circle read whole. The site's bases ascend in
+    // plus-strand order from here, on either strand, because a reverse-strand position `j` is the
+    // plus base `base_len - 1 - j`.
+    let site_core_rel = |i: usize, strand: i8| -> isize {
+        if strand == 1 {
+            i as isize - core_at as isize
+        } else {
+            base_len as isize - i as isize - span as isize - core_at as isize
+        }
+    };
+    // Where the spacer begins among them, and where the PAM does: in plus-strand order the PAM
+    // leads exactly when the nuclease's PAM side and the strand disagree, so SpCas9's forward site
+    // opens with its spacer and its reverse site opens with its PAM.
+    let spacer_leads = |strand: i8| is_spcas9 == (strand == 1);
+    let spacer_core_rel = |i: usize, strand: i8| -> isize {
+        site_core_rel(i, strand) + if spacer_leads(strand) { 0 } else { pam_len as isize }
+    };
+    let pam_core_rel = |i: usize, strand: i8| -> isize {
+        site_core_rel(i, strand) + if spacer_leads(strand) { spacer_len as isize } else { 0 }
+    };
+    // Whether `[from, from + len)` lies inside the searched range.
+    let inside_core = |from: isize, len: usize| -> bool {
+        from >= 0 && from + len as isize <= core_len as isize
+    };
+    // A candidate of the searched range: its whole spacer is in it. On a circle read whole every
+    // base of the record is in it, including the bases a site wraps onto, so nothing is excluded
+    // there; an interval keeps a candidate whose PAM is outside it and drops one whose spacer
+    // crosses a bound (US-01M7DVAS AC2).
+    let spacer_in_core = |i: usize, strand: i8| -> bool {
+        wraps || inside_core(spacer_core_rel(i, strand), spacer_len)
+    };
+    let site_in_core =
+        |i: usize, strand: i8| -> bool { wraps || inside_core(site_core_rel(i, strand), span) };
+
     // ── Pass 1: every candidate guide, and the set of seeds whose matches must be counted. ──
     let mut candidates: Vec<(u32, i8)> = Vec::new();
     let mut seed_counts: FxHashMap<u32, u32> = FxHashMap::default();
     for (strand_b, strand) in [(s_bytes, 1i8), (rc_bytes, -1i8)] {
         for i in 0..starts {
+            if !spacer_in_core(i, strand) {
+                continue;
+            }
             if let Some((spacer, _)) = candidate_at(strand_b, i, is_spcas9) {
                 // The spacer is unambiguous, so its seed always packs.
                 if let Some(key) = pack_seed(seed_of(spacer, is_spcas9)) {
@@ -590,12 +868,22 @@ pub fn scan_crispr_guides(
     }
 
     // ── Pass 2: the exact number of matches of each of those seeds, over both strands of the
-    // scanned range. A window holding an ambiguity code matches no seed of A, C, G and T, so the
-    // run of unambiguous bases is restarted there. On a circle the pass reads `SEED_LEN - 1` bases
-    // into the copy of the start, which is every window that crosses the origin and no window
-    // twice: a seed match across the origin is counted once, like any other. ──
-    let counted = if wraps { scanned + SEED_LEN - 1 } else { scanned };
-    for strand_b in [&s_bytes[..counted], &rc_bytes[..counted]] {
+    // searched range. A window holding an ambiguity code matches no seed of A, C, G and T, so the
+    // run of unambiguous bases is restarted there. On a circle read whole the pass reads
+    // `SEED_LEN - 1` bases into the copy of the start, which is every window that crosses the
+    // origin and no window twice: a seed match across the origin is counted once, like any other.
+    // An interval counts the windows that lie inside it, and not the context either side of it: a
+    // specificity counted over an interval is an interval specificity. ──
+    let counted: [&[u8]; 2] = if wraps {
+        let to = core_len + SEED_LEN - 1;
+        [&s_bytes[..to], &rc_bytes[..to]]
+    } else {
+        [
+            &s_bytes[core_at..core_at + core_len],
+            &rc_bytes[base_len - core_at - core_len..base_len - core_at],
+        ]
+    };
+    for strand_b in counted {
         let mut packed = 0u32;
         let mut run = 0usize;
         for &b in strand_b {
@@ -659,7 +947,7 @@ pub fn scan_crispr_guides(
         // (BG-01M7E69W AC1); only the floor is enforced here, over a raw total as low as 5.
         on_target = on_target.max(CRISPR_HEURISTIC_RANK_RANGE.0);
 
-        // Other exact occurrences of the 12-nt PAM-proximal seed over the scanned range (both
+        // Other exact occurrences of the 12-nt PAM-proximal seed over the searched range (both
         // strands), counted in full. Specificity = 100 / (1 + seed matches): 100 for a seed with no
         // other copy; it does not search a genome.
         let seed_hits = pack_seed(seed_of(spacer, is_spcas9))
@@ -694,44 +982,79 @@ pub fn scan_crispr_guides(
     // How long the ranking list may grow before it is trimmed back to `limit`: bounded, so a
     // megabase scan with hundreds of thousands of candidates holds only the best of them at once.
     let trim_at = limit.saturating_mul(2).max(64);
-    // Where the reported cut falls, and the staggered second one where the preset has it: both are
-    // the preset's own offsets (D0131), never a rule chosen from the nuclease's name.
-    // Where a candidate at `offset` on `strand` sits in the record: `(start, end, cut)`, 1-based and
-    // inside 1..scanned. A circular scan reads offsets past the last base, so every position is
-    // taken modulo the record: a site across the origin reads `start > end`, the convention this
-    // workbench already uses for a primer binding site that straddles the origin. On a linear scan
-    // no offset reaches the modulus, so the three numbers are the ones a straight read gives.
-    // The plus-strand coordinate of the base `cut_off` into the site, by the same mirror as the
-    // site's own ends: a cut read on the reverse strand is reported where it falls on the plus one.
-    let cut_at = |offset: u32, strand: i8, cut_off: usize| -> usize {
-        let i = offset as usize;
-        if strand == 1 {
-            (i + cut_off - 1) % scanned + 1
+    // The 1-based coordinate of the record's own base `core_rel` bases into the searched range,
+    // counting on round the origin: every position the scan reports is one of these, so a site
+    // across the origin reads `start > end` — the convention this workbench already uses for a
+    // primer binding site that straddles it — and nothing is reported outside `1..=length`. On a
+    // range read straight no offset reaches the modulus.
+    let plus_pos = |core_rel: isize| -> usize {
+        (core_start as isize - 1 + core_rel).rem_euclid(seq_len as isize) as usize + 1
+    };
+    // Whether the record holds the base `core_rel` bases into the searched range *and the scan read
+    // it*: every base of a circle read whole, every base of the molecule for an interval on a
+    // circle, and only the bases of the range itself where it was read straight from base 1.
+    let readable = |core_rel: isize| -> bool {
+        if wraps || (plan.is_some() && circular) {
+            true
+        } else if plan.is_some() {
+            let abs = core_start as isize - 1 + core_rel;
+            abs >= 0 && abs < seq_len as isize
         } else {
-            scanned - (i + cut_off) % scanned
+            core_rel >= 0 && core_rel < core_len as isize
         }
     };
-    // The same cut, or nothing where it falls on no base: only a circle read whole wraps (`wraps`),
-    // so on a straight read a cut whose break would lie at or past the end of the range read
-    // (`i + cut_off >= scanned`, on either strand) has no plus-strand base before it inside the
-    // range and is not given one by the modulus (US-01M7DV29 AC4).
+    // Where the reported cut falls, and the staggered second one where the preset has it: both are
+    // the preset's own offsets (D0131), never a rule chosen from the nuclease's name. The base
+    // reported is the last plus-strand base before the break, so on the reverse strand it is the
+    // base one position below the site base the cut follows.
+    let cut_core_rel = |i: usize, strand: i8, cut_off: usize| -> isize {
+        if strand == 1 {
+            site_core_rel(i, strand) + cut_off as isize - 1
+        } else {
+            site_core_rel(i, strand) + span as isize - cut_off as isize - 1
+        }
+    };
+    let cut_at = |offset: u32, strand: i8, cut_off: usize| -> usize {
+        plus_pos(cut_core_rel(offset as usize, strand, cut_off))
+    };
+    // The same cut, or nothing where it falls on no base the scan read: the break lies between the
+    // two bases either side of it, so both must be there. On a linear molecule read to its end a
+    // cut past that end has no plus-strand base before it and is not given one by the modulus
+    // (US-01M7DV29 AC4); on a circle every position exists.
     let cut_in_range = |offset: u32, strand: i8, cut_off: usize| -> Option<usize> {
-        if wraps || (offset as usize) + cut_off < scanned {
+        let before = cut_core_rel(offset as usize, strand, cut_off);
+        if readable(before) && readable(before + 1) {
             Some(cut_at(offset, strand, cut_off))
         } else {
             None
         }
     };
     let coords = |offset: u32, strand: i8| -> (usize, usize, usize) {
+        let from = site_core_rel(offset as usize, strand);
+        (
+            plus_pos(from),
+            plus_pos(from + span as isize - 1),
+            cut_at(offset, strand, cut_offset),
+        )
+    };
+    // What a guide read outside the interval searched, where it read anything (US-01M7DVAS AC2):
+    // its spacer is inside the interval, so only its PAM can be outside, and the note names that
+    // PAM's own bases. `None` for a whole-sequence scan and for a site wholly inside the interval.
+    let interval_context_note = |offset: u32, strand: i8| -> Option<String> {
+        let iv = searched_interval?;
         let i = offset as usize;
-        if strand == 1 {
-            (i % scanned + 1, (i + span - 1) % scanned + 1, cut_at(offset, strand, cut_offset))
-        } else {
-            // The 1-based plus-strand coordinate of reverse-strand position `j`: the two strands run
-            // in opposite directions, so the site's last base is its lowest plus coordinate.
-            let plus = |j: usize| scanned - j % scanned;
-            (plus(i + span - 1), plus(i), cut_at(offset, strand, cut_offset))
+        if site_in_core(i, strand) {
+            return None;
         }
+        let from = pam_core_rel(i, strand);
+        Some(format!(
+            "The spacer lies inside the interval searched ({}..{}), but its {} PAM at {}..{} does not: that PAM was read from context outside the interval, which was read for a PAM and for nothing else — no base of it was searched for a guide of its own, or counted as a seed match.",
+            format_thousands(iv.start),
+            format_thousands(iv.end),
+            preset.pam_side,
+            format_thousands(plus_pos(from)),
+            format_thousands(plus_pos(from + pam_len as isize - 1))
+        ))
     };
     let mut ranking: Vec<Ranked> = Vec::new();
     for &(offset, strand) in &candidates {
@@ -754,6 +1077,35 @@ pub fn scan_crispr_guides(
     ranking.truncate(limit);
 
     let mut warnings = bounded_warning(scanned);
+    // The interval searched, said in words beside the numbers (US-01M7DVAS AC4): what was searched,
+    // how long it is, how long the whole sequence is, and that the seed counts cover that interval
+    // alone — so an interval scan is never read as a scan of the whole sequence.
+    if let Some(p) = &plan {
+        let iv = p.interval;
+        warnings.push(format!(
+            "Guides were searched for in bases {}..{} — the {} bp interval asked for{}, of the {} bases of this sequence — on both strands, and seed matches counted in that interval alone: a guide or a seed match outside it is not in this result, so a specificity here is an interval specificity and not one over the whole sequence.",
+            format_thousands(iv.start),
+            format_thousands(iv.end),
+            format_thousands(iv.length_bp),
+            if iv.crosses_origin {
+                ", across the origin"
+            } else {
+                ""
+            },
+            format_thousands(seq_len)
+        ));
+        if let Some(note) = &p.cap_note {
+            warnings.push(note.clone());
+        }
+        if ctx_left + ctx_right > 0 {
+            warnings.push(format!(
+                "{} bases outside that interval were read as PAM context only — {} before it and {} after it: a candidate whose spacer is inside the interval but whose PAM is not is listed and says so on its own row, and no base of that context was searched for a guide of its own or counted as a seed match.",
+                format_thousands(ctx_left + ctx_right),
+                format_thousands(ctx_left),
+                format_thousands(ctx_right)
+            ));
+        }
+    }
     // A caller that asked for no rows was not capped: it asked for the report alone (US-01M7DVH2).
     if limit > 0 && ranking.len() < candidates.len() {
         warnings.push(format!(
@@ -762,6 +1114,27 @@ pub fn scan_crispr_guides(
             format_thousands(candidates.len())
         ));
     }
+
+    // Whether the searched range itself was read across the origin, and how many of its bases lie
+    // the other side of it: a circle read whole continues `span - 1` bases past its last base, and
+    // an interval that runs across the origin holds its `end` bases after it.
+    let scanned_circular = wraps || searched_interval.is_some_and(|iv| iv.crosses_origin);
+    let origin_span_bp = match searched_interval {
+        Some(iv) if !wraps => {
+            if iv.crosses_origin {
+                iv.end
+            } else {
+                0
+            }
+        }
+        _ => {
+            if wraps {
+                span - 1
+            } else {
+                0
+            }
+        }
+    };
 
     // ── The records themselves, built only for the candidates that were kept. ──
     let guides: Vec<CrisprGuideRecord> = ranking
@@ -801,8 +1174,8 @@ pub fn scan_crispr_guides(
                 candidate_count: candidates.len(),
                 scanned_length_bp: scanned,
                 sequence_length_bp: seq_len,
-                scanned_circular: wraps,
-                origin_span_bp: if wraps { span - 1 } else { 0 },
+                scanned_circular,
+                origin_span_bp,
                 warnings: warnings.clone(),
                 pam_side: preset.pam_side.clone(),
                 pam_pattern: preset.pam_pattern.clone(),
@@ -816,6 +1189,8 @@ pub fn scan_crispr_guides(
                     _ => None,
                 },
                 pam_ambiguity_note: pam_ambiguity_note(pam, &preset.pam_pattern),
+                searched_interval,
+                interval_context_note: interval_context_note(r.offset, r.strand),
             }
         })
         .collect();
@@ -825,9 +1200,34 @@ pub fn scan_crispr_guides(
         candidate_count: candidates.len(),
         scanned_length_bp: scanned,
         sequence_length_bp: seq_len,
-        scanned_circular: wraps,
-        origin_span_bp: if wraps { span - 1 } else { 0 },
+        scanned_circular,
+        origin_span_bp,
+        searched_interval,
+        interval_refusal: None,
+        context_outside_interval_bp: ctx_left + ctx_right,
         warnings,
+    }
+}
+
+/// A scan that searched nothing, and says why: the nuclease was not a preset (D0130), or the
+/// interval could not be searched (US-01M7DVAS AC6). No range is claimed and no guide is returned,
+/// because none was looked for.
+fn refused_scan(
+    sequence_length_bp: usize,
+    reason: String,
+    interval_refusal: Option<String>,
+) -> CrisprGuideScan {
+    CrisprGuideScan {
+        guides: Vec::new(),
+        candidate_count: 0,
+        scanned_length_bp: 0,
+        sequence_length_bp,
+        scanned_circular: false,
+        origin_span_bp: 0,
+        searched_interval: None,
+        interval_refusal,
+        context_outside_interval_bp: 0,
+        warnings: vec![reason],
     }
 }
 
@@ -1007,5 +1407,80 @@ mod crispr_tests {
         let r = find_crispr_guides(&rc, "SpCas9 (NGG)", 50);
         let rg = r.iter().find(|g| g.strand == -1 && g.spacer_seq == spacer).unwrap();
         assert_eq!(rg.cut_position, seq.len() - 22);
+    }
+}
+
+#[cfg(test)]
+mod interval_plan_tests {
+    use super::*;
+
+    /// US-01M7DVAS AC6, and the interaction with [`GUIDE_SCAN_MAX_BP`]: the cap still bounds the
+    /// bases an *interval* asks for, and the interval the scan then reports is the one it really
+    /// searched rather than the one it was asked for. The cap is a parameter here so the rule is
+    /// read at a hundred bases instead of allocating eight million of them; the scan itself passes
+    /// [`GUIDE_SCAN_MAX_BP`], which is asserted below so the two cannot drift apart.
+    ///
+    /// Wrong implementations this kills: a cap applied to the whole sequence but not to the bases an
+    /// interval asks for (the 800-bp interval comes back whole); a cap that refuses such an interval
+    /// instead of reading its first bases (it comes back as an error); a cap that truncates the
+    /// bases but leaves `searched_interval` naming the interval asked for (its end stays 900); and
+    /// one that counts an across-origin interval's length as `end - start` (the 901-bp interval
+    /// round the origin is then not capped at all).
+    #[test]
+    fn us_01m7dvas_ac6_the_scan_cap_still_bounds_the_bases_an_interval_asks_for() {
+        let spcas9 = resolve_nuclease_preset("SpCas9 (NGG)").expect("a preset");
+        let plan = |start, end, circular, max_bp| {
+            plan_interval(
+                start,
+                end,
+                1_000,
+                circular,
+                spcas9.site_span_bp,
+                &spcas9.id,
+                max_bp,
+            )
+        };
+        // Inside the cap: searched as asked for, with nothing to say about it.
+        let asked = plan(101, 200, false, 500).expect("an interval inside the cap is searchable");
+        assert_eq!(
+            (
+                asked.interval.start,
+                asked.interval.end,
+                asked.interval.length_bp
+            ),
+            (101, 200, 100)
+        );
+        assert!(asked.cap_note.is_none());
+        // Longer than the cap: read from its start for the cap's own bases, and said in words.
+        let capped = plan(101, 900, false, 500).expect("a long interval is bounded, not refused");
+        assert_eq!(
+            (
+                capped.interval.start,
+                capped.interval.end,
+                capped.interval.length_bp
+            ),
+            (101, 600, 500)
+        );
+        let note = capped.cap_note.expect("the bound is named");
+        assert!(
+            note.contains("101..900") && note.contains("101..600") && note.contains("500"),
+            "the sentence names the interval asked for and the bases really searched: {note}"
+        );
+        // Across the origin of a circle the cap counts the same bases, round the origin.
+        let across = plan(900, 800, true, 500).expect("an across-origin interval is bounded too");
+        assert_eq!(
+            (
+                across.interval.start,
+                across.interval.end,
+                across.interval.length_bp,
+                across.interval.crosses_origin
+            ),
+            (900, 399, 500, true)
+        );
+        assert!(across.cap_note.is_some());
+        // The cap the scan itself applies, so this test and the scan read one number.
+        assert_eq!(GUIDE_SCAN_MAX_BP, 8_000_000);
+        let whole = plan(1, 1_000, false, GUIDE_SCAN_MAX_BP).expect("the whole record");
+        assert!(whole.cap_note.is_none() && whole.interval.length_bp == 1_000);
     }
 }

@@ -56,7 +56,7 @@ use molbiocraft_cloning::{
 };
 use molbiocraft_cloning::cloning_crispr::{
     audit_sequence_alerts_for_scan, find_crispr_guides_for_topology, resolve_nuclease_preset,
-    scan_crispr_guides, supported_nuclease_presets,
+    scan_crispr_guides, scan_crispr_guides_in_interval, supported_nuclease_presets,
 };
 use molbiocraft_cloning::rebase_catalog::{
     scan_restriction_sites, RestrictionPositionLimit, RESTRICTION_POSITIONS_PER_ENZYME,
@@ -1080,6 +1080,10 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         // sequence length, how the record was read, the bases across its origin and the warnings -
         // so a reader of the scan's numbers does not have to find them on a guide row, and gets
         // them when the scan found no guide. `maxResults` 0 asks for that report with no rows.
+        //
+        // `start1Based` and `end1Based` search one interval of the record instead of all of it
+        // (US-01M7DVAS); the envelope then carries `searchedInterval`, the bases of context outside
+        // it that were read for a PAM, and - where the interval cannot be searched - the reason.
         "scan_crispr_guides" => {
             let seq = str_arg(&payload, "seq", "");
             // As `find_crispr_guides`: the default for a missing key, a refusal for an id that is
@@ -1088,7 +1092,39 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             resolve_nuclease_preset(nuclease)?;
             let max_results = usize_arg(&payload, "maxResults", 30);
             let circular = bool_arg(&payload, "circular", false);
-            to_val(scan_crispr_guides(seq, nuclease, max_results, None, circular))
+            // The interval on screen, when one is asked for (US-01M7DVAS): 1-based and inclusive,
+            // and on a circular record `start1Based > end1Based` runs across the origin. Both keys
+            // or neither - one alone is a caller that lost a bound somewhere, and reading it as the
+            // whole sequence is exactly the silent widening of scope this story refuses. An
+            // interval the engine cannot search comes back as a scan that says so in
+            // `intervalRefusal`, not as an error, so a surface can show the reason it was given.
+            let interval = match (
+                payload.get("start1Based").is_some(),
+                payload.get("end1Based").is_some(),
+            ) {
+                (false, false) => None,
+                (true, true) => Some((
+                    usize_arg(&payload, "start1Based", 0),
+                    usize_arg(&payload, "end1Based", 0),
+                )),
+                (start, _) => {
+                    return Err(format!(
+                        "An interval needs both bounds: '{}1Based' was sent without '{}1Based', so no guide was searched for. Send both, or neither to search the whole sequence.",
+                        if start { "start" } else { "end" },
+                        if start { "end" } else { "start" }
+                    ))
+                }
+            };
+            match interval {
+                None => to_val(scan_crispr_guides(seq, nuclease, max_results, None, circular)),
+                Some(iv) => to_val(scan_crispr_guides_in_interval(
+                    seq,
+                    nuclease,
+                    max_results,
+                    Some(iv),
+                    circular,
+                )),
+            }
         }
         "audit_sequence_alerts" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;

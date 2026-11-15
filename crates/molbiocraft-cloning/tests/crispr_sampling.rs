@@ -17,7 +17,8 @@
 //! guides sit in the ranges each strand's old scan never reached.
 
 use molbiocraft_cloning::cloning_crispr::{
-    find_crispr_guides, resolve_nuclease_preset, scan_crispr_guides, supported_nuclease_presets,
+    find_crispr_guides, resolve_nuclease_preset, scan_crispr_guides,
+    scan_crispr_guides_in_interval, supported_nuclease_presets,
     CrisprGuideRecord, CRISPR_HEURISTIC_RANK_RANGE, GUIDE_SCAN_MAX_BP,
 };
 
@@ -1692,4 +1693,498 @@ fn acgt_background(len: usize, seed: u32) -> Vec<u8> {
             b"ACGT"[((x >> 24) & 0b11) as usize]
         })
         .collect()
+}
+
+// ───────── US-01M7DVAS: the whole sequence, or the interval on screen ─────────
+//
+// The scan took a prefix bound only (`scan_limit_bp`, bases 1 to N of both strands), so the span
+// Adaeze had selected could not be searched: a 200-bp window inside a 5 kb plasmid meant scanning
+// the plasmid. The interval below is 1-based and inclusive, may run `start > end` across the origin
+// of a circle, and keeps every reported coordinate inside `1..=length`.
+//
+// The expectation is never written out by hand: it is the exhaustive whole-record oracle above,
+// kept where the candidate's *whole spacer* lies inside the interval. A PAM outside the interval
+// does not disqualify a candidate — it is disclosed — and a spacer across a bound is not a
+// candidate of that interval at all.
+
+/// Whether `pos` (1-based) lies inside the 1-based inclusive interval `iv`, which runs across the
+/// origin of a circle when `iv.0 > iv.1`.
+fn in_interval(pos: usize, iv: (usize, usize)) -> bool {
+    if iv.0 <= iv.1 {
+        pos >= iv.0 && pos <= iv.1
+    } else {
+        pos >= iv.0 || pos <= iv.1
+    }
+}
+
+/// The plus-strand coordinates of `span` bases, ascending from `start` round a record of `len`.
+fn site_bases(start: usize, span: usize, len: usize) -> Vec<usize> {
+    (0..span).map(|k| (start - 1 + k) % len + 1).collect()
+}
+
+/// The plus-strand coordinates of a candidate's spacer alone. In plus-strand order the PAM leads
+/// exactly when the nuclease's PAM side and the strand disagree, so SpCas9's forward spacer is the
+/// site's first 20 bases and its reverse spacer the last 20.
+fn spacer_bases(c: &Candidate, is_spcas9: bool, len: usize) -> Vec<usize> {
+    let span = if is_spcas9 { 23 } else { 24 };
+    let all = site_bases(c.0, span, len);
+    if (c.2 == 1) == is_spcas9 {
+        all[..20].to_vec()
+    } else {
+        all[span - 20..].to_vec()
+    }
+}
+
+/// Every candidate an interval scan must return: the exhaustive whole-record oracle, kept where the
+/// candidate's whole spacer lies inside the interval.
+fn oracle_interval_candidates(
+    seq: &[u8],
+    is_spcas9: bool,
+    circular: bool,
+    iv: (usize, usize),
+) -> Vec<Candidate> {
+    let len = seq.len();
+    let mut out: Vec<Candidate> = oracle_candidates(seq, is_spcas9, circular)
+        .into_iter()
+        .filter(|c| {
+            spacer_bases(c, is_spcas9, len)
+                .iter()
+                .all(|&p| in_interval(p, iv))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// A third and a fourth spacer free of `GG` and `CC`, so planting one adds no PAM on either strand
+/// (`SPACER20` above is not: it holds `CC`, so its reverse complement spells a `GG` and a planted
+/// block of it is a candidate on both strands). Each PAM-proximal seed appears nowhere else.
+const FOURTH_SPACER: &str = "TACGATCAGTACTGATCATG";
+const INTERVAL_SPACER: &str = "CGTATCAGCTAGTCATGCAT";
+
+/// Three spacers for the 5'-PAM fixtures, which are planted in a background that alternates T and
+/// A: each holds no `TTT`, so it spells no PAM of its own, and no `AAA`, so the reverse strand
+/// spells none either (a run of A on one strand is a run of T on the other, which is why a
+/// background of A alone cannot be used: wherever such a run ends, the reverse strand reads
+/// `TTTV`). None ends in T, so no junction with the background spells a `TTT` of its own.
+const CAS12A_SPACERS: [&str; 3] = [
+    "CGTATCAGCTAGTCATGCTA",
+    "ATCGTACTGATCAGTCATGA",
+    "TAGCATCGATACGTATCAGA",
+];
+
+/// AC2. Four SpCas9 sites in a 300-bp record, read with the interval 101..200: one wholly inside,
+/// one whose spacer is inside and whose PAM is not, one whose spacer crosses the start bound by two
+/// bases — so its whole site still lies among the bases a correct scan reads — and one wholly
+/// outside. Then the same three cases for a 5' PAM, where the PAM sits *before* the spacer and the
+/// context is read off the interval's start bound instead of its end.
+///
+/// Wrong implementations this kills (each run as a mutant): keeping only candidates whose whole
+/// *site* is inside the interval (the straddling guide disappears); keeping every candidate the scan
+/// can read rather than those whose spacer is inside (the 99..121 site comes back); never marking a
+/// PAM read outside the interval; and reading context after the interval only (the 5'-PAM case loses
+/// its PAM, and the bases of context reported halve).
+#[test]
+fn us_01m7dvas_ac2_a_pam_outside_the_interval_is_disclosed_and_a_crossing_spacer_is_not_returned() {
+    const LEN: usize = 300;
+    const IV: (usize, usize) = (101, 200);
+    // A and T only: the four planted blocks are the whole candidate set (a block's own reverse
+    // complement spells CCT + a GG-free spacer, so each is one forward candidate).
+    let mut seq = at_background(LEN, 0x15_7a01);
+    plant(&mut seq, 125, &block(SPACER)); // spacer 126..145, PAM 146..148 — site wholly inside
+    plant(&mut seq, 180, &block(LONE_SPACER)); // spacer 181..200 inside, PAM 201..203 outside
+    // A spacer that crosses the start bound by two bases, so its *whole site* (99..121) still lies
+    // inside the bases a correct scan reads — the interval and the three bases of PAM context
+    // either side of it. A scan that kept any candidate it could read, rather than the candidates
+    // whose spacer is inside the interval, returns this one; one that simply stopped reading at the
+    // bound could not see it either way, which is why it is here and not further out.
+    plant(&mut seq, 98, &block(INTERVAL_SPACER)); // spacer 99..118 — crosses the start bound
+    plant(&mut seq, 20, &block(FOURTH_SPACER)); // site 21..43 — wholly outside
+    let text = String::from_utf8(seq.clone()).unwrap();
+
+    // The whole sequence holds all four; the interval is the scope control under test.
+    let whole = scan_crispr_guides(&text, "SpCas9 (NGG)", usize::MAX, None, false);
+    assert_eq!(whole.candidate_count, 4, "{:?}", as_tuples(&whole.guides));
+
+    let scan = scan_crispr_guides_in_interval(
+        &text,
+        "SpCas9 (NGG)",
+        usize::MAX,
+        Some(IV),
+        false,
+    );
+    assert_eq!(
+        as_candidates(&scan.guides),
+        oracle_interval_candidates(&seq, true, false, IV),
+        "the interval's candidates are the whole-record oracle's, kept by spacer"
+    );
+    assert_eq!(scan.candidate_count, 2, "{:?}", as_tuples(&scan.guides));
+
+    let by_spacer = |s: &str| {
+        scan.guides
+            .iter()
+            .find(|g| g.spacer_seq == s)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no guide with spacer {s}; the interval returned {:?}",
+                    as_tuples(&scan.guides)
+                )
+            })
+    };
+    // 1. The whole site inside: returned, and nothing is disclosed about context it did not read.
+    let inside = by_spacer(SPACER);
+    assert_eq!((inside.start, inside.end), (126, 148));
+    assert_eq!(
+        inside.interval_context_note, None,
+        "this site is wholly inside the interval"
+    );
+    // 2. The spacer inside and the PAM outside: returned, and marked as using context outside the
+    //    interval, naming the PAM's own bases.
+    let straddling = by_spacer(LONE_SPACER);
+    assert_eq!((straddling.start, straddling.end), (181, 203));
+    let note = straddling
+        .interval_context_note
+        .as_deref()
+        .expect("a PAM outside the interval is disclosed");
+    assert!(
+        note.contains("201..203") && note.contains("101..200") && note.contains("outside the interval"),
+        "the note names the PAM read outside the interval and the interval itself: {note}"
+    );
+    // 3. The spacer across a bound: not returned at all, and not counted as a candidate.
+    assert!(
+        !scan.guides.iter().any(|g| g.spacer_seq == INTERVAL_SPACER),
+        "a spacer that crosses the interval's start bound is not a candidate of it"
+    );
+    assert!(!scan.guides.iter().any(|g| g.spacer_seq == FOURTH_SPACER));
+    // The bases of context the scan read, so a reader knows an outside PAM was readable at all.
+    assert_eq!(scan.context_outside_interval_bp, 6, "3 bases each side of a 23-bp SpCas9 site");
+
+    // The same three cases for a 5' PAM, where the PAM sits before the spacer.
+    // T and A in turn: no `TTT` and no `AAA` on either strand, so the planted sites are again the
+    // whole candidate set. Every offset below is even, so the base before each block is an A and the
+    // block's own `TTT` is the only one.
+    let mut a_seq: Vec<u8> = (0..LEN)
+        .map(|i| if i % 2 == 0 { b'T' } else { b'A' })
+        .collect();
+    let [edge, inner, crossing] = CAS12A_SPACERS;
+    plant(&mut a_seq, 96, &format!("TTTA{edge}")); // PAM 97..100 outside, spacer 101..120 inside
+    plant(&mut a_seq, 140, &format!("TTTA{inner}")); // PAM 141..144, spacer 145..164 — inside
+    plant(&mut a_seq, 186, &format!("TTTA{crossing}")); // spacer 191..210 — crosses the end bound
+    let a_text = String::from_utf8(a_seq.clone()).unwrap();
+    let cas12a = scan_crispr_guides_in_interval(
+        &a_text,
+        "Cas12a / Cpf1 (TTTV)",
+        usize::MAX,
+        Some(IV),
+        false,
+    );
+    assert_eq!(
+        as_candidates(&cas12a.guides),
+        oracle_interval_candidates(&a_seq, false, false, IV),
+        "a 5' PAM reads its context off the interval's start bound"
+    );
+    assert_eq!(cas12a.candidate_count, 2, "{:?}", as_tuples(&cas12a.guides));
+    let five_prime = cas12a
+        .guides
+        .iter()
+        .find(|g| g.spacer_seq == edge)
+        .expect("the spacer at the interval's first base is returned");
+    let note = five_prime
+        .interval_context_note
+        .as_deref()
+        .expect("a 5' PAM before the interval's start is disclosed");
+    assert!(
+        note.contains("97..100") && note.contains("outside the interval"),
+        "{note}"
+    );
+    assert!(
+        cas12a
+            .guides
+            .iter()
+            .find(|g| g.spacer_seq == inner)
+            .expect("the wholly inside site")
+            .interval_context_note
+            .is_none()
+    );
+    assert!(!cas12a.guides.iter().any(|g| g.spacer_seq == crossing));
+}
+
+/// AC3. One 300-bp fixture read three ways: as a circle with an interval that runs across the
+/// origin (280..40), as a line with that same interval, and as a line and then a circle with the
+/// interval 201..300 — whose last 20 bases are a spacer whose only PAM lies at 1..3.
+///
+/// Wrong implementations this kills (each run as a mutant): allowing `start > end` on a linear
+/// record, which has no origin to run across; reading a linear record's context round the origin
+/// (the 281..3 site comes back from a line); and reporting coordinates in the frame of the bases
+/// read rather than the record's own (the across-origin sites come back as 41..63).
+#[test]
+fn us_01m7dvas_ac3_a_circular_interval_runs_across_the_origin_and_a_linear_one_is_refused() {
+    const LEN: usize = 300;
+    let mut seq = at_background(LEN, 0x15_7b02);
+    // A site whose spacer is the record's last 20 bases and whose PAM is its first three: on a
+    // circle that is a site across the origin with its PAM inside the molecule; on a line those
+    // three bases are not context the scan may read.
+    plant(&mut seq, 0, "AGG");
+    plant(&mut seq, 280, INTERVAL_SPACER);
+    // A site wholly inside the tail, and one wholly inside the head.
+    plant(&mut seq, 230, &block(SPACER));
+    plant(&mut seq, 15, &block(LONE_SPACER)); // site 16..38
+    // A site whose spacer crosses the across-origin interval's end bound (41..60 for 280..40).
+    plant(&mut seq, 40, &block(FOURTH_SPACER)); // spacer 41..60, PAM 61..63
+    let text = String::from_utf8(seq.clone()).unwrap();
+
+    // ── A circular interval across the origin. ──
+    const ACROSS: (usize, usize) = (280, 40);
+    let across = scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", usize::MAX, Some(ACROSS), true);
+    assert!(
+        across.interval_refusal.is_none(),
+        "{:?}",
+        across.interval_refusal
+    );
+    assert_eq!(
+        as_candidates(&across.guides),
+        oracle_interval_candidates(&seq, true, true, ACROSS),
+        "an across-origin interval holds the oracle's candidates, by spacer"
+    );
+    assert!(!across.guides.is_empty());
+    for g in &across.guides {
+        for p in [g.start, g.end, g.cut_position] {
+            assert!(
+                (1..=LEN).contains(&p),
+                "{} reports {p}, outside 1..={LEN}",
+                g.name
+            );
+        }
+    }
+    let origin_site = across
+        .guides
+        .iter()
+        .find(|g| g.spacer_seq == INTERVAL_SPACER)
+        .expect("the site across the origin is in an interval that runs across it");
+    assert_eq!(
+        (origin_site.start, origin_site.end),
+        (281, 3),
+        "a site across the origin reads start > end"
+    );
+    assert!(origin_site.start > origin_site.end);
+    assert!(
+        across.scanned_circular && across.origin_span_bp == 40,
+        "the searched range itself runs across the origin: {:?}",
+        (across.scanned_circular, across.origin_span_bp)
+    );
+    assert_eq!(across.scanned_length_bp, 61, "300 - 280 + 1 + 40");
+    assert!(!across.guides.iter().any(|g| g.spacer_seq == FOURTH_SPACER));
+
+    // ── The same interval on a linear record: refused, with the reason. ──
+    let linear = scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", usize::MAX, Some(ACROSS), false);
+    let reason = linear
+        .interval_refusal
+        .as_deref()
+        .expect("a linear molecule has no origin to run across");
+    assert!(
+        reason.contains("280..40") && reason.contains("linear"),
+        "{reason}"
+    );
+    assert!(linear.guides.is_empty() && linear.candidate_count == 0);
+    assert!(linear.warnings.iter().any(|w| w == reason), "{:?}", linear.warnings);
+
+    // ── A linear interval at the record's tail reads no context past either end. ──
+    const TAIL: (usize, usize) = (201, 300);
+    let tail = scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", usize::MAX, Some(TAIL), false);
+    assert_eq!(
+        as_candidates(&tail.guides),
+        oracle_interval_candidates(&seq, true, false, TAIL),
+        "no base before base 1 or past the last base is read as a PAM"
+    );
+    assert!(
+        !tail.guides.iter().any(|g| g.spacer_seq == INTERVAL_SPACER),
+        "the spacer at 281..300 has its PAM only across the origin, which a line has not"
+    );
+    assert!(tail.guides.iter().any(|g| g.spacer_seq == SPACER));
+    // The same tail interval on the circle does hold it, with the PAM disclosed as outside.
+    let tail_circular =
+        scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", usize::MAX, Some(TAIL), true);
+    let wrapped = tail_circular
+        .guides
+        .iter()
+        .find(|g| g.spacer_seq == INTERVAL_SPACER)
+        .expect("on a circle the PAM at 1..3 is context the scan may read");
+    assert_eq!((wrapped.start, wrapped.end), (281, 3));
+    assert!(
+        wrapped
+            .interval_context_note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("1..3"),
+        "{:?}",
+        wrapped.interval_context_note
+    );
+}
+
+/// AC5. One guide read twice — over the whole circle, and over an interval that holds it — with a
+/// second copy of its seed well outside the interval and a third straddling the interval's end
+/// bound into the PAM context. The spacer, PAM, strand, start, end and cut position are the same
+/// number in both scopes; the seed counts and the stated scope are not.
+///
+/// Wrong implementations this kills (each run as a mutant): counting every 12-mer of the bases read
+/// rather than those inside the interval (the straddling copy is counted, and the interval
+/// specificity reads 50 instead of 100); and reporting no interval at all, which leaves
+/// `scanned_length_bp` counting an interval under a report that claims none.
+#[test]
+fn us_01m7dvas_ac5_the_same_guide_reads_the_same_coordinates_in_either_scope() {
+    const LEN: usize = 400;
+    const IV: (usize, usize) = (51, 200);
+    let mut seq = at_background(LEN, 0x15_7c03);
+    plant(&mut seq, 100, &block(SPACER)); // site 101..123, inside the interval
+    plant(&mut seq, 150, &block(LONE_SPACER)); // site 151..173, inside the interval
+    plant(&mut seq, 300, SEED); // another copy of SPACER's seed, well outside the interval
+    // A third copy at 192..203, which straddles the interval's end bound: nine of its bases are
+    // inside the interval and three are in the PAM context read beyond it, so a scan that counted
+    // every 12-mer of the bases it *read* — context included — counts this copy, and one that
+    // counts the 12-mers inside the interval does not. It is three bases out because that is all
+    // the context a 23-bp SpCas9 site asks for; a copy any further out is invisible either way.
+    plant(&mut seq, 191, SEED);
+    let text = String::from_utf8(seq.clone()).unwrap();
+
+    let whole = scan_crispr_guides(&text, "SpCas9 (NGG)", usize::MAX, None, true);
+    let interval =
+        scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", usize::MAX, Some(IV), true);
+    let find = |scan: &molbiocraft_cloning::cloning_crispr::CrisprGuideScan| {
+        scan.guides
+            .iter()
+            .find(|g| g.spacer_seq == SPACER)
+            .expect("the planted guide is in both scopes")
+            .clone()
+    };
+    let (w, i) = (find(&whole), find(&interval));
+    assert_eq!(
+        (
+            w.spacer_seq.as_str(),
+            w.pam_seq.as_str(),
+            w.strand,
+            w.start,
+            w.end,
+            w.cut_position,
+            w.cut_position_target_strand
+        ),
+        (
+            i.spacer_seq.as_str(),
+            i.pam_seq.as_str(),
+            i.strand,
+            i.start,
+            i.end,
+            i.cut_position,
+            i.cut_position_target_strand
+        ),
+        "the same guide, read in a different scope"
+    );
+    // Only the counts and the stated scope differ: the second seed copy sits outside the interval.
+    assert_eq!(
+        (w.off_target_count, w.specificity_score),
+        (2, 33),
+        "the whole record holds two more copies of this seed"
+    );
+    assert_eq!(
+        (i.off_target_count, i.specificity_score),
+        (0, 100),
+        "neither copy lies inside the interval searched: one is at 301, and the one at 192..203 \
+         runs past its end bound into the bases read for a PAM"
+    );
+    assert_eq!((w.scanned_length_bp, i.scanned_length_bp), (LEN, 150));
+    assert!(w.searched_interval.is_none(), "a whole-sequence scan searched no interval");
+    let si = i.searched_interval.expect("the interval the scan searched");
+    assert_eq!((si.start, si.end, si.length_bp, si.crosses_origin), (51, 200, 150, false));
+    assert_eq!(
+        (whole.searched_interval.is_none(), interval.searched_interval.is_some()),
+        (true, true)
+    );
+
+    // An interval that is the whole circle is the whole circle, from either start: the same
+    // candidate set at the same coordinates as a whole-sequence circular scan, with no outside to
+    // read context from and the origin read as such. The rotated pair 51..50 is the same 400 bases
+    // counted from another base, which is where a coordinate reported in the frame of the bases
+    // read — rather than the record's own — comes apart.
+    for iv in [(1, LEN), (51, 50)] {
+        let all_of_it =
+            scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", usize::MAX, Some(iv), true);
+        assert_eq!(
+            as_candidates(&all_of_it.guides),
+            as_candidates(&whole.guides),
+            "the interval {iv:?} is the whole record"
+        );
+        assert_eq!(
+            (
+                all_of_it.candidate_count,
+                all_of_it.scanned_length_bp,
+                all_of_it.context_outside_interval_bp,
+                all_of_it.scanned_circular,
+                all_of_it.origin_span_bp
+            ),
+            (whole.candidate_count, LEN, 0, true, 22),
+            "{iv:?}: nothing lies outside the whole of a circle, and its origin is read"
+        );
+        assert_eq!(
+            find(&all_of_it).off_target_count,
+            w.off_target_count,
+            "{iv:?}: the seed counts are the whole record's too"
+        );
+    }
+}
+
+/// AC6. Every interval the scan cannot search, each refused with its own bounds echoed: shorter
+/// than the nuclease's site span, a bound below 1, a bound past the last base, and the one-base
+/// interval a careless reader derives from an empty selection. A refused scan returns no guide and
+/// claims no range, and a whole-sequence scan of the same record is unaffected.
+///
+/// Wrong implementations this kills (each run as a mutant): searching an interval shorter than a
+/// whole site (it comes back with guides whose spacer cannot fit); and a refusal that names no
+/// bounds, so the reader cannot tell which interval was rejected. The cap that still bounds the
+/// bases an interval asks for is checked beside the planner it belongs to, in `cloning_crispr.rs`.
+#[test]
+fn us_01m7dvas_ac6_an_interval_too_short_or_outside_the_sequence_is_refused_with_its_bounds() {
+    const LEN: usize = 300;
+    let mut seq = at_background(LEN, 0x15_7d04);
+    plant(&mut seq, 100, &block(SPACER));
+    let text = String::from_utf8(seq).unwrap();
+    let refused = |iv: (usize, usize), circular: bool| {
+        let scan =
+            scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", usize::MAX, Some(iv), circular);
+        let reason = scan
+            .interval_refusal
+            .clone()
+            .unwrap_or_else(|| panic!("{iv:?} is not a searchable interval, but was not refused"));
+        assert!(
+            scan.guides.is_empty() && scan.candidate_count == 0,
+            "a refused interval returns no guide: {:?}",
+            as_tuples(&scan.guides)
+        );
+        assert!(
+            scan.searched_interval.is_none() && scan.scanned_length_bp == 0,
+            "a refused interval claims no searched range"
+        );
+        assert!(scan.warnings.iter().any(|w| *w == reason), "{:?}", scan.warnings);
+        reason
+    };
+
+    // Shorter than the nuclease's own site span.
+    let short = refused((101, 121), false);
+    assert!(
+        short.contains("101..121") && short.contains("21") && short.contains("23"),
+        "the reason echoes the interval, its length and the site span: {short}"
+    );
+    // Bounds that are not inside the sequence.
+    let below = refused((0, 100), false);
+    assert!(below.contains("0..100") && below.contains("300"), "{below}");
+    let above = refused((290, 400), false);
+    assert!(above.contains("290..400") && above.contains("300"), "{above}");
+    let above_circular = refused((290, 400), true);
+    assert!(above_circular.contains("290..400"), "{above_circular}");
+    // A one-base interval, and the interval a careless reader derives from an empty selection.
+    let one = refused((100, 100), false);
+    assert!(one.contains("100..100") && one.contains("1 bp"), "{one}");
+
+    // A whole-sequence scan of the same record is unaffected by any of this.
+    let whole = scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", usize::MAX, None, false);
+    assert_eq!(whole.candidate_count, 1);
+    assert!(whole.interval_refusal.is_none() && whole.searched_interval.is_none());
 }

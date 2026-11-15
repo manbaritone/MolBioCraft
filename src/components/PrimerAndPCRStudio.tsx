@@ -9,6 +9,7 @@ import {
   SequenceDocument,
   SequenceFeature,
 } from '../types/bio';
+import { intervalLength } from '../core/activeInterval';
 import {
   calculatePrimerMetrics,
   databasePrimerCandidate,
@@ -66,6 +67,14 @@ interface PrimerAndPCRStudioProps {
   primerDatabaseRevision?: number;
   /** The Primer Database that Save to Primer Database writes to; the user's own store unless given. */
   primerDatabase?: PrimerDatabase;
+  /**
+   * The bases selected in the workbench, as the App holds them (PRD F03's one active interval,
+   * EP-01M7CCCF): 1-based and inclusive, `start > end` running across the origin of a circular
+   * record. It is the interval Find CRISPR Sites offers beside the whole sequence (US-01M7DVAS
+   * AC1). `null` or absent is no selection, and only the whole sequence is then offered - never an
+   * interval guessed from a missing one.
+   */
+  selectedRange?: { start: number; end: number; label?: string } | null;
 }
 
 export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
@@ -79,6 +88,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   commandNonce,
   primerDatabase,
   primerDatabaseRevision = 0,
+  selectedRange = null,
 }) => {
   // In the workbench the conditions of each sub-tab sit in App's inspector; drawn on its own, the
   // studio keeps every setting where it sits in its card (US-01M6TAKD).
@@ -221,17 +231,83 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     return counts;
   }, [doc.sequence, doc.primers]);
 
+  // What Find CRISPR Sites may be asked to search (US-01M7DVAS AC1): the interval on screen, or why
+  // the selection the App holds is not one. The selection is read as it is, not through a
+  // normaliser: a bound outside the sequence, a reversed pair on a linear record and a span shorter
+  // than the nuclease's own site are each named here, because clamping one of them would search a
+  // range the user never selected, and reading it as "no interval" would quietly search the whole
+  // plasmid instead.
+  const crisprRangeOffer = useMemo((): {
+    interval: { start: number; end: number; lengthBp: number; crossesOrigin: boolean } | null;
+    note: string;
+  } => {
+    const length = doc.sequence.length;
+    const siteSpanBp = chosenPreset?.siteSpanBp ?? 23;
+    if (!selectedRange) {
+      return {
+        interval: null,
+        note: 'No bases are selected, so only the whole sequence is offered: select the span to search to offer it as an interval.',
+      };
+    }
+    const bounds = `${bp(selectedRange.start)}..${bp(selectedRange.end)}`;
+    if (
+      !Number.isInteger(selectedRange.start) ||
+      !Number.isInteger(selectedRange.end) ||
+      selectedRange.start < 1 ||
+      selectedRange.end < 1 ||
+      selectedRange.start > length ||
+      selectedRange.end > length
+    ) {
+      return {
+        interval: null,
+        note: `The selection ${bounds} is not inside the ${bp(length)} bases of this sequence, so it is not offered as a search interval: it is read neither as the whole sequence nor as an empty one.`,
+      };
+    }
+    if (selectedRange.start > selectedRange.end && doc.topology !== 'circular') {
+      return {
+        interval: null,
+        note: `The selection ${bounds} runs from a start past its end, which is an interval across the origin of a circle; this sequence is linear and has no origin to run across, so it is not offered as a search interval.`,
+      };
+    }
+    // The length comes from the active-interval model, which counts both sides of the origin: an
+    // origin-crossing selection is not `end - start` bases (BG-01M7CG2W).
+    const lengthBp = intervalLength({ start: selectedRange.start, end: selectedRange.end }, length);
+    if (lengthBp < siteSpanBp) {
+      return {
+        interval: null,
+        note: `The selection ${bounds} is ${bp(lengthBp)} bp, shorter than the ${bp(siteSpanBp)}-bp ${crisprNuclease} site, so it holds no whole site and is not offered as a search interval.`,
+      };
+    }
+    return {
+      interval: {
+        start: selectedRange.start,
+        end: selectedRange.end,
+        lengthBp,
+        crossesOrigin: selectedRange.start > selectedRange.end,
+      },
+      note: '',
+    };
+  }, [selectedRange, doc.sequence.length, doc.topology, chosenPreset, crisprNuclease]);
+  // Which of the two scopes the scan is asked for. A user who selected a span and then asked for
+  // CRISPR sites meant that span, so the interval is preferred wherever one is on offer; choosing
+  // the whole sequence here keeps it, and a selection that cannot be searched falls back to the
+  // whole sequence rather than to nothing.
+  const [crisprScopeChoice, setCrisprScopeChoice] = useState<'whole' | 'interval'>('interval');
+  const crisprScope: 'whole' | 'interval' =
+    crisprScopeChoice === 'interval' && crisprRangeOffer.interval ? 'interval' : 'whole';
   // The record's own topology goes to the engine: a plasmid is scanned as the circle it is, so the
-  // guides across its origin are listed (BG-01M6T6GQ).
+  // guides across its origin are listed (BG-01M6T6GQ). The interval goes with it where one was
+  // asked for, and the engine then searches that arc of the record alone (US-01M7DVAS).
   const crisprResult = useMemo(
     () =>
       scanCrisprGuides(
         doc.sequence,
         crisprNuclease,
         CRISPR_GUIDES_LISTED,
-        doc.topology === 'circular'
+        doc.topology === 'circular',
+        crisprScope === 'interval' ? crisprRangeOffer.interval : null
       ),
-    [doc.sequence, doc.topology, crisprNuclease]
+    [doc.sequence, doc.topology, crisprNuclease, crisprScope, crisprRangeOffer.interval]
   );
   const crisprGuides = crisprResult.guides;
   // The scan's own report (US-01M7DVH2): the envelope the scan op replies with, so these numbers are
@@ -244,17 +320,33 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   const crisprCandidates = crisprScan?.candidateCount;
   const crisprScanned = crisprScan?.scannedLengthBp;
   const crisprSequenceBp = crisprScan?.sequenceLengthBp;
+  // The interval the scan searched, as the scan itself reports it (US-01M7DVAS) — not the interval
+  // this tab asked for, which an engine bound can shorten. Where it is set, `scannedLengthBp` counts
+  // that interval, so the bounded-prefix wording below ("bases 1 to N") would be a false claim.
+  const crisprSearchedInterval = crisprScan?.searchedInterval;
+  const crisprIntervalRefusal = crisprScan?.intervalRefusal;
+  const crisprContextBp = crisprScan?.contextOutsideIntervalBp ?? 0;
+  const crisprIntervalBounds = crisprSearchedInterval
+    ? `${bp(crisprSearchedInterval.start)}..${bp(crisprSearchedInterval.end)}`
+    : '';
+  const crisprIntervalText = crisprSearchedInterval
+    ? `${crisprIntervalBounds} (${bp(crisprSearchedInterval.lengthBp)} bp${crisprSearchedInterval.crossesOrigin ? ', across the origin' : ''})`
+    : '';
   const crisprScanIsPartial =
+    crisprSearchedInterval === undefined &&
     crisprScanned !== undefined &&
     crisprSequenceBp !== undefined &&
     crisprScanned < crisprSequenceBp;
   // Read from the scan's own reply, never from the document: a circular record the scan could not
   // read whole was read straight, and says so instead of claiming its origin.
   const crisprScanWrapped =
-    crisprScan?.scannedCircular === true && (crisprScan.originSpanBp ?? 0) > 0;
+    crisprSearchedInterval === undefined &&
+    crisprScan?.scannedCircular === true &&
+    (crisprScan.originSpanBp ?? 0) > 0;
   /** How the scan read the molecule, in the words the seed-match sentence and the no-guide line share. */
-  const crisprReadAs =
-    crisprScanIsPartial
+  const crisprReadAs = crisprSearchedInterval
+    ? `bases ${crisprIntervalBounds} — the ${bp(crisprSearchedInterval.lengthBp)} bp interval searched${crisprSearchedInterval.crossesOrigin ? ', across the origin' : ''} — of the ${bp(crisprSequenceBp ?? 0)} bases of this ${doc.topology === 'circular' ? 'circular' : 'linear'} sequence, on both strands`
+    : crisprScanIsPartial
       ? `bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence, on both strands`
       : crisprScanWrapped
       ? `all ${bp(crisprSequenceBp!)} bases of this circular sequence, including the ${bp(crisprScan!.originSpanBp)} across its origin, on both strands`
@@ -524,6 +616,32 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       {chosenPreset && (
         <span className="mbc-opdlg-muted" data-nuclease-facts={chosenPreset.id}>
           {`PAM ${chosenPreset.pamPattern} on the ${chosenPreset.pamSide} side, ${chosenPreset.spacerLengthBp}-nt spacer, ${chosenPreset.siteSpanBp}-bp site. ${chosenPreset.cutConvention}`}
+        </span>
+      )}
+    </>
+  );
+  // What the scan may be asked to search (US-01M7DVAS AC1): the interval on screen, where the
+  // selection is one that can be searched, and the whole sequence — which is all that is offered
+  // when there is no such selection, with the reason beside it.
+  const searchRangeSelect = (
+    <>
+      <select
+        aria-label="Search range:"
+        value={crisprScope}
+        onChange={(e) => setCrisprScopeChoice(e.target.value === 'interval' ? 'interval' : 'whole')}
+      >
+        {crisprRangeOffer.interval && (
+          <option value="interval">
+            {`The selected interval ${bp(crisprRangeOffer.interval.start)}..${bp(crisprRangeOffer.interval.end)} (${bp(crisprRangeOffer.interval.lengthBp)} bp${crisprRangeOffer.interval.crossesOrigin ? ', across the origin' : ''})`}
+          </option>
+        )}
+        <option value="whole">
+          {`The whole sequence (${bp(doc.sequence.length)} bp${doc.topology === 'circular' ? ', circular' : ''})`}
+        </option>
+      </select>
+      {crisprRangeOffer.note && (
+        <span className="mbc-opdlg-muted" data-crispr-range-note="">
+          {crisprRangeOffer.note}
         </span>
       )}
     </>
@@ -965,6 +1083,10 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 <span>Nuclease / PAM:</span>
                 {nucleaseSelect}
               </label>
+              <label className="form-field">
+                <span>Search range:</span>
+                {searchRangeSelect}
+              </label>
             </InspectorSection>
           )}
           <div className="studio-card-header">
@@ -973,6 +1095,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             </h3>
             <div className="cloning-action-row">
               {!inWorkbench && nucleaseSelect}
+              {!inWorkbench && searchRangeSelect}
               <button className="btn-success" onClick={handleAnnotateTop5Crispr}>
                 + Annotate Top 5 Guides onto {doc.name}
               </button>
@@ -980,21 +1103,38 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
           </div>
 
           <div className="info-callout">
-            {crisprCandidates === undefined
+            {/* An interval the engine refused was searched not at all, so this line claims no
+                range, no candidate count and no seed count for it (US-01M7DVAS AC6). */}
+            {crisprIntervalRefusal !== undefined
+              ? `No range was searched: ${crisprIntervalRefusal} No guide, range or seed count is claimed here.`
+              : crisprCandidates === undefined
               ? `CRISPR scan report unavailable (${crisprResult.reportUnavailableReason ?? 'the engine sent no scan report'}): this tab cannot say how many candidate guides there are, what range was searched, or whether the scan is complete.`
               : crisprCandidates === 0
               ? `No candidate ${crisprNuclease} guide: 0 of the candidates this scan looked for are in ${crisprReadAs}.`
               : crisprCandidates > crisprReturned
               ? `Lists the ${bp(crisprReturned)} highest-scoring of the ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`
               : `Lists all ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`}{' '}
+            {/* What was searched, in the scan's own numbers: the interval, its length, the whole
+                sequence's length and the bases outside the interval that were read for a PAM — so
+                an interval scan is never read as a scan of the whole sequence (US-01M7DVAS AC4). */}
+            {crisprSearchedInterval !== undefined && (
+              <>
+                <strong>Searched</strong>: {crisprReadAs}.{' '}
+                {crisprContextBp > 0
+                  ? `${bp(crisprContextBp)} bases outside the interval were read as PAM context only: a candidate whose spacer is inside the interval but whose PAM is not is listed and says so on its own row, and no base of that context was searched for a guide of its own or counted as a seed match.`
+                  : 'No base outside the interval was read.'}{' '}
+              </>
+            )}
             <strong>Heuristic rank</strong>: a rule of thumb over the spacer and its PAM — from a base of 68, raised for GC content inside 40–65 % and lowered outside 30–75 %, raised for a G and lowered for a T at spacer position 20, raised for a C at position 16 and for an A or G at position 4, lowered for a TTTT run and for a PAM ending GGG, then held to 8 to 98. These are SpCas9 rules of thumb, read off a Cas12a spacer unchanged. It is not a measured or predicted cutting efficiency, and not a trained Doench model.{' '}
             {/* What orders the list, and what the seed count counts, are both claims about a scan
                 that ran: an absent report says neither (US-01M7DVH2 AC5). */}
-            {crisprScan !== undefined && (
+            {crisprScan !== undefined && crisprIntervalRefusal === undefined && (
               <>
                 <strong>Order</strong>: this rank plus the seed-match score, not the rank alone.{' '}
                 <strong>Seed matches</strong>:{' '}
-                {crisprScanIsPartial
+                {crisprSearchedInterval !== undefined
+                  ? `other exact copies of the 12-nt PAM-proximal seed inside the interval searched, ${crisprIntervalText}, on both strands, and no copy outside it — an interval specificity, not one over the whole ${bp(crisprSequenceBp ?? 0)} bases`
+                  : crisprScanIsPartial
                   ? `other exact copies of the 12-nt PAM-proximal seed in bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence — the range searched, on both strands — and no copy outside it`
                   : `other exact copies of the 12-nt PAM-proximal seed across ${crisprReadAs}`}{' '}
                 (no genome-wide off-target search).
@@ -1039,6 +1179,14 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                       <span title={g.pamAmbiguityNote}>
                         {' '}
                         (ambiguity code, base not read)
+                      </span>
+                    )}
+                    {/* This guide's spacer is inside the interval searched but its PAM is not, so
+                        the PAM was read from context outside it (US-01M7DVAS AC2). */}
+                    {g.intervalContextNote && (
+                      <span title={g.intervalContextNote}>
+                        {' '}
+                        (PAM outside the interval searched)
                       </span>
                     )}
                   </td>
