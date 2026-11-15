@@ -1,5 +1,6 @@
-# The inputs public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80, BG-01M7FGTR):
-# every .rs under crates/*/src, each file they include_str!/include_bytes!/include! outside a
+# The inputs public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80, BG-01M7FGTR,
+# BG-01M7FQHB): every .rs under crates/*/src, each crate's build script (a build.rs at its root or
+# the file its package.build names), each file they include_str!/include_bytes!/include! outside a
 # #[cfg(test)] module, every crate's Cargo.toml, and the workspace Cargo.toml and Cargo.lock.
 # Written by `npm run wasm:build`; checked by src/__tests__/crisprScoreProvenance.test.tsx,
 # which walks the tree again and names every file that differs. Do not edit by hand.

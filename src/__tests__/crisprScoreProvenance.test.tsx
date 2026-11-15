@@ -2015,3 +2015,165 @@ describe('every CRISPR seed sentence states the length the engine reports (BG-01
     }
   }, 55_000);
 });
+
+/**
+ * BG-01M7FQHB: cargo compiles code from outside a crate's `src/` in four ways the walk was blind to -
+ * a crate-root `build.rs`, which cargo runs with no manifest change; a `package.build` key naming
+ * another build script; a `[lib]` `path` key moving the library root; and a `#[path]` attribute
+ * pointing a module at any file. Each is recorded as an engine input or refused by name.
+ *
+ * Wrong implementations this catches:
+ * - the base walker, which records none of the four and refuses none;
+ * - a refusal whose message names neither the construct nor the file;
+ * - a fix that refuses every `[lib]` section, which the real `molbiocraft-wasm` manifest carries
+ *   with no `path`, or every `path` key, which every path dependency carries;
+ * - a `#[path]` check on raw text, which refuses one written in a comment or a string;
+ * - a build script recorded alone, without the files it includes or the modules it loads.
+ */
+describe('a build script, a library root or a module from outside src/ is recorded or refused (BG-01M7FQHB)', () => {
+  const SCRIPT = 'scripts/build_rust_wasm.mjs';
+  /** A throwaway checkout holding the workspace plus `files`, handed to `use`, then removed. */
+  const onCrate = (files: ReadonlyArray<readonly [string, string]>, use: (tree: string) => void) => {
+    const tree = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FQHB-`);
+    try {
+      for (const [file, text] of [
+        ['Cargo.toml', '[workspace]\nmembers = ["crates/c"]\n'],
+        ['Cargo.lock', 'version = 4\n'],
+        ['crates/c/src/lib.rs', 'pub fn f() {}\n'],
+        ...files,
+      ] as const) {
+        nodeFs.mkdirSync(`${tree}/${file.slice(0, file.lastIndexOf('/') + 1) || '.'}`, { recursive: true });
+        nodeFs.writeFileSync(`${tree}/${file}`, text, 'utf8');
+      }
+      use(tree);
+    } finally {
+      nodeFs.rmSync(tree, { recursive: true, force: true });
+    }
+  };
+  const PACKAGE = '[package]\nname = "c"\n';
+  const refusal = (tree: string) => {
+    try {
+      engineInputs(tree);
+    } catch (error) {
+      return (error as Error).message;
+    }
+    return 'walked without a refusal';
+  };
+
+  it('BG-01M7FQHB AC1 a crate-root build.rs is recorded with what it includes, and reaches the record --sources-only writes', async () => {
+    const { execFileSync } = (await import(/* @vite-ignore */ 'node:child_process')) as {
+      execFileSync: (file: string, args: string[], options: { encoding: 'utf8'; cwd: string }) => string;
+    };
+    onCrate(
+      [
+        ['crates/c/Cargo.toml', PACKAGE],
+        ['crates/c/build.rs', 'fn main() { let _ = include_str!("data/cfg.txt"); }\n'],
+        ['crates/c/data/cfg.txt', 'flag\n'],
+        [SCRIPT, nodeFs.readFileSync(new URL(SCRIPT, REPO_ROOT), 'utf8')],
+      ],
+      (tree) => {
+        const { files } = engineInputs(tree);
+        expect(files).toContain('crates/c/build.rs');
+        expect(files, 'a build script recorded without the file it includes').toContain('crates/c/data/cfg.txt');
+        // Through the shipped entry point CI runs, not only the function: the record names it.
+        execFileSync(process.execPath, [`${tree}/${SCRIPT}`, '--sources-only'], { encoding: 'utf8', cwd: tree });
+        const record = nodeFs.readFileSync(new URL(SOURCE_DIGEST_SIDECAR, pathToFileURL(`${tree}/`)), 'utf8');
+        expect(record).toMatch(/^[0-9a-f]{64} {2}crates\/c\/build\.rs$/m);
+        expect(record).toMatch(/^[0-9a-f]{64} {2}crates\/c\/data\/cfg\.txt$/m);
+      }
+    );
+    // A module the build script loads from a file beside it is refused by file, line and name.
+    onCrate(
+      [
+        ['crates/c/Cargo.toml', PACKAGE],
+        ['crates/c/build.rs', '// mod not_this;\nmod helper;\nfn main() { helper::run() }\n'],
+        ['crates/c/helper.rs', 'pub fn run() {}\n'],
+      ],
+      (tree) => expect(refusal(tree)).toMatch(/^crates\/c\/build\.rs:2: .*mod helper;/)
+    );
+  });
+
+  it('BG-01M7FQHB AC2 a package.build script is recorded by the path its manifest names, and one the walk cannot follow is refused by name', () => {
+    for (const manifest of [
+      `${PACKAGE}build = "gen/b.rs"\n`,
+      `${PACKAGE}build = 'gen/b.rs' # the script\n`,
+      'package.name = "c"\npackage.build = "gen/b.rs"\n',
+      // A header written inside a multi-line string is text, and the key after it is still package's.
+      `${PACKAGE}description = """\n[x]\n"""\nbuild = "gen/b.rs"\n`,
+    ]) {
+      onCrate(
+        [
+          ['crates/c/Cargo.toml', manifest],
+          ['crates/c/gen/b.rs', 'fn main() { let _ = include_bytes!("seed.bin"); }\n'],
+          ['crates/c/gen/seed.bin', '\u0001'],
+        ],
+        (tree) => {
+          const { files, raw } = engineInputs(tree);
+          expect(files, manifest).toContain('crates/c/gen/b.rs');
+          expect(raw, manifest).toContain('crates/c/gen/seed.bin');
+        }
+      );
+    }
+    const cases: Array<[string, RegExp]> = [
+      [`${PACKAGE}build = "gen/missing.rs"\n`, /^crates\/c\/Cargo\.toml:3: package\.build = "gen\/missing\.rs" .*not a file/],
+      [`${PACKAGE}build = "../../../outside.rs"\n`, /^crates\/c\/Cargo\.toml:3: package\.build = "\.\.\/\.\.\/\.\.\/outside\.rs" .*outside this checkout/],
+      [`${PACKAGE}build = ["gen/b.rs"]\n`, /^crates\/c\/Cargo\.toml:3: package\.build = \["gen\/b\.rs"\] /],
+      [`${PACKAGE}build = "gen\\\\b.rs"\n`, /^crates\/c\/Cargo\.toml:3: package\.build = /],
+    ];
+    for (const [manifest, expected] of cases) {
+      onCrate([['crates/c/Cargo.toml', manifest]], (tree) => expect(refusal(tree), manifest).toMatch(expected));
+    }
+  });
+
+  it('BG-01M7FQHB AC2 a [lib] path is refused by name in every form, and a [lib] or a path key that moves no library root walks', () => {
+    for (const manifest of [
+      `${PACKAGE}[lib]\npath = "lib/main.rs"\n`,
+      `${PACKAGE}[ lib ]\n"path" = 'lib/main.rs'\n`,
+      `lib.path = "lib/main.rs"\n${PACKAGE}`,
+      `lib = { crate-type = ["cdylib"], path = "lib/main.rs" }\n${PACKAGE}`,
+    ]) {
+      onCrate([['crates/c/Cargo.toml', manifest]], (tree) =>
+        expect(refusal(tree), manifest).toMatch(/^crates\/c\/Cargo\.toml:\d+: \[lib\] path = .*lib\/main\.rs/)
+      );
+    }
+    for (const manifest of [
+      `${PACKAGE}[lib]\ncrate-type = ["cdylib", "rlib"]\n`,
+      `${PACKAGE}[lib]\n# path = "lib/main.rs"\nname = "c"\n`,
+      `${PACKAGE}[dependencies]\nd = { path = "../d" }\n[lib.metadata]\npath = "x"\n`,
+      `${PACKAGE}description = "a [lib] path = here"\n[lib]\ncrate-type = ["cdylib"]\n[[bin]]\nname = "tool"\npath = "tools/main.rs"\n`,
+    ]) {
+      onCrate([['crates/c/Cargo.toml', manifest]], (tree) => expect(engineInputs(tree).files, manifest).toContain('crates/c/src/lib.rs'));
+    }
+    // The real tree: molbiocraft-wasm carries a [lib] with no path, and still walks.
+    const wasmManifest = nodeFs.readFileSync(new URL('crates/molbiocraft-wasm/Cargo.toml', REPO_ROOT), 'utf8');
+    expect(wasmManifest, 'molbiocraft-wasm no longer carries a [lib], so this case proves nothing').toMatch(/^\[lib\]$/m);
+    expect(walkEngineInputs().files).toContain('crates/molbiocraft-wasm/Cargo.toml');
+  });
+
+  it('BG-01M7FQHB AC2 a #[path] module attribute is refused by name wherever it is code, and nowhere it is a comment or a string', () => {
+    for (const [source, line] of [
+      ['#[path = "../extra/x.rs"] mod x;\npub fn f() {}\n', 1],
+      ['pub fn f() {}\n# [ path = "../extra/x.rs" ]\nmod x;\n', 2],
+      ['pub fn f() {}\n\n#[cfg_attr(feature = "f", path = "../extra/x.rs")]\nmod x;\n', 3],
+    ] as const) {
+      onCrate(
+        [
+          ['crates/c/Cargo.toml', PACKAGE],
+          ['crates/c/src/lib.rs', source],
+          ['crates/c/extra/x.rs', 'pub fn g() {}\n'],
+        ],
+        (tree) => expect(refusal(tree), source).toMatch(new RegExp(`^crates/c/src/lib\\.rs:${line}: a #\\[path\\] attribute .*extra/x\\.rs`))
+      );
+    }
+    onCrate(
+      [
+        ['crates/c/Cargo.toml', PACKAGE],
+        [
+          'crates/c/src/lib.rs',
+          '// #[path = "../extra/x.rs"] mod x;\n/* #[path = "y.rs"] */\npub const S: &str = "#[path = \\"z.rs\\"]";\npub const R: &str = r#"#[path = "w.rs"]"#;\n#[doc = "path = here"]\n#[cfg(feature = "path")]\npub fn f() {}\n',
+        ],
+      ],
+      (tree) => expect(engineInputs(tree).files).toContain('crates/c/src/lib.rs')
+    );
+  });
+});

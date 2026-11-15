@@ -411,13 +411,19 @@ function testModuleSpans(code, file) {
  * argument that is not one string literal closed by its own delimiter, a target missing from the
  * tree or outside the checkout - is refused by file and line rather than left out of the record.
  *
+ * Before any of that, the source is refused if it loads a module from a file the walk does not
+ * follow (refuseModulesFromElsewhere).
+ *
+ * @param {boolean} [buildScript] whether `abs` is a crate's build script rather than a source of
+ *   the library
  * @returns {{ path: string, rust: boolean, bytes: boolean }[]} absolute paths; `rust` for an
  *   `include!` target, `bytes` for an `include_bytes!` one
  */
-function includedFiles(rootDir, abs) {
+function includedFiles(rootDir, abs, buildScript = false) {
   const file = toRel(rootDir, abs);
   const text = fs.readFileSync(abs, 'utf8');
   const { code, literals } = rustCode(text, file);
+  refuseModulesFromElsewhere(code, text, file, buildScript);
   const spans = testModuleSpans(code, file);
   const found = [];
   const site = /(?<![A-Za-z0-9_])(include_str|include_bytes|include)\s*!\s*([([{])\s*/g;
@@ -445,19 +451,162 @@ function includedFiles(rootDir, abs) {
 }
 
 /**
+ * Refuses, by file, line and name, a Rust source that loads a module from a file the walk does not
+ * follow (BG-01M7FQHB), read from code that `rustCode` has lexed - so one written in a comment or a
+ * string literal is never read as code:
+ * - a `path = ...` inside any attribute - `#[path = "..."]`, or the same key under `#[cfg_attr(...)]`.
+ *   It can point a module at any file, inside `src/` or outside it, and where it lands depends on
+ *   rustc's rules for the module it sits in; refusing it is simpler and surer than resolving it, and
+ *   the tree has none. It is refused inside a `#[cfg(test)]` module too: a red there costs a reword,
+ *   not a missed input;
+ * - in a build script, an out-of-line `mod name;`, which loads a file beside the script that no
+ *   other rule records. In a library source the same item loads a file under `src/`, which the walk
+ *   already records.
+ */
+function refuseModulesFromElsewhere(code, text, file, buildScript) {
+  const attribute = /#\s*!?\s*\[/g;
+  for (let m; (m = attribute.exec(code)) !== null; ) {
+    let depth = 1;
+    let j = m.index + m[0].length;
+    for (; j < code.length && depth > 0; j++) {
+      if (code[j] === '[') depth++;
+      else if (code[j] === ']') depth--;
+    }
+    if (/(?<![A-Za-z0-9_])path\s*=/.test(code.slice(m.index + m[0].length, j))) {
+      throw new Error(
+        `${file}:${lineOf(text, m.index)}: a #[path] attribute (${text.slice(m.index, j)}) points a module at a file the engine-input walk does not follow, so that input cannot be recorded; move the module under src/ where its name puts it`
+      );
+    }
+  }
+  if (!buildScript) return;
+  const outOfLine = /(?<![A-Za-z0-9_])mod\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+  for (let m; (m = outOfLine.exec(code)) !== null; ) {
+    throw new Error(
+      `${file}:${lineOf(text, m.index)}: the build script's \`mod ${m[1]};\` loads a module file beside it that the engine-input walk does not follow, so that input cannot be recorded; write the module inline or include!() it`
+    );
+  }
+}
+
+/**
+ * The keys of one crate manifest that move what cargo compiles out of the walk's sight, by the line
+ * each is written on: `package.build` and `lib.path`, in any of TOML's spellings of them - under a
+ * `[package]` / `[lib]` header, as a dotted key, or in an inline table - with quoted key parts
+ * unquoted. A line scan rather than a TOML parser: the lines inside a `"""` or `'''` multi-line
+ * string are skipped, and so is the rest of the line that closes one.
+ *
+ * @returns {{ key: string, value: string, line: number }[]} `value` as written, comment stripped
+ */
+function manifestTargetKeys(toml) {
+  const found = [];
+  // Splits on `sep` outside quotes and brackets: TOML key parts on '.', inline-table pairs on ','.
+  const split = (text, sep) => {
+    const parts = [];
+    let depth = 0;
+    let quote = '';
+    let from = 0;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quote) {
+        if (c === '\\' && quote === '"') i++;
+        else if (c === quote) quote = '';
+      } else if (c === '"' || c === "'") quote = c;
+      else if (c === '[' || c === '{') depth++;
+      else if (c === ']' || c === '}') depth--;
+      else if (c === '#' && sep !== '#') return [...parts, text.slice(from, i)];
+      else if (c === sep && depth === 0) (parts.push(text.slice(from, i)), (from = i + 1));
+    }
+    return [...parts, text.slice(from)];
+  };
+  const keyOf = (text) => split(text, '.').map((part) => part.trim().replace(/^(["'])(.*)\1$/, '$2'));
+  const pairs = (prefix, text, line) => {
+    const [body] = split(text, '#');
+    const at = split(body, '=');
+    if (at.length < 2) return;
+    const key = [...prefix, ...keyOf(at[0])].join('.');
+    const value = body.slice(at[0].length + 1).trim();
+    if (value.startsWith('{') && value.endsWith('}')) {
+      for (const pair of split(value.slice(1, -1), ',')) pairs(key.split('.'), pair, line);
+    } else if (key === 'package.build' || key === 'lib.path') found.push({ key, value, line });
+  };
+  let table = [];
+  let multiline = '';
+  toml.split(/\r?\n/).forEach((raw, index) => {
+    // The lines inside a multi-line string are text: a `[x]` there is no header, a `k = v` no key.
+    if (multiline) {
+      if (raw.includes(multiline)) multiline = '';
+      return;
+    }
+    for (const delimiter of ['"""', "'''"]) {
+      if (raw.split(delimiter).length % 2 === 0) multiline = delimiter;
+    }
+    const line = split(raw, '#')[0].trim();
+    const header = /^\[\[([^\]]*)\]\]$|^\[([^\]]*)\]$/.exec(line);
+    if (header) table = header[1] !== undefined ? ['[[array]]'] : keyOf(header[2]);
+    else pairs(table, line, index + 1);
+  });
+  return found;
+}
+
+/**
+ * The build scripts of one crate, which cargo compiles and runs before the library and whose
+ * output (cfgs, generated code, link flags) can change the engine (BG-01M7FQHB). Recorded rather
+ * than refused, since cargo runs a crate-root `build.rs` with no manifest change at all:
+ * - `build.rs` at the crate root, whenever it exists - even under `build = false`, where it records
+ *   a file the engine does not need (a red that costs a rebuild) rather than read the key wrong;
+ * - the file a `package.build` key names, resolved against the crate directory.
+ * A `[lib]` `path` moves the library root, and with it where every `mod` resolves, so it is refused
+ * rather than followed; so is a `package.build` that is not one plain string, or that names a file
+ * missing from the tree or outside the checkout. `[[bin]]` targets are not compiled into the cdylib
+ * and are not read.
+ *
+ * @returns {string[]} absolute paths of the build scripts
+ */
+function buildScripts(rootDir, crateDir, manifest) {
+  const rel = toRel(rootDir, manifest);
+  const scripts = [];
+  const atRoot = path.join(crateDir, 'build.rs');
+  if (fs.existsSync(atRoot) && fs.statSync(atRoot).isFile()) scripts.push(atRoot);
+  for (const { key, value, line } of manifestTargetKeys(fs.readFileSync(manifest, 'utf8'))) {
+    const at = `${rel}:${line}`;
+    if (key === 'lib.path') {
+      throw new Error(`${at}: [lib] path = ${value} moves the library root out of src/, where the engine-input walk does not follow its modules, so those inputs cannot be recorded`);
+    }
+    if (value === 'true' || value === 'false') continue;
+    const plain = /^"([^"\\]*)"$|^'([^']*)'$/.exec(value);
+    if (!plain) {
+      throw new Error(`${at}: package.build = ${value} is not one plain string naming a build script, so the build script cannot be recorded`);
+    }
+    const script = path.resolve(crateDir, plain[1] ?? plain[2]);
+    const scriptRel = toRel(rootDir, script);
+    if (scriptRel.startsWith('../') || path.isAbsolute(scriptRel)) {
+      throw new Error(`${at}: package.build = ${value} names ${script}, outside this checkout, so it cannot be recorded`);
+    }
+    if (!fs.existsSync(script) || !fs.statSync(script).isFile()) {
+      throw new Error(`${at}: package.build = ${value} names ${scriptRel}, which is not a file in this tree`);
+    }
+    scripts.push(script);
+  }
+  return scripts;
+}
+
+/**
  * Every input the engine is built from, discovered from the tree - not an enumeration, so a file
  * added tomorrow is covered the day it is added - and the one walk of the crate tree, which both
  * the build's record and the vitest that checks it read (BG-01M7FGTR folded the vitest's own walker
  * into this one):
  * - every `.rs` below each crate's `src`, to any depth (`tests/` and `benches/` are left out: cargo
  *   compiles them as their own targets, not into the cdylib);
+ * - each crate's build scripts (buildScripts) - a crate-root `build.rs` and a `package.build`
+ *   target - which cargo runs before compiling the engine (BG-01M7FQHB);
  * - every file those sources `include_str!`, `include_bytes!` or `include!` outside a
  *   `#[cfg(test)]` module - such as the two `.pdb` files `molbiocraft-cloning/src/sample_structures.rs`
  *   embeds, which are build inputs of the engine, not test data - and what an `include!`-ed file
  *   includes in turn;
  * - every crate's `Cargo.toml` (its dependencies and features), and the WORKSPACE_MANIFESTS.
  * A crate is a directory under `crates/` holding a `Cargo.toml`. A missing workspace manifest is
- * refused by name rather than left out. `raw` names the inputs to digest over their exact bytes:
+ * refused by name rather than left out, and so is each way of compiling code from outside the walk
+ * that is not recorded - a `[lib]` `path`, a `#[path]` attribute, a build script's out-of-line
+ * `mod` (buildScripts, refuseModulesFromElsewhere). `raw` names the inputs to digest over their exact bytes:
  * every `include_bytes!` target, which the engine embeds byte for byte (BG-01M7FQN4) - including a
  * file some other site also reads with `include_str!`, since one digest per path must be the one
  * that misses no change. Every other input is text (rustc reads `.rs`, `include_str!` and
@@ -478,12 +627,17 @@ export function engineInputs(rootDir) {
     }
   };
   const crates = [];
+  const scripts = new Set();
   const cratesDir = path.join(rootDir, 'crates');
   for (const crate of fs.readdirSync(cratesDir, { withFileTypes: true })) {
     const manifest = path.join(cratesDir, crate.name, 'Cargo.toml');
     if (!crate.isDirectory() || !fs.existsSync(manifest)) continue;
     crates.push(crate.name);
     found.add(manifest);
+    for (const script of buildScripts(rootDir, path.join(cratesDir, crate.name), manifest)) {
+      scripts.add(script);
+      rust.push(script);
+    }
     const src = path.join(cratesDir, crate.name, 'src');
     if (fs.existsSync(src)) walk(src);
   }
@@ -501,7 +655,7 @@ export function engineInputs(rootDir) {
     if (lexed.has(abs)) continue;
     lexed.add(abs);
     found.add(abs);
-    for (const included of includedFiles(rootDir, abs)) {
+    for (const included of includedFiles(rootDir, abs, scripts.has(abs))) {
       found.add(included.path);
       if (included.rust) rust.push(included.path);
       if (included.bytes) raw.add(included.path);
@@ -548,8 +702,9 @@ export function sourceDigestManifest(rootDir) {
     raw.includes(rel) ? rawDigest(fs.readFileSync(path.join(rootDir, rel))) : sourceDigest(fs.readFileSync(path.join(rootDir, rel), 'utf8'));
   const lines = files.map((rel) => `${digestOf(rel)}  ${rel}`);
   return [
-    `# The inputs public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80, BG-01M7FGTR):`,
-    `# every .rs under crates/*/src, each file they include_str!/include_bytes!/include! outside a`,
+    `# The inputs public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80, BG-01M7FGTR,`,
+    `# BG-01M7FQHB): every .rs under crates/*/src, each crate's build script (a build.rs at its root or`,
+    `# the file its package.build names), each file they include_str!/include_bytes!/include! outside a`,
     `# #[cfg(test)] module, every crate's Cargo.toml, and the workspace Cargo.toml and Cargo.lock.`,
     `# Written by \`npm run wasm:build\`; checked by src/__tests__/crisprScoreProvenance.test.tsx,`,
     `# which walks the tree again and names every file that differs. Do not edit by hand.`,
