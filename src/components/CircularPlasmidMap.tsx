@@ -43,6 +43,25 @@ interface CircularPlasmidMapProps {
    */
   orfScope?: { firstBp?: number; minAa?: number } | null;
   selectedRange: { start: number; end: number } | null;
+  /**
+   * The CRISPR guide a guide row asked to be shown (US-01M7DVA6), or none: the whole site as the
+   * row reports it, and its spacer and PAM as their own spans. Every coordinate is 1-based,
+   * inclusive and on the plus strand, `start > end` running across the origin - so a part across
+   * the origin draws as the sector that crosses it, never as the arc between its ends. The map
+   * draws the two parts as sectors of their own, each distinguishable from the other.
+   */
+  guideHighlight?: {
+    name: string;
+    nuclease: string;
+    strand: 1 | -1;
+    site: { start: number; end: number };
+    spacer: { start: number; end: number };
+    pam: { start: number; end: number };
+    pamSide: string;
+    cutPosition: number;
+    cutPositionTargetStrand?: number;
+    cutPositionTargetStrandNote?: string;
+  } | null;
   onSelectRange: (range: { start: number; end: number; label?: string }) => void;
   showOrfs: boolean;
   showPrimers: boolean;
@@ -976,6 +995,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   orfs,
   orfScope = null,
   selectedRange,
+  guideHighlight = null,
   onSelectRange,
   showOrfs,
   showPrimers,
@@ -1072,6 +1092,18 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     () => selectionInterval(selectedRange, seqLen, doc.topology),
     [selectedRange, seqLen, doc.topology]
   );
+  /**
+   * The shown guide's two parts as sectors of the ring (US-01M7DVA6): the same
+   * `selectionSectorAngles` the active interval is drawn by, so a part across the origin runs past
+   * twelve o'clock and covers both arcs - never the complementary arc the long way round
+   * (BG-01M7CG2W, AC3).
+   */
+  const guideSectors = useMemo(() => {
+    if (!guideHighlight) return null;
+    const spacer = selectionSectorAngles(guideHighlight.spacer, seqLen, doc.topology);
+    const pam = selectionSectorAngles(guideHighlight.pam, seqLen, doc.topology);
+    return spacer.length && pam.length ? { spacer, pam } : null;
+  }, [guideHighlight, seqLen, doc.topology]);
   const isProtein = doc.moleculeType === 'Protein';
   const unitLabel = isProtein ? 'aa' : 'bp';
   const viewWidth = 680;
@@ -1734,6 +1766,39 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
               strokeWidth="1.4"
             />
           ))}
+
+          {/* The shown CRISPR guide, its two parts apart (US-01M7DVA6): the spacer as a solid
+              sector, the PAM as a paler dashed one in another colour, both inside the selection's
+              band so they read as two parts of the one site. */}
+          {guideHighlight && guideSectors && (
+            <g data-guide-arc-group={guideHighlight.name}>
+              {(['spacer', 'pam'] as const).flatMap((part) =>
+                guideSectors[part].map((seg) => (
+                  <path
+                    key={`guide-${part}-${seg.startAngle}`}
+                    data-guide-arc={part}
+                    data-guide-arc-span={seg.label}
+                    data-start-angle={seg.startAngle}
+                    data-end-angle={seg.endAngle}
+                    d={describeSelectionSector(cx, cy, rBackbone - 9, rBackbone + 9, seg.startAngle, seg.endAngle)}
+                    fill={part === 'spacer' ? 'rgba(22, 163, 74, 0.55)' : 'rgba(217, 119, 6, 0.35)'}
+                    fillRule="evenodd"
+                    stroke={part === 'spacer' ? '#15803d' : '#b45309'}
+                    strokeWidth="1.2"
+                    strokeDasharray={part === 'spacer' ? undefined : '3 2'}
+                  >
+                    <title>
+                      {part === 'spacer'
+                        ? `${guideHighlight.name} spacer ${seg.label} (${guideHighlight.nuclease}, ${
+                            guideHighlight.strand === 1 ? 'forward (+)' : 'reverse (−)'
+                          } strand): the bases to order`
+                        : `${guideHighlight.name} ${guideHighlight.pamSide} PAM ${seg.label}: read by the nuclease, not part of the spacer to order`}
+                    </title>
+                  </path>
+                ))
+              )}
+            </g>
+          )}
 
           {/* Adaptive Coordinate Ruler Ticks, labelled inside the innermost track */}
           {ticks.map((t) => {

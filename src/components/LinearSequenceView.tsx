@@ -4,7 +4,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ZoomIn, ZoomOut } from 'lucide-react';
 import { downloadSummarySequence } from '../core/contigSummary';
-import { intervalContains, intervalSequence, moveInterval, normaliseInterval, renderSegments, resizeIntervalBy, selectionInterval } from '../core/activeInterval';
+import { intervalContains, intervalLength, intervalSequence, moveInterval, normaliseInterval, renderSegments, resizeIntervalBy, selectionInterval } from '../core/activeInterval';
 import {
   anchoredOffset,
   classifyWheelGesture,
@@ -53,6 +53,26 @@ interface LinearSequenceViewProps {
   /** What `cutSites` cover when the caller scanned only part of the molecule; absent, the view gives no coverage note. */
   restrictionScope?: RestrictionScanScope | null;
   selectedRange: { start: number; end: number; label?: string } | null;
+  /**
+   * The CRISPR guide a guide row asked to be shown (US-01M7DVA6), or none: the whole site as the
+   * row reports it, and its spacer and PAM as their own spans. Every coordinate is 1-based,
+   * inclusive and on the plus strand, `start > end` running across the origin of a circular record
+   * (the active-interval convention). The base rows mark the spacer's bases and the PAM's bases
+   * apart, and the ribbon above them reads each part on the guide's own strand; nothing here edits
+   * the document.
+   */
+  guideHighlight?: {
+    name: string;
+    nuclease: string;
+    strand: 1 | -1;
+    site: { start: number; end: number };
+    spacer: { start: number; end: number };
+    pam: { start: number; end: number };
+    pamSide: string;
+    cutPosition: number;
+    cutPositionTargetStrand?: number;
+    cutPositionTargetStrandNote?: string;
+  } | null;
   onSelectRange: (range: { start: number; end: number; label?: string }) => void;
   onUpdateDocument: (updated: SequenceDocument) => void;
   showTranslation?: boolean;
@@ -154,6 +174,33 @@ const CUT_MARK_STYLE: React.CSSProperties = {
 const cutMark = (strand: 'top' | 'bottom') => (
   <span aria-hidden="true" data-cut-mark={strand} className="seq-cut-mark" style={CUT_MARK_STYLE} />
 );
+
+/**
+ * A base of the shown CRISPR guide's spacer, and one of its PAM (US-01M7DVA6): the spacer is the
+ * part a researcher orders and carries a solid underline, the PAM is only read by the nuclease and
+ * carries a dotted one in another colour - so the two parts of a guide read apart without colour
+ * alone saying which is which. One frozen object each, shared by every base of a part.
+ */
+const GUIDE_SPACER_BASE_STYLE: React.CSSProperties = {
+  backgroundColor: 'rgba(22, 163, 74, 0.22)',
+  borderBottom: '2px solid #15803d',
+};
+const GUIDE_PAM_BASE_STYLE: React.CSSProperties = {
+  backgroundColor: 'rgba(217, 119, 6, 0.22)',
+  borderBottom: '2px dotted #b45309',
+};
+/** The guide ribbon above the base rows: one line, out of the way of the selection quickbar. */
+const GUIDE_RIBBON_STYLE: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  gap: 8,
+  padding: '3px 8px',
+  marginBlockEnd: 4,
+  border: '1px solid var(--mbc-border)',
+  borderRadius: 4,
+  fontSize: 11,
+};
 const SCHEMATIC_X0 = 38;
 const SCHEMATIC_X1 = 762;
 const SCHEMATIC_W = SCHEMATIC_X1 - SCHEMATIC_X0;
@@ -1688,6 +1735,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   siteVisibility = null,
   restrictionScope = null,
   selectedRange,
+  guideHighlight = null,
   onSelectRange,
   onUpdateDocument,
   showTranslation = true,
@@ -1826,6 +1874,25 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     () => (rawLen === 0 ? null : selectionInterval(selectedRange, seqLen, doc.topology)),
     [selectedRange, rawLen, seqLen, doc.topology]
   );
+  /**
+   * The shown guide's two parts as the active-interval model reads them (US-01M7DVA6), with the
+   * bases of each read from this document 5'->3' on the guide's own strand: the reverse complement
+   * of the plus strand for a reverse guide, so the letters shown as the spacer read as the guide's
+   * spacer and not as its complement (AC2). A part across the origin is read round it, both arcs,
+   * because `intervalSequence` follows `start > end` (AC3, BG-01M7CG2W).
+   */
+  const guideParts = useMemo(() => {
+    if (!guideHighlight || rawLen === 0) return null;
+    const spacer = selectionInterval(guideHighlight.spacer, seqLen, doc.topology);
+    const pam = selectionInterval(guideHighlight.pam, seqLen, doc.topology);
+    if (!spacer || !pam) return null;
+    const asRead = (iv: ActiveInterval) => {
+      const plus = intervalSequence(doc.sequence, iv);
+      return guideHighlight.strand === -1 ? reverseComplement(plus) : plus;
+    };
+    return { spacer, pam, spacerBases: asRead(spacer), pamBases: asRead(pam) };
+  }, [guideHighlight, doc.sequence, doc.topology, rawLen, seqLen]);
+
   // The first base of the selection in reading order, and the page that holds it at this row length.
   const selectionStart = selectionIv ? selectionIv.start : null;
   const selectionPage =
@@ -3697,6 +3764,56 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
         </p>
       )}
 
+      {/* The guide shown from a CRISPR row (US-01M7DVA6): its spacer and its PAM named and read
+          apart, each at the plus-strand coordinates the row reports and each on the guide's own
+          strand - so the bases marked as the spacer are the ones to order. */}
+      {guideHighlight && guideParts && (
+        <div
+          className="seq-guide-ribbon"
+          style={GUIDE_RIBBON_STYLE}
+          data-guide-highlight={guideHighlight.name}
+          data-guide-strand={guideHighlight.strand}
+          data-guide-site={`${guideHighlight.site.start}..${guideHighlight.site.end}`}
+          data-guide-spacer={`${guideParts.spacer.start}..${guideParts.spacer.end}`}
+          data-guide-pam={`${guideParts.pam.start}..${guideParts.pam.end}`}
+          data-guide-spacer-bases={guideParts.spacerBases}
+          data-guide-pam-bases={guideParts.pamBases}
+          data-guide-cut={guideHighlight.cutPosition}
+          data-guide-cut-target={guideHighlight.cutPositionTargetStrand}
+          data-guide-cut-target-note={
+            guideHighlight.cutPositionTargetStrand === undefined
+              ? guideHighlight.cutPositionTargetStrandNote
+              : undefined
+          }
+        >
+          <strong>{guideHighlight.name}</strong>
+          <span>
+            {guideHighlight.nuclease} ·{' '}
+            {guideHighlight.strand === 1 ? 'forward (+) strand' : 'reverse (−) strand'} · cut @{' '}
+            {guideHighlight.cutPosition.toLocaleString()}
+            {guideHighlight.cutPositionTargetStrand !== undefined
+              ? `, target strand @ ${guideHighlight.cutPositionTargetStrand.toLocaleString()}`
+              : guideHighlight.cutPositionTargetStrandNote
+              ? `, target strand: ${guideHighlight.cutPositionTargetStrandNote}`
+              : ''}
+          </span>
+          <span>
+            <span style={GUIDE_SPACER_BASE_STYLE}>spacer</span>{' '}
+            {guideParts.spacer.start.toLocaleString()}..{guideParts.spacer.end.toLocaleString()} (
+            {intervalLength(guideParts.spacer, seqLen).toLocaleString()} nt
+            {guideParts.spacer.start > guideParts.spacer.end ? ', across the origin' : ''}){' '}
+            <span className="mono-cell">5&apos;-{guideParts.spacerBases}-3&apos;</span>
+          </span>
+          <span>
+            <span style={GUIDE_PAM_BASE_STYLE}>{guideHighlight.pamSide} PAM</span>{' '}
+            {guideParts.pam.start.toLocaleString()}..{guideParts.pam.end.toLocaleString()} (
+            {intervalLength(guideParts.pam, seqLen).toLocaleString()} nt
+            {guideParts.pam.start > guideParts.pam.end ? ', across the origin' : ''}){' '}
+            <span className="mono-cell">{guideParts.pamBases}</span> — read by the nuclease, not part
+            of the spacer to order
+          </span>
+        </div>
+      )}
       <div
         ref={attachRowsScroll}
         className="sequence-blocks-scroll"
@@ -3794,6 +3911,15 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                 {row.topSlice.split('').map((ch, idx) => {
                   const pos = row.rowStart + idx;
                   const inSel = selectionIv !== null && intervalContains(selectionIv, pos, seqLen);
+                  // Which part of the shown guide this base belongs to, if either: a base is never
+                  // both, so the spacer and the PAM read apart (US-01M7DVA6 AC1).
+                  const guidePart = !guideParts
+                    ? null
+                    : intervalContains(guideParts.spacer, pos, seqLen)
+                    ? 'spacer'
+                    : intervalContains(guideParts.pam, pos, seqLen)
+                    ? 'pam'
+                    : null;
                   const tokenClass = isProtein
                     ? `aa-res ${classifyProteinResidueCss(ch)}`
                     : `base-ch base-${ch === 'U' ? 'T' : ch}`;
@@ -3802,7 +3928,15 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                       {row.marks.top === idx && cutMark('top')}
                       <span
                         data-pos={pos}
+                        data-guide-part={guidePart ?? undefined}
                         className={`${tokenClass} ${inSel ? 'sel-base' : ''}`}
+                        style={
+                          guidePart === 'spacer'
+                            ? GUIDE_SPACER_BASE_STYLE
+                            : guidePart === 'pam'
+                            ? GUIDE_PAM_BASE_STYLE
+                            : undefined
+                        }
                         onClick={() =>
                           onSelectRange({
                             start: pos,

@@ -96,7 +96,7 @@ function guideTable(html: string): { headers: string[]; rows: string[][] } {
   const start = html.lastIndexOf('<table', html.indexOf('<span>Guide Name</span>'));
   const table = start < 0 ? '' : html.slice(start, html.indexOf('</table>', start) + '</table>'.length);
   const headers = [...table.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => text(m[1]));
-  const rows = [...table.matchAll(/<tr><td><strong>(?:gRNA|crRNA)[\s\S]*?<\/tr>/g)].map((m) =>
+  const rows = [...table.matchAll(/<tr[^>]*><td><strong>(?:gRNA|crRNA)[\s\S]*?<\/tr>/g)].map((m) =>
     [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => text(c[1]))
   );
   return { headers, rows };

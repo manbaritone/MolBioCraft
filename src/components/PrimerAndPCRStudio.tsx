@@ -20,6 +20,7 @@ import {
   findPrimerBindings,
   primerMatchSettingsText,
   testSavedPrimersOnSequence,
+  type CrisprScanGuide,
 } from '../core/bioEngine';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { MolBioMenuGlyph } from './MolBioIcons';
@@ -53,13 +54,96 @@ const bp = (n: number) => n.toLocaleString('en-US');
 const guideRange = (g: CrisprGuideRecord) =>
   `${bp(g.start)}..${bp(g.end)}${g.start > g.end ? ' (across the origin)' : ''}`;
 
+/**
+ * A guide as the views draw it (US-01M7DVA6): the whole site exactly as the row reports it, and the
+ * two parts of that site apart - the spacer the researcher orders and the PAM the nuclease only
+ * reads. Every coordinate is 1-based, inclusive and on the plus strand, `start > end` running across
+ * the origin of a circular record, the one convention the active-interval model reads (PRD F03).
+ * The bases themselves are not carried: a view reads them from the document at these spans and
+ * orients them on the guide's own strand, so a span and the letters drawn for it cannot disagree.
+ */
+export interface CrisprGuideHighlight {
+  /** The guide's name, as its row shows it. */
+  name: string;
+  /** The nuclease preset the scan used, in the engine's own words. */
+  nuclease: string;
+  strand: 1 | -1;
+  /** The spacer and its PAM together, as the row's Region cell reports them. */
+  site: { start: number; end: number };
+  spacer: { start: number; end: number };
+  pam: { start: number; end: number };
+  /** Which side of the spacer the PAM sits on, in the engine's words (`5'` or `3'`). */
+  pamSide: string;
+  /** The reported cut, a plus-strand coordinate. */
+  cutPosition: number;
+  /** The staggered second cut, where the preset has one and it falls on a base that was read. */
+  cutPositionTargetStrand?: number;
+  /** Why a staggered second cut has no position here; absent where it has one or the cutter is blunt. */
+  cutPositionTargetStrandNote?: string;
+}
+
+/**
+ * Where a guide's spacer and its PAM lie inside the site the row reports (US-01M7DVA6 AC1-AC3),
+ * read off the engine's own record: the site ascends in plus-strand order from `start`, wrapping the
+ * origin once where `start > end`, and the PAM leads exactly when the nuclease's PAM side and the
+ * guide's strand disagree - so SpCas9's forward site opens with its spacer and its reverse site
+ * opens with its PAM (the rule `scan_crispr_guides` builds the coordinates by). The lengths are the
+ * record's own spacer and PAM, never a constant, so a 20-nt spacer with a 3-nt or a 4-nt PAM both
+ * come out right.
+ */
+export function crisprGuideParts(
+  g: Pick<CrisprGuideRecord, 'start' | 'end' | 'strand' | 'spacerSeq' | 'pamSeq'> & { pamSide: string },
+  sequenceLength: number
+): { spacer: { start: number; end: number }; pam: { start: number; end: number } } {
+  const len = Math.max(1, sequenceLength);
+  const wrap = (pos: number) => ((((pos - 1) % len) + len) % len) + 1;
+  const span = (from: number, bases: number) => ({ start: wrap(from), end: wrap(from + bases - 1) });
+  const spacerLen = g.spacerSeq.length;
+  const pamLen = g.pamSeq.length;
+  const spacerLeads = g.pamSide.startsWith("3'") === (g.strand === 1);
+  return spacerLeads
+    ? { spacer: span(g.start, spacerLen), pam: span(g.start + spacerLen, pamLen) }
+    : { spacer: span(g.start + pamLen, spacerLen), pam: span(g.start, pamLen) };
+}
+
+/** The guide a click hands the views: its site, its two parts and what the row says about it. */
+export function crisprGuideHighlight(g: CrisprScanGuide, sequenceLength: number): CrisprGuideHighlight {
+  const { spacer, pam } = crisprGuideParts(g, sequenceLength);
+  return {
+    name: g.name,
+    nuclease: g.nuclease,
+    strand: g.strand,
+    site: { start: g.start, end: g.end },
+    spacer,
+    pam,
+    pamSide: g.pamSide,
+    cutPosition: g.cutPosition,
+    // An absent staggered cut stays absent: it is never drawn as 0 or as a position (US-01M7DV29 AC4).
+    ...(g.cutPositionTargetStrand !== undefined ? { cutPositionTargetStrand: g.cutPositionTargetStrand } : {}),
+    ...(g.cutPositionTargetStrandNote !== undefined
+      ? { cutPositionTargetStrandNote: g.cutPositionTargetStrandNote }
+      : {}),
+  };
+}
+
 interface PrimerAndPCRStudioProps {
   doc: SequenceDocument;
   allDocuments?: SequenceDocument[];
   onUpdateDocument: (updated: SequenceDocument) => void;
   onAddConstruct: (ampliconDoc: SequenceDocument) => void;
   onStatusNotice?: (message: string) => void;
-  onJumpToCoordinate?: (start: number, end: number, label?: string) => void;
+  /**
+   * Shows `start..end` in the sequence views as the one active interval (PRD F03), `start > end`
+   * running across the origin. `guide` is given only by a CRISPR guide row (US-01M7DVA6): the same
+   * site, with its spacer and its PAM apart, for the views to draw the two parts distinguishably.
+   * Showing a guide changes nothing in the document.
+   */
+  onJumpToCoordinate?: (
+    start: number,
+    end: number,
+    label?: string,
+    guide?: CrisprGuideHighlight
+  ) => void;
   /** Sub-tab requested by a menu command (CRISPR sites, saved primers, design). */
   initialSubTab?: 'design' | 'saved' | 'crispr';
   commandNonce?: number;
@@ -401,24 +485,63 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     provenance: `Primer ${p.name} on ${doc.name} (document ${doc.id}), binding ${p.bindStart}..${p.bindEnd}`,
   });
 
-  const handleAnnotateCrisprGuide = (g: CrisprGuideRecord) => {
-    const newFeat: SequenceFeature = {
-      id: `feat-${g.id}-${Date.now()}`,
-      name: `${g.name} (${g.pamSeq})`,
+  /**
+   * Annotate one guide (US-01M7DVA6 AC4): the spacer and its PAM as two features of their own
+   * spans, written in one `onUpdateDocument` call and so in one undoable step - a single undo takes
+   * both away, never the spacer alone. Both carry the strand, the nuclease preset and the cut
+   * position, in a note and in qualifiers an export can carry, so the PAM is never read as bases of
+   * the spacer to order.
+   */
+  const handleAnnotateCrisprGuide = (g: CrisprScanGuide) => {
+    const parts = crisprGuideParts(g, doc.sequence.length);
+    const stamp = Date.now();
+    const cutWords = `Cut @ ${g.cutPosition}${
+      g.cutPositionTargetStrand !== undefined
+        ? `, target strand @ ${g.cutPositionTargetStrand}`
+        : g.cutPositionTargetStrandNote
+        ? `, target strand: ${g.cutPositionTargetStrandNote}`
+        : ''
+    }`;
+    const shared = (part: 'spacer' | 'PAM'): Pick<SequenceFeature, 'type' | 'strand' | 'qualifiers'> => ({
       type: 'crispr_guide',
-      start: g.start,
-      end: g.end,
       strand: g.strand,
-      color: g.onTargetScore >= 70 ? '#16a34a' : g.onTargetScore >= 50 ? '#d97706' : '#dc2626',
-      notes: `${g.nuclease} spacer ${g.spacerSeq} | Cut @ ${g.cutPosition} | Heuristic=${g.onTargetScore}, seed matches=${g.offTargetCount}`,
-    };
+      qualifiers: {
+        guide_name: g.name,
+        guide_part: part,
+        nuclease: g.nuclease,
+        pam_side: g.pamSide,
+        spacer_span: `${parts.spacer.start}..${parts.spacer.end}`,
+        pam_span: `${parts.pam.start}..${parts.pam.end}`,
+        cut_position: String(g.cutPosition),
+      },
+    });
+    const newFeats: SequenceFeature[] = [
+      {
+        ...shared('spacer'),
+        id: `feat-${g.id}-spacer-${stamp}`,
+        name: `${g.name} spacer`,
+        start: parts.spacer.start,
+        end: parts.spacer.end,
+        color: g.onTargetScore >= 70 ? '#16a34a' : g.onTargetScore >= 50 ? '#d97706' : '#dc2626',
+        notes: `${g.nuclease} spacer ${g.spacerSeq} (${g.strand === 1 ? 'forward' : 'reverse'} strand) | ${cutWords} | Heuristic=${g.onTargetScore}, seed matches=${g.offTargetCount}`,
+      },
+      {
+        ...shared('PAM'),
+        id: `feat-${g.id}-pam-${stamp}`,
+        name: `${g.name} PAM (${g.pamSeq})`,
+        start: parts.pam.start,
+        end: parts.pam.end,
+        color: '#64748b',
+        notes: `${g.nuclease} ${g.pamSide} PAM ${g.pamSeq} of ${g.name} (${g.strand === 1 ? 'forward' : 'reverse'} strand): read by the nuclease, not part of the spacer ordered | ${cutWords}`,
+      },
+    ];
     onUpdateDocument({
       ...doc,
-      features: [...doc.features, newFeat],
+      features: [...doc.features, ...newFeats],
       updatedAt: new Date().toISOString(),
     });
     onStatusNotice?.(
-      `Annotated CRISPR guide "${g.name}" (${g.start.toLocaleString()}..${g.end.toLocaleString()} bp, DSB @ ${g.cutPosition.toLocaleString()} bp) on "${doc.name}"`
+      `Annotated CRISPR guide "${g.name}" on "${doc.name}": spacer ${parts.spacer.start.toLocaleString()}..${parts.spacer.end.toLocaleString()} and ${g.pamSide} PAM ${parts.pam.start.toLocaleString()}..${parts.pam.end.toLocaleString()} bp, DSB @ ${g.cutPosition.toLocaleString()} bp`
     );
   };
 
@@ -1167,8 +1290,32 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
               </tr>
             </thead>
             <tbody>
-              {crisprGuides.map((g) => (
-                <tr key={g.id}>
+              {crisprGuides.map((g) => {
+                // The two parts of this guide's site, and what showing it hands the views
+                // (US-01M7DVA6): the row's own coordinates, with the spacer and the PAM apart.
+                const parts = crisprGuideParts(g, doc.sequence.length);
+                const partsWords = `spacer ${guideRange({ ...g, start: parts.spacer.start, end: parts.spacer.end })}, ${g.pamSide} PAM ${guideRange({ ...g, start: parts.pam.start, end: parts.pam.end })}`;
+                const showGuide = onJumpToCoordinate
+                  ? () =>
+                      onJumpToCoordinate(
+                        g.start,
+                        g.end,
+                        `${g.name} (${g.pamSeq})`,
+                        crisprGuideHighlight(g, doc.sequence.length)
+                      )
+                  : undefined;
+                return (
+                <tr
+                  key={g.id}
+                  data-crispr-guide-row={g.id}
+                  className={showGuide ? 'mbc-row-clickable' : undefined}
+                  title={
+                    showGuide
+                      ? `Show ${g.name} in the sequence views: ${partsWords} (DSB @ ${bp(g.cutPosition)})`
+                      : undefined
+                  }
+                  onClick={showGuide}
+                >
                   <td>
                     <strong>{g.name}</strong>
                   </td>
@@ -1192,14 +1339,16 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                   </td>
                   <td>{g.strand === 1 ? 'Forward (+)' : 'Reverse (-)'}</td>
                   <td>
-                    {onJumpToCoordinate ? (
+                    {showGuide ? (
                       <button
                         type="button"
                         className="mbc-coord-jump-btn"
-                        title={`Jump to ${g.name} (${guideRange(g)} bp, DSB @ ${bp(g.cutPosition)}) in Sequence view`}
-                        onClick={() =>
-                          onJumpToCoordinate(g.start, g.end, `${g.name} (${g.pamSeq})`)
-                        }
+                        title={`Show ${g.name} (${guideRange(g)} bp: ${partsWords}, DSB @ ${bp(g.cutPosition)}) in Sequence view`}
+                        onClick={(e) => {
+                          // The row shows the guide too: one call, not the row's as well.
+                          e.stopPropagation();
+                          showGuide();
+                        }}
                       >
                         {guideRange(g)} (DSB @ {bp(g.cutPosition)})
                       </button>
@@ -1256,13 +1405,20 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                   <td>
                     <button
                       className="btn-secondary-sm"
-                      onClick={() => handleAnnotateCrisprGuide(g)}
+                      data-crispr-annotate={g.id}
+                      title={`Annotate ${g.name} on ${doc.name}: ${partsWords}`}
+                      onClick={(e) => {
+                        // Annotating is not showing: it leaves the studio where it is.
+                        e.stopPropagation();
+                        handleAnnotateCrisprGuide(g);
+                      }}
                     >
                       + Annotate
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </WorkbenchSmartTable>
         </div>

@@ -504,6 +504,8 @@ import {
 import { DisplayedSitesPanel, clearedChoiceCount, clearedChoicesNotice } from './components/DisplayedSitesPanel';
 import { alignmentImageRefusal, alignmentImageRows, exportAlignmentImage, isAlignmentImageDocument } from './core/alignmentImage';
 import type { FigureImageFormat } from './core/figureExport';
+// Type only (the studio itself stays a lazy chunk): the guide a CRISPR row hands the views.
+import type { CrisprGuideHighlight } from './components/PrimerAndPCRStudio';
 
 // On-demand lazy studio & database explorer chunks (keep startup bundle lean & responsive)
 const WorkflowPipelineStudio = React.lazy(() =>
@@ -1704,6 +1706,17 @@ export const App: React.FC = () => {
     label?: string;
   } | null>({ start: 5179, end: 5898, label: 'eGFP (CDS)' });
 
+  /**
+   * The CRISPR guide the views draw apart (US-01M7DVA6): the site a guide row showed, with its
+   * spacer and its PAM as their own plus-strand spans (`start > end` across the origin), and the
+   * document it was shown on. It is view state only - showing a guide never edits the document -
+   * and it is drawn only while the selection it set is still the guide's own site, so any other
+   * selection drops it rather than leaving a ribbon over bases that are no longer the guide's.
+   */
+  const [crisprGuideShown, setCrisprGuideShown] = useState<
+    (CrisprGuideHighlight & { docId: string }) | null
+  >(null);
+
   const [sessionName, setSessionName] = useState<string>('MolBioCraft_Workbench');
   const [mbcImportMode, setMbcImportMode] = useState<'replace' | 'merge'>('replace');
 
@@ -2253,6 +2266,21 @@ export const App: React.FC = () => {
   const selectionIv = useMemo(
     () => selectionInterval(selectedRange, activeDoc.sequence.length, activeDoc.topology),
     [selectedRange, activeDoc.sequence.length, activeDoc.topology]
+  );
+  /**
+   * The guide the sequence views draw apart (US-01M7DVA6), or none: the one shown from a CRISPR row,
+   * while it is still this document's and the selection is still the guide's own site. A selection
+   * made anywhere else drops it, so the ribbon and the arcs never name a guide the selection left.
+   */
+  const guideHighlight = useMemo(
+    () =>
+      crisprGuideShown &&
+      crisprGuideShown.docId === activeDoc.id &&
+      selectedRange?.start === crisprGuideShown.site.start &&
+      selectedRange?.end === crisprGuideShown.site.end
+        ? crisprGuideShown
+        : null,
+    [crisprGuideShown, activeDoc.id, selectedRange]
   );
   const selectionComposition = useMemo(() => {
     if (!sessionActive || !selectionIv || activeDoc.moleculeType === 'Protein') return null;
@@ -15182,6 +15210,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             siteVisibility={mapSiteVisibility}
                             orfs={orfs}
                             selectedRange={selectedRange}
+                            guideHighlight={guideHighlight}
                             onSelectRange={setSelectedRange}
                             showOrfs={showOrfs}
                             orfScope={orfScope}
@@ -15200,6 +15229,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             siteVisibility={mapSiteVisibility}
                             restrictionScope={restrictionScope}
                             selectedRange={selectedRange}
+                            guideHighlight={guideHighlight}
                             onSelectRange={setSelectedRange}
                             onUpdateDocument={handleUpdateDocument}
                             showTranslation={showTranslation}
@@ -15574,8 +15604,11 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       onUpdateDocument={handleUpdateDocument}
                       onAddConstruct={handleAddConstruct}
                       onStatusNotice={setStatusBanner}
-                      onJumpToCoordinate={(start, end, label) => {
+                      onJumpToCoordinate={(start, end, label, guide) => {
                         setSelectedRange({ start, end, label });
+                        // A guide row hands its two parts along with its site (US-01M7DVA6): the
+                        // views draw the spacer and the PAM apart. Nothing here edits the document.
+                        setCrisprGuideShown(guide ? { ...guide, docId: activeDoc.id } : null);
                         setViewerTab('sequence-view');
                         setStatusBanner(
                           `Jumped to ${label ? `${label} ` : ''}(${start.toLocaleString()}..${end.toLocaleString()} bp)`

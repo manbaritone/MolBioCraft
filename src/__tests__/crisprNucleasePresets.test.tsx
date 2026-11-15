@@ -73,7 +73,7 @@ const optionValues = (select: string) =>
 
 /** The rows of the guide table, as a reader reads each one. */
 const guideRows = (html: string) =>
-  [...html.matchAll(/<tr><td><strong>(?:gRNA|crRNA)[\s\S]*?<\/tr>/g)].map((m) => text(m[0]).trim());
+  [...html.matchAll(/<tr[^>]*><td><strong>(?:gRNA|crRNA)[\s\S]*?<\/tr>/g)].map((m) => text(m[0]).trim());
 
 /** A 20-nt spacer free of GG and CC: one candidate per planted site. */
 const SPACER20 = 'GACGTTACCGATTGCAATCG';

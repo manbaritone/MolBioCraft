@@ -152,7 +152,7 @@ describe('the CRISPR tab says how many guides there are and what was searched (B
     ]);
     // 25 guides are listed: one row each, each with its own Annotate button.
     expect(
-      html.match(/<button class="btn-secondary-sm">\+ Annotate<\/button>/g) ?? [],
+      html.match(/<button class="btn-secondary-sm"[^>]*>\+ Annotate<\/button>/g) ?? [],
       'a row per listed guide'
     ).toHaveLength(25);
   }, 55_000);
@@ -477,7 +477,7 @@ function plantWrapping(seq: string, at: number, block: string): string {
 
 /** The rows of the guide table, as a reader reads each one. */
 const guideRows = (html: string) =>
-  [...html.matchAll(/<tr><td><strong>(gRNA|crRNA)[\s\S]*?<\/tr>/g)].map((m) => text(m[0]).trim());
+  [...html.matchAll(/<tr[^>]*><td><strong>(gRNA|crRNA)[\s\S]*?<\/tr>/g)].map((m) => text(m[0]).trim());
 
 const ORIGIN_RECORD_BP = 4_990;
 /** 4,990 bases of A and T with one site across the origin (4,980..12) and one at 2,001..2,023. */
