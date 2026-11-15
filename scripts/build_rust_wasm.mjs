@@ -544,11 +544,17 @@ export function writeSourceDigestSidecar(rootDir) {
 function main() {
   const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-  // `--sources-only` rewrites the provenance sidecar alone, for a change that cannot alter codegen
-  // (a comment, a doc line) where a full rebuild is not worth 1.5 GiB of target/.
+  // `--sources-only` rewrites the provenance sidecar alone, without rebuilding the engine, for the
+  // CI staleness check (.github/workflows/ci.yml), which regenerates the record and diffs it against
+  // the committed one. Run on its own it would attest to a build that never happened, so it is not a
+  // remedy for a stale engine and says so on every run (BG-01M7FGPW).
   if (process.argv.includes('--sources-only')) {
     const { path: out, files } = writeSourceDigestSidecar(ROOT_DIR);
-    console.log(`[MolBioCraft WASM] Recorded ${files} engine inputs -> ${path.relative(ROOT_DIR, out)}`);
+    console.log(
+      `[MolBioCraft WASM] Recorded ${files} engine inputs -> ${path.relative(ROOT_DIR, out)} without rebuilding the engine. ` +
+        `This is for the CI staleness check; it does not bring public/molbiocraft_wasm.wasm up to date - ` +
+        `run \`npm run wasm:build\` and commit the result for that.`
+    );
     return;
   }
   const LOCAL_RUSTUP = path.join(ROOT_DIR, '.toolchain', 'rustup');

@@ -531,7 +531,7 @@ const REPO_ROOT = new URL('../../', import.meta.url);
 /** The record the build writes beside the engine (`scripts/build_rust_wasm.mjs`). */
 const SOURCE_DIGEST_SIDECAR = 'public/molbiocraft_wasm.wasm.sources.sha256';
 
-/** What every failure here asks for, and the only thing that rewrites the record. */
+/** What every failure here asks for: the one command that rebuilds the engine and rewrites its record together. */
 const REBUILD = 'npm run wasm:build';
 
 /**
@@ -623,8 +623,7 @@ function differingSources(recorded: Map<string, string>, current: Map<string, st
 const staleMessage = (differ: string[]) =>
   `public/molbiocraft_wasm.wasm was built from inputs this checkout no longer holds, so every ` +
   `number this suite reads from the engine is the old code's. ${differ.length} file(s) differ:\n  ` +
-  `${differ.join('\n  ')}\nRun \`${REBUILD}\` (and commit the engine with the change), or ` +
-  `\`node scripts/build_rust_wasm.mjs --sources-only\` for a change that cannot alter codegen.`;
+  `${differ.join('\n  ')}\nRun \`${REBUILD}\` and commit the rebuilt engine with the change.`;
 
 describe('the committed engine carries the sources it was built from (BG-01M7FA80)', () => {
   it('BG-01M7FA80 AC1 a changed Rust compute source without a rebuild fails by name', () => {
@@ -935,6 +934,57 @@ describe('the record covers every input the engine is built from (BG-01M7FGTR)',
       const named = differingSources(recorded.digests, edited);
       expect(named).toEqual([`${input} (changed since the engine was built)`]);
       expect(staleMessage(named)).toContain(input.slice(input.lastIndexOf('/') + 1));
+    }
+  });
+});
+
+describe('a red guard asks for a rebuild, and the record-only flag says it rebuilds nothing (BG-01M7FGPW)', () => {
+  const SCRIPT = 'scripts/build_rust_wasm.mjs';
+  const nodeChildProcessSpec = 'node:child_process';
+
+  it('BG-01M7FGPW AC1 the stale-engine message names one action: rebuild and commit', () => {
+    const message = staleMessage(['crates/c/src/lib.rs (changed since the engine was built)']);
+    expect(message).toContain(`Run \`${REBUILD}\``);
+    expect(message).toMatch(/commit/i);
+    // The record-only flag rewrites the record without building, so offering it to a reader of a
+    // red suite silences the guard over the very engine it says is stale.
+    expect(message).not.toContain('--sources-only');
+    expect(message).not.toMatch(/cannot alter codegen/i);
+  });
+
+  it('BG-01M7FGPW AC2 AC3 --sources-only says it rebuilt nothing, writes the record, and leaves the engine alone', async () => {
+    const { execFileSync } = (await import(/* @vite-ignore */ nodeChildProcessSpec)) as {
+      execFileSync: (file: string, args: string[], options: { encoding: 'utf8'; cwd: string }) => string;
+    };
+    const tree = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FGPW-flag-`);
+    try {
+      const engine = 'stale engine bytes\n';
+      for (const [file, text] of [
+        ['Cargo.toml', '[workspace]\nmembers = ["crates/c"]\n'],
+        ['Cargo.lock', 'version = 4\n'],
+        ['crates/c/Cargo.toml', '[package]\nname = "c"\n'],
+        ['crates/c/src/lib.rs', 'pub fn f() -> u8 { 1 }\n'],
+        ['public/molbiocraft_wasm.wasm', engine],
+        [SCRIPT, nodeFs.readFileSync(new URL(SCRIPT, REPO_ROOT), 'utf8')],
+      ] as const) {
+        nodeFs.mkdirSync(`${tree}/${file.slice(0, file.lastIndexOf('/') + 1) || '.'}`, { recursive: true });
+        nodeFs.writeFileSync(`${tree}/${file}`, text, 'utf8');
+      }
+      // The shipped entry point, run the way CI runs it, on a tree that holds no target/ and no
+      // toolchain: a run that tried to build would fail here rather than pass.
+      const out = execFileSync(process.execPath, [`${tree}/${SCRIPT}`, '--sources-only'], { encoding: 'utf8', cwd: tree });
+      expect(out).toMatch(/Recorded 4 engine inputs/);
+      expect(out).toMatch(/without rebuilding the engine/i);
+      expect(out).toMatch(/CI staleness check/i);
+      expect(out).toContain(REBUILD);
+
+      // The flag still does its job for CI: the record is the build's, byte for byte.
+      const treeUrl = pathToFileURL(`${tree}/`);
+      expect(nodeFs.readFileSync(new URL(SOURCE_DIGEST_SIDECAR, treeUrl), 'utf8')).toBe(sourceDigestManifest(tree));
+      // And it built nothing: the engine is the bytes it found.
+      expect(nodeFs.readFileSync(new URL('public/molbiocraft_wasm.wasm', treeUrl), 'utf8')).toBe(engine);
+    } finally {
+      nodeFs.rmSync(tree, { recursive: true, force: true });
     }
   });
 });
