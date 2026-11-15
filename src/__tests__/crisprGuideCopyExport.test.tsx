@@ -36,8 +36,14 @@
  *   rows are selected, or of a selection it does not declare.
  * - AC5: an origin-crossing guide exported as a swapped pair (12..290), as a negative length, or
  *   with no convention stated in the file.
+ *
+ * BG-01M7EZVV adds the cases those fixtures could not reach, each at the end of this file: the
+ * export's `-` strand branch (every fixture above lists forward guides alone), a 5'-PAM nuclease's
+ * whole export row, and a copy report taken from a `writeText` that resolved rather than from the
+ * clipboard - plus two clicks that finish out of order.
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness } from './appHarness';
@@ -116,6 +122,31 @@ const dualSeq = (() => {
 })();
 const DUAL = dnaDoc('dv5p-dual', 'pDV5P_Dual', dualSeq, 'linear');
 
+/** The other strand of `bases`, read 5'->3' - how a minus-strand guide's own spacer reads. */
+const revComp = (bases: string): string =>
+  [...bases]
+    .reverse()
+    .map((b) => ({ A: 'T', C: 'G', G: 'C', T: 'A' })[b] ?? 'N')
+    .join('');
+
+/**
+ * One forward SpCas9 site and one on the minus strand (BG-01M7EZVV AC1). The reverse site is
+ * planted as the reverse complement of `spacer + TGG`, so the plus strand reads `CCA` then the
+ * complement of the spacer and the guide the engine finds is on the minus strand: its spacer is
+ * `STRANDS_REVERSE.spacer`, read 5'->3' off that strand, and the export's strand cell has a `-`
+ * branch to exercise. Neither planted 23-mer spells a second NGG on either strand (no other GG,
+ * no other CC), and the filler spells none at all, so these two sites are the only candidates.
+ */
+const STRANDS_FORWARD = { start: 41, spacer: 'TTACGATCATCAGATCGATA', pam: 'TGG' };
+const STRANDS_REVERSE = { start: 141, spacer: 'ACGTATCAGTCAGTCATCAG', pam: 'TGG' };
+const strandsSeq = (() => {
+  const draft = filler(240).split('');
+  plant(draft, STRANDS_FORWARD.start, STRANDS_FORWARD.spacer + STRANDS_FORWARD.pam);
+  plant(draft, STRANDS_REVERSE.start, revComp(STRANDS_REVERSE.spacer + STRANDS_REVERSE.pam));
+  return draft.join('');
+})();
+const STRANDS = dnaDoc('ezvv-strands', 'pEZVV_Strands', strandsSeq, 'linear');
+
 const SPCAS9 = 'SpCas9 (NGG)';
 const CAS12A = 'Cas12a / Cpf1 (TTTV)';
 
@@ -192,6 +223,50 @@ function breakClipboard(mode: 'refuses' | 'absent', why = 'Write permission deni
   };
 }
 
+/**
+ * A clipboard whose `writeText` resolves without writing (BG-01M7EZVV AC4): it takes the call,
+ * refuses nothing, and goes on holding `held`. With `readable` the build lets the page read the
+ * clipboard back and so can tell; without it, the page cannot tell at all.
+ */
+function droppingClipboard(held: string, readable: boolean): void {
+  const nav = globalThis.navigator as unknown as { clipboard?: unknown };
+  nav.clipboard = {
+    writeText: () => Promise.resolve(),
+    ...(readable ? { readText: () => Promise.resolve(held) } : {}),
+  };
+}
+
+/**
+ * A clipboard that really writes, but only when the test lets a write finish (BG-01M7EZVV AC4), so
+ * two clicks can be made to finish in either order - as a real clipboard, which answers over IPC,
+ * may.
+ */
+function deferredClipboard(): { finish: (write: number) => void; writes: () => string[] } {
+  const waiting: { text: string; resolve: () => void }[] = [];
+  let held = '';
+  const nav = globalThis.navigator as unknown as { clipboard?: unknown };
+  nav.clipboard = {
+    writeText: (text: string) =>
+      new Promise<void>((resolve) => {
+        waiting.push({
+          text,
+          resolve: () => {
+            held = text;
+            resolve();
+          },
+        });
+      }),
+    readText: () => Promise.resolve(held),
+  };
+  return {
+    finish: (write: number) => {
+      if (!waiting[write]) throw new Error(`no write ${write} is waiting (${waiting.length} are)`);
+      waiting[write].resolve();
+    },
+    writes: () => waiting.map((w) => w.text),
+  };
+}
+
 /** The tab's report of the last copy: whether it copied, what it said and the text it left to read. */
 function copyReport(app: AppHarness): { status: string | null; words: string; text: string } {
   const panel = app.one('[data-crispr-copy-status]', 'the copy report');
@@ -244,6 +319,28 @@ function parseDelimited(text: string, delimiter: '\t' | ','): { headers: string[
   });
   return { headers, rows };
 }
+
+/**
+ * The scan callout as a researcher reads it on screen: the one sentence that states what the seed
+ * count counted. Found by what it says, so no production markup exists only for this test.
+ */
+function seedMatchesCallout(app: AppHarness): string {
+  const shown = app.all('.info-callout').filter((e) => e.textContent.includes('Seed matches'));
+  expect(shown, 'the CRISPR tab states its seed matches once').toHaveLength(1);
+  return shown[0].textContent.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The files the app's seed sentences live in (BG-01M7EZVV AC3). Both are swept, because the number
+ * was hand-written in both and a guard that read one would pass a tree that still wrote it in the
+ * other.
+ */
+const SEED_SENTENCE_FILES = ['src/core/crisprGuideText.ts', 'src/components/PrimerAndPCRStudio.tsx'];
+/** A seed length written out as digits, in any wording - what no surface may do again. */
+const DIGITS_BEFORE_SEED = /[0-9]+-nt [A-Za-z-]*\s*seed/;
+/** A file of this tree, as it stands now. */
+const treeSource = (path: string): string =>
+  readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
 
 /** The one exported row for the guide named `name`; any other count throws. */
 function rowOf(rows: Record<string, string>[], name: string): Record<string, string> {
@@ -551,6 +648,243 @@ describe('US-01M7DV5P AC5: the exported coordinates are the row\'s own', () => {
         expect(Number(other['Site Length (bp)'])).toBe(Number(other.End) - Number(other.Start) + 1);
         expect(other['Coordinate Convention']).toMatch(/1-based/i);
       }
+    });
+  });
+});
+
+/*
+ * BG-01M7EZVV: the four claims above were right in the code and held by nothing a fixture could
+ * exercise. Every fixture of US-01M7DV5P listed forward SpCas9 guides alone, so the export's
+ * `-` strand branch and its whole 5'-PAM nuclease row were never read, and the copy report was
+ * taken on trust from a `writeText` that resolved. Each test below names the mutant it kills.
+ */
+
+// ─── AC1: the strand cell, on both of its branches ───
+
+describe("BG-01M7EZVV AC1: the export's strand cell is held on both branches", () => {
+  it("BG-01M7EZVV AC1 a reverse-strand guide exports its own strand, and a forward one its own", async () => {
+    await withApp(async (app) => {
+      await onCrisprTab(app, STRANDS);
+      const scan = await engineScan(STRANDS, SPCAS9);
+      expect(scan.report?.candidateCount, 'the two planted sites and nothing else').toBe(2);
+      const reverse = scan.guides.find((g) => g.strand === -1);
+      const forward = scan.guides.find((g) => g.strand === 1);
+      expect(reverse, 'the fixture reaches the minus strand').toBeDefined();
+      expect(forward, 'and the plus strand, so both branches are read').toBeDefined();
+      // The minus-strand guide is read off its own strand: its spacer is the planted one, not the
+      // plus-strand bases its coordinates span.
+      expect(reverse!.spacerSeq).toBe(STRANDS_REVERSE.spacer);
+      expect(forward!.spacerSeq).toBe(STRANDS_FORWARD.spacer);
+      expect(listedGuideIds(app).slice().sort()).toEqual(scan.guides.map((g) => g.id).sort());
+
+      const rows = parseDelimited((await exportGuides(app, 'TSV')).text, '\t').rows;
+      const reverseRow = rowOf(rows, reverse!.name);
+      const forwardRow = rowOf(rows, forward!.name);
+
+      // Kills `'Reverse (-)'` -> `'Forward (+)'`, the swap of the two arms, and one label for both.
+      expect(reverseRow.Strand, 'the minus-strand row says the strand it is on').toBe('Reverse (-)');
+      expect(forwardRow.Strand).toBe('Forward (+)');
+      expect(reverseRow.Strand, 'the two branches are not the same cell').not.toBe(forwardRow.Strand);
+
+      // The rest of the reverse row is that guide's own too, not its plus-strand reading.
+      expect(reverseRow["Spacer (5'->3')"]).toBe(reverse!.spacerSeq);
+      expect(reverseRow.PAM).toContain(reverse!.pamSeq);
+      expect(Number(reverseRow.Start)).toBe(reverse!.start);
+      expect(Number(reverseRow.End)).toBe(reverse!.end);
+      expect(Number(reverseRow['Site Length (bp)'])).toBe(
+        reverse!.spacerSeq.length + reverse!.pamSeq.length
+      );
+      expect(Number(reverseRow['Cut Position'])).toBe(reverse!.cutPosition);
+    });
+  });
+});
+
+// ─── AC2: a 5'-PAM nuclease's own site facts ───
+
+describe("BG-01M7EZVV AC2: the export carries a Cas12a guide's own site facts", () => {
+  it('BG-01M7EZVV AC2 a Cas12a guide exports its own PAM side, pattern, site length and second cut', async () => {
+    await withApp(async (app) => {
+      await onCrisprTab(app, DUAL);
+      // The same record read by both presets, so the 3'-PAM nuclease's own answer is on hand to
+      // contradict every cell a hard-coded SpCas9 literal would write (LC-002).
+      const spcas9 = await engineScan(DUAL, SPCAS9);
+      const blunt = spcas9.guides[0];
+      await chooseNuclease(app, CAS12A);
+      const scan = await engineScan(DUAL, CAS12A);
+      expect(scan.report?.candidateCount, 'one planted Cas12a site').toBe(1);
+      const guide = scan.guides[0];
+      expect(listedGuideIds(app), 'the Cas12a row the chooser listed').toEqual([guide.id]);
+
+      const rows = parseDelimited((await exportGuides(app, 'TSV')).text, '\t').rows;
+      expect(rows).toHaveLength(1);
+      const row = rowOf(rows, guide.name);
+
+      // The PAM side and pattern are the record's own. Kills the literal
+      // `3' of the spacer (pattern NGG)`, which is what the other preset on this record says.
+      expect(row['PAM Side']).toBe(`${guide.pamSide} of the spacer (pattern ${guide.pamPattern})`);
+      expect(guide.pamSide, "Cas12a reads its PAM on the other side").not.toBe(blunt.pamSide);
+      expect(guide.pamPattern, 'and by another pattern').not.toBe(blunt.pamPattern);
+      expect(row['PAM Side'], "never the 3'-PAM nuclease's cell").not.toBe(
+        `${blunt.pamSide} of the spacer (pattern ${blunt.pamPattern})`
+      );
+      expect(row.PAM).toContain(guide.pamSeq);
+
+      // Its own site length, counted from its own spacer and PAM - never the other preset's.
+      const siteSpan = guide.spacerSeq.length + guide.pamSeq.length;
+      expect(Number(row['Site Length (bp)'])).toBe(siteSpan);
+      expect(siteSpan, "the 5'-PAM site is not the 3'-PAM one").not.toBe(
+        blunt.spacerSeq.length + blunt.pamSeq.length
+      );
+
+      // A staggered cutter reports a second cut, and the cell is that coordinate, not a word.
+      expect(guide.cutPositionTargetStrand, "the engine reports Cas12a's second cut").toBeDefined();
+      expect(row['Second Cut (Target Strand)']).toBe(String(guide.cutPositionTargetStrand));
+      expect(Number(row['Second Cut (Target Strand)']), 'the cut is staggered').not.toBe(
+        guide.cutPosition
+      );
+      // And the blunt cutter on the same record reports none, which is never written as a number.
+      expect(blunt.cutPositionTargetStrand, 'SpCas9 reports one cut position').toBeUndefined();
+
+      // The preset cell and the cut convention are this nuclease's own as well.
+      expect(row['Nuclease Preset']).toContain(guide.nuclease);
+      expect(row['Nuclease Preset']).toContain(guide.pamPattern);
+      expect(row['Nuclease Preset']).toContain(String(siteSpan));
+      expect(row['Cut Convention']).toBe(guide.cutConvention);
+      expect(row['Cut Convention'], "not the blunt cutter's convention").not.toBe(
+        blunt.cutConvention
+      );
+    });
+  });
+});
+
+// ─── AC3: one source for the seed length ───
+
+describe('BG-01M7EZVV AC3: the seed length is stated from one source', () => {
+  it('BG-01M7EZVV AC3 every CRISPR seed sentence states its length from one source', async () => {
+    const { CRISPR_SEED_LENGTH_BP } = await import('../core/crisprGuideText');
+    // Every figure asserted below is this constant, read from the module the surfaces read. A test
+    // that restated the number would pass a surface that had drifted away from it, which is the
+    // defect this criterion is about.
+    const stated = `${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed`;
+
+    // A whole-sequence scan: the sentence on screen, and the export's own cell.
+    await withApp(async (app) => {
+      await onCrisprTab(app, PLASMID);
+      expect(seedMatchesCallout(app), 'the panel states the seed it counted').toContain(stated);
+      const rows = parseDelimited((await exportGuides(app, 'TSV')).text, '\t').rows;
+      expect(rows.length, 'rows to read the cell of').toBeGreaterThan(0);
+      for (const row of rows) expect(row['Seed Match Scope']).toContain(stated);
+    });
+
+    // An interval scan: the other arm of both sentences (the chooser prefers the span on screen,
+    // D0135), so neither file's interval branch keeps a number of its own.
+    await withApp(async (app) => {
+      await onCrisprTab(app, PLASMID, { start: 101, end: 240 });
+      const panel = seedMatchesCallout(app);
+      expect(panel, "the panel's interval arm").toContain(stated);
+      expect(panel, 'and it is the interval arm that was read').toMatch(/interval searched/i);
+      const rows = parseDelimited((await exportGuides(app, 'TSV')).text, '\t').rows;
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row['Seed Match Scope']).toContain(stated);
+        expect(row['Seed Match Scope']).toMatch(/interval searched/i);
+      }
+    });
+
+    // And the sweep, over both files. Four of the five sentences are driven above; the fifth is the
+    // panel's bounded-prefix arm, which needs a record longer than the engine's scan bound, and the
+    // sweep is all that holds it. A guard scoped to one file would pass a tree that had removed
+    // the export's two literals and kept the studio's three - the repair this criterion names.
+    for (const path of SEED_SENTENCE_FILES) {
+      const source = treeSource(path);
+      expect(
+        source.match(DIGITS_BEFORE_SEED),
+        `${path} states the seed length from the constant, never as digits`
+      ).toBeNull();
+      expect(source.includes('${CRISPR_SEED_LENGTH_BP}-nt'), `${path} reads that constant`).toBe(
+        true
+      );
+    }
+    const declared = SEED_SENTENCE_FILES.map(
+      (path) => treeSource(path).match(/const CRISPR_SEED_LENGTH_BP\b/g)?.length ?? 0
+    ).reduce((a, b) => a + b, 0);
+    expect(declared, 'the number is declared once in the tree, not once per file').toBe(1);
+  });
+});
+
+// ─── AC4: a copy reported only as far as the page can tell ───
+
+describe('BG-01M7EZVV AC4: a copy is reported only as far as the page can tell', () => {
+  it('BG-01M7EZVV AC4 a write that resolves without writing is not reported as a copy, and the last click is the report on screen', async () => {
+    await withApp(async (app) => {
+      await onCrisprTab(app, PLASMID);
+      const scan = await engineScan(PLASMID, SPCAS9);
+      const listed = listedGuideIds(app);
+      const first = scan.guides.find((g) => g.id === listed[1])!;
+      const last = scan.guides.find((g) => g.id === listed[listed.length - 1])!;
+      expect(first.spacerSeq, 'two rows with text of their own').not.toBe(last.spacerSeq);
+
+      // (a) The write resolves, the clipboard goes on holding other text, and the build lets the
+      // page read it back: the page can tell, and says nothing was copied. Kills treating a
+      // resolved `writeText` as proof of a write.
+      const kept = 'WHATEVER THE CLIPBOARD HELD BEFORE';
+      droppingClipboard(kept, true);
+      await app.click(copyButton(app, 'spacer', last.id));
+      const dropped = copyReport(app);
+      expect(dropped.status, 'a write that did not land is not a copy').toBe('not-copied');
+      expect(dropped.words).toMatch(/nothing was copied/i);
+      expect(dropped.words, 'and why: the clipboard held other text').toMatch(/other text/i);
+      expect(dropped.words, 'the clipboard refused nothing, so it is not called a refusal').not.toMatch(
+        /refused it/i
+      );
+      expect(dropped.text, 'the text is still there to take by hand').toBe(last.spacerSeq);
+      expect(app.doc.body.textContent, 'nowhere does the page claim a copy').not.toMatch(
+        /Copied [^.]*to the clipboard/
+      );
+
+      // (b) The write resolves and no read-back is permitted: the page cannot tell, says so, and
+      // still never claims a copy (LC-006).
+      droppingClipboard(kept, false);
+      await app.click(copyButton(app, 'spacer-pam', last.id));
+      const unconfirmed = copyReport(app);
+      expect(unconfirmed.status, 'a copy the page cannot confirm is not reported as one').not.toBe(
+        'copied'
+      );
+      expect(unconfirmed.words, 'the panel states the limit').toMatch(/cannot confirm/i);
+      expect(unconfirmed.words, 'and names what it cannot do').toMatch(/read the clipboard back/i);
+      expect(unconfirmed.words, 'not told as a refusal either (LC-006)').not.toMatch(/refused it/i);
+      expect(
+        unconfirmed.words,
+        'and not in the words of the write the page could read back as other text'
+      ).not.toBe(dropped.words);
+      expect(unconfirmed.text).toContain(last.spacerSeq);
+      expect(app.doc.body.textContent).not.toMatch(/Copied [^.]*to the clipboard/);
+
+      // (c) Two copies in quick succession, finishing in the order a real clipboard could: the
+      // later click finishes first, the earlier one last. Kills leaving the `setCrisprCopy` calls
+      // unsequenced, which leaves the earlier click's report on screen as the answer to the later.
+      const clipboard = deferredClipboard();
+      await app.click(copyButton(app, 'spacer', first.id));
+      await app.click(copyButton(app, 'spacer', last.id));
+      expect(clipboard.writes(), 'both clicks reached the clipboard, neither has finished').toEqual([
+        first.spacerSeq,
+        last.spacerSeq,
+      ]);
+      // The finish order is the whole proof, and it is reversed on purpose: the later click's
+      // write (1) finishes first, the earlier click's (0) last. Measured - with these two lines in
+      // click order instead, the unsequenced `setCrisprCopy` passes this test, because the later
+      // click would then also report last and nothing would tell the two implementations apart.
+      // Tidying them into ascending order silently voids this case.
+      clipboard.finish(1);
+      await app.settle();
+      clipboard.finish(0);
+      await app.settle();
+      const latest = copyReport(app);
+      expect(latest.text, "the later click's text is the report on screen").toBe(last.spacerSeq);
+      expect(latest.text, "not the earlier click's, which finished last").not.toBe(first.spacerSeq);
+      expect(latest.words).toContain(last.name);
+      expect(latest.words, "the earlier click's guide is not named").not.toContain(first.name);
+      expect(latest.status, 'and it is reported as the copy it was read back as').toBe('copied');
     });
   });
 });

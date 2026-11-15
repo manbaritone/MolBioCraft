@@ -38,6 +38,22 @@ import { sequenceRevision } from './restrictionDisplay';
 /** A count as a researcher reads it, grouped like the engine's own sentences. */
 const bp = (n: number) => n.toLocaleString('en-US');
 
+/**
+ * The PAM-proximal seed length, counted in bases, that every CRISPR sentence in this app states
+ * (BG-01M7EZVV AC3). It is written once, here, and read by all of them: the number was hand-written
+ * at five places over two files, so a change to what the scorer counts would have left five
+ * sentences telling a researcher the old figure with every test green - the single-source defect
+ * BG-01M7EYED closed for the heuristic rank, in a second place.
+ *
+ * It is a TypeScript copy of the engine's own seed length (`SEED_LEN`, `cloning_crispr.rs`), not a
+ * value read from it. The engine keeps that constant private and reports no seed length on a scan,
+ * so no surface can ask for one today: `CrisprScanReport` carries none, `CrisprGuideRecord` carries
+ * none, and the CRISPR entries of the engine's RPC are the nuclease presets and the rank's rule.
+ * That second drift axis - this constant against the scorer's - is open, and is BG-01M7FF3B; this
+ * constant closes only the drift between the sentences themselves (D0137).
+ */
+export const CRISPR_SEED_LENGTH_BP = 12;
+
 /** The guide facts a copy reads: the record's own bases, PAM side and PAM pattern. */
 export type CrisprCopyGuide = Pick<
   CrisprScanGuide,
@@ -180,7 +196,7 @@ function seedScopeText(scan: CrisprScanReport | undefined, topology: string): st
   }
   const interval = scan.searchedInterval;
   if (interval) {
-    return `Other exact copies of the 12-nt PAM-proximal seed inside the interval searched, bases ${bp(
+    return `Other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed inside the interval searched, bases ${bp(
       interval.start
     )}..${bp(interval.end)} (${bp(interval.lengthBp)} bp${
       interval.crossesOrigin ? ', across the origin' : ''
@@ -188,7 +204,7 @@ function seedScopeText(scan: CrisprScanReport | undefined, topology: string): st
       scan.sequenceLengthBp
     )} bases. ${notGenomeWide}`;
   }
-  return `Other exact copies of the 12-nt PAM-proximal seed in ${scannedRangeText(
+  return `Other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed in ${scannedRangeText(
     scan,
     topology
   )} — the range searched — on both strands, and no copy outside it. ${notGenomeWide}`;

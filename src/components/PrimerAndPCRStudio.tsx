@@ -1,7 +1,7 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import {
   CrisprGuideRecord,
@@ -23,6 +23,7 @@ import {
   type CrisprScanGuide,
 } from '../core/bioEngine';
 import {
+  CRISPR_SEED_LENGTH_BP,
   crisprGuideExportTable,
   crisprHeuristicRuleText,
   crisprSpacerAndPamCopyText,
@@ -533,45 +534,112 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   };
 
   /**
-   * One copy out of the guide table, as it went (US-01M7DV5P AC1-AC3): what was copied, whether the
-   * clipboard took it, and the text itself - which stays on screen either way, so a refused copy
-   * still leaves the researcher the bases to take by hand (PRD F31, LC-006).
+   * One copy out of the guide table, as far as the page can tell (US-01M7DV5P AC1-AC3,
+   * BG-01M7EZVV AC4): what was copied, how sure the page is that the clipboard took it, and the
+   * text itself - which stays on screen in every outcome, so a copy that did not land still leaves
+   * the researcher the bases to take by hand (PRD F31, LC-006).
+   *
+   * `outcome` is three-valued because the page really has three answers, and collapsing them to a
+   * boolean made the third read as the first: `copied` where the write was read back off the
+   * clipboard, `not-copied` where it was refused, absent, or accepted and then not there, and
+   * `unconfirmed` where the write resolved but this build does not let the page read the clipboard
+   * back - a copy nobody can stand behind, and so never reported as one.
    */
   const [crisprCopy, setCrisprCopy] = useState<{
-    copied: boolean;
+    outcome: 'copied' | 'unconfirmed' | 'not-copied';
     detail: string;
     text: string;
   } | null>(null);
-  /** What a refused copy tells the reader to do with the text left on screen. */
+  /** What a copy that did not land tells the reader to do with the text left on screen. */
   const COPY_BY_HAND = 'The text is below — select it and copy it by hand.';
+  /** The word the copy panel leads with, one per outcome: only `copied` says a copy happened. */
+  const CRISPR_COPY_HEADINGS: Record<'copied' | 'unconfirmed' | 'not-copied', string> = {
+    copied: 'Copied',
+    unconfirmed: 'Copy not confirmed',
+    'not-copied': 'Nothing was copied',
+  };
+  /**
+   * Which click a report belongs to (BG-01M7EZVV AC4). A copy is two awaits long - the write, and
+   * the read-back that confirms it - so two clicks in quick succession can finish in either order,
+   * and an unsequenced `setCrisprCopy` leaves the earlier click's report on screen as the answer to
+   * the later one. Only the newest click reports.
+   */
+  const crisprCopyClick = useRef(0);
 
   /**
    * Writes `text` to the clipboard and reports what really happened. A build with no clipboard at
    * all and a clipboard that refused the write are told apart (LC-006), and neither is ever
    * reported as a copy.
+   *
+   * A `writeText` that resolved is not a write that landed: a clipboard can accept the call and
+   * keep its own contents, and reporting the resolve as proof claimed a copy the page never made
+   * (BG-01M7EZVV AC4). Where the build lets the page read the clipboard back, the write is
+   * confirmed against what the clipboard now holds; where it does not, the panel says so instead.
    */
   const copyCrisprText = async (what: string, text: string): Promise<void> => {
+    const click = (crisprCopyClick.current += 1);
+    /** Reports one outcome of this click, unless a later click has already started. */
+    const report = (
+      outcome: 'copied' | 'unconfirmed' | 'not-copied',
+      detail: string,
+      notice: string
+    ): void => {
+      if (click !== crisprCopyClick.current) return;
+      setCrisprCopy({ outcome, detail, text });
+      onStatusNotice?.(notice);
+    };
     const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
     if (!clipboard || typeof clipboard.writeText !== 'function') {
-      const detail = `${what} was not written: this build provides no clipboard to write to. ${COPY_BY_HAND}`;
-      setCrisprCopy({ copied: false, detail, text });
-      onStatusNotice?.(
+      report(
+        'not-copied',
+        `${what} was not written: this build provides no clipboard to write to. ${COPY_BY_HAND}`,
         `Nothing was copied: ${what} was not written, because this build provides no clipboard; the text is shown in the CRISPR tab to take by hand.`
       );
       return;
     }
     try {
       await clipboard.writeText(text);
-      setCrisprCopy({ copied: true, detail: `${what} is on the clipboard.`, text });
-      onStatusNotice?.(`Copied ${what} to the clipboard.`);
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
-      const detail = `${what} was not written: the clipboard refused it (${why}). ${COPY_BY_HAND}`;
-      setCrisprCopy({ copied: false, detail, text });
-      onStatusNotice?.(
+      report(
+        'not-copied',
+        `${what} was not written: the clipboard refused it (${why}). ${COPY_BY_HAND}`,
         `Nothing was copied: ${what} was not written, because the clipboard refused it (${why}); the text is shown in the CRISPR tab to take by hand.`
       );
+      return;
     }
+    // What the clipboard holds now, where the build permits the page to ask; `undefined` is "the
+    // page cannot tell", which is not "the clipboard is empty" and is never read as either
+    // outcome (LC-006).
+    let onClipboard: string | undefined;
+    if (typeof clipboard.readText === 'function') {
+      try {
+        onClipboard = await clipboard.readText();
+      } catch {
+        onClipboard = undefined;
+      }
+    }
+    if (onClipboard === text) {
+      report(
+        'copied',
+        `${what} is on the clipboard, read back from it.`,
+        `Copied ${what} to the clipboard.`
+      );
+      return;
+    }
+    if (onClipboard === undefined) {
+      report(
+        'unconfirmed',
+        `${what} was handed to the clipboard and the write was not refused, but this build does not let the page read the clipboard back, so the page cannot confirm the copy. ${COPY_BY_HAND}`,
+        `Copy not confirmed: ${what} was handed to the clipboard, but this build does not let the page read the clipboard back to confirm it; the text is shown in the CRISPR tab to take by hand.`
+      );
+      return;
+    }
+    report(
+      'not-copied',
+      `${what} was not written: the clipboard took the write without refusing it and then held other text. ${COPY_BY_HAND}`,
+      `Nothing was copied: ${what} was not written, because the clipboard took the write without refusing it and then held other text; the text is shown in the CRISPR tab to take by hand.`
+    );
   };
 
   const saveToPrimerDatabase = (candidate: DatabasePrimerInput, opener: HTMLElement) => {
@@ -1374,15 +1442,19 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
               </>
             )}
             {/* What the seed count counts is a claim about a scan that ran: an absent report makes
-                it no claim at all (US-01M7DVH2 AC5). */}
+                it no claim at all (US-01M7DVH2 AC5). The seed's length is
+                `CRISPR_SEED_LENGTH_BP`, stated once there and read by every sentence in the app
+                that gives it (BG-01M7EZVV AC3): these three sentences each hand-wrote the number,
+                as the export's two did, so a change to what the scorer counts left five surfaces
+                stating the old figure. */}
             {crisprScan !== undefined && crisprIntervalRefusal === undefined && (
               <>
                 <strong>Seed matches</strong>:{' '}
                 {crisprSearchedInterval !== undefined
-                  ? `other exact copies of the 12-nt PAM-proximal seed inside the interval searched, ${crisprIntervalText}, on both strands, and no copy outside it — an interval specificity, not one over the whole ${bp(crisprSequenceBp ?? 0)} bases`
+                  ? `other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed inside the interval searched, ${crisprIntervalText}, on both strands, and no copy outside it — an interval specificity, not one over the whole ${bp(crisprSequenceBp ?? 0)} bases`
                   : crisprScanIsPartial
-                  ? `other exact copies of the 12-nt PAM-proximal seed in bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence — the range searched, on both strands — and no copy outside it`
-                  : `other exact copies of the 12-nt PAM-proximal seed across ${crisprReadAs}`}{' '}
+                  ? `other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed in bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence — the range searched, on both strands — and no copy outside it`
+                  : `other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed across ${crisprReadAs}`}{' '}
                 (no genome-wide off-target search).
               </>
             )}{' '}
@@ -1404,15 +1476,16 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
 
           <ResultWarnings warnings={crisprScan?.warnings} label="CRISPR guide warnings" />
 
-          {/* The last copy, as it went (US-01M7DV5P AC3): a copy the environment refused says
-              nothing was copied and leaves the text here to take by hand. */}
+          {/* The last copy, as it went (US-01M7DV5P AC3, BG-01M7EZVV AC4): a copy the environment
+              refused says nothing was copied, a write this build cannot confirm says that rather
+              than claiming a copy, and either way the text is here to take by hand. */}
           {crisprCopy && (
             <div
               className="info-callout"
               role="status"
-              data-crispr-copy-status={crisprCopy.copied ? 'copied' : 'not-copied'}
+              data-crispr-copy-status={crisprCopy.outcome}
             >
-              <strong>{crisprCopy.copied ? 'Copied' : 'Nothing was copied'}</strong>: {crisprCopy.detail}
+              <strong>{CRISPR_COPY_HEADINGS[crisprCopy.outcome]}</strong>: {crisprCopy.detail}
               <pre className="mono-cell" data-crispr-copy-text="">
                 {crisprCopy.text}
               </pre>
