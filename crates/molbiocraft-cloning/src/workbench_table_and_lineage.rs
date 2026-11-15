@@ -1199,10 +1199,12 @@ mod tests {
             if pam.as_bytes().ends_with(b"GGG") {
                 r -= 5;
             }
-            r.clamp(
-                crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE.0,
-                crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE.1,
-            )
+            // The engine's shape, and only the engine's shape: `score_guide` enforces the floor and
+            // has no ceiling arm, because the top of the range is the sum of every raise it can
+            // apply at once. An oracle that also clamped to the ceiling agreed with the engine only
+            // while 98 was unreachable, and under a raised weight capped its own answer so the
+            // mismatch read as a bare inequality instead of "the ceiling moved" (BG-01M7EKMJ AC3).
+            r.max(crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE.0)
         };
 
         let samples = get_sample_library();
@@ -1214,17 +1216,25 @@ mod tests {
             let scan = crate::cloning_crispr::scan_crispr_guides(&doc.sequence, nuclease, 40, None, false);
             assert!(!scan.guides.is_empty(), "{nuclease} finds candidates in the fixture");
             for g in &scan.guides {
-                assert_eq!(
-                    g.on_target_score,
-                    rank_from_the_description(&g.spacer_seq, &g.pam_seq),
-                    "{nuclease} guide {} ({}+{}) scores {} where the description's rule gives {}",
+                let from_the_description = rank_from_the_description(&g.spacer_seq, &g.pam_seq);
+                let (lo, hi) = crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE;
+                // The oracle caps nothing, so a raised weight arrives here as the ceiling moving,
+                // said in those words, rather than as an unexplained inequality below.
+                assert!(
+                    from_the_description <= hi,
+                    "the description's rule re-derives {nuclease} guide {} ({}+{}) as {}, above the \
+                     ceiling {hi} that CRISPR_HEURISTIC_RANK_RANGE states: the scorer's arithmetic \
+                     top has moved, so that ceiling must move with it",
                     g.id,
                     g.spacer_seq,
                     g.pam_seq,
-                    g.on_target_score,
-                    rank_from_the_description(&g.spacer_seq, &g.pam_seq)
+                    from_the_description
                 );
-                let (lo, hi) = crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE;
+                assert_eq!(
+                    g.on_target_score, from_the_description,
+                    "{nuclease} guide {} ({}+{}) scores {} where the description's rule gives {}",
+                    g.id, g.spacer_seq, g.pam_seq, g.on_target_score, from_the_description
+                );
                 assert!(
                     (lo..=hi).contains(&g.on_target_score),
                     "a rank outside the bounds the description names: {}",

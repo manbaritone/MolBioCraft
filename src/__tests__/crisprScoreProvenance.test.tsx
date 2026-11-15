@@ -149,7 +149,68 @@ function engineRankRange(): [number, number] {
   return [Number(bounds![1]), Number(bounds![2])];
 }
 
+/** The Rust file that declares the rank's range - the source the committed wasm is built from. */
+const RUST_RANK_RANGE_SOURCE = new URL(
+  '../../crates/molbiocraft-cloning/src/cloning_crispr.rs',
+  import.meta.url
+);
+
+/**
+ * The range `CRISPR_HEURISTIC_RANK_RANGE` declares in current Rust source, read out of the file
+ * itself (BG-01M7EKMJ AC1).
+ *
+ * A missing, unreadable, empty or re-shaped source file is told apart from an answer and named:
+ * none of them may read as "the range agrees" (LC-006).
+ */
+function declaredRankRange(): [number, number] {
+  const path = decodeURIComponent(RUST_RANK_RANGE_SOURCE.pathname);
+  let source: string;
+  try {
+    source = readFileSync(RUST_RANK_RANGE_SOURCE, 'utf8');
+  } catch (cause) {
+    const code = (cause as { code?: string }).code;
+    throw new Error(
+      `the Rust source declaring the rank range is ${code === 'ENOENT' ? 'missing' : `unreadable (${code ?? cause})`}: ${path}`
+    );
+  }
+  if (source.trim() === '') throw new Error(`the Rust source declaring the rank range is empty: ${path}`);
+  const declared = /pub const CRISPR_HEURISTIC_RANK_RANGE:\s*\(i32,\s*i32\)\s*=\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)\s*;/.exec(
+    source
+  );
+  if (!declared) {
+    throw new Error(
+      `no \`pub const CRISPR_HEURISTIC_RANK_RANGE: (i32, i32) = (lo, hi);\` declaration in ${path}: this test cannot tell whether the committed wasm is current`
+    );
+  }
+  return [Number(declared[1]), Number(declared[2])];
+}
+
 describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
+  /**
+   * BG-01M7EKMJ AC1: the committed wasm this suite calls is the one current Rust source says it is.
+   *
+   * Every other check of the range here reads it from the engine (`engineRankRange`), and the engine
+   * the frontend has is the prebuilt artifact behind `virtual:molbiocraft-wasm-bytes`
+   * (`src/lib/rustBioEngine.ts`) - not this checkout's Rust. So changing
+   * `CRISPR_HEURISTIC_RANK_RANGE` and skipping `npm run wasm:build` left the whole suite green
+   * locally while the constant's own doc promised it would turn red; it only fired in CI, where the
+   * wasm build runs first. That is the LC-009 trap one step removed: not a stale artifact, but a
+   * guard whose firing depends on one.
+   *
+   * Wrong implementations this kills: reading the range only from the wasm, which agrees with
+   * itself whatever the source says; and reading the source but treating an absent, empty or
+   * re-shaped file as agreement (`declaredRankRange` names each instead).
+   */
+  it('BG-01M7EKMJ AC1 the committed wasm reports the rank range the Rust source declares', () => {
+    const [lo, hi] = declaredRankRange();
+    expect(
+      engineRankRange(),
+      `the committed wasm reports a rank range this checkout's Rust source does not declare. ` +
+        `crates/molbiocraft-cloning/src/cloning_crispr.rs says (${lo}, ${hi}); run \`npm run wasm:build\` ` +
+        `so public/molbiocraft_wasm.wasm carries the source it is built from.`
+    ).toEqual([lo, hi]);
+  }, 55_000);
+
   it('US-01M7DVVR AC1 no label, header, catalogue, plugin or macro string credits a number to an unrun model, and the seed column is named for what it counts', () => {
     const html = crisprTab();
     const { headers, rows } = guideTable(html);

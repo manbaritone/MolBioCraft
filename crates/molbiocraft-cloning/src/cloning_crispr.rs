@@ -310,12 +310,20 @@ pub const GUIDE_SCAN_MAX_BP: usize = 8_000_000;
 /// ([`crate::reaction_buffers::crispr_heuristic_rank_description`]), and the label of the guided
 /// CRISPR pipeline's rank readout. Change the scorer and those three move with it.
 ///
-/// Two surfaces do not read it, and are held to it by a test instead (BG-01M7E69W AC3): the studio's
-/// `Heuristic Rank (8-98)` column header and the `held to 8 to 98` sentence of its callout are TSX
-/// literals in `PrimerAndPCRStudio.tsx`, checked against the range the engine itself reports by
-/// `src/__tests__/crisprScoreProvenance.test.tsx`. The plugin's per-guide field states no range at
-/// all - it is the bare rank. So a change here moves the Rust surfaces and *fails* the TSX ones,
-/// which are then edited by hand.
+/// One surface does not read it, and is held to it by a test instead (BG-01M7E69W AC3): the
+/// studio's `Heuristic Rank (8-98)` column header is a TSX literal in `PrimerAndPCRStudio.tsx`,
+/// checked by `src/__tests__/crisprScoreProvenance.test.tsx` against the range the engine reports.
+/// (The studio's `held to 8 to 98` sentence was a second such literal until BG-01M7EYED; the rank
+/// callout now states the engine's own description, so it reads this constant too.) The plugin's
+/// per-guide field states no range at all - it is the bare rank.
+///
+/// What that vitest calls is the **committed wasm** (`public/molbiocraft_wasm.wasm`, reaching it as
+/// `virtual:molbiocraft-wasm-bytes`), never this source file. So a change here moves the Rust
+/// surfaces, and reaches the TSX guard only once `npm run wasm:build` has put the new range into
+/// that artifact - which is why the same vitest also reads this declaration out of this file and
+/// asserts the committed wasm agrees with it. An edit to the pair below with no rebuild is
+/// therefore red on a developer's machine, not only in CI where the wasm build runs before vitest
+/// (BG-01M7EKMJ AC1). The header literal is then edited by hand.
 ///
 /// The floor is enforced and the ceiling is arithmetic. The top is the sum of every raise the scorer
 /// can apply at once - 68 + 14 (GC inside 40-65 %) + 8 (G at spacer position 20) + 5 (C at position
