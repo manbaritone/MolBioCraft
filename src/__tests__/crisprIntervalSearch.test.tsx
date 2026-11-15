@@ -68,17 +68,21 @@
  * the reviewer's M15 said a bounded prefix was read "over the whole record, on one strand - and
  * copies outside it too" and survived both criteria above. The two cases below close that. AC1
  * reads the callout's seed sentence apart from the rest of the callout and requires it to be this
- * file's own words plus the formatter's phrase verbatim, on each of the four branches. AC2 derives
- * the branch list from the source of `crisprReadAs` itself and holds the note and the callout to
- * the identical phrase on each, with every arm of the formatter asserted to be reached by exactly
- * one fixture - so a fifth branch, or a fixture that stops reaching one, fails here rather than
- * going unread. The numbers in each phrase are asserted against the scan report's own, so a branch
+ * file's own words plus the formatter's phrase verbatim, on each of the five branches. AC2 derives
+ * the branch list from the source of `crisprScanReadAs` in core (src/core/crisprGuideText.ts) - its
+ * five arms, one per template literal - and holds the note and the callout to the identical phrase
+ * on each of five fixtures, with every arm asserted to be reached by exactly one of them - so a
+ * sixth arm, or a fixture that stops reaching one, fails here rather than going unread. On the
+ * under-site arm (a plasmid shorter than one SpCas9 site, read without crossing its origin) the
+ * scan finds no guide, so no note can be saved for that record: its note side is computed by the
+ * formatter itself, `crisprScanReadAs` over the scan's own report, and only the callout there is
+ * read off the App. The numbers in each phrase are asserted against the scan report's own, so a branch
  * whose wording keeps its shape while drifting a number (a bounded prefix claiming the whole
  * record) fails too. Wrong implementations they kill: the frame drift M15; the callout's range
  * literal drifting from the note's; the formatter's bounded branch drifting; and a guard that holds
- * only the branch a fixture happens to reach. The fifth branch of the scope sentence - the engine
- * sent no report, so the scope is unknown (LC-006) - is reached by no fixture here and is
- * BG-01M7FD7R's.
+ * only the branch a fixture happens to reach. The scope sentence's one other outcome - the engine
+ * sent no report, so the scope is unknown (LC-006) - is no arm of `crisprScanReadAs`, is reached by
+ * no fixture here and is BG-01M7FD7R's.
  */
 
 import React from 'react';

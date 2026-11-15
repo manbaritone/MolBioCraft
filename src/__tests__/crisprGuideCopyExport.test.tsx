@@ -1260,34 +1260,71 @@ describe("BG-01M7FH8K AC2: the export's branch list is the formatter's own", () 
   }, 600_000);
 });
 
+/** Core's interval-specificity function, the one other place scope wording is written. */
+const specificitySource = (): string => {
+  const decl = /export function crisprIntervalSpecificityText\([\s\S]*?\n}\n/.exec(
+    treeSource('src/core/crisprGuideText.ts')
+  );
+  if (!decl) throw new Error('src/core/crisprGuideText.ts declares no `crisprIntervalSpecificityText`');
+  return decl[0];
+};
+
+/**
+ * The scope sweep's fragments: every literal run of 12 or more characters between the `${...}`
+ * holes of the formatter's arms and of the interval-specificity function's templates.
+ */
+const scopeFragments = (): string[] =>
+  [...formatterArms().arms, ...(specificitySource().match(/`[^`]*`/g) ?? [])]
+    .flatMap((arm) => arm.slice(1, -1).split(/\$\{[^}]*\}/))
+    .map((literal) => literal.trim())
+    .filter((literal) => literal.length >= 12);
+
+/** A source with its block and line comments taken out. */
+const uncommented = (source: string): string =>
+  source.replace(/\{?\/\*[\s\S]*?\*\/\}?/g, '').replace(/^\s*\/\/.*$/gm, '');
+
+/**
+ * The range chooser's sentence in PrimerAndPCRStudio.tsx, the whole template literal as the source
+ * writes it, backticks included. It says a selection lies outside the record - "not inside the N
+ * bases of this sequence" - and states no seed scope, so it is the one studio text the sweep lets
+ * say "bases of this". The exemption is this sentence, not that fragment.
+ */
+const RANGE_CHOOSER_SENTENCE =
+  '`The selection ${bounds} is not inside the ${bp(length)} bases of this sequence, so it is not offered as a search interval: it is read neither as the whole sequence nor as an empty one.`';
+
+/**
+ * The scope sweep over a studio source: its comments taken out, then the range chooser's sentence
+ * taken out where it appears whole, the fragments left in it are what the studio writes of its own.
+ * `chooserSentences` counts the whole-sentence matches, so an exemption that names nothing - or a
+ * second copy - is seen rather than passed.
+ */
+function studioScopeSweep(studioSource: string, fragments: string[]): { written: string[]; chooserSentences: number } {
+  const source = uncommented(studioSource);
+  const rest = source.split(RANGE_CHOOSER_SENTENCE).join('');
+  return {
+    written: fragments.filter((fragment) => rest.includes(fragment)),
+    chooserSentences: source.split(RANGE_CHOOSER_SENTENCE).length - 1,
+  };
+}
+
 describe('BG-01M7FH8K AC3: the export writes no scope wording of its own', () => {
   it('BG-01M7FH8K AC3 the export holds no second scope literal', async () => {
     const { crisprScanReadAs, crisprGuideExportTable } = await import('../core/crisprGuideText');
     // (a) The file, outside the formatter and its comments: no scope wording is written there, live
     // or dead. The wording is the formatter's own fragments, plus the frames seedScopeText wrote.
-    const { arms } = formatterArms();
-    const specificity = /export function crisprIntervalSpecificityText\([\s\S]*?\n}\n/.exec(
-      treeSource('src/core/crisprGuideText.ts')
-    );
-    expect(specificity, 'core states the interval specificity once').not.toBeNull();
-    const fragments = [...arms, ...(specificity![0].match(/`[^`]*`/g) ?? [])]
-      .flatMap((arm) => arm.slice(1, -1).split(/\$\{[^}]*\}/))
-      .map((literal) => literal.trim())
-      .filter((literal) => literal.length >= 12);
+    const specificity = specificitySource();
+    const fragments = scopeFragments();
     expect(fragments.length, 'the formatter states fragments for the sweep to look for').toBeGreaterThan(3);
-    const uncommented = (source: string) =>
-      source.replace(/\{?\/\*[\s\S]*?\*\/\}?/g, '').replace(/^\s*\/\/.*$/gm, '');
     const rest = uncommented(
-      treeSource('src/core/crisprGuideText.ts').replace(formatterSource(), '').replace(specificity![0], '')
+      treeSource('src/core/crisprGuideText.ts').replace(formatterSource(), '').replace(specificity, '')
     );
-    const studioRest = uncommented(treeSource('src/components/PrimerAndPCRStudio.tsx'));
     for (const fragment of fragments) {
       expect(rest.includes(fragment), `the file outside the formatter writes "${fragment}" again`).toBe(false);
-      // The studio's range chooser says a selection is "not inside the N bases of this sequence" -
-      // a sentence about the selection, not a seed scope - so the bare joint is not swept there.
-      if (fragment === 'bases of this') continue;
-      expect(studioRest.includes(fragment), `the studio writes "${fragment}" of its own`).toBe(false);
     }
+    // The studio, its range chooser's one sentence excepted whole (BG-01M7FSNN).
+    const studio = studioScopeSweep(treeSource('src/components/PrimerAndPCRStudio.tsx'), fragments);
+    expect(studio.chooserSentences, "the studio writes the range chooser's sentence the sweep excepts, once").toBe(1);
+    expect(studio.written, 'the studio writes no scope fragment of its own').toEqual([]);
     expect(rest, 'no frame of the export\'s own names the range it covered').not.toMatch(
       /interval searched|range searched|bases 1 to|bases of this|on both strands/
     );
@@ -1315,6 +1352,44 @@ describe('BG-01M7FH8K AC3: the export writes no scope wording of its own', () =>
     expect(cell, 'a missing report is said to be missing').toMatch(/^Not stated: the engine sent no scan report/);
     expect(cell, 'and no scope is claimed for it').not.toMatch(/bases of this|bases 1 to|interval searched|seed across/);
   }, 600_000);
+});
+
+describe('BG-01M7FSNN AC1: the scope sweep excepts the range chooser\'s one sentence, not a fragment', () => {
+  it('BG-01M7FSNN AC1 a dead studio copy of the scope wording fails the sweep', () => {
+    const fragments = scopeFragments();
+    expect(fragments, 'the sweep looks for the formatter\'s "bases of this" joint').toContain('bases of this');
+    const real = treeSource('src/components/PrimerAndPCRStudio.tsx');
+    const chooserAt = real.indexOf(RANGE_CHOOSER_SENTENCE);
+    expect(chooserAt, "the studio writes the range chooser's sentence, whole").toBeGreaterThan(-1);
+
+    // The studio as it stands passes: the chooser's sentence is excepted, and nothing else is written.
+    expect(studioScopeSweep(real, fragments), 'the real studio passes the sweep').toEqual({
+      written: [],
+      chooserSentences: 1,
+    });
+    // The chooser's sentence is reached by the sweep - only its whole-sentence exemption lets it pass.
+    const chooserOnly = `const note = ${RANGE_CHOOSER_SENTENCE};\n`;
+    expect(
+      fragments.filter((fragment) => chooserOnly.includes(fragment)),
+      'the chooser\'s sentence holds the swept fragment'
+    ).toContain('bases of this');
+
+    // A dead copy of the formatter's wording, planted in memory beside the chooser: refused.
+    const planted = (line: string) => `${real.slice(0, chooserAt)}${line}\n${real.slice(chooserAt)}`;
+    const dead = planted('const deadScope = (n: number, t: string) => `all ${n} bases of this ${t} sequence`; ');
+    expect(studioScopeSweep(dead, fragments).written, 'a dead studio copy of the scope wording is refused').toContain(
+      'bases of this'
+    );
+    // The exemption is the sentence matched whole: a near copy that keeps its opening is refused.
+    const near = planted(
+      'const nearScope = `The selection ${bounds} is not inside the ${bp(length)} bases of this sequence, on both strands`; '
+    );
+    expect(studioScopeSweep(near, fragments).written, 'a near copy of the chooser\'s sentence is refused').toContain(
+      'bases of this'
+    );
+    // And a second whole copy of the sentence is counted, not silently excepted twice.
+    expect(studioScopeSweep(planted(`const again = ${RANGE_CHOOSER_SENTENCE};`), fragments).chooserSentences).toBe(2);
+  });
 });
 
 describe('BG-01M7FH8K AC4: a circular record is never called linear, on screen or in the export', () => {
