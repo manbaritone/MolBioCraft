@@ -261,15 +261,22 @@ pub const GUIDE_SCAN_MAX_BP: usize = 8_000_000;
 
 /// The lowest and the highest heuristic rank `score_guide` can report (BG-01M7E61C).
 ///
-/// The scorer owns its own bound, so every surface that states the range reads it here instead of
-/// writing a number of its own beside it: the clamp in `score_guide`, the rank description the
-/// plugin and the studio callout print ([`crate::reaction_buffers::crispr_heuristic_rank_description`]),
-/// the studio's column header and the guided pipeline's readout. Change the scorer and they all
-/// move, or the tests that re-measure this range fail.
+/// Three surfaces inside this crate read the range here rather than writing a number of their own:
+/// the floor in `score_guide`, the rank description the plugin reply and the studio callout print
+/// ([`crate::reaction_buffers::crispr_heuristic_rank_description`]), and the label of the guided
+/// CRISPR pipeline's rank readout. Change the scorer and those three move with it.
 ///
-/// Both ends are reachable. The top is the sum of every raise the scorer can apply at once -
-/// 68 + 14 (GC inside 40-65 %) + 8 (G at spacer position 20) + 5 (C at position 16) + 3 (A or G at
-/// position 4) = 98 - and the floor is what any lower total is reported as: the worst spacer the
+/// Two surfaces do not read it, and are held to it by a test instead (BG-01M7E69W AC3): the studio's
+/// `Heuristic Rank (8-98)` column header and the `held to 8 to 98` sentence of its callout are TSX
+/// literals in `PrimerAndPCRStudio.tsx`, checked against the range the engine itself reports by
+/// `src/__tests__/crisprScoreProvenance.test.tsx`. The plugin's per-guide field states no range at
+/// all - it is the bare rank. So a change here moves the Rust surfaces and *fails* the TSX ones,
+/// which are then edited by hand.
+///
+/// The floor is enforced and the ceiling is arithmetic. The top is the sum of every raise the scorer
+/// can apply at once - 68 + 14 (GC inside 40-65 %) + 8 (G at spacer position 20) + 5 (C at position
+/// 16) + 3 (A or G at position 4) = 98 - so no score ever needs capping and `score_guide` has no
+/// ceiling arm to do it with; the floor is what any lower total is reported as: the worst spacer the
 /// scorer can read (all-T, so GC outside 30-75 %, a T at position 20, a TTTT run, and a PAM ending
 /// GGG) totals 68 - 22 - 6 - 30 - 5 = 5 and is reported as 8. The ranks were printed "/ 100" under
 /// a header that said 8-99, and neither bound was the one a reader could reach: 99 was unreachable
@@ -644,8 +651,13 @@ pub fn scan_crispr_guides(
         if pam.ends_with(b"GGG") {
             on_target -= 5;
         }
-        // The scorer's own bound, which every label that states the range reads (BG-01M7E61C).
-        on_target = on_target.clamp(CRISPR_HEURISTIC_RANK_RANGE.0, CRISPR_HEURISTIC_RANK_RANGE.1);
+        // The scorer's own floor, which every label that states the range reads (BG-01M7E61C).
+        // There is no ceiling to apply, and no ceiling arm here: every raise above at once is
+        // 68 + 14 + 8 + 5 + 3 = 98, which is [`CRISPR_HEURISTIC_RANK_RANGE`].1, so a `clamp` upper
+        // arm could never cap a score and a reviewer could widen it to 1000 unnoticed. The ceiling
+        // is the arithmetic, held by a test that scores a broad sample and reads the top it reaches
+        // (BG-01M7E69W AC1); only the floor is enforced here, over a raw total as low as 5.
+        on_target = on_target.max(CRISPR_HEURISTIC_RANK_RANGE.0);
 
         // Other exact occurrences of the 12-nt PAM-proximal seed over the scanned range (both
         // strands), counted in full. Specificity = 100 / (1 + seed matches): 100 for a seed with no

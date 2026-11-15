@@ -18,7 +18,7 @@
 
 use molbiocraft_cloning::cloning_crispr::{
     find_crispr_guides, resolve_nuclease_preset, scan_crispr_guides, supported_nuclease_presets,
-    CrisprGuideRecord, GUIDE_SCAN_MAX_BP,
+    CrisprGuideRecord, CRISPR_HEURISTIC_RANK_RANGE, GUIDE_SCAN_MAX_BP,
 };
 
 // ───────────────────────────── fixtures, from a fixed seed ─────────────────────────────
@@ -1472,4 +1472,224 @@ fn us_01m7dv29_ac4_a_circle_read_whole_wraps_the_target_strand_cut_across_its_or
     assert!(scan.scanned_circular, "a circle read whole");
     assert_eq!(g.cut_position_target_strand, Some(3), "32 taken round a 29-base circle");
     assert_eq!(g.cut_position_target_strand_note, None);
+}
+
+// ───────────────── BG-01M7E69W: the guards over the heuristic rank, made able to fail ─────────────────
+
+/// A 20-nt spacer the scorer raises every way it can: 40 % GC (8 of 20), a G at position 20, a C at
+/// position 16 and an A at position 4, no TTTT run — 68 + 14 + 8 + 5 + 3 = 98, the stated ceiling.
+/// It holds no `GG` and no `CC`, so planting it adds no PAM of its own on either strand.
+const RANK_98_SPACER: &str = "ACAACACACACACAACAAAG";
+/// `RANK_98_SPACER`'s PAM-proximal 12-mer, the seed SpCas9 counts matches of. A second bare copy of
+/// it is planted in the A/T background, which gives it one other exact copy and no new candidate.
+const RANK_98_SEED: &str = "CACACAACAAAG";
+/// A second spacer the scorer raises every way but one: a C at position 4 rather than an A or a G,
+/// so it misses that +3 and scores 95. 45 % GC (9 of 20), so it is inside the same band; still
+/// `GG`/`CC`-free, and its own seed appears nowhere else in the fixture.
+const RANK_95_SPACER: &str = "ACACACACACACACACAAAG";
+/// `RANK_95_SPACER`'s PAM-proximal 12-mer.
+const RANK_95_SEED: &str = "ACACACACAAAG";
+
+/// Two planted SpCas9 guides whose rank and whose seed count disagree about which is the better
+/// guide: the 98 has one other copy of its seed (specificity 50) and the 95 has none (100), so the
+/// list the engine returns is 95-then-98 by the rank plus the seed score, and 98-then-95 by the rank
+/// alone. The background is A and T only, so the two planted PAMs are the only ones in it.
+fn rank_and_seed_disagree_fixture() -> String {
+    let mut seq = at_background(600, 0x5EED_0F01);
+    plant(&mut seq, 100, &block(RANK_98_SPACER));
+    plant(&mut seq, 300, &block(RANK_95_SPACER));
+    // A bare second copy of the 98's seed: 12 bases with no `GG` and no `CC`, so it is a seed match
+    // and not a candidate guide.
+    plant(&mut seq, 500, RANK_98_SEED);
+    String::from_utf8(seq).expect("ASCII bases")
+}
+
+/// BG-01M7E69W AC2: the guide list is ordered by the heuristic rank **plus** the seed-match score —
+/// the claim the plugin, the studio callout and the rank description all make — checked over a
+/// fixture in which the two formulas disagree.
+///
+/// US-01M7DVVR's order assertion ran over the pET-28a sample library, where every listed guide has
+/// `specificity_score == 100`, so the sum it read was a constant 100 above the rank and the oracle
+/// could not tell the two formulas apart: mutating the sort key from `on_t + spec` to `on_t`
+/// survived it. The fixture here plants that disagreement — and states it as a precondition, so a
+/// fixture that later loses it fails loudly instead of passing vacuously (LC-002).
+///
+/// Wrong implementations this kills: `score: on_t` in `scan_crispr_guides`'s pass 3 (the rank
+/// alone), and any sort key that ignores the seed term or reverses the order.
+#[test]
+fn bg_01m7e69w_ac2_the_guide_list_is_ordered_by_the_rank_plus_the_seed_match_score() {
+    let seq = rank_and_seed_disagree_fixture();
+
+    // ── The fixture, checked by a direct search of both strands rather than by the engine. ──
+    assert_eq!(
+        direct_seed_hits(seq.as_bytes(), seq.len(), RANK_98_SEED),
+        2,
+        "the 98's seed must have one other exact copy, or its specificity is not 50"
+    );
+    assert_eq!(
+        direct_seed_hits(seq.as_bytes(), seq.len(), RANK_95_SEED),
+        1,
+        "the 95's seed must be unique, or its specificity is not 100"
+    );
+
+    let scan = scan_crispr_guides(&seq, "SpCas9 (NGG)", usize::MAX, None, false);
+    assert_eq!(
+        scan.guides.len(),
+        scan.candidate_count,
+        "every candidate is listed, so the order read here is the whole of it"
+    );
+    assert_eq!(scan.guides.len(), 2, "the A/T background plants exactly the two guides: {:?}",
+        scan.guides.iter().map(|g| g.spacer_seq.clone()).collect::<Vec<_>>());
+
+    // ── Precondition: the fixture can reach the wrong implementation. ──
+    let specificities: Vec<i32> = scan.guides.iter().map(|g| g.specificity_score).collect();
+    let distinct: std::collections::BTreeSet<i32> = specificities.iter().copied().collect();
+    assert!(
+        distinct.len() >= 2,
+        "at least two listed guides must differ in specificity_score, or this order check cannot \
+         tell the rank from the rank plus the seed score: {specificities:?}"
+    );
+    // And they disagree by more than the ranks do: ordering these same guides by the rank alone —
+    // the engine's own total order with the seed term dropped — breaks the order asserted below.
+    let mut by_rank_alone = scan.guides.clone();
+    by_rank_alone.sort_by(|a, b| {
+        b.on_target_score
+            .cmp(&a.on_target_score)
+            .then_with(|| a.start.cmp(&b.start))
+            .then_with(|| b.strand.cmp(&a.strand))
+    });
+    let mutant_keys: Vec<i32> = by_rank_alone
+        .iter()
+        .map(|g| g.on_target_score + g.specificity_score)
+        .collect();
+    assert!(
+        !mutant_keys.windows(2).all(|w| w[0] >= w[1]),
+        "the rank alone orders this fixture the same way as the rank plus the seed score, so the \
+         assertion below cannot kill `score: on_t`: {mutant_keys:?}"
+    );
+
+    // ── The order the engine actually returns. ──
+    let keys: Vec<i32> = scan
+        .guides
+        .iter()
+        .map(|g| g.on_target_score + g.specificity_score)
+        .collect();
+    assert!(
+        keys.windows(2).all(|w| w[0] >= w[1]),
+        "the guides are not in the order every surface claims — the rank plus the seed-match \
+         score, best first: {keys:?}"
+    );
+
+    // ── Named, so the numbers behind the order are legible. ──
+    let by_spacer = |spacer: &str| -> &CrisprGuideRecord {
+        scan.guides
+            .iter()
+            .find(|g| g.spacer_seq == spacer)
+            .unwrap_or_else(|| panic!("the planted spacer {spacer} is listed"))
+    };
+    let high_rank = by_spacer(RANK_98_SPACER);
+    let high_specificity = by_spacer(RANK_95_SPACER);
+    assert_eq!(
+        (high_rank.on_target_score, high_rank.specificity_score, high_rank.off_target_count),
+        (98, 50, 1),
+        "the 98-ranked guide has one other seed copy"
+    );
+    assert_eq!(
+        (
+            high_specificity.on_target_score,
+            high_specificity.specificity_score,
+            high_specificity.off_target_count
+        ),
+        (95, 100, 0),
+        "the 95-ranked guide has none"
+    );
+    assert_eq!(
+        scan.guides[0].spacer_seq, RANK_95_SPACER,
+        "the lower rank with the unique seed is listed first, because 95 + 100 beats 98 + 50"
+    );
+}
+
+/// BG-01M7E69W AC1: the rank's floor is clamped and its ceiling is arithmetic.
+///
+/// `score_guide` had `clamp(RANGE.0, RANGE.1)`, whose upper arm could never fire: the scorer's
+/// maximum raw score is 68 + 14 (GC inside 40–65 %) + 8 (G at position 20) + 5 (C at position 16)
+/// + 3 (A or G at position 4) = 98, and the stated ceiling is 98 too, so a reviewer's
+/// `.clamp(RANGE.0, 1000)` passed every criterion BG-01M7E61C added. The dead arm is gone (LC-008)
+/// and this test records which of the two arms was load-bearing: the floor, which turns the worst
+/// spacer's 5 raw into the stated 8, and no ceiling, which nothing needs because no spacer scores
+/// above it.
+///
+/// Wrong implementations this kills: any raise or base the scorer grows past the stated ceiling,
+/// which the removed arm used to cap silently (e.g. the GC raise at +24, which reports 108); and a
+/// floor removed or moved, which reports the worst spacer as its raw 5.
+#[test]
+fn bg_01m7e69w_ac1_the_rank_floor_is_clamped_and_its_ceiling_is_the_arithmetic() {
+    let (lo, hi) = CRISPR_HEURISTIC_RANK_RANGE;
+    // The arithmetic the removal rests on, written out.
+    assert_eq!(
+        68 + 14 + 8 + 5 + 3,
+        hi,
+        "the scorer's maximum raw score is no longer the stated ceiling, so the ceiling now needs \
+         an arm of its own rather than the arithmetic"
+    );
+
+    // ── No candidate of a 40 kb random sequence scores above the ceiling, on either preset, with
+    // nothing capping it; and one planted spacer reaches it exactly. ──
+    let mut seq = acgt_background(40_000, 0x5EED_0AC1);
+    plant(&mut seq, 1_000, &block(RANK_98_SPACER));
+    let seq = String::from_utf8(seq).expect("ASCII bases");
+    let mut measured_max = i32::MIN;
+    let mut scored = 0usize;
+    for nuclease in ["SpCas9 (NGG)", "Cas12a / Cpf1 (TTTV)"] {
+        let scan = scan_crispr_guides(&seq, nuclease, usize::MAX, None, false);
+        assert!(scan.guides.len() > 500, "{nuclease} finds a broad sample in 40 kb of random bases: {}", scan.guides.len());
+        for g in &scan.guides {
+            assert!(
+                g.on_target_score <= hi,
+                "{nuclease} guide {} ({}+{}) ranks {}, above the stated ceiling {hi}, and nothing \
+                 caps it: the stated range and the scorer's arithmetic have parted",
+                g.id,
+                g.spacer_seq,
+                g.pam_seq,
+                g.on_target_score
+            );
+            assert!(g.on_target_score >= lo, "a rank below the clamped floor {lo}: {}", g.on_target_score);
+            measured_max = measured_max.max(g.on_target_score);
+            scored += 1;
+        }
+    }
+    assert!(scored > 1_000, "the sweep scored {scored} candidates");
+    assert_eq!(
+        measured_max, hi,
+        "the stated ceiling is reached by the arithmetic alone, with no arm to cap anything"
+    );
+
+    // ── The floor is the arm that does the work: all T, so GC outside 30–75 % (−22), a T at
+    // position 20 (−6), a TTTT run (−30) and a PAM ending GGG (−5) — 68 − 63 = 5 raw, reported as
+    // the stated floor. ──
+    let worst_spacer = "T".repeat(20);
+    let worst = format!("{}{}GGG{}", "A".repeat(12), worst_spacer, "A".repeat(12));
+    let scan = scan_crispr_guides(&worst, "SpCas9 (NGG)", usize::MAX, None, false);
+    let guide = scan
+        .guides
+        .iter()
+        .find(|g| g.spacer_seq == worst_spacer)
+        .expect("the worst spacer is a candidate of its own sequence");
+    assert_eq!(
+        guide.on_target_score, lo,
+        "the worst spacer totals 5 raw and only the floor arm reports it as the stated {lo}"
+    );
+}
+
+/// `len` bases of A, C, G and T from `seed` (the same bases on every run): a background that spells
+/// PAMs of its own, unlike [`at_background`], so a scan of it reads thousands of unplanned spacers
+/// across the features the rank weighs.
+fn acgt_background(len: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed;
+    (0..len)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            b"ACGT"[((x >> 24) & 0b11) as usize]
+        })
+        .collect()
 }

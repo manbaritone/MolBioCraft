@@ -1142,13 +1142,13 @@ mod tests {
     /// A description is only provenance if it is the rule: the shipped text named three features
     /// ("GC content in 40-65 %, a G at the 3' end of the spacer, and no TTTT run") and a 0-100
     /// range, while the scorer reads six features and a PAM and can only ever report the range it
-    /// clamps to ([`crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE`], BG-01M7E61C). It
+    /// states ([`crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE`], BG-01M7E61C). It
     /// also said the rank orders the list, which the rank alone does not - the list is ordered by
     /// the rank plus the seed-match score. This holds every surface that describes the rank to the
     /// code, by naming each feature and by re-deriving the score from the description's own words.
     fn assert_rank_description_is_the_rule_the_engine_runs(desc: &str) {
-        // The bounds it names are the bounds the clamp allows - read from the clamp's own constant,
-        // so the two cannot drift apart (BG-01M7E61C).
+        // The bounds it names are the bounds the scorer reports - read from the scorer's own
+        // constant, so the two cannot drift apart (BG-01M7E61C).
         let (lo, hi) = crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE;
         assert!(
             desc.contains(&format!("{lo} to {hi}")) || desc.contains(&format!("{lo}-{hi}")),
@@ -1266,7 +1266,7 @@ mod tests {
     /// Wrong implementations this kills: the shipped per-guide field
     /// `format!("{}/100", g.on_target_score)` (`reaction_buffers.rs`), which prints the rank out of
     /// a 100 the scorer can never reach; any "/100" elsewhere in the reply; and a description whose
-    /// range is a literal beside the clamp rather than the clamp's own bound.
+    /// range is a literal beside the scorer rather than the scorer's own constant.
     #[test]
     fn bg_01m7e61c_ac2_the_crispr_plugin_states_each_rank_with_no_hundred_denominator() {
         let doc = crispr_fixture_doc();
@@ -1373,7 +1373,10 @@ mod tests {
         );
     }
 
-    /// `<rank> • <No other seed copy | N seed match(es)>` - the studio's own seed-cell words.
+    /// `<rank> • <No other seed copy | 1 seed match | N seed matches>` - the studio's own seed-cell
+    /// words, in its own grammar: no copy is spelled out, one copy is singular and two or more are
+    /// plural. It once took any count before either suffix, so "1 seed matches" and "2 seed match"
+    /// passed it too (BG-01M7E69W AC3).
     fn is_studio_seed_phrase(value: &str) -> bool {
         let Some((rank, seed)) = value.split_once(" • ") else {
             return false;
@@ -1381,21 +1384,117 @@ mod tests {
         if rank.is_empty() || !rank.bytes().all(|b| b.is_ascii_digit()) {
             return false;
         }
-        seed == "No other seed copy"
-            || seed
-                .strip_suffix(" seed matches")
-                .or_else(|| seed.strip_suffix(" seed match"))
-                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        if seed == "No other seed copy" {
+            return true;
+        }
+        let (count, plural) = match seed.strip_suffix(" seed matches") {
+            Some(count) => (count, true),
+            None => match seed.strip_suffix(" seed match") {
+                Some(count) => (count, false),
+                None => return false,
+            },
+        };
+        if count.is_empty() || !count.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        // A zero is never printed as a count, and the suffix agrees with the count it follows.
+        count.parse::<usize>().is_ok_and(|n| n >= 1 && (n >= 2) == plural)
+    }
+
+    /// BG-01M7E69W AC3: the seed-cell words this file checks the pipeline readout against are the
+    /// words the studio prints — singular for one copy, plural for more, and a zero spelled out.
+    ///
+    /// The check above read the readout against a predicate that accepted any digits before either
+    /// suffix, so "1 seed matches" and "2 seed match" passed it and the studio's plural grammar was
+    /// unpinned. The studio's cell (`PrimerAndPCRStudio.tsx`) and the pipeline's readout
+    /// (`crispr_seed_match_phrase`) both print exactly three forms, which are the three accepted
+    /// here and the only three.
+    ///
+    /// Wrong implementations this kills: the predicate as shipped, which accepted "1 seed matches"
+    /// and "2 seed match"; one that accepts a "0 seed match" count the studio spells
+    /// "No other seed copy"; and one that takes any suffix at all.
+    #[test]
+    fn bg_01m7e69w_ac3_the_studio_seed_phrase_is_pinned_to_the_grammar_the_studio_prints() {
+        for good in [
+            "98 • No other seed copy",
+            "95 • 1 seed match",
+            "50 • 2 seed matches",
+            "8 • 17 seed matches",
+        ] {
+            assert!(is_studio_seed_phrase(good), "the studio prints this and the check rejects it: {good}");
+        }
+        for bad in [
+            "98 • 1 seed matches",
+            "98 • 2 seed match",
+            "98 • 0 seed matches",
+            "98 • 0 seed match",
+            "98 • No other seed copies",
+            "98 • seed matches",
+            "98 • 2 seed",
+            "98 • 2 seed matchesx",
+            "98",
+            "x • 1 seed match",
+            "98 • 1 SEED MATCH",
+        ] {
+            assert!(
+                !is_studio_seed_phrase(bad),
+                "the studio never prints this and the check accepts it: {bad}"
+            );
+        }
+        // And the readout the guided pipeline actually builds is one of the accepted forms, so the
+        // predicate is pinned to the printer and not only to this table. The sample record's lead
+        // guide has no other seed copy, so it only ever exercises the spelled-out zero; a record
+        // whose lead guide has exactly one copy exercises the singular, which is the form a printer
+        // that said "1 seed matches" would get wrong and no fixture here used to read.
+        let rank_readout = |doc: &molbiocraft_core::SequenceDocument| -> String {
+            let report = crate::bio_pipelines::execute_bio_pipeline_rust(
+                doc,
+                "crispr-hdr-knockout",
+                "macos",
+                "2026-11-15T08:00:00Z",
+            )
+            .expect("the guided CRISPR pipeline runs on the record");
+            report
+                .steps
+                .iter()
+                .find(|s| s.id == "grna-ranking")
+                .and_then(|s| s.metrics.iter().find(|m| m.label.contains("Heuristic Rank")))
+                .expect("the step has a heuristic rank readout")
+                .value
+                .clone()
+        };
+        let sample = rank_readout(&crispr_fixture_doc());
+        assert!(
+            is_studio_seed_phrase(&sample),
+            "the pipeline readout is not one of the studio's three seed forms: {sample}"
+        );
+
+        // One guide and one other copy of its seed, in an A/T background that spells no PAM of its
+        // own: the lead guide is that guide, and its one copy is printed in the singular.
+        let mut one_copy = crispr_fixture_doc();
+        one_copy.sequence = format!(
+            "{bg}{spacer}AGG{bg}{seed}{bg}",
+            bg = "AT".repeat(50),
+            spacer = "ACAACACACACACAACAAAG",
+            seed = "CACACAACAAAG",
+        );
+        let single = rank_readout(&one_copy);
+        assert_eq!(
+            single, "98 • 1 seed match",
+            "one other copy of the lead guide's seed is not printed in the studio's singular"
+        );
+        assert!(is_studio_seed_phrase(&single), "and the check accepts it: {single}");
     }
 
     /// BG-01M7E61C AC4: the range every surface states is the range the scorer reaches, measured by
-    /// scoring candidates rather than asserted as a string, and it is the clamp's own bound.
+    /// scoring candidates rather than asserted as a string, and its floor is the scorer's own.
     ///
     /// Wrong implementations this kills:
-    /// - a clamp widened to `(0, 100)` (or narrowed) while the labels keep the old numbers: the
-    ///   worst spacer the scorer can read totals 5 raw and must be reported as the stated floor, and
-    ///   the best totals 98 and must be reported as the stated ceiling - the pET-28a library alone
-    ///   cannot see this, because its candidates run 14..98 and 10..98 and never touch the floor;
+    /// - a floor moved or dropped while the labels keep the old number: the worst spacer the scorer
+    ///   can read totals 5 raw and must be reported as the stated floor - the pET-28a record alone
+    ///   cannot see this, because its candidates run 14..98 and 10..98 and never touch the floor.
+    ///   The ceiling has no arm to mutate (BG-01M7E69W AC1): it is reached here, and held to the
+    ///   arithmetic by `bg_01m7e69w_ac1_…` in `tests/crispr_sampling.rs`;
     /// - a stated range whose top no spacer reaches (the shipped 99, unreachable by construction);
     /// - a label whose range is a literal rather than the scorer's constant.
     #[test]
@@ -1403,7 +1502,10 @@ mod tests {
         let (lo, hi) = stated_rank_range();
         assert!(lo < hi, "the stated range is empty: {lo} to {hi}");
 
-        // ── Measured: every candidate of the sample library, for both presets. ──
+        // ── Measured: every candidate of one record of the sample library - the pET-28a
+        // `crispr_fixture_doc` reads - for both presets, and of no other record (BG-01M7E69W AC3).
+        // Its candidates run 14..98 and 10..98, which is why the floor is reached below by a
+        // constructed spacer rather than here. ──
         let doc = crispr_fixture_doc();
         let mut measured_min = i32::MAX;
         let mut measured_max = i32::MIN;
@@ -1439,9 +1541,9 @@ mod tests {
         );
         assert!(measured_min >= lo, "the library reaches {measured_min}, below the stated {lo}");
 
-        // ── The clamp's own bound: the worst and the best spacer the scorer can read. ──
+        // ── The two ends by construction: the worst and the best spacer the scorer can read. ──
         // All-T: GC outside 30-75 %, a T at position 20, a TTTT run, and a PAM ending GGG - 5 raw,
-        // which only the clamp turns into the floor the labels state.
+        // which only the floor clamp turns into the floor the labels state.
         let worst_spacer = "T".repeat(20);
         let worst = format!("{}{}GGG{}", "A".repeat(12), worst_spacer, "A".repeat(12));
         // Every raise at once: GC 40 %, A at position 4, C at position 16, G at position 20, no
@@ -1460,7 +1562,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{label} is not a candidate of its own sequence"));
             assert_eq!(
                 guide.on_target_score, expected,
-                "{label} is reported as {} where the stated range says {expected}: the clamp and the labels have parted",
+                "{label} is reported as {} where the stated range says {expected}: the scorer and the labels have parted",
                 guide.on_target_score
             );
         }
