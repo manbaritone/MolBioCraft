@@ -614,3 +614,274 @@ describe('CRISPR Top 5 annotation shape (BG-01M7EQAA)', () => {
     });
   });
 });
+
+/**
+ * BG01M7EXRW: two guards over this overlay held less than they appeared to, and one id source was
+ * no source of uniqueness at all.
+ *
+ * - AC1: `crisprGuideParts` takes each part's length from the record's own `spacerSeq`/`pamSeq`,
+ *   which is right - but hard-coding `spacerLen = 20; pamLen = 3` passed every criterion above and
+ *   the whole frontend suite, because nothing here exercised a 5'-PAM nuclease. The cases below do,
+ *   on both strands, and assert each span against the record's own lengths.
+ * - AC2: "a staggered second cut with no position stays absent rather than being drawn as 0" was
+ *   true by reading and exercised by no test, because only a staggered cutter reaches it.
+ * - AC3: both features of an annotation took `feat-<guide>-<part>-${Date.now()}`, so annotating one
+ *   guide twice inside a millisecond wrote two features with one id.
+ *
+ * Wrong implementations these kill:
+ * - AC1: `spacerLen = 20` / `pamLen = 3` in place of the record's lengths. A 5'-PAM record is where
+ *   that bites: on the forward strand the spacer is placed `pamLen` past the site's first base, so
+ *   it opens and closes one base early and reads the wrong letters, and the PAM comes out 3 bases
+ *   long instead of 4; on the reverse strand the spacer happens to survive (Cas12a's spacer is 20
+ *   too), and the PAM alone is a base short. Both cases are asserted, so neither carries the
+ *   criterion alone. Also killed: the PAM-leads rule read off the strand alone or off the PAM side
+ *   alone (either swaps one of the two cases); a 23-nt spacer measured as 20.
+ * - AC2: `data-guide-cut-target` given `?? 0` or any fallback, so an absent second cut is drawn at
+ *   base 0; the conditional spread in `crisprGuideHighlight` made unconditional, which puts the key
+ *   on the record the views are handed; a ribbon that is simply missing (the primary cut and the
+ *   note are both asserted present here, and a guide that does have a second cut is asserted to
+ *   write the attribute, so absence is never read off an empty page - LC-006).
+ * - AC3: `Date.now()` as the only source of uniqueness (the clock is held at one value here, so a
+ *   timestamp cannot tell the two annotations apart); a serial shared by both annotations.
+ */
+
+/** The engine's only 5'-PAM preset, as its chooser names it: a 4-nt PAM, where SpCas9's is 3. */
+const CAS12A = 'Cas12a / Cpf1 (TTTV)';
+
+/**
+ * A 128-bp line holding exactly two Cas12a sites and nothing else - the filler carries no `TTT` and
+ * no `AAA`, so it holds no `TTTV` on either strand:
+ * - one reverse-strand site at 41..64: its spacer on the plus strand at 41..60, its PAM `CAAA` at
+ *   61..64 (read `TTTG` on the minus strand, 5' of the spacer);
+ * - one forward-strand site at 105..128, flush with the last base: its PAM `TTTG` at 105..108 and
+ *   its spacer at 109..128. Flush is what AC2 needs: Cas12a's target-strand cut falls 3 bases past
+ *   the site's end, which on a record read straight is past the last base, so the engine withholds
+ *   its position and says why.
+ */
+const CAS12A_REVERSE_SITE = `${'TTACGATCATCAGATCGATA'}CAAA`;
+const CAS12A_FORWARD_SITE = `TTTG${'ACGTATCAGTCAGTCATCAG'}`;
+const cas12aSeq = `${filler(40)}${CAS12A_REVERSE_SITE}${filler(40)}${CAS12A_FORWARD_SITE}`;
+const CAS12A_DOC = dnaDoc('exrw-cas12a', 'pEXRW_Cas12a', cas12aSeq, 'linear');
+
+/** This launch's engine over the fixture, asked for the same preset the tab is set to. */
+async function cas12aGuides(doc: SequenceDocument) {
+  const { scanCrisprGuides } = await import('../core/bioEngine');
+  return scanCrisprGuides(doc.sequence, CAS12A, 25, doc.topology === 'circular');
+}
+
+/** The CRISPR tab on `doc`, with the nuclease chooser set to Cas12a through its own select. */
+const onCas12aTab = async (app: AppHarness, doc: SequenceDocument) => {
+  await onCrisprTab(app, doc);
+  await app.change(app.one('select[aria-label="Nuclease / PAM:"]', 'the nuclease chooser'), CAS12A);
+  await app.settle();
+  expect(
+    app.one(`[data-nuclease-facts]`, 'the chosen preset\'s facts').getAttribute('data-nuclease-facts'),
+    'the tab is scanning for the 5\'-PAM preset'
+  ).toBe(CAS12A);
+};
+
+/**
+ * The Cas12a scan opened afresh and `guideId`'s row clicked: the linear view's ribbon for it.
+ * Showing a guide jumps to the sequence view, so each guide is shown from its own scan rather than
+ * from whatever the last click left on screen.
+ */
+const showCas12aGuide = async (app: AppHarness, guideId: string): Promise<LiveElement> => {
+  await onCas12aTab(app, CAS12A_DOC);
+  await app.click(guideRow(app, guideId));
+  return app.one('[data-guide-highlight]', 'the linear view guide ribbon');
+};
+
+/** The bases a span covers, counting both bounds and a wrap of the origin. */
+const spanLength = (span: { start: number; end: number }, length: number) =>
+  positionsOf(span.start, span.end, length).length;
+
+/** `start..end` as the ribbon and the arcs write it. */
+const spanText = (span: { start: number; end: number }) => `${span.start}..${span.end}`;
+
+describe('CRISPR guide parts, a withheld second cut and annotation ids (BG01M7EXRW)', () => {
+  it("BG01M7EXRW AC1: a Cas12a guide's parts are spanned from the record's own lengths", async () => {
+    // Part 1: the shipped surface, on both strands, for the engine's own 5'-PAM preset.
+    await withApp(async (app) => {
+      await onCas12aTab(app, CAS12A_DOC);
+      const scan = await cas12aGuides(CAS12A_DOC);
+      expect(scan.report?.candidateCount, 'the fixture holds its two planted sites and nothing else').toBe(2);
+      const listed = listedGuideIds(app);
+      expect(listed.length, 'the tab lists both of them').toBe(2);
+
+      const byStrand = (strand: 1 | -1) => {
+        const hits = scan.guides.filter((g) => g.strand === strand && listed.includes(g.id));
+        expect(hits.length, `one listed ${strand === 1 ? 'forward' : 'reverse'} Cas12a guide`).toBe(1);
+        return hits[0];
+      };
+
+      for (const strand of [1, -1] as const) {
+        const g = byStrand(strand);
+        const where = `${g.name} (${strand === 1 ? 'forward' : 'reverse'})`;
+        // The record's own lengths, which are not SpCas9's: a 4-nt PAM.
+        expect(g.pamSeq.length, `${where}: the record's PAM is 4 nt, not 3`).toBe(4);
+        expect(g.spacerSeq.length, `${where}: the record's spacer`).toBe(
+          scan.guides[0].spacerSeq.length
+        );
+
+        // The spans read from the document's own bases, independent of the component's arithmetic.
+        const parts = partsByBases(CAS12A_DOC.sequence, g);
+        await showCas12aGuide(app, g.id);
+        const ribbon = guideRibbon(app);
+        expect(ribbon.name, `${where} is the guide highlighted`).toBe(g.name);
+        expect(ribbon.spacer, `${where}: the spacer span drawn`).toBe(spanText(parts.spacer));
+        expect(ribbon.pam, `${where}: the PAM span drawn`).toBe(spanText(parts.pam));
+        // And each drawn span is exactly as long as the record's own part, never a constant.
+        expect(
+          spanLength({ start: Number(ribbon.spacer!.split('..')[0]), end: Number(ribbon.spacer!.split('..')[1]) }, CAS12A_DOC.sequence.length),
+          `${where}: the spacer drawn is ${g.spacerSeq.length} bases, the record's own spacer length`
+        ).toBe(g.spacerSeq.length);
+        expect(
+          spanLength({ start: Number(ribbon.pam!.split('..')[0]), end: Number(ribbon.pam!.split('..')[1]) }, CAS12A_DOC.sequence.length),
+          `${where}: the PAM drawn is ${g.pamSeq.length} bases, the record's own PAM length`
+        ).toBe(g.pamSeq.length);
+        // The letters drawn as each part are the record's own, on the guide's strand.
+        expect(ribbon.spacerBases, `${where}: the letters marked as the spacer`).toBe(g.spacerSeq);
+        expect(ribbon.pamBases, `${where}: the letters marked as the PAM`).toBe(g.pamSeq);
+      }
+    });
+
+    // Part 2: a 5'-PAM nuclease whose spacer is 23 nt and whose PAM is 4. No preset the engine
+    // offers has a 23-nt spacer (Cas12a's is 20, and SpCas9's is 20 with a 3-nt PAM), so this
+    // length can only be put through `crisprGuideParts` as a record - which is the unit AC1 names,
+    // and the one place a hard-coded 20 would be read.
+    const { crisprGuideParts } = await import('../components/PrimerAndPCRStudio');
+    const LEN = 400;
+    for (const strand of [1, -1] as const) {
+      const g = {
+        start: 10,
+        end: 36,
+        strand,
+        spacerSeq: 'ACGTACGTACGTACGTACGTACG', // 23 nt
+        pamSeq: 'TTTA', // 4 nt
+        pamSide: "5'",
+      };
+      expect([g.spacerSeq.length, g.pamSeq.length], 'the record this case asserts against').toEqual([23, 4]);
+      const parts = crisprGuideParts(g, LEN);
+      expect(
+        spanLength(parts.spacer, LEN),
+        `a ${g.spacerSeq.length}-nt spacer on the ${strand === 1 ? 'forward' : 'reverse'} strand spans its own length`
+      ).toBe(g.spacerSeq.length);
+      expect(
+        spanLength(parts.pam, LEN),
+        `a ${g.pamSeq.length}-nt PAM on the ${strand === 1 ? 'forward' : 'reverse'} strand spans its own length`
+      ).toBe(g.pamSeq.length);
+      // The two parts tile the site, in the order a 5'-PAM nuclease puts them in on that strand:
+      // the PAM leads the plus-strand site of a forward guide and trails it on a reverse one.
+      const leading = strand === 1 ? parts.pam : parts.spacer;
+      const trailing = strand === 1 ? parts.spacer : parts.pam;
+      expect([leading.start, trailing.end], 'the two parts cover the whole site').toEqual([g.start, g.end]);
+      expect(trailing.start, 'and meet with no gap and no overlap').toBe(leading.end + 1);
+    }
+  });
+
+  it('BG01M7EXRW AC2: a withheld staggered second cut is drawn nowhere', async () => {
+    await withApp(async (app) => {
+      await onCas12aTab(app, CAS12A_DOC);
+      const scan = await cas12aGuides(CAS12A_DOC);
+      const withheld = scan.guides.find((g) => g.strand === 1)!;
+      const held = scan.guides.find((g) => g.strand === -1)!;
+      // The case is reached: the engine really does withhold this guide's second cut, and says why.
+      expect(withheld, 'the forward guide flush with the last base').toBeTruthy();
+      expect(withheld.cutPositionTargetStrand, 'its target-strand cut has no position').toBeUndefined();
+      expect(withheld.cutPositionTargetStrandNote, 'and the engine says why').toBeTruthy();
+      // And the contrast is reachable, so an absent attribute is not absent for want of a case.
+      expect(held.cutPositionTargetStrand, 'the reverse guide does have a second cut').toEqual(
+        expect.any(Number)
+      );
+
+      const ribbon = await showCas12aGuide(app, withheld.id);
+      expect(ribbon.getAttribute('data-guide-highlight')).toBe(withheld.name);
+      // The attribute is not written at all - not written with the value 0, or '', or 'undefined'.
+      expect(
+        ribbon.hasAttribute('data-guide-cut-target'),
+        'no target-strand cut attribute is written for a cut that has no position'
+      ).toBe(false);
+      expect(
+        ribbon.getAttributeNames().filter((n) => n === 'data-guide-cut-target'),
+        'and none under that name at all'
+      ).toEqual([]);
+      // The ribbon is there and says what it does know: the reported cut, and why the second is absent.
+      expect(ribbon.getAttribute('data-guide-cut'), 'the reported cut is still drawn').toBe(
+        String(withheld.cutPosition)
+      );
+      expect(ribbon.getAttribute('data-guide-cut-target-note'), 'with the engine\'s own reason beside it').toBe(
+        withheld.cutPositionTargetStrandNote
+      );
+      expect(ribbon.textContent.replace(/\s+/g, ' '), 'and the words say it too').toContain(
+        `target strand: ${withheld.cutPositionTargetStrandNote}`
+      );
+
+      // The guide that has a second cut writes it, so the assertion above is about this case alone.
+      const second = await showCas12aGuide(app, held.id);
+      expect(second.getAttribute('data-guide-cut-target'), 'a second cut that has a position is drawn').toBe(
+        String(held.cutPositionTargetStrand)
+      );
+      expect(second.hasAttribute('data-guide-cut-target-note'), 'and then carries no reason').toBe(false);
+
+      // The record the views are handed carries no key for the absent cut either, so the absence
+      // cannot be reintroduced one layer up by spreading it unconditionally.
+      const { crisprGuideHighlight } = await import('../components/PrimerAndPCRStudio');
+      const highlight = crisprGuideHighlight(withheld, CAS12A_DOC.sequence.length);
+      expect(
+        Object.prototype.hasOwnProperty.call(highlight, 'cutPositionTargetStrand'),
+        'the highlight handed to the views has no target-strand cut key'
+      ).toBe(false);
+      expect(
+        Object.prototype.hasOwnProperty.call(
+          crisprGuideHighlight(held, CAS12A_DOC.sequence.length),
+          'cutPositionTargetStrand'
+        ),
+        'and does carry it for the guide that has one'
+      ).toBe(true);
+    });
+  });
+
+  it('BG01M7EXRW AC3: annotating one guide twice in the same millisecond gives distinct ids', async () => {
+    await withApp(async (app) => {
+      await onCrisprTab(app, PLASMID);
+      const scan = await engineGuides(PLASMID);
+      const listed = listedGuideIds(app);
+      // Never the first row: ids that collide only for the top-ranked guide would pass that by luck.
+      const guide = scan.guides.find((g) => g.id === listed[listed.length - 1])!;
+      const parts = partsByBases(PLASMID.sequence, guide);
+
+      // One clock reading for both annotations, so a timestamp cannot tell them apart.
+      const FROZEN = 1_763_200_000_000;
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(FROZEN);
+      try {
+        const annotate = () =>
+          app.click(app.one(`[data-crispr-annotate="${guide.id}"]`, `the Annotate button for ${guide.id}`));
+        await annotate();
+        await annotate();
+        expect(new Set(clock.mock.results.map((r) => r.value)), 'the clock read one value throughout').toEqual(
+          new Set([FROZEN])
+        );
+      } finally {
+        clock.mockRestore();
+      }
+
+      const written = ((await savedDocument(app, PLASMID.id)).features as WrittenFeature[]).filter(
+        (f) => f.type === 'crispr_guide'
+      );
+      // Both annotations landed: two features each, the same guide twice over.
+      expect(written.length, 'the guide is annotated twice, as its spacer and its PAM each time').toBe(4);
+      expect(written.filter((f) => f.qualifiers?.guide_part === 'spacer').length).toBe(2);
+      expect(written.filter((f) => f.qualifiers?.guide_part === 'PAM').length).toBe(2);
+      for (const f of written) {
+        expect(f.qualifiers?.guide_name, 'every one of them is this guide').toBe(guide.name);
+      }
+      // The spans are the same annotation twice, not two different guides smuggled in.
+      for (const f of written.filter((f) => f.qualifiers?.guide_part === 'spacer')) {
+        expect([f.start, f.end]).toEqual([parts.spacer.start, parts.spacer.end]);
+      }
+      // And no two features share an id.
+      const ids = written.map((f) => f.id);
+      expect(new Set(ids).size, `four distinct feature ids, not ${ids.join(', ')}`).toBe(4);
+    });
+  });
+});

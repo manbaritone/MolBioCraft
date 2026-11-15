@@ -133,6 +133,20 @@ export function crisprGuideHighlight(g: CrisprScanGuide, sequenceLength: number)
   };
 }
 
+/**
+ * A serial number taken once per annotation written, counting up for as long as the app runs
+ * (BG01M7EXRW AC3). A feature id is what a downstream reader tells two annotations apart by, and
+ * `Date.now()` alone gives two annotations of one guide the same id whenever they land inside the
+ * same millisecond - a scripted double-fire, or one button pressed twice fast. The serial is the
+ * part of the id that does not depend on the clock's resolution; the timestamp is kept beside it so
+ * an id still says when it was written.
+ */
+let crisprAnnotationSerial = 0;
+const nextCrisprAnnotationSerial = () => {
+  crisprAnnotationSerial += 1;
+  return crisprAnnotationSerial;
+};
+
 interface PrimerAndPCRStudioProps {
   doc: SequenceDocument;
   allDocuments?: SequenceDocument[];
@@ -593,9 +607,13 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
    * 5 Guides` write this, so one document holds one shape of `crispr_guide` annotation however it
    * was made (BG-01M7EQAA AC2). Neither span is clipped to the range the scan searched: a guide
    * whose PAM lies outside a selected interval is annotated over its whole site (AC3).
+   *
+   * Each call takes its own serial number, so the two ids it writes are unique however fast the
+   * annotation is repeated (BG01M7EXRW AC3) - `stamp` says when, the serial says which.
    */
   const crisprGuideAnnotation = (g: CrisprScanGuide, stamp: number) => {
     const parts = crisprGuideParts(g, doc.sequence.length);
+    const serial = nextCrisprAnnotationSerial();
     const cutWords = `Cut @ ${g.cutPosition}${
       g.cutPositionTargetStrand !== undefined
         ? `, target strand @ ${g.cutPositionTargetStrand}`
@@ -619,7 +637,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     const newFeats: SequenceFeature[] = [
       {
         ...shared('spacer'),
-        id: `feat-${g.id}-spacer-${stamp}`,
+        id: `feat-${g.id}-spacer-${stamp}-${serial}`,
         name: `${g.name} spacer`,
         start: parts.spacer.start,
         end: parts.spacer.end,
@@ -628,7 +646,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       },
       {
         ...shared('PAM'),
-        id: `feat-${g.id}-pam-${stamp}`,
+        id: `feat-${g.id}-pam-${stamp}-${serial}`,
         name: `${g.name} PAM (${g.pamSeq})`,
         start: parts.pam.start,
         end: parts.pam.end,
