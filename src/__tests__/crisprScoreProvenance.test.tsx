@@ -159,14 +159,14 @@ const RUST_RANK_RANGE_SOURCE = new URL(
  * The range `CRISPR_HEURISTIC_RANK_RANGE` declares in current Rust source, read out of the file
  * itself (BG-01M7EKMJ AC1).
  *
- * A missing, unreadable, empty or re-shaped source file is told apart from an answer and named:
- * none of them may read as "the range agrees" (LC-006).
+ * A missing, unreadable, empty, re-shaped or ambiguous source file is told apart from an answer and
+ * named: none of them may read as "the range agrees" (LC-006, BG-01M7FAQZ).
  */
-function declaredRankRange(): [number, number] {
-  const path = decodeURIComponent(RUST_RANK_RANGE_SOURCE.pathname);
+function declaredRankRange(at: URL = RUST_RANK_RANGE_SOURCE): [number, number] {
+  const path = decodeURIComponent(at.pathname);
   let source: string;
   try {
-    source = readFileSync(RUST_RANK_RANGE_SOURCE, 'utf8');
+    source = readFileSync(at, 'utf8');
   } catch (cause) {
     const code = (cause as { code?: string }).code;
     throw new Error(
@@ -174,15 +174,32 @@ function declaredRankRange(): [number, number] {
     );
   }
   if (source.trim() === '') throw new Error(`the Rust source declaring the rank range is empty: ${path}`);
-  const declared = /pub const CRISPR_HEURISTIC_RANK_RANGE:\s*\(i32,\s*i32\)\s*=\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)\s*;/.exec(
-    source
-  );
-  if (!declared) {
+  // A candidate is a line that begins with the declaration (`m`), which is how the source writes it
+  // (cloning_crispr.rs, column 0), so the same text inside a `///` comment is not a candidate at
+  // all - while `^` alone, matching only at the start of the file, would find nothing there and
+  // read as "no declaration". An indented declaration inside a `mod` would be missed too, and is
+  // the zero-candidate refusal below rather than an agreement. Every candidate is counted (`g`),
+  // because a second spelling - one a `/* */` block hides from a line-anchored pattern - means this
+  // reader cannot tell which pair the wasm must agree with, and taking the first match would adopt
+  // whichever is written higher up (BG-01M7FAQZ).
+  const declared = [
+    ...source.matchAll(
+      /^pub const CRISPR_HEURISTIC_RANK_RANGE:\s*\(i32,\s*i32\)\s*=\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)\s*;/gm
+    ),
+  ];
+  if (declared.length === 0) {
     throw new Error(
       `no \`pub const CRISPR_HEURISTIC_RANK_RANGE: (i32, i32) = (lo, hi);\` declaration in ${path}: this test cannot tell whether the committed wasm is current`
     );
   }
-  return [Number(declared[1]), Number(declared[2])];
+  if (declared.length > 1) {
+    throw new Error(
+      `${declared.length} \`pub const CRISPR_HEURISTIC_RANK_RANGE: (i32, i32) = (lo, hi);\` declarations in ${path}: ` +
+        `this test cannot tell which one the committed wasm must agree with, and adopts neither. Leave exactly one ` +
+        `(a commented-out range inside a \`/* */\` block is one of these).`
+    );
+  }
+  return [Number(declared[0][1]), Number(declared[0][2])];
 }
 
 describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
@@ -746,5 +763,101 @@ describe('the committed engine carries the sources it was built from (BG-01M7FA8
     } finally {
       nodeFs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('the declared rank range comes from one unambiguous declaration (BG-01M7FAQZ)', () => {
+  /** A Rust source to read instead of the checkout's own, so no case here can touch the real file. */
+  const asSource = (text: string, read: (at: URL, path: string) => void) => {
+    const dir = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FAQZ-rank-range-`);
+    try {
+      const path = `${dir}/cloning_crispr.rs`;
+      nodeFs.writeFileSync(path, text, 'utf8');
+      read(pathToFileURL(path), path);
+    } finally {
+      nodeFs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  /** What `declaredRankRange` answered, and with what - either arm, never both. */
+  const answerFor = (at: URL): { got?: [number, number]; message: string } => {
+    try {
+      return { got: declaredRankRange(at), message: '' };
+    } catch (cause) {
+      return { message: cause instanceof Error ? cause.message : `a non-Error was thrown: ${String(cause)}` };
+    }
+  };
+
+  it('BG-01M7FAQZ AC1 an ambiguous rank-range declaration is refused by name', () => {
+    // Two spellings, both at the start of a line - the first inside a block comment, which a
+    // line-anchored pattern cannot tell from code. A reader that takes the first match answers with
+    // the stale pair, which is what would let BG-01M7EKMJ AC1 agree with a comment rather than with
+    // the constant the committed wasm was built from.
+    asSource(
+      [
+        '//! The CRISPR scorer.',
+        '',
+        '/* The range this scorer used to report, kept for the changelog:',
+        'pub const CRISPR_HEURISTIC_RANK_RANGE: (i32, i32) = (0, 100);',
+        '*/',
+        'pub const CRISPR_HEURISTIC_RANK_RANGE: (i32, i32) = (8, 98);',
+        '',
+        'pub fn rank() -> i32 { 68 }',
+        '',
+      ].join('\n'),
+      (at, path) => {
+        const { got, message } = answerFor(at);
+        // It refuses, rather than answering with either pair.
+        expect(got, `an ambiguous source must be refused, not answered with ${JSON.stringify(got)}`).toBeUndefined();
+        expect(message, 'the refusal names the file it could not read').toContain(path);
+        expect(message, 'the refusal says how many declarations it found').toMatch(/\b2\b/);
+        expect(message, 'the refusal is an Error, not a stringified something else').not.toMatch(/non-Error/);
+      }
+    );
+  });
+
+  it('BG-01M7FAQZ AC2 a declaration spelled inside a comment is not a candidate', () => {
+    // A `///` line is not the start of a declaration, so the old pair written there is not one of
+    // the candidates: the helper answers with the constant's own numbers and does not refuse.
+    const commented: [number, number] = [8, 98];
+    const declared: [number, number] = [12, 91];
+    expect(
+      declared,
+      "the fixture's own constant must hold a different pair from its comment, or either answer passes"
+    ).not.toEqual(commented);
+    asSource(
+      [
+        '//! The CRISPR scorer.',
+        '',
+        `/// The range was once \`pub const CRISPR_HEURISTIC_RANK_RANGE: (i32, i32) = (${commented.join(', ')});\`.`,
+        `pub const CRISPR_HEURISTIC_RANK_RANGE: (i32, i32) = (${declared.join(', ')});`,
+        '',
+      ].join('\n'),
+      (at) => {
+        const { got, message } = answerFor(at);
+        expect(
+          got,
+          `the commented line is not a declaration, so this source is not ambiguous: ${message}`
+        ).toEqual(declared);
+      }
+    );
+
+    // The other direction: anchoring to the start of the file instead of the start of a line finds
+    // nothing in the real source, whose declaration is a few hundred lines down - a refusal that
+    // reads as "no declaration" on a correct tree. So the real file must answer, with the numbers
+    // its own declaration line carries, found here by reading lines rather than by this helper's
+    // pattern.
+    const path = decodeURIComponent(RUST_RANK_RANGE_SOURCE.pathname);
+    const onItsOwnLine = readFileSync(RUST_RANK_RANGE_SOURCE, 'utf8')
+      .split('\n')
+      .filter((line) => line.startsWith('pub const CRISPR_HEURISTIC_RANK_RANGE'));
+    expect(onItsOwnLine.length, `${path} declares the rank range once`).toBe(1);
+    const pair = /\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)\s*;/.exec(onItsOwnLine[0].split('=')[1]);
+    expect(pair, `the declaration states a pair: ${onItsOwnLine[0]}`).not.toBeNull();
+    const { got, message } = answerFor(RUST_RANK_RANGE_SOURCE);
+    expect(got, `the real source declares a rank range this helper must find: ${message}`).toEqual([
+      Number(pair![1]),
+      Number(pair![2]),
+    ]);
   });
 });
