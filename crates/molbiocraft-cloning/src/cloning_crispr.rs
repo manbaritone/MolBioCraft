@@ -1662,10 +1662,12 @@ mod seed_length_report_tests {
     /// length, the same lines and the same byte offsets, so a brace or an identifier written inside
     /// one is not read as code and a span found here names the same bytes of the original.
     ///
-    /// Every prefix Rust gives a literal is read, not just the bare quote: `b"..."`, `r"..."`,
-    /// `br"..."`, `r#"..."#`, `br#"..."#` and `b'.'`. A raw string ends at its own closing quote
-    /// and knows no escapes, so `br"a\"` ends where it ends; reading it as an ordinary string
-    /// would run the blanking to the next quote in the file and hide the code in between.
+    /// Every prefix Rust gives a string or character literal is read, not just the bare quote: a
+    /// byte (`b`) or C-string (`c`) prefix, optionally followed by `r` and any number of `#`s -
+    /// `b"..."`, `c"..."`, `r"..."`, `br"..."`, `cr"..."`, `r#"..."#`, `br#"..."#`, `cr#"..."#` - and
+    /// `b'.'`. A raw string ends at its own closing quote and knows no escapes, so `br"a\"` and
+    /// `cr"a\"` end where they end; reading either as an ordinary string would run the blanking to
+    /// the next quote in the file and hide the code in between.
     fn code_only(source: &str) -> String {
         let b = source.as_bytes();
         let ident = |c: Option<&u8>| c.is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_');
@@ -1682,7 +1684,8 @@ mod seed_length_report_tests {
         /// `None` where `i` starts no literal.
         fn literal_at(b: &[u8], i: usize, prefixed_ok: bool) -> Option<(usize, bool, usize)> {
             let mut p = i;
-            if b.get(p) == Some(&b'b') {
+            // A byte string (`b`) or a C string (`c`); either may then be raw.
+            if matches!(b.get(p), Some(b'b' | b'c')) {
                 p += 1;
             }
             let raw = b.get(p) == Some(&b'r');
@@ -1691,8 +1694,8 @@ mod seed_length_report_tests {
             }
             let hashes = if raw { b[p..].iter().take_while(|&&c| c == b'#').count() } else { 0 };
             let quote = p + hashes;
-            // A prefix (`b`, `r`, `br`, and any `#`s) only counts where it is a token of its own,
-            // so the `br` of `fibr"` is no prefix.
+            // A prefix (`b`, `c`, `r`, `br`, `cr`, and any `#`s) only counts where it is a token of
+            // its own, so the `br` of `fibr"` is no prefix.
             if b.get(quote) == Some(&b'"') && (quote == i || prefixed_ok) {
                 Some((quote, raw, hashes))
             } else {
@@ -2001,6 +2004,38 @@ mod seed_length_report_tests {
         let gated = format!("{source}\n{}", hiding_shapes[4].1);
         let (_, gated_inside) = seed_length_mentions(&gated);
         assert_eq!(gated_inside, inside + 1, "a #[cfg(test)] mod behind another attribute is still skipped");
+    }
+
+    /// BG-01M7GC14 AC1: a C-string raw literal whose closing quote follows a backslash hides no
+    /// shipped setter. `cr"a\"` is a whole literal; a reader that does not know the `c` prefix
+    /// sees the `r` after an identifier character, takes the `"` for an ordinary string, and its
+    /// `\"` escape runs the blanking on to the next quote. Followed by a comment holding ONE quote,
+    /// that run-on stops before the end of the file - so it hides the setter in between rather than
+    /// the rest of the file, which is the shape the appended-setter pins above did not reach.
+    ///
+    /// Run over an in-memory copy of this file through the same `code_only`, `test_module_spans`
+    /// and `seed_length_mentions`, so the file this crate compiles is never edited.
+    #[test]
+    fn a_c_string_raw_literal_hides_no_setter() {
+        let source = include_str!("cloning_crispr.rs");
+        let (outside, _) = seed_length_mentions(source);
+        assert!(
+            outside.iter().all(|(_, line)| states_the_scanners_own(line)),
+            "the control: the file as it stands refuses nothing: {outside:?}"
+        );
+        let setter = "pub fn reseed(scan: &mut CrisprGuideScan) {\n    scan.seed_length_bp = Some(12);\n}\n";
+        let odd_quote = "// as in \"C:\n";
+        for literal in [r#"cr"a\""#, r##"cr#"a\"#"##] {
+            let planted = format!("{source}\npub const RAW: &core::ffi::CStr = {literal};\n{setter}{odd_quote}");
+            let (planted_outside, _) = seed_length_mentions(&planted);
+            let refused: Vec<&(usize, String)> =
+                planted_outside.iter().filter(|(_, l)| !states_the_scanners_own(l)).collect();
+            assert_eq!(refused.len(), 1, "a setter written after `{literal}` is refused, once: {refused:?}");
+            assert!(
+                refused[0].1.contains("scan.seed_length_bp = Some(12);"),
+                "and it is the planted setter that is refused, after `{literal}`: {refused:?}"
+            );
+        }
     }
 
     /// BG-01M7FVBN AC1: Cas12a counts the seed it reports, from its own PAM-proximal end.
