@@ -259,6 +259,23 @@ pub struct CrisprGuideScan {
 /// is why the bound exists and why a scan that hits it says so.
 pub const GUIDE_SCAN_MAX_BP: usize = 8_000_000;
 
+/// The lowest and the highest heuristic rank `score_guide` can report (BG-01M7E61C).
+///
+/// The scorer owns its own bound, so every surface that states the range reads it here instead of
+/// writing a number of its own beside it: the clamp in `score_guide`, the rank description the
+/// plugin and the studio callout print ([`crate::reaction_buffers::crispr_heuristic_rank_description`]),
+/// the studio's column header and the guided pipeline's readout. Change the scorer and they all
+/// move, or the tests that re-measure this range fail.
+///
+/// Both ends are reachable. The top is the sum of every raise the scorer can apply at once -
+/// 68 + 14 (GC inside 40-65 %) + 8 (G at spacer position 20) + 5 (C at position 16) + 3 (A or G at
+/// position 4) = 98 - and the floor is what any lower total is reported as: the worst spacer the
+/// scorer can read (all-T, so GC outside 30-75 %, a T at position 20, a TTTT run, and a PAM ending
+/// GGG) totals 68 - 22 - 6 - 30 - 5 = 5 and is reported as 8. The ranks were printed "/ 100" under
+/// a header that said 8-99, and neither bound was the one a reader could reach: 99 was unreachable
+/// by construction.
+pub const CRISPR_HEURISTIC_RANK_RANGE: (i32, i32) = (8, 98);
+
 /// The PAM-proximal seed length whose exact matches elsewhere are counted as off-targets.
 const SEED_LEN: usize = 12;
 /// A `SEED_LEN`-mer packed two bits per base.
@@ -627,7 +644,8 @@ pub fn scan_crispr_guides(
         if pam.ends_with(b"GGG") {
             on_target -= 5;
         }
-        on_target = on_target.clamp(8, 99);
+        // The scorer's own bound, which every label that states the range reads (BG-01M7E61C).
+        on_target = on_target.clamp(CRISPR_HEURISTIC_RANK_RANGE.0, CRISPR_HEURISTIC_RANK_RANGE.1);
 
         // Other exact occurrences of the 12-nt PAM-proximal seed over the scanned range (both
         // strands), counted in full. Specificity = 100 / (1 + seed matches): 100 for a seed with no

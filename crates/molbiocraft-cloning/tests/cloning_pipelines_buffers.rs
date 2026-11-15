@@ -94,9 +94,16 @@ fn all_four_guided_bio_pipelines_execute_cleanly_in_rust_with_lf_and_crlf_export
 /// BG-01M6PWB5: the CRISPR pipeline's guide scores are a rule-of-thumb on-target heuristic and a
 /// specificity score from exact seed matches inside the sequence, so no catalog entry, report or
 /// Markdown export may attribute them to a published model (Doench, Hsu-Zhang) that was never run.
+///
+/// The readout it reads is now the rank bare beside the seed count, under a label that states the
+/// range the scorer owns (BG-01M7E61C): the old `"{on}/100 • {seed}/100"` value printed a rank out
+/// of a 100 it can never reach, and the specificity it parsed was a 100 / (1 + matches) percentage.
 #[test]
 fn crispr_pipeline_labels_guide_scores_as_the_heuristics_it_computes() {
-    const SCORE_LABEL: &str = "Heuristic On-Target / In-Sequence Seed Specificity";
+    let (rank_lo, rank_hi) = molbiocraft_cloning::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE;
+    let score_label =
+        format!("Heuristic Rank ({rank_lo}–{rank_hi}) / Exact Seed Matches (range searched)");
+    let score_label = score_label.as_str();
     const UNRUN_MODELS: [&str; 4] = ["Doench", "Hsu", "Zhang", "Rule Set"];
 
     let samples = get_sample_library();
@@ -134,24 +141,36 @@ fn crispr_pipeline_labels_guide_scores_as_the_heuristics_it_computes() {
     let score = ranking
         .metrics
         .iter()
-        .find(|m| m.label == SCORE_LABEL)
-        .unwrap_or_else(|| panic!("no '{SCORE_LABEL}' metric in {:?}", ranking.metrics));
+        .find(|m| m.label == score_label)
+        .unwrap_or_else(|| panic!("no '{score_label}' metric in {:?}", ranking.metrics));
     // The fixture reaches the lead-guide branch, so the label carries real scores, not "N/A".
-    let (on_target, seed_specificity) = score
+    let (rank, seed_matches) = score
         .value
-        .strip_suffix("/100")
-        .and_then(|v| v.split_once("/100 • "))
+        .split_once(" • ")
         .unwrap_or_else(|| panic!("unexpected score value {:?}", score.value));
-    for part in [on_target, seed_specificity] {
-        let n: i32 = part.parse().unwrap();
-        assert!((0..=100).contains(&n), "score {n} outside 0..=100");
-    }
-    assert!(ranking.finding_summary.contains(&format!(
-        "heuristic on-target {on_target}/100, seed specificity {seed_specificity}/100"
-    )));
+    let n: i32 = rank.parse().unwrap();
+    assert!(
+        (rank_lo..=rank_hi).contains(&n),
+        "rank {n} outside the range the scorer reports ({rank_lo} to {rank_hi})"
+    );
+    // The seed readout is a count in the studio's words, never a percentage (BG-01M7E61C).
+    assert!(
+        seed_matches == "No other seed copy"
+            || seed_matches.ends_with(" seed match")
+            || seed_matches.ends_with(" seed matches"),
+        "unexpected seed readout {seed_matches:?}"
+    );
+    assert!(
+        ranking
+            .finding_summary
+            .contains(&format!("heuristic rank {rank}, {}", seed_matches.to_lowercase())),
+        "the summary does not say the same thing as the readout: {}",
+        ranking.finding_summary
+    );
+    assert!(!score.value.contains("/100") && !ranking.finding_summary.contains("/100"));
     assert!(crispr
         .markdown_protocol
-        .contains(&format!("| {SCORE_LABEL} | {} |", score.value)));
+        .contains(&format!("| {score_label} | {} |", score.value)));
 }
 
 /// Each flagged overhang pair as (a, b, rule), the rule named by the issue text it carries.

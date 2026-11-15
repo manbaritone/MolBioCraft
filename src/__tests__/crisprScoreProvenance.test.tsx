@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 /**
- * US-01M7DVVR: every CRISPR number says what it is. The candidate list is discovery, the 8-99
+ * US-01M7DVVR: every CRISPR number says what it is. The candidate list is discovery, the ranked
  * number is a heuristic rank whose description is the rule the engine runs - every feature it
- * reads, its real bounds, and the rank-plus-seed-matches order of the list - the seed count is
+ * reads, its real bounds (which the engine owns and reports, BG-01M7E61C), and the
+ * rank-plus-seed-matches order of the list - the seed count is
  * exact copies of the 12-nt PAM-proximal seed in the range searched, and genome-wide specificity -
  * which no
  * reference genome or method is configured to compute - is shown as "Not evaluated".
@@ -21,7 +22,9 @@
  * - genome-wide specificity shown as a number (0 or 100) instead of "Not evaluated" with the reason;
  * - a menu description naming SaCas9, which no preset scans for, or an efficiency model;
  * - a rank described as three spacer features over 0-100 when the scorer reads six and a PAM and
- *   can only report 8 to 99, or a rank said to order a list the seed count also orders.
+ *   can only report the range it clamps to, or a rank said to order a list the seed count also
+ *   orders;
+ * - a rank printed "/ 100" under a header stating a range it can never reach (BG-01M7E61C AC1).
  */
 
 import React from 'react';
@@ -111,6 +114,21 @@ const labelsOf = (html: string) => [
 /** The sentences of `s` that name an unrun model. */
 const sentencesNamingAModel = (s: string) => s.split(/(?<=[.!?])\s+/).filter((x) => NAMES_A_MODEL.test(x));
 
+/**
+ * The rank range the engine itself reports, read from the real WASM engine's rank description
+ * rather than written out here (BG-01M7E61C AC4 owns the bound; every surface states it).
+ */
+function engineRankRange(): [number, number] {
+  const model = (
+    executeBuiltinWorkflowMacroRust('js-crispr-spcas9-scanner', doc) as {
+      scoreModels: Record<string, string>;
+    }
+  ).scoreModels.onTargetScore;
+  const bounds = /Heuristic rank \((\d+) to (\d+)\)/.exec(model);
+  expect(bounds, `the engine does not report the rank's range: ${model}`).not.toBeNull();
+  return [Number(bounds![1]), Number(bounds![2])];
+}
+
 describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
   it('US-01M7DVVR AC1 no label, header, catalogue, plugin or macro string credits a number to an unrun model, and the seed column is named for what it counts', () => {
     const html = crisprTab();
@@ -146,6 +164,9 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
   }, 55_000);
 
   it('US-01M7DVVR AC3 each score names its model and inputs, and genome-wide specificity is Not evaluated with the reason', () => {
+    // The bounds are the engine's own, so the callout and the header move with the scorer and are
+    // never read against a number this test wrote down (BG-01M7E61C).
+    const [lo, hi] = engineRankRange();
     const html = crisprTab();
     const shown = callout(html);
     // The heuristic rank names the rule, every feature it reads, its real bounds, what orders the
@@ -160,7 +181,7 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
       'position 4',
       'TTTT run',
       'GGG',
-      '8 to 99',
+      `${lo} to ${hi}`,
       'seed-match',
       'Cas12a',
     ]) {
@@ -176,7 +197,9 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
       'Genome-wide specificity : Not evaluated — no reference genome or off-target search method is configured, so no genome-wide specificity is computed.'
     );
     const { headers, rows } = guideTable(html);
-    expect(headers).toEqual(expect.arrayContaining(['Heuristic Rank (8–99)', 'Genome-wide Specificity']));
+    expect(headers).toEqual(
+      expect.arrayContaining([`Heuristic Rank (${lo}–${hi})`, 'Genome-wide Specificity'])
+    );
     const genomeColumn = headers.indexOf('Genome-wide Specificity');
     for (const row of rows) expect(row[genomeColumn]).toBe('Not evaluated');
     // The reason travels with every cell, not with the callout alone.
@@ -190,7 +213,7 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
       totalCandidatesFound: number;
       guidesListed: number;
     };
-    for (const phrase of ['GC content', '40-65 %', '30-75 %', 'position 20', 'position 16', 'position 4', 'TTTT', 'GGG', '8 to 99', 'seed-match', 'Cas12a']) {
+    for (const phrase of ['GC content', '40-65 %', '30-75 %', 'position 20', 'position 16', 'position 4', 'TTTT', 'GGG', `${lo} to ${hi}`, 'seed-match', 'Cas12a']) {
       expect(plugin.scoreModels.onTargetScore, `the plugin's rank model does not name ${phrase}`).toContain(phrase);
     }
     expect(plugin.scoreModels.seedMatches).toContain('12-nt PAM-proximal seed in all 3,000 bases of this sequence, on both strands');
@@ -213,6 +236,45 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
     expect(description).not.toMatch(/efficien|activity|Doench|Rule Set|predicted/i);
     expect(description).toContain('heuristic');
   });
+
+  /**
+   * BG-01M7E61C AC1: the rank is printed as the bare number the engine reports, under a column
+   * header that states the range the engine itself states - read from the real WASM engine's rank
+   * description, never written out here.
+   *
+   * Wrong implementations this kills: the shipped cell `{g.onTargetScore} / 100` under a
+   * "Heuristic Rank (8–99)" header beside a callout saying the rank is "held to 8 to 99", where a
+   * reader sees "93 / 100" and cannot tell which bound is real; and a header or callout whose range
+   * is a literal that no longer matches the scorer's own bound.
+   */
+  it('BG-01M7E61C AC1 the guide table prints each rank bare under a header stating the range the engine reports', () => {
+    const [lo, hi] = engineRankRange();
+
+    const html = crisprTab();
+    const { headers, rows } = guideTable(html);
+    expect(rows.length, 'the fixture lists guides').toBeGreaterThan(0);
+
+    // The column states the engine's range, and no column of the table states another one.
+    expect(headers).toContain(`Heuristic Rank (${lo}–${hi})`);
+    const ranges = headers.flatMap((h) => [...h.matchAll(/\((\d+)[-–](\d+)\)/g)].map((m) => `${m[1]}–${m[2]}`));
+    expect(ranges, `a column states a range the engine does not report: ${headers.join(' | ')}`).toEqual([
+      `${lo}–${hi}`,
+    ]);
+
+    // Every cell is the bare rank: no denominator anywhere in it, and inside the stated range.
+    const rankColumn = headers.findIndex((h) => h.startsWith('Heuristic Rank'));
+    for (const row of rows) {
+      const cell = row[rankColumn];
+      expect(cell, `the rank cell "${cell}" is not the bare rank`).toMatch(/^\d+$/);
+      expect(Number(cell)).toBeGreaterThanOrEqual(lo);
+      expect(Number(cell)).toBeLessThanOrEqual(hi);
+    }
+    // And the callout beside the table says the rank is held to the same range, with no "/ 100"
+    // anywhere in the guide table a reader could read it against.
+    expect(callout(html)).toContain(`held to ${lo} to ${hi}`);
+    const table = html.slice(html.lastIndexOf('<table', html.indexOf('<span>Guide Name</span>')));
+    expect(text(table.slice(0, table.indexOf('</table>')))).not.toMatch(/\/\s*100/);
+  }, 55_000);
 
   it('US-01M7DVVR AC5 no CRISPR surface calls a heuristic number efficiency, activity or genome-wide specificity, and an uncomputed number is unavailable, never 0 or 100', () => {
     const html = crisprTab();

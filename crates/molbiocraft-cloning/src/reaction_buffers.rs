@@ -319,9 +319,16 @@ pub fn analyze_gibson_overlap_junction(overlap_seq: &str) -> GibsonJunctionTherm
 }
 
 /// Executes built-in bioinformatics workflow macros natively in Rust via `aho-corasick`.
-/// What the CRISPR plugin's heuristic rank is (US-01M7DVVR): a rule of thumb over three features
-/// of the spacer, not a trained model or a measured activity.
-pub const CRISPR_HEURISTIC_RANK_DESCRIPTION: &str = "Heuristic rank (8 to 99), a rule of thumb over the spacer and its PAM: from a base of 68, raised for GC content inside 40-65 % and lowered outside 30-75 %, raised for a G and lowered for a T at spacer position 20, raised for a C at position 16 and for an A or G at position 4, lowered for a TTTT run and for a PAM ending GGG, then held to 8 to 99. These are SpCas9 rules of thumb, read off a Cas12a spacer unchanged. The list is ordered by this rank plus the seed-match score, not by the rank alone; it is not a measured or predicted cutting efficiency.";
+/// What the CRISPR plugin's heuristic rank is (US-01M7DVVR): a rule of thumb over the spacer and
+/// its PAM, not a trained model or a measured activity - and the range it can report, read from
+/// the scorer that reports it ([`crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE`]) instead of
+/// written out here, so the rule and its bound cannot drift apart (BG-01M7E61C).
+pub fn crispr_heuristic_rank_description() -> String {
+    let (lo, hi) = crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE;
+    format!(
+        "Heuristic rank ({lo} to {hi}), a rule of thumb over the spacer and its PAM: from a base of 68, raised for GC content inside 40-65 % and lowered outside 30-75 %, raised for a G and lowered for a T at spacer position 20, raised for a C at position 16 and for an A or G at position 4, lowered for a TTTT run and for a PAM ending GGG, then held to {lo} to {hi}. These are SpCas9 rules of thumb, read off a Cas12a spacer unchanged. The list is ordered by this rank plus the seed-match score, not by the rank alone; it is not a measured or predicted cutting efficiency."
+    )
+}
 
 /// What a genome-wide specificity would need and why this engine shows none (US-01M7DVVR AC3).
 pub const CRISPR_GENOME_WIDE_SPECIFICITY_NOT_EVALUATED: &str = "Not evaluated: no reference genome or off-target search method is configured, so no genome-wide specificity is computed.";
@@ -451,7 +458,9 @@ pub fn execute_builtin_rust_workflow_macro(
                         "spacer": g.spacer_seq,
                         "pam": g.pam_seq,
                         "gcPercent": format!("{:.0}%", g.gc_percent),
-                        "onTargetScore": format!("{}/100", g.on_target_score),
+                        // The rank itself, with no denominator: it is held to the range
+                        // `scoreModels.onTargetScore` states, not to 100 (BG-01M7E61C).
+                        "onTargetScore": g.on_target_score,
                         "status": if g.spacer_seq.contains("TTTT") {
                             "Avoid (U6 PolIII TTTT stop)"
                         } else if (40.0..=70.0).contains(&g.gc_percent) {
@@ -472,7 +481,7 @@ pub fn execute_builtin_rust_workflow_macro(
                 "scannedLengthBp": scan.scanned_length_bp,
                 "sequenceLengthBp": scan.sequence_length_bp,
                 "scoreModels": {
-                    "onTargetScore": CRISPR_HEURISTIC_RANK_DESCRIPTION,
+                    "onTargetScore": crispr_heuristic_rank_description(),
                     "seedMatches": crispr_seed_count_description(scan.scanned_length_bp, scan.sequence_length_bp),
                     "genomeWideSpecificity": CRISPR_GENOME_WIDE_SPECIFICITY_NOT_EVALUATED,
                 },

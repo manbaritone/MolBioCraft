@@ -1141,13 +1141,19 @@ mod tests {
     ///
     /// A description is only provenance if it is the rule: the shipped text named three features
     /// ("GC content in 40-65 %, a G at the 3' end of the spacer, and no TTTT run") and a 0-100
-    /// range, while the scorer reads six features and a PAM and can only ever report 8 to 99. It
+    /// range, while the scorer reads six features and a PAM and can only ever report the range it
+    /// clamps to ([`crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE`], BG-01M7E61C). It
     /// also said the rank orders the list, which the rank alone does not - the list is ordered by
     /// the rank plus the seed-match score. This holds every surface that describes the rank to the
     /// code, by naming each feature and by re-deriving the score from the description's own words.
     fn assert_rank_description_is_the_rule_the_engine_runs(desc: &str) {
-        // The bounds it names are the bounds the clamp allows.
-        assert!(desc.contains("8 to 99") || desc.contains("8-99"), "the rank description does not name its real bounds: {desc}");
+        // The bounds it names are the bounds the clamp allows - read from the clamp's own constant,
+        // so the two cannot drift apart (BG-01M7E61C).
+        let (lo, hi) = crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE;
+        assert!(
+            desc.contains(&format!("{lo} to {hi}")) || desc.contains(&format!("{lo}-{hi}")),
+            "the rank description does not name its real bounds ({lo} to {hi}): {desc}"
+        );
         assert!(!desc.contains("0-100") && !desc.contains("0–100"), "the rank description still claims 0-100: {desc}");
         // Every feature the scorer reads is named, including the three the shipped text omitted.
         for feature in [
@@ -1193,7 +1199,10 @@ mod tests {
             if pam.as_bytes().ends_with(b"GGG") {
                 r -= 5;
             }
-            r.clamp(8, 99)
+            r.clamp(
+                crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE.0,
+                crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE.1,
+            )
         };
 
         let samples = get_sample_library();
@@ -1215,8 +1224,9 @@ mod tests {
                     g.on_target_score,
                     rank_from_the_description(&g.spacer_seq, &g.pam_seq)
                 );
+                let (lo, hi) = crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE;
                 assert!(
-                    (8..=99).contains(&g.on_target_score),
+                    (lo..=hi).contains(&g.on_target_score),
                     "a rank outside the bounds the description names: {}",
                     g.on_target_score
                 );
@@ -1232,6 +1242,236 @@ mod tests {
                 "{nuclease} guides are not in the order the description claims: {keys:?}"
             );
         }
+    }
+
+    /// The sample library's pET-28a record, the fixture every CRISPR guard here reads.
+    fn crispr_fixture_doc() -> molbiocraft_core::SequenceDocument {
+        let samples = get_sample_library();
+        samples
+            .iter()
+            .find(|d| d.name.contains("pET-28a"))
+            .unwrap_or(&samples[0])
+            .clone()
+    }
+
+    /// The range the engine states, read from the scorer and not written out here (BG-01M7E61C AC4).
+    fn stated_rank_range() -> (i32, i32) {
+        crate::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE
+    }
+
+    /// BG-01M7E61C AC2: the `js-crispr-spcas9-scanner` plugin, called the way the app calls it,
+    /// states each guide's rank with no denominator, and the range its `scoreModels.onTargetScore`
+    /// names is the scorer's own.
+    ///
+    /// Wrong implementations this kills: the shipped per-guide field
+    /// `format!("{}/100", g.on_target_score)` (`reaction_buffers.rs`), which prints the rank out of
+    /// a 100 the scorer can never reach; any "/100" elsewhere in the reply; and a description whose
+    /// range is a literal beside the clamp rather than the clamp's own bound.
+    #[test]
+    fn bg_01m7e61c_ac2_the_crispr_plugin_states_each_rank_with_no_hundred_denominator() {
+        let doc = crispr_fixture_doc();
+        let reply =
+            crate::reaction_buffers::execute_builtin_rust_workflow_macro("js-crispr-spcas9-scanner", &doc);
+        let json = serde_json::to_string(&reply).unwrap();
+        assert!(
+            !json.contains("/100"),
+            "the plugin reply still prints a number out of 100: {json}"
+        );
+
+        let (lo, hi) = stated_rank_range();
+        let guides = reply["topGuides"].as_array().expect("the plugin lists its top guides");
+        assert!(!guides.is_empty(), "the fixture lists guides");
+        for g in guides {
+            let rank = g["onTargetScore"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("a guide's rank is not a bare number: {}", g["onTargetScore"]));
+            assert!(
+                (i64::from(lo)..=i64::from(hi)).contains(&rank),
+                "a plugin rank outside the range the engine states ({lo} to {hi}): {rank}"
+            );
+        }
+        // The field is described by the range the scorer owns - the same one the studio's column
+        // header states, which `crisprScoreProvenance.test.tsx` (AC1) reads back from this reply.
+        let model = reply["scoreModels"]["onTargetScore"].as_str().unwrap();
+        assert!(
+            model.contains(&format!("Heuristic rank ({lo} to {hi})"))
+                && model.contains(&format!("held to {lo} to {hi}")),
+            "the plugin's rank model does not name the scorer's range ({lo} to {hi}): {model}"
+        );
+    }
+
+    /// BG-01M7E61C AC3: the guided CRISPR pipeline's gRNA-ranking step prints no "/100" either, and
+    /// names its rank and its seed count in the words the studio's own columns use.
+    ///
+    /// Wrong implementations this kills: the shipped readout `format!("{}/100 • {}/100", ...)` and
+    /// the finding summary's "(heuristic on-target {}/100, seed specificity {}/100)"
+    /// (`bio_pipelines.rs`), which US-01M7DVVR's tests never read; and a seed readout printed as a
+    /// 100 / (1 + matches) percentage, which reads as a specificity this engine does not compute.
+    #[test]
+    fn bg_01m7e61c_ac3_the_guided_pipeline_crispr_step_prints_no_hundred_denominator() {
+        let doc = crispr_fixture_doc();
+        let report = crate::bio_pipelines::execute_bio_pipeline_rust(
+            &doc,
+            "crispr-hdr-knockout",
+            "macos",
+            "2026-11-15T08:00:00Z",
+        )
+        .expect("the guided CRISPR pipeline runs on the fixture");
+        let step = report
+            .steps
+            .iter()
+            .find(|s| s.id == "grna-ranking")
+            .expect("the pipeline has a gRNA ranking step");
+        let (lo, hi) = stated_rank_range();
+
+        let shown = serde_json::to_string(step).unwrap();
+        assert!(
+            !shown.contains("/100"),
+            "the CRISPR pipeline step still prints a number out of 100: {shown}"
+        );
+        // The readout is named in the studio's words, with the scorer's range in the label.
+        let readout = step
+            .metrics
+            .iter()
+            .find(|m| m.label.contains("Heuristic Rank"))
+            .expect("the step has a heuristic rank readout");
+        assert!(
+            readout.label.contains(&format!("Heuristic Rank ({lo}–{hi})")),
+            "the rank readout does not state the engine's range: {}",
+            readout.label
+        );
+        assert!(
+            readout.label.contains("Exact Seed Matches"),
+            "the seed readout is not named for what it counts: {}",
+            readout.label
+        );
+        // The rank is the bare rank, and the seed count is the seed count - in the studio's words.
+        let seed_phrase = is_studio_seed_phrase(&readout.value);
+        assert!(
+            seed_phrase,
+            "the readout is not a bare rank beside the studio's seed-match words: {}",
+            readout.value
+        );
+        let rank: i32 = readout
+            .value
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap_or_else(|_| panic!("the readout does not start with a bare rank: {}", readout.value));
+        assert!(
+            (lo..=hi).contains(&rank),
+            "a pipeline rank outside the range the engine states ({lo} to {hi}): {rank}"
+        );
+        // And the summary says the same thing in the same words.
+        assert!(
+            step.finding_summary.contains("heuristic rank")
+                && (step.finding_summary.contains("seed match")
+                    || step.finding_summary.contains("no other seed copy")),
+            "the summary does not name its numbers in the studio's words: {}",
+            step.finding_summary
+        );
+    }
+
+    /// `<rank> • <No other seed copy | N seed match(es)>` - the studio's own seed-cell words.
+    fn is_studio_seed_phrase(value: &str) -> bool {
+        let Some((rank, seed)) = value.split_once(" • ") else {
+            return false;
+        };
+        if rank.is_empty() || !rank.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        seed == "No other seed copy"
+            || seed
+                .strip_suffix(" seed matches")
+                .or_else(|| seed.strip_suffix(" seed match"))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    /// BG-01M7E61C AC4: the range every surface states is the range the scorer reaches, measured by
+    /// scoring candidates rather than asserted as a string, and it is the clamp's own bound.
+    ///
+    /// Wrong implementations this kills:
+    /// - a clamp widened to `(0, 100)` (or narrowed) while the labels keep the old numbers: the
+    ///   worst spacer the scorer can read totals 5 raw and must be reported as the stated floor, and
+    ///   the best totals 98 and must be reported as the stated ceiling - the pET-28a library alone
+    ///   cannot see this, because its candidates run 14..98 and 10..98 and never touch the floor;
+    /// - a stated range whose top no spacer reaches (the shipped 99, unreachable by construction);
+    /// - a label whose range is a literal rather than the scorer's constant.
+    #[test]
+    fn bg_01m7e61c_ac4_the_stated_rank_range_is_the_range_the_scorer_reaches() {
+        let (lo, hi) = stated_rank_range();
+        assert!(lo < hi, "the stated range is empty: {lo} to {hi}");
+
+        // ── Measured: every candidate of the sample library, for both presets. ──
+        let doc = crispr_fixture_doc();
+        let mut measured_min = i32::MAX;
+        let mut measured_max = i32::MIN;
+        for nuclease in ["SpCas9 (NGG)", "Cas12a / Cpf1 (TTTV)"] {
+            let scan = crate::cloning_crispr::scan_crispr_guides(
+                &doc.sequence,
+                nuclease,
+                usize::MAX,
+                None,
+                false,
+            );
+            assert!(!scan.guides.is_empty(), "{nuclease} finds candidates in the fixture");
+            assert_eq!(
+                scan.guides.len(),
+                scan.candidate_count,
+                "{nuclease}: every candidate is scored, so none of the range is unmeasured"
+            );
+            for g in &scan.guides {
+                assert!(
+                    (lo..=hi).contains(&g.on_target_score),
+                    "{nuclease} guide {} ranks {} outside the stated range {lo} to {hi}",
+                    g.id,
+                    g.on_target_score
+                );
+                measured_min = measured_min.min(g.on_target_score);
+                measured_max = measured_max.max(g.on_target_score);
+            }
+        }
+        // The stated top is reached, not merely permitted.
+        assert_eq!(
+            measured_max, hi,
+            "the stated top rank {hi} is not the top the library reaches ({measured_max})"
+        );
+        assert!(measured_min >= lo, "the library reaches {measured_min}, below the stated {lo}");
+
+        // ── The clamp's own bound: the worst and the best spacer the scorer can read. ──
+        // All-T: GC outside 30-75 %, a T at position 20, a TTTT run, and a PAM ending GGG - 5 raw,
+        // which only the clamp turns into the floor the labels state.
+        let worst_spacer = "T".repeat(20);
+        let worst = format!("{}{}GGG{}", "A".repeat(12), worst_spacer, "A".repeat(12));
+        // Every raise at once: GC 40 %, A at position 4, C at position 16, G at position 20, no
+        // TTTT, a PAM that does not end GGG - 98 raw, the stated ceiling with no clamping.
+        let best_spacer = "ACAACACACACACAACAAAG";
+        let best = format!("{}{}AGG{}", "A".repeat(12), best_spacer, "A".repeat(12));
+        for (label, seq, spacer, expected) in [
+            ("the worst spacer the scorer can read", worst, worst_spacer.clone(), lo),
+            ("the best spacer the scorer can read", best, best_spacer.to_string(), hi),
+        ] {
+            let scan = crate::cloning_crispr::scan_crispr_guides(&seq, "SpCas9 (NGG)", usize::MAX, None, false);
+            let guide = scan
+                .guides
+                .iter()
+                .find(|g| g.spacer_seq == spacer)
+                .unwrap_or_else(|| panic!("{label} is not a candidate of its own sequence"));
+            assert_eq!(
+                guide.on_target_score, expected,
+                "{label} is reported as {} where the stated range says {expected}: the clamp and the labels have parted",
+                guide.on_target_score
+            );
+        }
+
+        // ── The labels: formatted from the constant, so they move with it. ──
+        let described = crate::reaction_buffers::crispr_heuristic_rank_description();
+        assert!(
+            described.contains(&format!("Heuristic rank ({lo} to {hi})"))
+                && described.contains(&format!("held to {lo} to {hi}")),
+            "the rank description does not name the scorer's range ({lo} to {hi}): {described}"
+        );
     }
 
     #[test]

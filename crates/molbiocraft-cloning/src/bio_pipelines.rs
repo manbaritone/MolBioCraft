@@ -17,7 +17,9 @@ use molbiocraft_protein::{analyze_protein_sequence, find_orfs, optimize_codons_f
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
-use crate::cloning_crispr::{audit_sequence_alerts_for_scan, scan_crispr_guides};
+use crate::cloning_crispr::{
+    audit_sequence_alerts_for_scan, scan_crispr_guides, CRISPR_HEURISTIC_RANK_RANGE,
+};
 use crate::plasmid_features::detect_common_features;
 use crate::rebase_catalog::{
     find_non_cutting_enzymes, get_rebase_enzymes, scan_restriction_sites, simulate_restriction_digest,
@@ -119,6 +121,17 @@ pub struct BioPipelineExecutionReport {
     pub visual_zones: Vec<PipelineVisualZone>,
     pub markdown_protocol: String,
     pub suggested_export_filename: String,
+}
+
+/// The seed count in the words the Primer & PCR studio's guide cell uses (BG-01M7E61C): other
+/// exact copies of the 12-nt PAM-proximal seed over the range searched, counted - never a
+/// 100 / (1 + matches) percentage, which reads as a specificity this engine does not compute.
+fn crispr_seed_match_phrase(off_target_count: usize) -> String {
+    match off_target_count {
+        0 => "No other seed copy".into(),
+        1 => "1 seed match".into(),
+        n => format!("{n} seed matches"),
+    }
 }
 
 fn fmt_num(n: usize) -> String {
@@ -1245,14 +1258,16 @@ pub fn execute_bio_pipeline_rust(
             biological_rationale: "Ranks guides by a rule-of-thumb activity heuristic (GC content, 3' G, no poly-T) and by exact 12-nt PAM-proximal seed matches within this sequence; it is not a trained on-target model and does not search a genome for off-targets.".into(),
             finding_summary: if let Some(g) = top_guide {
                 format!(
-                    "Found {} SpCas9 and {} Cas12a candidate guides; listing the top {} and top {}; lead guide cuts at bp {} (heuristic on-target {}/100, seed specificity {}/100).",
+                    "Found {} SpCas9 and {} Cas12a candidate guides; listing the top {} and top {}; lead guide cuts at bp {} (heuristic rank {}, {}).",
                     fmt_num(cas9_scan.candidate_count),
                     fmt_num(cas12_scan.candidate_count),
                     fmt_num(cas9_scan.guides.len()),
                     fmt_num(cas12_scan.guides.len()),
                     g.cut_position,
+                    // The rank bare and the seed count as a count, in the words the studio's own
+                    // columns use: neither is a number out of 100 (BG-01M7E61C).
                     g.on_target_score,
-                    g.specificity_score
+                    crispr_seed_match_phrase(g.off_target_count).to_lowercase()
                 )
             } else {
                 "No canonical SpCas9 5'-NGG-3' PAM site detected in sequence.".into()
@@ -1280,9 +1295,20 @@ pub fn execute_bio_pipeline_rust(
                     tone: Some(if top_guide.is_some() { "good" } else { "bad" }.into()),
                 },
                 PipelineMetricKV {
-                    label: "Heuristic On-Target / In-Sequence Seed Specificity".into(),
+                    // The two numbers named as the studio's own columns name them, with the range
+                    // the scorer owns in the label and no denominator in the value (BG-01M7E61C).
+                    label: format!(
+                        "Heuristic Rank ({}–{}) / Exact Seed Matches (range searched)",
+                        CRISPR_HEURISTIC_RANK_RANGE.0, CRISPR_HEURISTIC_RANK_RANGE.1
+                    ),
                     value: top_guide
-                        .map(|g| format!("{}/100 • {}/100", g.on_target_score, g.specificity_score))
+                        .map(|g| {
+                            format!(
+                                "{} • {}",
+                                g.on_target_score,
+                                crispr_seed_match_phrase(g.off_target_count)
+                            )
+                        })
                         .unwrap_or_else(|| "N/A".into()),
                     tone: Some(if s2_status == "PASS" { "good" } else { "warn" }.into()),
                 },
