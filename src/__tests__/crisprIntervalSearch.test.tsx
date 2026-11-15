@@ -56,10 +56,29 @@
  * a bounded prefix described as the whole sequence. Every number in the wording asserted is built
  * from the scan report's own (`originSpanBp`, `scannedLengthBp`, `sequenceLengthBp`) rather than
  * written out - the literals here are the engine's bound, asserted as a precondition, and the
- * whole-sequence claim the bounded note must not make. On the circular branch the note's scope is
- * asserted to be text the callout holds, so the two surfaces cannot drift apart; on the bounded
- * branch the callout wraps the range in a sentence of its own (US-01M7DVAS AC4), so what the two
- * share is the range, and the note is held to the formatter's full branch wording instead.
+ * whole-sequence claim the bounded note must not make. On both branches the note's scope is
+ * asserted to be text the callout holds, in the branch's whole wording, so the two surfaces cannot
+ * drift apart.
+ *
+ * BG-01M7FCDY is where those words come from: the callout's seed sentence read the one formatter
+ * (`crisprReadAs`) on its whole-sequence branch alone and hand-wrote a frame of its own on the
+ * other two - the bounded one a second copy of the formatter's own bounded wording - while the
+ * `Searched:` line that would have supplied shared text renders only for an interval. So the
+ * adjectival frame of a sentence could drift from the note's on one branch with every test green:
+ * the reviewer's M15 said a bounded prefix was read "over the whole record, on one strand - and
+ * copies outside it too" and survived both criteria above. The two cases below close that. AC1
+ * reads the callout's seed sentence apart from the rest of the callout and requires it to be this
+ * file's own words plus the formatter's phrase verbatim, on each of the four branches. AC2 derives
+ * the branch list from the source of `crisprReadAs` itself and holds the note and the callout to
+ * the identical phrase on each, with every arm of the formatter asserted to be reached by exactly
+ * one fixture - so a fifth branch, or a fixture that stops reaching one, fails here rather than
+ * going unread. The numbers in each phrase are asserted against the scan report's own, so a branch
+ * whose wording keeps its shape while drifting a number (a bounded prefix claiming the whole
+ * record) fails too. Wrong implementations they kill: the frame drift M15; the callout's range
+ * literal drifting from the note's; the formatter's bounded branch drifting; and a guard that holds
+ * only the branch a fixture happens to reach. The fifth branch of the scope sentence - the engine
+ * sent no report, so the scope is unknown (LC-006) - is reached by no fixture here and is
+ * BG-01M7FD7R's.
  */
 
 import React from 'react';
@@ -358,7 +377,7 @@ describe('BG-01M7EQAA AC4: the note states the scope of the branch the scan actu
       const originBp = circularScan.report?.originSpanBp ?? 0;
       expect(originBp, 'so bases across its origin were read').toBeGreaterThan(0);
       expect(circularScan.guides.length, 'the plasmid holds guides to annotate').toBeGreaterThan(0);
-      const circularWords = `all 400 bases of this circular sequence, including the ${originBp} across its origin`;
+      const circularWords = `all 400 bases of this circular sequence, including the ${originBp} across its origin, on both strands`;
       const circularSaid = calloutWords(app);
       expect(circularSaid, 'the callout names the circle and its origin bases').toContain(circularWords);
 
@@ -397,9 +416,12 @@ describe('BG-01M7EQAA AC4: the note states the scope of the branch the scan actu
       const boundedRange = `bases 1 to ${boundedScan.report!.scannedLengthBp.toLocaleString('en-US')} of the ${boundedScan.report!.sequenceLengthBp.toLocaleString('en-US')} bases of this sequence`;
       const boundedWords = `${boundedRange}, on both strands`;
       const boundedSaid = calloutWords(app);
-      // The callout's seed sentence wraps this range in words of its own ("— the range searched …
-      // and no copy outside it", US-01M7DVAS AC4), so the range is what the two surfaces share.
-      expect(boundedSaid, 'the callout names the range read').toContain(boundedRange);
+      // The callout states the scope in the one formatter's words on this branch too
+      // (BG-01M7FCDY AC1), so the whole branch wording is what the two surfaces share - not the
+      // range alone, which left the sentence's frame free to drift (the reviewer's M15).
+      expect(boundedSaid, "the callout names the prefix read in the formatter's own words").toContain(
+        boundedWords
+      );
       expect(boundedSaid, 'and claims none of the bases past it').not.toContain('all 8,000,100 bases');
 
       await annotateTop5(app);
@@ -426,6 +448,182 @@ describe('BG-01M7EQAA AC4: the note states the scope of the branch the scan actu
     } finally {
       app.unmount();
     }
+  }, 600_000);
+});
+
+// ─── BG-01M7FCDY: the callout's seed sentence reads the one formatter, on every branch ───
+
+/** A count of bases as every surface in the app writes it. */
+const bpText = (n: number) => n.toLocaleString('en-US');
+
+/**
+ * The seed-match sentence of the guide table's callout: what the callout says between
+ * `Seed matches:` and its genome-wide note.
+ *
+ * Read apart from the rest of the callout on purpose. The callout also prints `Searched: <scope>`
+ * on its interval branch, so a guard that asks only whether the callout somewhere holds the
+ * formatter's words passes while the seed sentence hand-writes a scope of its own - which is the
+ * defect BG-01M7FCDY closes.
+ */
+const seedSentence = (said: string): string => {
+  const m = /Seed matches:\s*([\s\S]*?)\(no genome-wide off-target search\)/.exec(said);
+  if (!m) throw new Error(`the CRISPR callout holds no "Seed matches" sentence: ${said}`);
+  return m[1].trim();
+};
+
+/** One scan shape as the two surfaces state it, with the scan report that produced it. */
+type BranchSurfaces = {
+  /** What the fixture is, for a failure message. */
+  branch: string;
+  doc: SequenceDocument;
+  report: NonNullable<Awaited<ReturnType<typeof engineScan>>['report']>;
+  /** The callout's seed-match sentence. */
+  seedSaid: string;
+  /** The scope sentence each Top 5 note carries, as the saved document carries it. */
+  noteScopes: string[];
+};
+
+let branchSurfacesOnce: Promise<BranchSurfaces[]> | undefined;
+
+/**
+ * Every scan shape the studio can show, read from one launch of the real App: an interval of a
+ * plasmid, the prefix of a record longer than the engine reads, a plasmid read whole and a linear
+ * record read whole - the four branches `crisprReadAs` can print. The scope sentence is read out of
+ * the document the App saves, so a scope that reaches no writer fails here (LC-003).
+ */
+const branchSurfaces = (): Promise<BranchSurfaces[]> =>
+  (branchSurfacesOnce ??= (async () => {
+    const cases: { branch: string; doc: SequenceDocument; interval?: { start: number; end: number } }[] = [
+      { branch: 'interval', doc: circular400, interval: { start: 101, end: 300 } },
+      { branch: 'bounded prefix', doc: pastTheBound },
+      { branch: 'circular whole', doc: circular400 },
+      { branch: 'linear whole', doc: linear300 },
+    ];
+    const app = await mountApp();
+    try {
+      const read: BranchSurfaces[] = [];
+      for (const { branch, doc, interval } of cases) {
+        await appOnCrisprTab(app, doc, interval);
+        const scan = await engineScan(doc, interval);
+        expect(scan.report, `${branch}: the engine sent a scan report`).toBeTruthy();
+        expect(scan.guides.length, `${branch}: the fixture holds guides to annotate`).toBeGreaterThan(0);
+        const seedSaid = seedSentence(calloutWords(app));
+        await annotateTop5(app);
+        const noteScopes = seedNotes(await savedFeatures(app, doc.id)).map(scopeOf);
+        expect(noteScopes.length, `${branch}: one seed count stated per guide annotated`).toBe(
+          Math.min(5, scan.guides.length)
+        );
+        read.push({ branch, doc, report: scan.report!, seedSaid, noteScopes });
+      }
+      return read;
+    } finally {
+      app.unmount();
+    }
+  })());
+
+describe("BG-01M7FCDY AC1: the callout's seed sentence reads the one formatter, not a copy of it", () => {
+  it("BG-01M7FCDY AC1 the callout states the scope in the formatter's own words on every branch", async () => {
+    const { CRISPR_SEED_LENGTH_BP } = await import('../core/crisprGuideText');
+    for (const { branch, report, seedSaid, noteScopes } of await branchSurfaces()) {
+      const scope = noteScopes[0];
+      expect(scope.length, `${branch}: the note says what the count covered`).toBeGreaterThan(20);
+      expect(new Set(noteScopes).size, `${branch}: every note states the one scope`).toBe(1);
+      // The callout's own words, then the formatter's, with nothing of the scope written out here:
+      // a frame of the callout's own invention cannot sit between the two.
+      expect(seedSaid, `${branch}: the callout states the scope in the formatter's own words`).toContain(
+        `other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed across ${scope}`
+      );
+      // The three frames the branches hand-wrote before this fix, and the drift the reviewer's M15
+      // slipped past both BG-01M7EQAA criteria, in none of them now.
+      expect(seedSaid, `${branch}: no branch keeps a frame of its own`).not.toMatch(
+        /seed inside the interval searched|seed in bases 1 to|the range searched|on one strand|copies outside it too/
+      );
+      // What is genuinely the callout's own claim: a scan of part of the record says that the rest
+      // of it holds no copy, and a scan of the whole record claims no such thing.
+      const readPartOfIt =
+        report.searchedInterval !== undefined || report.scannedLengthBp < report.sequenceLengthBp;
+      expect(
+        seedSaid.includes('and no copy outside it'),
+        `${branch}: only a scan of part of the record says no copy lies outside it`
+      ).toBe(readPartOfIt);
+    }
+  }, 600_000);
+});
+
+/**
+ * The arms of `crisprReadAs`, read out of the studio's own source - one regular expression per
+ * branch it can print, with each `${...}` left free. The branch list is derived here rather than
+ * written out, so a branch added to the formatter without a case below fails this guard instead of
+ * going unread: BG-01M7EQAA AC1 passed for a year of plasmids while calling them linear precisely
+ * because its fixtures reached two of the four branches and nothing said so.
+ */
+const readAsBranchPatterns = async (): Promise<RegExp[]> => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../components/PrimerAndPCRStudio.tsx', import.meta.url), 'utf8');
+  const decl = /const crisprReadAs =([\s\S]*?);\n/.exec(source);
+  if (!decl) throw new Error('the studio declares no `crisprReadAs`, so this guard has nothing to derive');
+  const arms = decl[1].match(/`[^`]*`/g) ?? [];
+  if (arms.length === 0) throw new Error('`crisprReadAs` states no branch this guard can read');
+  return arms.map(
+    (arm) =>
+      new RegExp(
+        arm
+          .slice(1, -1)
+          .split(/\$\{[^}]*\}/)
+          .map((literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('[\\s\\S]*?')
+      )
+  );
+};
+
+describe('BG-01M7FCDY AC2: one guard holds every branch of the formatter to a single source', () => {
+  it("BG-01M7FCDY AC2 note and callout share the formatter's phrase on all four branches", async () => {
+    const patterns = await readAsBranchPatterns();
+    const surfaces = await branchSurfaces();
+    expect(
+      patterns.length,
+      'every branch `crisprReadAs` can print is read by a case here - add one for a new branch'
+    ).toBe(surfaces.length);
+
+    const reached = new Map<number, string>();
+    for (const { branch, doc, report, seedSaid, noteScopes } of surfaces) {
+      const scope = noteScopes[0];
+      // (i) The identical phrase on both surfaces - not a paraphrase, and not merely a shared number.
+      expect(seedSaid, `${branch}: the callout's seed sentence holds the note's scope phrase`).toContain(
+        scope
+      );
+      // (ii) Which branch printed it, decided by the formatter's own source rather than by this file.
+      const matched = patterns.flatMap((pattern, i) => (pattern.test(scope) ? [i] : []));
+      expect(matched.length, `${branch}: the scope "${scope}" is exactly one branch of crisprReadAs`).toBe(
+        1
+      );
+      expect(reached.get(matched[0]), `${branch}: no two cases read the same branch`).toBeUndefined();
+      reached.set(matched[0], branch);
+      // (iii) The numbers in the phrase are the scan report's own, so a branch that drifts one - a
+      // bounded prefix claiming the whole record - fails here even though its shape still fits.
+      const stated = [bpText(report.sequenceLengthBp)];
+      if (report.searchedInterval !== undefined) {
+        stated.push(bpText(report.searchedInterval.lengthBp), `${report.searchedInterval.start}`);
+      } else if (report.scannedLengthBp < report.sequenceLengthBp) {
+        stated.push(bpText(report.scannedLengthBp));
+      } else if (report.scannedCircular === true && (report.originSpanBp ?? 0) > 0) {
+        stated.push(bpText(report.originSpanBp!));
+      }
+      for (const number of stated) {
+        expect(scope, `${branch}: the phrase states the scan's own ${number}`).toContain(number);
+      }
+      // A bounded prefix is a range and claims no topology; every other branch names the one the
+      // document has, read from the document rather than written out per branch.
+      const topologyWords =
+        report.searchedInterval === undefined && report.scannedLengthBp < report.sequenceLengthBp
+          ? 'bases of this sequence'
+          : `this ${doc.topology === 'circular' ? 'circular' : 'linear'} sequence`;
+      expect(scope, `${branch}: the phrase names the topology the document has`).toContain(topologyWords);
+    }
+    expect(
+      [...reached.keys()].sort(),
+      'every branch of crisprReadAs is read by one of these cases'
+    ).toEqual(patterns.map((_, i) => i));
   }, 600_000);
 });
 

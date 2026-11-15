@@ -167,7 +167,7 @@ describe('the CRISPR tab says how many guides there are and what was searched (B
     const html = crisprTab(pastTheBound);
     const shown = callout(html);
     expect(shown, 'the range read, not "in this sequence"').toContain(
-      'other exact copies of the 12-nt PAM-proximal seed in bases 1 to 8,000,000 of the 8,000,100 bases of this sequence'
+      'other exact copies of the 12-nt PAM-proximal seed across bases 1 to 8,000,000 of the 8,000,100 bases of this sequence'
     );
     expect(shown, 'and it does not claim the whole sequence').not.toMatch(
       /seed in this sequence|across all [\d,]+ bases/
@@ -368,7 +368,7 @@ describe('a CRISPR scan reports its own numbers even with no guide (US-01M7DVH2)
     const html = crisprTab(pastTheBound);
     const shown = callout(html);
     expect(shown).toContain(
-      'other exact copies of the 12-nt PAM-proximal seed in bases 1 to 8,000,000 of the 8,000,100 bases of this sequence — the range searched, on both strands — and no copy outside it'
+      'other exact copies of the 12-nt PAM-proximal seed across bases 1 to 8,000,000 of the 8,000,100 bases of this sequence, on both strands, and no copy outside it'
     );
     expect(shown, 'the whole sequence is not claimed').not.toMatch(/across all [\d,]+ bases/);
 

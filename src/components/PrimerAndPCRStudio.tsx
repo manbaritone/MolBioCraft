@@ -441,9 +441,6 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   const crisprIntervalBounds = crisprSearchedInterval
     ? `${bp(crisprSearchedInterval.start)}..${bp(crisprSearchedInterval.end)}`
     : '';
-  const crisprIntervalText = crisprSearchedInterval
-    ? `${crisprIntervalBounds} (${bp(crisprSearchedInterval.lengthBp)} bp${crisprSearchedInterval.crossesOrigin ? ', across the origin' : ''})`
-    : '';
   const crisprScanIsPartial =
     crisprSearchedInterval === undefined &&
     crisprScanned !== undefined &&
@@ -1446,15 +1443,24 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 `CRISPR_SEED_LENGTH_BP`, stated once there and read by every sentence in the app
                 that gives it (BG-01M7EZVV AC3): these three sentences each hand-wrote the number,
                 as the export's two did, so a change to what the scorer counts left five surfaces
-                stating the old figure. */}
+                stating the old figure.
+                Which bases were read is `crisprReadAs` on every branch, as the annotation note
+                reads it (BG-01M7FCDY AC1): the interval and bounded-prefix branches each wrote a
+                frame of their own here - the bounded one a copy of the formatter's own bounded
+                wording - so the frame could drift from the note's on one branch with every
+                criterion that holds the note green, as the reviewer's M15 did. What is left is only this sentence's own claim:
+                what a seed match is, and that a scan of part of the record found no copy in the
+                rest of it. */}
             {crisprScan !== undefined && crisprIntervalRefusal === undefined && (
               <>
                 <strong>Seed matches</strong>:{' '}
-                {crisprSearchedInterval !== undefined
-                  ? `other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed inside the interval searched, ${crisprIntervalText}, on both strands, and no copy outside it — an interval specificity, not one over the whole ${bp(crisprSequenceBp ?? 0)} bases`
-                  : crisprScanIsPartial
-                  ? `other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed in bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence — the range searched, on both strands — and no copy outside it`
-                  : `other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed across ${crisprReadAs}`}{' '}
+                {`other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed across ${crisprReadAs}${
+                  crisprSearchedInterval !== undefined
+                    ? `, and no copy outside it — an interval specificity, not one over the whole ${bp(crisprSequenceBp ?? 0)} bases`
+                    : crisprScanIsPartial
+                    ? ', and no copy outside it'
+                    : ''
+                }`}{' '}
                 (no genome-wide off-target search).
               </>
             )}{' '}
