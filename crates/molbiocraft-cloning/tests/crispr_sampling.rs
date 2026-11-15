@@ -2541,3 +2541,91 @@ fn bg_01m7ep67_ac1_the_seed_count_description_names_the_interval_the_scan_search
         "the plugin reads its scope from the scan it made, not from two of that scan's numbers"
     );
 }
+
+/// BG-01M7F4G3: the fifth shape of a scan, which BG-01M7EP67 named and left unchecked — a
+/// **refused** scan, where `searched_interval` is `None` and `scanned_length_bp` is 0. It failed
+/// the interval branch and satisfied `scanned_length_bp < sequence_length_bp`, so the seed-count
+/// sentence read "bases 1 to 0 of the 4,990 bases of this sequence": a count of copies in a range
+/// that does not exist, for a scan that searched nothing.
+///
+/// Both refusal doors are exercised, because `refused_scan` (`cloning_crispr.rs`:1269) is reached
+/// from the unknown-nuclease refusal (D0130) and from the interval-plan refusal, and only the
+/// second sets `interval_refusal`: a fix that reads the reason from that field alone leaves the
+/// unknown-nuclease door describing a refusal it cannot explain, so each door is asked for the
+/// reason the scan actually holds (LC-002).
+#[test]
+fn bg_01m7f4g3_ac1_a_refused_scan_is_described_as_refused() {
+    use molbiocraft_cloning::reaction_buffers::crispr_seed_count_description;
+
+    const LEN: usize = 4_990;
+    let mut seq = at_background(LEN, 0x7f_4c33);
+    plant(&mut seq, 4_020, &block(SPACER));
+    let text = String::from_utf8(seq).unwrap();
+
+    // Door one: a nuclease id that is not a preset. The refusal is the scan's own warning and
+    // `interval_refusal` is None, which is the whole point of covering this door.
+    let unknown = scan_crispr_guides(&text, "Cas9ish (NGG)", 25, None, false);
+    assert_eq!(
+        (
+            unknown.searched_interval.is_some(),
+            unknown.scanned_length_bp,
+            unknown.sequence_length_bp,
+            unknown.interval_refusal.is_some(),
+        ),
+        (false, 0, LEN, false),
+        "the unknown-nuclease door builds a refused scan and sets no interval_refusal"
+    );
+    let nuclease_reason = resolve_nuclease_preset("Cas9ish (NGG)")
+        .expect_err("\"Cas9ish (NGG)\" is not a preset");
+    assert_eq!(
+        unknown.warnings,
+        vec![nuclease_reason.clone()],
+        "the engine's own reason is the refused scan's single warning"
+    );
+
+    // Door two: an interval that cannot be planned. Here `interval_refusal` is set.
+    let outside =
+        scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", 25, Some((6_000, 6_100)), true);
+    assert_eq!(
+        (
+            outside.searched_interval.is_some(),
+            outside.scanned_length_bp,
+            outside.sequence_length_bp,
+        ),
+        (false, 0, LEN),
+        "the interval-plan door builds the same refused shape"
+    );
+    let interval_reason = outside
+        .interval_refusal
+        .clone()
+        .expect("the interval-plan door sets interval_refusal");
+    assert!(
+        interval_reason.contains("6,000..6,100") && interval_reason.contains("not inside this sequence"),
+        "the refusal echoes the interval asked for: {interval_reason}"
+    );
+
+    for (door, scan, reason) in [
+        ("unknown nuclease", &unknown, nuclease_reason),
+        ("interval plan", &outside, interval_reason),
+    ] {
+        let said = crispr_seed_count_description(scan);
+        assert!(
+            !said.contains("bases 1 to 0"),
+            "{door}: a refused scan searched no bases 1 to 0: {said}"
+        );
+        assert!(
+            !said.contains("bases 1 to")
+                && !said.contains("bp interval searched")
+                && !said.contains("bases of this sequence"),
+            "{door}: a refused scan names no range of bases it searched: {said}"
+        );
+        assert!(
+            said.contains("refused"),
+            "{door}: the sentence says the scan was refused: {said}"
+        );
+        assert!(
+            said.contains(&reason),
+            "{door}: the sentence carries the engine's own reason, which this scan holds: {said}"
+        );
+    }
+}

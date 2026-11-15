@@ -343,7 +343,28 @@ pub const CRISPR_GENOME_WIDE_SPECIFICITY_NOT_EVALUATED: &str = "Not evaluated: n
 /// [`CrisprGuideScan::searched_interval`](crate::cloning_crispr::CrisprGuideScan::searched_interval),
 /// which is the field that says a scan read an arc of the record rather than a prefix of it, in the
 /// same bounds-and-origin wording the scan's own warnings use.
+///
+/// A **refused** scan is said to be refused rather than described as a range (BG-01M7F4G3): it has
+/// no `searched_interval` and `scanned_length_bp` 0, so it used to fall through to the prefix
+/// branch below and read "bases 1 to 0 of the N bases of this sequence" — a count of copies in a
+/// range that does not exist, for a scan that searched nothing. The reason is read from the refusal
+/// the scan actually holds, because `refused_scan` is reached from two doors and only the
+/// interval-plan one sets
+/// [`interval_refusal`](crate::cloning_crispr::CrisprGuideScan::interval_refusal); the
+/// unknown-nuclease refusal (D0130) carries its reason as the scan's warning, as both doors do.
 pub fn crispr_seed_count_description(scan: &crate::cloning_crispr::CrisprGuideScan) -> String {
+    if scan.searched_interval.is_none() && scan.scanned_length_bp == 0 {
+        if let Some(reason) = scan
+            .interval_refusal
+            .as_deref()
+            .or_else(|| scan.warnings.first().map(String::as_str))
+        {
+            return format!(
+                "Seed matches: none counted, because this scan was refused and read none of this \
+                 sequence. {reason}"
+            );
+        }
+    }
     let range = if let Some(iv) = scan.searched_interval {
         format!(
             "bases {}..{} — the {} bp interval searched{} — of the {} bases of this sequence",
