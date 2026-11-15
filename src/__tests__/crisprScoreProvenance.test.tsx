@@ -1803,11 +1803,12 @@ describe('every stated count of the rank says what it counts (BG-01M7FC2X)', () 
 /**
  * The seed length `SEED_LEN` declares in current Rust source, read out of the file itself
  * (BG-01M7FF3B AC3), with the one-declaration discipline `declaredRankRange` keeps (BG-01M7FAQZ): a
- * candidate is a line that BEGINS with the declaration, so the same text in a `///` comment is no
- * candidate; every candidate is counted, and two or more - one a block comment hides from a
- * line-anchored pattern - are refused by name with the file and the count rather than resolved by
- * taking the first. A missing, unreadable, empty or re-shaped file is a refusal too, never agreement
- * (LC-006).
+ * candidate is a line whose first text is the declaration, indented or not (BG-01M7FVBN AC3), so one
+ * shadowing the top-level constant inside a module is counted rather than unseen, while the same
+ * text in a `//` or `///` comment is no candidate; every candidate is counted, and two or more - one
+ * a block comment hides from a pattern reading code alone - are refused by name with the file and the
+ * count rather than resolved by taking the first. A missing, unreadable, empty or re-shaped file is a
+ * refusal too, never agreement (LC-006).
  */
 function declaredSeedLength(at: URL = RUST_RANK_RANGE_SOURCE): number {
   const path = decodeURIComponent(at.pathname);
@@ -1821,7 +1822,7 @@ function declaredSeedLength(at: URL = RUST_RANK_RANGE_SOURCE): number {
     );
   }
   if (source.trim() === '') throw new Error(`the Rust source declaring the seed length is empty: ${path}`);
-  const declared = [...source.matchAll(/^(?:pub(?:\([^)]*\))?\s+)?const SEED_LEN:\s*usize\s*=\s*(\d+)\s*;/gm)];
+  const declared = [...source.matchAll(/^[ \t]*(?:pub(?:\([^)]*\))?\s+)?const SEED_LEN:\s*usize\s*=\s*(\d+)\s*;/gm)];
   if (declared.length === 0) {
     throw new Error(
       `no \`const SEED_LEN: usize = n;\` declaration in ${path}: this test cannot tell whether the committed wasm counts the seed the source does`
@@ -2042,7 +2043,12 @@ describe('every CRISPR seed sentence states the length the engine reports (BG-01
       // Missing, empty and re-shaped sources are refusals, each named.
       expect(answerFor('missing.rs', null).message).toMatch(/is missing: .*missing\.rs/);
       expect(answerFor('empty.rs', '  \n').message).toMatch(/is empty: .*empty\.rs/);
-      expect(answerFor('reshaped.rs', 'mod scan {\n    const SEED_LEN: usize = 14;\n}\n').message).toMatch(
+      // An indented declaration is a candidate (BG-01M7FVBN AC3): alone inside a module it is the
+      // one declaration and answers, so it cannot be shadowed past this reader unseen.
+      const indented = answerFor('indented.rs', 'mod scan {\n    const SEED_LEN: usize = 14;\n}\n');
+      expect(indented.got, `an indented declaration is read: ${indented.message}`).toBe(14);
+      // A declaration in another shape is still no declaration, and refused by name.
+      expect(answerFor('reshaped.rs', 'static SEED_LEN: usize = 14;\n').message).toMatch(
         /^no `const SEED_LEN: usize = n;` declaration in .*reshaped\.rs/
       );
       // And the comparison is with the source: a source declaring another length than the
@@ -2057,6 +2063,80 @@ describe('every CRISPR seed sentence states the length the engine reports (BG-01
       nodeFs.rmSync(dir, { recursive: true, force: true });
     }
   }, 55_000);
+});
+
+/**
+ * BG-01M7FVBN AC3: a `const SEED_LEN` indented beside the top-level one is a candidate too, so a
+ * constant shadowing it inside a module is refused by file and count rather than read as agreement
+ * with the committed engine.
+ *
+ * Wrong implementations this kills: the line-anchored reader this replaces, which saw the top-level
+ * declaration alone and answered its number while a second one stood indented below it; a refusal
+ * that names neither the file nor the count; and a widened reader that takes a commented spelling,
+ * indented or not, as a candidate and so refuses an honest tree.
+ */
+describe('BG-01M7FVBN AC3: a shadowing SEED_LEN is counted, not read past', () => {
+  it('BG-01M7FVBN AC3 an indented SEED_LEN beside the top-level one is refused', () => {
+    const dir = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FVBN-seed-len-`);
+    const answerFor = (name: string, lines: string[]): { got?: number; message: string; path: string } => {
+      const path = `${dir}/${name}`;
+      nodeFs.writeFileSync(path, `${lines.join('\n')}\n`, 'utf8');
+      try {
+        return { got: declaredSeedLength(pathToFileURL(path)), message: '', path };
+      } catch (cause) {
+        return { message: cause instanceof Error ? cause.message : `a non-Error was thrown: ${String(cause)}`, path };
+      }
+    };
+    try {
+      // The shadowing shape: a top-level declaration with a second one indented inside a module.
+      // The two carry different numbers, so a reader that saw only the first would answer 12 and
+      // read a tree holding two seed lengths as agreeing with the engine.
+      const shadowed = answerFor('shadowed.rs', [
+        'const SEED_LEN: usize = 12;',
+        '',
+        'mod scan {',
+        '    const SEED_LEN: usize = 14;',
+        '}',
+      ]);
+      expect(shadowed.got, 'a shadowed source is refused, not answered').toBeUndefined();
+      expect(shadowed.message, 'the refusal names the file').toContain(shadowed.path);
+      expect(shadowed.message, 'and the count it found').toMatch(/^2 /);
+      // Deeper in, and `pub`: still the second candidate, still refused.
+      const deeper = answerFor('deeper.rs', [
+        'const SEED_LEN: usize = 12;',
+        'mod a {',
+        '    mod b {',
+        '        pub const SEED_LEN: usize = 14;',
+        '    }',
+        '}',
+      ]);
+      expect(deeper.got, 'a declaration two modules down is a candidate').toBeUndefined();
+      expect(deeper.message, 'and the count it found').toMatch(/^2 /);
+      // The controls, so the wider pattern refuses no honest tree: an indented comment is no
+      // candidate, and an indented declaration alone is the one declaration.
+      const commented = answerFor('commented-indented.rs', [
+        'const SEED_LEN: usize = 12;',
+        'mod scan {',
+        '    /// The seed was once `const SEED_LEN: usize = 10;`.',
+        '    // const SEED_LEN: usize = 10;',
+        '}',
+      ]);
+      expect(commented.got, `an indented comment is no declaration: ${commented.message}`).toBe(12);
+      const alone = answerFor('alone.rs', ['mod scan {', '    const SEED_LEN: usize = 14;', '}']);
+      expect(alone.got, `an indented declaration alone answers: ${alone.message}`).toBe(14);
+      // And the real scanner, read by its own lines at any indent: one declaration, and the
+      // reader answers that line's number rather than refusing the tree this test runs in.
+      const onItsOwnLine = readFileSync(RUST_RANK_RANGE_SOURCE, 'utf8')
+        .split('\n')
+        .filter((line) => line.trimStart().startsWith('const SEED_LEN'));
+      expect(onItsOwnLine.length, 'cloning_crispr.rs declares SEED_LEN once, at any indent').toBe(1);
+      expect(declaredSeedLength(), "the reader answers the declaration's own number").toBe(
+        Number(/=\s*(\d+)\s*;/.exec(onItsOwnLine[0])?.[1])
+      );
+    } finally {
+      nodeFs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 /**

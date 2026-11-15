@@ -1459,3 +1459,67 @@ describe('BG-01M7FH8K AC4: a circular record is never called linear, on screen o
     });
   }, 600_000);
 });
+
+/**
+ * BG-01M7FVBN AC2: the Top 5 note's no-length path, rendered. Every guard on it was a source-text
+ * check, and the note itself was only ever written from a report that carried a length - so a
+ * fallback filling 12 in for a report without one was caught by reading the file, never by the note
+ * a researcher reads.
+ *
+ * The note is driven here through the App's own "+ Annotate Top 5 Guides" button and read out of
+ * the session the App saves, off the real engine's report on the real record with its one
+ * `seedLengthBp` field dropped - the engine that predates the field, which the reader
+ * (`isCrisprScanReport`) accepts. Wrong implementations this kills: reviewer mutants Ta and Ta2, a
+ * `?? 12` or a '12-nt PAM-proximal seed' default in `crisprSeedNoteWords`, and any other number
+ * filled in for a report that states none.
+ */
+describe("BG-01M7FVBN AC2: the Top 5 note's no-length path is rendered", () => {
+  it("BG-01M7FVBN AC2 the Top 5 note's no-length path is rendered", async () => {
+    const noLength = 'PAM-proximal seed (the engine did not report its length)';
+    vi.doMock('../core/bioEngine', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../core/bioEngine')>();
+      return {
+        ...real,
+        scanCrisprGuides: (...args: Parameters<typeof real.scanCrisprGuides>) => {
+          const result = real.scanCrisprGuides(...args);
+          if (!result.report) return result;
+          const { seedLengthBp: _dropped, ...rest } = result.report;
+          return { ...result, report: rest };
+        },
+      };
+    });
+    try {
+      await withApp(async (app) => {
+        await onCrisprTab(app, PLASMID);
+        // The launch reads the substituted report: the real engine reports a length, and this one
+        // does not, so the control is that the callout on screen states none either.
+        const { scanCrisprGuides: realScan } = await vi.importActual<typeof import('../core/bioEngine')>(
+          '../core/bioEngine'
+        );
+        const reported = realScan(PLASMID.sequence, SPCAS9, 25, true).report?.seedLengthBp;
+        expect(reported, 'the real engine reports a seed length, so dropping it is a change').toBeGreaterThan(0);
+        expect(seedMatchesCallout(app), 'the launch reads the report with no length').toContain(noLength);
+        // The note itself, written by the button and read back out of the saved session.
+        await annotateTopFive(app);
+        const before = app.downloads().length;
+        await app.menu('file:save-session');
+        const files = app.downloads();
+        expect(files.length, 'File > Save Session saves one file').toBe(before + 1);
+        const payload = JSON.parse(await files[files.length - 1].text()) as {
+          documents: { id: string; features: { notes?: string }[] }[];
+        };
+        const saved = payload.documents.find((d) => d.id === PLASMID.id);
+        if (!saved) throw new Error(`the saved session holds no document "${PLASMID.id}"`);
+        const notes = saved.features.map((f) => f.notes ?? '').filter((n) => n.includes('seed counted:'));
+        expect(notes.length, 'the Top 5 annotation wrote seed-count notes to read').toBeGreaterThan(0);
+        for (const note of notes) {
+          expect(note, 'the note states that the engine reported no length').toContain(`seed counted: ${noLength}`);
+          expect(note.match(/\d+-nt/), `no length is filled in for a report without one: "${note}"`).toBeNull();
+          expect(note, "and never the length the real engine would have reported").not.toContain(`${reported}-nt`);
+        }
+      });
+    } finally {
+      vi.doUnmock('../core/bioEngine');
+    }
+  }, 600_000);
+});

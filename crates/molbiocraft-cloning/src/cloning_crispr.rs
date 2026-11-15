@@ -1586,9 +1586,8 @@ mod seed_length_report_tests {
     ///
     /// Wrong implementations this kills:
     /// - a reporting path that writes the seed length as a second literal beside the scanner's own
-    ///   constant (`Some(12)`), which agrees today and drifts the day `SEED_LEN` changes: every
-    ///   non-test line that sets `seed_length_bp` is read out of this file and must set it from
-    ///   `SEED_LEN` or claim none;
+    ///   constant (`Some(12)`), which agrees today and drifts the day `SEED_LEN` changes - held
+    ///   over the shipped source by `seed_length_report_has_no_second_source`, not here;
     /// - a reported length that no scan used - a preset's number, or one the counting ignores: the
     ///   fixture is built from the reported length `l`, with a copy of the `l`-base seed and a copy
     ///   of only its `l - 1` bases planted elsewhere, so the guide's seed count is the one a seed of
@@ -1657,25 +1656,269 @@ mod seed_length_report_tests {
         let refused = scan_crispr_guides_in_interval(&seq, "SpCas9 (NGG)", 10, Some((5, 2)), false);
         assert!(refused.interval_refusal.is_some(), "an across-origin interval on a linear record is refused");
         assert_eq!(refused.seed_length_bp, None, "a refused scan reports no seed length");
+    }
 
-        // And the reporting paths themselves: every non-test line that sets the field reads the
-        // scanner's constant or claims none, so no second literal can stand beside `SEED_LEN`.
+    /// `source` with every comment, string and character literal replaced by spaces: the same length,
+    /// the same lines and the same byte offsets, so a brace or an identifier written inside one is
+    /// not read as code and a span found here names the same bytes of the original.
+    fn code_only(source: &str) -> String {
+        let b = source.as_bytes();
+        let ident = |c: Option<&u8>| c.is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_');
+        let mut out = b.to_vec();
+        let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
+            for k in from..to {
+                if out[k] != b'\n' {
+                    out[k] = b' ';
+                }
+            }
+        };
+        let mut i = 0usize;
+        while i < b.len() {
+            match (b[i], b.get(i + 1)) {
+                (b'/', Some(b'/')) => {
+                    let end = source[i..].find('\n').map_or(b.len(), |o| i + o);
+                    blank(&mut out, i, end);
+                    i = end;
+                }
+                (b'/', Some(b'*')) => {
+                    // Rust block comments nest, so depth is counted rather than the first `*/` taken.
+                    let (mut depth, mut j) = (1usize, i + 2);
+                    while j < b.len() && depth > 0 {
+                        if b[j] == b'/' && b.get(j + 1) == Some(&b'*') {
+                            depth += 1;
+                            j += 2;
+                        } else if b[j] == b'*' && b.get(j + 1) == Some(&b'/') {
+                            depth -= 1;
+                            j += 2;
+                        } else {
+                            j += 1;
+                        }
+                    }
+                    assert_eq!(depth, 0, "an unterminated block comment at byte {i}");
+                    blank(&mut out, i, j);
+                    i = j;
+                }
+                // A raw string: `r`, any number of `#`, a quote, and the same `#`s after its close.
+                (b'r', _) if !ident(i.checked_sub(1).and_then(|p| b.get(p))) => {
+                    let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
+                    if b.get(i + 1 + hashes) != Some(&b'"') {
+                        i += 1;
+                        continue;
+                    }
+                    let close = format!("\"{}", "#".repeat(hashes));
+                    let from = i + 2 + hashes;
+                    let end = source[from..].find(&close).map_or(b.len(), |o| from + o + close.len());
+                    blank(&mut out, i, end);
+                    i = end;
+                }
+                // A character or byte literal, braces and quotes inside it included. A lifetime
+                // (`'a`, with no closing quote) is left as the code it is.
+                (b'\'', _) => {
+                    let end = if b.get(i + 1) == Some(&b'\\') {
+                        source[i + 3..].find('\'').map(|o| i + 3 + o + 1)
+                    } else {
+                        source[i + 1..].chars().next().and_then(|c| {
+                            let after = i + 1 + c.len_utf8();
+                            (b.get(after) == Some(&b'\'')).then_some(after + 1)
+                        })
+                    };
+                    match end {
+                        Some(e) => {
+                            blank(&mut out, i, e);
+                            i = e;
+                        }
+                        None => i += 1,
+                    }
+                }
+                (b'"', _) => {
+                    let mut j = i + 1;
+                    while j < b.len() {
+                        if b[j] == b'\\' {
+                            j += 2;
+                            continue;
+                        }
+                        j += 1;
+                        if b[j - 1] == b'"' {
+                            break;
+                        }
+                    }
+                    blank(&mut out, i, j);
+                    i = j;
+                }
+                _ => i += 1,
+            }
+        }
+        String::from_utf8(out).expect("blanking replaces whole characters with spaces")
+    }
+
+    /// The byte span of every `#[cfg(test)]` module in `code` (comments and strings already
+    /// blanked), from its attribute to the `}` that closes its block, matched by counting braces -
+    /// so the shipped code is this file minus these spans, whether it is written above them,
+    /// between them or below them all.
+    fn test_module_spans(code: &str) -> Vec<(usize, usize)> {
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        let mut from = 0usize;
+        while let Some(off) = code[from..].find("#[cfg(test)]") {
+            let at = from + off;
+            let open = at + code[at..].find('{').expect("a #[cfg(test)] module opens a block");
+            let mut depth = 0usize;
+            let close = code[open..]
+                .char_indices()
+                .find_map(|(k, c)| {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    (c == '}' && depth == 0).then_some(open + k + 1)
+                })
+                .expect("a #[cfg(test)] module closes its block");
+            spans.push((at, close));
+            from = close;
+        }
+        spans
+    }
+
+    /// BG-01M7FVBN AC1: no second source of the reported seed length anywhere in the shipped
+    /// scanner - the whole file minus every `#[cfg(test)]` module span, so code below the tests is
+    /// read too. Every occurrence of the identifier outside those spans and outside comments and
+    /// strings is the struct's declaration, `Some(SEED_LEN)` or `None`, refused by line otherwise.
+    ///
+    /// Wrong implementations this kills: a bound variable with field shorthand (`let
+    /// seed_length_bp = Some(12);` then `seed_length_bp,`), which the line-start scan this replaces
+    /// passed; a hand-written `Default` or base value carrying a literal into a struct update; an
+    /// assignment after construction (`scan.seed_length_bp = Some(12);`); and any of those placed
+    /// after the test modules, which a prefix-only scan never reads.
+    ///
+    /// What it does not kill, stated: a literal 12 in the counting path itself, which agrees with
+    /// `SEED_LEN` today and is caught by the length-parametric fixtures above and below the day
+    /// `SEED_LEN` changes.
+    #[test]
+    fn seed_length_report_has_no_second_source() {
         let source = include_str!("cloning_crispr.rs");
-        let shipped = &source[..source.find("#[cfg(test)]").expect("this file has its tests below its code")];
-        let setters: Vec<&str> = shipped
-            .lines()
-            .map(str::trim)
-            .filter(|line| line.starts_with("seed_length_bp:"))
-            .collect();
-        assert!(
-            setters.iter().any(|line| *line == "seed_length_bp: Some(SEED_LEN),"),
-            "a scan that ran sets its seed length from SEED_LEN"
+        let code = code_only(source);
+        assert_eq!(code.len(), source.len(), "blanking keeps every byte offset");
+        let spans = test_module_spans(&code);
+        assert_eq!(
+            spans.len(),
+            code.matches("#[cfg(test)]").count(),
+            "every test module in this file is spanned"
         );
-        for line in &setters {
+        assert!(spans.len() >= 3, "this file has three test modules, and all of them are spanned");
+        let field = "seed_length_bp";
+        let word = |c: Option<&u8>| c.is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_');
+        let bytes = code.as_bytes();
+        let mut outside: Vec<(usize, String)> = Vec::new();
+        let mut inside = 0usize;
+        for (at, _) in code.match_indices(field) {
+            if word(at.checked_sub(1).and_then(|p| bytes.get(p))) || word(bytes.get(at + field.len())) {
+                continue;
+            }
+            if spans.iter().any(|&(from, to)| at >= from && at < to) {
+                inside += 1;
+                continue;
+            }
+            let start = source[..at].rfind('\n').map_or(0, |n| n + 1);
+            let end = source[at..].find('\n').map_or(source.len(), |o| at + o);
+            let line = source[..start].matches('\n').count() + 1;
+            outside.push((line, source[start..end].trim().to_string()));
+        }
+        assert!(inside > 0, "the test modules of this file mention the field, so the spans are read");
+        let shapes: Vec<&str> = outside
+            .iter()
+            .map(|(_, line)| line.trim_end_matches(',').trim())
+            .collect();
+        assert_eq!(
+            shapes.iter().filter(|l| **l == "pub seed_length_bp: Option<usize>").count(),
+            1,
+            "the field is declared once: {outside:?}"
+        );
+        assert!(
+            shapes.iter().any(|l| *l == "seed_length_bp: Some(SEED_LEN)"),
+            "a scan that ran sets its seed length from SEED_LEN: {outside:?}"
+        );
+        assert!(
+            shapes.iter().any(|l| *l == "seed_length_bp: None"),
+            "a scan that counted no seed claims no length: {outside:?}"
+        );
+        for (line, text) in &outside {
             assert!(
-                *line == "seed_length_bp: Some(SEED_LEN)," || *line == "seed_length_bp: None,",
-                "a scan reports a seed length that is not SEED_LEN: `{line}`"
+                text.trim_end_matches(',').trim() == "pub seed_length_bp: Option<usize>"
+                    || text.trim_end_matches(',').trim() == "seed_length_bp: Some(SEED_LEN)"
+                    || text.trim_end_matches(',').trim() == "seed_length_bp: None",
+                "the shipped scanner states a seed length from a second source at line {line}: `{text}`"
             );
         }
+    }
+
+    /// BG-01M7FVBN AC1: Cas12a counts the seed it reports, from its own PAM-proximal end.
+    ///
+    /// Length-parametric from the length `l` the Cas12a scan itself reports, as the SpCas9 fixture
+    /// above is: a decoy sharing the guide's 5' `l` bases is counted, one sharing only `l - 1` is
+    /// not, one sharing `l + 1` is counted alike, and two sharing only its 3' `l` bases are not -
+    /// so a Cas12a scan that took SpCas9's 3' seed, or counted one base more or less than it
+    /// reports, fails here. No seed length is written in this test.
+    #[test]
+    fn cas12a_counts_its_pam_proximal_seed() {
+        let probe = scan_crispr_guides("ACGT", "Cas12a / Cpf1 (TTTV)", 0, None, false);
+        let l = probe.seed_length_bp.expect("a scan that ran reports the seed length it counted with");
+        assert!(l >= 2 && l < 20, "a seed of {l} bases leaves no room for this fixture inside a 20-nt spacer");
+
+        let spacer = "GTCAGGTACCTTAGCAAGTC";
+        let sp = spacer.as_bytes();
+        assert_ne!(&spacer[..l], &spacer[20 - l..], "a seed of {l} bases tells the spacer's two ends apart");
+        for k in [l - 1, l, l + 1] {
+            let seed = &spacer[..k];
+            assert_ne!(
+                seed,
+                reverse_complement_iupac(seed, false),
+                "a {k}-base seed that is its own reverse complement is counted twice per copy"
+            );
+        }
+        // Seeded background (LCG) between the planted pieces, so no accidental copy lies in it.
+        let mut x: u32 = 0x5eed_c12a;
+        let mut background = |n: usize| -> String {
+            (0..n)
+                .map(|_| {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    b"ACGT"[(x >> 30) as usize] as char
+                })
+                .collect()
+        };
+        // A copy of the exact 5' `l`-base seed with the base after it changed; a copy of only its
+        // first `l - 1` bases, likewise broken; and two copies of its 3' `l` bases alone, so a scan
+        // counting SpCas9's end reports a different number rather than the same one by accident.
+        let five_copy = format!("{}{}", &spacer[..l], other_than(sp[l]));
+        let shorter_copy = format!("{}{}", &spacer[..l - 1], other_than(sp[l - 1]));
+        let three_copy = format!("{}{}", other_than(sp[20 - l - 1]), &spacer[20 - l..]);
+        let seq = format!(
+            "{}TTTA{spacer}{}{five_copy}{}{shorter_copy}{}{three_copy}{}{three_copy}{}",
+            background(150),
+            background(150),
+            background(150),
+            background(150),
+            background(150),
+            background(150)
+        );
+
+        let scan = scan_crispr_guides(&seq, "Cas12a / Cpf1 (TTTV)", 100_000, None, false);
+        assert_eq!(scan.seed_length_bp, Some(l), "the scan reports the length its probe did");
+        let guide = scan
+            .guides
+            .iter()
+            .find(|g| g.strand == 1 && g.spacer_seq == spacer)
+            .expect("the planted Cas12a guide is found");
+        // The count a seed of `k` PAM-proximal bases gives, worked out without the scanner; and the
+        // count the other end of the spacer would give, which this fixture makes a different number.
+        let pam_proximal = |k: usize| both_strand_count(&seq, &spacer[..k]) - 1;
+        let pam_distal = both_strand_count(&seq, &spacer[20 - l..]) - 1;
+        assert_ne!(pam_proximal(l), pam_proximal(l - 1), "the fixture tells an {l}-base seed from a shorter one");
+        assert_ne!(pam_proximal(l), pam_proximal(l + 1), "the fixture tells an {l}-base seed from a longer one");
+        assert_ne!(pam_proximal(l), pam_distal, "the fixture tells Cas12a's 5' seed from SpCas9's 3' one");
+        assert_eq!(
+            guide.off_target_count,
+            pam_proximal(l),
+            "Cas12a counts the {l} PAM-proximal bases it reports, from its own 5' end"
+        );
     }
 }
