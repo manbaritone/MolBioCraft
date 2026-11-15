@@ -516,9 +516,14 @@ pub fn scan_crispr_guides(
 /// - A candidate is returned only when its **whole spacer** lies inside the interval. A candidate
 ///   whose spacer is inside but whose PAM is not is returned and carries
 ///   [`CrisprGuideRecord::interval_context_note`], which names the PAM's own bases: the PAM was read
-///   from `pam_pattern.len()` bases of context either side of the interval, which are read for a PAM
-///   and for nothing else. A candidate whose spacer crosses a bound is not a candidate of that
-///   interval at all.
+///   from `pam_pattern.len()` bases of context either side of the interval — a whole PAM, which is
+///   where such a PAM can be — and those bases are read for a PAM and for nothing else. A candidate
+///   whose spacer crosses a bound is not a candidate of that interval at all.
+/// - On a circle that context runs round the origin, so an interval leaving less than a PAM's
+///   length outside it still has its PAMs read and its guides returned: the context then reaches
+///   back over the interval's own far bases, which are read again and searched for nothing new.
+///   `context_outside_interval_bp` counts the bases **outside** the interval that this read, each
+///   once, however many times they were read and whichever side of the interval they were read on.
 /// - Seed matches are counted over the interval alone, on both strands, so the specificity of a
 ///   guide found this way is an **interval** specificity. `searched_interval` is what says so, and
 ///   the scan's `warnings` say it in words.
@@ -706,15 +711,23 @@ fn scan_guides(
     // to a bound shorter than the sequence do not meet, and neither do the ends of a proper arc, so
     // such a range is read straight.
     let wraps = circular && scanned == seq_len;
-    // An interval that is a proper arc may read `pam_len` bases either side of it as PAM context,
-    // and for nothing else (US-01M7DVAS AC2). The count is clamped so that no base of the interval
-    // is read as context as well, and on a linear record so that nothing past either end is read at
-    // all (AC3): a line has no base before its first or after its last.
+    // An interval that is a proper arc reads `pam_len` bases either side of it as PAM context, and
+    // for nothing else (US-01M7DVAS AC2). A whole PAM either side is what the rule needs, because a
+    // candidate whose spacer is inside the interval may have its PAM anywhere in the `pam_len` bases
+    // past a bound; a context shorter than that leaves such a candidate off the end of the bases
+    // read, and it is then dropped with nothing said — which is what a clamp to the bases outside
+    // the interval did to every selection leaving less than a PAM outside it, on a circle.
+    // On a circle the context runs round the origin, so there is always a whole PAM of it to read:
+    // where the interval leaves less than that outside, the context reaches back over the
+    // interval's own far bases, which are read a second time and searched for nothing new (no
+    // candidate can be found twice, as the bases read are shorter than one turn of the circle plus
+    // a site). `context_outside_interval_bp` below counts the bases outside the interval that this
+    // reads, each once. On a linear record the context stops at either end (AC3): a line has no
+    // base before its first or after its last.
     let (ctx_left, ctx_right) = match &plan {
         Some(p) if !wraps => {
             if circular {
-                let outside = seq_len - p.interval.length_bp;
-                (pam_len.min(outside), pam_len.min(outside))
+                (pam_len, pam_len)
             } else {
                 (
                     pam_len.min(p.interval.start - 1),
@@ -723,6 +736,15 @@ fn scan_guides(
             }
         }
         _ => (0, 0),
+    };
+    // The bases outside the interval the scan really read, counted once each (US-01M7DVAS AC4): the
+    // two context windows meet on a near-full circle, so a base read before the interval and again
+    // after it is one base of context and not two, and no base of the interval is counted as its own
+    // context. There are `seq_len - length_bp` bases outside an interval, and the context cannot
+    // read more of them than that.
+    let context_outside_interval_bp = match &plan {
+        Some(p) if !wraps => (seq_len - p.interval.length_bp).min(ctx_left + ctx_right),
+        _ => 0,
     };
     // Where the searched range begins, as a 1-based coordinate of the whole record: base 1 for a
     // whole-sequence scan, the interval's own start for an interval.
@@ -1048,7 +1070,7 @@ fn scan_guides(
         }
         let from = pam_core_rel(i, strand);
         Some(format!(
-            "The spacer lies inside the interval searched ({}..{}), but its {} PAM at {}..{} does not: that PAM was read from context outside the interval, which was read for a PAM and for nothing else — no base of it was searched for a guide of its own, or counted as a seed match.",
+            "The spacer lies inside the interval searched ({}..{}), but its {} PAM at {}..{} does not lie wholly inside it: that PAM was read from context outside the interval, which was read for a PAM and for nothing else — no base of it was searched for a guide of its own, or counted as a seed match.",
             format_thousands(iv.start),
             format_thousands(iv.end),
             preset.pam_side,
@@ -1097,13 +1119,31 @@ fn scan_guides(
         if let Some(note) = &p.cap_note {
             warnings.push(note.clone());
         }
-        if ctx_left + ctx_right > 0 {
-            warnings.push(format!(
-                "{} bases outside that interval were read as PAM context only — {} before it and {} after it: a candidate whose spacer is inside the interval but whose PAM is not is listed and says so on its own row, and no base of that context was searched for a guide of its own or counted as a seed match.",
-                format_thousands(ctx_left + ctx_right),
-                format_thousands(ctx_left),
-                format_thousands(ctx_right)
-            ));
+        if context_outside_interval_bp > 0 {
+            // The bases *outside* the interval each context window reads: a whole PAM of them,
+            // unless the interval leaves fewer than that outside it, where the window reads the
+            // rest of its own bases back over the interval and those are not context of anything.
+            let outside = seq_len - iv.length_bp;
+            let before = ctx_left.min(outside);
+            let after = ctx_right.min(outside);
+            if before + after > context_outside_interval_bp {
+                // A near-full circle: the two windows meet, so some of those bases were read on
+                // both sides of the interval. They are one base of context each, not two.
+                warnings.push(format!(
+                    "{} bases outside that interval were read as PAM context only — all of the bases outside it: {} before it and {} after it, {} of them read on both sides, because the interval leaves less of the sequence outside it than a PAM either side of it reads. A candidate whose spacer is inside the interval but whose PAM is not is listed and says so on its own row, and no base of that context was searched for a guide of its own or counted as a seed match.",
+                    format_thousands(context_outside_interval_bp),
+                    format_thousands(before),
+                    format_thousands(after),
+                    format_thousands(before + after - context_outside_interval_bp)
+                ));
+            } else {
+                warnings.push(format!(
+                    "{} bases outside that interval were read as PAM context only — {} before it and {} after it: a candidate whose spacer is inside the interval but whose PAM is not is listed and says so on its own row, and no base of that context was searched for a guide of its own or counted as a seed match.",
+                    format_thousands(context_outside_interval_bp),
+                    format_thousands(before),
+                    format_thousands(after)
+                ));
+            }
         }
     }
     // A caller that asked for no rows was not capped: it asked for the report alone (US-01M7DVH2).
@@ -1204,7 +1244,7 @@ fn scan_guides(
         origin_span_bp,
         searched_interval,
         interval_refusal: None,
-        context_outside_interval_bp: ctx_left + ctx_right,
+        context_outside_interval_bp,
         warnings,
     }
 }

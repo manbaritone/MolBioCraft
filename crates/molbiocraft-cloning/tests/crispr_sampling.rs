@@ -2188,3 +2188,218 @@ fn us_01m7dvas_ac6_an_interval_too_short_or_outside_the_sequence_is_refused_with
     assert_eq!(whole.candidate_count, 1);
     assert!(whole.interval_refusal.is_none() && whole.searched_interval.is_none());
 }
+
+// ───── US-01M7DVAS AC2/AC4 on a near-full circle: the PAM context that runs past the origin ─────
+//
+// The interval scan read its bases into a *linear* buffer of `interval + pam_len` bases either
+// side, and clamped each side to the bases outside the interval. On a near-full-circle selection —
+// one leaving fewer than a PAM's length outside it — that clamp was shorter than a PAM, so a
+// candidate whose whole spacer lay inside the interval, with its PAM reaching round the origin,
+// ran off the end of the buffer and was dropped: no row, no candidate, no warning. The same clamp
+// counted each outside base once per side, so the report claimed twice the bases it had read.
+//
+// The two fixtures below are the regime at its tightest (a 120-bp circle read over 3..120, which
+// leaves two bases outside), and the sweep after them is the regime itself: every interval from
+// `seq_len - 1` bases down past twice a PAM's length, on two record lengths, from four starts and
+// for both presets, against the exhaustive whole-record oracle.
+
+/// The bases outside `iv` that a scan of it must read as PAM context, counted **once each**: a base
+/// within `pam_len` of either bound, on the far side of it, round the origin when `circular`. This
+/// is the number [`CrisprGuideScan::context_outside_interval_bp`] reports, derived here from the
+/// positions themselves rather than from the engine's arithmetic.
+fn oracle_context_bp(len: usize, iv: (usize, usize), pam_len: usize, circular: bool) -> usize {
+    let mut read: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for k in 1..=pam_len as isize {
+        if circular {
+            read.insert((iv.0 as isize - 1 - k).rem_euclid(len as isize) as usize + 1);
+            read.insert((iv.1 as isize - 1 + k).rem_euclid(len as isize) as usize + 1);
+        } else {
+            if iv.0 as isize - k >= 1 {
+                read.insert((iv.0 as isize - k) as usize);
+            }
+            if iv.1 + k as usize <= len {
+                read.insert(iv.1 + k as usize);
+            }
+        }
+    }
+    read.into_iter().filter(|&p| !in_interval(p, iv)).count()
+}
+
+/// AC2 clause 2 and AC4 at the tightest the regime gets: a 120-bp circle searched over 3..120, two
+/// bases of it left outside — fewer than either preset's PAM. One record per preset, each carrying
+/// a site whose whole spacer is inside the interval and whose PAM reaches across the origin into
+/// those two bases: for Cas12a the reverse-strand site 101..4, PAM `TTTA` at 1..4, cut 102; for
+/// SpCas9 the forward site 101..3, PAM `AGG` at 1..3.
+///
+/// Wrong implementations this kills (each run as a mutant): clamping the context read to the bases
+/// outside the interval (the site is dropped — the defect this repairs); reading context on one
+/// side of the interval only (dropped on the other side still); counting a base of context once per
+/// side, which claimed 4 bases outside a 120-bp circle that has only 2; and reporting every base
+/// outside the interval as context, read or not.
+#[test]
+fn us_01m7dvas_ac2_a_near_full_circle_keeps_the_guide_whose_pam_reaches_past_the_origin() {
+    const LEN: usize = 120;
+    const IV: (usize, usize) = (3, LEN);
+
+    // Cas12a. T and A in turn holds no `TTT` and no `AAA`, so neither strand spells a PAM of its
+    // own and the planted site is the record's whole candidate set.
+    let mut cas12a_seq: Vec<u8> = (0..LEN)
+        .map(|i| if i % 2 == 0 { b'T' } else { b'A' })
+        .collect();
+    // The reverse strand reads `TTTA` at 4..1 and then its spacer at 120..101.
+    plant(&mut cas12a_seq, 0, "TAAA");
+    plant(&mut cas12a_seq, 100, "TCAGACAGGTAGATCATCTC");
+    let cas12a_text = String::from_utf8(cas12a_seq.clone()).unwrap();
+    let cas12a_site: Candidate = (101, 4, -1, "GAGATGATCTACCTGTCTGA".to_string(), 102);
+
+    // SpCas9. A and T alone spell no `GG` and no `CC`, so again the planted site is the whole set:
+    // its spacer is the record's bases 101..120 and its `AGG` PAM its bases 1..3.
+    let mut cas9_seq = at_background(LEN, 0x15_7e05);
+    plant(&mut cas9_seq, 0, "AGG");
+    plant(&mut cas9_seq, 100, LONE_SPACER);
+    let cas9_text = String::from_utf8(cas9_seq.clone()).unwrap();
+    let cas9_site: Candidate = (101, 3, 1, LONE_SPACER.to_string(), 117);
+
+    for (label, text, seq, is_spcas9, nuclease, pam_len, site) in [
+        (
+            "Cas12a",
+            &cas12a_text,
+            &cas12a_seq,
+            false,
+            "Cas12a / Cpf1 (TTTV)",
+            4usize,
+            cas12a_site,
+        ),
+        (
+            "SpCas9",
+            &cas9_text,
+            &cas9_seq,
+            true,
+            "SpCas9 (NGG)",
+            3usize,
+            cas9_site,
+        ),
+    ] {
+        // The circle read whole holds the site; so must the interval that holds its whole spacer.
+        let whole = scan_crispr_guides(text, nuclease, usize::MAX, None, true);
+        assert_eq!(
+            as_candidates(&whole.guides),
+            vec![site.clone()],
+            "{label}: the planted site is the whole circle's candidate set"
+        );
+
+        let scan = scan_crispr_guides_in_interval(text, nuclease, usize::MAX, Some(IV), true);
+        assert_eq!(
+            as_candidates(&scan.guides),
+            oracle_interval_candidates(seq, is_spcas9, true, IV),
+            "{label}: the interval's candidates are the oracle's"
+        );
+        assert!(
+            scan.guides.iter().any(|g| (
+                g.start,
+                g.end,
+                g.strand,
+                g.spacer_seq.clone(),
+                g.cut_position
+            ) == site),
+            "{label}: the site whose spacer is inside {IV:?} and whose PAM runs past the origin is \
+             missing; the interval returned {:?}",
+            as_tuples(&scan.guides)
+        );
+        assert_eq!(
+            scan.candidate_count, 1,
+            "{label}: {:?}",
+            as_tuples(&scan.guides)
+        );
+        // AC2: that PAM is marked as read from context outside the interval, naming its bases.
+        let note = scan.guides[0]
+            .interval_context_note
+            .as_deref()
+            .unwrap_or_else(|| panic!("{label}: a PAM outside the interval is disclosed"));
+        // Part of this PAM is inside the interval and part of it outside, so the note claims no
+        // more than that: it does not lie *wholly* inside.
+        assert!(
+            note.contains("3..120") && note.contains("does not lie wholly inside it"),
+            "{label}: {note}"
+        );
+
+        // AC4: two bases of this circle lie outside 3..120, each read on both sides of the
+        // interval — and counted once, not once per side.
+        assert_eq!(
+            scan.context_outside_interval_bp,
+            oracle_context_bp(LEN, IV, pam_len, true),
+            "{label}: the bases outside the interval that were read, counted once each"
+        );
+        assert_eq!(scan.context_outside_interval_bp, 2, "{label}");
+        let said = scan
+            .warnings
+            .iter()
+            .find(|w| w.contains("PAM context"))
+            .unwrap_or_else(|| panic!("{label}: {:?}", scan.warnings));
+        assert!(
+            said.contains("2 bases") && !said.contains("4 bases"),
+            "{label}: the sentence counts the bases that are there: {said}"
+        );
+        assert!(
+            said.contains("all of the bases outside it") && said.contains("read on both sides"),
+            "{label}: and says why two bases of context were read four times: {said}"
+        );
+    }
+}
+
+/// AC2 and AC4 over the whole near-full-circle regime, not the one case it was reported from
+/// (LC-002): every interval length from `seq_len - 1` down to `seq_len - 12` — past twice either
+/// preset's PAM, so the sweep crosses the boundary where the two context windows stop meeting — on
+/// two record lengths, from four starts, for both presets, against the exhaustive whole-record
+/// oracle kept by spacer. The records are dense ACGT, so each scan compares real candidate sets.
+///
+/// Wrong implementations this kills (each run as a mutant): any clamp of the PAM context that is
+/// shorter than a PAM (guides go missing at some length in the sweep); reading context past one
+/// bound only (the same); a context window of `pam_len + 1` either side, which reads a base the
+/// scan has no business reading — no candidate can come of it, because a spacer outside the
+/// interval is dropped either way, but the bases read outside the interval are then one more per
+/// side than a PAM, which this sweep reads where the interval leaves 7 or 8 bases outside it; and
+/// counting the context by side, or by every base outside the interval, rather than by the distinct
+/// bases that were read.
+#[test]
+fn us_01m7dvas_ac2_every_near_full_circle_interval_matches_the_brute_force_oracle() {
+    for len in [120usize, 137] {
+        let seq = acgt_background(len, 0x15_7f06 ^ len as u32);
+        let text = String::from_utf8(seq.clone()).unwrap();
+        for (is_spcas9, nuclease, pam_len) in [
+            (true, "SpCas9 (NGG)", 3usize),
+            (false, "Cas12a / Cpf1 (TTTV)", 4usize),
+        ] {
+            for start in [1usize, 3, 29, len - 2] {
+                for length_bp in (len - 12)..len {
+                    let end = (start - 1 + length_bp - 1) % len + 1;
+                    let iv = (start, end);
+                    let scan =
+                        scan_crispr_guides_in_interval(&text, nuclease, usize::MAX, Some(iv), true);
+                    assert!(
+                        scan.interval_refusal.is_none(),
+                        "{len} bp, {nuclease}, {iv:?}: {:?}",
+                        scan.warnings
+                    );
+                    let expected = oracle_interval_candidates(&seq, is_spcas9, true, iv);
+                    assert_eq!(
+                        as_candidates(&scan.guides),
+                        expected,
+                        "{len} bp, {nuclease}, interval {iv:?} ({length_bp} bp): the candidates \
+                         whose whole spacer lies inside it"
+                    );
+                    assert_eq!(
+                        scan.candidate_count,
+                        expected.len(),
+                        "{len} bp, {nuclease}, {iv:?}: the candidate count is the oracle's"
+                    );
+                    assert_eq!(
+                        scan.context_outside_interval_bp,
+                        oracle_context_bp(len, iv, pam_len, true),
+                        "{len} bp, {nuclease}, {iv:?}: the distinct bases outside it that were read"
+                    );
+                }
+            }
+        }
+    }
+}

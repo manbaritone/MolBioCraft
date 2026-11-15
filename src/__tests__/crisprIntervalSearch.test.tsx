@@ -28,7 +28,9 @@
  * - an interval offered when there is no selection at all;
  * - an origin-crossing selection measured as `end - start` (the circular case is 161 bp, not a
  *   negative or a 240-bp span - BG-01M7CG2W);
- * - the bases of PAM context read outside the interval left unsaid.
+ * - the bases of PAM context read outside the interval left unsaid;
+ * - a base of context read on both sides of an interval that nearly closes on itself counted once
+ *   per side, which claimed 4 bases outside a 120-bp circle that leaves only 2 outside it.
  */
 
 import React from 'react';
@@ -117,6 +119,8 @@ const warnings = (html: string) =>
 
 const linear300 = dnaDoc('Crispr_Interval_Linear', randomDna(300, 0x15_7a01));
 const circular400 = dnaDoc('Crispr_Interval_Circular', randomDna(400, 0x15_7b02), 'circular');
+/** A circle an interval can nearly close: 118 of its 120 bases are searched, two lie outside. */
+const circular120 = dnaDoc('Crispr_Interval_Near_Full_Circle', randomDna(120, 0x15_7c03), 'circular');
 
 describe('US-01M7DVAS AC1: Find CRISPR Sites offers the whole sequence or the interval on screen', () => {
   it('offers both scopes, naming the selected interval by its own 1-based bounds', () => {
@@ -205,6 +209,23 @@ describe('US-01M7DVAS AC4: the scan report names the interval searched, never th
     expect(said).toContain('across the origin');
     expect(said).toContain('400 bases');
     expect(said).not.toContain('all 400 bases of this circular sequence');
+  });
+
+  it('counts a base of context read on both sides of a near-full-circle interval once', () => {
+    // 118 of these 120 bases are the interval searched, so bases 1 and 2 are the only ones outside
+    // it - and each of them is read twice, once as the PAM context off either bound of an interval
+    // that nearly closes on itself. Two bases of this sequence were read outside the interval, not
+    // four: the number says what was read, not how often it was read.
+    const html = crisprTab(circular120, { start: 3, end: 120 });
+    const said = callout(html);
+    expect(said).toContain('3..120');
+    expect(said).toContain('118 bp');
+    expect(said).toContain('2 bases outside the interval were read as PAM context only');
+    expect(said).not.toContain('4 bases outside the interval');
+    // The engine's own sentence counts them the same way, and says why they were read twice.
+    expect(warnings(html).join(' | ')).toContain(
+      '2 bases outside that interval were read as PAM context only — all of the bases outside it'
+    );
   });
 
   it('keeps the whole-sequence wording, and claims no interval, when the whole sequence was searched', () => {
