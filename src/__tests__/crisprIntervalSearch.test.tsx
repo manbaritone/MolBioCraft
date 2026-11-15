@@ -486,10 +486,19 @@ type BranchSurfaces = {
 let branchSurfacesOnce: Promise<BranchSurfaces[]> | undefined;
 
 /**
+ * A plasmid shorter than an SpCas9 site: the engine reads its bases straight, not round its origin
+ * (`scannedCircular` false), and finds no guide - the one shape in which the shipped studio shows a
+ * circular record read without crossing its origin (BG-01M7FH8K AC4).
+ */
+const circularUnderASite = dnaDoc('Crispr_Interval_Circle_Under_Site', randomDna(20, 0x15_7e05), 'circular');
+
+/**
  * Every scan shape the studio can show, read from one launch of the real App: an interval of a
- * plasmid, the prefix of a record longer than the engine reads, a plasmid read whole and a linear
- * record read whole - the four branches `crisprReadAs` can print. The scope sentence is read out of
- * the document the App saves, so a scope that reaches no writer fails here (LC-003).
+ * plasmid, the prefix of a record longer than the engine reads, a plasmid read whole, a plasmid read
+ * without crossing its origin and a linear record read whole - the five branches `crisprScanReadAs`
+ * can print. The scope sentence is read out of the document the App saves, so a scope that reaches
+ * no writer fails here (LC-003). The plasmid read without crossing its origin holds no guide, so it
+ * has no note to save: its callout is read against the formatter alone.
  */
 const branchSurfaces = (): Promise<BranchSurfaces[]> =>
   (branchSurfacesOnce ??= (async () => {
@@ -498,6 +507,7 @@ const branchSurfaces = (): Promise<BranchSurfaces[]> =>
       { branch: 'bounded prefix', doc: pastTheBound },
       { branch: 'circular whole', doc: circular400 },
       { branch: 'linear whole', doc: linear300 },
+      { branch: 'circular not read across its origin', doc: circularUnderASite },
     ];
     const app = await mountApp();
     try {
@@ -506,8 +516,13 @@ const branchSurfaces = (): Promise<BranchSurfaces[]> =>
         await appOnCrisprTab(app, doc, interval);
         const scan = await engineScan(doc, interval);
         expect(scan.report, `${branch}: the engine sent a scan report`).toBeTruthy();
-        expect(scan.guides.length, `${branch}: the fixture holds guides to annotate`).toBeGreaterThan(0);
         const seedSaid = seedSentence(calloutWords(app));
+        if (scan.guides.length === 0) {
+          expect(branch, 'only the plasmid under one site holds no guide').toBe('circular not read across its origin');
+          const { crisprScanReadAs } = await import('../core/crisprGuideText');
+          read.push({ branch, doc, report: scan.report!, seedSaid, noteScopes: [crisprScanReadAs(scan.report!, doc.topology)] });
+          continue;
+        }
         await annotateTop5(app);
         const noteScopes = seedNotes(await savedFeatures(app, doc.id)).map(scopeOf);
         expect(noteScopes.length, `${branch}: one seed count stated per guide annotated`).toBe(
@@ -551,19 +566,20 @@ describe("BG-01M7FCDY AC1: the callout's seed sentence reads the one formatter, 
 });
 
 /**
- * The arms of `crisprReadAs`, read out of the studio's own source - one regular expression per
- * branch it can print, with each `${...}` left free. The branch list is derived here rather than
+ * The arms of `crisprScanReadAs`, the one scope formatter, read out of its own source in
+ * src/core/crisprGuideText.ts (BG-01M7FH8K: the studio reads it and keeps no copy) - one regular
+ * expression per branch it can print, with each `${...}` left free. The branch list is derived here rather than
  * written out, so a branch added to the formatter without a case below fails this guard instead of
  * going unread: BG-01M7EQAA AC1 passed for a year of plasmids while calling them linear precisely
  * because its fixtures reached two of the four branches and nothing said so.
  */
 const readAsBranchPatterns = async (): Promise<RegExp[]> => {
   const { readFileSync } = await import('node:fs');
-  const source = readFileSync(new URL('../components/PrimerAndPCRStudio.tsx', import.meta.url), 'utf8');
-  const decl = /const crisprReadAs =([\s\S]*?);\n/.exec(source);
-  if (!decl) throw new Error('the studio declares no `crisprReadAs`, so this guard has nothing to derive');
-  const arms = decl[1].match(/`[^`]*`/g) ?? [];
-  if (arms.length === 0) throw new Error('`crisprReadAs` states no branch this guard can read');
+  const source = readFileSync(new URL('../core/crisprGuideText.ts', import.meta.url), 'utf8');
+  const decl = /export function crisprScanReadAs\([\s\S]*?\n}\n/.exec(source);
+  if (!decl) throw new Error('core declares no `crisprScanReadAs`, so this guard has nothing to derive');
+  const arms = decl[0].match(/`[^`]*`/g) ?? [];
+  if (arms.length === 0) throw new Error('`crisprScanReadAs` states no branch this guard can read');
   return arms.map(
     (arm) =>
       new RegExp(
@@ -577,12 +593,12 @@ const readAsBranchPatterns = async (): Promise<RegExp[]> => {
 };
 
 describe('BG-01M7FCDY AC2: one guard holds every branch of the formatter to a single source', () => {
-  it("BG-01M7FCDY AC2 note and callout share the formatter's phrase on all four branches", async () => {
+  it("BG-01M7FCDY AC2 note and callout share the formatter's phrase on every branch", async () => {
     const patterns = await readAsBranchPatterns();
     const surfaces = await branchSurfaces();
     expect(
       patterns.length,
-      'every branch `crisprReadAs` can print is read by a case here - add one for a new branch'
+      'every branch `crisprScanReadAs` can print is read by a case here - add one for a new branch'
     ).toBe(surfaces.length);
 
     const reached = new Map<number, string>();
@@ -594,7 +610,7 @@ describe('BG-01M7FCDY AC2: one guard holds every branch of the formatter to a si
       );
       // (ii) Which branch printed it, decided by the formatter's own source rather than by this file.
       const matched = patterns.flatMap((pattern, i) => (pattern.test(scope) ? [i] : []));
-      expect(matched.length, `${branch}: the scope "${scope}" is exactly one branch of crisprReadAs`).toBe(
+      expect(matched.length, `${branch}: the scope "${scope}" is exactly one branch of crisprScanReadAs`).toBe(
         1
       );
       expect(reached.get(matched[0]), `${branch}: no two cases read the same branch`).toBeUndefined();
@@ -622,7 +638,7 @@ describe('BG-01M7FCDY AC2: one guard holds every branch of the formatter to a si
     }
     expect(
       [...reached.keys()].sort(),
-      'every branch of crisprReadAs is read by one of these cases'
+      'every branch of crisprScanReadAs is read by one of these cases'
     ).toEqual(patterns.map((_, i) => i));
   }, 600_000);
 });

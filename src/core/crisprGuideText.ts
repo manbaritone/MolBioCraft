@@ -148,11 +148,42 @@ export const CRISPR_EXPORT_COORDINATE_CONVENTION =
 const topologyWord = (topology: string): 'circular' | 'linear' =>
   topology === 'circular' ? 'circular' : 'linear';
 
-/** What a scan read, where it reports no interval: the whole molecule, or a bounded prefix of it. */
-function scannedRangeText(scan: CrisprScanReport, topology: string): string {
-  return scan.scannedLengthBp < scan.sequenceLengthBp
-    ? `bases 1 to ${bp(scan.scannedLengthBp)} of the ${bp(scan.sequenceLengthBp)} bases of this sequence`
-    : `all ${bp(scan.sequenceLengthBp)} bases of this ${topologyWord(topology)} sequence`;
+/**
+ * Which bases a scan read, in the one set of words every surface states it in (BG-01M7FH8K): the
+ * interval it searched, the bounded prefix of a record longer than the engine reads, a circle read
+ * round its origin, a circle read without crossing its origin, or a linear record read whole -
+ * always from the scan's own report, never from what the tab asked for. The guide table's callout,
+ * the Top 5 annotation note and the guide export's `Seed Match Scope` and `Interval Searched` cells
+ * all read it; no surface states these words of its own.
+ *
+ * A circular record is never called linear (BG-01M7FH8K AC4). Where the scan did not read it across
+ * its origin - it read the bases straight, or reported no base across the origin - the phrase says
+ * so, and that no guide or seed match spanning the origin was searched: "all N bases of this
+ * circular sequence" alone would claim coverage the scan did not have.
+ */
+export function crisprScanReadAs(scan: CrisprScanReport, topology: string): string {
+  const interval = scan.searchedInterval;
+  if (interval) {
+    return `bases ${bp(interval.start)}..${bp(interval.end)} — the ${bp(interval.lengthBp)} bp interval searched${interval.crossesOrigin ? ', across the origin' : ''} — of the ${bp(scan.sequenceLengthBp)} bases of this ${topologyWord(topology)} sequence, on both strands`;
+  }
+  if (scan.scannedLengthBp < scan.sequenceLengthBp) {
+    return `bases 1 to ${bp(scan.scannedLengthBp)} of the ${bp(scan.sequenceLengthBp)} bases of this sequence, on both strands`;
+  }
+  if (scan.scannedCircular && scan.originSpanBp > 0) {
+    return `all ${bp(scan.sequenceLengthBp)} bases of this circular sequence, including the ${bp(scan.originSpanBp)} across its origin, on both strands`;
+  }
+  if (topologyWord(topology) === 'circular') {
+    return `all ${bp(scan.sequenceLengthBp)} bases of this circular sequence, read without crossing its origin, on both strands — so no guide or seed match spanning the origin was searched`;
+  }
+  return `all ${bp(scan.sequenceLengthBp)} bases of this linear sequence, on both strands`;
+}
+
+/**
+ * What an interval's seed count is not (BG-01M7FH8K): a count over the whole sequence. Stated here
+ * once, for the callout, the Top 5 note and the export alike.
+ */
+export function crisprIntervalSpecificityText(scan: CrisprScanReport): string {
+  return `an interval specificity, not one over the whole ${bp(scan.sequenceLengthBp)} bases`;
 }
 
 /** The interval a guide was searched in, as the scan itself reports it (US-01M7DVAS). */
@@ -167,47 +198,41 @@ function intervalSearchedText(
   if (scan.intervalRefusal !== undefined) {
     return `No interval was searched: ${scan.intervalRefusal}`;
   }
-  const interval = scan.searchedInterval;
-  if (!interval) {
-    return `No interval: the scan searched ${scannedRangeText(scan, topology)}, on both strands.`;
+  if (!scan.searchedInterval) {
+    return `No interval: the scan searched ${crisprScanReadAs(scan, topology)}.`;
   }
   const context =
     scan.contextOutsideIntervalBp > 0
       ? `${bp(scan.contextOutsideIntervalBp)} bases outside it were read as PAM context only.`
       : 'No base outside it was read.';
   return [
-    `bases ${bp(interval.start)}..${bp(interval.end)} — the ${bp(interval.lengthBp)} bp interval searched${
-      interval.crossesOrigin ? ', across the origin' : ''
-    } — of the ${bp(scan.sequenceLengthBp)} bases of this ${topologyWord(topology)} sequence.`,
+    `${crisprScanReadAs(scan, topology)}.`,
     context,
     ...(guide.intervalContextNote ? [guide.intervalContextNote] : []),
   ].join(' ');
 }
 
 /**
- * What a guide's seed count counts (US-01M7DVVR, US-01M7DVAS AC4): the seed, the range it was
- * counted over and both strands - so an interval specificity is never read as a sequence-wide one -
- * and that no genome-wide search was run.
+ * What a guide's seed count counts (US-01M7DVVR, US-01M7DVAS AC4): the seed, and the bases it was
+ * counted over in `crisprScanReadAs`'s words and no others (BG-01M7FH8K), so the cell that travels
+ * in the file cannot describe the count differently from the screen. What the formatter does not
+ * say is this cell's own: that a scan of part of the record found no copy in the rest of it, that
+ * an interval count is not one over the whole sequence, and that no genome-wide search was run.
  */
 function seedScopeText(scan: CrisprScanReport | undefined, topology: string): string {
   const notGenomeWide = 'No genome-wide off-target search was run.';
   if (!scan) {
     return `Not stated: the engine sent no scan report, so the range this count covers cannot be stated. ${notGenomeWide}`;
   }
-  const interval = scan.searchedInterval;
-  if (interval) {
-    return `Other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed inside the interval searched, bases ${bp(
-      interval.start
-    )}..${bp(interval.end)} (${bp(interval.lengthBp)} bp${
-      interval.crossesOrigin ? ', across the origin' : ''
-    }), on both strands, and no copy outside it — an interval specificity, not one over the whole ${bp(
-      scan.sequenceLengthBp
-    )} bases. ${notGenomeWide}`;
-  }
-  return `Other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed in ${scannedRangeText(
+  const partOfIt = scan.searchedInterval
+    ? `, and no copy outside it — ${crisprIntervalSpecificityText(scan)}`
+    : scan.scannedLengthBp < scan.sequenceLengthBp
+      ? ', and no copy outside it'
+      : '';
+  return `Other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed across ${crisprScanReadAs(
     scan,
     topology
-  )} — the range searched — on both strands, and no copy outside it. ${notGenomeWide}`;
+  )}${partOfIt}. ${notGenomeWide}`;
 }
 
 /** A preset's own site facts, in its own numbers (US-01M7DV29): never SpCas9's written out. */

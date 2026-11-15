@@ -26,6 +26,8 @@ import {
   CRISPR_SEED_LENGTH_BP,
   crisprGuideExportTable,
   crisprHeuristicRuleText,
+  crisprIntervalSpecificityText,
+  crisprScanReadAs,
   crisprSpacerAndPamCopyText,
   crisprSpacerCopyText,
 } from '../core/crisprGuideText';
@@ -438,28 +440,18 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   const crisprSearchedInterval = crisprScan?.searchedInterval;
   const crisprIntervalRefusal = crisprScan?.intervalRefusal;
   const crisprContextBp = crisprScan?.contextOutsideIntervalBp ?? 0;
-  const crisprIntervalBounds = crisprSearchedInterval
-    ? `${bp(crisprSearchedInterval.start)}..${bp(crisprSearchedInterval.end)}`
-    : '';
   const crisprScanIsPartial =
     crisprSearchedInterval === undefined &&
     crisprScanned !== undefined &&
     crisprSequenceBp !== undefined &&
     crisprScanned < crisprSequenceBp;
-  // Read from the scan's own reply, never from the document: a circular record the scan could not
-  // read whole was read straight, and says so instead of claiming its origin.
-  const crisprScanWrapped =
-    crisprSearchedInterval === undefined &&
-    crisprScan?.scannedCircular === true &&
-    (crisprScan.originSpanBp ?? 0) > 0;
-  /** How the scan read the molecule, in the words the seed-match sentence and the no-guide line share. */
-  const crisprReadAs = crisprSearchedInterval
-    ? `bases ${crisprIntervalBounds} — the ${bp(crisprSearchedInterval.lengthBp)} bp interval searched${crisprSearchedInterval.crossesOrigin ? ', across the origin' : ''} — of the ${bp(crisprSequenceBp ?? 0)} bases of this ${doc.topology === 'circular' ? 'circular' : 'linear'} sequence, on both strands`
-    : crisprScanIsPartial
-      ? `bases 1 to ${bp(crisprScanned!)} of the ${bp(crisprSequenceBp!)} bases of this sequence, on both strands`
-      : crisprScanWrapped
-      ? `all ${bp(crisprSequenceBp!)} bases of this circular sequence, including the ${bp(crisprScan!.originSpanBp)} across its origin, on both strands`
-      : `all ${bp(crisprSequenceBp ?? 0)} bases of this linear sequence, on both strands`;
+  /**
+   * How the scan read the molecule, in the words the seed-match sentence, the no-guide line, the Top
+   * 5 note and the guide export all share: `crisprScanReadAs`, stated once in core (BG-01M7FH8K) and
+   * read here rather than copied. Every surface that prints it sits behind a scan report, so a scan
+   * that sent none prints no scope at all.
+   */
+  const crisprReadAs = crisprScan ? crisprScanReadAs(crisprScan, doc.topology) : '';
   /**
    * What a seed count covered, as an annotation of the document has to say it (BG-01M7EQAA AC1):
    * the same words `crisprReadAs` gives the callout and the no-guide line, read from the scan's own
@@ -472,7 +464,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     crisprScan === undefined
       ? 'scope unavailable: the engine sent no scan report, so which bases this count covered is not known'
       : crisprSearchedInterval !== undefined
-      ? `counted over ${crisprReadAs} — an interval specificity, not one over the whole ${bp(crisprSequenceBp ?? 0)} bases`
+      ? `counted over ${crisprReadAs} — ${crisprIntervalSpecificityText(crisprScan)}`
       : `counted over ${crisprReadAs}`;
   const crisprTabCount =
     crisprCandidates === undefined
@@ -1445,7 +1437,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 as the export's two did, so a change to what the scorer counts left five surfaces
                 stating the old figure.
                 Which bases were read is `crisprReadAs` on every branch, as the annotation note
-                reads it (BG-01M7FCDY AC1): the interval and bounded-prefix branches each wrote a
+                and the export read it (BG-01M7FCDY AC1, BG-01M7FH8K: `crisprScanReadAs` in core): the interval and bounded-prefix branches each wrote a
                 frame of their own here - the bounded one a copy of the formatter's own bounded
                 wording - so the frame could drift from the note's on one branch with every
                 criterion that holds the note green, as the reviewer's M15 did. What is left is only this sentence's own claim:
@@ -1456,7 +1448,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 <strong>Seed matches</strong>:{' '}
                 {`other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed across ${crisprReadAs}${
                   crisprSearchedInterval !== undefined
-                    ? `, and no copy outside it — an interval specificity, not one over the whole ${bp(crisprSequenceBp ?? 0)} bases`
+                    ? `, and no copy outside it — ${crisprIntervalSpecificityText(crisprScan)}`
                     : crisprScanIsPartial
                     ? ', and no copy outside it'
                     : ''

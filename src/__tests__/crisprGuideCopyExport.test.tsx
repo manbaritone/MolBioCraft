@@ -555,8 +555,10 @@ describe('US-01M7DV5P AC4: the export carries each guide with its coordinates an
         rule.replace(/\s+/g, ' ').trim()
       );
       expect(Number(row['Exact Seed Matches'])).toBe(guide.offTargetCount);
-      expect(row['Seed Match Scope']).toMatch(/12-nt PAM-proximal seed/);
-      expect(row['Seed Match Scope']).toMatch(/both strands/);
+      // The scope in the formatter's own words (BG-01M7FH8K AC3): a shape match here passed any
+      // wording at all that named the seed.
+      const { crisprScanReadAs } = await import('../core/crisprGuideText');
+      expect(row['Seed Match Scope']).toContain(`seed across ${crisprScanReadAs(scan.report!, PLASMID.topology)}`);
       expect(row['Seed Match Scope'], 'the count is not a genome-wide one').toMatch(/genome-wide/i);
       expect(row['Nuclease Preset']).toContain(guide.nuclease);
       expect(row['Interval Searched']).toMatch(/no interval/i);
@@ -887,4 +889,429 @@ describe('BG-01M7EZVV AC4: a copy is reported only as far as the page can tell',
       expect(latest.status, 'and it is reported as the copy it was read back as').toBe('copied');
     });
   });
+});
+
+// ─── BG-01M7FH8K: the export's scope cell reads the one formatter, on every branch ───
+
+/**
+ * The export's `Seed Match Scope` cell wrote a seed count's scope in its own words (`seedScopeText`)
+ * while the callout and the Top 5 annotation note read the studio's formatter - so a cell edited
+ * alone, `inside the interval searched` to `within the range read`, left every test green and the
+ * spreadsheet a researcher sends on describing the count differently from the screen. The cell now
+ * reads `crisprScanReadAs` in src/core/crisprGuideText.ts, the formatter lifted beside it, and
+ * these three cases hold it there on every branch the formatter can print.
+ *
+ * Wrong implementations these kill:
+ * - AC1: an export cell, callout or note that words any branch of the scope otherwise - a frame of
+ *   the export's own, a dropped `across the origin` - and an export that keeps the scope but
+ *   loses a fact the formatter does not carry
+ *   (the interval specificity, `no copy outside it`, `No genome-wide off-target search was run.`).
+ * - AC2: a fixed list of four fixtures, so a fifth branch added to the formatter goes unread; and a
+ *   derivation that silently finds fewer arms than the formatter returns.
+ * - AC3: `seedScopeText`'s or `scannedRangeText`'s own scope literals left in the file, live or
+ *   dead; a cell whose words outside the formatter's phrase state a scope of their own; a report the
+ *   engine never sent exported as a scope.
+ */
+
+/** Seeded pseudo-random DNA (LCG): the bases BG-01M7FCDY's fixtures reach all four branches with. */
+function seededBases(length: number, seed: number): string {
+  let x = seed >>> 0;
+  const out = new Array<string>(length);
+  for (let i = 0; i < length; i++) {
+    x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+    out[i] = 'ACGT'[x >>> 30];
+  }
+  return out.join('');
+}
+
+const SCOPE_LINEAR = dnaDoc('fh8k-linear', 'pFH8K_Linear', seededBases(300, 0x15_7a01), 'linear');
+const SCOPE_CIRCULAR = dnaDoc('fh8k-circular', 'pFH8K_Circular', seededBases(400, 0x15_7b02), 'circular');
+/**
+ * A plasmid shorter than an SpCas9 site: the engine reads it straight, not round its origin
+ * (`scannedCircular` false), and finds no guide - the one shape in which the shipped engine reports
+ * a circular record read without crossing its origin.
+ */
+const SCOPE_UNDER_SITE = dnaDoc('fh8k-under-site', 'pFH8K_Under_Site', seededBases(20, 0x15_7e05), 'circular');
+/** 100 bases past the engine's scan bound: the one shape the studio shows a bounded prefix in. */
+const SCOPE_PAST_BOUND = dnaDoc('fh8k-past-bound', 'pFH8K_Past_Bound', seededBases(8_000_100, 0x15_7d04), 'linear');
+
+/** A count of bases as every surface in the app writes it. */
+const basesText = (n: number) => n.toLocaleString('en-US');
+
+/** The callout's seed-match sentence alone: what it says between `Seed matches:` and its genome-wide note. */
+function calloutSeedSentence(app: AppHarness): string {
+  const m = /Seed matches:\s*([\s\S]*?)\(no genome-wide off-target search\)/.exec(seedMatchesCallout(app));
+  if (!m) throw new Error('the CRISPR callout holds no "Seed matches" sentence');
+  return m[1].trim();
+}
+
+/** Presses the tab's own `+ Annotate Top 5 Guides` button. */
+async function annotateTopFive(app: AppHarness): Promise<void> {
+  const buttons = app
+    .all('button')
+    .filter((b) => b.textContent.replace(/\s+/g, ' ').includes('+ Annotate Top 5 Guides'));
+  expect(buttons, 'the CRISPR tab shows one "+ Annotate Top 5 Guides" button').toHaveLength(1);
+  await app.click(buttons[0]);
+}
+
+/** The scope clause of every seed-count note in the document the App saves (File > Save Session). */
+async function savedNoteScopes(app: AppHarness, docId: string): Promise<string[]> {
+  const before = app.downloads().length;
+  await app.menu('file:save-session');
+  const files = app.downloads();
+  expect(files.length, 'File > Save Session saves one file').toBe(before + 1);
+  const payload = JSON.parse(await files[files.length - 1].text()) as {
+    documents: { id: string; features: { notes?: string }[] }[];
+  };
+  const saved = payload.documents.find((d) => d.id === docId);
+  if (!saved) throw new Error(`the saved session holds no document "${docId}"`);
+  return saved.features
+    .map((f) => /seed matches=\d+[,.]?\s*counted over ([\s\S]*?)(?: — an interval specificity|$)/.exec(f.notes ?? '')?.[1])
+    .filter((s): s is string => s !== undefined);
+}
+
+/**
+ * The formatter's phrase as an exported cell holds it: everything after `seed across` up to the
+ * export's own claims. Read by the cell's frame, not by the formatter, so AC2 decides which branch
+ * the CELL printed rather than which one the formatter would have.
+ */
+const cellPhrase = (cell: string): string =>
+  /PAM-proximal seed across ([\s\S]*?)(?:, and no copy outside it|\. No genome-wide)/.exec(cell)?.[1] ?? '';
+
+/** One scan shape, as the export, the callout and the saved note each state it. */
+type ExportedBranch = {
+  branch: string;
+  /** Set where the case is a second reading of an arm another case already reaches. */
+  variantOf?: string;
+  /** The molecule and the report the exported cells were written from. */
+  doc: SequenceDocument;
+  report: NonNullable<Awaited<ReturnType<typeof engineScan>>['report']>;
+  /** The molecule and the report the callout was read from: the same, but for the synthetic case. */
+  seedDoc: SequenceDocument;
+  seedReport: NonNullable<Awaited<ReturnType<typeof engineScan>>['report']>;
+  cells: string[];
+  intervalCells: string[];
+  seedSaid: string;
+  noteScopes: string[];
+};
+
+let exportedBranchesOnce: Promise<ExportedBranch[]> | undefined;
+
+/** Every scan shape the formatter can print, read from one launch of the real App. */
+const exportedBranches = (): Promise<ExportedBranch[]> =>
+  (exportedBranchesOnce ??= (async () => {
+    const cases: {
+      branch: string;
+      variantOf?: string;
+      doc: SequenceDocument;
+      interval?: { start: number; end: number };
+    }[] = [
+      { branch: 'interval', doc: SCOPE_CIRCULAR, interval: { start: 101, end: 300 } },
+      // The interval arm's other side: an interval across the origin, which must say so.
+      { branch: 'interval across the origin', variantOf: 'interval', doc: SCOPE_CIRCULAR, interval: { start: 380, end: 140 } },
+      { branch: 'bounded prefix', doc: SCOPE_PAST_BOUND },
+      { branch: 'circular whole', doc: SCOPE_CIRCULAR },
+      { branch: 'linear whole', doc: SCOPE_LINEAR },
+    ];
+    const app = await mountApp();
+    try {
+      const read: ExportedBranch[] = [];
+      // The fifth arm, a circular record read without crossing its origin. The shipped engine
+      // reaches it only on a plasmid shorter than a site, which the studio shows - its callout is
+      // read here - but which holds no guide to export. Its cells are written by the export itself
+      // from the whole plasmid's own guides under that plasmid's report with the origin read
+      // cleared: the one synthetic report in these cases, and named as one.
+      {
+        const branch = 'circular not read across its origin';
+        await onCrisprTab(app, SCOPE_UNDER_SITE);
+        const under = await engineScan(SCOPE_UNDER_SITE, SPCAS9);
+        expect(under.report, `${branch}: the engine read the plasmid straight`).toMatchObject({
+          scannedCircular: false,
+          originSpanBp: 0,
+        });
+        expect(under.guides, `${branch}: a plasmid under one site holds no guide`).toHaveLength(0);
+        const seedSaid = calloutSeedSentence(app);
+        const whole = await engineScan(SCOPE_CIRCULAR, SPCAS9);
+        const report = { ...whole.report!, scannedCircular: false, originSpanBp: 0 };
+        const { crisprGuideExportTable } = await import('../core/crisprGuideText');
+        const table = crisprGuideExportTable({
+          guides: whole.guides,
+          document: SCOPE_CIRCULAR,
+          scan: report,
+          heuristicRule: await engineRankRule(SCOPE_CIRCULAR),
+          scope: { selectedCount: 0, shownCount: whole.guides.length },
+        });
+        const column = (name: string) => table.rows.map((r) => r[table.headers.indexOf(name)]);
+        read.push({
+          branch,
+          doc: SCOPE_CIRCULAR,
+          report,
+          seedDoc: SCOPE_UNDER_SITE,
+          seedReport: under.report!,
+          cells: column('Seed Match Scope'),
+          intervalCells: column('Interval Searched'),
+          seedSaid,
+          noteScopes: [],
+        });
+      }
+      for (const { branch, variantOf, doc, interval } of cases) {
+        await onCrisprTab(app, doc, interval);
+        const scan = await engineScan(doc, SPCAS9, interval);
+        expect(scan.report, `${branch}: the engine sent a scan report`).toBeTruthy();
+        expect(scan.guides.length, `${branch}: the fixture holds guides to export`).toBeGreaterThan(0);
+        const seedSaid = calloutSeedSentence(app);
+        const rows = parseDelimited((await exportGuides(app, 'TSV')).text, '\t').rows;
+        expect(rows.length, `${branch}: the export writes the rows shown`).toBe(listedGuideIds(app).length);
+        await annotateTopFive(app);
+        const noteScopes = await savedNoteScopes(app, doc.id);
+        expect(noteScopes.length, `${branch}: one seed count stated per guide annotated`).toBe(
+          Math.min(5, scan.guides.length)
+        );
+        read.push({
+          branch,
+          ...(variantOf ? { variantOf } : {}),
+          doc,
+          report: scan.report!,
+          seedDoc: doc,
+          seedReport: scan.report!,
+          cells: rows.map((r) => r['Seed Match Scope']),
+          intervalCells: rows.map((r) => r['Interval Searched']),
+          seedSaid,
+          noteScopes,
+        });
+      }
+      return read;
+    } finally {
+      app.unmount();
+    }
+  })());
+
+/** The formatter's declaration, as src/core/crisprGuideText.ts holds it now. */
+const formatterSource = (): string => {
+  const decl = /export function crisprScanReadAs\([\s\S]*?\n}\n/.exec(treeSource('src/core/crisprGuideText.ts'));
+  if (!decl) throw new Error('src/core/crisprGuideText.ts declares no `crisprScanReadAs` to derive from');
+  return decl[0];
+};
+
+/**
+ * The formatter's arms, read out of its own source - one regular expression per branch it can
+ * print, each `${...}` left free - with the count of its `return`s beside them, counted apart so a
+ * derivation that finds fewer arms than the formatter returns fails rather than passing on the arms
+ * it did find.
+ */
+const formatterArms = (): { arms: string[]; patterns: RegExp[]; returns: number } => {
+  const source = formatterSource();
+  const arms = source.match(/`[^`]*`/g) ?? [];
+  const returns = (source.match(/\breturn\b/g) ?? []).length;
+  const patterns = arms.map(
+    (arm) =>
+      new RegExp(
+        `^${arm
+          .slice(1, -1)
+          .split(/\$\{[^}]*\}/)
+          .map((literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('[\\s\\S]*?')}$`
+      )
+  );
+  return { arms, patterns, returns };
+};
+
+describe("BG-01M7FH8K AC1: the export's scope cell, the callout and the note state one phrase", () => {
+  it("BG-01M7FH8K AC1 the exported scope cell states the formatter's phrase on every branch", async () => {
+    const { crisprScanReadAs } = await import('../core/crisprGuideText');
+    // One formatter, in core: the studio calls it and the specificity clause, and keeps no copy.
+    const studio = treeSource('src/components/PrimerAndPCRStudio.tsx');
+    expect(studio, 'the studio reads the scope from core').toMatch(/crisprScanReadAs\(crisprScan, doc\.topology\)/);
+    expect(studio, 'and the interval specificity too').toMatch(/crisprIntervalSpecificityText\(crisprScan\)/);
+    for (const { branch, doc, report, seedDoc, seedReport, cells, seedSaid, noteScopes } of await exportedBranches()) {
+      const phrase = crisprScanReadAs(report, doc.topology);
+      // The identical phrase on all three surfaces: the cell that travels in the file, the sentence
+      // on screen and the note the saved document carries.
+      expect(cells.length, `${branch}: there are exported cells to read`).toBeGreaterThan(0);
+      for (const cell of cells) {
+        expect(cellPhrase(cell), `${branch}: the exported cell states the formatter's phrase`).toBe(phrase);
+      }
+      expect(seedSaid, `${branch}: the callout states the formatter's phrase`).toContain(
+        `seed across ${crisprScanReadAs(seedReport, seedDoc.topology)}`
+      );
+      for (const scope of noteScopes) {
+        expect(scope, `${branch}: the saved note states the formatter's phrase`).toBe(phrase);
+      }
+      // The facts the formatter does not carry and the cell did before this fix, each still there.
+      const readPartOfIt =
+        report.searchedInterval !== undefined || report.scannedLengthBp < report.sequenceLengthBp;
+      for (const cell of cells) {
+        expect(cell, `${branch}: the count is not a genome-wide one`).toContain(
+          'No genome-wide off-target search was run.'
+        );
+        expect(
+          cell.includes('and no copy outside it'),
+          `${branch}: a scan of part of the record says no copy lies outside it, and only that one`
+        ).toBe(readPartOfIt);
+        expect(
+          cell.includes('across the origin'),
+          `${branch}: an interval says it runs across the origin where it does, and only there`
+        ).toBe(report.searchedInterval?.crossesOrigin === true);
+        expect(
+          cell.includes(`an interval specificity, not one over the whole ${basesText(report.sequenceLengthBp)} bases`),
+          `${branch}: an interval count says it is not one over the whole sequence, and only it`
+        ).toBe(report.searchedInterval !== undefined);
+      }
+    }
+  }, 600_000);
+});
+
+describe("BG-01M7FH8K AC2: the export's branch list is the formatter's own", () => {
+  it("BG-01M7FH8K AC2 the exported branch list is derived from the formatter's source", async () => {
+    const { arms, patterns, returns } = formatterArms();
+    expect(arms.length, 'the derivation finds an arm for every `return` the formatter makes').toBe(returns);
+    // A variant re-reads an arm another case reaches; it is not a branch of its own.
+    const branches = (await exportedBranches()).filter((b) => b.variantOf === undefined);
+    expect(
+      (await exportedBranches()).some((b) => b.variantOf === 'interval' && b.report.searchedInterval?.crossesOrigin),
+      'the origin-crossing variant searched an interval across the origin'
+    ).toBe(true);
+    expect(
+      patterns.length,
+      'every branch the formatter can print is exported by a case here - add one for a new branch'
+    ).toBe(branches.length);
+    const reached = new Map<number, string>();
+    for (const { branch, cells } of branches) {
+      const printed = new Set(cells.map(cellPhrase));
+      expect(printed.size, `${branch}: every exported row states the one scope`).toBe(1);
+      const [phrase] = [...printed];
+      const matched = patterns.flatMap((pattern, i) => (pattern.test(phrase) ? [i] : []));
+      expect(matched.length, `${branch}: the exported scope "${phrase}" is exactly one arm of the formatter`).toBe(1);
+      expect(reached.get(matched[0]), `${branch}: no two cases export the same arm`).toBeUndefined();
+      reached.set(matched[0], branch);
+    }
+    expect([...reached.keys()].sort(), 'every arm of the formatter is exported by one of these cases').toEqual(
+      patterns.map((_, i) => i)
+    );
+  }, 600_000);
+});
+
+describe('BG-01M7FH8K AC3: the export writes no scope wording of its own', () => {
+  it('BG-01M7FH8K AC3 the export holds no second scope literal', async () => {
+    const { crisprScanReadAs, crisprGuideExportTable } = await import('../core/crisprGuideText');
+    // (a) The file, outside the formatter and its comments: no scope wording is written there, live
+    // or dead. The wording is the formatter's own fragments, plus the frames seedScopeText wrote.
+    const { arms } = formatterArms();
+    const specificity = /export function crisprIntervalSpecificityText\([\s\S]*?\n}\n/.exec(
+      treeSource('src/core/crisprGuideText.ts')
+    );
+    expect(specificity, 'core states the interval specificity once').not.toBeNull();
+    const fragments = [...arms, ...(specificity![0].match(/`[^`]*`/g) ?? [])]
+      .flatMap((arm) => arm.slice(1, -1).split(/\$\{[^}]*\}/))
+      .map((literal) => literal.trim())
+      .filter((literal) => literal.length >= 12);
+    expect(fragments.length, 'the formatter states fragments for the sweep to look for').toBeGreaterThan(3);
+    const uncommented = (source: string) =>
+      source.replace(/\{?\/\*[\s\S]*?\*\/\}?/g, '').replace(/^\s*\/\/.*$/gm, '');
+    const rest = uncommented(
+      treeSource('src/core/crisprGuideText.ts').replace(formatterSource(), '').replace(specificity![0], '')
+    );
+    const studioRest = uncommented(treeSource('src/components/PrimerAndPCRStudio.tsx'));
+    for (const fragment of fragments) {
+      expect(rest.includes(fragment), `the file outside the formatter writes "${fragment}" again`).toBe(false);
+      // The studio's range chooser says a selection is "not inside the N bases of this sequence" -
+      // a sentence about the selection, not a seed scope - so the bare joint is not swept there.
+      if (fragment === 'bases of this') continue;
+      expect(studioRest.includes(fragment), `the studio writes "${fragment}" of its own`).toBe(false);
+    }
+    expect(rest, 'no frame of the export\'s own names the range it covered').not.toMatch(
+      /interval searched|range searched|bases 1 to|bases of this|on both strands/
+    );
+
+    // (b) Each exported cell, the formatter's phrase taken out: what is left states no scope.
+    for (const { branch, doc, report, cells, intervalCells } of await exportedBranches()) {
+      const phrase = crisprScanReadAs(report, doc.topology);
+      for (const cell of [...cells, ...intervalCells]) {
+        expect(cell, `${branch}: the cell reads the formatter`).toContain(phrase);
+        expect(cell.replace(phrase, ''), `${branch}: the rest of the cell states no scope of its own`).not.toMatch(
+          /interval searched|range searched|bases 1 to|bases of this|on both strands|across its origin/
+        );
+      }
+    }
+
+    // (c) A report the engine never sent is stated as such, never exported as a scope (LC-006).
+    const scan = await engineScan(SCOPE_LINEAR, SPCAS9);
+    const table = crisprGuideExportTable({
+      guides: scan.guides.slice(0, 1),
+      document: SCOPE_LINEAR,
+      heuristicRule: 'rule',
+      scope: { selectedCount: 0, shownCount: 1 },
+    });
+    const cell = table.rows[0][table.headers.indexOf('Seed Match Scope')];
+    expect(cell, 'a missing report is said to be missing').toMatch(/^Not stated: the engine sent no scan report/);
+    expect(cell, 'and no scope is claimed for it').not.toMatch(/bases of this|bases 1 to|interval searched|seed across/);
+  }, 600_000);
+});
+
+describe('BG-01M7FH8K AC4: a circular record is never called linear, on screen or in the export', () => {
+  /**
+   * At base the export named the record's own topology and the screen called a plasmid read without
+   * crossing its origin a linear sequence; sharing the screen's formatter would have carried that
+   * false fact into the file (D0141). The arm now states the record's own topology and what the scan
+   * did not do - no guide or seed match spanning the origin was searched - in place of "all N bases
+   * of this circular sequence", which alone would claim a coverage the scan did not have.
+   */
+  it('BG-01M7FH8K AC4 a circular record is never called linear', async () => {
+    const notAcrossOrigin = /no guide or seed match spanning the origin was searched/;
+    await withApp(async (app) => {
+      const { crisprScanReadAs, crisprGuideExportTable } = await import('../core/crisprGuideText');
+
+      // (a) On screen, through the real engine: a plasmid shorter than a site is read straight.
+      await onCrisprTab(app, SCOPE_UNDER_SITE);
+      const under = await engineScan(SCOPE_UNDER_SITE, SPCAS9);
+      expect(under.report, 'the engine read this plasmid straight').toMatchObject({ scannedCircular: false, originSpanBp: 0 });
+      const said = seedMatchesCallout(app);
+      expect(said, 'the screen never calls a plasmid linear').not.toMatch(/linear/);
+      expect(said, 'it names the record as circular').toContain('of this circular sequence');
+      expect(said, 'and says the origin was not searched across').toMatch(notAcrossOrigin);
+      expect(said, 'in the one formatter\'s words').toContain(crisprScanReadAs(under.report!, 'circular'));
+
+      // (b) In the export, each sub-case the arm covers: a plasmid read straight, and one read as a
+      // circle with no base across its origin. The shipped engine returns no guide in either, so
+      // both are this plasmid's own scan with the origin read cleared - synthetic reports, said so.
+      const whole = await engineScan(SCOPE_CIRCULAR, SPCAS9);
+      expect(whole.report, 'the control: the plasmid read whole wraps its origin').toMatchObject({ scannedCircular: true });
+      expect(whole.report!.originSpanBp).toBeGreaterThan(0);
+      const subCases = [
+        { name: 'read straight', report: { ...whole.report!, scannedCircular: false, originSpanBp: 0 } },
+        { name: 'read as a circle, no base across its origin', report: { ...whole.report!, scannedCircular: true, originSpanBp: 0 } },
+      ];
+      for (const { name, report } of subCases) {
+        const table = crisprGuideExportTable({
+          guides: whole.guides,
+          document: SCOPE_CIRCULAR,
+          scan: report,
+          heuristicRule: 'rule',
+          scope: { selectedCount: 0, shownCount: whole.guides.length },
+        });
+        expect(table.rows.length, `${name}: rows to read`).toBeGreaterThan(0);
+        for (const column of ['Seed Match Scope', 'Interval Searched']) {
+          for (const row of table.rows) {
+            const cell = row[table.headers.indexOf(column)];
+            expect(cell, `${name}: the ${column} cell never calls a plasmid linear`).not.toMatch(/linear/);
+            expect(cell, `${name}: it names the record as circular`).toContain('400 bases of this circular sequence');
+            expect(cell, `${name}: it says the origin was not searched across`).toMatch(notAcrossOrigin);
+            expect(cell, `${name}: and claims no origin bases it did not read`).not.toMatch(/including the \S+ across its origin/);
+          }
+        }
+        // The screen reads the same function with the same report, so it says the same.
+        expect(crisprScanReadAs(report, 'circular'), `${name}: the screen's words`).not.toMatch(/linear/);
+        expect(crisprScanReadAs(report, 'circular')).toMatch(notAcrossOrigin);
+      }
+
+      // (c) The controls: a plasmid read round its origin claims no gap, and a line is still a line.
+      const round = crisprScanReadAs(whole.report!, 'circular');
+      expect(round).toContain(`including the ${basesText(whole.report!.originSpanBp)} across its origin`);
+      expect(round).not.toMatch(notAcrossOrigin);
+      const line = await engineScan(SCOPE_LINEAR, SPCAS9);
+      const lineSaid = crisprScanReadAs(line.report!, 'linear');
+      expect(lineSaid).toContain('300 bases of this linear sequence');
+      expect(lineSaid, 'a line has no origin to cross').not.toMatch(/origin/);
+    });
+  }, 600_000);
 });
