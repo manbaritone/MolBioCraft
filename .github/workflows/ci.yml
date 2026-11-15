@@ -59,14 +59,18 @@ jobs:
       # The build step below rewrites public/molbiocraft_wasm.wasm.sources.sha256 from this
       # checkout before the Vitest provenance guard reads it, so that guard alone cannot see a
       # stale record here. Regenerate the record before the build and fail if it differs from the
-      # committed file. --sources-only only hashes crates/*/src (Node built-ins: no Rust toolchain,
-      # no target/). The digests collapse CRLF to LF, so it is platform-independent and one OS checks it.
+      # committed file. --sources-only records every engine input (BG01M7FGTR): every .rs under
+      # crates/*/src, the files they include, every crate's Cargo.toml, and the workspace Cargo.toml
+      # and Cargo.lock (Node built-ins: no Rust toolchain, no target/). Text digests collapse CRLF to
+      # LF, so it is platform-independent and one OS checks it. set -eo pipefail (BG01M7FQE2) stops
+      # the job if --sources-only itself fails, even under a bash shell line without -e (bash {0}).
       - name: Check Committed Engine Source Record Is Current
         if: runner.os == 'Linux'
         run: |
+          set -eo pipefail
           node scripts/build_rust_wasm.mjs --sources-only
           git diff --exit-code -- public/molbiocraft_wasm.wasm.sources.sha256 || {
-            echo "::error file=public/molbiocraft_wasm.wasm.sources.sha256::Engine source record is stale: public/molbiocraft_wasm.wasm.sources.sha256 does not match the Rust sources under crates/*/src. Rebuild the engine with npm run wasm:build and commit the result"
+            echo "::error file=public/molbiocraft_wasm.wasm.sources.sha256::Engine source record is stale: public/molbiocraft_wasm.wasm.sources.sha256 does not match the engine inputs this commit carries (the Rust under crates/*/src, the files it includes, the crate and workspace Cargo.toml files and Cargo.lock). Rebuild the engine with npm run wasm:build and commit the result"
             exit 1
           }
 
