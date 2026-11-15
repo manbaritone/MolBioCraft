@@ -11,7 +11,8 @@
  * inline/SSR loader across React, Vitest, Vite browser bundles, standalone HTML, and native WebViews.
  *
  * Run as a script it builds; imported, it only exports the path guard, the remaps it checks for,
- * the rustflags it runs cargo with and the rustflags check (src/__tests__/buildRustWasmGuard.test.ts).
+ * the rustflags it runs cargo with and the rustflags check (src/__tests__/buildRustWasmGuard.test.ts),
+ * and the walk and record of the engine's inputs (src/__tests__/crisprScoreProvenance.test.tsx).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -282,40 +283,214 @@ export function droppedConfigRustflags({ cwd, cargoHome, env }) {
 }
 
 /**
- * The sidecar, beside the emitted engine, that records the Rust sources it was built from
- * (BG-01M7FA80). `src/__tests__/crisprScoreProvenance.test.tsx` walks the tree again at test time
- * and fails naming every file whose digest differs, so a compute change with no rebuild is red on a
- * developer's machine instead of leaving a stale artifact that agrees with itself (LC-009).
+ * The sidecar, beside the emitted engine, that records the inputs it was built from (BG-01M7FA80,
+ * BG-01M7FGTR). `src/__tests__/crisprScoreProvenance.test.tsx` walks the tree again at test time,
+ * through `engineInputs` below, and fails naming every file whose digest differs, so a compute
+ * change with no rebuild is red on a developer's machine instead of leaving a stale artifact that
+ * agrees with itself (LC-009).
  */
 export const SOURCE_DIGEST_SIDECAR = 'public/molbiocraft_wasm.wasm.sources.sha256';
 
 /**
- * Every Rust source the engine is built from, discovered by walking `crates/<crate>/src` - not an
- * enumeration, so a file added tomorrow is covered the day it is added. Each crate's `src` tree is
- * walked to any depth; every crate here happens to keep its sources flat today (the one directory
- * below a `src`, `molbiocraft-cloning/src/sample_structures`, holds .pdb fixtures), so the descent
- * is held by a tree the vitest builds rather than by this checkout. `tests/` and `benches/` are
- * left out: cargo compiles them as their own targets, not into the cdylib.
+ * The workspace manifests the engine is resolved from: cargo builds `-p molbiocraft-wasm` from the
+ * root workspace, so its `Cargo.toml` (members, `[workspace.dependencies]`, the release profile)
+ * and its `Cargo.lock` (every dependency's exact version) decide the engine's bytes as much as any
+ * `.rs` does. `src-tauri/` is excluded from the workspace and its own manifests do not build the
+ * engine, so they are not here.
+ */
+export const WORKSPACE_MANIFESTS = ['Cargo.toml', 'Cargo.lock'];
+
+const toRel = (rootDir, p) => path.relative(rootDir, p).split(path.sep).join('/');
+const lineOf = (text, offset) => text.slice(0, offset).split('\n').length;
+const isIdent = (c) => c !== undefined && /[A-Za-z0-9_]/.test(c);
+
+/**
+ * A Rust source read as code: every comment and character literal blanked to spaces and every
+ * string literal to `"` (newlines kept, so offsets and line numbers still hold), with its text
+ * kept aside by the offset it starts at. A brace or a macro name inside a comment or a literal is
+ * therefore never read as code. Lifetimes and labels (`'a`) are code; `'x'`, `'\n'`, `'\u{..}'`,
+ * `b'x'` are literals; `"..."`, `b"..."` and raw `r#"..."#` strings are literals.
+ *
+ * @param {string} text the source
+ * @returns {{ code: string, literals: Map<number, { text: string, end: number, raw: boolean }> }}
+ *   each string literal by the offset of its first character: its text between the quotes, the
+ *   offset just past it, and whether it is raw (so its backslashes are not escapes)
+ */
+function rustCode(text) {
+  const out = text.split('');
+  const literals = new Map();
+  const blank = (from, to, fill = ' ') => {
+    for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = fill;
+  };
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '/' && text[i + 1] === '/') {
+      let j = text.indexOf('\n', i);
+      if (j < 0) j = text.length;
+      blank(i, j);
+      i = j;
+    } else if (c === '/' && text[i + 1] === '*') {
+      let depth = 1;
+      let j = i + 2;
+      while (j < text.length && depth > 0) {
+        if (text[j] === '/' && text[j + 1] === '*') (depth++, (j += 2));
+        else if (text[j] === '*' && text[j + 1] === '/') (depth--, (j += 2));
+        else j++;
+      }
+      blank(i, j);
+      i = j;
+    } else if ((c === 'r' || c === 'b' || c === 'c') && !isIdent(text[i - 1]) && /^(?:[bc]?r)(#*)"/.test(text.slice(i, i + 260))) {
+      const [opener, hashes] = /^(?:[bc]?r)(#*)"/.exec(text.slice(i, i + 260));
+      const close = `"${hashes}`;
+      const end = text.indexOf(close, i + opener.length);
+      if (end < 0) throw new Error(`an unterminated raw string literal at offset ${i}`);
+      literals.set(i, { text: text.slice(i + opener.length, end), end: end + close.length, raw: true });
+      blank(i, end + close.length, '"');
+      i = end + close.length;
+    } else if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      literals.set(i, { text: text.slice(i + 1, j), end: j + 1, raw: false });
+      blank(i, j + 1, '"');
+      i = j + 1;
+    } else if (c === "'") {
+      let end = -1;
+      if (text[i + 1] === '\\') {
+        end = i + 3;
+        while (end < text.length && text[end] !== "'") end++;
+      } else if (text[i + 2] === "'") end = i + 2;
+      else if (/[\uD800-\uDBFF]/.test(text[i + 1] ?? '') && text[i + 3] === "'") end = i + 3;
+      if (end < 0) i++; // a lifetime or a label: code
+      else {
+        blank(i, end + 1);
+        i = end + 1;
+      }
+    } else i++;
+  }
+  return { code: out.join(''), literals };
+}
+
+/**
+ * The spans of `#[cfg(test)] mod <name> { ... }` items in code read by `rustCode`. cargo compiles
+ * them only into the test harness, never into the cdylib, so what they include is no input of the
+ * engine. Only an inline `mod` block is a span: any other `#[cfg(test)]` item is left in, which
+ * records a file the engine may not need (a red that costs a rebuild) rather than miss one it does.
+ */
+function testModuleSpans(code, file) {
+  const spans = [];
+  const attr = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/g;
+  for (let m; (m = attr.exec(code)) !== null; ) {
+    let depth = 1;
+    let j = m.index + m[0].length;
+    for (; j < code.length && depth > 0; j++) {
+      if (code[j] === '{') depth++;
+      else if (code[j] === '}') depth--;
+    }
+    if (depth !== 0) {
+      throw new Error(`${file}:${lineOf(code, m.index)}: the #[cfg(test)] module opened here never closes, so the engine inputs it hides cannot be told from the ones it does not`);
+    }
+    spans.push([m.index, j]);
+    attr.lastIndex = j;
+  }
+  return spans;
+}
+
+/**
+ * The files one Rust source pulls into its crate by `include_str!`, `include_bytes!` or `include!`,
+ * resolved as rustc resolves them (relative to the including file's directory), outside any
+ * `#[cfg(test)]` module. A site rustc could follow but this cannot - an argument that is not one
+ * string literal, a target missing from the tree or outside the checkout - is refused by name
+ * rather than left out of the record.
+ *
+ * @returns {{ path: string, rust: boolean }[]} absolute paths; `rust` for an `include!` target
+ */
+function includedFiles(rootDir, abs) {
+  const file = toRel(rootDir, abs);
+  const text = fs.readFileSync(abs, 'utf8');
+  const { code, literals } = rustCode(text);
+  const spans = testModuleSpans(code, file);
+  const found = [];
+  const site = /(?<![A-Za-z0-9_])(include_str|include_bytes|include)\s*!\s*\(\s*/g;
+  for (let m; (m = site.exec(code)) !== null; ) {
+    if (spans.some(([from, to]) => m.index >= from && m.index < to)) continue;
+    const at = `${file}:${lineOf(text, m.index)}`;
+    const literal = literals.get(m.index + m[0].length);
+    const plain = literal !== undefined && /^\s*,?\s*\)/.test(code.slice(literal.end)) && (literal.raw || !/\\(?![\\"])/.test(literal.text));
+    if (!plain) {
+      throw new Error(`${at}: ${m[1]}! takes something other than one plain string literal, so the engine input it reads cannot be recorded`);
+    }
+    const target = path.resolve(path.dirname(abs), literal.raw ? literal.text : literal.text.replace(/\\([\\"])/g, '$1'));
+    const rel = toRel(rootDir, target);
+    if (rel.startsWith('../') || path.isAbsolute(rel)) {
+      throw new Error(`${at}: ${m[1]}!("${literal.text}") reads ${target}, outside this checkout, so it cannot be recorded`);
+    }
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
+      throw new Error(`${at}: ${m[1]}!("${literal.text}") reads ${rel}, which is not a file in this tree`);
+    }
+    found.push({ path: target, rust: m[1] === 'include' });
+  }
+  return found;
+}
+
+/**
+ * Every input the engine is built from, discovered from the tree - not an enumeration, so a file
+ * added tomorrow is covered the day it is added - and the one walk of the crate tree, which both
+ * the build's record and the vitest that checks it read (BG-01M7FGTR folded the vitest's own walker
+ * into this one):
+ * - every `.rs` below each crate's `src`, to any depth (`tests/` and `benches/` are left out: cargo
+ *   compiles them as their own targets, not into the cdylib);
+ * - every file those sources `include_str!`, `include_bytes!` or `include!` outside a
+ *   `#[cfg(test)]` module - such as the two `.pdb` files `molbiocraft-cloning/src/sample_structures.rs`
+ *   embeds, which are build inputs of the engine, not test data - and what an `include!`-ed file
+ *   includes in turn;
+ * - every crate's `Cargo.toml` (its dependencies and features), and the WORKSPACE_MANIFESTS.
+ * A crate is a directory under `crates/` holding a `Cargo.toml`. A missing workspace manifest is
+ * refused by name rather than left out.
  *
  * @param {string} rootDir the checkout root
- * @returns {string[]} repo-relative, forward-slash paths, sorted
+ * @returns {{ files: string[], crates: string[] }} repo-relative, forward-slash paths and crate
+ *   directory names, each sorted
  */
-export function crateSourceFiles(rootDir) {
-  const found = [];
+export function engineInputs(rootDir) {
+  const found = new Set();
+  const rust = [];
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
-      else if (entry.isFile() && entry.name.endsWith('.rs')) found.push(full);
+      else if (entry.isFile() && entry.name.endsWith('.rs')) rust.push(full);
     }
   };
+  const crates = [];
   const cratesDir = path.join(rootDir, 'crates');
   for (const crate of fs.readdirSync(cratesDir, { withFileTypes: true })) {
-    if (!crate.isDirectory()) continue;
+    const manifest = path.join(cratesDir, crate.name, 'Cargo.toml');
+    if (!crate.isDirectory() || !fs.existsSync(manifest)) continue;
+    crates.push(crate.name);
+    found.add(manifest);
     const src = path.join(cratesDir, crate.name, 'src');
     if (fs.existsSync(src)) walk(src);
   }
-  return found.map((p) => path.relative(rootDir, p).split(path.sep).join('/')).sort();
+  for (const manifest of WORKSPACE_MANIFESTS) {
+    const at = path.join(rootDir, manifest);
+    if (!fs.existsSync(at)) {
+      throw new Error(`the workspace ${manifest} is missing from ${rootDir}: the dependencies the engine is built against cannot be recorded`);
+    }
+    found.add(at);
+  }
+  const lexed = new Set();
+  while (rust.length > 0) {
+    const abs = rust.pop();
+    if (lexed.has(abs)) continue;
+    lexed.add(abs);
+    found.add(abs);
+    for (const included of includedFiles(rootDir, abs)) {
+      found.add(included.path);
+      if (included.rust) rust.push(included.path);
+    }
+  }
+  return { files: [...found].map((p) => toRel(rootDir, p)).sort(), crates: crates.sort() };
 }
 
 /**
@@ -328,23 +503,25 @@ export function crateSourceFiles(rootDir) {
 export const sourceDigest = (text) => createHash('sha256').update(text.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
 
 /**
- * The sidecar's text for a checkout: a `# ` header, then one `<sha256>  <path>` line per discovered
- * source, sorted by path. Refuses to write a manifest with no entries, which would make the digest
- * a constant and the guard vacuous.
+ * The sidecar's text for a checkout: a `# ` header, then one `<sha256>  <path>` line per input
+ * `engineInputs` discovers, sorted by path. Refuses to write a manifest with no `.rs` source, which
+ * would make the digest a constant and the guard vacuous.
  *
  * @param {string} rootDir the checkout root
  * @returns {string}
  */
 export function sourceDigestManifest(rootDir) {
-  const files = crateSourceFiles(rootDir);
-  if (files.length === 0) {
+  const { files } = engineInputs(rootDir);
+  if (!files.some((file) => file.endsWith('.rs'))) {
     throw new Error(`no .rs source found under ${path.join(rootDir, 'crates')}/*/src: refusing to write an empty ${SOURCE_DIGEST_SIDECAR}`);
   }
   const lines = files.map((rel) => `${sourceDigest(fs.readFileSync(path.join(rootDir, rel), 'utf8'))}  ${rel}`);
   return [
-    `# The Rust sources public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80).`,
+    `# The inputs public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80, BG-01M7FGTR):`,
+    `# every .rs under crates/*/src, each file they include_str!/include_bytes!/include! outside a`,
+    `# #[cfg(test)] module, every crate's Cargo.toml, and the workspace Cargo.toml and Cargo.lock.`,
     `# Written by \`npm run wasm:build\`; checked by src/__tests__/crisprScoreProvenance.test.tsx,`,
-    `# which walks crates/*/src again and names every file that differs. Do not edit by hand.`,
+    `# which walks the tree again and names every file that differs. Do not edit by hand.`,
     ...lines,
     '',
   ].join('\n');
@@ -371,7 +548,7 @@ function main() {
   // (a comment, a doc line) where a full rebuild is not worth 1.5 GiB of target/.
   if (process.argv.includes('--sources-only')) {
     const { path: out, files } = writeSourceDigestSidecar(ROOT_DIR);
-    console.log(`[MolBioCraft WASM] Recorded ${files} Rust sources -> ${path.relative(ROOT_DIR, out)}`);
+    console.log(`[MolBioCraft WASM] Recorded ${files} engine inputs -> ${path.relative(ROOT_DIR, out)}`);
     return;
   }
   const LOCAL_RUSTUP = path.join(ROOT_DIR, '.toolchain', 'rustup');
@@ -490,7 +667,7 @@ function main() {
   }
 
   console.log(
-    `[MolBioCraft WASM] Verified 0 imports, no build-machine paths & smoke-tested RPC! Wrote ${(wasmBytes.length / 1024).toFixed(1)} KiB WASM -> ${path.relative(ROOT_DIR, outWasmPath)}${sidecar === null ? '' : ` (+ ${sidecar.files} source digests -> ${path.relative(ROOT_DIR, sidecar.path)})`}`
+    `[MolBioCraft WASM] Verified 0 imports, no build-machine paths & smoke-tested RPC! Wrote ${(wasmBytes.length / 1024).toFixed(1)} KiB WASM -> ${path.relative(ROOT_DIR, outWasmPath)}${sidecar === null ? '' : ` (+ ${sidecar.files} input digests -> ${path.relative(ROOT_DIR, sidecar.path)})`}`
   );
 }
 

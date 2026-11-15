@@ -43,6 +43,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { PrimerAndPCRStudio } from '../components/PrimerAndPCRStudio';
 import { crisprNucleasePresets } from '../core/bioEngine';
+import { engineInputs, sourceDigestManifest } from '../../scripts/build_rust_wasm.mjs';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import { resolveMenuNodeFunctionDescription } from '../data/menuFunctionDescriptions';
 import {
@@ -507,8 +508,9 @@ const { createHash } = (await import(/* @vite-ignore */ nodeCryptoSpec)) as {
   };
 };
 const { tmpdir } = (await import(/* @vite-ignore */ nodeOsSpec)) as { tmpdir: () => string };
-const { pathToFileURL } = (await import(/* @vite-ignore */ nodeUrlSpec)) as {
+const { pathToFileURL, fileURLToPath } = (await import(/* @vite-ignore */ nodeUrlSpec)) as {
   pathToFileURL: (path: string) => URL;
+  fileURLToPath: (url: URL) => string;
 };
 const nodeFs = (await import(/* @vite-ignore */ nodeFsSpec)) as {
   readFileSync: (path: URL, encoding: 'utf8') => string;
@@ -548,27 +550,14 @@ const digestOfAll = (digests: Map<string, string>) =>
   );
 
 /**
- * Every Rust source the engine is built from, discovered by walking the tree at test time - so a
- * compute file added tomorrow is covered the day it is added, and no list is maintained anywhere.
- * Each crate's `src` is walked to any depth; `tests/` and `benches/` are not compiled into the
- * cdylib and are left out.
+ * Every input the engine is built from, discovered by walking the tree at test time - so a file
+ * added tomorrow is covered the day it is added, and no list is maintained anywhere. This is the
+ * build's own walk (`engineInputs` in `scripts/build_rust_wasm.mjs`), not a second one written
+ * here: two walkers over one tree can disagree about what counts as an input, and the record and
+ * its check would then each be right about a different set (BG-01M7FGTR).
  */
-function walkCrateSources(root: URL = REPO_ROOT): { files: string[]; crates: string[] } {
-  const files: string[] = [];
-  const crates: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of nodeFs.readdirSync(new URL(dir, root), { withFileTypes: true })) {
-      if (entry.isDirectory()) walk(`${dir}${entry.name}/`);
-      else if (entry.isFile() && entry.name.endsWith('.rs')) files.push(`${dir}${entry.name}`);
-    }
-  };
-  for (const entry of nodeFs.readdirSync(new URL('crates/', root), { withFileTypes: true })) {
-    if (!entry.isDirectory() || !nodeFs.existsSync(new URL(`crates/${entry.name}/Cargo.toml`, root))) continue;
-    crates.push(entry.name);
-    if (nodeFs.existsSync(new URL(`crates/${entry.name}/src/`, root))) walk(`crates/${entry.name}/src/`);
-  }
-  return { files: files.sort(), crates: crates.sort() };
-}
+const walkEngineInputs = (root: URL = REPO_ROOT): { files: string[]; crates: string[] } =>
+  engineInputs(fileURLToPath(root));
 
 /** Each walked source, as the tree holds it now. */
 const readCrateSources = (files: string[]) =>
@@ -632,14 +621,14 @@ function differingSources(recorded: Map<string, string>, current: Map<string, st
 
 /** What a reader is told when the engine lags its sources: which files, and what to run. */
 const staleMessage = (differ: string[]) =>
-  `public/molbiocraft_wasm.wasm was built from Rust sources this checkout no longer holds, so every ` +
+  `public/molbiocraft_wasm.wasm was built from inputs this checkout no longer holds, so every ` +
   `number this suite reads from the engine is the old code's. ${differ.length} file(s) differ:\n  ` +
   `${differ.join('\n  ')}\nRun \`${REBUILD}\` (and commit the engine with the change), or ` +
   `\`node scripts/build_rust_wasm.mjs --sources-only\` for a change that cannot alter codegen.`;
 
 describe('the committed engine carries the sources it was built from (BG-01M7FA80)', () => {
   it('BG-01M7FA80 AC1 a changed Rust compute source without a rebuild fails by name', () => {
-    const { files } = walkCrateSources();
+    const { files } = walkEngineInputs();
     const current = currentSourceDigests(readCrateSources(files));
     const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
 
@@ -665,7 +654,7 @@ describe('the committed engine carries the sources it was built from (BG-01M7FA8
   });
 
   it('BG-01M7FA80 AC2 the digested source set is discovered by walking crates', () => {
-    const { files, crates } = walkCrateSources();
+    const { files, crates } = walkEngineInputs();
     const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
 
     // A walk that matched nothing would make the digest a constant and the guard vacuous.
@@ -679,12 +668,15 @@ describe('the committed engine carries the sources it was built from (BG-01M7FA8
       expect(ofCrate.length, `no source of crates/${crate} is digested`).toBeGreaterThan(0);
     }
     // The walk is a walk, shown on a tree built here, because this checkout happens to keep every
-    // crate's sources flat (its one directory below a `src` holds .pdb fixtures) - so the real tree
+    // crate's Rust flat (its one directory below a `src` holds the two .pdb files
+    // `sample_structures.rs` embeds in the engine, and no `.rs`) - so the real tree
     // cannot tell a recursive walk from a single readdir, and a crate added tomorrow with its
     // modules in directories would be digested by one and missed by the other.
     const tree = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FA80-walk-`);
     try {
       for (const [file, text] of [
+        ['Cargo.toml', '[workspace]\nmembers = ["crates/new-crate"]\n'],
+        ['Cargo.lock', 'version = 4\n'],
         ['crates/new-crate/Cargo.toml', '[package]\nname = "new-crate"\n'],
         ['crates/new-crate/src/lib.rs', 'pub mod deep;\n'],
         ['crates/new-crate/src/deep/mod.rs', 'pub mod deeper;\n'],
@@ -696,9 +688,12 @@ describe('the committed engine carries the sources it was built from (BG-01M7FA8
         nodeFs.mkdirSync(`${tree}/${file.slice(0, file.lastIndexOf('/'))}`, { recursive: true });
         nodeFs.writeFileSync(`${tree}/${file}`, text, 'utf8');
       }
-      const walked = walkCrateSources(pathToFileURL(`${tree}/`));
+      const walked = walkEngineInputs(pathToFileURL(`${tree}/`));
       expect(walked.crates, 'a directory with no Cargo.toml is not a crate').toEqual(['new-crate']);
-      expect(walked.files, 'the walk digests every .rs below a crate\'s src/, and only those').toEqual([
+      expect(walked.files, 'the walk digests every .rs below a crate\'s src/ and the manifests, and only those').toEqual([
+        'Cargo.lock',
+        'Cargo.toml',
+        'crates/new-crate/Cargo.toml',
         'crates/new-crate/src/deep/deeper/compute.rs',
         'crates/new-crate/src/deep/mod.rs',
         'crates/new-crate/src/lib.rs',
@@ -724,12 +719,12 @@ describe('the committed engine carries the sources it was built from (BG-01M7FA8
   it('BG-01M7FA80 AC3 a clean tree passes and an unreadable digest refuses by name', () => {
     // Silent on a clean tree, and it reports the digest it matched.
     const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
-    const { files } = walkCrateSources();
+    const { files } = walkEngineInputs();
     const current = currentSourceDigests(readCrateSources(files));
     expect(recorded.digest).toMatch(/^[0-9a-f]{64}$/);
     expect(digestOfAll(current)).toBe(recorded.digest);
     console.info(
-      `BG-01M7FA80: public/molbiocraft_wasm.wasm matches sha256 ${recorded.digest} over ${recorded.digests.size} Rust sources`
+      `BG-01M7FA80: public/molbiocraft_wasm.wasm matches sha256 ${recorded.digest} over ${recorded.digests.size} engine inputs`
     );
 
     // And it refuses, by name, rather than agreeing when it cannot tell.
@@ -764,6 +759,182 @@ describe('the committed engine carries the sources it was built from (BG-01M7FA8
       }
     } finally {
       nodeFs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the record covers every input the engine is built from (BG-01M7FGTR)', () => {
+  /** A throwaway checkout holding `files`, handed to `use`, then removed whatever `use` did. */
+  const onTree = (prefix: string, files: ReadonlyArray<readonly [string, string]>, use: (tree: string) => void) => {
+    const tree = nodeFs.mkdtempSync(`${tmpdir()}/${prefix}-`);
+    try {
+      for (const [file, text] of files) {
+        if (file.includes('/')) nodeFs.mkdirSync(`${tree}/${file.slice(0, file.lastIndexOf('/'))}`, { recursive: true });
+        nodeFs.writeFileSync(`${tree}/${file}`, text, 'utf8');
+      }
+      use(tree);
+    } finally {
+      nodeFs.rmSync(tree, { recursive: true, force: true });
+    }
+  };
+  const WORKSPACE: ReadonlyArray<readonly [string, string]> = [
+    ['Cargo.toml', '[workspace]\nmembers = ["crates/c"]\n'],
+    ['Cargo.lock', 'version = 4\n'],
+    ['crates/c/Cargo.toml', '[package]\nname = "c"\n'],
+  ];
+  const SAMPLE_STRUCTURES = 'crates/molbiocraft-cloning/src/sample_structures/';
+
+  it('BG-01M7FGTR AC1 the record holds every .pdb the engine embeds and the workspace manifests', () => {
+    const { files, crates } = walkEngineInputs();
+    const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
+
+    // Each .pdb the directory holds, found by listing it rather than named here.
+    const pdbs = nodeFs
+      .readdirSync(new URL(SAMPLE_STRUCTURES, REPO_ROOT), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.pdb'))
+      .map((entry) => `${SAMPLE_STRUCTURES}${entry.name}`);
+    expect(pdbs.length, `${SAMPLE_STRUCTURES} holds no .pdb, so this case proves nothing`).toBeGreaterThan(0);
+    const manifests = ['Cargo.toml', 'Cargo.lock', ...crates.map((crate) => `crates/${crate}/Cargo.toml`)];
+    for (const input of [...pdbs, ...manifests]) {
+      expect(files, `the walk does not find ${input}`).toContain(input);
+      expect(recorded.digests.has(input), `${input} is not in ${SOURCE_DIGEST_SIDECAR}`).toBe(true);
+    }
+
+    // What does not build the engine is not recorded as if it did: src-tauri is excluded from the
+    // workspace and resolves its own lockfile, and a file only a #[cfg(test)] module includes is
+    // compiled into the test harness, never into the cdylib.
+    expect(files).not.toContain('src-tauri/Cargo.toml');
+    expect(files).not.toContain('src-tauri/Cargo.lock');
+    const testOnly = 'crates/molbiocraft-cloning/src/workbench_table_and_lineage.rs';
+    expect(readCrateSources([testOnly]).get(testOnly), `${testOnly} no longer includes src/types/bio.ts in its tests`).toContain(
+      'include_str!("../../../src/types/bio.ts")'
+    );
+    expect(files).not.toContain('src/types/bio.ts');
+
+    // And the committed record is exactly what the build writes for this tree, byte for byte - the
+    // text `node scripts/build_rust_wasm.mjs --sources-only` and `npm run wasm:build` both write.
+    expect(nodeFs.readFileSync(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT), 'utf8')).toBe(
+      sourceDigestManifest(fileURLToPath(REPO_ROOT))
+    );
+  });
+
+  it('BG-01M7FGTR AC1 an included file is discovered from the code that includes it', () => {
+    const lib = [
+      '//! include_str!("nope-doc.txt") in a doc comment is no site',
+      'pub const A: &str = include_str!("data/a.txt");',
+      'pub const B: &[u8] = include_bytes!("../assets/b.bin");',
+      'const NOT: &str = "include_str!(\\"nope-string.txt\\")";',
+      "const BRACE: char = '{';",
+      'const RAW: &str = r#"} "quoted" }"#;',
+      "fn f<'a>(x: &'a str) -> &'a str { x }",
+      'include!("gen/c.in");',
+      '#[cfg(test)]',
+      'mod tests {',
+      '    // Each line here holds a brace a reader of the code must not count, then a site it must',
+      '    // not record, so a lexer that miscounts any one of them ends this module too early.',
+      '    #[test] fn t() { let _ = "}"; }',
+      '    const T1: &str = include_str!("nope-test.txt");',
+      "    const CLOSE: char = '}';",
+      '    const T2: &str = include_str!("nope-test.txt");',
+      '    const RAW_CLOSE: &str = r#"x "}" y"#;',
+      '    const T3: &str = include_str!("nope-test.txt");',
+      '    /* } nested /* } */ } */',
+      '    const T4: &str = include_str!("nope-test.txt");',
+      '}',
+      'pub const AFTER: &str = include_str!("data/after.txt");',
+      '',
+    ].join('\n');
+    onTree(
+      'BG01M7FGTR-include',
+      [
+        ...WORKSPACE,
+        ['crates/c/src/lib.rs', lib],
+        ['crates/c/src/data/a.txt', 'a\n'],
+        ['crates/c/src/data/after.txt', 'after\n'],
+        ['crates/c/assets/b.bin', 'b\n'],
+        ['crates/c/src/gen/c.in', 'pub const D: &str = include_str!("d.txt");\n'],
+        ['crates/c/src/gen/d.txt', 'd\n'],
+        ['crates/c/src/nope-doc.txt', 'x\n'],
+        ['crates/c/src/nope-string.txt', 'x\n'],
+        ['crates/c/src/nope-test.txt', 'x\n'],
+      ],
+      (tree) => {
+        const walked = walkEngineInputs(pathToFileURL(`${tree}/`));
+        expect(walked.files, 'every file the code includes, outside its tests, and nothing a comment or a string names').toEqual([
+          'Cargo.lock',
+          'Cargo.toml',
+          'crates/c/Cargo.toml',
+          'crates/c/assets/b.bin',
+          'crates/c/src/data/a.txt',
+          'crates/c/src/data/after.txt',
+          'crates/c/src/gen/c.in',
+          'crates/c/src/gen/d.txt',
+          'crates/c/src/lib.rs',
+        ]);
+        // The record is written from the same walk: one line per input, nothing else.
+        const recorded = sourceDigestManifest(tree)
+          .split('\n')
+          .filter((line) => line !== '' && !line.startsWith('#'))
+          .map((line) => line.slice(66));
+        expect(recorded).toEqual(walked.files);
+      }
+    );
+  });
+
+  it('BG-01M7FGTR AC1 an input the walk cannot follow is refused by name, not left out', () => {
+    const cases: Array<{ as: string; files: ReadonlyArray<readonly [string, string]>; names: RegExp }> = [
+      {
+        as: 'a missing Cargo.lock',
+        files: [WORKSPACE[0], WORKSPACE[2], ['crates/c/src/lib.rs', 'pub fn f() {}\n']],
+        names: /the workspace Cargo\.lock is missing/,
+      },
+      {
+        as: 'an include of a file not in the tree',
+        files: [...WORKSPACE, ['crates/c/src/lib.rs', 'const G: &str = include_str!("gone.txt");\n']],
+        names: /crates\/c\/src\/lib\.rs:1: include_str!\("gone\.txt"\) reads crates\/c\/src\/gone\.txt, which is not a file/,
+      },
+      {
+        as: 'an include whose path is not one literal',
+        files: [...WORKSPACE, ['crates/c/src/lib.rs', 'const G: &str = include_str!(concat!(env!("OUT_DIR"), "/g.txt"));\n']],
+        names: /crates\/c\/src\/lib\.rs:1: include_str! takes something other than one plain string literal/,
+      },
+      {
+        as: 'an include from outside the checkout',
+        files: [...WORKSPACE, ['crates/c/src/lib.rs', 'const G: &[u8] = include_bytes!("../../../../g.bin");\n']],
+        names: /crates\/c\/src\/lib\.rs:1: include_bytes!\("\.\.\/\.\.\/\.\.\/\.\.\/g\.bin"\) reads .* outside this checkout/,
+      },
+      {
+        as: 'a test module that never closes',
+        files: [...WORKSPACE, ['crates/c/src/lib.rs', 'pub fn f() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n']],
+        names: /crates\/c\/src\/lib\.rs:2: the #\[cfg\(test\)\] module opened here never closes/,
+      },
+    ];
+    for (const { as, files, names } of cases) {
+      onTree('BG01M7FGTR-refuse', files, (tree) => {
+        let message = 'nothing was thrown';
+        try {
+          const walked = walkEngineInputs(pathToFileURL(`${tree}/`));
+          message = `nothing was thrown; the walk answered ${JSON.stringify(walked.files)}`;
+        } catch (cause) {
+          message = cause instanceof Error ? cause.message : String(cause);
+        }
+        expect(message, `${as} must be refused by name`).toMatch(names);
+      });
+    }
+  });
+
+  it('BG-01M7FGTR AC2 an edited .pdb or lockfile fails the guard and names that file', () => {
+    const { files } = walkEngineInputs();
+    const recorded = readRecordedSourceDigests(new URL(SOURCE_DIGEST_SIDECAR, REPO_ROOT));
+    const current = currentSourceDigests(readCrateSources(files));
+    expect(differingSources(recorded.digests, current), 'the tree is not clean to begin with').toEqual([]);
+    const pdb = files.find((file) => file.startsWith(SAMPLE_STRUCTURES) && file.endsWith('.pdb'));
+    expect(pdb, `no .pdb under ${SAMPLE_STRUCTURES} is walked`).toBeDefined();
+    for (const input of [pdb!, 'Cargo.lock']) {
+      const edited = new Map(current).set(input, digestOf(`${readCrateSources([input]).get(input)}\nREMARK verify\n`));
+      const named = differingSources(recorded.digests, edited);
+      expect(named).toEqual([`${input} (changed since the engine was built)`]);
+      expect(staleMessage(named)).toContain(input.slice(input.lastIndexOf('/') + 1));
     }
   });
 });

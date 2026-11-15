@@ -1,6 +1,11 @@
-# The Rust sources public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80).
+# The inputs public/molbiocraft_wasm.wasm beside this file was built from (BG-01M7FA80, BG-01M7FGTR):
+# every .rs under crates/*/src, each file they include_str!/include_bytes!/include! outside a
+# #[cfg(test)] module, every crate's Cargo.toml, and the workspace Cargo.toml and Cargo.lock.
 # Written by `npm run wasm:build`; checked by src/__tests__/crisprScoreProvenance.test.tsx,
-# which walks crates/*/src again and names every file that differs. Do not edit by hand.
+# which walks the tree again and names every file that differs. Do not edit by hand.
+a29649a8ccd2f72c840460b71f866d8e76c6637c823b2137d9225bece0346fd0  Cargo.lock
+060050903869e4c97a03bd534351150361984481dc07fb08c6193c12e515875e  Cargo.toml
+b2b385124fc8570024c30818d0c447b4c31e538c6db5c90ba71d62bcb904066e  crates/molbiocraft-align/Cargo.toml
 84c43d92ff67dfd34fcf87cc9a0e38e154397852363f3dc9ca06ef12d94c3aec  crates/molbiocraft-align/src/debruijn.rs
 2c6c1122707554c94509cfdc369bf78ed8f1da3513c253713c501142523bc308  crates/molbiocraft-align/src/large_scale_seed_chain.rs
 c0608a4fb5f845c37eaa5521740726ac9712528c602391d98068b7144b9adbb6  crates/molbiocraft-align/src/lib.rs
@@ -11,6 +16,7 @@ c7a3772169e19b9140e84754765aca50fbf4bfb1fb6bd61586c6c123613ad143  crates/molbioc
 c0006a5f8719873d607a9944675d414b4e9fd4eb8abe4de462c3d1680e44b301  crates/molbiocraft-align/src/poa_and_banded.rs
 20caf2686e307f01ec25e56a5727b381ffde23af7697e869f3747a5a2436df48  crates/molbiocraft-align/src/progressive.rs
 6c29b3b44ef72b6986591f004bc0de9da1e7f83bd1262ae300bcac3049bd3720  crates/molbiocraft-align/src/search_blast.rs
+8593482a6a7bdb54fc9af61482ca3df446cd53700e8fac7042cac1c3a973e85d  crates/molbiocraft-cloning/Cargo.toml
 8962b236559da3bc3634d0ddc1d31b9b79331a3446e2ec92da49fb2c6a52d67d  crates/molbiocraft-cloning/src/action_vectors_data.rs
 0561237fe7f63195d3b43f53e6fea7c5bac5c75df2542bfb6801be8d47c4d662  crates/molbiocraft-cloning/src/batch_ops.rs
 f4cbae4621102a2f5eaadcf39f57f8a46cf1636719c6903a070a76d2514f9198  crates/molbiocraft-cloning/src/bio_pipelines.rs
@@ -28,11 +34,14 @@ fd51bf26ac59659da3097717f88a667eeb896fef2d0be27f542449125b088470  crates/molbioc
 39849c4fb4ee454f3d77fa23107fc5a34f31021bbb54a6069eda7a49126dce30  crates/molbiocraft-cloning/src/sample_genomes_data.rs
 2d29cfb5c92316fb27e3a23ce181370291f5bc0566b9787861dedfea16006482  crates/molbiocraft-cloning/src/sample_library_data.rs
 2851d2cd9b26712266729d4d38c1e85ccdf2de8722ed958e13a92f73e7b1f4af  crates/molbiocraft-cloning/src/sample_structures.rs
+d77eefc1db56e8cce8f30a67e92625a1ed2b30f79252b47b1dcbc5135baa5451  crates/molbiocraft-cloning/src/sample_structures/1a4y_ca.pdb
+430e544369b7234d0deb5f92dabaddd912258a30c80ae5633d83fae4b47670dd  crates/molbiocraft-cloning/src/sample_structures/1d66_ca.pdb
 60f00ac070498cc23f28df63780e1ea67632323704012d8178a18d9d0d4b7ae9  crates/molbiocraft-cloning/src/systems_strains_data.rs
 72df7a9fb91b2b0ccf6acd6ddbf986edeaf421f737ed57f97d9c01b0ae043376  crates/molbiocraft-cloning/src/thermodynamics.rs
 600658c9fe8f624a0fbc5a3ec73034f15e704718cb2db749fefc918671d25786  crates/molbiocraft-cloning/src/vector_architect.rs
 3d98b43fa0d01fbb3a8d5e6779438408be137c791724c0abe6f8bc94dd35dce9  crates/molbiocraft-cloning/src/vector_catalog_data.rs
 1d5f3e7bd5c641d021c1ccfb125989157b8c880d712fd410f0ef4b33a1c0d2b1  crates/molbiocraft-cloning/src/workbench_table_and_lineage.rs
+6cbf1322b2427e2bdc055cc4b5456e08d1ac68725ffbb3597b7de5f6b112d7c8  crates/molbiocraft-core/Cargo.toml
 6cd125961a7909c69a754dd9436955c0527ceab3fe524cce4de3ce152882ba69  crates/molbiocraft-core/src/epigenetics_codon_kmer.rs
 33e6319f5508d3f29f4d153ae1e5fd48b3e6c2474f719614529817f35be66d8d  crates/molbiocraft-core/src/genetic_codes.rs
 0f083df0970e808ed32bd28638862ff5da26c80f74436f97d1636a347f22d5e3  crates/molbiocraft-core/src/genome_index.rs
@@ -40,6 +49,7 @@ fd51bf26ac59659da3097717f88a667eeb896fef2d0be27f542449125b088470  crates/molbioc
 c32bf21686c1e86034e71fd5ca57e264ad9a8100016725fc6d8a08e25c34b1f8  crates/molbiocraft-core/src/iupac.rs
 7f8b23bec152d1365dbb42499a42a9cd6628c8128f955278587b4a6d36d4b279  crates/molbiocraft-core/src/lib.rs
 4303e291f0d2fb016d5d185c8597d59e550ad1b46178cbf6dcb31d3862fb4edb  crates/molbiocraft-core/src/types.rs
+f298cc4f60236815ec54d85986edd527945dbe5e683d7e61be2ed29764a0320c  crates/molbiocraft-formats/Cargo.toml
 af25a67da580bb692b7b364091b605f15dc22bbfaa749bfa3f291d88d8310ebc  crates/molbiocraft-formats/src/bam.rs
 c08e9759c2575c68bf7b5a32e15602f80226393085853fee34bb3cd8bc474f8a  crates/molbiocraft-formats/src/chromatogram_mbc.rs
 154dfbe9c1928a3103296aec158da6bf14b89dcf0a373f24baad499b52b4fbca  crates/molbiocraft-formats/src/flatfiles.rs
@@ -49,6 +59,7 @@ f83754499141cadb43acf7eef6ef1f313d110fe2dd5eac893df85221f713607a  crates/molbioc
 c30ba1d498f144a87d49ce85fb16201529edca592e5f4ba0d39dd69090f972b3  crates/molbiocraft-formats/src/pdb_mmcif.rs
 557e722debe185f6875258c6e8b6ba1fe2b9de8ce4ec63203d9b552ac30655b5  crates/molbiocraft-formats/src/reference_databases.rs
 329847f00b25fa5ed0997a4f2c6ba425f960e4247aedd494fb76600c4b4cd7fa  crates/molbiocraft-formats/src/scf.rs
+10d3e9cbe81cda7dac4577541297b6b28d4d474a4acb3d84f0ae26be869ff068  crates/molbiocraft-phylo/Cargo.toml
 395e42680d16bb9999670cf098cb6f02c10ec62a00d81ff7dfc45e4785ff0a8b  crates/molbiocraft-phylo/src/aa_models.rs
 3286a6bee45c57b53243b9e48a8a0b2463a74115d46abcdf324a942b44ba8be7  crates/molbiocraft-phylo/src/coalescent_recombination.rs
 df7d29b954d81e2eebccf5c733136c8c4c022bcc754b637c1619fe993fa49908  crates/molbiocraft-phylo/src/distances.rs
@@ -60,6 +71,7 @@ e4dbd512f65583b7f5e36193279651098033a25e8fa7a39238648828aec2c1b2  crates/molbioc
 52e7a5ae013ab82a5eb61430879887fa6aaa3260ec8d6fbdb02a528e1f13df1e  crates/molbiocraft-phylo/src/newick_layout.rs
 4573fe9f0d49255aa51154c36ed9829f8c0e9bd7a81f4c17a5e5c326924a3c24  crates/molbiocraft-phylo/src/protein_ml.rs
 ddc0136e8726a856cb0a54b4c3644af8478c455682403db017cf373d3c313b17  crates/molbiocraft-phylo/src/trees.rs
+e0059e4ae4cdf40ae9c352945bb47d8166ebe0844d8a8ad07a0fd0d1acfb4242  crates/molbiocraft-protein/Cargo.toml
 4a0f822904db271eb8500bb8a19f4fe4a9653288adc9cb3346a8a900da5cad21  crates/molbiocraft-protein/src/aa_params.rs
 939010636a2ee29e1775ec43320af58d71812d1c7f585990420901f43e97632a  crates/molbiocraft-protein/src/backbone.rs
 71dc13bee068db005bfe9e06a640dcca8093df5ccbf78de6cc8df77afcbb4155  crates/molbiocraft-protein/src/biophysics_3d.rs
@@ -70,5 +82,6 @@ f81b6292e8865209825eeb5613000c1fe66b78dcd851cdac5c6caf64aa0f7f30  crates/molbioc
 ce92ec9dc6f264bbc781199050665e2232f8bd1c0ffb2a242e209d2cea2a51e3  crates/molbiocraft-protein/src/proteomics_mass_spec.rs
 58e8831797698f74cb05cb5337b92e62c551aa8740825858ebff141183422449  crates/molbiocraft-protein/src/structure_align.rs
 655327d4cd012a69ef03eac594ed432713a18d383c79f932634e480a41bc3fc5  crates/molbiocraft-protein/src/translation_orf.rs
+44fe1006687467e86860d8e3ce5c79c365d66bd0d687cdd332b1c4eada526d08  crates/molbiocraft-wasm/Cargo.toml
 9f42a401ab57482a9e9a12f80626353c2f11ae1a543553df8831d80239ba7d55  crates/molbiocraft-wasm/src/lib.rs
 accd4e73f84d5b5e54a4478406acd7f5481c2a87b2b3c64a73c234f0cb638e2a  crates/molbiocraft-wasm/src/resident_store.rs
