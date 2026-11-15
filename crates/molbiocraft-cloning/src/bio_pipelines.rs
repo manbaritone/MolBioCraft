@@ -1276,8 +1276,10 @@ pub fn execute_bio_pipeline_rust(
             title: "Dual-Nuclease PAM Discovery (SpCas9 NGG & LbCas12a TTTV)".into(),
             status: s2_status.into(),
             // The rank in the words the scorer's own description gives it, rather than restated
-            // here — the restatement had drifted to three of its seven features and called the
-            // number an "activity", which US-01M7DVVR AC5 forbids of it on every other surface —
+            // here — the restatement had drifted to three of the six features the rank reads (five
+            // of the spacer and one of its PAM, weighed by `score_guide` in seven adjustment arms
+            // over the spacer and an eighth for the PAM) and called the number an "activity",
+            // which US-01M7DVVR AC5 forbids of it on every other surface —
             // and whose guides are ranked, which only this step's SpCas9 half is (BG-01M7EGF6).
             biological_rationale: format!(
                 "{} Only the SpCas9 guides are ranked here: this step's lead guide and its verdict come from them alone, and the Cas12a candidates are counted beside them, never ranked against them. It is not a trained on-target model and does not search a genome for off-targets, so the verdict reads the two numbers this step prints: it passes when the lead SpCas9 guide's heuristic rank is {} or more and its seed count reads \"{}\".",

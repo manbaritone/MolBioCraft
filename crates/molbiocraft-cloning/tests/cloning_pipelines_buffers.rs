@@ -1013,7 +1013,9 @@ fn lowest_passing_rank_record() -> SequenceDocument {
 /// Wrong implementations this kills — each of them passed every test in the repo before this bug:
 /// the shipped sentence "Ranks guides by a rule-of-thumb activity heuristic (GC content, 3' G, no
 /// poly-T)…", which calls the rank an activity (the one word US-01M7DVVR AC3/AC5 forbids about this
-/// number on every other surface), enumerates three of the seven features the scorer reads, and
+/// number on every other surface), enumerates three of the six features the scorer reads (five of
+/// the spacer and one of its PAM, weighed in seven adjustment arms over the spacer and an eighth
+/// for the PAM), and
 /// claims to rank "guides" when only the SpCas9 guides are ranked and only the SpCas9 lead guide
 /// decides the step's verdict; and any later restatement of the rule beside
 /// `crispr_heuristic_rank_description()` instead of from it, which is how those three drifted apart

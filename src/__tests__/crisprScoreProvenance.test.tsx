@@ -29,7 +29,9 @@
  * - a heuristic described as activity or efficiency;
  * - genome-wide specificity shown as a number (0 or 100) instead of "Not evaluated" with the reason;
  * - a menu description naming SaCas9, which no preset scans for, or an efficiency model;
- * - a rank described as three spacer features over 0-100 when the scorer reads six and a PAM and
+ * - a rank described as three spacer features over 0-100 when the scorer reads five features of
+ *   the spacer and one of its PAM, six in all (weighed in seven adjustment arms over the spacer
+ *   and an eighth for the PAM), and
  *   reports only inside CRISPR_HEURISTIC_RANK_RANGE — whose floor the scorer clamps and whose
  *   ceiling is its arithmetic, every raise at once, held by a test rather than by a clamp
  *   (BG-01M7E69W AC1) — or a rank said to order a list the seed count also orders;
@@ -859,5 +861,501 @@ describe('the declared rank range comes from one unambiguous declaration (BG-01M
       Number(pair![1]),
       Number(pair![2]),
     ]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// BG-01M7FC2X: wherever the tree states how many things the rank reads, it says what they are.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How a count may be spelled, and the fragments every pattern below is assembled from.
+ *
+ * No line of this file writes a count next to a noun the sweep reads, because the sweep reads this
+ * file: it walks every Rust and TypeScript source under `crates/` and `src/`, and
+ * `src/__tests__/crisprScoreProvenance.test.tsx` is one of them. A pattern, a fixture or a plant
+ * spelled out here would be a statement in a swept file, and a wrong one would make the sweep red
+ * on its own source for ever. So every count a pattern or a fixture needs is joined to its noun at
+ * run time - by the regex engine from `COUNT`, or by `saying()` - and the only counts written out
+ * in prose here are the correct ones, which the sweep holds to the rule like any other site.
+ */
+const COUNT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'] as const;
+const COUNT = `(?:${COUNT_WORDS.join('|')}|\\d+)`;
+/** The nouns that say what is counted - a property of the guide, or an arm of the scorer. */
+const COUNT_NOUN = '(?:features?|propert(?:y|ies)|arms?|adjustments?)';
+/** Words that may sit between a count and its noun without being one. */
+const COUNT_MODIFIER = '(?:(?:adjustment|adjustments|scored|scoring|distinct)\\s+){0,2}';
+/** A count spelled, then whatever it counts - so no forbidden phrase is a literal in this file. */
+const saying = (n: number, rest: string) => `${COUNT_WORDS[n]} ${rest}`;
+const countValue = (token: string) =>
+  COUNT_WORDS.indexOf(token as (typeof COUNT_WORDS)[number]) >= 0
+    ? COUNT_WORDS.indexOf(token as (typeof COUNT_WORDS)[number])
+    : Number(token);
+/** The first count in a matched phrase: the number that phrase states. */
+const countIn = (phrase: string) => countValue(new RegExp(`\\b(${COUNT})\\b`).exec(phrase)![1]);
+
+type CountSide = 'spacer' | 'pam' | 'total';
+type CountClass = 'features' | 'arms';
+type RankCounts = Record<CountClass, Record<CountSide, number>>;
+
+const OF_SIDE: Record<CountSide, string> = {
+  spacer: 'of the spacer',
+  pam: 'of its PAM',
+  total: 'in all',
+};
+
+/**
+ * How many things the rank reads, and in how many arms, *derived* from the engine's own one
+ * statement of the rule - never written here (BG01M7F18J AC2 derives the same numbers in Rust, and
+ * this is the same derivation on the shipped WASM string the app reads).
+ *
+ * Each `raised`/`lowered` is an adjustment; a subject named with no direction of its own inherits
+ * the one before it, and a direction with no subject after it belongs to the subject before it. The
+ * distinct subjects are the features. A clause this cannot classify fails loudly rather than being
+ * counted as nothing (LC-006): a silent undercount is the defect BG01M7F18J existed to kill.
+ */
+function deriveRankCounts(description: string): RankCounts & { enumeration: string } {
+  const OPENS = 'a rule of thumb over the spacer and its PAM: ';
+  const CLOSES = ', then held to';
+  const from = description.indexOf(OPENS);
+  if (from < 0) {
+    throw new Error(`the rule's one statement no longer opens its enumeration with "${OPENS}": ${description}`);
+  }
+  const tail = description.slice(from + OPENS.length);
+  const to = tail.indexOf(CLOSES);
+  if (to < 0) {
+    throw new Error(`the rule's one statement no longer closes its enumeration with "${CLOSES}": ${description}`);
+  }
+  const enumeration = tail.slice(0, to);
+  const words = enumeration
+    .split(/\s+/)
+    .map((w) => w.replace(/^[,.;:()]+|[,.;:()]+$/g, ''))
+    .filter((w) => w !== '');
+  const isCount = (w: string) => /^\d+$/.test(w);
+  const isBases = (w: string) => /^[ACGT]+$/.test(w);
+  const isSpan = (w: string) => /^\d+[-–]\d+$/.test(w);
+  // Connectives, directions and the base letters a clause names as a value: vocabulary that
+  // introduces no property of its own. Anything outside it is an unclassified subject.
+  const CONNECTIVES = [
+    'from', 'of', 'raised', 'lowered', 'for', 'and', 'a', 'an', 'at', 'or', 'inside', 'outside',
+    'spacer', 'then', 'the', 'its',
+  ];
+  const subjects: Record<'spacer' | 'pam', Set<string>> = { spacer: new Set(), pam: new Set() };
+  const arms: Record<'spacer' | 'pam', number> = { spacer: 0, pam: 0 };
+  let pending = 0;
+  let lastSide: 'spacer' | 'pam' | null = null;
+  const attribute = (side: 'spacer' | 'pam') => {
+    arms[side] += pending > 0 ? pending : 1;
+    pending = 0;
+    lastSide = side;
+  };
+  for (let i = 0; i < words.length; ) {
+    const w = words[i];
+    if (w === 'base' && words[i + 1] === 'of' && isCount(words[i + 2] ?? '')) {
+      i += 3; // the base the adjustments move, not one of them
+    } else if (w === 'GC' && words[i + 1] === 'content') {
+      subjects.spacer.add('GC content');
+      attribute('spacer');
+      i += 2;
+    } else if (isSpan(w) && words[i + 1] === '%') {
+      // A bound on a composition already named, not a property of its own.
+      if (!subjects.spacer.has('GC content')) {
+        throw new Error(`the rule bounds a percentage (${w} %) before saying what it is of: ${enumeration}`);
+      }
+      i += 2;
+    } else if (w === 'position' && isCount(words[i + 1] ?? '')) {
+      const side = words[i - 1] === 'PAM' ? 'pam' : 'spacer';
+      subjects[side].add(`position ${words[i + 1]}`);
+      attribute(side);
+      i += 2;
+    } else if (isBases(w) && w.length > 1 && words[i + 1] === 'run') {
+      subjects.spacer.add(`${w} run`);
+      attribute('spacer');
+      i += 2;
+    } else if (w === 'PAM' && words[i + 1] === 'ending' && isBases(words[i + 2] ?? '')) {
+      subjects.pam.add(`PAM ending ${words[i + 2]}`);
+      attribute('pam');
+      i += 3;
+    } else if (CONNECTIVES.includes(w) || (isBases(w) && w.length === 1)) {
+      if (w === 'raised' || w === 'lowered') pending += 1;
+      i += 1;
+    } else {
+      throw new Error(
+        `the rule names a property this derivation cannot classify, at "${w}" in "${enumeration}": teach it the new property instead of letting it count the rank's features short`
+      );
+    }
+  }
+  // A direction with no subject after it belongs to the subject before it.
+  if (pending > 0) {
+    if (lastSide === null) throw new Error(`the rule states adjustments with no subject at all: ${enumeration}`);
+    arms[lastSide as 'spacer' | 'pam'] += pending;
+  }
+  if (subjects.spacer.size === 0 || subjects.pam.size === 0) {
+    throw new Error(
+      `the rule names ${subjects.spacer.size} properties of the spacer and ${subjects.pam.size} of its PAM, so one of the two was read as nothing: ${enumeration}`
+    );
+  }
+  return {
+    features: {
+      spacer: subjects.spacer.size,
+      pam: subjects.pam.size,
+      total: subjects.spacer.size + subjects.pam.size,
+    },
+    arms: { spacer: arms.spacer, pam: arms.pam, total: arms.spacer + arms.pam },
+    enumeration,
+  };
+}
+
+/**
+ * A statement of a count of the rank, in the shapes this tree has written one in.
+ *
+ * `selfMarking` shapes name the spacer, the PAM or the scorer themselves, so they are read in any
+ * sentence of any swept file - which is what makes a count planted in a file nobody listed fail.
+ * The weaker shapes ("its N arms") are read only in a sentence that also names the rank, because
+ * the word "arms" belongs to other things in this tree (a scan's two arms, a floor and a ceiling).
+ */
+type CountShape = { side: CountSide; selfMarking: boolean; re: string };
+const NAMED_COUNT_SHAPES: CountShape[] = [
+  { side: 'spacer', selfMarking: true, re: `${COUNT}\\s+${COUNT_MODIFIER}(${COUNT_NOUN})\\s+of the spacer\\b` },
+  { side: 'pam', selfMarking: true, re: `${COUNT}\\s+${COUNT_MODIFIER}(${COUNT_NOUN})\\s+of its pam\\b` },
+  { side: 'spacer', selfMarking: true, re: `${COUNT}\\s+${COUNT_MODIFIER}(${COUNT_NOUN})\\s+over the spacer\\b` },
+  { side: 'spacer', selfMarking: true, re: `${COUNT}\\s+${COUNT_MODIFIER}(${COUNT_NOUN})\\s+and (?:a|its|the) pam\\b` },
+  { side: 'total', selfMarking: true, re: `${COUNT}\\s+${COUNT_MODIFIER}(${COUNT_NOUN})\\s+the (?:scorer|rank) reads\\b` },
+  { side: 'total', selfMarking: false, re: `${COUNT}\\s+${COUNT_MODIFIER}(${COUNT_NOUN})\\s+of it\\b` },
+  { side: 'total', selfMarking: false, re: `(?:its|the rank's|the scorer's)\\s+${COUNT}\\s+${COUNT_MODIFIER}(${COUNT_NOUN})` },
+];
+/**
+ * A count of the rank stated with no noun between the number and what it is a count over. These are
+ * read only in a sentence that names the rank, because "N of its PAM" is also how a single *base*
+ * of a guide is spoken of (`LinearSequenceView.tsx`), and "more than 12,000 in all" is a count of
+ * something else entirely.
+ */
+const BARE_COUNT_SHAPES: CountShape[] = [
+  { side: 'spacer', selfMarking: true, re: `${COUNT}\\s+of the spacer\\b(?!'s)` },
+  { side: 'pam', selfMarking: true, re: `${COUNT}\\s+of its pam\\b` },
+  { side: 'spacer', selfMarking: true, re: `${COUNT}\\s+and (?:a|its|the) pam\\b` },
+  { side: 'spacer', selfMarking: true, re: `${COUNT}\\s+over the spacer\\b` },
+  { side: 'total', selfMarking: false, re: `(?<![\\d,])${COUNT}\\s+in all\\b` },
+];
+/** The words by which a sentence says it is speaking of this rank. */
+const RANK_MARKER = /\branks?\b|\bscorer\b|score_guide|on_target/;
+/** `arms` and `adjustments` count the scorer's arms; everything else counts the guide's features. */
+const classOfNoun = (noun: string): CountClass => (/^(?:arms?|adjustments?)$/.test(noun) ? 'arms' : 'features');
+
+type CountFinding = { file: string; phrase: string; why: string };
+
+/** Comment markers and line wrapping gone, so a count split over two lines is still one phrase. */
+const asProse = (text: string) => text.toLowerCase().replace(/[/*]/g, ' ').replace(/\s+/g, ' ');
+
+/**
+ * Every statement of a count of the rank the swept sources make that the rule does not bear out.
+ *
+ * The sites are discovered, never listed: the input is whatever the walk read. Each sentence is
+ * read on its own, so the noun that says what is counted has to be in the statement itself.
+ */
+function sweepRankCounts(sources: Map<string, string>, derived: RankCounts): CountFinding[] {
+  const findings: CountFinding[] = [];
+  for (const [file, text] of sources) {
+    for (const sentence of asProse(text).split(/[.;]/)) {
+      const marked = RANK_MARKER.test(sentence);
+      const named: Array<{ at: number; length: number; cls: CountClass }> = [];
+      for (const shape of NAMED_COUNT_SHAPES) {
+        if (!shape.selfMarking && !marked) continue;
+        for (const m of sentence.matchAll(new RegExp(shape.re, 'g'))) {
+          const phrase = m[0].trim();
+          const cls = classOfNoun(m[1]);
+          named.push({ at: m.index, length: m[0].length, cls });
+          const expected = derived[cls][shape.side];
+          if (countIn(phrase) !== expected) {
+            findings.push({
+              file,
+              phrase,
+              why: `says ${countIn(phrase)} where the rule's own enumeration gives ${expected} ${cls} ${OF_SIDE[shape.side]}`,
+            });
+          }
+        }
+      }
+      named.sort((a, b) => a.at - b.at);
+      for (const shape of BARE_COUNT_SHAPES) {
+        if (!marked) continue;
+        for (const m of sentence.matchAll(new RegExp(shape.re, 'g'))) {
+          const phrase = m[0].trim();
+          // A bare count inside a statement that does name its noun is that statement, not a
+          // second one ("five features of the spacer" holds "of the spacer" inside it).
+          if (named.some((n) => n.at <= m.index && m.index < n.at + n.length)) continue;
+          const governing = named.filter((n) => n.at < m.index).pop() ?? named[0];
+          if (governing === undefined) {
+            findings.push({
+              file,
+              phrase,
+              why: `states a count with no noun: nothing in the sentence says what the ${countIn(phrase)} are, so it reads as a count of whatever the reader supplies`,
+            });
+            continue;
+          }
+          const expected = derived[governing.cls][shape.side];
+          if (countIn(phrase) !== expected) {
+            findings.push({
+              file,
+              phrase,
+              why: `says ${countIn(phrase)} where the rule's own enumeration gives ${expected} ${governing.cls} ${OF_SIDE[shape.side]}`,
+            });
+          }
+        }
+      }
+    }
+  }
+  return findings;
+}
+
+/** Which swept files state a count of the rank with its noun at all - the sweep's own reach. */
+function filesStatingACount(sources: Map<string, string>): string[] {
+  const holders = new Set<string>();
+  for (const [file, text] of sources) {
+    for (const sentence of asProse(text).split(/[.;]/)) {
+      const marked = RANK_MARKER.test(sentence);
+      for (const shape of NAMED_COUNT_SHAPES) {
+        if (!shape.selfMarking && !marked) continue;
+        if (new RegExp(shape.re).test(sentence)) holders.add(file);
+      }
+    }
+  }
+  return [...holders].sort();
+}
+
+/** What a reader is told when a site and the rule have parted: the file, the phrase and the rule. */
+const countMessage = (findings: CountFinding[]) =>
+  `${findings.length} statement(s) of the CRISPR rank's counts do not bear out the rule the engine ` +
+  `runs:\n  ${findings.map((f) => `${f.file}: "${f.phrase}" ${f.why}`).join('\n  ')}`;
+
+/** Every Rust and TypeScript source under `crates/` and `src/`, found by walking, not by listing. */
+function walkProseSources(root: URL = REPO_ROOT): string[] {
+  const files: string[] = [];
+  const skip = new Set(['target', 'node_modules', 'dist', '.git']);
+  const walk = (dir: string) => {
+    for (const entry of nodeFs.readdirSync(new URL(dir, root), { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!skip.has(entry.name)) walk(`${dir}${entry.name}/`);
+      } else if (entry.isFile() && /\.(?:rs|ts|tsx)$/.test(entry.name)) {
+        files.push(`${dir}${entry.name}`);
+      }
+    }
+  };
+  for (const top of ['crates/', 'src/']) {
+    if (!nodeFs.existsSync(new URL(top, root))) throw new Error(`the sweep has nothing to read: ${top} is not in the tree`);
+    walk(top);
+  }
+  return files.sort();
+}
+
+const readProseSources = (files: string[], root: URL = REPO_ROOT) =>
+  new Map(files.map((file) => [file, nodeFs.readFileSync(new URL(file, root), 'utf8')] as const));
+
+/** The scorer's arms, counted in its own body - the other half of what the description states. */
+function scorerArmCount(): number {
+  const path = 'crates/molbiocraft-cloning/src/cloning_crispr.rs';
+  const source = nodeFs.readFileSync(new URL(path, REPO_ROOT), 'utf8');
+  const OPENS = 'let score_guide = |spacer: &[u8], pam: &[u8]|';
+  const CLOSES = "// The scorer's own floor";
+  const from = source.indexOf(OPENS);
+  if (from < 0) throw new Error(`${path} no longer binds the scorer as "${OPENS}", so its arms cannot be counted`);
+  const body = source.slice(from);
+  const to = body.indexOf(CLOSES);
+  if (to < 0) throw new Error(`${path} no longer ends the scorer's arms at "${CLOSES}", so they cannot be counted`);
+  const arms = body.slice(0, to);
+  return (arms.match(/on_target \+=/g) ?? []).length + (arms.match(/on_target -=/g) ?? []).length;
+}
+
+/** The three sites this bug corrects, and the phrase each one carried instead. */
+const CORRECTED_SITES: Array<{ file: string; was: string; now: string }> = [
+  {
+    file: 'src/__tests__/crisprScoreProvenance.test.tsx',
+    now: `the scorer reads ${saying(5, 'features of')}`,
+    was: `the scorer reads ${saying(6, 'and a PAM and')}`,
+  },
+  {
+    file: 'crates/molbiocraft-cloning/src/bio_pipelines.rs',
+    now: `three of the ${saying(6, 'features the rank reads')}`,
+    was: `three of its ${saying(7, 'features')}`,
+  },
+  {
+    file: 'crates/molbiocraft-cloning/tests/cloning_pipelines_buffers.rs',
+    now: `three of the ${saying(6, 'features the scorer reads')}`,
+    was: `three of the ${saying(7, 'features the scorer reads')}`,
+  },
+];
+
+describe('every stated count of the rank says what it counts (BG-01M7FC2X)', () => {
+  /** The rule's own counts, read from the engine the app reads them from. */
+  const rankCounts = () => deriveRankCounts(crisprHeuristicRankDescriptionRust());
+  /** The tree as the walk finds it, read fresh so no case here can be answered from a cache. */
+  const sweptTree = () => {
+    const files = walkProseSources();
+    return { files, sources: readProseSources(files) };
+  };
+
+  it("BG-01M7FC2X AC1 no statement of the rank's feature count contradicts the scorer", () => {
+    const derived = rankCounts();
+    const { files, sources } = sweptTree();
+    // Nowhere in the tree, not at a list of sites: the input is the walk's.
+    expect(files.length, 'the sweep read no source at all, so it proves nothing').toBeGreaterThan(100);
+    const findings = sweepRankCounts(sources, derived);
+    expect(findings, countMessage(findings)).toEqual([]);
+
+    // And each of the three sites is corrected, both ways round: it states the count the rule gives
+    // now, and the phrase it used to carry is one this sweep refuses. The sweep above is what
+    // "correcting only the frontend site" fails - it reads the two Rust sites too. The round trip
+    // below says the rest: that each site's own former wording, restored on its own, is refused by
+    // name, so "those two were merely ambiguous" cannot be said of them.
+    for (const { file, was, now } of CORRECTED_SITES) {
+      const text = sources.get(file);
+      expect(text, `${file} is not among the ${files.length} swept sources`).toBeDefined();
+      expect(asProse(text!), `${file} must state the count the rule gives`).toContain(asProse(now));
+      const before = asProse(text!).replace(asProse(now), asProse(was));
+      expect(before, `${file} no longer holds the phrase this bug was filed for`).not.toEqual(asProse(text!));
+      const regressed = sweepRankCounts(new Map([[file, before]]), derived);
+      expect(regressed.length, `restoring "${was}" in ${file} must fail the sweep`).toBeGreaterThan(0);
+      expect([...new Set(regressed.map((f) => f.file))], 'and the failure names the file').toEqual([file]);
+      expect(
+        regressed.some((f) => asProse(was).includes(f.phrase)),
+        `the restored phrase itself must be what the sweep refuses: ${countMessage(regressed)}`
+      ).toBe(true);
+    }
+  });
+
+  it('BG-01M7FC2X AC2 a wrong count in an unlisted file fails the sweep', () => {
+    const derived = rankCounts();
+    const { files, sources } = sweptTree();
+    // The pattern reaches real statements in several files, so a green sweep is not a vacuous one.
+    const holders = filesStatingACount(sources);
+    expect(holders.length, 'the sweep matches no statement in the tree, so it would pass on any tree').toBeGreaterThan(3);
+
+    // A wrong count planted in a file no list here names - a crate source that has never spoken of
+    // the rank - fails the sweep, and the message names that file.
+    const unlisted = 'crates/molbiocraft-core/src/lib.rs';
+    expect(files, `${unlisted} is not in the tree any more: plant in another swept file`).toContain(unlisted);
+    expect(holders, `${unlisted} already states a count, so planting one there proves less`).not.toContain(unlisted);
+    const planted = new Map(sources).set(
+      unlisted,
+      `${sources.get(unlisted)}\n// ${saying(derived.features.spacer + 1, 'features of the spacer')}\n`
+    );
+    const found = sweepRankCounts(planted, derived);
+    expect(found.map((f) => f.file), countMessage(found)).toEqual([unlisted]);
+    expect(countMessage(found)).toContain(unlisted);
+
+    // And the walk itself discovers a file nobody could have listed, at any depth, in either tree.
+    const tree = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FC2X-sweep-`);
+    try {
+      const plant = `// ${saying(derived.features.spacer + 1, 'features of the spacer')}\n`;
+      for (const [file, text] of [
+        ['crates/new-crate/src/deep/compute.rs', plant],
+        ['crates/new-crate/src/notes.md', plant],
+        ['src/components/NewPanel.tsx', plant],
+        ['src/__tests__/clean.ts', `// ${saying(derived.features.spacer, 'features of the spacer')}\n`],
+      ] as const) {
+        nodeFs.mkdirSync(`${tree}/${file.slice(0, file.lastIndexOf('/'))}`, { recursive: true });
+        nodeFs.writeFileSync(`${tree}/${file}`, text, 'utf8');
+      }
+      const root = pathToFileURL(`${tree}/`);
+      const walked = walkProseSources(root);
+      expect(walked, 'the walk reads Rust and TypeScript at any depth, and nothing else').toEqual([
+        'crates/new-crate/src/deep/compute.rs',
+        'src/__tests__/clean.ts',
+        'src/components/NewPanel.tsx',
+      ]);
+      const onTree = sweepRankCounts(readProseSources(walked, root), derived);
+      expect(onTree.map((f) => f.file).sort(), countMessage(onTree)).toEqual([
+        'crates/new-crate/src/deep/compute.rs',
+        'src/components/NewPanel.tsx',
+      ]);
+    } finally {
+      nodeFs.rmSync(tree, { recursive: true, force: true });
+    }
+
+    // The spelling the sites are held to is the rule's, not a number written here: read the rule as
+    // naming one more feature of the spacer and every correct site in the tree fails.
+    const shifted: RankCounts = {
+      features: { ...derived.features, spacer: derived.features.spacer + 1 },
+      arms: derived.arms,
+    };
+    const underShifted = sweepRankCounts(sources, shifted);
+    expect(
+      [...new Set(underShifted.map((f) => f.file))].length,
+      'no site tracks the derived count, so the sweep is holding them to a constant'
+    ).toBeGreaterThan(2);
+  });
+
+  it('BG-01M7FC2X AC3 a count stated with no noun is refused', () => {
+    const derived = rankCounts();
+    // The two counts are different numbers, or neither could be read as the other.
+    expect(derived.arms.spacer, 'the arms and the features of the spacer are the same number here').not.toBe(
+      derived.features.spacer
+    );
+    expect(derived.arms.total, 'the arms and the features in all are the same number here').not.toBe(
+      derived.features.total
+    );
+    // And the arms the rule states are the arms the scorer runs, so the arms convention below is
+    // the scorer's own shape and not a second claim. (This comment says "N arms", not a number
+    // beside the spacer: a bare count written here would be a planted defect in a swept file, and
+    // the sweep reads this file. It caught one in this very comment while it was being written.)
+    expect(scorerArmCount(), 'the rule states a different number of adjustments from `score_guide`').toBe(
+      derived.arms.total
+    );
+
+    const sweep = (prose: string) => sweepRankCounts(new Map([['src/fixture.ts', `// ${prose}\n`]]), derived);
+    const whys = (prose: string) => sweep(prose).map((f) => f.why).join(' | ');
+
+    // Said with its noun, each count in its own words: accepted.
+    const spelled = `the scorer reads ${saying(derived.features.spacer, 'features of the spacer')} and ${saying(
+      derived.features.pam,
+      'of its PAM'
+    )}, ${saying(derived.features.total, 'in all')}`;
+    expect(whys(spelled), `"${spelled}" is the spelling the rule gives`).toBe('');
+    const asArms = `the scorer runs ${saying(derived.arms.spacer, 'adjustment arms over the spacer')} and an eighth for the PAM`;
+    expect(whys(asArms), `"${asArms}" is the other convention, and says which it is`).toBe('');
+
+    // Each count read as the other: refused. This is the ambiguity that produced the original error.
+    const armsAsFeatures = `the scorer reads ${saying(derived.arms.spacer, 'features of the spacer')}`;
+    expect(whys(armsAsFeatures), `"${armsAsFeatures}" reads the arms as features`).toContain(
+      `${derived.features.spacer} features of the spacer`
+    );
+    const featuresAsArms = `the scorer runs ${saying(derived.features.spacer, 'adjustment arms over the spacer')}`;
+    expect(whys(featuresAsArms), `"${featuresAsArms}" reads the features as arms`).toContain(
+      `${derived.arms.spacer} arms of the spacer`
+    );
+
+    // A bare count - a number with no noun anywhere in its statement - is refused, whatever its
+    // value: the reader cannot tell which of the two counts it is, which is the whole defect.
+    for (const bare of [
+      `the scorer reads ${saying(6, 'and a PAM')}`,
+      `the rank is a rule of thumb over ${saying(6, 'of the spacer')}`,
+      `the rank is a rule of thumb over ${saying(derived.features.spacer, 'of the spacer')}`,
+      `the scorer weighs ${saying(derived.arms.spacer, 'over the spacer')}`,
+    ]) {
+      expect(whys(bare), `"${bare}" states a count with no noun`).toContain('states a count with no noun');
+    }
+    // Once the statement says what is counted, the counts it then carries bare are read against it.
+    expect(whys(spelled), 'a bare count governed by a noun in its own statement is read, not refused').toBe('');
+    const wrongBare = `the scorer reads ${saying(derived.features.spacer, 'features of the spacer')} and ${saying(
+      derived.features.pam + 1,
+      'of its PAM'
+    )}`;
+    expect(whys(wrongBare), `"${wrongBare}" miscounts the PAM`).toContain(`${derived.features.pam} features of its PAM`);
+
+    // What it leaves alone: ordinary prose that puts a number beside the word "rank", and a count of
+    // something else that borrows the word "arms". Neither states a count of what the rank reads.
+    for (const ordinary of [
+      'the heuristic rank is 68 before any adjustment, and a rank 72 guide ranks above a rank 60 one',
+      `a scan can run to as many bases as lie between the starts of its ${saying(2, 'arms')}`,
+      `a base of the shown guide's spacer, and ${saying(1, 'of its PAM:')} the spacer is what you order`,
+      'every repeat, more than 12,000 in all, and nothing else the checks read',
+    ]) {
+      expect(whys(ordinary), `"${ordinary}" states no count of what the rank reads`).toBe('');
+    }
+    // The cost of that, stated rather than hidden: a possessive count of arms ("its N arms") in a
+    // sentence that does name the scorer is read as a count of the rank's arms, and refused.
+    const borrowed = `the scorer walks as many bases as lie between the starts of its ${saying(2, 'arms')}`;
+    expect(whys(borrowed), `"${borrowed}" is read as a count of the scorer's arms`).toContain(
+      `${derived.arms.total} arms in all`
+    );
   });
 });
