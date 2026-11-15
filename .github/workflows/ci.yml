@@ -55,6 +55,21 @@ jobs:
       - name: Install Frontend Dependencies
         run: npm ci
 
+      # The committed engine source record (BG01M7FGSF) must match the Rust sources this commit carries.
+      # The build step below rewrites public/molbiocraft_wasm.wasm.sources.sha256 from this
+      # checkout before the Vitest provenance guard reads it, so that guard alone cannot see a
+      # stale record here. Regenerate the record before the build and fail if it differs from the
+      # committed file. --sources-only only hashes crates/*/src (Node built-ins: no Rust toolchain,
+      # no target/). The digests collapse CRLF to LF, so it is platform-independent and one OS checks it.
+      - name: Check Committed Engine Source Record Is Current
+        if: runner.os == 'Linux'
+        run: |
+          node scripts/build_rust_wasm.mjs --sources-only
+          git diff --exit-code -- public/molbiocraft_wasm.wasm.sources.sha256 || {
+            echo "::error file=public/molbiocraft_wasm.wasm.sources.sha256::Engine source record is stale: public/molbiocraft_wasm.wasm.sources.sha256 does not match the Rust sources under crates/*/src. Rebuild the engine with npm run wasm:build and commit the result"
+            exit 1
+          }
+
       - name: Build Zero-Import Rust WebAssembly Engine & Production Frontend
         run: |
           npm run wasm:build
