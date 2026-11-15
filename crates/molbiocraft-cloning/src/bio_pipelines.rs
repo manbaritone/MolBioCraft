@@ -21,6 +21,7 @@ use crate::cloning_crispr::{
     audit_sequence_alerts_for_scan, scan_crispr_guides, CRISPR_HEURISTIC_RANK_RANGE,
 };
 use crate::plasmid_features::detect_common_features;
+use crate::reaction_buffers::crispr_heuristic_rank_description;
 use crate::rebase_catalog::{
     find_non_cutting_enzymes, get_rebase_enzymes, scan_restriction_sites, simulate_restriction_digest,
     RestrictionPositionLimit, RESTRICTION_POSITIONS_PER_ENZYME,
@@ -133,6 +134,18 @@ fn crispr_seed_match_phrase(off_target_count: usize) -> String {
         n => format!("{n} seed matches"),
     }
 }
+
+/// What the gRNA-ranking step's PASS asks of its lead guide, in the two numbers the step prints:
+/// the heuristic rank, and the seed count beside it (`crispr_seed_match_phrase`). The step states
+/// both in its rationale, reading the seed half's words from the same constant the comparison
+/// reads, so a threshold cannot move without the sentence moving with it.
+///
+/// The seed half was `specificity_score >= 70` until BG-01M7EGF6 — a threshold on the
+/// `100 / (1 + matches)` percentage BG-01M7E61C took off the screen, so a reader who saw WARN
+/// beside "2 seed matches" had no number on screen that explained it. The two are the same
+/// verdict (`round(100 / (1 + off)) >= 70` iff `off == 0`), which is why no PASS/WARN moved.
+const GRNA_PASS_MIN_HEURISTIC_RANK: i32 = 60;
+const GRNA_PASS_MAX_OTHER_SEED_COPIES: usize = 0;
 
 fn fmt_num(n: usize) -> String {
     let s = n.to_string();
@@ -1229,9 +1242,16 @@ pub fn execute_bio_pipeline_rust(
             (b.on_target_score + b.specificity_score).cmp(&(a.on_target_score + a.specificity_score))
         });
         let top_guide = ranked_cas9.first();
+        // The verdict reads the two numbers the step prints — the heuristic rank and the seed
+        // count — and nothing else (BG-01M7EGF6).
         let s2_status = match top_guide {
             None => "ACTION_REQUIRED",
-            Some(g) if g.on_target_score >= 60 && g.specificity_score >= 70 => "PASS",
+            Some(g)
+                if g.on_target_score >= GRNA_PASS_MIN_HEURISTIC_RANK
+                    && g.off_target_count <= GRNA_PASS_MAX_OTHER_SEED_COPIES =>
+            {
+                "PASS"
+            }
             Some(_) => "WARN",
         };
 
@@ -1255,7 +1275,16 @@ pub fn execute_bio_pipeline_rust(
             id: "grna-ranking".into(),
             title: "Dual-Nuclease PAM Discovery (SpCas9 NGG & LbCas12a TTTV)".into(),
             status: s2_status.into(),
-            biological_rationale: "Ranks guides by a rule-of-thumb activity heuristic (GC content, 3' G, no poly-T) and by exact 12-nt PAM-proximal seed matches within this sequence; it is not a trained on-target model and does not search a genome for off-targets.".into(),
+            // The rank in the words the scorer's own description gives it, rather than restated
+            // here — the restatement had drifted to three of its seven features and called the
+            // number an "activity", which US-01M7DVVR AC5 forbids of it on every other surface —
+            // and whose guides are ranked, which only this step's SpCas9 half is (BG-01M7EGF6).
+            biological_rationale: format!(
+                "{} Only the SpCas9 guides are ranked here: this step's lead guide and its verdict come from them alone, and the Cas12a candidates are counted beside them, never ranked against them. It is not a trained on-target model and does not search a genome for off-targets, so the verdict reads the two numbers this step prints: it passes when the lead SpCas9 guide's heuristic rank is {} or more and its seed count reads \"{}\".",
+                crispr_heuristic_rank_description(),
+                GRNA_PASS_MIN_HEURISTIC_RANK,
+                crispr_seed_match_phrase(GRNA_PASS_MAX_OTHER_SEED_COPIES).to_lowercase()
+            ),
             finding_summary: if let Some(g) = top_guide {
                 format!(
                     "Found {} SpCas9 and {} Cas12a candidate guides; listing the top {} and top {}; lead guide cuts at bp {} (heuristic rank {}, {}).",

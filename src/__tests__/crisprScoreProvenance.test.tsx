@@ -14,6 +14,14 @@
  * engine calls, the macro catalogue and the CRISPR plugin's reply from the real WASM engine, and the
  * menu descriptions from the source file the App reads them from. Nothing is mocked.
  *
+ * The guided pipeline shows the same numbers through strings the engine writes, and AC5's
+ * vocabulary rule below reads this studio's render alone - which is how the gRNA-ranking step came
+ * to call the rank an "activity" heuristic with nothing failing (BG-01M7EGF6). That step's own
+ * rationale, summary and metrics and the pipeline's catalogue entry are held to the same rule where
+ * they are written, over the whole sample library, by
+ * `bg_01m7egf6_ac2_no_pipeline_crispr_surface_calls_the_heuristic_rank_an_activity` in
+ * `crates/molbiocraft-cloning/tests/cloning_pipelines_buffers.rs`.
+ *
  * Wrong implementations this catches:
  * - the shipped "Hsu Specificity" header, "(Rust Doench 2016 Engine)" plugin name and macro comment;
  * - a model named in a label or header, even where a sentence elsewhere says it is not run;
@@ -281,6 +289,9 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
     const html = crisprTab();
     const all = text(html);
     // Any word for a measured quality appears only where the sentence says the number is not it.
+    // The same rule over the guided pipeline's CRISPR surfaces is `bg_01m7egf6_ac2` in
+    // crates/molbiocraft-cloning/tests/cloning_pipelines_buffers.rs (BG-01M7EGF6): these engine
+    // strings reach a reader through the pipeline report, not through this render.
     for (const sentence of all.split(/(?<=[.!?])\s+/).filter((s) => /efficien|activity/i.test(s))) {
       expect(sentence, 'a heuristic is never called efficiency or activity').toMatch(/not a measured or predicted cutting efficiency/);
     }

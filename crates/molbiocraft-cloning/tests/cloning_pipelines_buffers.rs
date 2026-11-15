@@ -98,6 +98,11 @@ fn all_four_guided_bio_pipelines_execute_cleanly_in_rust_with_lf_and_crlf_export
 /// The readout it reads is now the rank bare beside the seed count, under a label that states the
 /// range the scorer owns (BG-01M7E61C): the old `"{on}/100 • {seed}/100"` value printed a rank out
 /// of a 100 it can never reach, and the specificity it parsed was a 100 / (1 + matches) percentage.
+///
+/// The rationale it reads is now the engine's own description of the rank (BG-01M7EGF6): this test
+/// reads it only for what BG-01M6PWB5 guards — a rule of thumb with no published model behind it —
+/// and `bg_01m7egf6_ac1_the_grna_rationale_reads_the_rule_the_scorer_runs_over_the_spcas9_guides`
+/// owns the retired spellings, so the sentence is pinned once.
 #[test]
 fn crispr_pipeline_labels_guide_scores_as_the_heuristics_it_computes() {
     let (rank_lo, rank_hi) = molbiocraft_cloning::cloning_crispr::CRISPR_HEURISTIC_RANK_RANGE;
@@ -136,7 +141,9 @@ fn crispr_pipeline_labels_guide_scores_as_the_heuristics_it_computes() {
         .iter()
         .find(|s| s.id == "grna-ranking")
         .expect("gRNA ranking step");
-    assert!(ranking.biological_rationale.contains("rule-of-thumb activity heuristic"));
+    assert!(ranking
+        .biological_rationale
+        .contains("a rule of thumb over the spacer and its PAM"));
     assert!(ranking.biological_rationale.contains("not a trained on-target model"));
     let score = ranking
         .metrics
@@ -932,5 +939,500 @@ fn grna_pipeline_reads_a_circular_record_across_its_origin() {
             fmt(circle.len()),
             fmt(in_window(origin_window))
         )
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// BG-01M7EGF6: the guided pipeline's gRNA-ranking step says what its rank is, whose guides it
+// ranks, and decides its verdict from the two numbers it puts on screen.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The CRISPR knockout pipeline's catalogue entry.
+fn crispr_pipeline_definition() -> molbiocraft_cloning::PipelineDefinition {
+    get_bio_pipeline_catalog()
+        .into_iter()
+        .find(|d| d.id == "crispr-hdr-knockout")
+        .expect("the CRISPR knockout pipeline is in the catalogue")
+}
+
+/// A sample-library document by a fragment of its name — the records the workbench ships, read
+/// through the shipped `get_sample_library`.
+fn sample_doc(name_fragment: &str) -> SequenceDocument {
+    get_sample_library()
+        .into_iter()
+        .find(|d| d.name.contains(name_fragment))
+        .unwrap_or_else(|| panic!("no sample document named like {name_fragment:?}"))
+}
+
+/// A record whose only two SpCas9 sites are the same 23 bases, so its lead guide's seed has another
+/// exact copy: 600 bases of A/T background (which holds no `GG`, no `CC` and no `TTT`, so it offers
+/// no PAM of its own to either nuclease) with one 20-nt spacer + `AGG` planted twice.
+///
+/// Both candidates score a heuristic rank of 90 (a base of 68, +14 for 45 % GC, +8 for the G at
+/// spacer position 20) and count one other seed copy, so the rank half of the step's PASS is
+/// satisfied and the seed half is the half that decides — the one case the whole sample library
+/// cannot reach, since every guide it lists has a unique seed (LC-002).
+fn repeated_seed_record() -> SequenceDocument {
+    const SITE: &str = "AGACTGACTAGCATGACATGAGG";
+    let mut bases: String = "AT".repeat(300);
+    for at in [100usize, 400] {
+        bases.replace_range(at..at + SITE.len(), SITE);
+    }
+    pipeline_doc(
+        "Grna_Repeat_Seed",
+        &bases,
+        Topology::Linear,
+        vec![cds_feature(1, 600)],
+    )
+}
+
+/// A record whose one SpCas9 site scores the bare base of the heuristic rank — 68, with no feature
+/// of the rule raising or lowering it — and whose seed has no other copy, so it passes on the rank
+/// the step asks for and nothing else.
+///
+/// Its spacer is 35 % GC (neither the 40–65 % raise nor the outside-30–75 % drop), reads A at
+/// position 20, T at 16 and C at 4 (none of the three position raises, and not the T-at-20 drop),
+/// holds no TTTT run, and its PAM is AGG, not one ending GGG. The whole sample library's lowest
+/// lead-guide rank is 79, so without this record the rank half of the step's PASS is a threshold no
+/// fixture reaches: raising it from 60 to 70 passed every test in the repo (LC-008).
+fn lowest_passing_rank_record() -> SequenceDocument {
+    const SITE: &str = "ATTCAGATTGCTGAATCAGAAGG";
+    let mut bases: String = "AT".repeat(300);
+    bases.replace_range(200..200 + SITE.len(), SITE);
+    pipeline_doc(
+        "Grna_Rank_68",
+        &bases,
+        Topology::Linear,
+        vec![cds_feature(1, 600)],
+    )
+}
+
+/// BG-01M7EGF6 AC1: the gRNA-ranking step's rationale is the rule the scorer runs, formatted from
+/// the engine's own description of it, and it says whose guides are the ranked ones.
+///
+/// Wrong implementations this kills — each of them passed every test in the repo before this bug:
+/// the shipped sentence "Ranks guides by a rule-of-thumb activity heuristic (GC content, 3' G, no
+/// poly-T)…", which calls the rank an activity (the one word US-01M7DVVR AC3/AC5 forbids about this
+/// number on every other surface), enumerates three of the seven features the scorer reads, and
+/// claims to rank "guides" when only the SpCas9 guides are ranked and only the SpCas9 lead guide
+/// decides the step's verdict; and any later restatement of the rule beside
+/// `crispr_heuristic_rank_description()` instead of from it, which is how those three drifted apart
+/// from the scorer in the first place.
+#[test]
+fn bg_01m7egf6_ac1_the_grna_rationale_reads_the_rule_the_scorer_runs_over_the_spcas9_guides() {
+    let (_, step) = grna_report(&sample_doc("pET-28a"));
+    let rationale = &step.biological_rationale;
+
+    // Formatted from the engine's own description, word for word, not restated beside it.
+    let described = molbiocraft_cloning::reaction_buffers::crispr_heuristic_rank_description();
+    assert!(
+        rationale.contains(&described),
+        "the rationale is not formatted from crispr_heuristic_rank_description():\n  rationale: {rationale}\n  description: {described}"
+    );
+
+    // Never an activity, and never the three-feature rule the scorer never ran.
+    for retired in ["activity", "Activity", "3' G", "no poly-T", "poly-T"] {
+        assert!(
+            !rationale.contains(retired),
+            "the rationale says {retired:?}, which this number is not: {rationale}"
+        );
+    }
+
+    // Whose guides are ranked is said wherever the rationale says guides are ranked.
+    assert!(
+        rationale.contains("Only the SpCas9 guides are ranked"),
+        "the rationale does not say that the SpCas9 guides are the ranked ones: {rationale}"
+    );
+    assert!(
+        rationale.contains("Cas12a"),
+        "the rationale does not say what becomes of the Cas12a candidates: {rationale}"
+    );
+    for sentence in sentences(rationale) {
+        let claims_a_ranking = sentence.contains("rank") && sentence.contains("guide");
+        assert!(
+            !claims_a_ranking || sentence.contains("SpCas9"),
+            "a sentence ranks guides without saying whose: {sentence:?}"
+        );
+    }
+}
+
+/// The sentences of `text`, as the frontend's own vocabulary guard splits them
+/// (`src/__tests__/crisprScoreProvenance.test.tsx`, US-01M7DVVR AC5).
+fn sentences(text: &str) -> Vec<&str> {
+    text.split_inclusive(|c| matches!(c, '.' | '!' | '?'))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// US-01M7DVVR AC5's rule, applied to one CRISPR surface: a sentence may name a measured quality
+/// only to deny it, and the only specificity this engine computes is named for what it counts.
+///
+/// The denial is the studio's own sentence, so "it is not a trained on-target model" — true, and
+/// what the retired rationale said — does not buy the word "activity".
+fn assert_no_forbidden_crispr_vocabulary(surface: &str, text: &str) {
+    const NOT_A_MEASURED_NUMBER: &str = "not a measured or predicted cutting efficiency";
+    const NOT_COMPUTED: &str = "no genome-wide specificity is computed";
+    for sentence in sentences(text) {
+        let lower = sentence.to_lowercase();
+        if lower.contains("activity") || lower.contains("efficien") {
+            assert!(
+                lower.contains(NOT_A_MEASURED_NUMBER),
+                "{surface} calls a heuristic number an activity or an efficiency: {sentence:?}"
+            );
+        }
+        if lower.contains("genome-wide") {
+            assert!(
+                lower.contains(NOT_COMPUTED) || lower.contains("not evaluated"),
+                "{surface} claims something genome-wide: {sentence:?}"
+            );
+        }
+        if lower.contains("specificity") {
+            assert!(
+                lower.contains("in-sequence")
+                    || lower.contains("seed-match")
+                    || lower.contains(NOT_COMPUTED)
+                    || lower.contains("not evaluated"),
+                "{surface} names a specificity without saying what it counts: {sentence:?}"
+            );
+        }
+    }
+}
+
+/// BG-01M7EGF6 AC2: US-01M7DVVR AC5's forbidden-vocabulary guard reads every CRISPR surface its
+/// words already claim. Its own test reads the Primer & PCR studio's render alone
+/// (`src/__tests__/crisprScoreProvenance.test.tsx`), which is why the guided pipeline — the same
+/// numbers, worded by the engine — was never held to the criterion that covers it. Here the
+/// pipeline's catalogue entry and its gRNA step's every string are inside the guard, read from the
+/// shipped `get_bio_pipeline_catalog` and `execute_bio_pipeline_rust` over the whole sample library
+/// (LC-003), never from a helper that only a test calls.
+///
+/// Wrong implementations this kills: putting "activity", "efficiency" or a genome-wide claim back
+/// into the rationale, the finding summary, a metric label or a recommendation of this step — none
+/// of which failed a test before this bug; and a seed readout renamed to a bare "specificity",
+/// which reads as the genome-wide number this engine does not compute.
+#[test]
+fn bg_01m7egf6_ac2_no_pipeline_crispr_surface_calls_the_heuristic_rank_an_activity() {
+    let def = crispr_pipeline_definition();
+    assert_no_forbidden_crispr_vocabulary(
+        "the CRISPR pipeline's catalogue entry",
+        &serde_json::to_string(&def).unwrap(),
+    );
+
+    let mut steps_read = 0usize;
+    for doc in get_sample_library() {
+        let Ok(report) =
+            execute_bio_pipeline_rust(&doc, &def.id, "macos", "2026-11-15T00:00:00Z")
+        else {
+            // A record too short to run the pipeline shows no CRISPR surface at all.
+            continue;
+        };
+        let step = report
+            .steps
+            .iter()
+            .find(|s| s.id == "grna-ranking")
+            .expect("the gRNA ranking step");
+        let surface = format!("the gRNA step of {}", doc.name);
+        // Every string of the step a reader sees, the rationale and the summary among them.
+        let all = serde_json::to_string(step).unwrap();
+        assert!(
+            all.contains(&step.finding_summary.replace('"', "\\\""))
+                || all.contains(&step.finding_summary),
+            "{surface}: the guard does not read the summary it claims to"
+        );
+        assert_no_forbidden_crispr_vocabulary(&surface, &all);
+        assert_no_forbidden_crispr_vocabulary(&surface, &step.biological_rationale);
+        assert_no_forbidden_crispr_vocabulary(&surface, &step.finding_summary);
+        steps_read += 1;
+    }
+    assert!(
+        steps_read > 50,
+        "the guard read only {steps_read} gRNA steps of the sample library"
+    );
+}
+
+/// The thresholds the gRNA step states in its own words, parsed out of the sentence a reader reads:
+/// the rank it asks of the lead guide, and what it asks that guide's seed count to read.
+fn stated_grna_pass_threshold(step: &BioPipelineStepResult) -> (i32, String) {
+    let text = &step.biological_rationale;
+    let (_, after) = text
+        .split_once("heuristic rank is ")
+        .unwrap_or_else(|| panic!("the step does not state the rank it asks for: {text}"));
+    let (rank, rest) = after
+        .split_once(" or more and ")
+        .unwrap_or_else(|| panic!("the step does not state both halves of its verdict: {text}"));
+    let seed = rest
+        .split('"')
+        .nth(1)
+        .unwrap_or_else(|| panic!("the step does not quote the seed count it asks for: {text}"));
+    (
+        rank.trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("the stated rank {rank:?} is no number: {e}")),
+        seed.to_string(),
+    )
+}
+
+/// What the step printed about its lead guide, as the summary prints it: the heuristic rank and the
+/// seed count, or `None` where the step found no guide at all.
+fn printed_lead_guide_numbers(step: &BioPipelineStepResult) -> Option<(i32, String)> {
+    let (_, after) = step.finding_summary.split_once("(heuristic rank ")?;
+    let (rank, rest) = after.split_once(", ").expect("the summary's own format");
+    let (seed, _) = rest.split_once(')').expect("the summary's own format");
+    Some((rank.parse().expect("the printed rank is a number"), seed.to_string()))
+}
+
+/// BG-01M7EGF6 AC3: the step's PASS/WARN is decided only by numbers the step puts on screen.
+///
+/// The retired seed half was `specificity_score >= 70`, a threshold on the `100 / (1 + matches)`
+/// percentage BG-01M7E61C took off the screen when it made the readout a seed count: a user who saw
+/// WARN beside "2 seed matches" had no number on screen that explained it. The two formulations are
+/// exactly equivalent (`round(100 / (1 + off)) >= 70` iff `off == 0`), which this test records over
+/// every guide the sample library's own scans list, so the repair is shown to move no verdict.
+///
+/// Wrong implementations this kills: a seed threshold the step's words do not follow (the status is
+/// re-derived from the printed numbers and the stated threshold alone, so `off <= 1` beside a
+/// sentence asking for "no other seed copy" fails); and dropping the seed half altogether, which
+/// the repeated-seed record catches — its lead guide ranks 90, above the rank half, and WARNs only
+/// because its seed has another copy.
+#[test]
+fn bg_01m7egf6_ac3_the_grna_verdict_reads_the_seed_count_the_step_shows() {
+    // 1. The two formulations agree over every guide the sample library's scans list, on both
+    //    sides of the threshold: `off == 0` and `off > 0` are both reached here.
+    let mut with_other_copies = 0usize;
+    let mut guides_read = 0usize;
+    for doc in get_sample_library() {
+        let circular = doc.topology == Topology::Circular;
+        let clean: String = doc.sequence.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+        for nuclease in ["SpCas9 (NGG)", "Cas12a / Cpf1 (TTTV)"] {
+            let scan = molbiocraft_cloning::cloning_crispr::scan_crispr_guides(
+                &clean, nuclease, 4_000, None, circular,
+            );
+            for g in &scan.guides {
+                assert_eq!(
+                    g.specificity_score >= 70,
+                    g.off_target_count == 0,
+                    "{} {nuclease}: the retired percentage and the shown count disagree (specificity {}, {} other copies)",
+                    doc.name,
+                    g.specificity_score,
+                    g.off_target_count
+                );
+                guides_read += 1;
+                if g.off_target_count > 0 {
+                    with_other_copies += 1;
+                }
+            }
+        }
+    }
+    assert!(guides_read > 1_000, "only {guides_read} guides were read");
+    assert!(
+        with_other_copies > 0,
+        "no guide of the sample library has another seed copy, so the record is one-sided"
+    );
+
+    // 2. Every verdict the step reaches is the verdict its own printed numbers and its own stated
+    //    threshold give, over the sample library and over a record whose lead guide's seed repeats.
+    let mut seen_pass = 0usize;
+    let mut seen_warn_on_the_seed_half = 0usize;
+    let mut seen_action_required = 0usize;
+    let mut docs: Vec<SequenceDocument> = get_sample_library();
+    docs.push(repeated_seed_record());
+    docs.push(lowest_passing_rank_record());
+    for doc in docs {
+        let Ok(report) =
+            execute_bio_pipeline_rust(&doc, "crispr-hdr-knockout", "linux", "2026-11-15T00:00:00Z")
+        else {
+            continue;
+        };
+        let step = report
+            .steps
+            .iter()
+            .find(|s| s.id == "grna-ranking")
+            .expect("the gRNA ranking step");
+        let (min_rank, pass_seed) = stated_grna_pass_threshold(step);
+        match printed_lead_guide_numbers(step) {
+            None => {
+                assert_eq!(
+                    step.status, "ACTION_REQUIRED",
+                    "{}: no lead guide, but the step is not ACTION_REQUIRED",
+                    doc.name
+                );
+                seen_action_required += 1;
+            }
+            Some((rank, seed)) => {
+                let expected = if rank >= min_rank && seed == pass_seed { "PASS" } else { "WARN" };
+                assert_eq!(
+                    step.status, expected,
+                    "{}: the step is {} where its own numbers (rank {rank}, {seed:?}) and its own threshold (rank {min_rank} or more, {pass_seed:?}) say {expected}",
+                    doc.name, step.status
+                );
+                if expected == "PASS" {
+                    seen_pass += 1;
+                } else if rank >= min_rank {
+                    seen_warn_on_the_seed_half += 1;
+                }
+            }
+        }
+    }
+    assert!(seen_pass > 0 && seen_action_required > 0, "PASS {seen_pass}, none {seen_action_required}");
+    assert!(
+        seen_warn_on_the_seed_half > 0,
+        "no record WARNs on the seed half alone, so the seed half is untested"
+    );
+
+    // 3. Both halves of the stated threshold are thresholds a record reaches, so neither is a
+    //    number a reader is told and no fixture holds: a lead guide ranking the rule's bare base of
+    //    68 with no other seed copy passes.
+    let (_, lowest) = grna_report(&lowest_passing_rank_record());
+    let (lowest_rank, lowest_seed) = printed_lead_guide_numbers(&lowest).expect("a lead guide");
+    assert_eq!(
+        (lowest_rank, lowest_seed.as_str()),
+        (68, "no other seed copy"),
+        "the record no longer reaches the rank it was built for: {}",
+        lowest.finding_summary
+    );
+    assert_eq!(
+        lowest.status, "PASS",
+        "a lead guide ranking 68 with no other seed copy does not pass: {}",
+        lowest.finding_summary
+    );
+
+    // 4. The threshold is stated in the words the summary prints, so the two cannot drift: the
+    //    phrase the step asks for is the phrase a passing step printed.
+    let (_, passing) = grna_report(&sample_doc("pET-28a"));
+    assert_eq!(passing.status, "PASS", "the pET-28a fixture reaches the PASS branch");
+    let (_, pass_seed) = stated_grna_pass_threshold(&passing);
+    let (_, printed_seed) = printed_lead_guide_numbers(&passing).expect("a lead guide");
+    assert_eq!(
+        printed_seed, pass_seed,
+        "the step asks for a seed count it does not print: {}",
+        passing.finding_summary
+    );
+}
+
+/// FNV-1a 64 of `s` as 16 hex digits: a fingerprint that is the same on every run and every
+/// machine, which `std`'s own hashers do not promise to be.
+fn fingerprint(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Everything a reader of a pipeline report sees except the one sentence BG-01M7EGF6 AC1 rewrites:
+/// the overall verdict and readiness score, every step's status, finding summary, metrics,
+/// artifacts, recommendations, warnings and highlight, every visual zone, and the Markdown export
+/// with its "Why this matters" rationale lines (one per step) dropped.
+fn reader_visible_snapshot(report: &BioPipelineExecutionReport) -> String {
+    let mut out = format!(
+        "{} {} {}\n",
+        report.overall_status, report.readiness_score, report.sequence_length_bp
+    );
+    for s in &report.steps {
+        out.push_str(&format!(
+            "step {} {} [{}] {} -> {}/{}\n  {}\n",
+            s.step_number, s.id, s.status, s.title, s.target_studio, s.target_studio_label, s.finding_summary
+        ));
+        for m in &s.metrics {
+            out.push_str(&format!(
+                "  metric {} = {} [{}]\n",
+                m.label,
+                m.value,
+                m.tone.as_deref().unwrap_or("-")
+            ));
+        }
+        for a in &s.artifacts {
+            out.push_str(&format!("  artifact {} {} {}\n", a.label, a.sequence, a.note));
+        }
+        for r in &s.recommendations {
+            out.push_str(&format!("  recommend {r}\n"));
+        }
+        for w in &s.warnings {
+            out.push_str(&format!("  warn {w}\n"));
+        }
+        if let Some(h) = &s.highlight_range {
+            out.push_str(&format!("  highlight {}..{} {}\n", h.start, h.end, h.label));
+        }
+    }
+    for z in &report.visual_zones {
+        out.push_str(&format!(
+            "zone {} {} {} [{}] {}..{} strand {:?} {} -> {}\n",
+            z.id, z.track, z.label, z.status, z.start, z.end, z.strand, z.color, z.target_studio
+        ));
+    }
+    const RATIONALE: &str = "> **Why this matters**: ";
+    let rationale_lines = report
+        .markdown_protocol
+        .lines()
+        .filter(|l| l.starts_with(RATIONALE))
+        .count();
+    assert_eq!(
+        rationale_lines,
+        report.steps.len(),
+        "the export does not carry one rationale line per step, so dropping them drops something else"
+    );
+    for line in report.markdown_protocol.lines().filter(|l| !l.starts_with(RATIONALE)) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// BG-01M7EGF6 AC4: no verdict and no number a user reads changes. The fingerprint below is of
+/// every pipeline's whole reader-visible report over the whole sample library — each step's status,
+/// finding summary, metrics, artifacts, recommendations, warnings and highlight, every visual zone,
+/// the overall verdict and readiness score, and the Markdown export — taken at the run's base
+/// revision, before the verdict's seed half and the gRNA rationale were touched, and excluding only
+/// the rationale sentence AC1 rewrites.
+///
+/// Regenerate it (and say in the commit why it moved) with:
+/// `BG_01M7EGF6_AC4=print cargo test -p molbiocraft-cloning cloning_pipelines -- --nocapture`
+///
+/// Wrong implementations this kills: a seed threshold that moves a PASS to a WARN (`off <= 1` on
+/// this library moves none, but `off >= 1` or a rank threshold change moves many), and any edit to
+/// the step's numbers or wording smuggled in beside the one sentence this bug rewrites.
+const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
+    ("cloning-expression-qc", "c5c0ef5f0f706fa8"),
+    ("crispr-hdr-knockout", "48ee426c46530b6e"),
+    ("multihost-protein-mrna", "0ac03966a2e76c7b"),
+    ("viral-twist-onboarding", "b355cabe03450c44"),
+];
+
+#[test]
+fn cloning_pipelines_show_the_same_verdicts_and_numbers_as_before_bg_01m7egf6() {
+    let printing = std::env::var("BG_01M7EGF6_AC4").as_deref() == Ok("print");
+    let mut taken: Vec<(String, String)> = Vec::new();
+    for (pipeline, _) in BG_01M7EGF6_AC4_READER_VISIBLE {
+        let mut whole = String::new();
+        let mut reports = 0usize;
+        for doc in get_sample_library() {
+            whole.push_str(&format!("=== {} / {}\n", doc.name, pipeline));
+            match execute_bio_pipeline_rust(&doc, pipeline, "macos", "2026-11-15T00:00:00Z") {
+                Ok(report) => {
+                    whole.push_str(&reader_visible_snapshot(&report));
+                    reports += 1;
+                }
+                // A refusal is a reader-visible answer too, and it is pinned as one (LC-006).
+                Err(e) => whole.push_str(&format!("refused: {e}\n")),
+            }
+        }
+        assert!(reports > 50, "{pipeline} ran on only {reports} sample records");
+        taken.push((pipeline.to_string(), fingerprint(&whole)));
+    }
+    if printing {
+        for (pipeline, print) in &taken {
+            println!("    (\"{pipeline}\", \"{print}\"),");
+        }
+        return;
+    }
+    let expected: Vec<(String, String)> = BG_01M7EGF6_AC4_READER_VISIBLE
+        .iter()
+        .map(|(p, f)| (p.to_string(), f.to_string()))
+        .collect();
+    assert_eq!(
+        taken, expected,
+        "a verdict or a number a user reads moved; regenerate with BG_01M7EGF6_AC4=print and say what moved"
     );
 }
