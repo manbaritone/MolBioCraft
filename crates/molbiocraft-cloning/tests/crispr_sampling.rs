@@ -2403,3 +2403,141 @@ fn us_01m7dvas_ac2_every_near_full_circle_interval_matches_the_brute_force_oracl
         }
     }
 }
+
+// ───── BG-01M7EP67: the seed-count sentence reads the interval the scan really searched ─────
+//
+// `crispr_seed_count_description` took `(scanned_length_bp, sequence_length_bp)` — two numbers from
+// which an interval cannot be recovered — and said "bases 1 to N of the M bases of this sequence"
+// whenever the first was smaller than the second. That is right for its one caller, the CRISPR
+// plugin macro's whole-sequence scan, and wrong for every interval scan US-01M7DVAS made possible:
+// a search of bases 4,000..4,100 was described to a researcher as a search of bases 1 to 101, in
+// the one sentence whose whole job is to say where the seed counts came from. It takes the scan
+// now, so the interval is there to be read and the mis-description is not expressible.
+
+/// AC1. The sentence names the range the scan really read, in each of the four shapes a scan that
+/// searched something has: an interval inside the record, an interval across the origin of a
+/// circle, a whole-sequence scan, and a whole-sequence scan bounded to a prefix. (A refused scan is
+/// the fifth shape and is not checked here: it claims no range at all, and the one caller of this
+/// sentence names its nuclease as a literal preset, so it cannot produce one.) The reader is pinned
+/// beside the four (LC-003): the
+/// plugin macro's `seedMatches` string is this function of the scan the macro made, not of two of
+/// that scan's numbers, so an interval scan there would carry its interval.
+///
+/// Wrong implementations this kills (each run as a mutant): reading `scanned_length_bp` against
+/// `sequence_length_bp` for an interval scan, which says "bases 1 to 101 of the 4,990 bases of this
+/// sequence" of a search of 4,000..4,100; naming an interval's length where its bounds belong;
+/// dropping ", across the origin" from an interval that runs across it; and letting the
+/// whole-sequence or prefix-bounded wording drift from what shipped.
+#[test]
+fn bg_01m7ep67_ac1_the_seed_count_description_names_the_interval_the_scan_searched() {
+    use molbiocraft_cloning::reaction_buffers::crispr_seed_count_description;
+
+    const LEN: usize = 4_990;
+    let mut seq = at_background(LEN, 0x7e_0067);
+    plant(&mut seq, 4_020, &block(SPACER));
+    let text = String::from_utf8(seq).unwrap();
+
+    // An interval inside the record. It is really an interval scan and not a short whole-sequence
+    // one — two things the old two-number signature could not tell apart (LC-002).
+    let inside =
+        scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", 25, Some((4_000, 4_100)), true);
+    let iv = inside.searched_interval.expect("4,000..4,100 is a searchable interval");
+    assert_eq!(
+        (iv.start, iv.end, iv.length_bp, iv.crosses_origin),
+        (4_000, 4_100, 101, false),
+        "the interval the scan searched"
+    );
+    assert_eq!((inside.scanned_length_bp, inside.sequence_length_bp), (101, LEN));
+    let said = crispr_seed_count_description(&inside);
+    assert!(
+        !said.contains("bases 1 to"),
+        "an interval elsewhere in the molecule is not a prefix of it: {said}"
+    );
+    assert!(
+        said.contains("bases 4,000..4,100")
+            && said.contains("101 bp")
+            && said.contains("4,990 bases of this sequence"),
+        "the interval searched, how long it is, and how long the whole sequence is: {said}"
+    );
+    assert!(
+        !said.contains("across the origin"),
+        "4,000..4,100 does not run across the origin: {said}"
+    );
+
+    // An interval that runs across the origin of the circle says so, in the bounds a reader reads.
+    let across =
+        scan_crispr_guides_in_interval(&text, "SpCas9 (NGG)", 25, Some((4_950, 50)), true);
+    let across_iv = across
+        .searched_interval
+        .expect("4,950..50 is a searchable interval of a circle");
+    assert_eq!(
+        (
+            across_iv.start,
+            across_iv.end,
+            across_iv.length_bp,
+            across_iv.crosses_origin
+        ),
+        (4_950, 50, 91, true),
+        "41 bases to the last base, then 50 past the origin"
+    );
+    let said_across = crispr_seed_count_description(&across);
+    assert!(
+        said_across.contains("bases 4,950..50")
+            && said_across.contains("91 bp")
+            && said_across.contains("across the origin"),
+        "an interval that runs across the origin names it: {said_across}"
+    );
+    assert!(!said_across.contains("bases 1 to"), "{said_across}");
+
+    // A whole-sequence scan says exactly what it said before this bug (AC2's wording, pinned here
+    // on the function itself).
+    let whole = scan_crispr_guides(&text, "SpCas9 (NGG)", 25, None, false);
+    assert!(
+        whole.searched_interval.is_none() && whole.scanned_length_bp == LEN,
+        "a whole-sequence scan searched no interval"
+    );
+    assert_eq!(
+        crispr_seed_count_description(&whole),
+        "Seed matches: other exact copies of the 12-nt PAM-proximal seed in all 4,990 bases of \
+         this sequence, on both strands. It is not a genome-wide off-target count.",
+        "the whole-sequence sentence is the shipped one"
+    );
+
+    // And "bases 1 to N" stays right for the one scan that really did read a prefix.
+    let prefix = scan_crispr_guides(&text, "SpCas9 (NGG)", 25, Some(2_000), false);
+    assert!(
+        prefix.searched_interval.is_none() && prefix.scanned_length_bp == 2_000,
+        "a bound on a whole-sequence scan is a prefix, not an interval"
+    );
+    assert_eq!(
+        crispr_seed_count_description(&prefix),
+        "Seed matches: other exact copies of the 12-nt PAM-proximal seed in bases 1 to 2,000 of \
+         the 4,990 bases of this sequence, on both strands. It is not a genome-wide off-target \
+         count.",
+        "a prefix-bounded scan is still described as the prefix it read"
+    );
+
+    // The reader (LC-003): the plugin macro states its seed-count scope as this function of the
+    // whole scan it made, so whatever scope that scan has, the sentence carries it.
+    let mut doc = molbiocraft_cloning::get_sample_library()
+        .into_iter()
+        .next()
+        .expect("a sample record");
+    doc.id = "bg-01m7ep67".into();
+    doc.sequence = text.clone();
+    doc.topology = molbiocraft_core::types::Topology::Linear;
+    doc.features.clear();
+    doc.primers.clear();
+    let out = molbiocraft_cloning::execute_builtin_rust_workflow_macro(
+        "js-crispr-spcas9-scanner",
+        &doc,
+    );
+    let macro_scan = scan_crispr_guides(&doc.sequence, "SpCas9 (NGG)", 25, None, false);
+    assert_eq!(
+        out["scoreModels"]["seedMatches"]
+            .as_str()
+            .expect("the plugin states the scope of its seed counts"),
+        crispr_seed_count_description(&macro_scan),
+        "the plugin reads its scope from the scan it made, not from two of that scan's numbers"
+    );
+}

@@ -334,17 +334,39 @@ pub const CRISPR_GENOME_WIDE_SPECIFICITY_NOT_EVALUATED: &str = "Not evaluated: n
 
 /// What the CRISPR plugin's seed count counts (US-01M7DVVR AC3): the seed length, the range and
 /// both strands, read from the scan rather than assumed to be the whole sequence.
-pub fn crispr_seed_count_description(scanned_length_bp: usize, sequence_length_bp: usize) -> String {
-    let range = if scanned_length_bp < sequence_length_bp {
+///
+/// It takes the whole scan, not its two lengths (BG-01M7EP67). `scanned_length_bp` beside
+/// `sequence_length_bp` says only how *many* bases were read, never *which*: for the prefix bound
+/// of a whole-sequence scan those are the same question, and for an interval scan — which
+/// US-01M7DVAS made possible — they are not, so a search of bases 4,000..4,100 was described as a
+/// search of "bases 1 to 101". The interval is read from
+/// [`CrisprGuideScan::searched_interval`](crate::cloning_crispr::CrisprGuideScan::searched_interval),
+/// which is the field that says a scan read an arc of the record rather than a prefix of it, in the
+/// same bounds-and-origin wording the scan's own warnings use.
+pub fn crispr_seed_count_description(scan: &crate::cloning_crispr::CrisprGuideScan) -> String {
+    let range = if let Some(iv) = scan.searched_interval {
+        format!(
+            "bases {}..{} — the {} bp interval searched{} — of the {} bases of this sequence",
+            molbiocraft_core::format_thousands(iv.start),
+            molbiocraft_core::format_thousands(iv.end),
+            molbiocraft_core::format_thousands(iv.length_bp),
+            if iv.crosses_origin {
+                ", across the origin"
+            } else {
+                ""
+            },
+            molbiocraft_core::format_thousands(scan.sequence_length_bp)
+        )
+    } else if scan.scanned_length_bp < scan.sequence_length_bp {
         format!(
             "bases 1 to {} of the {} bases of this sequence",
-            molbiocraft_core::format_thousands(scanned_length_bp),
-            molbiocraft_core::format_thousands(sequence_length_bp)
+            molbiocraft_core::format_thousands(scan.scanned_length_bp),
+            molbiocraft_core::format_thousands(scan.sequence_length_bp)
         )
     } else {
         format!(
             "all {} bases of this sequence",
-            molbiocraft_core::format_thousands(sequence_length_bp)
+            molbiocraft_core::format_thousands(scan.sequence_length_bp)
         )
     };
     format!(
@@ -482,7 +504,7 @@ pub fn execute_builtin_rust_workflow_macro(
                 "sequenceLengthBp": scan.sequence_length_bp,
                 "scoreModels": {
                     "onTargetScore": crispr_heuristic_rank_description(),
-                    "seedMatches": crispr_seed_count_description(scan.scanned_length_bp, scan.sequence_length_bp),
+                    "seedMatches": crispr_seed_count_description(&scan),
                     "genomeWideSpecificity": CRISPR_GENOME_WIDE_SPECIFICITY_NOT_EVALUATED,
                 },
                 "warnings": scan.warnings,
