@@ -3135,6 +3135,14 @@ fieldset > legend,
   border-color: var(--mbc-amber-border);
 }
 
+/* The recognition motif in a cleavage picture, on the strand that carries it (US-01M7DVDV). */
+.mbc-cleavage-motif {
+  background: var(--mbc-bg-selected-soft);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .primer-pill {
   display: inline-flex;
   align-items: center;

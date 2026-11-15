@@ -337,6 +337,7 @@ import {
   StaticModalDialog,
 } from './components/MenusPreferencesAndBlastModal';
 import { PrimerDatabaseWindow } from './components/PrimerDatabaseWindow';
+import { EnzymeDatabaseWindow } from './components/EnzymeDatabaseWindow';
 import {
   buildNcbiReferencePresetDocumentRust,
   ensureResidentSequenceRust,
@@ -1207,9 +1208,11 @@ export const App: React.FC = () => {
   // The window's Import: the primer import dialog with Primer Database chosen (US-01M7DQ0X).
   const [primerDbImportOpen, setPrimerDbImportOpen] = useState(false);
   const [primerDbRefresh, setPrimerDbRefresh] = useState(0);
-  const openPrimerDatabaseWindow = () => {
-    // The in-app opener is the menu bar or toolbar button whose menu is open; from the native
-    // menu, it is whatever held focus.
+  /**
+   * The control a Databases window returns focus to: the in-app opener is the menu bar or toolbar
+   * button whose menu is open; from the native menu, it is whatever held focus.
+   */
+  const databaseWindowOpener = (): HTMLElement | null => {
     const trigger =
       typeof document === 'undefined'
         ? undefined
@@ -1217,7 +1220,15 @@ export const App: React.FC = () => {
             (el) => !el.closest('.desktop-menu-popup')
           );
     const active = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
-    setPrimerDbWindow({ opener: trigger ?? (active && active !== document.body ? active : null) });
+    return trigger ?? (active && active !== document.body ? active : null);
+  };
+  const openPrimerDatabaseWindow = () => {
+    setPrimerDbWindow({ opener: databaseWindowOpener() });
+  };
+  // Databases > Restriction Enzymes (US-01M7DVDV): open with the element focus returns to when it closes.
+  const [enzymeDbWindow, setEnzymeDbWindow] = useState<{ opener: HTMLElement | null } | null>(null);
+  const openEnzymeDatabaseWindow = () => {
+    setEnzymeDbWindow({ opener: databaseWindowOpener() });
   };
   const [localBlastDbs, setLocalBlastDbs] = useState<LocalSequenceDbEntry[]>(() => [
     {
@@ -7208,6 +7219,9 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         case 'tools:primer-database':
           openPrimerDatabaseWindow();
           break;
+        case 'tools:enzyme-database':
+          openEnzymeDatabaseWindow();
+          break;
         case 'align:expression-levels-dialog':
           requireActiveSession(() => setOperationDialog({ kind: 'expression-levels' }));
           break;
@@ -8350,6 +8364,12 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           id: `${idPrefix}-primer-database`,
           label: 'Primers',
           onSelect: () => openPrimerDatabaseWindow(),
+        },
+        {
+          kind: 'command',
+          id: `${idPrefix}-enzyme-database`,
+          label: 'Restriction Enzymes',
+          onSelect: () => openEnzymeDatabaseWindow(),
         },
       ],
     },
@@ -10504,6 +10524,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'tools-primer-database',
             label: 'Primers',
             onSelect: () => openPrimerDatabaseWindow(),
+          },
+          {
+            kind: 'command',
+            id: 'tools-enzyme-database',
+            label: 'Restriction Enzymes',
+            onSelect: () => openEnzymeDatabaseWindow(),
           },
           {
             kind: 'command',
@@ -17263,6 +17289,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           }
           onClose={() => setPrimerDbWindow(null)}
         />
+      )}
+      {enzymeDbWindow && (
+        <EnzymeDatabaseWindow returnFocusTo={enzymeDbWindow.opener} onClose={() => setEnzymeDbWindow(null)} />
       )}
       {primerDbImportOpen && (
         <ImportPrimersToDatabaseDialog

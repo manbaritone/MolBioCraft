@@ -1,0 +1,691 @@
+// Copyright 2026 MolBioCraft Contributors
+// SPDX-License-Identifier: CC-BY-NC-4.0
+
+/**
+ * Databases > Restriction Enzymes (US-01M7DVDV): the built-in catalogue, read-only, beside the
+ * user's own definitions (US-01M7DVMJ's store), with an editor that adds, edits or clones one and
+ * shows its double-strand cut before it is saved.
+ *
+ * The preview is a real engine scan: the definition's motif is planted between fixed flank bases
+ * (the probe), scanned with the definition as the one enzyme, and the engine's site at the planted
+ * position is drawn by the Enzymes view's own {@link CleavageDrawing}. A site the engine does not
+ * report is not drawn, never stood in for by a record built here.
+ */
+
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import type { CustomEnzymeDefinition, MethylationSensitivity, RestrictionCutSite, RestrictionEnzyme } from '../types/bio';
+import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
+import { scanRestrictionSites } from '../core/bioEngine';
+import { complementAligned } from '../core/alignmentViewModel';
+import {
+  MAX_CUSTOM_MOTIF_LENGTH,
+  METHYLATION_SENSITIVITIES,
+  openEnzymeDatabase,
+  validateFields,
+  type CustomEnzymeInput,
+  type EnzymeDatabase,
+  type EnzymeField,
+  type EnzymeFieldError,
+} from '../core/enzymeDatabase';
+import { CleavageDrawing } from './CleavagePreview';
+
+// ─── The probe ───
+
+/** Bases the picture shows beyond the motif and both cuts (the CleavageDrawing default). */
+export const PREVIEW_CONTEXT_BASES = 4;
+/** The longest flank the preview builds, so an offset of millions never builds a probe of millions. */
+export const MAX_PREVIEW_FLANK = 1000;
+
+/** Each IUPAC letter's first allowed base in A, C, G, T order (U is read as T, as the scan reads it). */
+const FIRST_ALLOWED: Readonly<Record<string, string>> = {
+  A: 'A', C: 'C', G: 'G', T: 'T', U: 'T',
+  R: 'A', Y: 'C', S: 'C', W: 'A', K: 'G', M: 'A',
+  B: 'C', D: 'A', H: 'A', V: 'A', N: 'A',
+};
+
+/** The motif with each degenerate letter resolved to the first base it allows (A, C, G, T order). */
+export function plantedMotif(motif: string): string {
+  return [...motif.toUpperCase()].map((c) => {
+    const base = FIRST_ALLOWED[c];
+    if (!base) throw new Error(`plantedMotif: ${c} is not an IUPAC nucleotide code`);
+    return base;
+  }).join('');
+}
+
+/** How far the farthest cut lies beyond the motif on each side (0 for cuts within it). */
+export function cutReach(motifLength: number, cutFwd: number, cutRev: number): { left: number; right: number } {
+  return {
+    left: Math.max(0, -Math.min(cutFwd, cutRev)),
+    right: Math.max(0, Math.max(cutFwd, cutRev) - motifLength),
+  };
+}
+
+/** A fixed run of bases: the same `n` bases for the same seed every time (a 32-bit LCG over ACGT). */
+function fixedBases(seed: number, n: number): string {
+  let s = seed >>> 0;
+  let out = '';
+  for (let i = 0; i < n; i++) {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    out += 'ACGT'[s >>> 30];
+  }
+  return out;
+}
+const LEFT_SEED = 0x5eed1e;
+const RIGHT_SEED = 0x5eed2f;
+
+/**
+ * The fixed flank of `n` bases on one side of the motif. Each side's bases are read outward from
+ * the motif, so lengthening a flank adds bases at its far end and the bases next to the motif (and
+ * any overhang among them) stay as they were.
+ */
+export function flankBases(side: 'left' | 'right', n: number): string {
+  const run = fixedBases(side === 'left' ? LEFT_SEED : RIGHT_SEED, n);
+  return side === 'left' ? [...run].reverse().join('') : run;
+}
+
+export interface PreviewProbe {
+  sequence: string;
+  /** 0-based start of the planted motif. */
+  motifStart: number;
+  motif: string;
+  circular: boolean;
+}
+
+/** The probe a definition is previewed on: its left flank, its planted motif and its right flank. */
+export function buildProbe(recognitionSeq: string, circular: boolean, flanks: { left: number; right: number }): PreviewProbe {
+  const motif = plantedMotif(recognitionSeq);
+  const left = flankBases('left', flanks.left);
+  return { sequence: left + motif + flankBases('right', flanks.right), motifStart: left.length, motif, circular };
+}
+
+/**
+ * The flank-length control's bounds and default on each side: the default is that side's reach plus
+ * the picture's context bases; the minimum is 0 on a linear probe (a flank shorter than the reach is
+ * the user's to choose) and the reach on a circular one, so a circle is never shorter than the motif
+ * plus its cuts' reach. Neither exceeds {@link MAX_PREVIEW_FLANK}.
+ */
+export function flankBounds(motifLength: number, cutFwd: number, cutRev: number, circular: boolean) {
+  const reach = cutReach(motifLength, cutFwd, cutRev);
+  const side = (r: number) => ({
+    min: circular ? r : 0,
+    default: Math.min(MAX_PREVIEW_FLANK, r + PREVIEW_CONTEXT_BASES),
+  });
+  return { reach, left: side(reach.left), right: side(reach.right) };
+}
+
+export type DefinitionPreview =
+  | { kind: 'refused'; errors: EnzymeFieldError[] }
+  | { kind: 'site'; probe: PreviewProbe; site: RestrictionCutSite }
+  | { kind: 'noSite'; probe: PreviewProbe; message: string }
+  | { kind: 'unavailable'; message: string };
+
+/** The engine's definition of a candidate: the fields the scan reads, with no supplier or buffer. */
+function engineEnzyme(v: { name: string; recognitionSeq: string; cutFwd: number; cutRev: number; isTypeIIS: boolean; methylationSensitivity: MethylationSensitivity[] }): RestrictionEnzyme {
+  return {
+    name: v.name,
+    recognitionSeq: v.recognitionSeq,
+    cutFwd: v.cutFwd,
+    cutRev: v.cutRev,
+    isTypeIIS: v.isTypeIIS,
+    suppliers: [],
+    methylationSensitivity: [...v.methylationSensitivity],
+    bufferNEB: '',
+    tempC: 37,
+  };
+}
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/**
+ * The preview of a candidate definition: refused when validation refuses it; otherwise the engine's
+ * scan of its probe with the definition as the one enzyme, and the forward site the engine reports
+ * at the planted motif's position. A site elsewhere in the flanks is never drawn instead; when the
+ * engine reports none at the planted position (a linear probe whose end falls inside a cut's reach),
+ * the outcome says how far past the probe's end the cut falls.
+ */
+export function previewDefinition(
+  input: Record<string, unknown>,
+  circular: boolean,
+  flanks: { left: number; right: number },
+  checkClonedFrom = true,
+): DefinitionPreview {
+  const valid = validateFields(input, checkClonedFrom);
+  if (!valid.ok) return { kind: 'refused', errors: valid.error.fields };
+  const v = valid.value;
+  const bounds = flankBounds(v.recognitionSeq.length, v.cutFwd, v.cutRev, circular);
+  if (bounds.left.min > MAX_PREVIEW_FLANK || bounds.right.min > MAX_PREVIEW_FLANK) {
+    const far = Math.max(bounds.reach.left, bounds.reach.right);
+    return { kind: 'unavailable', message: `A cut lies ${plural(far, 'base')} from the motif, beyond the ${MAX_PREVIEW_FLANK}-base flank a circular probe can hold, so it cannot be previewed.` };
+  }
+  const clampSide = (n: number, b: { min: number }) => Math.min(MAX_PREVIEW_FLANK, Math.max(b.min, Math.floor(n)));
+  const probe = buildProbe(v.recognitionSeq, circular, { left: clampSide(flanks.left, bounds.left), right: clampSide(flanks.right, bounds.right) });
+  let sites: RestrictionCutSite[];
+  try {
+    sites = scanRestrictionSites(probe.sequence, circular ? 'circular' : 'linear', [engineEnzyme(v)]).sites;
+  } catch (err) {
+    return { kind: 'unavailable', message: `The engine could not scan the probe: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const site = sites.find((s) => s.strand === 1 && s.position === probe.motifStart + 1);
+  if (site) return { kind: 'site', probe, site };
+  const len = probe.sequence.length;
+  const cuts = [probe.motifStart + v.cutFwd, probe.motifStart + v.cutRev];
+  const pastRight = Math.max(0, ...cuts.map((c) => c - len));
+  const pastLeft = Math.max(0, ...cuts.map((c) => -c));
+  if (!circular && (pastRight > 0 || pastLeft > 0)) {
+    const n = Math.max(pastRight, pastLeft);
+    const where = pastRight >= pastLeft ? 'after its last base' : 'before its first base';
+    return { kind: 'noSite', probe, message: `The cut falls ${plural(n, 'base')} past the probe's end (${where}) and cannot be previewed.` };
+  }
+  return { kind: 'noSite', probe, message: 'The engine reports no site at the planted motif, so there is no cut to preview.' };
+}
+
+// ─── The window ───
+
+/** Whether a query finds an enzyme: in its name (any case), or, with the query's spaces removed, in its motif (any case). */
+export function enzymeMatchesSearch(e: { name: string; recognitionSeq: string }, query: string): boolean {
+  const q = query.trim();
+  if (q === '') return true;
+  if (e.name.toLowerCase().includes(q.toLowerCase())) return true;
+  const motif = q.replace(/\s+/g, '').toUpperCase();
+  return motif !== '' && e.recognitionSeq.toUpperCase().includes(motif);
+}
+
+interface FormState {
+  /** The stored definition being edited; null for a new one. */
+  editId: string | null;
+  name: string;
+  recognitionSeq: string;
+  cutFwd: string;
+  cutRev: string;
+  isTypeIIS: boolean;
+  methylationSensitivity: MethylationSensitivity[];
+  clonedFrom?: string;
+  provenance: string;
+  notes: string;
+}
+
+const EMPTY_FORM: FormState = {
+  editId: null, name: '', recognitionSeq: '', cutFwd: '', cutRev: '', isTypeIIS: false, methylationSensitivity: [], provenance: '', notes: '',
+};
+
+/** A typed offset: a whole number as written, otherwise NaN, which validation refuses by name. */
+const offsetOf = (text: string) => (/^\s*-?\d+\s*$/.test(text) ? Number(text) : Number.NaN);
+
+function formInput(form: FormState): CustomEnzymeInput {
+  const input: CustomEnzymeInput = {
+    name: form.name,
+    recognitionSeq: form.recognitionSeq,
+    cutFwd: offsetOf(form.cutFwd),
+    cutRev: offsetOf(form.cutRev),
+    isTypeIIS: form.isTypeIIS,
+    methylationSensitivity: [...form.methylationSensitivity],
+    provenance: form.provenance,
+    notes: form.notes,
+  };
+  if (form.clonedFrom !== undefined) input.clonedFrom = form.clonedFrom;
+  return input;
+}
+
+/** The fields of `input` that differ from `stored`, as validation would store them. */
+function editedFields(stored: CustomEnzymeDefinition, input: CustomEnzymeInput): Partial<CustomEnzymeInput> {
+  const changes: Partial<CustomEnzymeInput> = {};
+  if (input.name.trim() !== stored.name) changes.name = input.name;
+  if (input.recognitionSeq.replace(/\s+/g, '').toUpperCase() !== stored.recognitionSeq) changes.recognitionSeq = input.recognitionSeq;
+  if (input.cutFwd !== stored.cutFwd) changes.cutFwd = input.cutFwd;
+  if (input.cutRev !== stored.cutRev) changes.cutRev = input.cutRev;
+  if ((input.isTypeIIS ?? false) !== stored.isTypeIIS) changes.isTypeIIS = input.isTypeIIS;
+  const m = input.methylationSensitivity ?? [];
+  if (m.length !== stored.methylationSensitivity.length || m.some((x, i) => x !== stored.methylationSensitivity[i])) {
+    changes.methylationSensitivity = m;
+  }
+  if ((input.provenance ?? '') !== stored.provenance) changes.provenance = input.provenance;
+  if ((input.notes ?? '') !== stored.notes) changes.notes = input.notes;
+  return changes;
+}
+
+const FIELD_LABELS: ReadonlyArray<readonly [keyof FormState & EnzymeField, string]> = [
+  ['name', 'Name'],
+  ['recognitionSeq', "Recognition motif (5' → 3')"],
+  ['cutFwd', 'Top-strand cut (bases from the motif start)'],
+  ['cutRev', 'Bottom-strand cut (bases from the motif start)'],
+  ['provenance', 'Provenance'],
+  ['notes', 'Notes'],
+];
+
+export interface EnzymeDatabaseWindowProps {
+  onClose: () => void;
+  /** The element focus returns to when the window closes (its opener). */
+  returnFocusTo?: HTMLElement | null;
+  database?: EnzymeDatabase;
+}
+
+export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onClose, returnFocusTo = null, database }) => {
+  const db = useMemo(() => database ?? openEnzymeDatabase(), [database]);
+  const [version, setVersion] = useState(0);
+  const read = useMemo(() => db.read(), [db, version]);
+  const [search, setSearch] = useState('');
+  const [form, setForm] = useState<FormState | null>(null);
+  const [submitErrors, setSubmitErrors] = useState<EnzymeFieldError[]>([]);
+  const [pendingClash, setPendingClash] = useState<{ builtIn: string; message: string } | null>(null);
+  const [notice, setNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
+  const [circular, setCircular] = useState(false);
+  // The user's flank lengths; null follows the default (the reach plus the context bases).
+  const [flankChoice, setFlankChoice] = useState<{ left: number | null; right: number | null }>({ left: null, right: null });
+
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const saveButtonRef = useRef<HTMLButtonElement | null>(null);
+  const formOpener = useRef<HTMLElement | null>(null);
+  const focusAfterRender = useRef<(() => HTMLElement | null | undefined) | null>(null);
+  useEffect(() => {
+    const target = focusAfterRender.current?.();
+    focusAfterRender.current = null;
+    if (target && target.isConnected) target.focus();
+  });
+  useEffect(() => {
+    searchRef.current?.focus();
+    return () => {
+      if (returnFocusTo && returnFocusTo.isConnected) returnFocusTo.focus();
+    };
+  }, []);
+  const formKey = form ? form.editId ?? `new:${form.clonedFrom ?? ''}` : null;
+  useEffect(() => {
+    if (formKey !== null) dialogRef.current?.querySelector<HTMLInputElement>('form input[aria-label="Name"]')?.focus();
+  }, [formKey]);
+
+  const closeForm = () => {
+    setForm(null);
+    setPendingClash(null);
+    setSubmitErrors([]);
+    focusAfterRender.current = () => formOpener.current;
+  };
+  const closeClash = () => {
+    setPendingClash(null);
+    focusAfterRender.current = () => saveButtonRef.current;
+  };
+  /** Escape closes the innermost open thing first, and the window only when nothing is open in it. */
+  const onEscape = () => {
+    if (pendingClash) closeClash();
+    else if (form) closeForm();
+    else onClose();
+  };
+  const onEscapeRef = useRef(onEscape);
+  onEscapeRef.current = onEscape;
+  useEffect(() => {
+    // A click need not focus a button (WebKit), leaving focus on the body: Escape there is this window's.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.target !== document.body) return;
+      const others = Array.from(document.querySelectorAll('dialog[open], [role="dialog"]')).filter((d) => d !== dialogRef.current);
+      if (others.length === 0) onEscapeRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const customs = read.ok ? read.definitions : [];
+  const builtIns = REBASE_ENZYMES.filter((e) => enzymeMatchesSearch(e, search));
+  const listedCustoms = customs.filter((d) => enzymeMatchesSearch(d, search));
+
+  const openForm = (next: FormState, opener: HTMLElement | null) => {
+    formOpener.current = opener;
+    setForm(next);
+    setSubmitErrors([]);
+    setPendingClash(null);
+    setNotice(null);
+    setFlankChoice({ left: null, right: null });
+  };
+  const startClone = (e: RestrictionEnzyme, opener: HTMLElement | null) =>
+    openForm(
+      {
+        editId: null,
+        name: e.name,
+        recognitionSeq: e.recognitionSeq,
+        cutFwd: String(e.cutFwd),
+        cutRev: String(e.cutRev),
+        isTypeIIS: e.isTypeIIS ?? false,
+        methylationSensitivity: [...(e.methylationSensitivity ?? [])],
+        clonedFrom: e.name,
+        provenance: `Cloned from the built-in ${e.name} in MolBioCraft's REBASE catalogue.`,
+        notes: '',
+      },
+      opener,
+    );
+  const startEdit = (d: CustomEnzymeDefinition, opener: HTMLElement | null) =>
+    openForm(
+      {
+        editId: d.id,
+        name: d.name,
+        recognitionSeq: d.recognitionSeq,
+        cutFwd: String(d.cutFwd),
+        cutRev: String(d.cutRev),
+        isTypeIIS: d.isTypeIIS,
+        methylationSensitivity: [...d.methylationSensitivity],
+        clonedFrom: d.clonedFrom,
+        provenance: d.provenance,
+        notes: d.notes,
+      },
+      opener,
+    );
+
+  const editing = form?.editId ? customs.find((d) => d.id === form.editId) : undefined;
+  const input = form ? formInput(form) : null;
+  // A stored cloned-from is text the catalogue may since have dropped; only a new one must name a built-in.
+  const checkClonedFrom = !form?.editId;
+  const live = input ? validateFields(input as unknown as Record<string, unknown>, checkClonedFrom) : null;
+  const fieldErrors = submitErrors.length > 0 ? submitErrors : live && !live.ok ? live.error.fields : [];
+  const fieldError = (field: EnzymeField) => fieldErrors.filter((e) => e.field === field).map((e) => e.reason).join(' ');
+
+  const bounds = live?.ok ? flankBounds(live.value.recognitionSeq.length, live.value.cutFwd, live.value.cutRev, circular) : null;
+  const flanks = bounds
+    ? {
+        left: Math.min(MAX_PREVIEW_FLANK, Math.max(bounds.left.min, flankChoice.left ?? bounds.left.default)),
+        right: Math.min(MAX_PREVIEW_FLANK, Math.max(bounds.right.min, flankChoice.right ?? bounds.right.default)),
+      }
+    : { left: 0, right: 0 };
+  // Recomputed from the form on every render, so any field, the topology or a flank length redraws it.
+  const preview = input ? previewDefinition(input as unknown as Record<string, unknown>, circular, flanks, checkClonedFrom) : null;
+
+  const submit = (confirmedClash?: string) => {
+    if (!form || !input) return;
+    if (form.editId) {
+      if (!editing) {
+        setNotice({ kind: 'error', text: 'Nothing was saved: the definition is no longer in the store.' });
+        return;
+      }
+      const changes = editedFields(editing, input);
+      if (Object.keys(changes).length === 0) {
+        setNotice({ kind: 'info', text: `${editing.name} is unchanged.` });
+        closeForm();
+        return;
+      }
+      const r = db.update(form.editId, changes, { confirmedClash });
+      setVersion((n) => n + 1);
+      if (!r.ok) {
+        if (r.error.kind === 'nameClash' && r.error.clash) return setPendingClash({ builtIn: r.error.clash, message: r.error.message });
+        setSubmitErrors(r.error.fields);
+        setPendingClash(null);
+        setNotice({ kind: 'error', text: r.error.message });
+        return;
+      }
+      setNotice({ kind: 'info', text: `Saved the changes to ${r.value.name}.` });
+      closeForm();
+      return;
+    }
+    const r = db.add(input, { confirmedClash });
+    setVersion((n) => n + 1);
+    if (!r.ok) {
+      if (r.error.kind === 'nameClash' && r.error.clash) return setPendingClash({ builtIn: r.error.clash, message: r.error.message });
+      setSubmitErrors(r.error.fields);
+      setPendingClash(null);
+      setNotice({ kind: 'error', text: r.error.message });
+      return;
+    }
+    setNotice({ kind: 'info', text: `Saved ${r.value.name} as a custom enzyme.` });
+    closeForm();
+  };
+
+  const updateForm = (patch: Partial<FormState>) => {
+    if (!form) return;
+    setForm({ ...form, ...patch });
+    setSubmitErrors([]);
+    setPendingClash(null);
+  };
+  const setFlank = (side: 'left' | 'right', text: string) => {
+    if (!/^\s*\d+\s*$/.test(text)) return;
+    setFlankChoice({ ...flankChoice, [side]: Number(text) });
+  };
+
+  const cutText = (e: { cutFwd: number; cutRev: number }) => `${e.cutFwd}/${e.cutRev}`;
+
+  return (
+    <div className="mbc-dialog-overlay" style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(15, 23, 42, 0.35)' }}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="enzyme-db-title"
+        ref={dialogRef}
+        className="prefs-modal-window modal-size-db studio-card"
+        style={{ maxHeight: '90vh', overflow: 'auto', width: 'min(1100px, 96vw)' }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.stopPropagation();
+            onEscape();
+          }
+        }}
+      >
+        <div className="studio-card-header">
+          <h3 id="enzyme-db-title">Restriction Enzymes</h3>
+          <button type="button" className="btn-secondary" aria-label="Close Restriction Enzymes" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        {notice && (
+          <p role={notice.kind === 'error' ? 'alert' : 'status'} className={notice.kind === 'error' ? 'warn-tag' : 'ok-tag'}>
+            {notice.text}
+          </p>
+        )}
+        {!read.ok && (
+          <p role="alert" className="warn-tag">
+            {read.error.message}
+          </p>
+        )}
+
+        <div className="cloning-action-row" role="toolbar" aria-label="Restriction Enzymes actions">
+          <label className="form-field">
+            <span>Search name or motif</span>
+            <input ref={searchRef} type="search" aria-label="Search enzymes" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </label>
+          <button type="button" className="btn-primary" aria-label="Add custom enzyme" disabled={!read.ok} onClick={(e) => openForm({ ...EMPTY_FORM }, e.currentTarget)}>
+            Add
+          </button>
+        </div>
+
+        {form && input && (
+          <form
+            aria-label={form.editId ? `Edit ${editing?.name ?? 'enzyme'}` : form.clonedFrom ? `Clone ${form.clonedFrom} as custom` : 'Add custom enzyme'}
+            className="studio-card"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submit();
+            }}
+          >
+            <p>
+              {form.editId
+                ? `Custom enzyme ${form.editId}`
+                : `New custom enzyme${form.clonedFrom ? `, cloned from the built-in ${form.clonedFrom}` : ''}: it is given its own custom id when saved.`}
+            </p>
+            {FIELD_LABELS.map(([field, label]) => (
+              <label key={field} className="form-field">
+                <span>{label}</span>
+                <input
+                  type="text"
+                  className={field === 'recognitionSeq' ? 'mono-input' : undefined}
+                  aria-label={field === 'name' ? 'Name' : label}
+                  aria-invalid={fieldError(field) ? true : undefined}
+                  value={form[field] as string}
+                  onChange={(e) => updateForm({ [field]: e.target.value } as Partial<FormState>)}
+                />
+                {fieldError(field) && <span className="warn-tag">{fieldError(field)}</span>}
+              </label>
+            ))}
+            <label className="form-field">
+              <span>Type IIS (cuts outside its motif)</span>
+              <input type="checkbox" aria-label="Type IIS" checked={form.isTypeIIS} onChange={(e) => updateForm({ isTypeIIS: e.target.checked })} />
+            </label>
+            <div role="group" aria-label="Methylation sensitivity">
+              <span>Methylation sensitivity: </span>
+              {METHYLATION_SENSITIVITIES.map((m) => (
+                <label key={m}>
+                  <input
+                    type="checkbox"
+                    aria-label={`${m}-sensitive`}
+                    checked={form.methylationSensitivity.includes(m)}
+                    onChange={(e) =>
+                      updateForm({
+                        methylationSensitivity: e.target.checked
+                          ? METHYLATION_SENSITIVITIES.filter((x) => x === m || form.methylationSensitivity.includes(x))
+                          : form.methylationSensitivity.filter((x) => x !== m),
+                      })
+                    }
+                  />{' '}
+                  {m}
+                </label>
+              ))}
+              {fieldError('methylationSensitivity') && <span className="warn-tag">{fieldError('methylationSensitivity')}</span>}
+            </div>
+            {form.clonedFrom !== undefined && <p aria-label="Cloned from">{`Cloned from: ${form.clonedFrom}`}</p>}
+            <p className="mono-cell">{`The motif may be up to ${MAX_CUSTOM_MOTIF_LENGTH} bases of IUPAC codes.`}</p>
+
+            <section aria-label="Cut preview" className="mbc-enzyme-preview">
+              <div className="cloning-action-row" role="group" aria-label="Preview probe">
+                <label className="form-field">
+                  <span>Probe</span>
+                  <select aria-label="Probe topology" value={circular ? 'circular' : 'linear'} onChange={(e) => setCircular(e.target.value === 'circular')}>
+                    <option value="linear">Linear</option>
+                    <option value="circular">Circular</option>
+                  </select>
+                </label>
+                {(['left', 'right'] as const).map((side) => (
+                  <label key={side} className="form-field">
+                    <span>{side === 'left' ? 'Left flank (bases)' : 'Right flank (bases)'}</span>
+                    <input
+                      type="number"
+                      aria-label={side === 'left' ? 'Left flank length' : 'Right flank length'}
+                      min={bounds ? bounds[side].min : 0}
+                      max={MAX_PREVIEW_FLANK}
+                      step={1}
+                      disabled={!bounds}
+                      value={flanks[side]}
+                      onChange={(e) => setFlank(side, e.target.value)}
+                    />
+                  </label>
+                ))}
+              </div>
+              <PreviewBody preview={preview} />
+            </section>
+
+            {pendingClash && (
+              <div role="group" aria-label="Name clash" className="primer-db-duplicate">
+                <p>{pendingClash.message}</p>
+                <div className="cloning-action-row">
+                  <button type="button" className="btn-primary" onClick={() => submit(pendingClash.builtIn)}>
+                    {`Keep Beside ${pendingClash.builtIn}`}
+                  </button>
+                  <button type="button" className="btn-secondary" aria-label="Cancel saving under a built-in's name" onClick={closeClash}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="cloning-action-row">
+              <button type="submit" className="btn-primary" ref={saveButtonRef}>
+                {form.editId ? 'Save Changes' : 'Save Enzyme'}
+              </button>
+              <button type="button" className="btn-secondary" aria-label="Cancel editing" onClick={closeForm}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+
+        <h4>Built-in catalogue</h4>
+        <table className="bio-table" aria-label="Built-in enzymes">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Source</th>
+              <th>Motif (5&apos; → 3&apos;)</th>
+              <th>Cuts (top/bottom)</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {builtIns.map((e) => (
+              <tr key={e.name} data-enzyme-source="built-in">
+                <td>{e.name}</td>
+                <td>Built-in</td>
+                <td className="mono-cell">{e.recognitionSeq}</td>
+                <td>{cutText(e)}</td>
+                <td>
+                  <button type="button" aria-label={`Clone ${e.name} as custom`} disabled={!read.ok} onClick={(ev) => startClone(e, ev.currentTarget)}>
+                    Clone as custom
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {builtIns.length === 0 && <p>No built-in enzyme matches the search.</p>}
+
+        <h4>Custom</h4>
+        {read.ok && (
+          <>
+            <table className="bio-table" aria-label="Custom enzymes">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Source</th>
+                  <th>Motif (5&apos; → 3&apos;)</th>
+                  <th>Cuts (top/bottom)</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {listedCustoms.map((d) => (
+                  <tr key={d.id} data-enzyme-source="custom" data-enzyme-id={d.id}>
+                    <td>{d.name}</td>
+                    <td>Custom</td>
+                    <td className="mono-cell">{d.recognitionSeq}</td>
+                    <td>{cutText(d)}</td>
+                    <td>
+                      <button type="button" aria-label={`Edit ${d.name}`} onClick={(ev) => startEdit(d, ev.currentTarget)}>
+                        Edit
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {listedCustoms.length === 0 && <p>{customs.length === 0 ? 'No custom enzyme yet.' : 'No custom enzyme matches the search.'}</p>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/** The preview area: the engine's site drawn, or why there is no picture. */
+const PreviewBody: React.FC<{ preview: DefinitionPreview | null }> = ({ preview }) => {
+  if (!preview) return null;
+  if (preview.kind === 'refused') {
+    return <p role="note">No preview: the definition is not valid yet (see the fields above).</p>;
+  }
+  if (preview.kind === 'unavailable') return <p role="note">{preview.message}</p>;
+  const { probe } = preview;
+  const span = `bases ${probe.motifStart + 1}–${probe.motifStart + probe.motif.length}`;
+  const about = (
+    <p data-preview-probe="">
+      {`Probe: ${probe.sequence.length} bases, ${probe.circular ? 'circular' : 'linear'}, with the motif planted as ${probe.motif} at ${span}.`}
+    </p>
+  );
+  if (preview.kind === 'noSite') {
+    return (
+      <div data-preview="no-site">
+        {about}
+        <p role="note">{preview.message}</p>
+        <pre aria-label="Probe bases, top strand 5' to 3' over bottom strand 3' to 5', no cut drawn" style={{ margin: '6px 0', fontFamily: 'var(--font-mono)', overflowX: 'auto' }}>
+          <code data-strand="probe-top">{`5'-${probe.sequence}-3'`}</code>
+          {'\n'}
+          <code data-strand="probe-bottom">{`3'-${complementAligned(probe.sequence)}-5'`}</code>
+        </pre>
+      </div>
+    );
+  }
+  return (
+    <div data-preview="site">
+      {about}
+      <CleavageDrawing site={preview.site} sequence={probe.sequence} circular={probe.circular} flank={PREVIEW_CONTEXT_BASES} />
+    </div>
+  );
+};

@@ -44,6 +44,34 @@ export function labelledStrands(p: CleavagePicture): { top: string; bottom: stri
 
 const reverse = (s: string) => [...s].reverse().join('');
 
+/**
+ * Where the recognition motif lies in a {@link labelledStrands} line, as `[start, end)` indexes:
+ * each cut mark (or the blank column for the other strand's cut) is inserted before the column it
+ * bounds, and the `5'-`/`3'-` label stands three characters ahead of the molecule's first column.
+ */
+export function motifSpanInLabelled(p: CleavagePicture): { start: number; end: number } {
+  const inserted = p.topCut.boundary === p.bottomCut.boundary ? [p.topCut.boundary] : [p.topCut.boundary, p.bottomCut.boundary];
+  const marked = (column: number) => column + inserted.filter((b) => b <= column).length;
+  return { start: marked(p.motif.start) + 3, end: marked(p.motif.end - 1) + 4 };
+}
+
+/** One strand line with the motif's span wrapped in a mark of its own. */
+const StrandLine: React.FC<{ strand: 'top' | 'bottom'; text: string; motif: { start: number; end: number } | null }> = ({ strand, text, motif }) => (
+  <code data-strand={strand}>
+    {motif ? (
+      <>
+        {text.slice(0, motif.start)}
+        <span className="mbc-cleavage-motif" data-motif="">
+          {text.slice(motif.start, motif.end)}
+        </span>
+        {text.slice(motif.end)}
+      </>
+    ) : (
+      text
+    )}
+  </code>
+);
+
 /** A cut in words: after the base before it, or before base 1 of a linear molecule, which no base precedes. */
 const cutWords = (strand: 'Top' | 'bottom', cut: CleavageCut) =>
   cut.position === null ? `${strand} strand cut before base 1` : `${strand} strand cut after base ${cut.position}`;
@@ -90,33 +118,27 @@ export function revealCleavagePreview(el: RevealableElement, pane: RevealableEle
   el.focus({ preventScroll: true });
 }
 
-export interface CleavagePreviewProps {
-  /** The engine's record of the one site to show. */
+export interface CleavageDrawingProps {
+  /** The engine's record of the one site to draw. */
   site: RestrictionCutSite;
   /** The molecule the site was scanned on. */
   sequence: string;
   circular: boolean;
   /** Bases shown beyond the motif and both cuts. */
   flank?: number;
-  /** Asked when the preview is dismissed (Escape or its close button). */
-  onClose: () => void;
-  id?: string;
 }
 
 /**
- * The cleavage preview of one restriction site: the enzyme, the matched site with its 1-based
- * coordinates and orientation, the two strands with both cuts where {@link cleavagePicture} places
- * them, the end the cut leaves, and whether it is a Type IIS or methylation-blocked site.
+ * The picture of one engine site, shared by the Enzymes view's cleavage preview and the
+ * Restriction Enzymes window's definition preview (US-01M7DVDV), so the two draw one picture: the
+ * matched site with its 1-based coordinates and orientation, the two strands with the motif marked
+ * on the strand that carries it and both cuts where {@link cleavagePicture} places them, the end
+ * the cut leaves, and whether it is a Type IIS or methylation-blocked site.
  */
-export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence, circular, flank = 4, onClose, id }) => {
-  const rootRef = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    const el = rootRef.current as unknown as RevealableElement | null;
-    if (el) revealCleavagePreview(el, scrollPaneOf(el));
-  }, [site.id]);
-
+export const CleavageDrawing: React.FC<CleavageDrawingProps> = ({ site, sequence, circular, flank = 4 }) => {
   const p = cleavagePicture(site, sequence, circular, flank);
   const strands = labelledStrands(p);
+  const motifSpan = motifSpanInLabelled(p);
   const siteSeq = p.top.slice(p.motif.start, p.motif.end);
   const first = p.coordinates[p.motif.start];
   const last = p.coordinates[p.motif.end - 1];
@@ -127,12 +149,61 @@ export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence
   const sensitivity = site.enzyme.methylationSensitivity ?? [];
 
   return (
+    <>
+      <p style={{ margin: '2px 0' }}>{`Site ${siteSeq}, bases ${first}–${last}, ${orientation}`}</p>
+      {p.crossesOrigin && (
+        <p style={{ margin: '2px 0' }}>{`It runs across the origin, from base ${sequence.length} to base 1.`}</p>
+      )}
+      <pre
+        aria-label="Top strand 5' to 3' over bottom strand 3' to 5', ▼ and ▲ marking the cuts"
+        style={{ margin: '6px 0', fontFamily: 'var(--font-mono)', lineHeight: 1.4, overflowX: 'auto' }}
+      >
+        <StrandLine strand="top" text={strands.top} motif={p.recognitionStrand === 'top' ? motifSpan : null} />
+        {'\n'}
+        <StrandLine strand="bottom" text={strands.bottom} motif={p.recognitionStrand === 'bottom' ? motifSpan : null} />
+      </pre>
+      <p style={{ margin: '2px 0' }}>{`${cutWords('Top', p.topCut)}; ${cutWords('bottom', p.bottomCut)}`}</p>
+      <p style={{ margin: '2px 0' }}>
+        <strong>{endWords(p)}</strong>
+      </p>
+      {p.typeIIS && (
+        <p style={{ margin: '2px 0' }}>
+          {`Type IIS: cuts outside the ${site.enzyme.recognitionSeq} motif, top strand ${p.topCut.gapFromMotif} nt and bottom strand ${p.bottomCut.gapFromMotif} nt from it`}
+        </p>
+      )}
+      {p.cleavage === 'methylation-blocked' && (
+        <p role="status" style={{ margin: '2px 0', padding: '2px 6px', background: 'var(--mbc-amber-soft)', border: '1px solid var(--mbc-amber-border)', borderRadius: 4 }}>
+          {`Methylation may block this cut${sensitivity.length > 0 ? ` (${site.enzyme.name} is ${sensitivity.join('/')}-sensitive)` : ''}: it is not a guaranteed cut.`}
+        </p>
+      )}
+    </>
+  );
+};
+
+export interface CleavagePreviewProps extends CleavageDrawingProps {
+  /** Asked when the preview is dismissed (Escape or its close button). */
+  onClose: () => void;
+  id?: string;
+}
+
+/**
+ * The cleavage preview of one restriction site: a dialog holding its {@link CleavageDrawing}, brought
+ * into sight and focused when it opens.
+ */
+export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence, circular, flank = 4, onClose, id }) => {
+  const rootRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const el = rootRef.current as unknown as RevealableElement | null;
+    if (el) revealCleavagePreview(el, scrollPaneOf(el));
+  }, [site.id]);
+
+  return (
     <section
       id={id}
       ref={rootRef}
       role="dialog"
       aria-modal="false"
-      aria-label={`${p.enzyme} cleavage preview`}
+      aria-label={`${site.enzyme.name} cleavage preview`}
       tabIndex={-1}
       className="mbc-cleavage-preview"
       onKeyDown={(e) => {
@@ -155,37 +226,12 @@ export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <strong>{`${p.enzyme} cleavage`}</strong>
+        <strong>{`${site.enzyme.name} cleavage`}</strong>
         <button type="button" className="mbc-icon-btn" aria-label="Close cleavage preview" onClick={onClose}>
           ×
         </button>
       </div>
-      <p style={{ margin: '2px 0' }}>{`Site ${siteSeq}, bases ${first}–${last}, ${orientation}`}</p>
-      {p.crossesOrigin && (
-        <p style={{ margin: '2px 0' }}>{`It runs across the origin, from base ${sequence.length} to base 1.`}</p>
-      )}
-      <pre
-        aria-label="Top strand 5' to 3' over bottom strand 3' to 5', ▼ and ▲ marking the cuts"
-        style={{ margin: '6px 0', fontFamily: 'var(--font-mono)', lineHeight: 1.4, overflowX: 'auto' }}
-      >
-        <code data-strand="top">{strands.top}</code>
-        {'\n'}
-        <code data-strand="bottom">{strands.bottom}</code>
-      </pre>
-      <p style={{ margin: '2px 0' }}>{`${cutWords('Top', p.topCut)}; ${cutWords('bottom', p.bottomCut)}`}</p>
-      <p style={{ margin: '2px 0' }}>
-        <strong>{endWords(p)}</strong>
-      </p>
-      {p.typeIIS && (
-        <p style={{ margin: '2px 0' }}>
-          {`Type IIS: cuts outside the ${site.enzyme.recognitionSeq} motif, top strand ${p.topCut.gapFromMotif} nt and bottom strand ${p.bottomCut.gapFromMotif} nt from it`}
-        </p>
-      )}
-      {p.cleavage === 'methylation-blocked' && (
-        <p role="status" style={{ margin: '2px 0', padding: '2px 6px', background: 'var(--mbc-amber-soft)', border: '1px solid var(--mbc-amber-border)', borderRadius: 4 }}>
-          {`Methylation may block this cut${sensitivity.length > 0 ? ` (${site.enzyme.name} is ${sensitivity.join('/')}-sensitive)` : ''}: it is not a guaranteed cut.`}
-        </p>
-      )}
+      <CleavageDrawing site={site} sequence={sequence} circular={circular} flank={flank} />
     </section>
   );
 };

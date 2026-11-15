@@ -104,6 +104,22 @@ describe('native menu ↔ dispatcher contract', () => {
     expect(resolveNativeMenuItemEnabled('tools:primer-database', noSession)).toBe(true);
   });
 
+  it('lists Databases > Restriction Enzymes natively after Primers, routed without a session (US-01M7DVDV AC1)', () => {
+    const dbs = mainRs.slice(mainRs.indexOf('let tools_dbs_sub'), mainRs.indexOf('let tools_batch_sub'));
+    expect([...dbs.matchAll(/item\("([^"]+)"/g)].map((m) => m[1])).toEqual([
+      'tools:databases-explorer',
+      'tools:primer-database',
+      'tools:enzyme-database',
+      'tools:make-blast-db',
+      'tools:local-blast-dbs',
+      'tools:blast-setup',
+    ]);
+    expect(dispatcher.get('tools:enzyme-database')).toBe(false);
+    expect(NATIVE_MENU_SESSION_INDEPENDENT_IDS).toContain('tools:enzyme-database');
+    const noSession = buildNativeMenuState({ sessionActive: false, activeDoc: null, selection: null, undoDepth: 0, redoDepth: 0 });
+    expect(resolveNativeMenuItemEnabled('tools:enzyme-database', noSession)).toBe(true);
+  });
+
   it('only declares command rules for real dispatcher commands', () => {
     for (const id of Object.keys(NATIVE_MENU_COMMAND_RULES)) {
       expect(dispatcher.has(id), id).toBe(true);

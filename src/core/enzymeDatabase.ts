@@ -121,6 +121,11 @@ export interface EnzymeAddOptions {
   confirmedClash?: string;
 }
 
+export interface EnzymeUpdateOptions {
+  /** As for `add`: the built-in name the user confirmed an edited name may equal. */
+  confirmedClash?: string;
+}
+
 export interface EnzymeImportConflict {
   id: string;
   stored: CustomEnzymeDefinition;
@@ -192,9 +197,11 @@ function multipleCuts(v: Record<string, unknown>): EnzymeFieldError | null {
 /**
  * Validate and normalize a definition's fields, collecting a reason for each invalid field.
  * `clonedFrom` must name a built-in when `checkClonedFrom` is set (input); a stored one is kept
- * as text, so a catalogue that later drops that enzyme leaves the store readable.
+ * as text, so a catalogue that later drops that enzyme leaves the store readable. Exported for the
+ * Restriction Enzymes window (US-01M7DVDV), which shows these reasons field by field as the user
+ * types and draws no preview of a definition they refuse.
  */
-function validateFields(
+export function validateFields(
   v: Record<string, unknown>,
   checkClonedFrom: boolean,
 ): { ok: true; value: Validated } | { ok: false; error: EnzymeDbError } {
@@ -400,6 +407,14 @@ export interface EnzymeDatabase {
    * `confirmedClash` names that built-in; it is then stored with its own id beside it.
    */
   add(input: CustomEnzymeInput, options?: EnzymeAddOptions): EnzymeDbResult<CustomEnzymeDefinition>;
+  /**
+   * Edit the stored definition `id` (US-01M7DVDV AC6): the fields `changes` names replace the
+   * stored ones and every other field is kept, the id and created time with them; the modified time
+   * is set only when a field changed. The result is checked by `add`'s field rules (a stored
+   * cloned-from is kept as text unless the edit changes it), and a refused edit writes nothing. A new name equal to a built-in's is a `nameClash` unless `confirmedClash` names
+   * it; a name the user already confirmed stays confirmed. An unknown id is `stale`.
+   */
+  update(id: string, changes: Partial<CustomEnzymeInput>, options?: EnzymeUpdateOptions): EnzymeDbResult<CustomEnzymeDefinition>;
   /** A versioned JSON backup of every definition. */
   exportBackup(): EnzymeDbResult<string>;
   /**
@@ -511,6 +526,43 @@ export function openEnzymeDatabase(env: EnzymeDatabaseEnv = {}): EnzymeDatabase 
         const time = now();
         const def = definition(id, valid.value, { createdAt: time, modifiedAt: time }, clash);
         return { ok: true, definitions: [...definitions, def], value: def };
+      });
+    },
+
+    update(id, changes, options = {}) {
+      return commit((definitions) => {
+        const index = definitions.findIndex((d) => d.id === id);
+        if (index < 0) return fail('stale', `Nothing was saved: no custom enzyme has the id ${id}.`);
+        const stored = definitions[index];
+        const merged: Record<string, unknown> = {
+          name: stored.name,
+          recognitionSeq: stored.recognitionSeq,
+          cutFwd: stored.cutFwd,
+          cutRev: stored.cutRev,
+          isTypeIIS: stored.isTypeIIS,
+          methylationSensitivity: stored.methylationSensitivity,
+          provenance: stored.provenance,
+          notes: stored.notes,
+          ...(stored.clonedFrom !== undefined ? { clonedFrom: stored.clonedFrom } : {}),
+          ...changes,
+        };
+        // A stored cloned-from is kept as text; only a changed one must name a built-in.
+        const valid = validateFields(merged, 'clonedFrom' in changes && changes.clonedFrom !== stored.clonedFrom);
+        if (!valid.ok) return valid;
+        const clash = builtInNameClash(valid.value.name);
+        if (clash !== undefined && !sameName(stored.sharesBuiltInName, clash) && !sameName(options.confirmedClash, clash)) {
+          return fail(
+            'nameClash',
+            `${valid.value.name} is the name of the built-in enzyme ${clash}. Nothing was saved: choose a different name, or confirm to keep it as a separate custom enzyme beside ${clash}.`,
+            { clash },
+          );
+        }
+        const unchanged = definition(id, valid.value, { createdAt: stored.createdAt, modifiedAt: stored.modifiedAt }, clash);
+        if (sameDefinition(unchanged, stored)) return { ok: true, definitions: null, value: stored };
+        const def = definition(id, valid.value, { createdAt: stored.createdAt, modifiedAt: now() }, clash);
+        const next = [...definitions];
+        next[index] = def;
+        return { ok: true, definitions: next, value: def };
       });
     },
 

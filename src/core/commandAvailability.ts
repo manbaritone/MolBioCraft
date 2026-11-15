@@ -228,6 +228,7 @@ export const NATIVE_MENU_SESSION_INDEPENDENT_IDS = [
   'primers:preferences',
   'tools:blast-setup',
   'tools:databases-explorer',
+  'tools:enzyme-database',
   'tools:local-blast-dbs',
   'tools:preferences',
   'tools:primer-database',

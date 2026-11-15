@@ -182,6 +182,7 @@ describe('Databases > Primers opens from every menu (US-01M7DQFS AC1)', () => {
     expect([...dbs.matchAll(/item\("([^"]+)", "([^"]+)"/g)].map((m) => `${m[1]} ${m[2]}`)).toEqual([
       'tools:databases-explorer NCBI & UniProt',
       'tools:primer-database Primers',
+      'tools:enzyme-database Restriction Enzymes',
       'tools:make-blast-db Make BLAST Database from Selection…',
       'tools:local-blast-dbs Local BLAST DBs',
       'tools:blast-setup BLAST Setup',
@@ -200,6 +201,7 @@ describe('Databases > Primers opens from every menu (US-01M7DQFS AC1)', () => {
       expect(await submenuLabels(app, ['Tools', 'Databases'])).toEqual([
         'NCBI & UniProt',
         'Primers',
+        'Restriction Enzymes',
         'Make BLAST Database from Selection…',
         'Local BLAST DBs',
         'BLAST Setup',
@@ -207,7 +209,7 @@ describe('Databases > Primers opens from every menu (US-01M7DQFS AC1)', () => {
       await app.press('Escape');
       await app.press('Escape');
       await app.press('Escape');
-      expect(await submenuLabels(app, ['File', 'Import Data', 'Databases'])).toEqual(['NCBI & UniProt', 'Primers']);
+      expect(await submenuLabels(app, ['File', 'Import Data', 'Databases'])).toEqual(['NCBI & UniProt', 'Primers', 'Restriction Enzymes']);
     });
   });
 });

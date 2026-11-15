@@ -55,7 +55,7 @@ vi.mock('react/jsx-runtime', async () => {
   return { ...actual, jsx: watch(actual.jsx), jsxs: watch(actual.jsxs) };
 });
 
-const { CleavagePreview } = await import('../components/CleavagePreview');
+const { CleavagePreview, CleavageDrawing } = await import('../components/CleavagePreview');
 const { LinearSequenceView, cutBoundaryInRow, revealSelectedRow } = await import('../components/LinearSequenceView');
 const { findRestrictionCutSites } = await import('../core/bioEngine');
 const { REBASE_ENZYMES } = await import('../data/rebaseEnzymes');
@@ -784,6 +784,43 @@ describe('US-01M7CC3B AC4 focus moves into the opened preview, and a stray Escap
 });
 
 // ─── BG-01M7CETX (US-01M7CC6K redelivery) ───
+
+describe('US-01M7DVDV AC3 the Enzymes view preview and the definition preview draw one picture, the motif marked', () => {
+  /** The marked motif's text on each strand of the preview's markup. */
+  const marksOf = (html: string, strand: 'top' | 'bottom') => {
+    const line = new RegExp(`data-strand="${strand}"[^>]*>([\\s\\S]*?)</code>`).exec(html)![1];
+    return [...line.matchAll(/data-motif=""[^>]*>([\s\S]*?)<\/span>/g)].map((m) => decode(m[1]));
+  };
+
+  it('a forward EcoRI site marks its motif on the top strand, the cut marks inside it kept', () => {
+    const p = previewOf('TTTTGAATTCTTTT', 'linear', 'EcoRI');
+    expect(marksOf(p.html, 'top')).toEqual(['G▼AATT C']);
+    expect(marksOf(p.html, 'bottom')).toEqual([]);
+    expect(p.top).toBe("5'-TTG▼AATT CTT-3'");
+  });
+
+  it('a reverse AciI site marks its motif on the bottom strand, which carries it', () => {
+    const p = previewOf('TTTTGCGGTTTT', 'linear', 'AciI');
+    expect(marksOf(p.html, 'top')).toEqual([]);
+    expect(marksOf(p.html, 'bottom')).toEqual(['C GC▲C']);
+  });
+
+  it('BsaI cutting past its motif marks only the motif, never the overhang', () => {
+    const p = previewOf('TTTTGGTCTCAAAAAGG', 'linear', 'BsaI-HFv2');
+    expect(marksOf(p.html, 'top')).toEqual(['GGTCTC']);
+  });
+
+  it('the preview draws through the shared CleavageDrawing, the one the definition preview renders', () => {
+    const seen: unknown[] = [];
+    probe.onElement = (type) => seen.push(type);
+    const site = engineSite('TTTTGAATTCTTTT', 'linear', 'EcoRI');
+    const preview = renderToStaticMarkup(<CleavagePreview site={site} sequence="TTTTGAATTCTTTT" circular={false} flank={2} onClose={() => {}} />);
+    probe.onElement = null;
+    expect(seen).toContain(CleavageDrawing);
+    const drawing = renderToStaticMarkup(<CleavageDrawing site={site} sequence="TTTTGAATTCTTTT" circular={false} flank={2} />);
+    expect(preview).toContain(drawing);
+  });
+});
 
 describe("BG-01M7CETX a linear molecule's ends are labelled at its own first and last base", () => {
   it("EcoRI at base 1: the 5'- and 3'- labels stand beside base 1, after the blank columns, not before them", () => {

@@ -1142,6 +1142,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[
             &item("tools:databases-explorer", "NCBI & UniProt", None)?,
             &item("tools:primer-database", "Primers", None)?,
+            &item("tools:enzyme-database", "Restriction Enzymes", None)?,
             &item("tools:make-blast-db", "Make BLAST Database from Selection…", None)?,
             &item("tools:local-blast-dbs", "Local BLAST DBs", None)?,
             &item("tools:blast-setup", "BLAST Setup", None)?,
