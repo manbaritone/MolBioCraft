@@ -287,6 +287,11 @@ pub struct CrisprGuideScan {
     /// One plain sentence per range or list this scan could not report whole (D0005).
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// The length of the PAM-proximal seed whose exact copies this scan counted (BG-01M7FF3B):
+    /// `SEED_LEN`, the constant the counting itself reads, so a surface states the length the scan
+    /// used rather than one of its own. `None` for a refused scan, which counted no seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_length_bp: Option<usize>,
 }
 
 /// The most bases of a sequence a guide scan reads when it is given no bound of its own
@@ -726,6 +731,7 @@ fn scan_guides(
             interval_refusal: None,
             context_outside_interval_bp: 0,
             warnings: bounded_warning(scanned),
+            seed_length_bp: Some(SEED_LEN),
         };
     }
     let limit = max_results;
@@ -1278,6 +1284,7 @@ fn scan_guides(
         interval_refusal: None,
         context_outside_interval_bp,
         warnings,
+        seed_length_bp: Some(SEED_LEN),
     }
 }
 
@@ -1300,6 +1307,7 @@ fn refused_scan(
         interval_refusal,
         context_outside_interval_bp: 0,
         warnings: vec![reason],
+        seed_length_bp: None,
     }
 }
 
@@ -1554,5 +1562,120 @@ mod interval_plan_tests {
         assert_eq!(GUIDE_SCAN_MAX_BP, 8_000_000);
         let whole = plan(1, 1_000, false, GUIDE_SCAN_MAX_BP).expect("the whole record");
         assert!(whole.cap_note.is_none() && whole.interval.length_bp == 1_000);
+    }
+}
+
+#[cfg(test)]
+mod seed_length_report_tests {
+    use super::*;
+
+    /// Exact occurrences of `motif` over both strands of `seq`, overlapping ones included: the
+    /// count a seed of that length would give, worked out here without the scanner.
+    fn both_strand_count(seq: &str, motif: &str) -> usize {
+        let count = |s: &str| (0..=s.len() - motif.len()).filter(|&i| &s[i..i + motif.len()] == motif).count();
+        count(seq) + count(&reverse_complement_iupac(seq, false))
+    }
+
+    /// Any base but `b`, so a planted copy stops matching one base further from the PAM.
+    fn other_than(b: u8) -> char {
+        if b == b'A' { 'C' } else { 'A' }
+    }
+
+    /// BG-01M7FF3B AC1: the seed length a scan reports is `SEED_LEN` itself, and it is the length the
+    /// scan actually counted with.
+    ///
+    /// Wrong implementations this kills:
+    /// - a reporting path that writes the seed length as a second literal beside the scanner's own
+    ///   constant (`Some(12)`), which agrees today and drifts the day `SEED_LEN` changes: every
+    ///   non-test line that sets `seed_length_bp` is read out of this file and must set it from
+    ///   `SEED_LEN` or claim none;
+    /// - a reported length that no scan used - a preset's number, or one the counting ignores: the
+    ///   fixture is built from the reported length `l`, with a copy of the `l`-base seed and a copy
+    ///   of only its `l - 1` bases planted elsewhere, so the guide's seed count is the one a seed of
+    ///   exactly `l` bases gives and differs from what `l - 1` or `l + 1` bases would give;
+    /// - a refused scan, which counted no seed, claiming a length anyway.
+    #[test]
+    fn reported_seed_length_is_the_scanner_s_own() {
+        let probe = scan_crispr_guides("ACGT", "SpCas9 (NGG)", 0, None, false);
+        let l = probe.seed_length_bp.expect("a scan that ran reports the seed length it counted with");
+        assert_eq!(l, SEED_LEN, "the reported seed length is the scanner's own constant");
+        assert!(l >= 2 && l < 20, "a seed of {l} bases leaves no room for this fixture inside a 20-nt spacer");
+
+        let spacer = "GTCAGGTACCTTAGCAAGTC";
+        let sp = spacer.as_bytes();
+        for k in [l - 1, l, l + 1] {
+            let seed = &spacer[20 - k..];
+            assert_ne!(
+                seed,
+                reverse_complement_iupac(seed, false),
+                "a {k}-base seed that is its own reverse complement is counted twice per copy"
+            );
+        }
+        // Seeded background (LCG) between the planted pieces, so no accidental copy lies in it.
+        let mut x: u32 = 0x5eed_0f3b;
+        let mut background = |n: usize| -> String {
+            (0..n)
+                .map(|_| {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    b"ACGT"[(x >> 30) as usize] as char
+                })
+                .collect()
+        };
+        // The guide, a copy of its exact `l`-base seed with the base before it changed, and a copy
+        // of only its `l - 1` PAM-proximal bases with the base before those changed.
+        let l_copy = format!("{}{}", other_than(sp[20 - l - 1]), &spacer[20 - l..]);
+        let shorter_copy = format!("{}{}", other_than(sp[20 - l]), &spacer[20 - l + 1..]);
+        let seq = format!(
+            "{}{spacer}AGG{}{l_copy}{}{shorter_copy}{}",
+            background(150),
+            background(150),
+            background(150),
+            background(150)
+        );
+
+        let scan = scan_crispr_guides(&seq, "SpCas9 (NGG)", 100_000, None, false);
+        assert_eq!(scan.seed_length_bp, Some(SEED_LEN), "the scan reports the constant it read");
+        let guide = scan
+            .guides
+            .iter()
+            .find(|g| g.strand == 1 && g.spacer_seq == spacer)
+            .expect("the planted guide is found");
+        let matches_at = |k: usize| both_strand_count(&seq, &spacer[20 - k..]) - 1;
+        assert_ne!(matches_at(l), matches_at(l - 1), "the fixture tells an {l}-base seed from a shorter one");
+        assert_ne!(matches_at(l), matches_at(l + 1), "the fixture tells an {l}-base seed from a longer one");
+        assert_eq!(
+            guide.off_target_count as usize,
+            matches_at(l),
+            "the seed count is the one a seed of the reported {l} bases gives"
+        );
+
+        // Cas12a counts its seed from the 5' end, with the same constant.
+        let cas12a = scan_crispr_guides(&seq, "Cas12a / Cpf1 (TTTV)", 0, None, false);
+        assert_eq!(cas12a.seed_length_bp, Some(SEED_LEN));
+
+        // A refused scan counted no seed and claims no length.
+        let refused = scan_crispr_guides_in_interval(&seq, "SpCas9 (NGG)", 10, Some((5, 2)), false);
+        assert!(refused.interval_refusal.is_some(), "an across-origin interval on a linear record is refused");
+        assert_eq!(refused.seed_length_bp, None, "a refused scan reports no seed length");
+
+        // And the reporting paths themselves: every non-test line that sets the field reads the
+        // scanner's constant or claims none, so no second literal can stand beside `SEED_LEN`.
+        let source = include_str!("cloning_crispr.rs");
+        let shipped = &source[..source.find("#[cfg(test)]").expect("this file has its tests below its code")];
+        let setters: Vec<&str> = shipped
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("seed_length_bp:"))
+            .collect();
+        assert!(
+            setters.iter().any(|line| *line == "seed_length_bp: Some(SEED_LEN),"),
+            "a scan that ran sets its seed length from SEED_LEN"
+        );
+        for line in &setters {
+            assert!(
+                *line == "seed_length_bp: Some(SEED_LEN)," || *line == "seed_length_bp: None,",
+                "a scan reports a seed length that is not SEED_LEN: `{line}`"
+            );
+        }
     }
 }

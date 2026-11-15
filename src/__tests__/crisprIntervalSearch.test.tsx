@@ -538,15 +538,18 @@ const branchSurfaces = (): Promise<BranchSurfaces[]> =>
 
 describe("BG-01M7FCDY AC1: the callout's seed sentence reads the one formatter, not a copy of it", () => {
   it("BG-01M7FCDY AC1 the callout states the scope in the formatter's own words on every branch", async () => {
-    const { CRISPR_SEED_LENGTH_BP } = await import('../core/crisprGuideText');
     for (const { branch, report, seedSaid, noteScopes } of await branchSurfaces()) {
       const scope = noteScopes[0];
+      // The seed's length is the one this branch's scan reported (BG-01M7FF3B), never a number of
+      // this test's or the app's own: a report without it fails here rather than reading as 12.
+      const seedLength = report.seedLengthBp;
+      expect(Number.isInteger(seedLength) && (seedLength as number) > 0, `${branch}: the scan reports its seed length`).toBe(true);
       expect(scope.length, `${branch}: the note says what the count covered`).toBeGreaterThan(20);
       expect(new Set(noteScopes).size, `${branch}: every note states the one scope`).toBe(1);
       // The callout's own words, then the formatter's, with nothing of the scope written out here:
       // a frame of the callout's own invention cannot sit between the two.
       expect(seedSaid, `${branch}: the callout states the scope in the formatter's own words`).toContain(
-        `other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed across ${scope}`
+        `other exact copies of the ${seedLength}-nt PAM-proximal seed across ${scope}`
       );
       // The three frames the branches hand-wrote before this fix, and the drift the reviewer's M15
       // slipped past both BG-01M7EQAA criteria, in none of them now.

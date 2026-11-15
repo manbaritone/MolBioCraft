@@ -1084,8 +1084,8 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         }
         // The scan itself (US-01M7DVH2): the same payload keys as `find_crispr_guides`, replying
         // with the whole `CrisprGuideScan` envelope - the candidate count, the bases read, the
-        // sequence length, how the record was read, the bases across its origin and the warnings -
-        // so a reader of the scan's numbers does not have to find them on a guide row, and gets
+        // sequence length, how the record was read, the bases across its origin, the warnings and
+        // the seed length its counts were taken with (`seedLengthBp`, BG-01M7FF3B) - so a reader of the scan's numbers does not have to find them on a guide row, and gets
         // them when the scan found no guide. `maxResults` 0 asks for that report with no rows.
         //
         // `start1Based` and `end1Based` search one interval of the record instead of all of it

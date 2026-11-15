@@ -23,11 +23,11 @@ import {
   type CrisprScanGuide,
 } from '../core/bioEngine';
 import {
-  CRISPR_SEED_LENGTH_BP,
   crisprGuideExportTable,
   crisprHeuristicRuleText,
   crisprIntervalSpecificityText,
   crisprScanReadAs,
+  crisprSeedText,
   crisprSpacerAndPamCopyText,
   crisprSpacerCopyText,
 } from '../core/crisprGuideText';
@@ -466,6 +466,15 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       : crisprSearchedInterval !== undefined
       ? `counted over ${crisprReadAs} — ${crisprIntervalSpecificityText(crisprScan)}`
       : `counted over ${crisprReadAs}`;
+  /**
+   * The seed those counts were taken with, as the note that outlives the session has to say it
+   * (BG-01M7FF3B): the length the scan reported, through the one formatter the callout and the
+   * export read, never a number of this component's own.
+   */
+  const crisprSeedNoteWords =
+    crisprScan === undefined
+      ? 'not known: the engine sent no scan report'
+      : crisprSeedText(crisprScan);
   const crisprTabCount =
     crisprCandidates === undefined
       ? 'scan report unavailable'
@@ -699,7 +708,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
         start: parts.spacer.start,
         end: parts.spacer.end,
         color: g.onTargetScore >= 70 ? '#16a34a' : g.onTargetScore >= 50 ? '#d97706' : '#dc2626',
-        notes: `${g.nuclease} spacer ${g.spacerSeq} (${g.strand === 1 ? 'forward' : 'reverse'} strand) | ${cutWords} | Heuristic=${g.onTargetScore}, seed matches=${g.offTargetCount}, ${crisprSeedScopeWords}`,
+        notes: `${g.nuclease} spacer ${g.spacerSeq} (${g.strand === 1 ? 'forward' : 'reverse'} strand) | ${cutWords} | seed counted: ${crisprSeedNoteWords} | Heuristic=${g.onTargetScore}, seed matches=${g.offTargetCount}, ${crisprSeedScopeWords}`,
       },
       {
         ...shared('PAM'),
@@ -1431,11 +1440,10 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
               </>
             )}
             {/* What the seed count counts is a claim about a scan that ran: an absent report makes
-                it no claim at all (US-01M7DVH2 AC5). The seed's length is
-                `CRISPR_SEED_LENGTH_BP`, stated once there and read by every sentence in the app
-                that gives it (BG-01M7EZVV AC3): these three sentences each hand-wrote the number,
-                as the export's two did, so a change to what the scorer counts left five surfaces
-                stating the old figure.
+                it no claim at all (US-01M7DVH2 AC5). The seed's length is the one the scan
+                reports, through `crisprSeedText` in core, which the Top 5 note and the export read
+                too (BG-01M7EZVV AC3, BG-01M7FF3B): no sentence in the app declares the number, so
+                a change to what the scorer counts changes every surface that states it.
                 Which bases were read is `crisprReadAs` on every branch, as the annotation note
                 and the export read it (BG-01M7FCDY AC1, BG-01M7FH8K: `crisprScanReadAs` in core): the interval and bounded-prefix branches each wrote a
                 frame of their own here - the bounded one a copy of the formatter's own bounded
@@ -1446,7 +1454,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             {crisprScan !== undefined && crisprIntervalRefusal === undefined && (
               <>
                 <strong>Seed matches</strong>:{' '}
-                {`other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed across ${crisprReadAs}${
+                {`other exact copies of the ${crisprSeedText(crisprScan)} across ${crisprReadAs}${
                   crisprSearchedInterval !== undefined
                     ? `, and no copy outside it — ${crisprIntervalSpecificityText(crisprScan)}`
                     : crisprScanIsPartial

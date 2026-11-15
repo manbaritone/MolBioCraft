@@ -285,6 +285,7 @@ describe('a CRISPR scan reports its own numbers even with no guide (US-01M7DVH2)
       // than a pair of zeroes, so this envelope still claims no interval at all.
       contextOutsideIntervalBp: 0,
       warnings: [],
+      seedLengthBp: expect.any(Number),
     });
 
     const none = crisprTab(linear);

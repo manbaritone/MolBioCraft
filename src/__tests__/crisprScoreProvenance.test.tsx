@@ -40,9 +40,9 @@
 
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PrimerAndPCRStudio } from '../components/PrimerAndPCRStudio';
-import { crisprNucleasePresets } from '../core/bioEngine';
+import { crisprNucleasePresets, scanCrisprGuides, type CrisprScanReport } from '../core/bioEngine';
 import { engineInputs, sourceDigestManifest } from '../../scripts/build_rust_wasm.mjs';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import { resolveMenuNodeFunctionDescription } from '../data/menuFunctionDescriptions';
@@ -1751,4 +1751,267 @@ describe('every stated count of the rank says what it counts (BG-01M7FC2X)', () 
       `${derived.arms.total} arms in all`
     );
   });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// BG-01M7FF3B: the seed length every CRISPR surface states is the one the engine's scan reports.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The seed length `SEED_LEN` declares in current Rust source, read out of the file itself
+ * (BG-01M7FF3B AC3), with the one-declaration discipline `declaredRankRange` keeps (BG-01M7FAQZ): a
+ * candidate is a line that BEGINS with the declaration, so the same text in a `///` comment is no
+ * candidate; every candidate is counted, and two or more - one a block comment hides from a
+ * line-anchored pattern - are refused by name with the file and the count rather than resolved by
+ * taking the first. A missing, unreadable, empty or re-shaped file is a refusal too, never agreement
+ * (LC-006).
+ */
+function declaredSeedLength(at: URL = RUST_RANK_RANGE_SOURCE): number {
+  const path = decodeURIComponent(at.pathname);
+  let source: string;
+  try {
+    source = readFileSync(at, 'utf8');
+  } catch (cause) {
+    const code = (cause as { code?: string }).code;
+    throw new Error(
+      `the Rust source declaring the seed length is ${code === 'ENOENT' ? 'missing' : `unreadable (${code ?? cause})`}: ${path}`
+    );
+  }
+  if (source.trim() === '') throw new Error(`the Rust source declaring the seed length is empty: ${path}`);
+  const declared = [...source.matchAll(/^(?:pub(?:\([^)]*\))?\s+)?const SEED_LEN:\s*usize\s*=\s*(\d+)\s*;/gm)];
+  if (declared.length === 0) {
+    throw new Error(
+      `no \`const SEED_LEN: usize = n;\` declaration in ${path}: this test cannot tell whether the committed wasm counts the seed the source does`
+    );
+  }
+  if (declared.length > 1) {
+    throw new Error(
+      `${declared.length} \`const SEED_LEN: usize = n;\` declarations in ${path}: ` +
+        `this test cannot tell which one the committed wasm must agree with, and adopts neither. Leave exactly one ` +
+        `(a commented-out length inside a \`/* */\` block is one of these).`
+    );
+  }
+  return Number(declared[0][1]);
+}
+
+/** The source files of the app a researcher reads: every `.ts` and `.tsx` under `src/` but the tests. */
+function appSources(dir: URL = new URL('../', import.meta.url), at = 'src'): { path: string; source: string }[] {
+  return nodeFs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.isDirectory()) {
+      return entry.name === '__tests__' ? [] : appSources(new URL(`${entry.name}/`, dir), `${at}/${entry.name}`);
+    }
+    return entry.isFile() && /\.tsx?$/.test(entry.name)
+      ? [{ path: `${at}/${entry.name}`, source: readFileSync(new URL(entry.name, dir), 'utf8') }]
+      : [];
+  });
+}
+
+describe('every CRISPR seed sentence states the length the engine reports (BG-01M7FF3B)', () => {
+  /** The real engine's report on this suite's record. */
+  const realReport = (): CrisprScanReport => {
+    const { report, reportUnavailableReason } = scanCrisprGuides(doc.sequence, 'SpCas9 (NGG)', 30, false);
+    if (!report) throw new Error(`the engine sent no scan report: ${reportUnavailableReason}`);
+    return report;
+  };
+
+  /**
+   * The CRISPR tab's callout, rendered off a scan whose report states `seedLengthBp` as given, or
+   * none. Everything else is the real engine's report on the real record: only the one field is
+   * replaced, because no real scanner reports a length other than its own, and a guard that only
+   * ever saw that one number cannot tell a surface reading it from one that writes it out. The
+   * substitute is scoped to this call (`vi.doMock` with the module graph reset either side), so no
+   * other test in this file meets it.
+   */
+  const calloutOffAReportOf = async (seedLengthBp: number | undefined): Promise<string> => {
+    vi.resetModules();
+    vi.doMock('../core/bioEngine', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../core/bioEngine')>();
+      return {
+        ...real,
+        scanCrisprGuides: (...args: Parameters<typeof real.scanCrisprGuides>) => {
+          const result = real.scanCrisprGuides(...args);
+          if (!result.report) return result;
+          const { seedLengthBp: _reported, ...rest } = result.report;
+          return { ...result, report: seedLengthBp === undefined ? rest : { ...rest, seedLengthBp } };
+        },
+      };
+    });
+    try {
+      const { PrimerAndPCRStudio: Studio } = await import('../components/PrimerAndPCRStudio');
+      return callout(
+        renderToStaticMarkup(
+          <Studio
+            doc={doc}
+            allDocuments={[doc]}
+            onUpdateDocument={() => undefined}
+            onAddConstruct={() => undefined}
+            initialSubTab="crispr"
+          />
+        )
+      );
+    } finally {
+      vi.doUnmock('../core/bioEngine');
+      vi.resetModules();
+    }
+  };
+
+  /**
+   * BG-01M7FF3B AC2. Wrong implementations this kills: keeping a hand-written constant beside the
+   * engine's number (two sources that agree today and drift later - the shape D0137 deferred here),
+   * in any file of the app, under any name; and a fallback that fills in a length when the report
+   * omits one, which would leave every sentence green on an engine that reports nothing.
+   */
+  it('BG-01M7FF3B AC2 no surface declares the seed length itself', async () => {
+    // (1) No file of the app declares a seed length, writes one as digits before "seed", or fills
+    // one in for a report that has none.
+    const sources = appSources();
+    expect(sources.length, 'the sweep read the app').toBeGreaterThan(100);
+    const declarations: Array<[string, RegExp]> = [
+      ['the retired constant', /\bCRISPR_SEED_LENGTH_BP\b/],
+      ['a seed-length constant', /\bconst\s+\w*seed_?len\w*\s*(?::\s*\w+\s*)?=\s*\d/i],
+      ['a seed length written as digits', /\b\d+\s*-?\s*(?:nt|bp|bases?)\s+(?:[A-Za-z-]+\s+)?seed\b/i],
+      ['a fallback for an absent seed length', /seedLengthBp\s*(?:\?\?|\|\|)/],
+      ['a seed length set on a report', /seedLengthBp\s*:\s*\d/],
+    ];
+    const found = sources.flatMap(({ path, source }) =>
+      declarations.filter(([, pattern]) => pattern.test(source)).map(([what]) => `${path}: ${what}`)
+    );
+    expect(found, 'no surface declares the seed length itself').toEqual([]);
+    // And every seed length the app writes is the one formatter's, from the report: a length held
+    // under a name this sweep does not know still has to be written before "-nt ... seed" somewhere.
+    const written = sources.flatMap(({ path, source }) =>
+      [...source.matchAll(/(.{0,40})-nt\s+(?:[A-Za-z-]+\s+)?seed\b/g)].map((m) => `${path}: ${m[1]}`)
+    );
+    expect(written, 'a seed length is written in one place, from the report').toEqual([
+      'src/core/crisprGuideText.ts:     ? `${bp(scan.seedLengthBp)}',
+    ]);
+
+    // (2) The one formatter, and the export's cell, state the number the report carries - a length
+    // no real scanner reports, so only a surface that reads the report can state it - and, for a
+    // report without one, no length at all.
+    const { crisprSeedText, crisprGuideExportTable } = await import('../core/crisprGuideText');
+    const report = realReport();
+    const { seedLengthBp: _real, ...withoutLength } = report;
+    const unusual = (report.seedLengthBp ?? 0) + 7;
+    const guides = scanCrisprGuides(doc.sequence, 'SpCas9 (NGG)', 3, false).guides;
+    expect(guides.length, 'guides to export').toBeGreaterThan(0);
+    const scopeCells = (scan: CrisprScanReport) => {
+      const table = crisprGuideExportTable({
+        guides,
+        document: doc,
+        scan,
+        heuristicRule: 'rule',
+        scope: { selectedCount: 0, shownCount: guides.length },
+      });
+      const column = table.headers.indexOf('Seed Match Scope');
+      return table.rows.map((row) => String(row[column]));
+    };
+    expect(crisprSeedText({ ...withoutLength, seedLengthBp: unusual })).toBe(`${unusual}-nt PAM-proximal seed`);
+    for (const cell of scopeCells({ ...withoutLength, seedLengthBp: unusual })) {
+      expect(cell, "the export's cell states the reported length").toContain(`copies of the ${unusual}-nt PAM-proximal seed`);
+    }
+    for (const said of [crisprSeedText(withoutLength), ...scopeCells(withoutLength)]) {
+      expect(said, 'a report without a length is stated as having none').toContain('the engine did not report its length');
+      expect(said.match(/\d+-nt/), `no length is filled in for a report without one: "${said}"`).toBeNull();
+    }
+
+    // A scan the engine refused counted no seed, and reaches the surfaces with no length filled in.
+    const refused = scanCrisprGuides(doc.sequence, 'SpCas9 (NGG)', 5, false, { start: 40, end: 10 }).report;
+    expect(refused?.intervalRefusal, 'an across-origin interval on a linear record is refused').toBeDefined();
+    expect(refused?.seedLengthBp, 'a refused scan carries no seed length to the surfaces').toBeUndefined();
+    expect(crisprSeedText(refused!)).toContain('the engine did not report its length');
+
+    // (3) The callout a researcher reads, rendered by the studio itself off each report.
+    const saidUnusual = await calloutOffAReportOf(unusual);
+    expect(saidUnusual, 'the callout states the length the report carries').toContain(
+      `other exact copies of the ${unusual}-nt PAM-proximal seed across`
+    );
+    const saidNone = await calloutOffAReportOf(undefined);
+    expect(saidNone, 'the callout still states its seed sentence').toContain('Seed matches');
+    expect(saidNone, 'and says the engine reported no length').toContain(
+      'other exact copies of the PAM-proximal seed (the engine did not report its length) across'
+    );
+    expect(saidNone.match(/\d+-nt PAM-proximal/), 'no length is filled in for the callout').toBeNull();
+  }, 120_000);
+
+  /**
+   * BG-01M7FF3B AC3. Wrong implementations this kills: an unanchored read that a commented spelling
+   * above the constant can win (BG-01M7FAQZ's defect, in a new reader); a guard comparing the
+   * engine's number with a literal in this test rather than with the source; and a missing,
+   * empty or unreadable source read as agreement rather than refused.
+   */
+  /**
+   * The committed engine's seed length, held to the one `SEED_LEN` the Rust source at `at`
+   * declares: the number the source declares, or a refusal naming what disagrees and the command
+   * that fixes it. The comparison is with the source, never with a figure of this test's.
+   */
+  const committedSeedLengthAgreesWith = (at: URL = RUST_RANK_RANGE_SOURCE): number => {
+    const declared = declaredSeedLength(at);
+    const reported = realReport().seedLengthBp;
+    if (reported !== declared) {
+      throw new Error(
+        `the committed wasm reports a seed length of ${String(reported)}, and ${decodeURIComponent(at.pathname)} declares ` +
+          `SEED_LEN = ${declared}; run \`${REBUILD}\` so public/molbiocraft_wasm.wasm carries the source it is built from.`
+      );
+    }
+    return declared;
+  };
+
+  it('BG-01M7FF3B AC3 the committed engine reports the seed length the Rust source declares', () => {
+    const declared = committedSeedLengthAgreesWith();
+
+    // The real file answers with the number its own declaration line carries, found here by
+    // reading lines rather than by the reader's pattern, so the reader is shown to find the
+    // declaration a few hundred lines down rather than refusing a correct tree.
+    const onItsOwnLine = readFileSync(RUST_RANK_RANGE_SOURCE, 'utf8')
+      .split('\n')
+      .filter((line) => line.startsWith('const SEED_LEN'));
+    expect(onItsOwnLine.length, 'cloning_crispr.rs declares SEED_LEN once').toBe(1);
+    expect(declared).toBe(Number(/=\s*(\d+)\s*;/.exec(onItsOwnLine[0])?.[1]));
+
+    // The refusals, each on a source written here, so no case can touch the real file.
+    const dir = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FF3B-seed-len-`);
+    const answerFor = (name: string, text: string | null): { got?: number; message: string; path: string } => {
+      const path = `${dir}/${name}`;
+      if (text !== null) nodeFs.writeFileSync(path, text, 'utf8');
+      try {
+        return { got: declaredSeedLength(pathToFileURL(path)), message: '', path };
+      } catch (cause) {
+        return { message: cause instanceof Error ? cause.message : `a non-Error was thrown: ${String(cause)}`, path };
+      }
+    };
+    try {
+      // Two spellings at the start of a line, the first inside a block comment: refused by name,
+      // with the file and the count, and answered with neither.
+      const ambiguous = answerFor(
+        'ambiguous.rs',
+        ['/* The seed this scanner once counted:', 'const SEED_LEN: usize = 10;', '*/', 'const SEED_LEN: usize = 14;', ''].join('\n')
+      );
+      expect(ambiguous.got, 'an ambiguous source is refused, not answered').toBeUndefined();
+      expect(ambiguous.message).toContain(ambiguous.path);
+      expect(ambiguous.message).toMatch(/^2 /);
+      // A `///` spelling above the constant is no candidate: the constant's own number answers.
+      const commented = answerFor(
+        'commented.rs',
+        ['/// The seed was once `const SEED_LEN: usize = 10;`.', 'const SEED_LEN: usize = 14;', ''].join('\n')
+      );
+      expect(commented.got, `the commented line is not a declaration: ${commented.message}`).toBe(14);
+      // Missing, empty and re-shaped sources are refusals, each named.
+      expect(answerFor('missing.rs', null).message).toMatch(/is missing: .*missing\.rs/);
+      expect(answerFor('empty.rs', '  \n').message).toMatch(/is empty: .*empty\.rs/);
+      expect(answerFor('reshaped.rs', 'mod scan {\n    const SEED_LEN: usize = 14;\n}\n').message).toMatch(
+        /^no `const SEED_LEN: usize = n;` declaration in .*reshaped\.rs/
+      );
+      // And the comparison is with the source: a source declaring another length than the
+      // committed engine reports is a refusal that asks for the rebuild, never agreement.
+      const other = `${dir}/other.rs`;
+      nodeFs.writeFileSync(other, `const SEED_LEN: usize = ${declared + 1};\n`, 'utf8');
+      expect(() => committedSeedLengthAgreesWith(pathToFileURL(other)), 'a source the engine was not built from').toThrow(
+        new RegExp(`seed length of ${declared}, and .*other\\.rs declares SEED_LEN = ${declared + 1}; run \`npm run wasm:build\``)
+      );
+      expect(() => committedSeedLengthAgreesWith(pathToFileURL(`${dir}/missing.rs`)), 'a missing source').toThrow(/is missing/);
+    } finally {
+      nodeFs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 55_000);
 });

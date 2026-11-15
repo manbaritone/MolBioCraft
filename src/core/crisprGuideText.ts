@@ -39,20 +39,23 @@ import { sequenceRevision } from './restrictionDisplay';
 const bp = (n: number) => n.toLocaleString('en-US');
 
 /**
- * The PAM-proximal seed length, counted in bases, that every CRISPR sentence in this app states
- * (BG-01M7EZVV AC3). It is written once, here, and read by all of them: the number was hand-written
- * at five places over two files, so a change to what the scorer counts would have left five
- * sentences telling a researcher the old figure with every test green - the single-source defect
- * BG-01M7EYED closed for the heuristic rank, in a second place.
+ * The seed a scan's counts were taken with, in the words every CRISPR seed sentence states it in
+ * (BG-01M7EZVV AC3, BG-01M7FF3B): its length is the one the scan reports, `seedLengthBp`, which the
+ * engine sets from the scanner's own `SEED_LEN` (`cloning_crispr.rs`). No surface of this app
+ * declares a seed length: the callout, the Top 5 annotation note and the export's `Seed Match
+ * Scope` cell all read it here, from the report of the scan whose counts they state, so a change
+ * to what the scorer counts changes every sentence with it.
  *
- * It is a TypeScript copy of the engine's own seed length (`SEED_LEN`, `cloning_crispr.rs`), not a
- * value read from it. The engine keeps that constant private and reports no seed length on a scan,
- * so no surface can ask for one today: `CrisprScanReport` carries none, `CrisprGuideRecord` carries
- * none, and the CRISPR entries of the engine's RPC are the nuclease presets and the rank's rule.
- * That second drift axis - this constant against the scorer's - is open, and is BG-01M7FF3B; this
- * constant closes only the drift between the sentences themselves (D0137).
+ * A report without the length - a refused scan, which counted no seed, or an engine older than the
+ * field - is said to have none. No number is filled in for it: a default here would state a length
+ * the engine never reported, and a guard reading these sentences would pass on an engine that
+ * reports nothing (LC-006).
  */
-export const CRISPR_SEED_LENGTH_BP = 12;
+export function crisprSeedText(scan: CrisprScanReport): string {
+  return scan.seedLengthBp !== undefined
+    ? `${bp(scan.seedLengthBp)}-nt PAM-proximal seed`
+    : 'PAM-proximal seed (the engine did not report its length)';
+}
 
 /** The guide facts a copy reads: the record's own bases, PAM side and PAM pattern. */
 export type CrisprCopyGuide = Pick<
@@ -229,7 +232,7 @@ function seedScopeText(scan: CrisprScanReport | undefined, topology: string): st
     : scan.scannedLengthBp < scan.sequenceLengthBp
       ? ', and no copy outside it'
       : '';
-  return `Other exact copies of the ${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed across ${crisprScanReadAs(
+  return `Other exact copies of the ${crisprSeedText(scan)} across ${crisprScanReadAs(
     scan,
     topology
   )}${partOfIt}. ${notGenomeWide}`;

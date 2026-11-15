@@ -543,6 +543,13 @@ export interface CrisprScanReport {
   contextOutsideIntervalBp: number;
   /** One plain sentence per range or list the scan could not report whole (D0005). */
   warnings: string[];
+  /**
+   * The length of the PAM-proximal seed whose exact copies the scan counted (BG-01M7FF3B): the
+   * engine's own `SEED_LEN`, as the scan reports it. Absent when the engine reported none - a
+   * refused scan, which counted no seed, or an engine older than the field - and then no surface
+   * states a length: none is ever filled in on the engine's behalf.
+   */
+  seedLengthBp?: number;
 }
 
 /**
@@ -636,6 +643,7 @@ export function scanCrisprGuides(
   }
   const searched = (reply as { searchedInterval?: unknown }).searchedInterval;
   const refusal = (reply as { intervalRefusal?: unknown }).intervalRefusal;
+  const seedLength = (reply as { seedLengthBp?: unknown }).seedLengthBp;
   // An interval this reader cannot read is no report at all: dropping it would leave
   // `scannedLengthBp` counting an interval under a report that claims none, which reads as a scan of
   // the whole sequence - the one thing an interval scan must never be shown as (US-01M7DVAS AC4).
@@ -657,6 +665,10 @@ export function scanCrisprGuides(
       contextOutsideIntervalBp: reply.contextOutsideIntervalBp,
       ...(isSearchedInterval(searched) ? { searchedInterval: searched } : {}),
       ...(typeof refusal === 'string' ? { intervalRefusal: refusal } : {}),
+      // Only a whole number of bases is a seed length; anything else is left absent, never guessed.
+      ...(Number.isInteger(seedLength) && (seedLength as number) > 0
+        ? { seedLengthBp: seedLength as number }
+        : {}),
       warnings: reply.warnings,
     },
   };

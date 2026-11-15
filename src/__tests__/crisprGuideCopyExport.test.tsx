@@ -763,25 +763,82 @@ describe("BG-01M7EZVV AC2: the export carries a Cas12a guide's own site facts", 
 
 describe('BG-01M7EZVV AC3: the seed length is stated from one source', () => {
   it('BG-01M7EZVV AC3 every CRISPR seed sentence states its length from one source', async () => {
-    const { CRISPR_SEED_LENGTH_BP } = await import('../core/crisprGuideText');
-    // Every figure asserted below is this constant, read from the module the surfaces read. A test
-    // that restated the number would pass a surface that had drifted away from it, which is the
-    // defect this criterion is about.
-    const stated = `${CRISPR_SEED_LENGTH_BP}-nt PAM-proximal seed`;
+    // The one source is the scan's own report (BG-01M7FF3B, D0142): the engine sets `seedLengthBp`
+    // from the scanner's `SEED_LEN`, and every figure asserted below is that number, read from the
+    // scan of the record each surface shows. A test that restated the number would pass a surface
+    // that had drifted away from it, and a test that read a constant of this app would pass two
+    // sources that agree today - the defect this criterion is about.
+    const seedStated = async (doc: SequenceDocument, interval?: { start: number; end: number }) => {
+      const { report } = await engineScan(doc, SPCAS9, interval);
+      const length = report?.seedLengthBp;
+      // An engine that reports no length must fail here, not be read as some length: absent is
+      // never an answer (LC-006).
+      expect(
+        Number.isInteger(length) && (length as number) > 0,
+        `the engine reports the seed length its scan counted with, not ${String(length)}`
+      ).toBe(true);
+      return `${length}-nt PAM-proximal seed`;
+    };
 
-    // A whole-sequence scan: the sentence on screen, and the export's own cell.
-    await withApp(async (app) => {
-      await onCrisprTab(app, PLASMID);
+    // A whole-sequence scan: the sentence on screen, the export's own cell, and the note the Top 5
+    // annotation writes into the document that travels in a session or a GenBank file.
+    const everySurfaceStates = async (app: AppHarness, stated: string) => {
       expect(seedMatchesCallout(app), 'the panel states the seed it counted').toContain(stated);
       const rows = parseDelimited((await exportGuides(app, 'TSV')).text, '\t').rows;
       expect(rows.length, 'rows to read the cell of').toBeGreaterThan(0);
       for (const row of rows) expect(row['Seed Match Scope']).toContain(stated);
+      await annotateTopFive(app);
+      await app.menu('file:save-session');
+      const files = app.downloads();
+      const payload = JSON.parse(await files[files.length - 1].text()) as {
+        documents: { id: string; features: { notes?: string }[] }[];
+      };
+      const notes = (payload.documents.find((d) => d.id === PLASMID.id)?.features ?? [])
+        .map((f) => f.notes ?? '')
+        .filter((n) => n.includes('seed matches='));
+      expect(notes.length, 'the Top 5 annotation wrote seed-count notes to read').toBeGreaterThan(0);
+      for (const note of notes) expect(note, 'the note states the seed it counted').toContain(`seed counted: ${stated}`);
+    };
+    await withApp(async (app) => {
+      await onCrisprTab(app, PLASMID);
+      await everySurfaceStates(app, await seedStated(PLASMID));
     });
+
+    // The same three surfaces off a scan whose report states a length no real scanner reports: only
+    // a surface that reads the report can state it, so a number written anywhere in the app - under
+    // any name, in any file - fails here, where the real engine's own figure could not tell the two
+    // apart. Only that one field of the real report is replaced, and only for this launch.
+    vi.doMock('../core/bioEngine', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../core/bioEngine')>();
+      return {
+        ...real,
+        scanCrisprGuides: (...args: Parameters<typeof real.scanCrisprGuides>) => {
+          const result = real.scanCrisprGuides(...args);
+          return result.report
+            ? { ...result, report: { ...result.report, seedLengthBp: (result.report.seedLengthBp ?? 0) + 7 } }
+            : result;
+        },
+      };
+    });
+    try {
+      await withApp(async (app) => {
+        await onCrisprTab(app, PLASMID);
+        const stated = await seedStated(PLASMID);
+        const { scanCrisprGuides: realScan } = await vi.importActual<typeof import('../core/bioEngine')>('../core/bioEngine');
+        expect(stated, 'the launch reads the substituted report').not.toBe(
+          `${realScan(PLASMID.sequence, SPCAS9, 25, true).report?.seedLengthBp}-nt PAM-proximal seed`
+        );
+        await everySurfaceStates(app, stated);
+      });
+    } finally {
+      vi.doUnmock('../core/bioEngine');
+    }
 
     // An interval scan: the other arm of both sentences (the chooser prefers the span on screen,
     // D0135), so neither file's interval branch keeps a number of its own.
     await withApp(async (app) => {
       await onCrisprTab(app, PLASMID, { start: 101, end: 240 });
+      const stated = await seedStated(PLASMID, { start: 101, end: 240 });
       const panel = seedMatchesCallout(app);
       expect(panel, "the panel's interval arm").toContain(stated);
       expect(panel, 'and it is the interval arm that was read').toMatch(/interval searched/i);
@@ -796,21 +853,33 @@ describe('BG-01M7EZVV AC3: the seed length is stated from one source', () => {
     // And the sweep, over both files. Four of the five sentences are driven above; the fifth is the
     // panel's bounded-prefix arm, which needs a record longer than the engine's scan bound, and the
     // sweep is all that holds it. A guard scoped to one file would pass a tree that had removed
-    // the export's two literals and kept the studio's three - the repair this criterion names.
-    for (const path of SEED_SENTENCE_FILES) {
-      const source = treeSource(path);
+    // the export's literals and kept the studio's - the repair this criterion names.
+    const sources = SEED_SENTENCE_FILES.map((path) => ({ path, source: treeSource(path) }));
+    for (const { path, source } of sources) {
       expect(
         source.match(DIGITS_BEFORE_SEED),
-        `${path} states the seed length from the constant, never as digits`
+        `${path} states the seed length from the scan's report, never as digits`
       ).toBeNull();
-      expect(source.includes('${CRISPR_SEED_LENGTH_BP}-nt'), `${path} reads that constant`).toBe(
-        true
-      );
+      expect(
+        source.match(/\bCRISPR_SEED_LENGTH_BP\b|^\s*(?:export\s+)?const\s+\w*SEED_?LEN\w*\s*[:=]/gim),
+        `${path} declares no seed length of its own: the engine's report is the one source`
+      ).toBeNull();
     }
-    const declared = SEED_SENTENCE_FILES.map(
-      (path) => treeSource(path).match(/const CRISPR_SEED_LENGTH_BP\b/g)?.length ?? 0
-    ).reduce((a, b) => a + b, 0);
-    expect(declared, 'the number is declared once in the tree, not once per file').toBe(1);
+    // One reader of the engine's number, and every surface reading it through that reader.
+    const readers = sources
+      .map(({ path, source }) => ({ path, reads: source.match(/\.seedLengthBp\b/g)?.length ?? 0 }))
+      .filter((r) => r.reads > 0);
+    expect(readers, 'the report is read for its seed length in one place').toEqual([
+      { path: 'src/core/crisprGuideText.ts', reads: 2 },
+    ]);
+    const studio = sources.find((s) => s.path === 'src/components/PrimerAndPCRStudio.tsx')!.source;
+    expect(
+      studio.includes('copies of the ${crisprSeedText(crisprScan)} across'),
+      "the callout's sentence reads that formatter"
+    ).toBe(true);
+    expect(studio.includes(': crisprSeedText(crisprScan);'), "the Top 5 note's words read it").toBe(true);
+    const text = sources.find((s) => s.path === 'src/core/crisprGuideText.ts')!.source;
+    expect(text.includes('copies of the ${crisprSeedText(scan)} across'), "the export's cell reads it").toBe(true);
   });
 });
 

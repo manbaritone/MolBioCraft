@@ -44,12 +44,14 @@ import {
   reverseComplement,
   runLocalBlastSearch,
   runMultipleSequenceAlignment,
+  scanCrisprGuides,
   setCircularOrigin,
   simulateMolecularCloning,
   simulateRestrictionDigest,
   simulateSiteDirectedMutagenesis,
   testSavedPrimersOnSequence,
 } from '../core/bioEngine';
+import { invokeRustBioSync } from '../lib/rustBioEngine';
 import {
   exportToEMBL,
   exportToFasta,
@@ -736,5 +738,38 @@ describe('MolBioCraft Core Bioinformatics Engine & Hybrid Modules', () => {
 
     // Invalid non-MBC JSON is rejected cleanly
     expect(() => parseMbcWorkbench('{"hello":"world"}')).toThrow(/magic header/);
+  });
+
+  /**
+   * BG-01M7FF3B: the scan reader carries the seed length the engine sent, and none it did not send.
+   * The number is compared with the engine's own reply rather than with a literal, so this pins the
+   * reader, not a figure; and a refused scan, which counted no seed, reaches every surface with no
+   * length rather than with one filled in.
+   */
+  it('BG-01M7FF3B the scan report carries the seed length the engine sent, and none when it sent none', () => {
+    const seq = 'ATGCGTACCGGTTAGCATGCAGGTACCGATTGCAAGGTTCAGG'.repeat(4);
+    const raw = invokeRustBioSync<{ seedLengthBp?: unknown }>('scan_crispr_guides', {
+      seq,
+      nuclease: 'SpCas9 (NGG)',
+      maxResults: 5,
+      circular: false,
+    });
+    expect(Number.isInteger(raw.seedLengthBp) && (raw.seedLengthBp as number) > 0, 'the engine reports a seed length').toBe(true);
+    const { report } = scanCrisprGuides(seq, 'SpCas9 (NGG)', 5, false);
+    expect(report?.seedLengthBp, 'the reader keeps the number the engine sent').toBe(raw.seedLengthBp);
+
+    const refusedRaw = invokeRustBioSync<Record<string, unknown>>('scan_crispr_guides', {
+      seq,
+      nuclease: 'SpCas9 (NGG)',
+      maxResults: 5,
+      circular: false,
+      start1Based: 40,
+      end1Based: 10,
+    });
+    expect(typeof refusedRaw.intervalRefusal, 'an across-origin interval on a linear record is refused').toBe('string');
+    expect('seedLengthBp' in refusedRaw, 'a refused scan reports no seed length').toBe(false);
+    const refused = scanCrisprGuides(seq, 'SpCas9 (NGG)', 5, false, { start: 40, end: 10 }).report;
+    expect(refused?.intervalRefusal, 'the refusal still reaches the reader').toBeDefined();
+    expect(refused && 'seedLengthBp' in refused, 'and no length is filled in for it').toBe(false);
   });
 });
