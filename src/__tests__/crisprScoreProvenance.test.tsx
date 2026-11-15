@@ -1159,6 +1159,49 @@ describe('a red guard asks for a rebuild, and the record-only flag says it rebui
       nodeFs.rmSync(tree, { recursive: true, force: true });
     }
   });
+
+  // The two tests above hold words that must appear, so "and do not commit the engine", or the
+  // record-only flag offered in words rather than by name, passed them both. These hold the whole
+  // text a reader acts on (BG-01M7FQRM). Proved for piped output only: the notice comes from the
+  // script's unexported main(), run here the way CI runs it, never under a terminal.
+  it('BG-01M7FQRM AC1 the stale-engine message and the --sources-only notice are asserted verbatim', async () => {
+    expect(staleMessage(['crates/c/src/lib.rs (changed since the engine was built)'])).toBe(
+      'public/molbiocraft_wasm.wasm was built from inputs this checkout no longer holds, so every ' +
+        "number this suite reads from the engine is the old code's. 1 file(s) differ:\n" +
+        '  crates/c/src/lib.rs (changed since the engine was built)\n' +
+        'Run `npm run wasm:build` and commit the rebuilt engine with the change.'
+    );
+
+    const { execFileSync } = (await import(/* @vite-ignore */ nodeChildProcessSpec)) as {
+      execFileSync: (file: string, args: string[], options: { encoding: 'utf8'; cwd: string }) => string;
+    };
+    const tree = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FQRM-notice-`);
+    try {
+      for (const [file, text] of [
+        ['Cargo.toml', '[workspace]\nmembers = ["crates/c"]\n'],
+        ['Cargo.lock', 'version = 4\n'],
+        ['crates/c/Cargo.toml', '[package]\nname = "c"\n'],
+        ['crates/c/src/lib.rs', 'pub fn f() -> u8 { 1 }\n'],
+        ['public/molbiocraft_wasm.wasm', 'stale engine bytes\n'],
+        [SCRIPT, nodeFs.readFileSync(new URL(SCRIPT, REPO_ROOT), 'utf8')],
+      ] as const) {
+        nodeFs.mkdirSync(`${tree}/${file.slice(0, file.lastIndexOf('/') + 1) || '.'}`, { recursive: true });
+        nodeFs.writeFileSync(`${tree}/${file}`, text, 'utf8');
+      }
+      // The count and the path are the run's own: the inputs the walk finds in this tree, and the
+      // record's path as path.relative prints it on this platform.
+      const count = engineInputs(tree).files.length;
+      const record = process.platform === 'win32' ? SOURCE_DIGEST_SIDECAR.replaceAll('/', '\\') : SOURCE_DIGEST_SIDECAR;
+      const out = execFileSync(process.execPath, [`${tree}/${SCRIPT}`, '--sources-only'], { encoding: 'utf8', cwd: tree });
+      expect(out).toBe(
+        `[MolBioCraft WASM] Recorded ${count} engine inputs -> ${record} without rebuilding the engine. ` +
+          'This is for the CI staleness check; it does not bring public/molbiocraft_wasm.wasm up to date - ' +
+          'run `npm run wasm:build` and commit the result for that.\n'
+      );
+    } finally {
+      nodeFs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('the declared rank range comes from one unambiguous declaration (BG-01M7FAQZ)', () => {
