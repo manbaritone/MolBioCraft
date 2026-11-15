@@ -58,6 +58,7 @@ use molbiocraft_cloning::cloning_crispr::{
     audit_sequence_alerts_for_scan, find_crispr_guides_for_topology, resolve_nuclease_preset,
     scan_crispr_guides, scan_crispr_guides_in_interval, supported_nuclease_presets,
 };
+use molbiocraft_cloning::reaction_buffers::crispr_heuristic_rank_description;
 use molbiocraft_cloning::rebase_catalog::{
     scan_restriction_sites, RestrictionPositionLimit, RESTRICTION_POSITIONS_PER_ENZYME,
 };
@@ -1056,6 +1057,12 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         // length, site span and cut convention (US-01M7DV29 AC1): the list a chooser offers, read
         // from the engine so no surface can offer a nuclease the engine does not scan for.
         "crispr_nuclease_presets" => to_val(supported_nuclease_presets()),
+        // The rank's rule in the engine's own words (BG-01M7EYED): the one statement of it,
+        // `crispr_heuristic_rank_description()`, so no surface has to restate the weights to show
+        // them. It reads no payload key and scans nothing - the rule does not depend on a
+        // document, and the only way to ask for it used to be a whole `js-crispr-spcas9-scanner`
+        // pass over up to `GUIDE_SCAN_MAX_BP` bases for one constant sentence.
+        "crispr_heuristic_rank_description" => to_val(crispr_heuristic_rank_description()),
         "find_crispr_guides" => {
             let seq = str_arg(&payload, "seq", "");
             // A missing key is the documented default; a value that is not a preset is a caller
@@ -2411,5 +2418,88 @@ mod tests {
             assert_eq!(term(&reply), "stop_gained", "{named}");
             assert_eq!(reply["warnings"], json!([format!("Unknown genetic code {named}: translated with the Standard code (table 1).")]));
         }
+    }
+
+    /// Seeded pseudo-random DNA (LCG), so every run reads the same bases and no seed repeats
+    /// enough times to make the scan's cost something other than a pass over the bases.
+    fn seeded_dna(length: usize, seed: u32) -> String {
+        let mut x = seed;
+        (0..length)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ['A', 'C', 'G', 'T'][(x >> 30) as usize]
+            })
+            .collect()
+    }
+
+    /// BG-01M7EYED AC1: the engine states the CRISPR heuristic rank's rule without scanning
+    /// anything.
+    ///
+    /// The rule is a constant — `crispr_heuristic_rank_description()` — but the only way to ask the
+    /// engine for it was to run the `js-crispr-spcas9-scanner` macro and read
+    /// `scoreModels.onTargetScore` off the reply, which is a whole CRISPR scan of a document, up to
+    /// `GUIDE_SCAN_MAX_BP` bases, for one sentence that does not depend on the document.
+    ///
+    /// The wrong implementation this kills is the accessor that delegates to that macro: it returns
+    /// the right string, so a test comparing only the text would pass it. So the criterion is held
+    /// by the scan not happening — the op reads no payload key, and 200 statements of the rule
+    /// cost less than one scan of the same bases — rather than by the text it returns.
+    #[test]
+    fn bg_01m7eyed_ac1_the_rank_rule_is_stated_without_scanning_a_sequence() {
+        // The source of truth, read from the crate that scores with these weights.
+        let stated = molbiocraft_cloning::reaction_buffers::crispr_heuristic_rank_description();
+        assert!(stated.contains("Heuristic rank ("), "fixture: {stated}");
+
+        // It answers with no sequence in the payload at all: there is nothing here to scan.
+        let bare = dispatch_bio_rpc("crispr_heuristic_rank_description", json!({})).unwrap();
+        assert_eq!(bare.as_str(), Some(stated.as_str()));
+
+        // Sent a document, a sequence and a nuclease, it reads none of them: an accessor that
+        // scanned would have to take the bases to scan from the payload it was given.
+        let seq = seeded_dna(120_000, 0x15_7c01);
+        let asked = json!({
+            "doc": {
+                "id": "d", "name": "d", "accession": "", "description": "", "moleculeType": "DNA",
+                "topology": "linear", "sequence": seq, "features": [], "primers": [],
+                "history": [], "createdAt": "", "updatedAt": "", "folder": ""
+            },
+            "seq": seq, "nuclease": "SpCas9 (NGG)", "maxResults": 30, "circular": false
+        });
+        let (out, keys) =
+            keys_read_by(|| dispatch_bio_rpc("crispr_heuristic_rank_description", asked.clone()));
+        assert_eq!(out.unwrap().as_str(), Some(stated.as_str()));
+        assert!(
+            keys.is_empty(),
+            "stating the rule read payload keys, so it is reading a document: {keys:?}"
+        );
+
+        // And it costs no pass over those bases, even asked with them: 200 statements of the rule
+        // are cheaper than one scan, which no implementation that scans for the sentence is -
+        // including one that reads the payload without the dispatcher's own argument helpers, and
+        // so records no key above. The payloads are built before the clock starts, so what is
+        // measured is the answering and not the copying of the bases into each request.
+        let payloads: Vec<Value> = (0..200).map(|_| asked.clone()).collect();
+        let started = std::time::Instant::now();
+        for payload in payloads {
+            dispatch_bio_rpc("crispr_heuristic_rank_description", payload).unwrap();
+        }
+        let two_hundred_rules = started.elapsed();
+        let started = std::time::Instant::now();
+        let scan = dispatch_bio_rpc(
+            "scan_crispr_guides",
+            json!({ "seq": seq, "maxResults": 5, "circular": false }),
+        )
+        .unwrap();
+        let one_scan = started.elapsed();
+        assert_eq!(scan["scannedLengthBp"].as_u64(), Some(seq.len() as u64), "fixture: {scan}");
+        assert!(
+            scan["candidateCount"].as_u64().unwrap_or(0) > 0,
+            "fixture: the scan this is measured against found no guide: {scan}"
+        );
+        assert!(
+            two_hundred_rules * 4 < one_scan,
+            "200 statements of the rule took {two_hundred_rules:?} and one scan of the same {} bases took {one_scan:?}: the rule is being read by scanning",
+            seq.len()
+        );
     }
 }

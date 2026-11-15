@@ -401,6 +401,12 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     [doc.sequence, doc.topology, crisprNuclease, crisprScope, crisprRangeOffer.interval]
   );
   const crisprGuides = crisprResult.guides;
+  /**
+   * The rank's rule in the engine's own words (BG-01M7EYED): one sentence, asked for once, from the
+   * engine op that states it without scanning anything. It does not depend on the document, so no
+   * scan, interval or nuclease is in its dependencies — and reading it is not a scan of its own.
+   */
+  const crisprRankRule = useMemo(() => crisprHeuristicRuleText(), []);
   // The scan's own report (US-01M7DVH2): the envelope the scan op replies with, so these numbers are
   // there when it found no guide, and none of them is derived from the rows the tab holds. Absent
   // only where the engine sent no report; it is then said to be unavailable, never read as zeroes.
@@ -475,8 +481,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       document: doc,
       ...(chosenPreset ? { preset: chosenPreset } : {}),
       ...(crisprScan ? { scan: crisprScan } : {}),
-      // The rank's rule in the engine's own words, never restated here (BG-01M7E61C).
-      heuristicRule: crisprHeuristicRuleText(doc),
+      // The rank's rule in the engine's own words, never restated here (BG-01M7E61C) — the same
+      // sentence the callout shows, asked for once (BG-01M7EYED).
+      heuristicRule: crisprRankRule,
       scope: { selectedCount: selected.length, shownCount: shown.length },
     });
   };
@@ -1329,12 +1336,10 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                   : 'No base outside the interval was read.'}{' '}
               </>
             )}
-            <strong>Heuristic rank</strong>: a rule of thumb over the spacer and its PAM — from a base of 68, raised for GC content inside 40–65 % and lowered outside 30–75 %, raised for a G and lowered for a T at spacer position 20, raised for a C at position 16 and for an A or G at position 4, lowered for a TTTT run and for a PAM ending GGG, then held to 8 to 98. These are SpCas9 rules of thumb, read off a Cas12a spacer unchanged. It is not a measured or predicted cutting efficiency, and not a trained Doench model.{' '}
-            {/* What orders the list, and what the seed count counts, are both claims about a scan
-                that ran: an absent report says neither (US-01M7DVH2 AC5). */}
+            {/* What the seed count counts is a claim about a scan that ran: an absent report makes
+                it no claim at all (US-01M7DVH2 AC5). */}
             {crisprScan !== undefined && crisprIntervalRefusal === undefined && (
               <>
-                <strong>Order</strong>: this rank plus the seed-match score, not the rank alone.{' '}
                 <strong>Seed matches</strong>:{' '}
                 {crisprSearchedInterval !== undefined
                   ? `other exact copies of the 12-nt PAM-proximal seed inside the interval searched, ${crisprIntervalText}, on both strands, and no copy outside it — an interval specificity, not one over the whole ${bp(crisprSequenceBp ?? 0)} bases`
@@ -1345,6 +1350,19 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
               </>
             )}{' '}
             <strong>Genome-wide specificity</strong>: {GENOME_WIDE_NOT_EVALUATED}
+          </div>
+
+          {/* The rank's rule, its features and its range in the engine's own words, read from the
+              engine (BG-01M7EYED): no weight is written in this app at all, and the engine's
+              sentence is held to its scorer by `us_01m7dvvr_ac2` (workbench_table_and_lineage.rs),
+              so a weight change cannot leave this surface — the one a researcher reads — stating
+              the old rule with every test green.
+              It is a callout of its own because it is a constant statement about the rank and not
+              a claim about this scan: the sentence names what orders the list, and the callout
+              above claims nothing about a scan whose report the engine did not send
+              (US-01M7DVH2 AC5). */}
+          <div className="info-callout" data-crispr-rank-rule="">
+            {crisprRankRule} It is not a trained Doench model.
           </div>
 
           <ResultWarnings warnings={crisprScan?.warnings} label="CRISPR guide warnings" />

@@ -29,7 +29,7 @@
  */
 
 import type { SequenceDocument } from '../types/bio';
-import { executeBuiltinWorkflowMacroRust } from '../lib/rustBioEngine';
+import { crisprHeuristicRankDescriptionRust } from '../lib/rustBioEngine';
 import { intervalLength } from './activeInterval';
 import type { CrisprNucleasePreset, CrisprScanGuide, CrisprScanReport } from './bioEngine';
 import type { FigureTable } from './figureExport';
@@ -80,16 +80,18 @@ export function crisprSpacerAndPamCopyText(guide: CrisprCopyGuide): string {
 }
 
 /**
- * The engine's own description of the heuristic rank's rule and its range, read from the CRISPR
- * plugin that reports it so that no surface restates it (BG-01M7E61C, decision D0134). An engine
- * that does not state it leaves the export saying so, never restating the rule from memory.
+ * The engine's own description of the heuristic rank's rule and its range, read from the engine so
+ * that no surface restates it (BG-01M7E61C, decision D0134). An engine that does not state it
+ * leaves the reader saying so, never restating the rule from memory.
+ *
+ * It asks the engine for that one sentence and nothing else (BG-01M7EYED). It used to run the
+ * `js-crispr-spcas9-scanner` macro over a document and read `scoreModels.onTargetScore` off the
+ * reply — a whole CRISPR scan, of up to `GUIDE_SCAN_MAX_BP` bases, for a constant that does not
+ * depend on the document, which is why the one surface that showed the rule restated it instead.
  */
-export function crisprHeuristicRuleText(doc: SequenceDocument): string {
+export function crisprHeuristicRuleText(): string {
   try {
-    const reply = executeBuiltinWorkflowMacroRust('js-crispr-spcas9-scanner', doc) as {
-      scoreModels?: { onTargetScore?: unknown };
-    };
-    const stated = reply?.scoreModels?.onTargetScore;
+    const stated: unknown = crisprHeuristicRankDescriptionRust();
     if (typeof stated === 'string' && stated.trim()) return stated.replace(/\s+/g, ' ').trim();
     return 'The engine did not state the rule behind this rank, so it is not stated here.';
   } catch (e) {

@@ -878,6 +878,15 @@ export function analyzeGibsonOverlapJunctionRust(
   );
 }
 
+/**
+ * The engine's own words for the CRISPR heuristic rank's rule and the range it reports
+ * (`crispr_heuristic_rank_description`, BG-01M7EYED): one sentence, with no document and no guide
+ * scan behind it, so a surface can state the rule the engine runs instead of restating it.
+ */
+export function crisprHeuristicRankDescriptionRust(): string {
+  return invokeRustBioSync<string>('crispr_heuristic_rank_description', {});
+}
+
 export function executeBuiltinWorkflowMacroRust(
   macroId: string,
   doc: SequenceDocument

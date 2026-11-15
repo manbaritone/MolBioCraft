@@ -43,7 +43,11 @@ import { PrimerAndPCRStudio } from '../components/PrimerAndPCRStudio';
 import { crisprNucleasePresets } from '../core/bioEngine';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import { resolveMenuNodeFunctionDescription } from '../data/menuFunctionDescriptions';
-import { executeBuiltinWorkflowMacroRust, getBuiltinWorkflowMacrosRust } from '../lib/rustBioEngine';
+import {
+  crisprHeuristicRankDescriptionRust,
+  executeBuiltinWorkflowMacroRust,
+  getBuiltinWorkflowMacrosRust,
+} from '../lib/rustBioEngine';
 import type { SequenceDocument } from '../types/bio';
 
 // Same dynamic-import pattern as nativeMenuContract.test.ts (no @types/node in the project).
@@ -114,6 +118,13 @@ function guideTable(html: string): { headers: string[]; rows: string[][] } {
 /** The info callout above the guide table, as a reader reads it. */
 const callout = (html: string) => text(/<div class="info-callout">([\s\S]*?)<\/div>/.exec(html)?.[1] ?? '');
 
+/**
+ * The rank's rule as a reader reads it: its own callout beside the guide table, which holds the
+ * engine's own sentence and nothing this component wrote about the scan (BG-01M7EYED).
+ */
+const rankRule = (html: string) =>
+  text(/<div[^>]*data-crispr-rank-rule[^>]*>([\s\S]*?)<\/div>/.exec(html)?.[1] ?? '');
+
 /** The labels of the tab: buttons, option labels, strong labels and headers. */
 const labelsOf = (html: string) => [
   ...[...html.matchAll(/<(button|option|strong|th|h3|label)[^>]*>([\s\S]*?)<\/\1>/g)].map((m) => text(m[2])),
@@ -181,10 +192,13 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
     // The heuristic rank names the rule, every feature it reads, its real bounds, what orders the
     // list and that these SpCas9 rules of thumb are read off a Cas12a spacer unchanged. A rank
     // described as three features and a 0–100 range is not the rule the engine runs.
+    // It is read from the rank's own callout, and the window bounds carry the engine's own dashes:
+    // that callout states the engine's sentence itself, not a retyped copy of it (BG-01M7EYED).
+    const rule = rankRule(html);
     for (const phrase of [
       'GC content',
-      '40–65 %',
-      '30–75 %',
+      '40-65 %',
+      '30-75 %',
       'position 20',
       'position 16',
       'position 4',
@@ -194,9 +208,9 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
       'seed-match',
       'Cas12a',
     ]) {
-      expect(shown, `the rank callout does not name ${phrase}`).toContain(phrase);
+      expect(rule, `the rank callout does not name ${phrase}`).toContain(phrase);
     }
-    expect(shown).not.toContain('0–100');
+    expect(`${rule} ${shown}`).not.toContain('0–100');
     // The seed count names the seed length, the range and the strands.
     expect(shown).toContain(
       'other exact copies of the 12-nt PAM-proximal seed across all 3,000 bases of this linear sequence, on both strands'
@@ -278,11 +292,77 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
       expect(Number(cell)).toBeGreaterThanOrEqual(lo);
       expect(Number(cell)).toBeLessThanOrEqual(hi);
     }
-    // And the callout beside the table says the rank is held to the same range, with no "/ 100"
-    // anywhere in the guide table a reader could read it against.
-    expect(callout(html)).toContain(`held to ${lo} to ${hi}`);
+    // And the rank's own callout beside the table says it is held to the same range, with no
+    // "/ 100" anywhere in the guide table a reader could read it against.
+    expect(rankRule(html)).toContain(`held to ${lo} to ${hi}`);
     const table = html.slice(html.lastIndexOf('<table', html.indexOf('<span>Guide Name</span>')));
     expect(text(table.slice(0, table.indexOf('</table>')))).not.toMatch(/\/\s*100/);
+  }, 55_000);
+
+  /**
+   * BG-01M7EYED AC3: the rule a researcher reads beside the guide table is the engine's own
+   * sentence, read from the engine, not a copy of it typed here.
+   *
+   * The callout used to restate the whole rule, weights and all, as a TSX literal - the third
+   * statement of one rule. `us_01m7dvvr_ac2_the_rank_the_engine_reports_is_the_rule_its_description_names`
+   * (workbench_table_and_lineage.rs) re-scores every guide from the engine description's own prose,
+   * so the engine's two statements cannot drift; nothing held this literal to either of them. The
+   * drift that permitted is the second step of a legitimate weight change - change the scorer, do
+   * what that Rust test asks and update the description - which left this callout, the surface a
+   * researcher actually reads, as the only wrong one with every test in the repo green.
+   *
+   * Wrong implementations this kills: a callout that states the rule from a literal of its own
+   * (which is not the engine's sentence word for word, so this fails the moment either is edited
+   * without the other); and the failure mode that reading from the engine introduces, which a
+   * literal did not have - an accessor returning an empty or an error string, leaving the callout
+   * silent about the rule while every "does not say what it must not" check still passes.
+   */
+  it('BG-01M7EYED AC3 the callout states the rule the engine runs, read from the engine', () => {
+    // The engine's own words, from the dedicated accessor that states them without scanning.
+    const stated = crisprHeuristicRankDescriptionRust();
+    const [lo, hi] = engineRankRange();
+    // Each feature the scorer reads, and the range the engine reports. An empty or error string
+    // names none of them, so this is also what makes a silent callout a failure below.
+    const features = [
+      'Heuristic rank',
+      'a rule of thumb over the spacer and its PAM',
+      'GC content',
+      'position 20',
+      'position 16',
+      'position 4',
+      'TTTT',
+      'GGG',
+      'seed-match',
+      'Cas12a',
+      `${lo} to ${hi}`,
+    ];
+    for (const phrase of features) {
+      expect(stated, `the engine's own rank description does not name ${phrase}`).toContain(phrase);
+    }
+
+    const html = crisprTab();
+    const rule = rankRule(html);
+    // The reader reads the engine's sentence itself, word for word.
+    expect(
+      rule,
+      `the callout does not state the engine's rule.\n  engine: ${stated}\n  callout: ${rule}`
+    ).toContain(stated);
+    // And every feature and the range are there in the render, not only in the accessor's reply.
+    for (const phrase of features) {
+      expect(rule, `the rank callout does not name ${phrase}`).toContain(phrase);
+    }
+
+    // What the callouts must never call the rank (US-01M7DVVR AC3, AC5): no sentence names a
+    // measured quality except to deny it, the rule claims no activity and no specificity, and
+    // genome-wide specificity is still the one thing reported as not evaluated.
+    const read = `${rule} ${callout(html)}`;
+    for (const sentence of read.split(/(?<=[.!?])\s+/).filter((s) => /efficien|activity/i.test(s))) {
+      expect(sentence, 'a heuristic is never called efficiency or activity').toMatch(
+        /not a measured or predicted cutting efficiency/
+      );
+    }
+    expect(stated, 'the rank is not an activity and not a specificity').not.toMatch(/activity|specificit/i);
+    expect(read).toContain('Genome-wide specificity : Not evaluated');
   }, 55_000);
 
   it('US-01M7DVVR AC5 no CRISPR surface calls a heuristic number efficiency, activity or genome-wide specificity, and an uncomputed number is unavailable, never 0 or 100', () => {
