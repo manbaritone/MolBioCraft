@@ -363,6 +363,9 @@ export interface SequenceFeature {
   cleavageSite?: string;
 }
 
+/** How the built-in catalogue spells a host methylation an enzyme is sensitive to. */
+export type MethylationSensitivity = 'Dam' | 'Dcm' | 'CpG' | 'EcoKI';
+
 export interface RestrictionEnzyme {
   name: string;
   recognitionSeq: string; // e.g., GAATTC or GGTCTC
@@ -370,7 +373,7 @@ export interface RestrictionEnzyme {
   cutRev: number;         // 0-indexed offset from start of recognitionSeq on bottom strand
   isTypeIIS?: boolean;
   suppliers: string[];    // e.g. ['NEB', 'Thermo', 'Takara']
-  methylationSensitivity: ('Dam' | 'Dcm' | 'CpG' | 'EcoKI')[];
+  methylationSensitivity: MethylationSensitivity[];
   bufferNEB: string;
   tempC: number;
 }
@@ -506,6 +509,44 @@ export interface DatabasePrimer {
   provenance: string;
   /** ISO 8601 time the record was moved to the trash; absent while it is active. */
   trashedAt?: string;
+}
+
+/**
+ * A restriction enzyme the user defined, kept in their enzyme database (US-01M7DVMJ), stored by
+ * `src/core/enzymeDatabase.ts`. It is never a built-in catalogue entry: the store holds custom
+ * definitions only. Its motif and offset fields are named as `RestrictionEnzyme`'s are and
+ * measured the same way.
+ */
+export interface CustomEnzymeDefinition {
+  /** Stable for the definition's life: export and import keep it. The store mints `custom:` and a UUID. */
+  id: string;
+  /** Every stored definition is custom. */
+  source: 'custom';
+  /** The display name, trimmed. The store adds one equal to a built-in's only once the user confirms it (`sharesBuiltInName`). */
+  name: string;
+  /**
+   * The IUPAC recognition motif 5' -> 3' on the top strand, uppercase, without whitespace. A
+   * definition has no strand field: a site read on the bottom strand is entered as its reverse
+   * complement.
+   */
+  recognitionSeq: string;
+  /** Top-strand cut, a whole number of bases from the motif's first base; may lie outside the motif, either side. */
+  cutFwd: number;
+  /** Bottom-strand cut, measured as `cutFwd` is. */
+  cutRev: number;
+  isTypeIIS: boolean;
+  /** Spelled as the built-in catalogue spells it; empty unless set. */
+  methylationSensitivity: MethylationSensitivity[];
+  /** The catalogue name of the built-in this definition was cloned from; absent when it was not. */
+  clonedFrom?: string;
+  /** The built-in catalogue name the user confirmed this definition's name may equal; absent otherwise. */
+  sharesBuiltInName?: string;
+  /** Free text, for example a REBASE or supplier reference; '' for none. */
+  provenance: string;
+  notes: string;
+  /** ISO 8601 times. */
+  createdAt: string;
+  modifiedAt: string;
 }
 
 export interface HistoryTreeNode {
