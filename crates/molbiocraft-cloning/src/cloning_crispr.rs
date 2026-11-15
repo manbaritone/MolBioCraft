@@ -1658,80 +1658,83 @@ mod seed_length_report_tests {
         assert_eq!(refused.seed_length_bp, None, "a refused scan reports no seed length");
     }
 
-    /// `source` with every comment, string and character literal replaced by spaces: the same length,
-    /// the same lines and the same byte offsets, so a brace or an identifier written inside one is
-    /// not read as code and a span found here names the same bytes of the original.
+    /// `source` with every comment, string and character literal replaced by spaces: the same
+    /// length, the same lines and the same byte offsets, so a brace or an identifier written inside
+    /// one is not read as code and a span found here names the same bytes of the original.
+    ///
+    /// Every prefix Rust gives a literal is read, not just the bare quote: `b"..."`, `r"..."`,
+    /// `br"..."`, `r#"..."#`, `br#"..."#` and `b'.'`. A raw string ends at its own closing quote
+    /// and knows no escapes, so `br"a\"` ends where it ends; reading it as an ordinary string
+    /// would run the blanking to the next quote in the file and hide the code in between.
     fn code_only(source: &str) -> String {
         let b = source.as_bytes();
         let ident = |c: Option<&u8>| c.is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_');
+        let before = |at: usize| ident(at.checked_sub(1).and_then(|p| b.get(p)));
         let mut out = b.to_vec();
         let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
-            for k in from..to {
+            for k in from..to.min(out.len()) {
                 if out[k] != b'\n' {
                     out[k] = b' ';
                 }
             }
         };
+        /// A literal starting at `i`: its opening quote, whether it is raw, and its `#` count.
+        /// `None` where `i` starts no literal.
+        fn literal_at(b: &[u8], i: usize, prefixed_ok: bool) -> Option<(usize, bool, usize)> {
+            let mut p = i;
+            if b.get(p) == Some(&b'b') {
+                p += 1;
+            }
+            let raw = b.get(p) == Some(&b'r');
+            if raw {
+                p += 1;
+            }
+            let hashes = if raw { b[p..].iter().take_while(|&&c| c == b'#').count() } else { 0 };
+            let quote = p + hashes;
+            // A prefix (`b`, `r`, `br`, and any `#`s) only counts where it is a token of its own,
+            // so the `br` of `fibr"` is no prefix.
+            if b.get(quote) == Some(&b'"') && (quote == i || prefixed_ok) {
+                Some((quote, raw, hashes))
+            } else {
+                None
+            }
+        }
         let mut i = 0usize;
         while i < b.len() {
-            match (b[i], b.get(i + 1)) {
-                (b'/', Some(b'/')) => {
-                    let end = source[i..].find('\n').map_or(b.len(), |o| i + o);
-                    blank(&mut out, i, end);
-                    i = end;
-                }
-                (b'/', Some(b'*')) => {
-                    // Rust block comments nest, so depth is counted rather than the first `*/` taken.
-                    let (mut depth, mut j) = (1usize, i + 2);
-                    while j < b.len() && depth > 0 {
-                        if b[j] == b'/' && b.get(j + 1) == Some(&b'*') {
-                            depth += 1;
-                            j += 2;
-                        } else if b[j] == b'*' && b.get(j + 1) == Some(&b'/') {
-                            depth -= 1;
-                            j += 2;
-                        } else {
-                            j += 1;
-                        }
-                    }
-                    assert_eq!(depth, 0, "an unterminated block comment at byte {i}");
-                    blank(&mut out, i, j);
-                    i = j;
-                }
-                // A raw string: `r`, any number of `#`, a quote, and the same `#`s after its close.
-                (b'r', _) if !ident(i.checked_sub(1).and_then(|p| b.get(p))) => {
-                    let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
-                    if b.get(i + 1 + hashes) != Some(&b'"') {
-                        i += 1;
-                        continue;
-                    }
-                    let close = format!("\"{}", "#".repeat(hashes));
-                    let from = i + 2 + hashes;
-                    let end = source[from..].find(&close).map_or(b.len(), |o| from + o + close.len());
-                    blank(&mut out, i, end);
-                    i = end;
-                }
-                // A character or byte literal, braces and quotes inside it included. A lifetime
-                // (`'a`, with no closing quote) is left as the code it is.
-                (b'\'', _) => {
-                    let end = if b.get(i + 1) == Some(&b'\\') {
-                        source[i + 3..].find('\'').map(|o| i + 3 + o + 1)
+            // A line comment, to the end of its line.
+            if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+                let end = source[i..].find('\n').map_or(b.len(), |o| i + o);
+                blank(&mut out, i, end);
+                i = end;
+                continue;
+            }
+            // A block comment; Rust nests them, so depth is counted rather than the first `*/` taken.
+            if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                let (mut depth, mut j) = (1usize, i + 2);
+                while j < b.len() && depth > 0 {
+                    if b[j] == b'/' && b.get(j + 1) == Some(&b'*') {
+                        depth += 1;
+                        j += 2;
+                    } else if b[j] == b'*' && b.get(j + 1) == Some(&b'/') {
+                        depth -= 1;
+                        j += 2;
                     } else {
-                        source[i + 1..].chars().next().and_then(|c| {
-                            let after = i + 1 + c.len_utf8();
-                            (b.get(after) == Some(&b'\'')).then_some(after + 1)
-                        })
-                    };
-                    match end {
-                        Some(e) => {
-                            blank(&mut out, i, e);
-                            i = e;
-                        }
-                        None => i += 1,
+                        j += 1;
                     }
                 }
-                (b'"', _) => {
-                    let mut j = i + 1;
+                assert_eq!(depth, 0, "an unterminated block comment at byte {i}");
+                blank(&mut out, i, j);
+                i = j;
+                continue;
+            }
+            // A string literal under any of its prefixes.
+            if let Some((quote, raw, hashes)) = literal_at(b, i, !before(i)) {
+                let end = if raw {
+                    // A raw string closes at its quote and the same number of `#`s, with no escapes.
+                    let close = format!("\"{}", "#".repeat(hashes));
+                    source[quote + 1..].find(&close).map_or(b.len(), |o| quote + 1 + o + close.len())
+                } else {
+                    let mut j = quote + 1;
                     while j < b.len() {
                         if b[j] == b'\\' {
                             j += 2;
@@ -1742,25 +1745,108 @@ mod seed_length_report_tests {
                             break;
                         }
                     }
-                    blank(&mut out, i, j);
-                    i = j;
-                }
-                _ => i += 1,
+                    j
+                };
+                blank(&mut out, i, end);
+                i = end;
+                continue;
             }
+            // A character or byte-character literal, braces and quotes inside it included. A
+            // lifetime (`'a`, with no closing quote) is left as the code it is.
+            let at_char = if b[i] == b'\'' {
+                Some(i)
+            } else if b[i] == b'b' && b.get(i + 1) == Some(&b'\'') && !before(i) {
+                Some(i + 1)
+            } else {
+                None
+            };
+            if let Some(quote) = at_char {
+                let end = if b.get(quote + 1) == Some(&b'\\') {
+                    source[quote + 3..].find('\'').map(|o| quote + 3 + o + 1)
+                } else {
+                    source[quote + 1..].chars().next().and_then(|c| {
+                        let after = quote + 1 + c.len_utf8();
+                        (b.get(after) == Some(&b'\'')).then_some(after + 1)
+                    })
+                };
+                if let Some(e) = end {
+                    blank(&mut out, i, e);
+                    i = e;
+                    continue;
+                }
+            }
+            i += 1;
         }
         String::from_utf8(out).expect("blanking replaces whole characters with spaces")
     }
 
-    /// The byte span of every `#[cfg(test)]` module in `code` (comments and strings already
-    /// blanked), from its attribute to the `}` that closes its block, matched by counting braces -
-    /// so the shipped code is this file minus these spans, whether it is written above them,
-    /// between them or below them all.
+    /// The byte span of every `#[cfg(test)]` MODULE in `code` (comments and strings already
+    /// blanked): from its attribute to the `}` that closes the module's own block, matched by
+    /// counting braces - so the shipped code is this file minus these spans, whether it is written
+    /// above them, between them or below them all.
+    ///
+    /// A span opens only where the attribute gates `mod <name> {` - `pub`, `pub(..)` and further
+    /// attributes in between included. A `#[cfg(test)]` on anything else - a `const`, a `static`, a
+    /// `use`, a bare `fn`, a `mod name;` with no block here - spans NOTHING, so its own item is
+    /// read as shipped code: a false refusal at worst, never a blind spot. Taking the next `{`
+    /// instead would let a blockless test-only item swallow every line up to the end of whatever
+    /// block came next, which is how a setter at the end of the file hid from this reader.
     fn test_module_spans(code: &str) -> Vec<(usize, usize)> {
+        const GATE: &str = "#[cfg(test)]";
+        let skip_space = |at: usize| at + (code[at..].len() - code[at..].trim_start().len());
         let mut spans: Vec<(usize, usize)> = Vec::new();
         let mut from = 0usize;
-        while let Some(off) = code[from..].find("#[cfg(test)]") {
+        while let Some(off) = code[from..].find(GATE) {
             let at = from + off;
-            let open = at + code[at..].find('{').expect("a #[cfg(test)] module opens a block");
+            from = at + GATE.len();
+            // Whatever else the item carries between the gate and its own keyword: more
+            // attributes, then a visibility.
+            let mut rest = skip_space(from);
+            while code[rest..].starts_with("#[") {
+                let mut depth = 0usize;
+                let Some(end) = code[rest..].char_indices().find_map(|(k, c)| {
+                    match c {
+                        '[' => depth += 1,
+                        ']' => depth -= 1,
+                        _ => {}
+                    }
+                    (c == ']' && depth == 0).then_some(rest + k + 1)
+                }) else {
+                    break;
+                };
+                rest = skip_space(end);
+            }
+            if let Some(tail) = code[rest..].strip_prefix("pub") {
+                let mut after = rest + "pub".len();
+                if tail.starts_with('(') {
+                    match code[after..].find(')') {
+                        Some(close) => after += close + 1,
+                        None => continue,
+                    }
+                } else if !tail.starts_with(char::is_whitespace) {
+                    // `pub` is not a token here (`pubescent`), so this is not a module either.
+                    continue;
+                }
+                rest = skip_space(after);
+            }
+            // Only a module has a block this reader may skip.
+            let Some(tail) = code[rest..].strip_prefix("mod") else {
+                continue;
+            };
+            if !tail.starts_with(char::is_whitespace) {
+                continue;
+            }
+            let name_at = skip_space(rest + "mod".len());
+            let name = &code[name_at..];
+            if !name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+                continue;
+            }
+            let name_len = name.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(name.len());
+            let open = skip_space(name_at + name_len);
+            if !code[open..].starts_with('{') {
+                // `mod name;` - the test code is in another file, and none of this one is skipped.
+                continue;
+            }
             let mut depth = 0usize;
             let close = code[open..]
                 .char_indices()
@@ -1779,37 +1865,18 @@ mod seed_length_report_tests {
         spans
     }
 
-    /// BG-01M7FVBN AC1: no second source of the reported seed length anywhere in the shipped
-    /// scanner - the whole file minus every `#[cfg(test)]` module span, so code below the tests is
-    /// read too. Every occurrence of the identifier outside those spans and outside comments and
-    /// strings is the struct's declaration, `Some(SEED_LEN)` or `None`, refused by line otherwise.
-    ///
-    /// Wrong implementations this kills: a bound variable with field shorthand (`let
-    /// seed_length_bp = Some(12);` then `seed_length_bp,`), which the line-start scan this replaces
-    /// passed; a hand-written `Default` or base value carrying a literal into a struct update; an
-    /// assignment after construction (`scan.seed_length_bp = Some(12);`); and any of those placed
-    /// after the test modules, which a prefix-only scan never reads.
-    ///
-    /// What it does not kill, stated: a literal 12 in the counting path itself, which agrees with
-    /// `SEED_LEN` today and is caught by the length-parametric fixtures above and below the day
-    /// `SEED_LEN` changes.
-    #[test]
-    fn seed_length_report_has_no_second_source() {
-        let source = include_str!("cloning_crispr.rs");
+    /// Every line of `source` outside its `#[cfg(test)]` module spans that mentions the
+    /// `seed_length_bp` identifier as code, as (line number, line), with the count of the mentions
+    /// inside those spans beside it. The reader the criterion is about, run here over any source so
+    /// a planted shape is checked without editing the file this crate compiles.
+    fn seed_length_mentions(source: &str) -> (Vec<(usize, String)>, usize) {
+        let field = "seed_length_bp";
         let code = code_only(source);
         assert_eq!(code.len(), source.len(), "blanking keeps every byte offset");
         let spans = test_module_spans(&code);
-        assert_eq!(
-            spans.len(),
-            code.matches("#[cfg(test)]").count(),
-            "every test module in this file is spanned"
-        );
-        assert!(spans.len() >= 3, "this file has three test modules, and all of them are spanned");
-        let field = "seed_length_bp";
-        let word = |c: Option<&u8>| c.is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_');
         let bytes = code.as_bytes();
-        let mut outside: Vec<(usize, String)> = Vec::new();
-        let mut inside = 0usize;
+        let word = |c: Option<&u8>| c.is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_');
+        let (mut outside, mut inside) = (Vec::new(), 0usize);
         for (at, _) in code.match_indices(field) {
             if word(at.checked_sub(1).and_then(|p| bytes.get(p))) || word(bytes.get(at + field.len())) {
                 continue;
@@ -1820,14 +1887,56 @@ mod seed_length_report_tests {
             }
             let start = source[..at].rfind('\n').map_or(0, |n| n + 1);
             let end = source[at..].find('\n').map_or(source.len(), |o| at + o);
-            let line = source[..start].matches('\n').count() + 1;
-            outside.push((line, source[start..end].trim().to_string()));
+            outside.push((source[..start].matches('\n').count() + 1, source[start..end].trim().to_string()));
         }
+        (outside, inside)
+    }
+
+    /// Whether a line that mentions the field is one of the three the shipped scanner may hold: the
+    /// struct's declaration, the scanner's own constant, or none at all.
+    fn states_the_scanners_own(line: &str) -> bool {
+        matches!(
+            line.trim_end_matches(',').trim(),
+            "pub seed_length_bp: Option<usize>" | "seed_length_bp: Some(SEED_LEN)" | "seed_length_bp: None"
+        )
+    }
+
+    /// BG-01M7FVBN AC1: no second source of the reported seed length anywhere in the shipped
+    /// scanner - the whole file minus every `#[cfg(test)]` module span, so code below the tests is
+    /// read too. Every occurrence of the identifier outside those spans and outside comments,
+    /// strings and character literals is the struct's declaration, `Some(SEED_LEN)` or `None`,
+    /// refused by line otherwise.
+    ///
+    /// Wrong implementations this kills: a bound variable with field shorthand (`let
+    /// seed_length_bp = Some(12);` then `seed_length_bp,`), which the line-start scan this replaces
+    /// passed; a hand-written `Default` or base value carrying a literal into a struct update; an
+    /// assignment after construction (`scan.seed_length_bp = Some(12);`); and any of those placed
+    /// after the test modules, which a prefix-only scan never reads.
+    ///
+    /// And the two blind spots this reader had at review (BG-01M7FVBN round 1), each pinned below
+    /// over a copy of this file rather than by editing it: a `#[cfg(test)]` on a BLOCKLESS item (a
+    /// `const`, a `static`, a `use`) made the span run to the close of the next block and swallow
+    /// the shipped code in it; and a byte raw string (`br"a\"`), read as an ordinary string, ran
+    /// the blanking past its close and hid the code after it.
+    ///
+    /// What it does not kill, stated: a literal 12 in the counting path itself, which agrees with
+    /// `SEED_LEN` today and is caught by the length-parametric fixtures above and below the day
+    /// `SEED_LEN` changes.
+    #[test]
+    fn seed_length_report_has_no_second_source() {
+        let source = include_str!("cloning_crispr.rs");
+        let code = code_only(source);
+        let spans = test_module_spans(&code);
+        assert_eq!(
+            spans.len(),
+            code.matches("#[cfg(test)]").count(),
+            "every test module in this file is spanned"
+        );
+        assert!(spans.len() >= 3, "this file has three test modules, and all of them are spanned");
+
+        let (outside, inside) = seed_length_mentions(source);
         assert!(inside > 0, "the test modules of this file mention the field, so the spans are read");
-        let shapes: Vec<&str> = outside
-            .iter()
-            .map(|(_, line)| line.trim_end_matches(',').trim())
-            .collect();
+        let shapes: Vec<&str> = outside.iter().map(|(_, line)| line.trim_end_matches(',').trim()).collect();
         assert_eq!(
             shapes.iter().filter(|l| **l == "pub seed_length_bp: Option<usize>").count(),
             1,
@@ -1843,12 +1952,55 @@ mod seed_length_report_tests {
         );
         for (line, text) in &outside {
             assert!(
-                text.trim_end_matches(',').trim() == "pub seed_length_bp: Option<usize>"
-                    || text.trim_end_matches(',').trim() == "seed_length_bp: Some(SEED_LEN)"
-                    || text.trim_end_matches(',').trim() == "seed_length_bp: None",
+                states_the_scanners_own(text),
                 "the shipped scanner states a seed length from a second source at line {line}: `{text}`"
             );
         }
+
+        // The pins: a setter this reader must refuse, written after a shape that used to hide it.
+        // Each is a copy of this file with the shape appended, read by the same functions, so the
+        // file this crate compiles is never edited and the control below is the file itself.
+        let setter = "pub fn reseed(scan: &mut CrisprGuideScan) {\n    scan.seed_length_bp = Some(12);\n}\n";
+        let hiding_shapes = [
+            ("a #[cfg(test)] const with no block", "#[cfg(test)]\nconst PROBE_ONLY: usize = 0;\n"),
+            ("a #[cfg(test)] static with no block", "#[cfg(test)]\nstatic PROBE_ONLY: usize = 0;\n"),
+            (
+                "a #[cfg(test)] use with no block",
+                "#[cfg(test)]\nuse std::collections::HashMap as _M;\n",
+            ),
+            ("a byte raw string ending in a backslash", "pub const RAW: &[u8] = br\"a\\\";\n"),
+            // And the shapes a module may wear, so the pins do not pass by refusing every gate:
+            // these must still be skipped, which the control below reads as agreement.
+            (
+                "a #[cfg(test)] mod behind another attribute",
+                "#[cfg(test)]\n#[allow(dead_code)]\npub(crate) mod hidden_tests {\n    pub fn s(scan: &mut CrisprGuideScan) {\n        scan.seed_length_bp = Some(12);\n    }\n}\n",
+            ),
+        ];
+        for (what, shape) in hiding_shapes {
+            let planted = format!("{source}\n{shape}{setter}");
+            let (planted_outside, _) = seed_length_mentions(&planted);
+            let refused: Vec<&(usize, String)> = planted_outside.iter().filter(|(_, l)| !states_the_scanners_own(l)).collect();
+            assert_eq!(
+                refused.len(),
+                1,
+                "a setter written after {what} is refused, once: {refused:?}"
+            );
+            assert!(
+                refused[0].1.contains("scan.seed_length_bp = Some(12);"),
+                "and it is the planted setter that is refused: {refused:?}"
+            );
+        }
+        // The control: the same reader over the file as it stands refuses nothing, so the pins
+        // above fail on the shape they plant rather than on anything this file already holds.
+        assert!(
+            outside.iter().all(|(_, line)| states_the_scanners_own(line)),
+            "the file this crate compiles states its seed length from one source: {outside:?}"
+        );
+        // And the last shape's module was skipped rather than refused: the setter inside it is
+        // test code, so a reader that spanned nothing at all would have refused that line too.
+        let gated = format!("{source}\n{}", hiding_shapes[4].1);
+        let (_, gated_inside) = seed_length_mentions(&gated);
+        assert_eq!(gated_inside, inside + 1, "a #[cfg(test)] mod behind another attribute is still skipped");
     }
 
     /// BG-01M7FVBN AC1: Cas12a counts the seed it reports, from its own PAM-proximal end.
