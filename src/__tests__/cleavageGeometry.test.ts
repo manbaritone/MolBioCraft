@@ -14,10 +14,10 @@ import { describe, expect, it } from 'vitest';
 import { CircularPlasmidMap } from '../components/CircularPlasmidMap';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import { executeBioPipelineRust } from '../lib/rustBioEngine';
-import { findRestrictionCutSites } from '../core/bioEngine';
+import { findRestrictionCutSites, scanRestrictionSites } from '../core/bioEngine';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { cleavagePicture, cutSiteDisplayPosition, type CleavagePicture } from '../core/restrictionDisplay';
-import type { RestrictionCutSite, SequenceDocument } from '../types/bio';
+import type { RestrictionCutSite, RestrictionEnzyme, SequenceDocument } from '../types/bio';
 
 /** The engine's one site of `enzyme` on `seq`. */
 function engineSite(seq: string, topology: 'circular' | 'linear', enzyme: string): RestrictionCutSite {
@@ -424,8 +424,6 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
     let checked = 0;
     let shortCircles = 0;
     for (const { seq, site } of records) {
-      // Within the stated reach: the cut nearer the motif lies less than one molecule length from it.
-      if (Math.min(site.enzyme.cutFwd, site.enzyme.cutRev) >= seq.length) continue;
       expectEngineAgreement(seq, site, true);
       checked++;
       if (site.enzyme.isTypeIIS && Math.max(site.enzyme.cutFwd, site.enzyme.cutRev) >= seq.length) shortCircles++;
@@ -453,7 +451,7 @@ describe('US-01M7CC6K AC4 origin wrap on a circular molecule, unavailable flank 
     expect(() => cleavagePicture(site, '', false)).toThrow(/EcoRI-5-1 has no sequence/);
   });
 
-  it('rests on every catalogue enzyme cutting at or after its motif start on the recognition strand', () => {
+  it('every catalogue enzyme cuts at or after its motif start on the recognition strand (a custom one need not: US-01M7DVY6 AC6)', () => {
     for (const e of REBASE_ENZYMES) {
       expect(e.cutFwd, e.name).toBeGreaterThanOrEqual(0);
       expect(e.cutRev, e.name).toBeGreaterThanOrEqual(0);
@@ -643,5 +641,112 @@ describe('BG-01M7CQV7 the pipeline restriction audit labels a cut as the site li
     }
     expect(zoneLabel(`GATC${pad}`, 'linear', 'Sau3AI')).toBe('Sau3AI @ 0');
     expect(zoneLabel(`${pad}CATG`, 'linear', 'NlaIII')).toBe(`NlaIII @ ${pad.length + 4}`);
+  });
+});
+
+/**
+ * US-01M7DVY6 AC6: a custom definition's sites, read from the engine through the scan the UI calls,
+ * drawn as the engine cuts them. Every expected strand is written out by hand from the definition's
+ * signed offsets; on a circle every rotation must draw the same picture, so no turn the origin
+ * happens to fall on decides where a cut is drawn.
+ */
+describe('US-01M7DVY6 AC6 a custom site is drawn as the engine cuts it, negative and mixed-sign offsets included', () => {
+  const custom = (name: string, recognitionSeq: string, cutFwd: number, cutRev: number): RestrictionEnzyme => ({
+    name, recognitionSeq, cutFwd, cutRev, isTypeIIS: false, suppliers: [], methylationSensitivity: [], bufferNEB: '', tempC: 37,
+  });
+  // CTTGAG(-5/-3): both cuts before the motif on its own strand. GTCCAG(-2/3): one before, one after.
+  const NEG = custom('MyNeg', 'CTTGAG', -5, -3);
+  const MIX = custom('MyMix', 'GTCCAG', -2, 3);
+  const rotate = (s: string, r: number) => s.slice(r) + s.slice(0, r);
+
+  /** The scan's one site of `enzyme` on `seq`, as the UI reads it (`scan_restriction_sites` with `customEnzymes`). */
+  function customSite(seq: string, topology: 'circular' | 'linear', enzyme: RestrictionEnzyme): RestrictionCutSite {
+    const scan = scanRestrictionSites(seq, topology, [enzyme]);
+    expect(scan.siteCounts).toEqual([{ enzyme: enzyme.name, sites: 1, methylationBlocked: 0 }]);
+    expect(scan.sites).toHaveLength(1);
+    return scan.sites[0];
+  }
+
+  const cases = [
+    {
+      what: 'a forward negative-offset site cuts 5 and 3 nt before its motif',
+      enzyme: NEG,
+      linear: { seq: 'AAAAACGTGGCTTGAGAAAAAAAAAAAAAA', record: [11, 1, 6, 8, '5prime', 'CG'], top: 'AA^CGTGGCTTGAGAA', bottom: 'TTGC^ACCGAACTCTT' },
+      circular: { seq: 'AACTTGAGAAAAAAAAAAAAAAAAATTCGA', record: [3, 1, 28, 30, '5prime', 'CG'], top: 'TT^CGAAACTTGAGAA', bottom: 'AAGC^TTTGAACTCTT' },
+      side: 'before',
+    },
+    {
+      what: 'a reverse negative-offset site cuts 3 and 5 nt past its motif end, before it on the bottom strand',
+      enzyme: NEG,
+      linear: { seq: 'AAAAAAAACTCAAGTTTCGAAAAAAA', record: [9, -1, 18, 20, '5prime', 'CG'], top: 'AACTCAAGTTT^CGAA', bottom: 'TTGAGTTCAAAGC^TT' },
+      circular: { seq: 'GAAAAAAAAAAAAAAAAAAACTCAAGTTTC', record: [21, -1, 30, 2, '5prime', 'CG'], top: 'AACTCAAGTTT^CGAA', bottom: 'TTGAGTTCAAAGC^TT' },
+      side: 'after',
+    },
+    {
+      what: 'a forward mixed-sign site cuts 2 nt before its motif and 3 into it',
+      enzyme: MIX,
+      linear: { seq: 'AAAAAAAAGTCCAGAAAAAAAA', record: [9, 1, 7, 12, '5prime', 'AAGTC'], top: 'AA^AAGTCCAGAA', bottom: 'TTTTCAG^GTCTT' },
+      circular: { seq: 'TGTCCAGAAAAAAAAAAAAAAAAC', record: [2, 1, 24, 5, '5prime', 'CTGTC'], top: 'AA^CTGTCCAGAA', bottom: 'TTGACAG^GTCTT' },
+      side: 'across start',
+    },
+    {
+      what: 'a reverse mixed-sign site cuts 3 nt into its motif and 2 past its end',
+      enzyme: MIX,
+      linear: { seq: 'AAAAAAAACTGGACAAAAAAAA', record: [9, -1, 12, 17, '5prime', 'GACAA'], top: 'AACTG^GACAAAA', bottom: 'TTGACCTGTT^TT' },
+      circular: { seq: 'GAAAAAAAAAAAAAAAACTGGACT', record: [18, -1, 21, 2, '5prime', 'GACTG'], top: 'AACTG^GACTGAA', bottom: 'TTGACCTGAC^TT' },
+      side: 'across end',
+    },
+  ] as const;
+
+  /** The picture of `site` agrees with the engine's record and lies on the side its offsets name. */
+  function expectDrawnAsCut(site: RestrictionCutSite, seq: string, circular: boolean, side: (typeof cases)[number]['side'], label: string) {
+    const p = cleavagePicture(site, seq, circular, 2);
+    expect(p.endType, label).toBe(site.overhangType);
+    expect(p.overhangSeq, label).toBe(site.overhangSeq);
+    expect(p.overhangLength, label).toBe(site.overhangSeq.length);
+    expect([p.topCut.firstBaseAfter, p.bottomCut.firstBaseAfter], label).toEqual([site.cutTop, site.cutBottom]);
+    const cuts = [p.topCut.boundary, p.bottomCut.boundary];
+    const { start, end } = p.motif;
+    if (side === 'before') expect(cuts.every((b) => b < start), label).toBe(true);
+    if (side === 'after') expect(cuts.every((b) => b > end), label).toBe(true);
+    if (side === 'across start') expect(p.topCut.boundary < start && p.bottomCut.boundary > start && p.bottomCut.boundary < end, label).toBe(true);
+    if (side === 'across end') expect(p.topCut.boundary > start && p.topCut.boundary < end && p.bottomCut.boundary > end, label).toBe(true);
+    return p;
+  }
+
+  for (const c of cases) {
+    it(`${c.what}, on a linear molecule`, () => {
+      const site = customSite(c.linear.seq, 'linear', c.enzyme);
+      expect([site.position, site.strand, site.cutTop, site.cutBottom, site.overhangType, site.overhangSeq]).toEqual([...c.linear.record]);
+      const p = expectDrawnAsCut(site, c.linear.seq, false, c.side, site.id);
+      expect([topWithCut(p), bottomWithCut(p)]).toEqual([c.linear.top, c.linear.bottom]);
+      expect(p.recognitionStrand).toBe(site.strand === 1 ? 'top' : 'bottom');
+    });
+
+    it(`${c.what}, on a circle across base 1, at every rotation`, () => {
+      const site = customSite(c.circular.seq, 'circular', c.enzyme);
+      expect([site.position, site.strand, site.cutTop, site.cutBottom, site.overhangType, site.overhangSeq]).toEqual([...c.circular.record]);
+      const p = expectDrawnAsCut(site, c.circular.seq, true, c.side, site.id);
+      expect([topWithCut(p), bottomWithCut(p)]).toEqual([c.circular.top, c.circular.bottom]);
+      expect(p.crossesOrigin).toBe(true);
+      for (let r = 1; r < c.circular.seq.length; r++) {
+        const seq = rotate(c.circular.seq, r);
+        const turned = customSite(seq, 'circular', c.enzyme);
+        const pr = expectDrawnAsCut(turned, seq, true, c.side, `${turned.id} rotated by ${r}`);
+        expect([topWithCut(pr), bottomWithCut(pr)], `rotated by ${r}`).toEqual([c.circular.top, c.circular.bottom]);
+      }
+    });
+  }
+
+  it('refuses, by name, a circular record whose cuts disagree with its enzyme\'s offsets or with its own overhang', () => {
+    const seq = cases[0].circular.seq;
+    const site = customSite(seq, 'circular', NEG);
+    // Both offsets one further: the overhang still matches the cuts, the offsets no longer do.
+    const shifted = { ...site, enzyme: { ...site.enzyme, cutFwd: -4, cutRev: -2 } };
+    expect(() => cleavagePicture(shifted, seq, true)).toThrow(/MyNeg-3-1's cuts 28\/30 disagree with MyNeg's offsets -4\/-2/);
+    // A bottom cut one further: the record no longer agrees with its own overhang, named first.
+    expect(() => cleavagePicture({ ...site, cutBottom: 1 }, seq, true)).toThrow(/MyNeg-3-1's cuts 28\/1 disagree with its 5prime 2-nt overhang/);
+    // The same record on a linear molecule is drawn from its cuts alone.
+    expect(() => cleavagePicture(shifted, seq, false)).not.toThrow();
   });
 });

@@ -83,14 +83,14 @@ const distanceToMotif = (b: number, motifStart: number, motifEnd: number) =>
  * On a linear molecule each is the engine's `cut - 1`: the engine never wraps a linear cut, so a cut
  * before base 1 is 1 and one after the last base is len + 1 (BG-01M7CDM1).
  *
- * On a circle the engine gives each cut modulo the length, which loses the turn it lies on. The
- * picture takes the pair as the engine's own record fixes it: the top cut, the bottom cut `d` bases
- * after it for a 5' end, before it for a 3' end (`d` the length of the engine's overhang), on the
- * side the enzyme cuts: a forward site cuts at or after its motif start and a reverse site at or
- * before its motif end (every catalogue enzyme's offsets are >= 0 on its recognition strand). It
- * places the pair on the nearest turn that side, which is right whenever the cut nearer the motif
- * lies less than one molecule length from it: a circle shorter than that is drawn on the wrong turn.
- * A circular record whose cuts disagree with its own overhang is refused with an error naming it.
+ * On a circle the engine gives each cut modulo the length, which loses the turn it lies on. The turn
+ * is read from the enzyme's signed offsets on the site (`site.enzyme.cutFwd` / `cutRev`, either may
+ * be negative, as a custom definition's can be: US-01M7DVY6), measured from the first base of the
+ * motif on the strand it was found on: a forward site's cuts lie at motif start + cutFwd (top) and
+ * + cutRev (bottom), a reverse site's at motif end - cutRev (top) and - cutFwd (bottom), so a cut
+ * before the motif is drawn before it. The offsets only place the engine's cuts on
+ * their turn: a circular record whose cuts disagree with its own overhang, or with its enzyme's
+ * offsets modulo the length, is refused with an error naming it.
  */
 function unwrapCuts(
   site: RestrictionCutSite,
@@ -110,19 +110,22 @@ function unwrapCircularCuts(site: RestrictionCutSite, len: number, motifStart: n
   if (mod(site.cutTop - 1 + diff - (site.cutBottom - 1), len) !== 0) {
     throw new Error(`cleavagePicture: ${site.id}'s cuts ${site.cutTop}/${site.cutBottom} disagree with its ${site.overhangType} ${d}-nt overhang`);
   }
-  const nearer = site.strand === 1 ? Math.min(0, diff) : Math.max(0, diff);
-  const anchor = site.cutTop - 1 + nearer;
-  const placed = site.strand === 1 ? motifStart + mod(anchor - motifStart, len) : motifEnd - mod(motifEnd - anchor, len);
-  const top = placed - nearer;
-  return { top, bottom: top + diff };
+  const { cutFwd, cutRev } = site.enzyme;
+  const top = site.strand === 1 ? motifStart + cutFwd : motifEnd - cutRev;
+  const bottom = site.strand === 1 ? motifStart + cutRev : motifEnd - cutFwd;
+  if (mod(top - (site.cutTop - 1), len) !== 0 || mod(bottom - (site.cutBottom - 1), len) !== 0 || bottom - top !== diff) {
+    throw new Error(`cleavagePicture: ${site.id}'s cuts ${site.cutTop}/${site.cutBottom} disagree with ${site.enzyme.name}'s offsets ${cutFwd}/${cutRev}`);
+  }
+  return { top, bottom };
 }
 
 /**
  * The two-strand cleavage picture of `site` on `sequence` (the molecule it was scanned on), with
  * `flank` bases shown beyond the motif and both cuts. It reads the cuts from the engine's record
- * (`cutTop`/`cutBottom`, and on a circle the overhang that fixes their turn) and never recomputes
- * them from the enzyme; it only lays them out, wrapping
- * across base 1 of a circular molecule and leaving the flank past a linear end blank.
+ * (`cutTop`/`cutBottom`); on a circle, where the record gives each cut modulo the length, it reads
+ * their turn from the enzyme's signed offsets and refuses a record they do not agree with
+ * (`unwrapCuts`). It only lays them out, wrapping across base 1 of a circular molecule and leaving
+ * the flank past a linear end blank.
  */
 export function cleavagePicture(
   site: RestrictionCutSite,

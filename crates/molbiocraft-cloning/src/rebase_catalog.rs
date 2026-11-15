@@ -324,7 +324,9 @@ pub struct EnzymeSiteCount {
 pub struct RestrictionSiteScan {
     /// The cut sites kept, by position and then enzyme name.
     pub sites: Vec<RestrictionCutSite>,
-    /// Every scanned enzyme, in scan order, with its complete site count (0 for a noncutter).
+    /// Every scanned enzyme, in scan order, with its complete site count (0 for a noncutter). An
+    /// enzyme whose recognition sequence holds a letter the scan cannot read is not scanned: it is
+    /// absent here and named in `warnings` (US-01M7DVY6).
     pub site_counts: Vec<EnzymeSiteCount>,
     /// The enzymes with sites left out of `sites`, in scan order.
     pub capped_enzymes: Vec<String>,
@@ -335,7 +337,9 @@ pub struct RestrictionSiteScan {
     /// Whether the scan kept fewer sites than it found, so a reader that needs every positioned
     /// site (a methylation or Type IIS check, a digest) has not been given them all.
     pub stopped_early: bool,
-    /// One plain sentence per position limit that left sites out (D0005).
+    /// One plain sentence per position limit that left sites out (D0005), then one per enzyme not
+    /// scanned because its recognition sequence holds a letter the scan cannot read, naming it and
+    /// the letter (US-01M7DVY6).
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -353,7 +357,8 @@ fn is_exact_acgt(motif: &str) -> bool {
 }
 
 /// The sequence bases an IUPAC recognition-site base matches, as `iupac_base_matches` reads them:
-/// an N also matches an N in the sequence. Empty for a code it does not know, which matches nothing.
+/// an N also matches an N in the sequence. Empty for a code it does not know: a site holding one is
+/// not scanned (`unreadable_letters`).
 fn iupac_options(pattern_base: u8) -> &'static [u8] {
     match pattern_base {
         b'A' => b"A",
@@ -373,6 +378,32 @@ fn iupac_options(pattern_base: u8) -> &'static [u8] {
         b'N' => b"ACGTN",
         _ => b"",
     }
+}
+
+/// The distinct letters of a recognition sequence the scan cannot read as a base code, in the order
+/// they first appear; empty when it reads every one (upper or lower case).
+fn unreadable_letters(rec: &str) -> Vec<char> {
+    let mut out: Vec<char> = Vec::new();
+    for c in rec.chars() {
+        let known = c.is_ascii() && !iupac_options(c.to_ascii_uppercase() as u8).is_empty();
+        if !known && !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The sentence naming an enzyme the scan did not read, and the letters it could not read.
+fn unreadable_motif_warning(enz: &RestrictionEnzyme, letters: &[char]) -> String {
+    let named = letters.iter().map(|c| format!("'{c}'")).collect::<Vec<_>>();
+    let (named, what) = match named.len() {
+        1 => (named[0].clone(), "which is not a base code"),
+        n => (format!("{} and {}", named[..n - 1].join(", "), named[n - 1]), "which are not base codes"),
+    };
+    format!(
+        "{} was not scanned: its recognition sequence {} holds {}, {} the scan reads, so it has no site count.",
+        enz.name, enz.recognition_seq, named, what
+    )
 }
 
 /// Every exact motif a degenerate site matches, when there are at most `MAX_SPELLED_OUT_MOTIFS`.
@@ -550,13 +581,20 @@ fn default_scan_enzymes(seq_len: usize) -> Vec<RestrictionEnzyme> {
     catalog
 }
 
+/// How many bases of a circular molecule's start its search space reads again past its end, so a
+/// site across the origin is found (US-01M7DVY6). A motif crossing the origin is found when it is at
+/// most this plus one bases long: one starting at the last base reads all of these. A cut offset is
+/// not bounded by it: cuts are read modulo the molecule's length.
+pub const ORIGIN_WRAP_BASES: usize = 36;
+
 /// The cleaned sequence a scan reads (upper case, U read as T) and its search space: the sequence,
-/// plus its first 36 bases again when it is circular, so a site across the origin is found.
+/// plus its first `ORIGIN_WRAP_BASES` bases again when it is circular, so a site across the origin
+/// is found.
 fn scan_search_space(raw_seq: &str, topology: Topology) -> (Vec<u8>, usize) {
     let mut seq = clean_alpha_sequence(raw_seq).replace('U', "T").into_bytes();
     let seq_len = seq.len();
     if topology == Topology::Circular && seq_len > 0 {
-        let wrap = seq[..seq_len.min(36)].to_vec();
+        let wrap = seq[..seq_len.min(ORIGIN_WRAP_BASES)].to_vec();
         seq.extend_from_slice(&wrap);
     }
     (seq, seq_len)
@@ -570,6 +608,9 @@ struct SiteTally {
     blocked: Vec<usize>,
     /// The first `keep` sites by position, as (start, strand).
     kept: Vec<Vec<(usize, i8)>>,
+    /// The letters each enzyme's recognition sequence holds that the scan cannot read; an enzyme
+    /// with any is not scanned, so its 0 count is no answer.
+    unreadable: Vec<Vec<char>>,
 }
 
 /// Every site of every enzyme in `search` (the first `seq_len` bases are the molecule): each
@@ -587,8 +628,9 @@ fn count_and_keep_sites(
     let mut counts = vec![0usize; enzymes.len()];
     let mut blocked = vec![0usize; enzymes.len()];
     let mut kept: Vec<Vec<(usize, i8)>> = vec![Vec::new(); enzymes.len()];
+    let unreadable: Vec<Vec<char>> = enzymes.iter().map(|e| unreadable_letters(&e.recognition_seq)).collect();
     if seq_len == 0 {
-        return SiteTally { counts, blocked, kept };
+        return SiteTally { counts, blocked, kept, unreadable };
     }
     let sensitivity: Vec<MethylationSensitivity> = enzymes.iter().map(MethylationSensitivity::of).collect();
     let sequence_has_n = search[..seq_len].contains(&b'N');
@@ -598,7 +640,7 @@ fn count_and_keep_sites(
     let mut window_patterns: Vec<(usize, Vec<u8>, i8)> = Vec::new();
     for (e_idx, e) in enzymes.iter().enumerate() {
         let rec = e.recognition_seq.to_ascii_uppercase();
-        if rec.is_empty() {
+        if rec.is_empty() || !unreadable[e_idx].is_empty() {
             continue;
         }
         let rc = reverse_complement_iupac(&rec, false);
@@ -673,7 +715,7 @@ fn count_and_keep_sites(
         k.sort_unstable();
         k.truncate(keep);
     }
-    SiteTally { counts, blocked, kept }
+    SiteTally { counts, blocked, kept, unreadable }
 }
 
 /// The D0005 sentence for a scan whose position limit left sites of `capped` out.
@@ -713,7 +755,9 @@ fn positions_capped_warning(limit: RestrictionPositionLimit, capped: &[(String, 
 /// to `MAX_SPELLED_OUT_MOTIFS` spellings, are found in a single pass of an Aho-Corasick automaton;
 /// a more degenerate site is matched base by base. Sites run across the origin of a circle, Type IIS
 /// sites cut outside themselves, and each kept site is marked when Dam (`GATC`) or Dcm (`CCWGG`)
-/// methylation blocks it; each enzyme's count of blocked sites is complete too.
+/// methylation blocks it; each enzyme's count of blocked sites is complete too. An enzyme whose
+/// recognition sequence holds a letter the scan cannot read is not scanned: it has no site count and
+/// one warning names it and the letter (US-01M7DVY6).
 pub fn scan_restriction_sites(
     raw_seq: &str,
     topology: Topology,
@@ -733,7 +777,7 @@ pub fn scan_restriction_sites(
         RestrictionPositionLimit::All => usize::MAX,
         RestrictionPositionLimit::PerEnzyme(n) | RestrictionPositionLimit::Total(n) => n,
     };
-    let SiteTally { counts, blocked, kept } = count_and_keep_sites(&search, seq_len, enzymes, topology, keep);
+    let SiteTally { counts, blocked, kept, unreadable } = count_and_keep_sites(&search, seq_len, enzymes, topology, keep);
 
     let mut picks: Vec<(usize, i8, usize)> = kept
         .iter()
@@ -762,12 +806,20 @@ pub fn scan_restriction_sites(
         .filter(|(i, _)| kept_per_enzyme[*i] < counts[*i])
         .map(|(i, e)| (e.name.clone(), counts[i]))
         .collect();
-    let warnings: Vec<String> = positions_capped_warning(limit, &capped).into_iter().collect();
+    let mut warnings: Vec<String> = positions_capped_warning(limit, &capped).into_iter().collect();
+    warnings.extend(
+        enzymes
+            .iter()
+            .zip(&unreadable)
+            .filter(|(_, letters)| !letters.is_empty())
+            .map(|(e, letters)| unreadable_motif_warning(e, letters)),
+    );
     RestrictionSiteScan {
         sites,
         site_counts: enzymes
             .iter()
             .enumerate()
+            .filter(|(i, _)| unreadable[*i].is_empty())
             .map(|(i, e)| EnzymeSiteCount { enzyme: e.name.clone(), sites: counts[i], methylation_blocked: blocked[i] })
             .collect(),
         stopped_early: !capped.is_empty(),
@@ -814,7 +866,8 @@ pub fn find_non_cutting_enzymes(
 /// 0-cutters for a molecule of the given topology, from every enzyme's complete site count over
 /// the whole molecule and the whole catalog (or `custom_enzymes`). A linear molecule has no
 /// end-to-start junction, so a site that only exists across that junction does not make the
-/// enzyme a cutter (previously always scanned as circular).
+/// enzyme a cutter (previously always scanned as circular). An enzyme whose recognition sequence
+/// holds a letter the scan cannot read was not scanned, so it is not listed (US-01M7DVY6).
 pub fn find_non_cutting_enzymes_for_topology(
     raw_seq: &str,
     topology: Topology,
@@ -829,11 +882,11 @@ pub fn find_non_cutting_enzymes_for_topology(
         }
     };
     let (search, seq_len) = scan_search_space(raw_seq, topology);
-    let counts = count_and_keep_sites(&search, seq_len, catalog, topology, 0).counts;
+    let SiteTally { counts, unreadable, .. } = count_and_keep_sites(&search, seq_len, catalog, topology, 0);
     catalog
         .iter()
-        .zip(&counts)
-        .filter(|(_, &n)| n == 0)
+        .zip(counts.iter().zip(&unreadable))
+        .filter(|(_, (&n, letters))| n == 0 && letters.is_empty())
         .map(|(e, _)| e.clone())
         .collect()
 }
@@ -1872,7 +1925,7 @@ mod rebase_validation {
             // Blocked: XbaI (GATC before), StuI (CCTGG after), ClaI (GATC after), BclI (GATC inside),
             // ApaI (CCAGG after); and unblocked XbaI, StuI and ApaI sites.
             "GATCTAGAAAAAAATCTAGAAAAAAAGGCCTGGAAAAAAAGGCCTAAAAAAATCGATCAAAAAATGATCAAAAAAGGGCCCAGGAAAAAAGGGCCCAAAAA",
-            // Smaller than the 36 bases a circle's search reads again past its end.
+            // Smaller than the ORIGIN_WRAP_BASES a circle's search reads again past its end.
             "GATCTAGATT",
             "AGGCCTGGTT",
         ];
