@@ -29,6 +29,9 @@ import {
   type WorkflowRunResult,
   type WorkflowStep,
 } from '../core/workflows';
+import { CUSTOM_ENZYME_NO_LONGER_STORED, enzymeLabel } from '../core/bioEngine';
+import { enzymeKey } from '../core/restrictionDisplay';
+import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
 
 function useWorkflows(): Workflow[] {
@@ -43,8 +46,36 @@ function useWorkflows(): Workflow[] {
 
 const settingsKey = (s: StepSettings) => (s.kind === 'profile' ? `profile:${s.name}` : s.kind);
 
-/** Editable fields for an operation's options (generic: checkbox / number / text by default type). */
-function OptionFieldsGrid({ op, values, readOnly, onChange }: { op: WorkflowOpId; values: OptionValues; readOnly?: boolean; onChange: (v: OptionValues) => void }) {
+/**
+ * A digest step's enzymes (US-01M7J1WY, D0157): a multi-select of the active list, valued by enzyme
+ * key and labelled by name, custom ones marked "(custom)". A stored key the list lacks is listed
+ * first, selected, under words that say so, and is never dropped. A change writes the kept keys in
+ * their stored order, then the new ones in list order; until then the stored text is untouched.
+ */
+function EnzymeKeysPicker({ value, enzymes, readOnly, onChange }: { value: string; enzymes: readonly RestrictionEnzyme[]; readOnly?: boolean; onChange: (v: string) => void }) {
+  const keys = value.split(',').map((x) => x.trim()).filter(Boolean);
+  const listed = enzymes.map((e) => ({ key: enzymeKey(e), label: enzymeLabel(e) }));
+  const known = new Set(listed.map((o) => o.key));
+  const missing = [...new Set(keys.filter((k) => !known.has(k)))].map((key) => ({
+    key,
+    label: key.startsWith('custom:') ? CUSTOM_ENZYME_NO_LONGER_STORED : `${key} (not in the catalogue)`,
+  }));
+  const options = [...missing, ...listed];
+  return (
+    <select multiple aria-label="enzymes" size={8} disabled={readOnly} value={keys}
+      onChange={(e) => {
+        const picked = new Set(Array.from(e.target.options).filter((o) => o.selected).map((o) => o.value));
+        const kept = keys.filter((k) => picked.has(k));
+        const added = options.map((o) => o.key).filter((k) => picked.has(k) && !keys.includes(k));
+        onChange([...kept, ...added].join(','));
+      }}>
+      {options.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+    </select>
+  );
+}
+
+/** Editable fields for an operation's options (generic: checkbox / number / text by default type; a digest's enzymes from a picker). */
+function OptionFieldsGrid({ op, values, readOnly, enzymes, onChange }: { op: WorkflowOpId; values: OptionValues; readOnly?: boolean; enzymes: readonly RestrictionEnzyme[]; onChange: (v: OptionValues) => void }) {
   const spec = WORKFLOW_OPS[op];
   return (
     <div className="mbc-wf-custom-grid">
@@ -54,7 +85,9 @@ function OptionFieldsGrid({ op, values, readOnly, onChange }: { op: WorkflowOpId
         return (
           <label key={k} className="mbc-wf-custom-field">
             <span>{k}</span>
-            {typeof def === 'boolean' ? (
+            {op === 'digest-fragments' && k === 'enzymes' ? (
+              <EnzymeKeysPicker value={String(val)} enzymes={enzymes} readOnly={readOnly} onChange={set} />
+            ) : typeof def === 'boolean' ? (
               <input type="checkbox" disabled={readOnly} checked={Boolean(val)} onChange={(e) => set(e.target.checked)} />
             ) : typeof def === 'number' ? (
               <input type="number" disabled={readOnly} value={Number(val)} onChange={(e) => set(Number(e.target.value))} />
@@ -68,7 +101,7 @@ function OptionFieldsGrid({ op, values, readOnly, onChange }: { op: WorkflowOpId
   );
 }
 
-function StepSettingsEditor({ step, readOnly, onChange }: { step: WorkflowStep; readOnly: boolean; onChange: (s: StepSettings) => void }) {
+function StepSettingsEditor({ step, readOnly, enzymes, onChange }: { step: WorkflowStep; readOnly: boolean; enzymes: readonly RestrictionEnzyme[]; onChange: (s: StepSettings) => void }) {
   const spec = WORKFLOW_OPS[step.op];
   const profiles = listProfiles(step.op);
   const custom = step.settings.kind === 'custom' ? step.settings.values : null;
@@ -99,7 +132,7 @@ function StepSettingsEditor({ step, readOnly, onChange }: { step: WorkflowStep; 
         )}
       </select>
       {custom && (
-        <OptionFieldsGrid op={step.op} values={custom} readOnly={readOnly} onChange={(values) => onChange({ kind: 'custom', values })} />
+        <OptionFieldsGrid op={step.op} values={custom} readOnly={readOnly} enzymes={enzymes} onChange={(values) => onChange({ kind: 'custom', values })} />
       )}
     </div>
   );
@@ -111,11 +144,13 @@ export interface ManageWorkflowsDialogProps {
   onRun: (workflowId: string) => void;
   onClose: () => void;
   onDownload: (content: string, fileName: string) => void;
+  /** The active enzyme list (US-01M7J1WY): a digest step's enzymes are chosen from it (the catalogue when not given) and its custom keys labelled by it in the step summaries (the stored text when not given). */
+  enzymes?: readonly RestrictionEnzyme[];
 }
 
 const blankWorkflow = (): Workflow => ({ id: '', name: 'New workflow', description: '', steps: [{ op: 'align-multiple', settings: { kind: 'defaults' } }], keepIntermediate: true });
 
-export const ManageWorkflowsDialog: React.FC<ManageWorkflowsDialogProps> = ({ onRun, onClose, onDownload }) => {
+export const ManageWorkflowsDialog: React.FC<ManageWorkflowsDialogProps> = ({ onRun, onClose, onDownload, enzymes }) => {
   const list = useWorkflows();
   const [selectedId, setSelectedId] = useState<string>(() => list[0]?.id ?? '');
   const [draft, setDraft] = useState<Workflow | null>(() => list[0] ?? null);
@@ -236,7 +271,7 @@ export const ManageWorkflowsDialog: React.FC<ManageWorkflowsDialogProps> = ({ on
                           onChange={(e) => updateStep(i, { op: e.target.value as WorkflowOpId, settings: { kind: 'defaults' } })}>
                           {WORKFLOW_OP_IDS.map((op) => <option key={op} value={op}>{WORKFLOW_OPS[op].label}</option>)}
                         </select>
-                        <span className="mbc-opdlg-muted">{describeSettings(s)}</span>
+                        <span className="mbc-opdlg-muted">{describeSettings(s, enzymes)}</span>
                         {!readOnly && (
                           <span className="mbc-wf-step-tools">
                             <button type="button" className="mbc-opdlg-icon-btn" aria-label={`Move step ${i + 1} up`} disabled={i === 0} onClick={() => move(i, -1)}><ArrowUp size={13} /></button>
@@ -246,7 +281,7 @@ export const ManageWorkflowsDialog: React.FC<ManageWorkflowsDialogProps> = ({ on
                           </span>
                         )}
                       </div>
-                      <StepSettingsEditor step={s} readOnly={readOnly} onChange={(settings) => updateStep(i, { ...s, settings })} />
+                      <StepSettingsEditor step={s} readOnly={readOnly} enzymes={enzymes ?? REBASE_ENZYMES} onChange={(settings) => updateStep(i, { ...s, settings })} />
                     </li>
                   ))}
                 </ol>
@@ -330,7 +365,7 @@ export const RunWorkflowDialog: React.FC<RunWorkflowDialogProps> = ({ inputs, so
               <OptionRow label="Steps:">
                 <ol className="mbc-wf-steps mbc-wf-steps-compact">
                   {w.steps.map((s, i) => (
-                    <li key={i}><strong>{WORKFLOW_OPS[s.op].label}</strong> <span className="mbc-opdlg-muted">({describeSettings(s)})</span></li>
+                    <li key={i}><strong>{WORKFLOW_OPS[s.op].label}</strong> <span className="mbc-opdlg-muted">({describeSettings(s, enzymes)})</span></li>
                   ))}
                 </ol>
                 <span className="mbc-opdlg-muted">{w.keepIntermediate ? 'Documents from every step are kept.' : 'Only the last step’s documents are kept.'}</span>
@@ -338,7 +373,7 @@ export const RunWorkflowDialog: React.FC<RunWorkflowDialogProps> = ({ inputs, so
             )}
             {w && w.steps.map((s, i) => s.settings.kind !== 'ask' ? null : (
               <OptionRow key={`ask-${i}`} label={`Step ${i + 1}: ${WORKFLOW_OPS[s.op].label}`}>
-                <OptionFieldsGrid op={s.op} values={asked[w.id]?.[i] ?? resolveStepValues(s)}
+                <OptionFieldsGrid op={s.op} values={asked[w.id]?.[i] ?? resolveStepValues(s)} enzymes={enzymes ?? REBASE_ENZYMES}
                   onChange={(nv) => setAsked((prev) => ({ ...prev, [w.id]: { ...(prev[w.id] ?? {}), [i]: nv } }))} />
               </OptionRow>
             ))}

@@ -16743,6 +16743,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       )}
       {manageWorkflowsOpen && (
         <ManageWorkflowsDialog
+          enzymes={activeEnzymes}
           onDownload={(content, name) => void handleDownloadFile(content, name, 'application/json')}
           onRun={(id) => {
             setManageWorkflowsOpen(false);

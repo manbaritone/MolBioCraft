@@ -26,7 +26,8 @@ import {
   type RunContext,
 } from './operationRunners';
 import { ALIGNED_MEMBER_METADATA_KEY } from './documentViews';
-import type { SequenceDocument } from '../types/bio';
+import { resolveDigestKeys } from './bioEngine';
+import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
 
 export type WorkflowOpId =
   | 'align-multiple'
@@ -268,7 +269,19 @@ export function resolveStepValues(step: WorkflowStep, asked?: OptionValues): Opt
   return { ...spec.defaults };
 }
 
-export function describeSettings(step: WorkflowStep): string {
+/**
+ * A digest step's stored enzymes as a summary shows them (US-01M7J1WY, D0157): the stored text exactly,
+ * unless a list is given and some key is a `custom:` id; then each key's label against that list, so
+ * no summary or run log shows the id. Without a list a stored custom key cannot be told from a deleted one.
+ */
+function describeEnzymes(stored: string, enzymes?: readonly RestrictionEnzyme[]): string {
+  const keys = stored.split(',').map((x) => x.trim()).filter(Boolean);
+  if (!enzymes || !keys.some((k) => k.startsWith('custom:'))) return stored;
+  return resolveDigestKeys(keys, enzymes).labels.join(',');
+}
+
+/** A step's options in a word or two; `enzymes`, the active enzyme list, labels a digest step's custom keys. */
+export function describeSettings(step: WorkflowStep, enzymes?: readonly RestrictionEnzyme[]): string {
   const s = step.settings;
   if (s.kind === 'last-used') return 'last-used options';
   if (s.kind === 'ask') return 'asked when run';
@@ -276,7 +289,8 @@ export function describeSettings(step: WorkflowStep): string {
   if (s.kind === 'custom') {
     const d = WORKFLOW_OPS[step.op].defaults;
     const changed = Object.entries(s.values).filter(([k, v]) => k in d && d[k] !== v);
-    return changed.length ? changed.map(([k, v]) => `${k}=${String(v)}`).join(', ') : 'defaults';
+    const shown = (k: string, v: unknown) => (step.op === 'digest-fragments' && k === 'enzymes' ? describeEnzymes(String(v), enzymes) : String(v));
+    return changed.length ? changed.map(([k, v]) => `${k}=${shown(k, v)}`).join(', ') : 'defaults';
   }
   return 'defaults';
 }
@@ -369,7 +383,7 @@ export async function runWorkflow(
       if (idx >= 0) created[idx] = u;
       else updated.set(u.id, u);
     }
-    const entry = { step: i + 1, label: spec.label, settings: describeSettings(step), summary: r.summary };
+    const entry = { step: i + 1, label: spec.label, settings: describeSettings(step, ctx.enzymes), summary: r.summary };
     log.push(entry);
     onStep?.(entry);
     current = r.created.length ? r.created : r.updated;
