@@ -26,7 +26,7 @@ import { dispatchLiveEvent, memoryStorage, type LiveElement, type LiveStorage } 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
 /** Every digest-by-id and buffer-plan call the engine receives, with its payload. */
-const engine = vi.hoisted(() => ({ calls: [] as Array<{ op: string; payload: Record<string, unknown> }> }));
+const engine = vi.hoisted(() => ({ calls: [] as Array<{ op: string; payload: Record<string, unknown>; reply?: unknown }> }));
 vi.mock('../lib/rustBioEngine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/rustBioEngine')>();
   const watched = new Set(['simulate_enzyme_digest', 'simulate_restriction_digest']);
@@ -38,8 +38,9 @@ vi.mock('../lib/rustBioEngine', async (importOriginal) => {
       return actual.evaluateMultiDigestBufferPlanRust(enzymes);
     },
     invokeRustBioSync: (op: string, payload?: unknown) => {
-      if (watched.has(op)) engine.calls.push({ op, payload: (payload ?? {}) as Record<string, unknown> });
-      return actual.invokeRustBioSync(op, payload);
+      const reply = actual.invokeRustBioSync(op, payload);
+      if (watched.has(op)) engine.calls.push({ op, payload: (payload ?? {}) as Record<string, unknown>, reply });
+      return reply;
     },
   };
 });
@@ -373,11 +374,58 @@ describe('US-01M7DVD5 AC6: a custom enzyme and a same-named built-in stay apart 
       await toggle(app, 'EcoRI');
       const note = unresolvedNote(app);
       expect(note).toContain('Lane 4 (EcoRI (custom)+EcoRI) not drawn');
-      expect(note).toContain('EcoRI and EcoRI (custom): EcoRI and EcoRI (custom) both cut the top strand before base 908 but leave different ends (AATT 5prime and AA 5prime)');
+      expect(note).toContain(
+        "EcoRI and EcoRI (custom): EcoRI and EcoRI (custom) both cut the top strand before base 908 but leave different ends (a 5' overhang AATT and a 5' overhang AA), so the digest cannot say which end that fragment has"
+      );
+      expect(note).not.toMatch(/5prime|3prime/);
       expect(note).toContain('before base 2529');
       expect(bands(app, 312), 'not drawn as a complete digest').toBe(0);
       expect(rows(app)).toEqual([]);
       expect(bands(app, 228), 'the single cutter (the custom twin alone) is whole').toBe(2);
     });
+  });
+  it('US-01M7DVD5 AC6 built-ins alone sharing a cut (SacI + XbaI on GAGCTCTAGA) keep the old dedupe: lane 4, the table and the export are drawn, complete', async () => {
+    // D0151. A 1,222 bp circle of C: GAGCTCTAGA at 301..310, where SacI (GAGCT^C, AGCT) and XbaI
+    // (T^CTAGA, CTAG) both cut before 306 and the old op keeps SacI (recognised first); SacI's
+    // GAGCTC again at 711..716 (cut before 716) and XbaI's TCTAGA at 1017..1022 (cut before 1018).
+    const seq = ['C'.repeat(300), 'GAGCTCTAGA', 'C'.repeat(400), 'GAGCTC', 'C'.repeat(300), 'TCTAGA', 'C'.repeat(200)].join('');
+    expect(seq.length).toBe(1222);
+    const poly: SequenceDocument = { ...DOC, id: 'pPoly', name: 'pPoly', sequence: seq };
+    engine.calls.length = 0;
+    const app = await mountApp({ storage: memoryStorage() });
+    try {
+      await app.restoreSession({ documents: [poly], activeDocId: poly.id, viewerTab: 'cloning-gel' });
+      await app.settle();
+      await toggle(app, 'BamHI');
+      await toggle(app, 'XhoI');
+      await toggle(app, 'SacI');
+      await toggle(app, 'XbaI');
+      expect(ticked(app)).toEqual(['XbaI', 'SacI']);
+      const last = enzymeDigests().filter((c) => JSON.stringify(c.payload.selection) === '["SacI","XbaI"]').pop();
+      expect(last?.reply, 'the digest by id of the two built-ins').toMatchObject({ complete: true, unresolvedEnzymes: [] });
+      expect(unresolvedNote(app)).toBeNull();
+      expect(laneLabels(app).slice(2)).toEqual(['SacI', 'SacI+XbaI']);
+      expect(multiLabels(app)).toEqual(['510 bp', '410 bp', '302 bp']);
+      expect(bands(app, 312)).toBe(3);
+      expect(rows(app)).toEqual([
+        ['3', '510 bp', '1018..305', 'XbaI CTAG', 'SacI AGCT'],
+        ['1', '410 bp', '306..715', 'SacI AGCT', 'SacI AGCT'],
+        ['2', '302 bp', '716..1017', 'SacI AGCT', 'XbaI CTAG'],
+      ]);
+      await app.click(app.one('[data-mbc-figure] button.mbc-figure-export-trigger', "the gel's Export"));
+      const tsv = app.all('[role="menuitem"]').filter((m) => words(m.textContent).startsWith('TSV'));
+      expect(tsv).toHaveLength(1);
+      await app.click(tsv[0]);
+      await app.settle();
+      const saved = app.downloads().filter((f) => f.filename.endsWith('.tsv'));
+      expect(saved).toHaveLength(1);
+      expect((await saved[0].text()).split('\n').filter((l) => /^\d\t/.test(l))).toEqual([
+        '3\t510\t1018\t305\tXbaI\tSacI',
+        '1\t410\t306\t715\tSacI\tSacI',
+        '2\t302\t716\t1017\tSacI\tXbaI',
+      ]);
+    } finally {
+      app.unmount();
+    }
   });
 });

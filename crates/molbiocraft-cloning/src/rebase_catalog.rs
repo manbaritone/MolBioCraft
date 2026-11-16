@@ -51,8 +51,9 @@ pub enum DigestEnzymeChoice {
     Unreadable { name: String, reason: String },
 }
 
-/// A selected enzyme a digest by id did not use, or two enzymes whose cuts at one top-strand
-/// position disagree on the bottom strand (US-01M7DVD5). `name` is how the enzyme is shown: a
+/// A selected enzyme a digest by id did not use, or two enzymes, at least one of them a custom
+/// definition, whose cuts at one top-strand position disagree on the bottom strand (US-01M7DVD5,
+/// D0151). `name` is how the enzyme is shown: a
 /// custom definition's name followed by " (custom)", a built-in's name as it is; a clash names both.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,7 +61,7 @@ pub struct UnresolvedDigestEnzyme {
     pub name: String,
     /// The ids involved, as sent (none when the entry could not be read far enough to have one).
     pub enzyme_ids: Vec<String>,
-    /// `unknownId`, `unreadableDefinition`, `noCustomId` or `clash`.
+    /// `unknownId`, `unreadableDefinition`, `noCustomId`, `sourceNotCustom` or `clash`.
     pub kind: String,
     pub reason: String,
 }
@@ -997,8 +998,8 @@ fn end_identity(enzyme: &RestrictionEnzyme) -> (Option<String>, Option<EnzymeSou
 }
 
 /// What `digest_with` cut: the fragments, whether any site cut at all (none gives the single uncut
-/// fragment), and each pair of cuts at one top-strand position that differ on the bottom strand,
-/// the one the fragments use first.
+/// fragment), and each pair of cuts at one top-strand position that differ on the bottom strand
+/// where a custom definition made either cut (D0151), the one the fragments use first.
 struct DigestCuts {
     fragments: Vec<DigestFragment>,
     any_cut: bool,
@@ -1067,9 +1068,13 @@ fn digest_with(doc: &SequenceDocument, chosen: &[RestrictionEnzyme]) -> DigestCu
             unique_cuts.push(c);
         } else if let Some(kept) = unique_cuts.last() {
             // A second cut at a kept top-strand position (cuts are sorted by it, so the kept one is
-            // the last): the fragments keep the first, as they always have; a bottom-strand cut or
-            // overhang that differs from it is a clash the digest by id reports (US-01M7DVD5).
-            if kept.cut_bottom != c.cut_bottom || kept.overhang_seq != c.overhang_seq || kept.overhang_type != c.overhang_type {
+            // the last): the fragments keep the first, as they always have. A bottom-strand cut or
+            // overhang that differs from it is a clash the digest by id reports only when a custom
+            // definition made either cut (US-01M7DVD5, D0151); two built-ins keep the old dedupe.
+            let custom_involved = kept.enzyme.source == EnzymeSource::Custom || c.enzyme.source == EnzymeSource::Custom;
+            let ends_differ =
+                kept.cut_bottom != c.cut_bottom || kept.overhang_seq != c.overhang_seq || kept.overhang_type != c.overhang_type;
+            if custom_involved && ends_differ {
                 clashes.push((kept.clone(), c));
             }
         }
@@ -1179,17 +1184,29 @@ fn digest_with(doc: &SequenceDocument, chosen: &[RestrictionEnzyme]) -> DigestCu
     DigestCuts { fragments, any_cut: true, clashes }
 }
 
+/// A cut's end as a reader says it: "a 5' overhang AATT", "a 3' overhang AGCT" or "a blunt end".
+fn end_in_words(cut: &RestrictionCutSite) -> String {
+    match cut.overhang_type.as_str() {
+        "5prime" => format!("a 5' overhang {}", cut.overhang_seq),
+        "3prime" => format!("a 3' overhang {}", cut.overhang_seq),
+        _ => "a blunt end".to_string(),
+    }
+}
+
 /// Simulate a digest by id (US-01M7DVD5, D0150): each built-in by its catalogue id, each custom
 /// enzyme by its own definition, so a custom one named like a built-in cuts at its own sites with
 /// its own offsets and its ends carry its id and source. Every selected enzyme the digest cannot
 /// use is listed with its reason - an id the catalogue does not hold, an entry that is not a
 /// definition, a definition whose motif the scan cannot read, a definition sent without a
-/// `custom:` id (never read as the built-in of its name) - and so is every top-strand position two
-/// cuts share while differing on the bottom strand; `complete` is then false. A digest with
-/// anything unresolved and no cut is no fragments, never the uncut molecule; an empty selection is
-/// the uncut molecule, complete. The built-ins are cut in catalogue order and before every custom
-/// definition (custom ones by id), so cuts at one position keep the old op's order whatever the
-/// selection's, and a catalogue-only digest is the one `simulate_restriction_digest` gives.
+/// `custom:` id, or with one but a source other than custom (never read as the built-in of its
+/// name) - and so is every top-strand position where a custom definition's cut and another cut
+/// differ on the bottom strand (D0151); `complete` is then false. Built-ins alone sharing a
+/// position keep the old op's dedupe and leave the digest complete. A digest with anything
+/// unresolved and no cut is no fragments, never the uncut molecule; an empty selection is the uncut
+/// molecule, complete. The built-ins are cut in catalogue order and before every custom definition
+/// (custom ones by id), so cuts at one position keep the old op's order whatever the selection's,
+/// and a catalogue-only digest has the fragments `simulate_restriction_digest` gives and is complete
+/// unless an id is unknown.
 pub fn simulate_enzyme_digest(doc: &SequenceDocument, selection: &[DigestEnzymeChoice]) -> EnzymeDigest {
     let mut unresolved: Vec<UnresolvedDigestEnzyme> = Vec::new();
     let mut builtin_ids: FxHashSet<&str> = FxHashSet::default();
@@ -1218,13 +1235,23 @@ pub fn simulate_enzyme_digest(doc: &SequenceDocument, selection: &[DigestEnzymeC
             DigestEnzymeChoice::Definition(def) => {
                 let label = format!("{} (custom)", def.name);
                 let letters = unreadable_letters(&def.recognition_seq);
-                if !def.id.starts_with(CUSTOM_ENZYME_ID_PREFIX) || def.source != EnzymeSource::Custom {
+                if !def.id.starts_with(CUSTOM_ENZYME_ID_PREFIX) {
                     unresolved.push(unresolved_one(
                         label,
                         Some(&def.id),
                         "noCustomId",
                         format!(
                             "the definition was sent without a custom: id (its id is \"{}\"), so it is not used, and not read as the built-in of that name",
+                            def.id
+                        ),
+                    ));
+                } else if def.source != EnzymeSource::Custom {
+                    unresolved.push(unresolved_one(
+                        label,
+                        Some(&def.id),
+                        "sourceNotCustom",
+                        format!(
+                            "the definition has the custom: id \"{}\" but its source says built-in, so it is not used, and not read as a built-in",
                             def.id
                         ),
                     ));
@@ -1256,14 +1283,12 @@ pub fn simulate_enzyme_digest(doc: &SequenceDocument, selection: &[DigestEnzymeC
             enzyme_ids: vec![kept.enzyme.id.clone(), other.enzyme.id.clone()],
             kind: "clash".to_string(),
             reason: format!(
-                "{} and {} both cut the top strand before base {} but leave different ends ({} {} and {} {}), so the digest cannot say which end that fragment has",
+                "{} and {} both cut the top strand before base {} but leave different ends ({} and {}), so the digest cannot say which end that fragment has",
                 a,
                 b,
                 kept.cut_top,
-                if kept.overhang_seq.is_empty() { "-" } else { kept.overhang_seq.as_str() },
-                kept.overhang_type,
-                if other.overhang_seq.is_empty() { "-" } else { other.overhang_seq.as_str() },
-                other.overhang_type,
+                end_in_words(kept),
+                end_in_words(other),
             ),
         });
     }

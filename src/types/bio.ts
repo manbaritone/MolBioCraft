@@ -685,12 +685,13 @@ export type EnzymeDigestSelection = Array<string | RestrictionEnzyme>;
 
 /**
  * A selected enzyme a digest by id did not use, or two whose cuts at one top-strand position leave
- * different ends. `name` is how it is shown (`enzymeLabel`); a clash names both.
+ * different ends where at least one is a custom definition (D0151). `name` is how it is shown
+ * (`enzymeLabel`); a clash names both.
  */
 export interface UnresolvedDigestEnzyme {
   name: string;
   enzymeIds: string[];
-  kind: 'unknownId' | 'unreadableDefinition' | 'noCustomId' | 'clash';
+  kind: 'unknownId' | 'unreadableDefinition' | 'noCustomId' | 'sourceNotCustom' | 'clash';
   reason: string;
 }
 

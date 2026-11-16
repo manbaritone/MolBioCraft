@@ -123,8 +123,22 @@ fn us_01m7dvd5_ac2_a_definition_without_a_custom_id_is_unresolved_never_filled_a
     for def in [no_id, builtin_id] {
         let r = by_id(&d, json!([def]));
         assert_eq!(kinds(&r), vec![("EcoRI (custom)".to_string(), "noCustomId".to_string())]);
+        assert_eq!(
+            r["unresolvedEnzymes"][0]["reason"],
+            json!("the definition was sent without a custom: id (its id is \"EcoRI\"), so it is not used, and not read as the built-in of that name")
+        );
         assert_eq!((r["complete"].clone(), r["fragments"].clone()), (json!(false), json!([])), "no cut at all, the built-in's GAATTC included");
     }
+    // A custom: id whose source says built-in: refused under its own reason, not "without a custom: id".
+    let mut wrong_source = mine();
+    wrong_source["source"] = json!("builtin");
+    let r = by_id(&d, json!([wrong_source]));
+    assert_eq!(kinds(&r), vec![("EcoRI (custom)".to_string(), "sourceNotCustom".to_string())]);
+    assert_eq!(
+        r["unresolvedEnzymes"][0]["reason"],
+        json!("the definition has the custom: id \"custom:mine\" but its source says built-in, so it is not used, and not read as a built-in")
+    );
+    assert_eq!((r["complete"].clone(), r["fragments"].clone()), (json!(false), json!([])));
     // Beside a built-in that cuts nothing here.
     let mut no_id = mine();
     no_id.as_object_mut().unwrap().remove("id");
@@ -201,8 +215,56 @@ fn us_01m7dvd5_ac6_cuts_at_one_position_keep_the_old_order_and_a_differing_overh
     let r = by_id(&d, json!([clash.clone(), "EcoRI"]));
     assert_eq!(r["complete"], json!(false));
     assert_eq!(kinds(&r), vec![("EcoRI and EcoRI (custom)".into(), "clash".into()), ("EcoRI and EcoRI (custom)".into(), "clash".into())]);
-    let reason = r["unresolvedEnzymes"][0]["reason"].as_str().unwrap();
-    assert!(reason.contains("AATT 5prime") && reason.contains("AA 5prime"), "{reason}");
+    assert_eq!(
+        r["unresolvedEnzymes"][0]["reason"],
+        json!("EcoRI and EcoRI (custom) both cut the top strand before base 52 but leave different ends (a 5' overhang AATT and a 5' overhang AA), so the digest cannot say which end that fragment has")
+    );
     assert_eq!(r["unresolvedEnzymes"][0]["enzymeIds"], json!(["EcoRI", "custom:mine"]));
     assert_eq!(by_id(&d, json!(["EcoRI", clash])), r);
+}
+
+/// D0151: a 1,222 bp circle of C holding the polylinker junction GAGCTCTAGA at 301..310, where SacI
+/// (GAGCT^C, 3' overhang AGCT) and XbaI (T^CTAGA, 5' overhang CTAG) both cut the top strand before
+/// base 306; SacI's GAGCTC again at 711..716 (cut before 716) and XbaI's TCTAGA at 1017..1022 (cut
+/// before 1018).
+fn polylinker_circle() -> Value {
+    let seq = format!("{}GAGCTCTAGA{}GAGCTC{}TCTAGA{}", fill(300), fill(400), fill(300), fill(200));
+    assert_eq!(seq.len(), 1222);
+    doc("poly", &seq, "circular")
+}
+
+#[test]
+fn us_01m7dvd5_ac2_built_ins_alone_sharing_a_top_strand_cut_keep_the_old_dedupe_and_stay_complete() {
+    let d = polylinker_circle();
+    let r = by_id(&d, json!(["SacI", "XbaI"]));
+    assert_eq!(r["complete"], json!(true));
+    assert_eq!(r["unresolvedEnzymes"], json!([]));
+    // The old op's dedupe keeps SacI (recognised first) at 306: 306..715, 716..1017, 1018..305.
+    assert_eq!(
+        spans(&r["fragments"]),
+        vec![
+            (1018, 305, 510, "XbaI".into(), "SacI".into()),
+            (306, 715, 410, "SacI".into(), "SacI".into()),
+            (716, 1017, 302, "SacI".into(), "XbaI".into()),
+        ]
+    );
+    assert_eq!(r["fragments"][0]["rightOverhang"], json!("AGCT"));
+    assert_eq!(r["fragments"], by_name(&d, &["SacI", "XbaI"]));
+}
+
+#[test]
+fn us_01m7dvd5_ac6_a_custom_cut_sharing_a_top_strand_position_with_a_built_in_is_still_a_clash() {
+    // A custom copy of XbaI beside SacI: the same position, other ends, and now a custom is involved.
+    let mut xba = mine();
+    xba["name"] = json!("MyXba");
+    xba["recognitionSeq"] = json!("TCTAGA");
+    xba["cutFwd"] = json!(1);
+    xba["cutRev"] = json!(5);
+    let r = by_id(&polylinker_circle(), json!(["SacI", xba]));
+    assert_eq!(r["complete"], json!(false));
+    assert_eq!(kinds(&r), vec![("SacI and MyXba (custom)".into(), "clash".into())]);
+    assert_eq!(
+        r["unresolvedEnzymes"][0]["reason"],
+        json!("SacI and MyXba (custom) both cut the top strand before base 306 but leave different ends (a 3' overhang AGCT and a 5' overhang CTAG), so the digest cannot say which end that fragment has")
+    );
 }
