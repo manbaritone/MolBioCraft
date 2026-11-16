@@ -159,7 +159,20 @@ export const CloningOperationDialog: React.FC<CloningOperationDialogProps> = ({
     }
     return Array.from(counts).filter(([, n]) => n === 1).map(([key]) => key).sort((a, b) => labelOfKey(a).localeCompare(labelOfKey(b)));
   };
-  const typeIIS = REBASE_ENZYMES.filter((e) => e.isTypeIIS).map((e) => enzymeKey(e));
+  /**
+   * The Type IIS keys the Golden Gate menu offers (US-01M7J165): the active list's Type IIS
+   * enzymes, so a stored definition marked Type IIS is offered beside the catalogue's, by its id.
+   */
+  const typeIIS = enzymes.filter((e) => e.isTypeIIS).map((e) => enzymeKey(e));
+  /**
+   * A chosen Type IIS key the menu does not offer - an earlier session's, say: its enzyme's label
+   * and that it is not a Type IIS enzyme, or, with no enzyme of that key left, that the definition
+   * is gone, so no bare `custom:` id is ever shown.
+   */
+  const unlistedTypeIISLabel = (key: string) => {
+    const e = byKey.get(key);
+    return e ? `${enzymeLabel(e)} (not a Type IIS enzyme)` : labelOfKey(key);
+  };
 
   return (
     <OperationDialog
@@ -220,6 +233,9 @@ export const CloningOperationDialog: React.FC<CloningOperationDialogProps> = ({
             {v.method === 'Golden Gate (Type IIS)' && (
               <OptionRow label="Type IIS enzyme:" htmlFor="opdlg-cl-iis">
                 <select id="opdlg-cl-iis" value={String(v.typeIIS)} onChange={(e) => set('typeIIS', e.target.value)}>
+                  {!typeIIS.includes(String(v.typeIIS)) && (
+                    <option value={String(v.typeIIS)}>{unlistedTypeIISLabel(String(v.typeIIS))}</option>
+                  )}
                   {typeIIS.map((k) => <option key={k} value={k}>{labelOfKey(k)}</option>)}
                 </select>
               </OptionRow>

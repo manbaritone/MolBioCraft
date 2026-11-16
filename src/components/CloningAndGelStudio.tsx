@@ -666,6 +666,27 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
     [enzymes]
   );
 
+  /**
+   * The options the Type IIS select lists (US-01M7J165): the active list's Type IIS enzymes, each
+   * by its key and its label, so a custom definition marked Type IIS is its own option and marked
+   * "(custom)". A stored definition carries no incubation temperature, so nothing stands where a
+   * built-in's would, as nothing stands where its buffer would in the 5'/3' menus - a temperature
+   * it never recorded is never shown for it.
+   */
+  const typeIISEnzymeOptions = useMemo(
+    () =>
+      enzymes
+        .filter((e) => e.isTypeIIS)
+        .map((e) => (
+          <option key={enzymeKey(e)} value={enzymeKey(e)}>
+            {enzymeLabel(e)} ({e.recognitionSeq}) — {isCustomEnzyme(e) ? '' : `${e.tempC}°C`}
+          </option>
+        )),
+    [enzymes]
+  );
+  /** The keys the Type IIS select offers, so a chosen one that has left it can still be named. */
+  const typeIISKeys = useMemo(() => enzymes.filter((e) => e.isTypeIIS).map((e) => enzymeKey(e)), [enzymes]);
+
   /** The methods whose reaction the studio sets up with a 5' and a 3' restriction enzyme. */
   const usesRestrictionEnzymes =
     cloningMethod === 'Restriction Ligation' ||
@@ -733,11 +754,10 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
           value={goldenGateEnz}
           onChange={(e) => setGoldenGateEnz(e.target.value)}
         >
-          {REBASE_ENZYMES.filter((e) => e.isTypeIIS).map((e) => (
-            <option key={e.name} value={e.name}>
-              {e.name} ({e.recognitionSeq}) — {e.tempC}°C
-            </option>
-          ))}
+          {!typeIISKeys.includes(goldenGateEnz) && (
+            <option value={goldenGateEnz}>{labelOfKey(goldenGateEnz)}</option>
+          )}
+          {typeIISEnzymeOptions}
         </select>
       </label>
       <div className="info-callout">

@@ -373,3 +373,104 @@ fn us_01m7hrv4_ac3_a_definitions_source_is_what_marks_its_label() {
     assert_eq!(e.source, EnzymeSource::Custom);
     assert_eq!(molbiocraft_cloning::rebase_catalog::enzyme_label(&e), "EcoRI (custom)");
 }
+
+// ─── US-01M7J165: Golden Gate assembled with a stored custom Type IIS definition ───
+
+/// Poly-C filler: it holds no motif below and no reverse complement of one, and carries no Dam
+/// (GATC) or Dcm (CCWGG) context; a definition declares no methylation sensitivity here, so no
+/// site planted beside it is ever read as blocked.
+fn cs(n: usize) -> String {
+    "C".repeat(n)
+}
+
+/// Adaeze's own Type IIS enzyme: a 7-nt motif, the top-strand cut 1 nt past it (`cut_fwd` 8) and
+/// the bottom-strand cut 4 nt further (`cut_rev` 12), so it leaves a 4-nt 5' overhang outside its
+/// recognition site - BsaI-HFv2's geometry over a motif of her own.
+fn ada_iis() -> RestrictionEnzyme {
+    custom("iis", "AdaIIS", "CTGCCGA", 8, 12, true)
+}
+/// The same definition NOT marked Type IIS, so only the flag differs.
+fn ada_not_iis() -> RestrictionEnzyme {
+    custom("flat", "AdaFlat", "CTGCCGA", 8, 12, false)
+}
+
+/// The 16 bp the construct opens with, and the 22 bp it ends with: the vector's two backbone
+/// stretches, outside both of its sites.
+const X: usize = 16;
+const Y: usize = 22;
+/// The part's own 16 bp between its overhangs. It begins "GA", which with the backbone's last C and
+/// the TGCC overhang spells CTGCCGA again once the two are joined - the residual site, present in
+/// neither input (the vector reads C TGCC A, the part A TGCC GA).
+const INNER: &str = "GATGAAACCCGGGTAA";
+
+/// The vector, 70 bp circular: a reverse-strand site whose overhang is TGCC and a forward-strand
+/// site whose overhang is GCTT, pointing at each other, so the backbone between them is site-free.
+fn iis_vector() -> SequenceDocument {
+    let seq = format!("{}TGCCA{}{}{}AGCTT{}", cs(X), "TCGGCAG", cs(8), "CTGCCGA", cs(Y));
+    assert_eq!(seq.len(), X + 5 + 7 + 8 + 7 + 5 + Y);
+    assert_eq!(seq.len(), 70);
+    doc("pIIS", seq, Topology::Circular)
+}
+/// The part, 41 bp linear: its two sites release TGCC + INNER + GCTT, the vector's own overhangs.
+fn iis_part() -> SequenceDocument {
+    let seq = format!("TT{}ATGCC{}GCTTA{}TT", "CTGCCGA", INNER, "TCGGCAG");
+    assert_eq!(seq.len(), 2 + 7 + 5 + INNER.len() + 5 + 7 + 2);
+    doc("pPart", seq, Topology::Linear)
+}
+/// The construct: the vector's two backbone stretches with the part's fragment between them, both
+/// recognition sites excised - 16 + (4 + 16 + 4) + 22 = 62 bp.
+fn iis_construct() -> String {
+    format!("{}TGCC{}GCTT{}", cs(X), INNER, cs(Y))
+}
+
+/// Golden Gate with a `custom:` Type IIS id: the definition's own construct, its two overhangs, its
+/// own words, and the residual-site warning its motif earns at the new junction.
+#[test]
+fn us_01m7j165_golden_gate_assembles_with_a_custom_type_iis_definition() {
+    let (v, i) = (iis_vector(), iis_part());
+    let r = clone_with(&v, &i, "Golden Gate (Type IIS)", "", "", "custom:iis", &[ada_iis()]);
+    assert!(r.success, "{:?}", r.warnings);
+    assert_eq!(r.construct_document.sequence, iis_construct());
+    assert_eq!(r.construct_document.sequence.len(), 62);
+    assert_eq!(r.construct_document.topology, Topology::Circular);
+    assert_eq!(r.overhang_or_homology_left, "5'-TGCC-3'");
+    assert_eq!(r.overhang_or_homology_right, "5'-GCTT-3'");
+    // Each piece runs from cut to cut, so one overhang travels with each: the part's fragment is
+    // TGCC + INNER (20 bp) and the backbone GCTT + Y + X (42 bp), 62 bp once they are joined.
+    assert_eq!(
+        r.summary,
+        "AdaIIS (custom) Golden Gate: 20 bp part joined to the 42 bp backbone through TGCC/GCTT overhangs: 62 bp construct."
+    );
+    assert_eq!(
+        r.warnings,
+        vec!["The product still contains a AdaIIS (custom) site and would be re-cut during cycling.".to_string()]
+    );
+    assert_eq!(
+        r.construct_document.history.last().map(|h| h.operation.clone()),
+        Some("Golden Gate Assembly (AdaIIS (custom))".to_string())
+    );
+    // Neither recognition site survives, and the motif's own count says the definition was read.
+    assert!(!r.construct_document.sequence.contains("TCGGCAG"));
+    assert_eq!(r.construct_document.sequence.matches("CTGCCGA").count(), 1);
+
+    // Without the definition the same id is unknown, so the construct above is the definition's.
+    let bare = clone6(&v, &i, "Golden Gate (Type IIS)", "", "", "custom:iis");
+    assert!(!bare.success);
+    assert_eq!(bare.warnings[0], "Unknown enzyme \"custom:iis\".");
+    assert_eq!(bare.construct_document.sequence, v.sequence);
+}
+
+/// A custom definition that is not marked Type IIS is refused by its label, however it cuts: only
+/// the flag differs from the definition that assembles above.
+#[test]
+fn us_01m7j165_a_custom_definition_that_is_not_type_iis_is_refused_by_its_label() {
+    let (v, i) = (iis_vector(), iis_part());
+    let r = clone_with(&v, &i, "Golden Gate (Type IIS)", "", "", "custom:flat", &[ada_not_iis()]);
+    assert!(!r.success);
+    assert_eq!(r.warnings[0], "AdaFlat (custom) is not a Type IIS enzyme.");
+    assert_eq!(r.construct_document.sequence, v.sequence);
+    // A catalogue Type II enzyme is refused the same way, by its bare name.
+    let b = clone6(&v, &i, "Golden Gate (Type IIS)", "", "", "EcoRI");
+    assert!(!b.success);
+    assert_eq!(b.warnings[0], "EcoRI is not a Type IIS enzyme.");
+}
