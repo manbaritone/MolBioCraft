@@ -207,13 +207,23 @@ export function sequenceRevision(sequence: string, topology: 'circular' | 'linea
 }
 
 /**
- * A restriction site's occurrence id: its enzyme, 1-based recognition position, strand and the
+ * The key an enzyme's display choices, site count and unique-cutter judgement are kept under
+ * (US-01M7GQZ6): its id, so a custom definition (`custom:<uuid>`) never shares a built-in's of the
+ * same name; an enzyme with no id keys by its name. A built-in's id is its catalogue name
+ * (US-01M7DV1V), so every built-in key is its name, as it was.
+ */
+export function enzymeKey(enzyme: { id?: string; name: string }): string {
+  return enzyme.id ?? enzyme.name;
+}
+
+/**
+ * A restriction site's occurrence id: its enzyme's {@link enzymeKey}, 1-based recognition position, strand and the
  * {@link sequenceRevision} of the molecule it was scanned on, never its place in a list. A rescan
  * of the same sequence gives every site the id it had; after an edit every site has a new id, a
  * site that only moved included, so a choice made on one revision never lands on another site.
  */
 export function siteOccurrenceId(site: RestrictionCutSite, revision: string): string {
-  return `${site.enzyme.name}@${site.position}${site.strand === -1 ? '-' : '+'}#${revision}`;
+  return `${enzymeKey(site.enzyme)}@${site.position}${site.strand === -1 ? '-' : '+'}#${revision}`;
 }
 
 /**
@@ -227,9 +237,12 @@ export function siteOccurrenceId(site: RestrictionCutSite, revision: string): st
 export interface SiteVisibility {
   /** The {@link sequenceRevision} the occurrence choices were made on. */
   revision: string;
-  /** Enzymes the user hid, by name, sorted. Enzyme choices outlive edits. */
+  /**
+   * Enzymes the user hid, by {@link enzymeKey}, sorted; a session saved before enzyme ids names each
+   * built-in by its name, which is its id. Enzyme choices outlive edits.
+   */
   hiddenEnzymes: string[];
-  /** Occurrence choices by {@link siteOccurrenceId}: the site's enzyme and whether it is shown. */
+  /** Occurrence choices by {@link siteOccurrenceId}: the site's enzyme (its {@link enzymeKey}) and whether it is shown. */
   occurrences: Record<string, { enzyme: string; shown: boolean }>;
 }
 
@@ -238,7 +251,7 @@ export function emptySiteVisibility(revision: string): SiteVisibility {
   return { revision, hiddenEnzymes: [], occurrences: {} };
 }
 
-/** `state` with `enzyme` shown or hidden and its occurrences' own choices cleared. */
+/** `state` with the enzyme keyed `enzyme` (its {@link enzymeKey}) shown or hidden and its occurrences' own choices cleared. */
 export function setEnzymeVisibility(state: SiteVisibility, enzyme: string, visible: boolean): SiteVisibility {
   const others = state.hiddenEnzymes.filter((n) => n !== enzyme);
   const occurrences = Object.fromEntries(Object.entries(state.occurrences).filter(([, o]) => o.enzyme !== enzyme));
@@ -251,10 +264,11 @@ export function setEnzymeVisibility(state: SiteVisibility, enzyme: string, visib
  */
 export function setOccurrenceVisibility(state: SiteVisibility, site: RestrictionCutSite, visible: boolean): SiteVisibility {
   const id = siteOccurrenceId(site, state.revision);
-  const enzymeShown = !state.hiddenEnzymes.includes(site.enzyme.name);
+  const key = enzymeKey(site.enzyme);
+  const enzymeShown = !state.hiddenEnzymes.includes(key);
   const occurrences = { ...state.occurrences };
   if (visible === enzymeShown) delete occurrences[id];
-  else occurrences[id] = { enzyme: site.enzyme.name, shown: visible };
+  else occurrences[id] = { enzyme: key, shown: visible };
   return { revision: state.revision, hiddenEnzymes: [...state.hiddenEnzymes], occurrences };
 }
 
@@ -274,7 +288,7 @@ export interface SiteVisibilityCounts {
  * The sites of `sites` (a scan of the molecule whose revision is `revision`) the maps display, as a
  * new array in scan order, with its counts. It reads `sites` and `state` and changes neither.
  * With `uniqueCuttersOnly`, only an enzyme cutting once is eligible, by `siteCounts` (the scan's
- * complete counts by name) when given, else by its sites in `sites`; the filter limits what is
+ * complete counts by {@link enzymeKey}) when given, else by its sites in `sites`; the filter limits what is
  * shown and leaves every choice in `state` as it was. An occurrence choice made on another revision
  * matches no site here.
  */
@@ -287,17 +301,17 @@ export function applySiteVisibility(
   let counts = options.siteCounts;
   if (!counts) {
     const own: Record<string, number> = {};
-    for (const s of sites) own[s.enzyme.name] = (own[s.enzyme.name] ?? 0) + 1;
+    for (const s of sites) own[enzymeKey(s.enzyme)] = (own[enzymeKey(s.enzyme)] ?? 0) + 1;
     counts = own;
   }
   const hiddenEnzymes = new Set(state.hiddenEnzymes);
   const displayed: RestrictionCutSite[] = [];
   let eligible = 0;
   for (const site of sites) {
-    if (options.uniqueCuttersOnly && counts[site.enzyme.name] !== 1) continue;
+    if (options.uniqueCuttersOnly && counts[enzymeKey(site.enzyme)] !== 1) continue;
     eligible++;
     const own = state.occurrences[siteOccurrenceId(site, revision)];
-    if (own ? own.shown : !hiddenEnzymes.has(site.enzyme.name)) displayed.push(site);
+    if (own ? own.shown : !hiddenEnzymes.has(enzymeKey(site.enzyme))) displayed.push(site);
   }
   return {
     displayed,
@@ -310,7 +324,7 @@ export function applySiteVisibility(
  * topology), as a new state: it keeps the occurrence choices whose id names a site in `sites`
  * scanned on `revision` and drops every other, so a choice made on another revision (every site
  * moved or not) or on a site no longer found is gone, never moved to another site. Enzyme choices
- * are kept, by name.
+ * are kept, by {@link enzymeKey}.
  */
 export function reconcileSiteVisibility(
   state: SiteVisibility,

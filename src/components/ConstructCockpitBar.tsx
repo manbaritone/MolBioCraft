@@ -7,6 +7,7 @@ import {
   tmNoAnswerSentence,
   translateSequence,
 } from '../core/bioEngine';
+import { enzymeKey } from '../core/restrictionDisplay';
 import { formatIntervalLabel, intervalContains, intervalSequence, intervalUnit, renderSegments, selectionInterval } from '../core/activeInterval';
 import type {
   RestrictionCutSite,
@@ -71,6 +72,7 @@ export interface ConstructCockpitBarProps {
   /**
    * Each enzyme's complete site count over what `cutSites` cover (the scan's `siteCounts`,
    * BG-01M6S1K2), which `cutSites` may hold only the first sites of; absent, counted from `cutSites`.
+   * Keyed by each enzyme's `enzymeKey` (US-01M7GQZ6), as `restrictionSiteCountsByName` keys them.
    */
   siteCounts?: Readonly<Record<string, number>>;
   selectedRange: SelectedRange | null;
@@ -97,7 +99,7 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
   const enzymeSiteCounts = useMemo((): Readonly<Record<string, number>> => {
     if (siteCounts) return siteCounts;
     const counts: Record<string, number> = {};
-    for (const cs of cutSites) counts[cs.enzyme.name] = (counts[cs.enzyme.name] ?? 0) + 1;
+    for (const cs of cutSites) counts[enzymeKey(cs.enzyme)] = (counts[enzymeKey(cs.enzyme)] ?? 0) + 1;
     return counts;
   }, [cutSites, siteCounts]);
 
@@ -244,15 +246,16 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
       }
     }
 
-    // Unique restriction enzymes cleaving inside the active interval
+    // Unique restriction enzymes cleaving inside the active interval, one per enzymeKey (US-01M7GQZ6):
+    // a custom enzyme named like a built-in is a cutter of its own, listed by its name.
     const uniqueInSpan: string[] = [];
+    const listed = new Set<string>();
     for (const cs of cutSites) {
-      const ename = cs.enzyme.name;
+      const key = enzymeKey(cs.enzyme);
       const inSpan = iv ? intervalContains(iv, cs.position, seqLen) : cs.position >= start && cs.position <= end;
-      if (enzymeSiteCounts[ename] === 1 && inSpan) {
-        if (!uniqueInSpan.includes(ename)) {
-          uniqueInSpan.push(ename);
-        }
+      if (enzymeSiteCounts[key] === 1 && inSpan && !listed.has(key)) {
+        listed.add(key);
+        uniqueInSpan.push(cs.enzyme.name);
       }
     }
 
@@ -279,7 +282,7 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
 
   // Unique cutters across the entire construct for horizon ticks
   const uniqueCutSites = useMemo(
-    () => cutSites.filter((cs) => enzymeSiteCounts[cs.enzyme.name] === 1).slice(0, 40),
+    () => cutSites.filter((cs) => enzymeSiteCounts[enzymeKey(cs.enzyme)] === 1).slice(0, 40),
     [cutSites, enzymeSiteCounts]
   );
 

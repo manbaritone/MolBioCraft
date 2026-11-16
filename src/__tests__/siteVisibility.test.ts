@@ -96,7 +96,11 @@ describe('US-01M7CC0W AC1: occurrence identity', () => {
     expect(id).toContain(rev);
     expect(siteOccurrenceId({ ...bsa, strand: 1 }, rev)).not.toBe(id);
     expect(siteOccurrenceId({ ...bsa, position: bsa.position + 1 }, rev)).not.toBe(id);
-    expect(siteOccurrenceId({ ...bsa, enzyme: { ...bsa.enzyme, name: 'Eco31I' } }, rev)).not.toBe(id);
+    // The enzyme is named by its id (US-01M7GQZ6): another enzyme is another id; the same enzyme
+    // under another display name is the same site.
+    expect(siteOccurrenceId({ ...bsa, enzyme: { ...bsa.enzyme, id: 'Eco31I', name: 'Eco31I' } }, rev)).not.toBe(id);
+    expect(siteOccurrenceId({ ...bsa, enzyme: { ...bsa.enzyme, id: 'custom:0d9c8b7a-6e5f-4d3c-8b2a-1f0e9d8c7b6a' } }, rev)).not.toBe(id);
+    expect(siteOccurrenceId({ ...bsa, enzyme: { ...bsa.enzyme, name: 'Eco31I' } }, rev)).toBe(id);
     expect(siteOccurrenceId(bsa, sequenceRevision(SEQ + 'A', 'circular'))).not.toBe(id);
     // The cut coordinates are not identity: the same occurrence read with another cut is the same site.
     expect(siteOccurrenceId({ ...bsa, cutTop: bsa.cutTop + 1 }, rev)).toBe(id);

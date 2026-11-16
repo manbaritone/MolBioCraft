@@ -237,10 +237,15 @@ export function scanRestrictionSites(
   });
 }
 
-/** Each scanned enzyme's complete site count by name; an enzyme the scan did not read is absent. */
+/**
+ * Each scanned enzyme's complete site count by its id (US-01M7GQZ6), the key `enzymeKey` gives its
+ * sites: a built-in's id is its name, so a built-in is counted under its name as before, and a custom
+ * definition sharing a built-in's name under its own `custom:` id. An enzyme the scan did not read is
+ * absent.
+ */
 export function restrictionSiteCountsByName(scan: Pick<RestrictionSiteScan, 'siteCounts'>): Record<string, number> {
   const counts: Record<string, number> = {};
-  for (const c of scan.siteCounts) counts[c.enzyme] = c.sites;
+  for (const c of scan.siteCounts) counts[c.enzymeId] = c.sites;
   return counts;
 }
 

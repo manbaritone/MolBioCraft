@@ -111,6 +111,11 @@ export function siteVisibilityForSession(
  * choices kept and every occurrence choice dropped, since none can name a site of the restored
  * sequence. The App then reconciles each document's choices with its scan when it scans it. Anything
  * that is not an object gives none.
+ *
+ * Hidden enzymes and occurrence choices are read back as saved, never re-keyed (US-01M7GQZ6): the
+ * choices are keyed by `enzymeKey`, and a session saved before enzyme ids named each built-in by its
+ * name, which is that built-in's id (US-01M7DV1V), so it opens with the same enzymes hidden and the
+ * same sites shown; a custom enzyme sharing a built-in's name is not hidden by the built-in's choice.
  */
 export function restoredSiteVisibility(
   raw: unknown,

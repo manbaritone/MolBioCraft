@@ -7,6 +7,7 @@ import type { RestrictionCutSite } from '../types/bio';
 import {
   applySiteVisibility,
   cutSiteDisplayPosition,
+  enzymeKey,
   reconcileSiteVisibility,
   setEnzymeVisibility,
   setOccurrenceVisibility,
@@ -29,6 +30,11 @@ export interface PanelOccurrence {
 
 /** One enzyme of the panel, with the occurrences that match the current search and filter. */
 export interface PanelEnzymeRow {
+  /**
+   * The enzyme's {@link enzymeKey} (US-01M7GQZ6): its choices, count and row are kept under it, so a
+   * custom enzyme named like a built-in is a row of its own. A built-in's is its name.
+   */
+  key: string;
   name: string;
   recognitionSeq: string;
   /** The scan's complete count of its sites. */
@@ -56,8 +62,9 @@ export interface PanelMolecule {
 }
 
 /**
- * Every enzyme row that matches `filter`, by name: an enzyme matches when its name holds the
- * search (any case), it is eligible under the unique-cutter filter (cutting once by `siteCounts`),
+ * Every enzyme row that matches `filter`, one per {@link enzymeKey}, by name: an enzyme matches when
+ * its name holds the search (any case), it is eligible under the unique-cutter filter (cutting once
+ * by `siteCounts`, keyed as its sites are),
  * and, with Shown only, at least one of its sites is drawn; Shown only also limits its occurrences
  * to the drawn ones. Every match is returned, however many the panel draws.
  */
@@ -76,20 +83,23 @@ export function displayedSitesRows(
   const query = filter.query.trim().toLowerCase();
   const byEnzyme = new Map<string, RestrictionCutSite[]>();
   for (const s of sites) {
-    const list = byEnzyme.get(s.enzyme.name);
+    const key = enzymeKey(s.enzyme);
+    const list = byEnzyme.get(key);
     if (list) list.push(s);
-    else byEnzyme.set(s.enzyme.name, [s]);
+    else byEnzyme.set(key, [s]);
   }
   const rows: PanelEnzymeRow[] = [];
-  for (const [name, kept] of byEnzyme) {
+  for (const [key, kept] of byEnzyme) {
+    const name = kept[0].enzyme.name;
     if (query && !name.toLowerCase().includes(query)) continue;
-    const siteCount = siteCounts[name] ?? kept.length;
+    const siteCount = siteCounts[key] ?? kept.length;
     if (filter.uniqueCuttersOnly && siteCount !== 1) continue;
     const ordered = [...kept].sort((a, b) => a.position - b.position || a.strand - b.strand);
     const matching = filter.shownOnly ? ordered.filter((s) => drawn.has(s)) : ordered;
     if (matching.length === 0) continue;
     const shownCount = kept.filter((s) => byUser.has(s)).length;
     rows.push({
+      key,
       name,
       recognitionSeq: kept[0].enzyme.recognitionSeq,
       siteCount,
@@ -114,7 +124,7 @@ export function displayedSitesRows(
 export function setRowsVisibility(visibility: SiteVisibility, rows: readonly PanelEnzymeRow[], visible: boolean): SiteVisibility {
   let next = visibility;
   for (const row of rows) {
-    if (row.occurrences.length === row.keptCount) next = setEnzymeVisibility(next, row.name, visible);
+    if (row.occurrences.length === row.keptCount) next = setEnzymeVisibility(next, row.key, visible);
     else for (const o of row.occurrences) next = setOccurrenceVisibility(next, o.site, visible);
   }
   return next;
@@ -122,7 +132,7 @@ export function setRowsVisibility(visibility: SiteVisibility, rows: readonly Pan
 
 /** `visibility` with every enzyme of `rows` back to no choice: shown, its sites' own choices cleared. */
 export function resetRowsVisibility(visibility: SiteVisibility, rows: readonly PanelEnzymeRow[]): SiteVisibility {
-  return rows.reduce((next, row) => setEnzymeVisibility(next, row.name, true), visibility);
+  return rows.reduce((next, row) => setEnzymeVisibility(next, row.key, true), visibility);
 }
 
 /**
@@ -145,7 +155,7 @@ const strandWord = (s: RestrictionCutSite) => (s.strand === -1 ? 'reverse' : 'fo
 export interface DisplayedSitesPanelProps {
   /** The scan's kept sites. */
   sites: readonly RestrictionCutSite[];
-  /** The scan's complete site counts by enzyme name. */
+  /** The scan's complete site counts by enzyme {@link enzymeKey} (`restrictionSiteCountsByName`). */
   siteCounts: Readonly<Record<string, number>>;
   /** The document's choices; the panel reconciles them to `molecule.revision` before reading or writing. */
   visibility: SiteVisibility;
@@ -157,6 +167,7 @@ export interface DisplayedSitesPanelProps {
   onGoToSite: (site: RestrictionCutSite) => void;
   initialQuery?: string;
   initialShownOnly?: boolean;
+  /** The rows open at first, by {@link enzymeKey}. */
   initialExpanded?: readonly string[];
 }
 
@@ -202,8 +213,8 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
   // Every listed checkbox, in the order Tab reaches it.
   const order: string[] = [];
   for (const row of drawnRows) {
-    order.push(`e:${row.name}`);
-    if (row.keptCount > 1 && expanded.has(row.name)) for (const o of row.occurrences) order.push(`o:${o.id}`);
+    order.push(`e:${row.key}`);
+    if (row.keptCount > 1 && expanded.has(row.key)) for (const o of row.occurrences) order.push(`o:${o.id}`);
   }
   /** A checkbox's change: the new choices, remembering the box so focus can follow if its row goes. */
   const choose = (key: string, next: SiteVisibility) => {
@@ -229,11 +240,11 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
     target?.focus();
   });
   const matchWords = `${rows.length.toLocaleString()} matching ${rows.length === 1 ? 'enzyme' : 'enzymes'}`;
-  const toggleExpanded = (name: string) =>
+  const toggleExpanded = (key: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
 
@@ -292,11 +303,11 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
         <ul className="mbc-dsites-list">
           {drawnRows.map((row) => {
             const multi = row.keptCount > 1;
-            const open = multi && expanded.has(row.name);
-            const listId = `mbc-dsites-occ-${row.name.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+            const open = multi && expanded.has(row.key);
+            const listId = `mbc-dsites-occ-${row.key.replace(/[^A-Za-z0-9_-]/g, '_')}`;
             const single = row.occurrences[0];
             return (
-              <li key={row.name} className="mbc-dsites-row">
+              <li key={row.key} className="mbc-dsites-row">
                 <div className="mbc-dsites-enzyme">
                   {multi ? (
                     <button
@@ -305,7 +316,7 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                       aria-expanded={open}
                       aria-controls={listId}
                       aria-label={`${open ? 'Collapse' : 'Expand'} the ${row.keptCount} sites of ${row.name}`}
-                      onClick={() => toggleExpanded(row.name)}
+                      onClick={() => toggleExpanded(row.key)}
                     >
                       {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
                     </button>
@@ -316,10 +327,10 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                     type="checkbox"
                     checked={row.state === 'shown'}
                     aria-checked={row.state === 'mixed' ? 'mixed' : undefined}
-                    ref={boxRef(`e:${row.name}`, row.state === 'mixed')}
+                    ref={boxRef(`e:${row.key}`, row.state === 'mixed')}
                     aria-label={`Show ${row.name} sites on the maps`}
                     onChange={(e) =>
-                      choose(`e:${row.name}`, setEnzymeVisibility(visibility, row.name, row.state === 'mixed' || e.target.checked))
+                      choose(`e:${row.key}`, setEnzymeVisibility(visibility, row.key, row.state === 'mixed' || e.target.checked))
                     }
                   />
                   <span className="mbc-dsites-name">{row.name}</span>

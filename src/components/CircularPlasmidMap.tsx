@@ -14,7 +14,7 @@ import {
   Topology,
 } from '../types/bio';
 import { getResidentTrackOverviewRust } from '../lib/rustBioEngine';
-import { applySiteVisibility, cutSiteDisplayPosition, type SiteVisibility } from '../core/restrictionDisplay';
+import { applySiteVisibility, cutSiteDisplayPosition, enzymeKey, type SiteVisibility } from '../core/restrictionDisplay';
 import { formatIntervalLabel, intervalUnit, normaliseInterval, selectionInterval } from '../core/activeInterval';
 import {
   WHEEL_NOTCH_PX,
@@ -33,7 +33,8 @@ interface CircularPlasmidMapProps {
   /**
    * Each enzyme's complete site count over what `cutSites` cover (the scan's `siteCounts`,
    * BG-01M6S1K2), which `cutSites` may hold only the first sites of: the single cutters and the
-   * plate's site count are read from it. Absent, they are counted from `cutSites`.
+   * plate's site count are read from it. Absent, they are counted from `cutSites`. Keyed by each
+   * enzyme's `enzymeKey` (US-01M7GQZ6), as `restrictionSiteCountsByName` keys them.
    */
   siteCounts?: Readonly<Record<string, number>>;
   orfs: ORFRecord[];
@@ -1173,7 +1174,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     if (siteCounts) return siteCounts;
     const counts: Record<string, number> = {};
     for (const c of cutSites) {
-      counts[c.enzyme.name] = (counts[c.enzyme.name] || 0) + 1;
+      counts[enzymeKey(c.enzyme)] = (counts[enzymeKey(c.enzyme)] || 0) + 1;
     }
     return counts;
   }, [cutSites, siteCounts]);
@@ -1185,13 +1186,13 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     if (isProtein || !siteVisibility) return { userShownCuts: cutSites, hiddenByUser: 0 };
     const shown = applySiteVisibility(cutSites, siteVisibility.revision, siteVisibility.state, { uniqueCuttersOnly: false }).displayed;
     if (showUniqueCuttersOnly) {
-      const once = (list: readonly RestrictionCutSite[]) => list.filter((c) => enzymeCounts[c.enzyme.name] === 1).length;
+      const once = (list: readonly RestrictionCutSite[]) => list.filter((c) => enzymeCounts[enzymeKey(c.enzyme)] === 1).length;
       return { userShownCuts: shown, hiddenByUser: once(cutSites) - once(shown) };
     }
     const kept: Record<string, number> = {};
-    for (const c of cutSites) kept[c.enzyme.name] = (kept[c.enzyme.name] ?? 0) + 1;
+    for (const c of cutSites) kept[enzymeKey(c.enzyme)] = (kept[enzymeKey(c.enzyme)] ?? 0) + 1;
     const unkept = siteVisibility.state.hiddenEnzymes.reduce(
-      (n, name) => n + (kept[name] ? Math.max(0, (enzymeCounts[name] ?? 0) - kept[name]) : 0),
+      (n, key) => n + (kept[key] ? Math.max(0, (enzymeCounts[key] ?? 0) - kept[key]) : 0),
       0
     );
     return { userShownCuts: shown, hiddenByUser: cutSites.length - shown.length + unkept };
@@ -1200,12 +1201,12 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   const displayedCuts = useMemo(() => {
     if (isProtein) return [];
     const filtered = showUniqueCuttersOnly
-      ? userShownCuts.filter((c) => enzymeCounts[c.enzyme.name] === 1)
+      ? userShownCuts.filter((c) => enzymeCounts[enzymeKey(c.enzyme)] === 1)
       : userShownCuts;
     return [...filtered]
       .sort((a, b) => {
-        const ua = enzymeCounts[a.enzyme.name] === 1 ? 0 : 1;
-        const ub = enzymeCounts[b.enzyme.name] === 1 ? 0 : 1;
+        const ua = enzymeCounts[enzymeKey(a.enzyme)] === 1 ? 0 : 1;
+        const ub = enzymeCounts[enzymeKey(b.enzyme)] === 1 ? 0 : 1;
         return ua - ub || a.position - b.position;
       })
       .slice(0, 32);
@@ -1217,7 +1218,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   const plateSiteCount = useMemo(() => {
     if (isProtein) return 0;
     // The sites the user hid are not among them (US-01M7CCGA): the map's note counts those apart.
-    if (showUniqueCuttersOnly) return userShownCuts.filter((c) => enzymeCounts[c.enzyme.name] === 1).length;
+    if (showUniqueCuttersOnly) return userShownCuts.filter((c) => enzymeCounts[enzymeKey(c.enzyme)] === 1).length;
     return (siteCounts ? Object.values(siteCounts).reduce((n, k) => n + k, 0) : cutSites.length) - hiddenByUser;
   }, [cutSites, userShownCuts, hiddenByUser, siteCounts, enzymeCounts, showUniqueCuttersOnly, isProtein]);
   // What a partial or reduced scan covered (BG-01M6RPWR): the map's note names it at every size.
@@ -1369,7 +1370,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     for (const cut of displayedCuts) {
       const cutAt = cutSiteDisplayPosition(cut.cutTop, seqLen, doc.topology === 'circular');
       const angle = (cutAt / seqLen) * 360;
-      const cutsOnce = enzymeCounts[cut.enzyme.name] === 1;
+      const cutsOnce = enzymeCounts[enzymeKey(cut.enzyme)] === 1;
       // Drawn as a unique cutter only when the scan covered the whole molecule.
       const isUnique = cutsOnce && !partialScan;
       const color = cut.methylationBlocked
