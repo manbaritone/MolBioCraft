@@ -12,7 +12,7 @@
 //! from the engine's scanner.
 
 use molbiocraft_cloning::rebase_catalog::{
-    find_non_cutting_enzymes, find_non_cutting_enzymes_for_topology, scan_restriction_sites,
+    find_non_cutting_enzymes, find_non_cutting_enzymes_for_topology, get_rebase_enzymes, scan_restriction_sites,
     RestrictionPositionLimit, RestrictionSiteScan, ORIGIN_WRAP_BASES,
 };
 use molbiocraft_core::types::{RestrictionCutSite, RestrictionEnzyme, Topology};
@@ -413,4 +413,129 @@ fn us_01m7dvy6_ac5_both_matching_paths_agree_and_an_unreadable_motif_is_named() 
     let names = |v: Vec<RestrictionEnzyme>| v.into_iter().map(|e| e.name).collect::<Vec<_>>();
     assert_eq!(names(find_non_cutting_enzymes(&seq, Some(&enzymes))), vec!["MyNone"]);
     assert_eq!(names(find_non_cutting_enzymes_for_topology(&seq, Topology::Linear, Some(&enzymes))), vec!["MyNone"]);
+}
+
+// BG-01M7GN42: the scan reads U as T in a motif, so a motif that equals its own reverse complement
+// once U is read as T is a palindrome, found once per occurrence on the forward strand, and every
+// other U motif is read exactly as its T spelling. A site keeps the motif as the user typed it.
+
+/// The bug's reproduction: EcoRI's site twice in a pUC-like stretch, at 1 and 64.
+const GN42_SEQ: &str =
+    "GAATTCGGATCCAAGCTTGCATGCCTGCAGGTCGACTCTAGAGGATCCCCGGGTACCGAGCTCGAATTCACTGGCCGTCGTTTTACAACGTCGTG";
+
+/// Every reading of `name` plus its site count and blocked count, so two enzymes compare whole.
+fn whole(scan: &RestrictionSiteScan, name: &str) -> (Vec<(usize, i8, usize, usize, String, String, bool)>, Option<(usize, usize)>) {
+    let sites = scan
+        .sites
+        .iter()
+        .filter(|s| s.enzyme.name == name)
+        .map(|s| (s.position, s.strand, s.cut_top, s.cut_bottom, s.overhang_seq.clone(), s.overhang_type.clone(), s.methylation_blocked))
+        .collect();
+    let counted = scan.site_counts.iter().find(|c| c.enzyme == name).map(|c| (c.sites, c.methylation_blocked));
+    (sites, counted)
+}
+
+/// AC1: GAAUUC, gaauuc and GaAuUc report EcoRI-shaped GAATTC's two sites and count, each once on
+/// the forward strand, linear and circular, and each site keeps the motif as it was typed.
+#[test]
+fn bg_01m7gn42_ac1_a_u_spelled_palindrome_reports_the_sites_and_count_of_its_t_spelling() {
+    let t = custom("Thymine", "GAATTC", 1, 5);
+    let spellings = [custom("Uracil", "GAAUUC", 1, 5), custom("Lower", "gaauuc", 1, 5), custom("Mixed", "GaAuUc", 1, 5)];
+    let expected = vec![site(1, 1, 2, 6, "AATT", "5prime"), site(64, 1, 65, 69, "AATT", "5prime")];
+    for topology in [Topology::Linear, Topology::Circular] {
+        let mut enzymes = vec![t.clone()];
+        enzymes.extend(spellings.iter().cloned());
+        let s = scan(GN42_SEQ, topology, &enzymes);
+        assert_eq!(reading(&s, "Thymine"), expected, "{topology:?}: the T spelling, by hand");
+        assert_eq!(count(&s, "Thymine"), Some(2));
+        for u in &spellings {
+            assert_eq!(reading(&s, &u.name), expected, "{topology:?}: {} {}", u.name, u.recognition_seq);
+            assert_eq!(whole(&s, &u.name), whole(&s, "Thymine"), "{topology:?}: {}", u.name);
+            assert_eq!(count(&s, &u.name), Some(2), "{topology:?}: {} counted once per occurrence", u.name);
+            for c in s.sites.iter().filter(|c| c.enzyme.name == u.name) {
+                assert_eq!(c.enzyme.recognition_seq, u.recognition_seq, "a site shows the motif as typed");
+                assert_eq!(c.strand, 1);
+            }
+        }
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        // Alone, each spelling counts the same two sites, and none is listed as a noncutter.
+        for u in &spellings {
+            let alone = scan(GN42_SEQ, topology, std::slice::from_ref(u));
+            assert_eq!(count(&alone, &u.name), Some(2), "{topology:?}: {} alone", u.name);
+        }
+    }
+    assert!(find_non_cutting_enzymes_for_topology(GN42_SEQ, Topology::Linear, Some(&spellings)).is_empty());
+
+    // A degenerate U palindrome is matched base by base (4,096 spellings): its sites are the T
+    // spelling's and the oracle's, forward only, linear and circular.
+    let mut b = bases(300, 0x6e42_0001).into_bytes();
+    for at in [0usize, 90, 200, 291] {
+        b[at + 3..at + 9].copy_from_slice(b"GAATTC");
+    }
+    let planted = String::from_utf8(b).unwrap();
+    let t_deg = custom("ThyDeg", "NNNGAATTCNNN", 4, 8);
+    let u_deg = custom("UraDeg", "NNNgaAUuCNNN", 4, 8);
+    for circular in [false, true] {
+        let topology = if circular { Topology::Circular } else { Topology::Linear };
+        let s = scan(&planted, topology, &[t_deg.clone(), u_deg.clone()]);
+        let truth = oracle(&planted, circular, &t_deg);
+        assert!(truth.len() >= if circular { 4 } else { 3 } && truth.iter().all(|r| r.1 == 1), "{truth:?}");
+        assert_eq!(engine_sites(&s, "UraDeg"), truth, "circular {circular}");
+        assert_eq!(whole(&s, "UraDeg"), whole(&s, "ThyDeg"), "circular {circular}");
+        assert_eq!(count(&s, "UraDeg"), Some(truth.len()));
+    }
+}
+
+/// AC1's boundary: a U motif that is not its own reverse complement (GACUUC, gacuuc) is still read
+/// on both strands, exactly as GACTTC is, so U alone never makes a motif a palindrome.
+#[test]
+fn bg_01m7gn42_ac1_u_spelled_palindrome_rule_leaves_a_non_palindrome_on_both_strands() {
+    let seq = format!("{}GACTTC{}GAAGTC{}", a(4), a(4), a(4));
+    let expected = vec![site(5, 1, 6, 10, "ACTT", "5prime"), site(15, -1, 16, 20, "AAGT", "5prime")];
+    let t = custom("Thymine", "GACTTC", 1, 5);
+    let us = [custom("Uracil", "GACUUC", 1, 5), custom("Lower", "gacuuc", 1, 5)];
+    for topology in [Topology::Linear, Topology::Circular] {
+        let s = scan(&seq, topology, &[t.clone(), us[0].clone(), us[1].clone()]);
+        assert_eq!(reading(&s, "Thymine"), expected, "{topology:?}");
+        for u in &us {
+            assert_eq!(reading(&s, &u.name), expected, "{topology:?}: {}", u.name);
+            assert_eq!(count(&s, &u.name), Some(2), "{topology:?}: {}", u.name);
+        }
+    }
+}
+
+/// AC1 for the catalogue: no built-in motif holds a U, so the scan reads each as before; and every
+/// built-in holding a T, copied with each T written U (upper, then lower case), reports exactly the
+/// built-in's sites, counts and blocked counts, palindromes and non-palindromes alike.
+#[test]
+fn bg_01m7gn42_ac1_u_spelled_palindrome_fix_reads_every_built_in_as_its_u_spelling() {
+    let catalog = get_rebase_enzymes();
+    assert!(catalog.iter().all(|e| !e.recognition_seq.contains(['U', 'u'])), "a built-in holds a U");
+    let seq = bases(6000, 0x6e42_0002);
+    let mut enzymes = Vec::new();
+    for e in catalog.iter().filter(|e| e.recognition_seq.contains('T')) {
+        for (tag, rec) in [("T", e.recognition_seq.clone()), ("U", e.recognition_seq.replace('T', "U")), ("u", e.recognition_seq.replace('T', "u"))] {
+            let mut c = e.clone();
+            c.name = format!("{tag}:{}", e.name);
+            c.recognition_seq = rec;
+            enzymes.push(c);
+        }
+    }
+    assert!(enzymes.len() >= 3 * 100, "{} copies", enzymes.len());
+    let (mut palindromes, mut reverse_sites) = (0usize, 0usize);
+    for topology in [Topology::Linear, Topology::Circular] {
+        let s = scan(&seq, topology, &enzymes);
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        for e in catalog.iter().filter(|e| e.recognition_seq.contains('T')) {
+            let t = whole(&s, &format!("T:{}", e.name));
+            assert!(t.1.is_some(), "{} counted", e.name);
+            assert_eq!(whole(&s, &format!("U:{}", e.name)), t, "{topology:?}: {} as U", e.name);
+            assert_eq!(whole(&s, &format!("u:{}", e.name)), t, "{topology:?}: {} as u", e.name);
+            if revcomp(&e.recognition_seq) == e.recognition_seq && !t.0.is_empty() {
+                palindromes += 1;
+            }
+            reverse_sites += t.0.iter().filter(|r| r.1 == -1).count();
+        }
+    }
+    assert!(palindromes >= 20 && reverse_sites >= 20, "the fixture reaches both: {palindromes} {reverse_sites}");
 }

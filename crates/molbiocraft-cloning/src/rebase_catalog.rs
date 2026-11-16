@@ -639,7 +639,10 @@ fn count_and_keep_sites(
     let mut ac_meta: Vec<(usize, i8, usize)> = Vec::with_capacity(enzymes.len() * 2);
     let mut window_patterns: Vec<(usize, Vec<u8>, i8)> = Vec::new();
     for (e_idx, e) in enzymes.iter().enumerate() {
-        let rec = e.recognition_seq.to_ascii_uppercase();
+        // U is read as T here, once, so the palindrome rule below reads the motif the matcher
+        // reads: GAAUUC is its own reverse complement and is scanned on one strand (BG-01M7GN42).
+        // The enzyme keeps its motif as written, so a site shows the user's own spelling.
+        let rec = e.recognition_seq.to_ascii_uppercase().replace('U', "T");
         if rec.is_empty() || !unreadable[e_idx].is_empty() {
             continue;
         }
