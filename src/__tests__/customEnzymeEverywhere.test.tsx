@@ -156,6 +156,17 @@ const uniqueList = (app: AppHarness) => app.all('.mbc-enzyme-cloud .mbc-enz-pill
 const restrictionNotes = (app: AppHarness) => app.all('.mbc-accordion-body .mbc-summary-note').map((n) => words(n.textContent));
 const onceListName = (app: AppHarness) =>
   words(app.all('.mbc-accordion-body label.mbc-check-row span').map((s) => words(s.textContent)).find((t) => /^(Cutting once|Unique Single-Cutters)/.test(t)));
+/** The Enzymes view's own scope words: its single-cutter tab and its note (inside the viewer canvas). */
+const enzymesViewWords = (app: AppHarness) => ({
+  tabs: app.canvas().querySelectorAll('button.method-tab-btn').map((b) => words(b.textContent)),
+  notes: app.canvas().querySelectorAll('.mbc-summary-note').map((n) => words(n.textContent)),
+});
+/** The Sequence tab's selection readout, or null with nothing selected. */
+const selectionReadout = (app: AppHarness) => {
+  const found = app.all('.mbc-selection-readout');
+  expect(found.length).toBeLessThanOrEqual(1);
+  return found.length ? words(found[0].textContent) : null;
+};
 /** The App's own notices naming the enzyme store, outside the Restriction Enzymes window. */
 const storeNotices = (app: AppHarness) =>
   app.all('[role="alert"]').filter((n) => !n.closest('[aria-labelledby="enzyme-db-title"]') && (n.textContent ?? '').includes(ENZ_KEY));
@@ -222,6 +233,14 @@ describe('US-01M7DV52 AC1: a stored definition is reported, marked as custom, on
       expect(panelNames(app)).toContain('AdaI (custom)');
       expect(panelBoxes(app)).toContain('Show AdaI (custom) sites on the maps');
       expect(uniqueList(app)).toContain('AdaI (custom)');
+      // The circular map's hover title ends " (custom)" for the custom site, never for a built-in's.
+      const titles = app.all('svg.plasmid-svg title').map((t) => words(t.textContent));
+      const adaTitles = titles.filter((t) => t.startsWith(`AdaI (${ADA.recognitionSeq}) cuts after ${cutAt} `));
+      expect(adaTitles).toHaveLength(1);
+      expect(adaTitles[0]).toMatch(/ overhang [A-Z]+\) \(custom\)$/);
+      const bamTitles = titles.filter((t) => t.startsWith('BamHI (GGATCC) cuts after '));
+      expect(bamTitles).toHaveLength(1);
+      expect(bamTitles[0]).toMatch(/ overhang [A-Z]+\)$/);
       // A built-in's own words are unchanged beside it.
       expect(panelBoxes(app)).toContain('Show BamHI sites on the maps');
       expect(panelNames(app)).not.toContain('BamHI (custom)');
@@ -278,6 +297,10 @@ describe('US-01M7DV52 AC2: the core cut follows the length the scan reads, and n
       expect(sentNames(scans()[scans().length - 1].custom)).toEqual([...catalogueIds(CORE_CATALOG_LEN), 'custom:seed-1', 'custom:seed-2']);
       expect(rows.find((r) => r.name === 'AdaI (custom)')?.cuts).toBe('1');
       expect(rows.find((r) => r.name === REBASE_ENZYMES[CORE_CATALOG_LEN].name)?.cuts).toBe('not scanned');
+      // The Enzymes view's own words name the custom definitions beside the core set (BG-01M7H719).
+      const view = enzymesViewWords(app);
+      expect(view.tabs).toContain(`Cutting once among ${CORE_CATALOG_LEN} core enzymes plus 2 custom`);
+      expect(view.notes).toContain(`Only ${CORE_CATALOG_LEN} core enzymes and your 2 custom enzymes were scanned: other built-in enzymes may also cut this sequence.`);
     });
   });
 
@@ -306,6 +329,10 @@ describe('US-01M7DV52 AC2: the core cut follows the length the scan reads, and n
       expect(scans()[scans().length - 1].custom).toBeNull();
       expect(restrictionNotes(app)).toContain(`Only ${CORE_CATALOG_LEN} core enzymes were scanned: other enzymes may also cut this sequence.`);
       expect(onceListName(app)).toMatch(new RegExp(`^Cutting once among ${CORE_CATALOG_LEN} core enzymes \\(\\d+\\)$`));
+      await enzymesView(app);
+      const view = enzymesViewWords(app);
+      expect(view.tabs).toContain(`Cutting once among ${CORE_CATALOG_LEN} core enzymes`);
+      expect(view.notes).toContain(`Only ${CORE_CATALOG_LEN} core enzymes were scanned: other enzymes may also cut this sequence.`);
     });
   });
 });
@@ -320,20 +347,36 @@ describe('US-01M7DV52 AC3: a custom noncutter is a noncutter only when it was sc
   const noneEnzyme: RestrictionEnzyme = { ...unreadable, id: 'custom:none-1', name: 'NoneI', recognitionSeq: NONE.recognitionSeq, cutFwd: 6, cutRev: 6 };
   const doc = docOf('pAda', SMALL);
 
-  it('US-01M7DV52 AC3 in the Enzymes view a scanned custom noncutter reads as a noncutter and an unread motif as not scanned', () => {
-    // An Enzyme Set document opens on its set, so the rows named in it are listed whatever they cut.
-    const setDoc: SequenceDocument = { ...doc, docMetadata: { ...(doc.docMetadata ?? {}), 'Document Type': 'Enzyme Set', 'Enzyme Names': 'NoneI, BadI, BamHI' } };
-    const html = ui.renderToStaticMarkup(<ui.HybridToolsAndHistoryStudio doc={setDoc} allDocuments={[setDoc]} initialSubTab="enzymes-view" enzymes={[...REBASE_ENZYMES, noneEnzyme, unreadable]} />);
-    const tbody = html.slice(html.indexOf('<tbody', html.indexOf('Restriction Enzymes Cleavage Sites Table')));
-    const rows = [...tbody.matchAll(/<tr[\s\S]*?<\/tr>/g)].map((m) => {
-      const cells = [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].replace(/<[^>]+>/g, ' ').replace(/&#x27;/g, "'").replace(/\s+/g, ' ').trim());
-      return { name: cells[0], cuts: cells[5], positions: cells[6] };
+  it('US-01M7DV52 AC3 in the Enzymes view a scanned custom noncutter reads as a noncutter and an unread motif as not scanned', async () => {
+    // A motif the scan cannot read never reaches the store, so the view is handed the list here,
+    // drawn in the live page beside a mounted App, and its All tab chosen as a user does.
+    await withDoc(memoryStorage(), doc, async (app) => {
+      const { createRoot } = await import('react-dom/client');
+      const host = app.doc.createElement('div');
+      app.doc.body.appendChild(host);
+      const root = createRoot(host as unknown as Element);
+      try {
+        await act(async () => {
+          root.render(<ui.HybridToolsAndHistoryStudio doc={doc} allDocuments={[doc]} initialSubTab="enzymes-view" enzymes={[...REBASE_ENZYMES, noneEnzyme, unreadable]} />);
+        });
+        const allTab = host.querySelectorAll('button.method-tab-btn').find((b) => words(b.textContent) === 'All REBASE Commercial');
+        if (!allTab) throw new Error('no All tab');
+        await app.click(allTab);
+        await app.settle();
+        const rows = host.querySelectorAll('[aria-label="Restriction Enzymes Cleavage Sites Table"] tbody tr').map((tr) => {
+          const td = tr.querySelectorAll('td');
+          return { name: words(td[0].querySelectorAll('strong')[0]?.textContent), cuts: words(td[5].textContent), positions: words(td[6].textContent) };
+        });
+        expect(rows.slice(0, REBASE_ENZYMES.length).map((r) => r.name)).toEqual(REBASE_ENZYMES.map((e) => e.name));
+        expect(rows.slice(REBASE_ENZYMES.length)).toEqual([
+          { name: 'NoneI (custom)', cuts: '0', positions: 'None (Noncutter)' },
+          { name: 'BadI (custom)', cuts: 'not scanned', positions: 'Not scanned: its recognition sequence holds a letter the scan cannot read' },
+        ]);
+      } finally {
+        await act(async () => root.unmount());
+        host.remove();
+      }
     });
-    expect(rows).toEqual([
-      expect.objectContaining({ name: 'BamHI', cuts: '1' }),
-      { name: 'NoneI (custom)', cuts: '0', positions: 'None (Noncutter)' },
-      { name: 'BadI (custom)', cuts: 'not scanned', positions: 'Not scanned: its recognition sequence holds a letter the scan cannot read' },
-    ]);
   });
 
   it('US-01M7DV52 AC3 through the App the Enzymes view reads a stored custom noncutter as a noncutter, never as not scanned', async () => {
@@ -565,5 +608,88 @@ describe('US-01M7DV52 AC5: a custom "EcoRI" beside the built-in EcoRI, end to en
       spy.mockRestore();
     }
     expect(errors.filter((e) => /same key/i.test(e)), 'no two rows share a React key').toEqual([]);
+  });
+});
+
+// ─── Round 2 (the review's findings) ───
+
+describe('US-01M7DV52 AC1: Go to site names the custom enzyme it selects', () => {
+  it('US-01M7DV52 AC1 the panel\'s "Go to EcoRI (custom) site" selects the site as "EcoRI (custom) cuts after N", and a built-in\'s as before', async () => {
+    const mineCut = posOf(SMALL, MINE.recognitionSeq) + MINE.cutFwd - 1;
+    const bamAt = posOf(SMALL, 'GGATCC');
+    await withDoc(seeded([MINE]), docOf('pTwoEco', SMALL), async (app) => {
+      expect(selectionReadout(app)).toBeNull();
+      await app.click(app.one(`[aria-label="Go to EcoRI (custom) site cutting after ${mineCut}"]`, 'the custom row\'s Go to'));
+      expect(selectionReadout(app)).toMatch(new RegExp(` • EcoRI \\(custom\\) cuts after ${mineCut}$`));
+      await app.click(app.one(`[aria-label="Go to BamHI site cutting after ${bamAt}"]`, 'BamHI\'s Go to'));
+      expect(selectionReadout(app)).toBe(`${bamAt.toLocaleString()}..${(bamAt + 5).toLocaleString()} (6 bp) • BamHI cuts after ${bamAt}`);
+    });
+  });
+});
+
+describe('US-01M7DV52 AC5: the Enzymes view ticks a custom "EcoRI" apart from the built-in, and keeps it out of an Enzyme Set', () => {
+  const tickBox = (app: AppHarness, label: string) => {
+    const found = app.all(`[aria-label="Restriction Enzymes Cleavage Sites Table"] input[aria-label="${label}"]`);
+    expect(found, label).toHaveLength(1);
+    return found[0] as LiveElement & { checked: boolean };
+  };
+  const rowOf = (app: AppHarness, label: string) => tickBox(app, label).closest('tr') as LiveElement;
+  const footer = (app: AppHarness) => words(app.one('.enzyme-set-statusbar', 'the selection footer').querySelectorAll('span')[0]?.textContent);
+  const status = (app: AppHarness) => words(app.canvas().querySelectorAll('button.btn-primary-sm').map((b) => b.parentElement?.querySelectorAll('span') ?? []).flat().map((sp) => sp.textContent).join(' '));
+  const tick = async (app: AppHarness, label: string) => {
+    await app.click(rowOf(app, label));
+    await app.settle();
+  };
+  const press = async (app: AppHarness, name: string) => {
+    await app.click(button(app.canvas(), name));
+    await app.settle();
+  };
+
+  it('US-01M7DV52 AC5 ticking "EcoRI (custom)" ticks it alone, the footer counts the ticked rows, and Extract and Save leave the custom row out and say so', async () => {
+    await withDoc(seeded([MINE]), docOf('pTwoEco', SMALL), async (app) => {
+      const rows = await enzymesView(app);
+      const total = rows.length;
+      expect(rows.filter((r) => r.name.startsWith('EcoRI')).map((r) => r.name)).toEqual(['EcoRI', 'EcoRI (custom)']);
+      await tick(app, 'Select EcoRI (custom)');
+      expect([tickBox(app, 'Select EcoRI (custom)').checked, tickBox(app, 'Select EcoRI').checked]).toEqual([true, false]);
+      expect(footer(app)).toBe(`1 of ${total} enzymes selected`);
+      // Only the custom row ticked: nothing is extracted, and the set is left as it was.
+      await press(app, 'Extract Selected Enzymes');
+      expect(status(app)).toContain('Nothing extracted (1 custom enzyme row(s) left out: an Enzyme Set holds built-in enzymes only)');
+      expect(app.all('button.method-tab-btn').map((b) => words(b.textContent))).toContain('Custom Enzyme Set (0)');
+      // The built-in ticked too: two rows, and the set takes the built-in alone.
+      await tick(app, 'Select EcoRI');
+      expect([tickBox(app, 'Select EcoRI (custom)').checked, tickBox(app, 'Select EcoRI').checked]).toEqual([true, true]);
+      expect(footer(app)).toBe(`2 of ${total} enzymes selected`);
+      await press(app, 'Extract Selected Enzymes');
+      expect(status(app)).toContain('Extracted 1 selected enzyme(s) into active Enzyme Set (1 custom enzyme row(s) left out: an Enzyme Set holds built-in enzymes only)');
+      // The Custom Enzyme Set filter lists the built-in EcoRI and never the custom one.
+      const set = enzymeRows(app);
+      expect(set.map((r) => r.name)).toEqual(['EcoRI']);
+      // Saving the set clears the ticks (as before); on the All tab the custom row is ticked alone again.
+      await enzymesView(app);
+      expect(footer(app)).toBe(`0 of ${total} enzymes selected`);
+      await tick(app, 'Select EcoRI (custom)');
+      expect([tickBox(app, 'Select EcoRI (custom)').checked, tickBox(app, 'Select EcoRI').checked]).toEqual([true, false]);
+      expect(footer(app)).toBe(`1 of ${total} enzymes selected`);
+      // Save on the All tab stores the built-ins listed and names the custom row left out.
+      await press(app, 'Save');
+      expect(status(app)).toContain(`Saved Enzyme Set "pTwoEco" (${total - 1} enzymes) (1 custom enzyme row(s) left out: an Enzyme Set holds built-in enzymes only)`);
+    });
+  });
+
+  it('US-01M7DV52 AC5 with nothing stored, ticking, Extract and Save read as before', async () => {
+    await withDoc(memoryStorage(), docOf('pPlain', SMALL), async (app) => {
+      const rows = await enzymesView(app);
+      await tick(app, 'Select EcoRI');
+      await tick(app, 'Select BamHI');
+      expect(footer(app)).toBe(`2 of ${rows.length} enzymes selected`);
+      await press(app, 'Extract Selected Enzymes');
+      expect(status(app)).toBe('Extracted 2 selected enzyme(s) into active Enzyme Set');
+      expect(enzymeRows(app).map((r) => r.name).sort()).toEqual(['BamHI', 'EcoRI']);
+      await enzymesView(app);
+      await press(app, 'Save');
+      expect(status(app)).toBe(`Saved Enzyme Set "pPlain" (${rows.length} enzymes)`);
+    });
   });
 });

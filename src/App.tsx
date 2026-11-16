@@ -2523,7 +2523,7 @@ export const App: React.FC = () => {
       setSelectedRange({
         start: site.position,
         end: site.position + site.enzyme.recognitionSeq.length - 1,
-        label: `${site.enzyme.name} cuts after ${cutSiteDisplayPosition(site.cutTop, activeDoc.sequence.length, activeDoc.topology === 'circular')}`,
+        label: `${enzymeLabel(site.enzyme)} cuts after ${cutSiteDisplayPosition(site.cutTop, activeDoc.sequence.length, activeDoc.topology === 'circular')}`,
       }),
     [activeDoc.sequence.length, activeDoc.topology]
   );

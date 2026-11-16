@@ -236,12 +236,14 @@ describe('US-01M7GQZ6 AC1: the Displayed restriction sites panel', () => {
   it('US-01M7GQZ6 AC1 the custom row\'s checkbox hides the custom "EcoRI" alone, and the built-in\'s the built-in alone', () => {
     const rows = rowsOf(EMPTY);
     const r = renderPanel();
-    const boxes = [...r.labelled('Show EcoRI sites on the maps'), ...r.labelled('Show EcoRI (custom) sites on the maps')];
-    expect(boxes).toHaveLength(2);
-    // The panel draws its rows in the order displayedSitesRows gives them.
-    const ecoRows = rows.filter((row) => row.name === 'EcoRI').map((row) => row.key);
-    r.check(boxes[ecoRows.indexOf(MINE_ID)], false);
-    r.check(boxes[ecoRows.indexOf('EcoRI')], false);
+    // One box per row, each under its own name: the built-in's unmarked, the custom one's marked (US-01M7DV52).
+    const builtInBoxes = r.labelled('Show EcoRI sites on the maps');
+    const customBoxes = r.labelled('Show EcoRI (custom) sites on the maps');
+    expect(builtInBoxes).toHaveLength(1);
+    expect(customBoxes).toHaveLength(1);
+    expect(rows.filter((row) => row.name === 'EcoRI').map((row) => row.key)).toEqual(['EcoRI', MINE_ID]);
+    r.check(customBoxes[0], false);
+    r.check(builtInBoxes[0], false);
     expect(r.changes.map((c) => c.hiddenEnzymes)).toEqual([[MINE_ID], ['EcoRI']]);
     expect(shown(SCAN.sites, r.changes[0])).toEqual([at(ECO1), at(ECO2), at(BAM1)].sort());
     expect(shown(SCAN.sites, r.changes[1])).toEqual([at(BAM1), at(MINE1)].sort());

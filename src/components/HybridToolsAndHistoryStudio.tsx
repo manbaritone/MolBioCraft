@@ -154,6 +154,12 @@ function translatedCoverage(
 
 /** Kyte-Doolittle hydropathy, and the b/y fragment-ion spectrum, both fill a studio card. */
 const HYDRO_PLOT = plotFrame(CHART_FULL);
+/** Whether a row key is a custom definition's (its `custom:` id): a built-in's key is its name. */
+const isCustomEnzymeKey = (key: string) => key.startsWith('custom:');
+/** The words an Enzyme Set action adds when it left custom rows out (US-01M7DV52). */
+const customRowsLeftOut = (n: number) =>
+  n > 0 ? ` (${n} custom enzyme row(s) left out: an Enzyme Set holds built-in enzymes only)` : '';
+
 /** The Enzymes view's count for an enzyme the restriction scan did not read (BG-01M6S1K2). */
 const NOT_SCANNED = 'not scanned';
 const MS2_PLOT = plotFrame({ ...CHART_FULL, h: 280, padL: 52 });
@@ -225,7 +231,9 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     const raw = String(doc.docMetadata?.['Enzyme Names'] ?? '').trim();
     return raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
   });
-  const [selectedEnzymeRowNames, setSelectedEnzymeRowNames] = useState<string[]>([]);
+  // The ticked rows by enzymeKey (US-01M7DV52): a built-in's is its name, so a custom definition
+  // named like a built-in is ticked on its own.
+  const [selectedEnzymeRowKeys, setSelectedEnzymeRowKeys] = useState<string[]>([]);
   const [enzymePickerValue, setEnzymePickerValue] = useState<string>(REBASE_ENZYMES[0]?.name ?? 'EcoRI');
   const [enzymeSetSubView, setEnzymeSetSubView] = useState<'Enzymes' | 'Lineage' | 'Info'>('Enzymes');
   const [enzymeSetStatusMsg, setEnzymeSetStatusMsg] = useState<string | null>(null);
@@ -235,7 +243,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     const raw = String(doc.docMetadata?.['Enzyme Names'] ?? '').trim();
     const parsed = raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
     setCustomEnzymeSetNames(parsed);
-    setSelectedEnzymeRowNames([]);
+    setSelectedEnzymeRowKeys([]);
     if (isEnzDoc) {
       setEnzymeSetFilter('custom_set');
     }
@@ -514,7 +522,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
       const count: number | null = key in counts ? counts[key] : null;
       return { enzyme: enz, count, cuts };
     }).filter((row) => {
-      if (enzymeSetFilter === 'custom_set') return customSetLookup.has(row.enzyme.name);
+      if (enzymeSetFilter === 'custom_set') return !isCustomEnzyme(row.enzyme) && customSetLookup.has(row.enzyme.name);
       if (enzymeSetFilter === 'unique') return row.count === 1;
       if (enzymeSetFilter === 'unique_dual') return row.count === 1 || row.count === 2;
       if (enzymeSetFilter === 'six_plus') return enzLength(row.enzyme.recognitionSeq) >= 6 && (row.count ?? 0) > 0;
@@ -560,16 +568,26 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     persistEnzymeSetToDocument(next, `Added ${enzName} (${next.length} enzymes in set)`);
   };
 
+  /**
+   * An Enzyme Set stores built-in names (US-01M7DV52): the ticked rows' built-in names in the order
+   * they were ticked, and how many ticked custom rows a set action leaves out.
+   */
+  const selectedForSet = () => {
+    const names = selectedEnzymeRowKeys.filter((k) => !isCustomEnzymeKey(k));
+    return { names, customLeftOut: selectedEnzymeRowKeys.length - names.length };
+  };
+
   const handleRemoveSelectedEnzymesFromSet = () => {
-    if (selectedEnzymeRowNames.length === 0) return;
-    const removeSet = new Set(selectedEnzymeRowNames);
+    if (selectedEnzymeRowKeys.length === 0) return;
+    const { names, customLeftOut } = selectedForSet();
+    const removeSet = new Set(names);
     // Edit the saved set itself; the table filter only changes what is shown.
     const baseList = customEnzymeSetNames;
     const next = baseList.filter((n) => !removeSet.has(n));
-    setSelectedEnzymeRowNames([]);
+    setSelectedEnzymeRowKeys([]);
     persistEnzymeSetToDocument(
       next,
-      `Removed ${removeSet.size} selected enzyme(s) (${next.length} remaining)`
+      `Removed ${removeSet.size} selected enzyme(s) (${next.length} remaining)${customRowsLeftOut(customLeftOut)}`
     );
   };
 
@@ -585,11 +603,29 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   };
 
   const handleExtractSelectedEnzymes = () => {
-    if (selectedEnzymeRowNames.length === 0) return;
-    const extracted = [...selectedEnzymeRowNames];
+    if (selectedEnzymeRowKeys.length === 0) return;
+    const { names: extracted, customLeftOut } = selectedForSet();
+    // Only custom rows ticked: the set is left as it is, never emptied.
+    if (extracted.length === 0) {
+      setEnzymeSetStatusMsg(`Nothing extracted${customRowsLeftOut(customLeftOut)}`);
+      return;
+    }
     persistEnzymeSetToDocument(
       extracted,
-      `Extracted ${extracted.length} selected enzyme(s) into active Enzyme Set`
+      `Extracted ${extracted.length} selected enzyme(s) into active Enzyme Set${customRowsLeftOut(customLeftOut)}`
+    );
+  };
+
+  /** The Save button's set: the listed built-ins (custom rows are left out, and counted). */
+  const handleSaveEnzymeSet = () => {
+    if (enzymeSetFilter === 'custom_set') {
+      persistEnzymeSetToDocument(customEnzymeSetNames, `Saved Enzyme Set "${doc.name}" (${filteredEnzymeSummary.length} enzymes)`);
+      return;
+    }
+    const names = filteredEnzymeSummary.filter((r) => !isCustomEnzyme(r.enzyme)).map((r) => r.enzyme.name);
+    persistEnzymeSetToDocument(
+      names,
+      `Saved Enzyme Set "${doc.name}" (${names.length} enzymes)${customRowsLeftOut(filteredEnzymeSummary.length - names.length)}`
     );
   };
 
@@ -1792,7 +1828,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
               <button
                 type="button"
                 className="btn-secondary-sm"
-                disabled={selectedEnzymeRowNames.length === 0}
+                disabled={selectedEnzymeRowKeys.length === 0}
                 onClick={handleRemoveSelectedEnzymesFromSet}
               >
                 &minus; Remove Selected Enzymes
@@ -1807,7 +1843,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
               <button
                 type="button"
                 className="btn-secondary-sm"
-                disabled={selectedEnzymeRowNames.length === 0}
+                disabled={selectedEnzymeRowKeys.length === 0}
                 onClick={handleExtractSelectedEnzymes}
               >
                 Extract Selected Enzymes
@@ -1822,14 +1858,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
               <button
                 type="button"
                 className="btn-primary-sm"
-                onClick={() =>
-                  persistEnzymeSetToDocument(
-                    enzymeSetFilter === 'custom_set'
-                      ? customEnzymeSetNames
-                      : filteredEnzymeSummary.map((r) => r.enzyme.name),
-                    `Saved Enzyme Set "${doc.name}" (${filteredEnzymeSummary.length} enzymes)`
-                  )
-                }
+                onClick={handleSaveEnzymeSet}
               >
                 Save
               </button>
@@ -1967,15 +1996,16 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                       const botSeq = complement(enzyme.recognitionSeq);
                       const botCut =
                         botSeq.slice(0, enzyme.cutRev) + '▲' + botSeq.slice(enzyme.cutRev);
-                      const isRowSelected = selectedEnzymeRowNames.includes(enzyme.name);
+                      const rowKey = enzymeKey(enzyme);
+                      const isRowSelected = selectedEnzymeRowKeys.includes(rowKey);
                       return (
                         <tr
-                          key={enzymeKey(enzyme)}
+                          key={rowKey}
                           onClick={() =>
-                            setSelectedEnzymeRowNames((prev) =>
-                              prev.includes(enzyme.name)
-                                ? prev.filter((n) => n !== enzyme.name)
-                                : [...prev, enzyme.name]
+                            setSelectedEnzymeRowKeys((prev) =>
+                              prev.includes(rowKey)
+                                ? prev.filter((k) => k !== rowKey)
+                                : [...prev, rowKey]
                             )
                           }
                           style={{
@@ -2050,7 +2080,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                   }}
                 >
                   <span>
-                    {selectedEnzymeRowNames.length} of {filteredEnzymeSummary.length} enzymes
+                    {selectedEnzymeRowKeys.length} of {filteredEnzymeSummary.length} enzymes
                     selected
                   </span>
                   <span>
