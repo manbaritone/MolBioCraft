@@ -11,11 +11,12 @@
 import React, { useMemo } from 'react';
 import { OperationDialog, OptionRow } from './OperationDialog';
 import { ORF_NOTE, runDeNovo, runFindOrfs, runMapToReferences, runValidateClone } from '../core/operationRunners';
-import { findRestrictionCutSites, simulateMolecularCloning } from '../core/bioEngine';
+import { CUSTOM_ENZYME_NO_LONGER_STORED, cloningCustomEnzymes, enzymeLabel, findRestrictionCutSites, simulateMolecularCloning } from '../core/bioEngine';
+import { enzymeKey } from '../core/restrictionDisplay';
 import { mapReadsToReference } from '../core/referenceMapping';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
-import { restrictionScanScope, restrictionScopeWords } from './CircularPlasmidMap';
-import type { CloningMethodType, SequenceDocument, SequenceFeature } from '../types/bio';
+import { customEnzymeCount, restrictionScanEnzymes, restrictionScanScope, restrictionScopeWords } from './CircularPlasmidMap';
+import type { CloningMethodType, RestrictionEnzyme, SequenceDocument, SequenceFeature } from '../types/bio';
 
 const now = () => new Date().toISOString();
 const uid = (p: string) => `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -111,6 +112,8 @@ export const CLONING_METHODS: { value: CloningMethodType; hint: string }[] = [
 
 export interface CloningOperationDialogProps {
   candidates: SequenceDocument[];
+  /** The active enzyme list (US-01M7HRV4): the catalogue, then every stored custom definition. */
+  enzymes?: RestrictionEnzyme[];
   initialVectorId?: string;
   initialInsertId?: string;
   onCreate: (doc: SequenceDocument, summary: string) => void;
@@ -119,7 +122,7 @@ export interface CloningOperationDialogProps {
 }
 
 export const CloningOperationDialog: React.FC<CloningOperationDialogProps> = ({
-  candidates, initialVectorId, initialInsertId, onCreate, onClose, onDownload,
+  candidates, enzymes = REBASE_ENZYMES, initialVectorId, initialInsertId, onCreate, onClose, onDownload,
 }) => {
   const dna = candidates.filter((d) => d.moleculeType === 'DNA' && d.sequence.length > 0);
   const vectorDefault = initialVectorId && dna.some((d) => d.id === initialVectorId)
@@ -127,15 +130,36 @@ export const CloningOperationDialog: React.FC<CloningOperationDialogProps> = ({
   const insertDefault = initialInsertId && initialInsertId !== vectorDefault && dna.some((d) => d.id === initialInsertId)
     ? initialInsertId : dna.find((d) => d.id !== vectorDefault)?.id ?? '';
   const byId = useMemo(() => new Map(dna.map((d) => [d.id, d])), [dna]);
+  const byKey = useMemo(() => {
+    const m = new Map<string, RestrictionEnzyme>();
+    for (const e of REBASE_ENZYMES) m.set(enzymeKey(e), e);
+    for (const e of enzymes) m.set(enzymeKey(e), e);
+    return m;
+  }, [enzymes]);
+  /** A chosen key's words: its enzyme's label, or, for a `custom:` key no longer stored, that it is gone. */
+  const labelOfKey = (key: string) => {
+    const e = byKey.get(key);
+    if (e) return enzymeLabel(e);
+    return key.startsWith('custom:') ? CUSTOM_ENZYME_NO_LONGER_STORED : key;
+  };
+  /**
+   * The vector's unique cutters, by key: the active list is scanned, so a custom definition is
+   * counted as its own enzyme and never merged with the built-in of its name. A list sent to the
+   * engine bypasses its own core cut, so `restrictionScanEnzymes` applies that cut here.
+   */
   const uniqueCuttersOf = (doc?: SequenceDocument) => {
     if (!doc) return [] as string[];
     const counts = new Map<string, number>();
-    for (const s of findRestrictionCutSites(doc.sequence, doc.topology === 'circular' ? 'circular' : 'linear')) {
-      if (!s.methylationBlocked) counts.set(s.enzyme.name, (counts.get(s.enzyme.name) ?? 0) + 1);
+    for (const s of findRestrictionCutSites(
+      doc.sequence,
+      doc.topology === 'circular' ? 'circular' : 'linear',
+      restrictionScanEnzymes(enzymes, doc.sequence.length)
+    )) {
+      if (!s.methylationBlocked) counts.set(enzymeKey(s.enzyme), (counts.get(enzymeKey(s.enzyme)) ?? 0) + 1);
     }
-    return Array.from(counts).filter(([, n]) => n === 1).map(([name]) => name).sort();
+    return Array.from(counts).filter(([, n]) => n === 1).map(([key]) => key).sort((a, b) => labelOfKey(a).localeCompare(labelOfKey(b)));
   };
-  const typeIIS = REBASE_ENZYMES.filter((e) => e.isTypeIIS).map((e) => e.name);
+  const typeIIS = REBASE_ENZYMES.filter((e) => e.isTypeIIS).map((e) => enzymeKey(e));
 
   return (
     <OperationDialog
@@ -158,7 +182,12 @@ export const CloningOperationDialog: React.FC<CloningOperationDialogProps> = ({
         const unique = v.method === 'Restriction Ligation' ? uniqueCuttersOf(vector) : [];
         // The engine scans a vector of more than 100,000 bp with its core enzymes only
         // (BG-01M6S1D2), so its single cutters are named for those, in the map's words.
-        const scopeWords = vector ? restrictionScopeWords(restrictionScanScope(vector.sequence.length), vector.sequence.length) : null;
+        const scopeWords = vector
+          ? restrictionScopeWords(
+              restrictionScanScope(vector.sequence.length, vector.sequence.length, customEnzymeCount(enzymes)),
+              vector.sequence.length
+            )
+          : null;
         const docSelect = (id: string, key: string) => (
           <select id={id} value={String(v[key])} onChange={(e) => set(key, e.target.value)}>
             {dna.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.sequence.length.toLocaleString()} bp, {d.topology})</option>)}
@@ -167,9 +196,9 @@ export const CloningOperationDialog: React.FC<CloningOperationDialogProps> = ({
         const enzSelect = (key: string, label: string) => (
           <select aria-label={label} value={String(v[key])} onChange={(e) => set(key, e.target.value)}>
             {!unique.includes(String(v[key])) && (
-              <option value={String(v[key])}>{`${String(v[key])} (not a unique cutter ${scopeWords ? scopeWords.once : 'in the vector'})`}</option>
+              <option value={String(v[key])}>{`${labelOfKey(String(v[key]))} (not a unique cutter ${scopeWords ? scopeWords.once : 'in the vector'})`}</option>
             )}
-            {unique.map((n) => <option key={n} value={n}>{n}</option>)}
+            {unique.map((k) => <option key={k} value={k}>{labelOfKey(k)}</option>)}
           </select>
         );
         return (
@@ -191,7 +220,7 @@ export const CloningOperationDialog: React.FC<CloningOperationDialogProps> = ({
             {v.method === 'Golden Gate (Type IIS)' && (
               <OptionRow label="Type IIS enzyme:" htmlFor="opdlg-cl-iis">
                 <select id="opdlg-cl-iis" value={String(v.typeIIS)} onChange={(e) => set('typeIIS', e.target.value)}>
-                  {typeIIS.map((n) => <option key={n} value={n}>{n}</option>)}
+                  {typeIIS.map((k) => <option key={k} value={k}>{labelOfKey(k)}</option>)}
                 </select>
               </OptionRow>
             )}
@@ -206,8 +235,9 @@ export const CloningOperationDialog: React.FC<CloningOperationDialogProps> = ({
       onRun={(v) => {
         const vector = byId.get(String(v.vectorId))!;
         const insert = byId.get(String(v.insertId))!;
+        const keys = [String(v.enzyme5), String(v.enzyme3), String(v.typeIIS)];
         const out = simulateMolecularCloning(vector, insert, String(v.method) as CloningMethodType,
-          String(v.enzyme5), String(v.enzyme3), String(v.typeIIS));
+          keys[0], keys[1], keys[2], cloningCustomEnzymes(keys, enzymes));
         if (!out.success) throw new Error([out.summary, ...out.warnings.slice(1)].join(' '));
         const t = now();
         const c = out.constructDocument;

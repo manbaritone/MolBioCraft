@@ -502,8 +502,9 @@ describe('US-01M7DV52 AC4: a store write in Databases > Restriction Enzymes reac
     });
   });
 
-  // The Digest dialog's half moved to US-01M7HRCD AC6 below: that dialog now offers custom enzymes.
-  it('US-01M7DV52 AC4 the Digest dialog and the restriction-cloning picker still offer the catalogue only', async () => {
+  // US-01M7DV52 AC4's Digest-dialog half moved to US-01M7HRCD AC6 below and its cloning half to
+  // US-01M7HRV4 AC7 here: both windows now offer custom enzymes, each marked.
+  it('US-01M7HRV4 AC7 the restriction-cloning picker offers "AdaI (custom)" as its own option when it is a unique cutter in the vector', async () => {
     await withDoc(seeded([ADA, MINE]), docOf('pAda', SMALL), async (app) => {
       expect(panelNames(app)).toContain('AdaI (custom)');
       // The restriction-cloning dialog's unique-cutter pickers, over this vector.
@@ -513,7 +514,16 @@ describe('US-01M7DV52 AC4: a store write in Databases > Restriction Enzymes reac
       const options = app.all('select option').map((o) => words(o.textContent));
       expect(options.length).toBeGreaterThan(before);
       expect(options).toContain('BamHI');
-      expect(options.some((o) => /AdaI|\(custom\)/.test(o))).toBe(false);
+      // AdaI cuts this vector once, so it is offered - as its own option, marked, never as its id.
+      expect(options).toContain('AdaI (custom)');
+      expect(options.filter((o) => o.startsWith('AdaI'))).toEqual(['AdaI (custom)', 'AdaI (custom)']);
+      expect(options.filter((o) => o.includes('custom:'))).toEqual([]);
+      const menus = app.all('select[aria-label="5\' enzyme"], select[aria-label="3\' enzyme"]');
+      expect(menus, "the window's 5' and 3' enzyme menus").toHaveLength(2);
+      for (const menu of menus) {
+        const own = menu.querySelectorAll('option').map((o) => words(o.textContent));
+        expect(own, "each menu offers it").toContain('AdaI (custom)');
+      }
     });
   });
 

@@ -11,12 +11,13 @@
 //! the cloning are dropped and counted in the warnings.
 
 use crate::cloning_crispr::CloningOutcome;
-use crate::rebase_catalog::{get_rebase_enzymes, scan_restriction_sites, RestrictionPositionLimit};
+use crate::rebase_catalog::{enzyme_label, get_rebase_enzymes, scan_restriction_sites, RestrictionPositionLimit};
 use crate::thermodynamics::calculate_primer_metrics;
 use molbiocraft_core::{
     clean_alpha_sequence, reverse_complement_iupac, FeatureSegment, HistoryTreeNode, InsertedRange,
     MoleculeType, RestrictionCutSite, RestrictionEnzyme, SequenceDocument, SequenceFeature, Topology,
 };
+use molbiocraft_core::types::CUSTOM_ENZYME_ID_PREFIX;
 
 /// A linear stretch of DNA with the features that lie wholly inside it (1-based, inclusive).
 #[derive(Clone, Default)]
@@ -167,6 +168,23 @@ fn rotate(p: &Piece, origin0: usize) -> Piece {
     Piece { seq, feats }
 }
 
+/// The enzyme an enzyme field of `simulate_molecular_cloning` names (US-01M7HRV4, D0153): a
+/// `custom:` id against the definitions supplied with the request, and nothing else - a definition
+/// is never found by name, and a `custom:` id with no definition is unknown, never the built-in of
+/// that name and never prefix-matched to one. Any other field is a catalogue name, read exactly as
+/// before by [`enzyme_by_name`], the dash-prefix fallback included.
+fn enzyme_by_key(key: &str, customs: &[RestrictionEnzyme]) -> Result<RestrictionEnzyme, String> {
+    let n = key.trim();
+    if n.starts_with(CUSTOM_ENZYME_ID_PREFIX) {
+        return customs
+            .iter()
+            .find(|e| e.id == n)
+            .cloned()
+            .ok_or_else(|| format!("Unknown enzyme \"{n}\"."));
+    }
+    enzyme_by_name(n)
+}
+
 fn enzyme_by_name(name: &str) -> Result<RestrictionEnzyme, String> {
     let n = name.trim();
     get_rebase_enzymes()
@@ -194,9 +212,9 @@ fn cuts(seq: &str, topo: Topology, e: &RestrictionEnzyme) -> Vec<RestrictionCutS
 fn unique_cut(seq: &str, topo: Topology, e: &RestrictionEnzyme, what: &str) -> Result<RestrictionCutSite, String> {
     let c = cuts(seq, topo, e);
     match c.len() {
-        0 => Err(format!("{} does not cut the {what}.", e.name)),
+        0 => Err(format!("{} does not cut the {what}.", enzyme_label(e))),
         1 => Ok(c.into_iter().next().unwrap()),
-        n => Err(format!("{} cuts the {what} {n} times; choose an enzyme with a unique site.", e.name)),
+        n => Err(format!("{} cuts the {what} {n} times; choose an enzyme with a unique site.", enzyme_label(e))),
     }
 }
 
@@ -243,7 +261,7 @@ fn open_vector(
     let l = vseq.len();
     let circular = vector.topology == Topology::Circular;
     let ca = unique_cut(vseq, vector.topology, e_a, "vector")?;
-    let cb = if e_a.name == e_b.name { ca.clone() } else { unique_cut(vseq, vector.topology, e_b, "vector")? };
+    let cb = if e_a.id == e_b.id { ca.clone() } else { unique_cut(vseq, vector.topology, e_b, "vector")? };
     let (pa, pb) = (ca.cut_top - 1, cb.cut_top - 1);
     if !circular {
         return Err("The vector is linear; circular vectors are linearized by the selected enzymes.".into());
@@ -284,7 +302,7 @@ fn insert_fragment(
         let topo = insert.topology;
         let cl = cuts(&seq, topo, e_left);
         let cr = cuts(&seq, topo, e_right);
-        let pair = if e_left.name == e_right.name {
+        let pair = if e_left.id == e_right.id {
             (cl.len() == 2).then(|| (cl[0].clone(), cl[1].clone()))
         } else if cl.len() == 1 && cr.len() == 1 && (circular || cl[0].cut_top < cr[0].cut_top) {
             Some((cl[0].clone(), cr[0].clone()))
@@ -304,38 +322,38 @@ fn insert_fragment(
         return Ok((piece, c1, c2));
     }
     let count = |e: &RestrictionEnzyme| cuts(iseq, insert.topology, e).len();
-    if e_left.name == e_right.name {
+    if e_left.id == e_right.id {
         Err(format!(
             "The insert must contain exactly two {} sites to release a fragment (found {}).",
-            e_left.name,
+            enzyme_label(e_left),
             count(e_left)
         ))
     } else {
         Err(format!(
             "The insert needs one {} and one {} site (found {} and {}); add them with PCR primer tails.",
-            e_left.name,
-            e_right.name,
+            enzyme_label(e_left),
+            enzyme_label(e_right),
             count(e_left),
             count(e_right)
         ))
     }
 }
 
-fn restriction_ligation(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e5: &str, e3: &str) -> Result<Built, String> {
-    let (ea, eb) = (enzyme_by_name(e5)?, enzyme_by_name(e3)?);
+fn restriction_ligation(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e5: &str, e3: &str, customs: &[RestrictionEnzyme]) -> Result<Built, String> {
+    let (ea, eb) = (enzyme_by_key(e5, customs)?, enzyme_by_key(e3, customs)?);
     let mut warnings = Vec::new();
     let (bb, up, down, bb_start) = open_vector(vs, v, &ea, &eb, &mut warnings)?;
     // the insert's left end joins the backbone's upstream end (its 3' end)
-    let e_left = if up.enzyme.name == ea.name { ea.clone() } else { eb.clone() };
-    let e_right = if down.enzyme.name == ea.name { ea.clone() } else { eb.clone() };
+    let e_left = if up.enzyme.id == ea.id { ea.clone() } else { eb.clone() };
+    let e_right = if down.enzyme.id == ea.id { ea.clone() } else { eb.clone() };
     let (ins, c1, c2) = insert_fragment(is, i, &e_left, &e_right, &mut warnings)?;
     if up.overhang_seq != c1.overhang_seq || down.overhang_seq != c2.overhang_seq || up.overhang_type != c1.overhang_type {
         return Err("The vector and insert ends are not compatible.".into());
     }
-    if ea.name == eb.name {
+    if ea.id == eb.id {
         warnings.push(format!(
             "Single-enzyme ({}) cloning is non-directional (two orientations) and the vector can self-ligate; dephosphorylate it.",
-            ea.name
+            enzyme_label(&ea)
         ));
     }
     let product = concat(&[&bb, &ins]);
@@ -348,18 +366,18 @@ fn restriction_ligation(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is
     Ok(Built {
         insert_range: (ins_start, ins_start + ins.seq.len() - 1),
         circular: true,
-        left_label: format!("{} {} ({})", up.enzyme.name, up.overhang_seq_or_blunt(), up.overhang_type),
-        right_label: format!("{} {} ({})", down.enzyme.name, down.overhang_seq_or_blunt(), down.overhang_type),
+        left_label: format!("{} {} ({})", enzyme_label(&up.enzyme), up.overhang_seq_or_blunt(), up.overhang_type),
+        right_label: format!("{} {} ({})", enzyme_label(&down.enzyme), down.overhang_seq_or_blunt(), down.overhang_type),
         summary: format!(
             "{}-cut insert ({} bp) ligated into the {}-opened {} backbone ({} bp): {} bp circular construct.",
-            if ea.name == eb.name { ea.name.clone() } else { format!("{}/{}", ea.name, eb.name) },
+            if ea.id == eb.id { enzyme_label(&ea) } else { format!("{}/{}", enzyme_label(&ea), enzyme_label(&eb)) },
             ins.seq.len(),
-            if ea.name == eb.name { ea.name.clone() } else { format!("{}/{}", ea.name, eb.name) },
+            if ea.id == eb.id { enzyme_label(&ea) } else { format!("{}/{}", enzyme_label(&ea), enzyme_label(&eb)) },
             v.name,
             bb.seq.len(),
             product.seq.len()
         ),
-        operation: format!("Restriction Ligation ({} / {})", ea.name, eb.name),
+        operation: format!("Restriction Ligation ({} / {})", enzyme_label(&ea), enzyme_label(&eb)),
         product,
         warnings,
     })
@@ -380,14 +398,14 @@ impl OverhangLabel for RestrictionCutSite {
 
 /// Gibson / NEBuilder HiFi / In-Fusion: the insert is joined to the opened vector through
 /// homology arms copied from the vector ends (added by primer tails, or already present).
-fn homology_assembly(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e5: &str, e3: &str, arm: usize, label: &str) -> Result<Built, String> {
+fn homology_assembly(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e5: &str, e3: &str, arm: usize, label: &str, customs: &[RestrictionEnzyme]) -> Result<Built, String> {
     let mut warnings = Vec::new();
     let (bb, up, bb_start, opened) = if v.topology == Topology::Linear {
         (doc_piece(v, vs), None, 0usize, "linear vector".to_string())
     } else {
-        let (ea, eb) = (enzyme_by_name(e5)?, enzyme_by_name(e3)?);
+        let (ea, eb) = (enzyme_by_key(e5, customs)?, enzyme_by_key(e3, customs)?);
         let (bb, up, _down, start) = open_vector(vs, v, &ea, &eb, &mut warnings)?;
-        (bb, Some(up), start, format!("{}/{}-linearized vector", ea.name, eb.name))
+        (bb, Some(up), start, format!("{}/{}-linearized vector", enzyme_label(&ea), enzyme_label(&eb)))
     };
     // A 5' overhang at the upstream end is double-stranded vector sequence that the assembly keeps.
     let mut left = bb.clone();
@@ -395,7 +413,7 @@ fn homology_assembly(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &
         if c.overhang_type == "5prime" {
             left.seq.push_str(&c.overhang_seq);
         } else if c.overhang_type == "3prime" {
-            warnings.push(format!("{} leaves 3' overhangs; exonuclease-based assembly removes them — check the junction.", c.enzyme.name));
+            warnings.push(format!("{} leaves 3' overhangs; exonuclease-based assembly removes them — check the junction.", enzyme_label(&c.enzyme)));
         }
     }
     let left_arm = left.seq[left.seq.len().saturating_sub(arm)..].to_string();
@@ -442,10 +460,10 @@ fn homology_assembly(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &
 
 /// Golden Gate / MoClo: Type IIS digestion of vector and part; the fragments without
 /// recognition sites are joined through their overhangs.
-fn golden_gate(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, enzyme: &str) -> Result<Built, String> {
-    let e = enzyme_by_name(enzyme)?;
+fn golden_gate(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, enzyme: &str, customs: &[RestrictionEnzyme]) -> Result<Built, String> {
+    let e = enzyme_by_key(enzyme, customs)?;
     if !e.is_type_iis {
-        return Err(format!("{} is not a Type IIS enzyme.", e.name));
+        return Err(format!("{} is not a Type IIS enzyme.", enzyme_label(&e)));
     }
     let mut warnings = Vec::new();
     let site_free = |seq: &str, topo: Topology, start0: usize, len: usize| -> bool {
@@ -459,7 +477,7 @@ fn golden_gate(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e
     let pick = |seq: &str, topo: Topology, what: &str| -> Result<(usize, usize, RestrictionCutSite, RestrictionCutSite), String> {
         let c = cuts(seq, topo, &e);
         if c.len() != 2 {
-            return Err(format!("The {what} has {} {} sites; Golden Gate needs exactly two.", c.len(), e.name));
+            return Err(format!("The {what} has {} {} sites; Golden Gate needs exactly two.", c.len(), enzyme_label(&e)));
         }
         let l = seq.len();
         let (a, b) = (c[0].cut_top - 1, c[1].cut_top - 1);
@@ -471,7 +489,7 @@ fn golden_gate(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e
         options
             .into_iter()
             .find(|&(s, len, _, _)| site_free(seq, topo, s, len))
-            .ok_or_else(|| format!("No {what} fragment between the {} sites is free of recognition sites (sites point the wrong way).", e.name))
+            .ok_or_else(|| format!("No {what} fragment between the {} sites is free of recognition sites (sites point the wrong way).", enzyme_label(&e)))
     };
     let (vs0, vlen, v_left_cut, v_right_cut) = pick(vs, v.topology, "vector")?;
     let (bb, dropped) = extract(vs, &v.features, v.topology == Topology::Circular, vs0, vlen);
@@ -509,7 +527,7 @@ fn golden_gate(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e
     let product = rotate(&product, rot);
     let ins_start = (bb.seq.len() + product.seq.len() - rot) % product.seq.len() + 1;
     if !cuts(&product.seq, Topology::Circular, &e).is_empty() {
-        warnings.push(format!("The product still contains a {} site and would be re-cut during cycling.", e.name));
+        warnings.push(format!("The product still contains a {} site and would be re-cut during cycling.", enzyme_label(&e)));
     }
     Ok(Built {
         insert_range: (ins_start, ins_start + ins.seq.len() - 1),
@@ -518,40 +536,40 @@ fn golden_gate(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e
         right_label: format!("5'-{oh_r}-3'"),
         summary: format!(
             "{} Golden Gate: {} bp part joined to the {} bp backbone through {oh_l}/{oh_r} overhangs: {} bp construct.",
-            e.name,
+            enzyme_label(&e),
             ins.seq.len(),
             bb.seq.len(),
             product.seq.len()
         ),
-        operation: format!("Golden Gate Assembly ({})", e.name),
+        operation: format!("Golden Gate Assembly ({})", enzyme_label(&e)),
         product,
         warnings,
     })
 }
 
 /// TA / GC and TOPO: the vector is a linear T-/TOPO vector, or is opened at the 5' enzyme's single blunt site.
-fn open_end_vector(v: &SequenceDocument, vs: &str, e5: &str, what: &str, warnings: &mut Vec<String>) -> Result<(Piece, usize), String> {
+fn open_end_vector(v: &SequenceDocument, vs: &str, e5: &str, what: &str, warnings: &mut Vec<String>, customs: &[RestrictionEnzyme]) -> Result<(Piece, usize), String> {
     if v.topology == Topology::Linear {
         return Ok((doc_piece(v, vs), 0));
     }
-    let e = enzyme_by_name(e5)?;
+    let e = enzyme_by_key(e5, customs)?;
     let c = unique_cut(vs, v.topology, &e, "vector")?;
     if c.overhang_type != "blunt" {
         return Err(format!(
             "{what} needs a linear {what} vector (or a blunt single cut to model one); {} leaves {} overhangs.",
-            e.name, c.overhang_type
+            enzyme_label(&e), c.overhang_type
         ));
     }
-    warnings.push(format!("The vector was opened at its single {} site to model a linearized {what} vector.", e.name));
+    warnings.push(format!("The vector was opened at its single {} site to model a linearized {what} vector.", enzyme_label(&e)));
     let p = c.cut_top - 1;
     let (bb, _) = extract(vs, &v.features, true, p, vs.len());
     Ok((bb, p))
 }
 
-fn ta_or_topo(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e5: &str, topo: bool) -> Result<Built, String> {
+fn ta_or_topo(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &str, e5: &str, topo: bool, customs: &[RestrictionEnzyme]) -> Result<Built, String> {
     let mut warnings = Vec::new();
     let what = if topo { "TOPO" } else { "T-overhang" };
-    let (bb, p0) = open_end_vector(v, vs, e5, what, &mut warnings)?;
+    let (bb, p0) = open_end_vector(v, vs, e5, what, &mut warnings, customs)?;
     let directional = topo && is.starts_with("CACC");
     if topo && !directional {
         warnings.push("Directional (D-)TOPO cloning needs CACC at the insert's 5' end; this insert would clone in either orientation.".into());
@@ -695,6 +713,8 @@ fn overlap_extension(v: &SequenceDocument, vs: &str, i: &SequenceDocument, is: &
     })
 }
 
+/// Cloning with catalogue enzymes only: [`simulate_molecular_cloning_with_custom_enzymes`] with no
+/// definitions supplied, so every enzyme field is a catalogue name, read exactly as before.
 pub fn simulate_molecular_cloning(
     vector_doc: &SequenceDocument,
     insert_doc: &SequenceDocument,
@@ -703,28 +723,51 @@ pub fn simulate_molecular_cloning(
     enzyme3_prime: &str,
     golden_gate_enzyme: &str,
 ) -> CloningOutcome {
+    simulate_molecular_cloning_with_custom_enzymes(
+        vector_doc,
+        insert_doc,
+        method,
+        enzyme5_prime,
+        enzyme3_prime,
+        golden_gate_enzyme,
+        &[],
+    )
+}
+
+/// Cloning where an enzyme field may be a `custom:` id of one of `custom_enzymes` (US-01M7HRV4,
+/// D0153). The definitions reach [`enzyme_by_key`] only: a catalogue name never matches one.
+pub fn simulate_molecular_cloning_with_custom_enzymes(
+    vector_doc: &SequenceDocument,
+    insert_doc: &SequenceDocument,
+    method: &str,
+    enzyme5_prime: &str,
+    enzyme3_prime: &str,
+    golden_gate_enzyme: &str,
+    custom_enzymes: &[RestrictionEnzyme],
+) -> CloningOutcome {
     let vs = clean_alpha_sequence(&vector_doc.sequence).replace('U', "T");
     let is = clean_alpha_sequence(&insert_doc.sequence).replace('U', "T");
     if vs.is_empty() || is.is_empty() {
         return fail(vector_doc, method, "Both the vector and the insert need a sequence.".into(), Vec::new());
     }
     let m = method.to_ascii_lowercase();
+    let cx = custom_enzymes;
     let built = if m.contains("restriction") {
-        restriction_ligation(vector_doc, &vs, insert_doc, &is, enzyme5_prime, enzyme3_prime)
+        restriction_ligation(vector_doc, &vs, insert_doc, &is, enzyme5_prime, enzyme3_prime, cx)
     } else if m.contains("in-fusion") {
-        homology_assembly(vector_doc, &vs, insert_doc, &is, enzyme5_prime, enzyme3_prime, 15, "In-Fusion Cloning")
+        homology_assembly(vector_doc, &vs, insert_doc, &is, enzyme5_prime, enzyme3_prime, 15, "In-Fusion Cloning", cx)
     } else if m.contains("hifi") {
-        homology_assembly(vector_doc, &vs, insert_doc, &is, enzyme5_prime, enzyme3_prime, 20, "NEBuilder HiFi Assembly")
+        homology_assembly(vector_doc, &vs, insert_doc, &is, enzyme5_prime, enzyme3_prime, 20, "NEBuilder HiFi Assembly", cx)
     } else if m.contains("gibson") {
-        homology_assembly(vector_doc, &vs, insert_doc, &is, enzyme5_prime, enzyme3_prime, 25, "Gibson Assembly")
+        homology_assembly(vector_doc, &vs, insert_doc, &is, enzyme5_prime, enzyme3_prime, 25, "Gibson Assembly", cx)
     } else if m.contains("golden") {
-        golden_gate(vector_doc, &vs, insert_doc, &is, golden_gate_enzyme)
+        golden_gate(vector_doc, &vs, insert_doc, &is, golden_gate_enzyme, cx)
     } else if m.contains("parts") {
-        golden_gate(vector_doc, &vs, insert_doc, &is, "BsaI-HFv2")
+        golden_gate(vector_doc, &vs, insert_doc, &is, "BsaI-HFv2", cx)
     } else if m.contains("ta /") || m.starts_with("ta") {
-        ta_or_topo(vector_doc, &vs, insert_doc, &is, enzyme5_prime, false)
+        ta_or_topo(vector_doc, &vs, insert_doc, &is, enzyme5_prime, false, cx)
     } else if m.contains("topo") {
-        ta_or_topo(vector_doc, &vs, insert_doc, &is, enzyme5_prime, true)
+        ta_or_topo(vector_doc, &vs, insert_doc, &is, enzyme5_prime, true, cx)
     } else if m.contains("gateway") {
         gateway(vector_doc, &vs, insert_doc, &is)
     } else if m.contains("overlap") {

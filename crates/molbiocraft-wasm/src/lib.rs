@@ -48,12 +48,15 @@ use molbiocraft_cloning::{
     get_origin_compatibility_groups, get_rebase_enzymes, get_sample_library,
     get_twist_antibiotic_standards, get_vector_catalog, get_vector_system_guides,
     group_documents_by_prefix, mask_sequence_regions, predict_secondary_structure_with,
-    randomly_sample_documents, set_circular_origin, simulate_molecular_cloning,
+    randomly_sample_documents, set_circular_origin,
     simulate_restriction_digest, simulate_site_directed_mutagenesis,
     simulate_twist_clonal_gene_insertion, splice_modular_part_into_document_rust,
     test_saved_primers_on_sequence, CatalogVectorEntry, CloningActionVectorPreset,
     ModularAssemblySpec, ModularVectorPart, SelectionRange1Based,
 };
+// Cloning that may be asked for a `custom:` enzyme id (US-01M7HRV4); with no definition sent it is
+// `simulate_molecular_cloning` itself.
+use molbiocraft_cloning::cloning_sim::simulate_molecular_cloning_with_custom_enzymes;
 use molbiocraft_cloning::cloning_crispr::{
     audit_sequence_alerts_for_scan, find_crispr_guides_for_topology, resolve_nuclease_preset,
     scan_crispr_guides, scan_crispr_guides_in_interval, supported_nuclease_presets,
@@ -1073,13 +1076,18 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let enz5 = str_arg(&payload, "enzyme5Prime", "EcoRI");
             let enz3 = str_arg(&payload, "enzyme3Prime", "XhoI");
             let gg_enz = str_arg(&payload, "goldenGateEnzyme", "BsaI-HFv2");
-            to_val(simulate_molecular_cloning(
+            // The definitions an enzyme field's `custom:` id may name (US-01M7HRV4, D0153); with
+            // none sent every field is a catalogue name, read exactly as before.
+            let custom_enzymes: Option<Vec<RestrictionEnzyme>> =
+                parse_opt_field(&payload, "customEnzymes")?;
+            to_val(simulate_molecular_cloning_with_custom_enzymes(
                 &vector_doc,
                 &insert_doc,
                 method,
                 enz5,
                 enz3,
                 gg_enz,
+                custom_enzymes.as_deref().unwrap_or(&[]),
             ))
         }
         "set_circular_origin" => {

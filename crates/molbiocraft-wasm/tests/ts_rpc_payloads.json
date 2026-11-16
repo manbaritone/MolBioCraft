@@ -676,6 +676,7 @@
   "selection"
  ],
  "simulate_molecular_cloning": [
+  "customEnzymes",
   "enzyme3Prime",
   "enzyme5Prime",
   "goldenGateEnzyme",

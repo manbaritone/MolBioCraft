@@ -18,6 +18,7 @@ import {
   analyzeSilentMutationsInCds,
   annealComplementaryOligos,
   CloningOutcome,
+  cloningCustomEnzymes,
   complement,
   computeDnaAndLigationCalculations,
   digestEndLabel,
@@ -280,6 +281,9 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
     [activeDoc.sequence.length, calcConcNgUl, calcVolUl, calcVecMassNg, documents, insertId]
   );
 
+  // The reaction's enzymes are held by KEY (US-01M7HRV4): a built-in's is its catalogue name, as
+  // before, a custom definition's its `custom:` id, so a custom enzyme named like a built-in is its
+  // own choice here as it is among the digest chips.
   const [enzyme5, setEnzyme5] = useState<string>('EcoRI');
   const [enzyme3, setEnzyme3] = useState<string>('XhoI');
   const [goldenGateEnz, setGoldenGateEnz] = useState<string>('BsaI-HFv2');
@@ -375,10 +379,10 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
   // a custom enzyme's name (D0150): a custom enzyme's activity is unknown, and with only custom
   // enzymes chosen no buffer or temperature is planned at all.
   const digestPlanEnzymes = useMemo(() => {
-    if (selectedDigestEnzymes.length === 0) return { builtIn: [enzyme5, enzyme3], custom: [] as string[] };
+    const keys = selectedDigestEnzymes.length === 0 ? [enzyme5, enzyme3] : selectedDigestEnzymes;
     const builtIn: string[] = [];
     const custom: string[] = [];
-    for (const key of selectedDigestEnzymes) {
+    for (const key of keys) {
       const e = enzymeOfKey(key);
       if (e && !isCustomEnzyme(e)) builtIn.push(e.name);
       else custom.push(labelOfKey(key));
@@ -396,9 +400,23 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
     .filter((r) => r.starActivityRisk)
     .map((r) => r.enzymeName);
 
+  // The buffer planner matches names by prefix and by the "-HF" substring, so it is never given a
+  // custom enzyme's name or key (D0153): the plan is made over the chosen built-ins, each custom
+  // enzyme reads as activity unknown under its label, and with none but custom enzymes chosen no
+  // buffer and no temperature are planned at all.
+  const cloningPlanEnzymes = useMemo(() => {
+    const builtIn: string[] = [];
+    const custom: string[] = [];
+    for (const key of [enzyme5, enzyme3]) {
+      const e = enzymeOfKey(key);
+      if (e && !isCustomEnzyme(e)) builtIn.push(e.name);
+      else custom.push(labelOfKey(key));
+    }
+    return { builtIn, custom };
+  }, [enzyme5, enzyme3, enzymeByKey]);
   const cloningBufferPlan = useMemo(
-    () => evaluateMultiDigestBufferPlanRust([enzyme5, enzyme3]),
-    [enzyme5, enzyme3]
+    () => (cloningPlanEnzymes.builtIn.length > 0 ? evaluateMultiDigestBufferPlanRust(cloningPlanEnzymes.builtIn) : null),
+    [cloningPlanEnzymes]
   );
 
   const goldenGateFidelity = useMemo(
@@ -424,7 +442,8 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
       cloningMethod,
       enzyme5,
       enzyme3,
-      goldenGateEnz
+      goldenGateEnz,
+      cloningCustomEnzymes([enzyme5, enzyme3, goldenGateEnz], enzymes)
     );
     setLastCloningResult(res);
     onStatusNotice?.(
@@ -630,6 +649,23 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
   };
   gelDrawingRef.current = drawGel;
 
+  /**
+   * The options both 5'/3' selects list: the active list's Type II enzymes, each by its key and its
+   * label, so a custom definition is its own option and marked - a custom Type IIS definition's home
+   * is the Type IIS menu (US-01M7J165), as the catalogue halves split here today.
+   */
+  const typeIIEnzymeOptions = useMemo(
+    () =>
+      enzymes
+        .filter((e) => !e.isTypeIIS)
+        .map((e) => (
+          <option key={enzymeKey(e)} value={enzymeKey(e)}>
+            {enzymeLabel(e)} ({e.recognitionSeq}) — {e.bufferNEB}
+          </option>
+        )),
+    [enzymes]
+  );
+
   /** The methods whose reaction the studio sets up with a 5' and a 3' restriction enzyme. */
   const usesRestrictionEnzymes =
     cloningMethod === 'Restriction Ligation' ||
@@ -650,32 +686,41 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
         <label className="form-field">
           <span>5&apos; Restriction Enzyme:</span>
           <select value={enzyme5} onChange={(e) => setEnzyme5(e.target.value)}>
-            {REBASE_ENZYMES.filter((e) => !e.isTypeIIS).map((e) => (
-              <option key={e.name} value={e.name}>
-                {e.name} ({e.recognitionSeq}) — {e.bufferNEB}
-              </option>
-            ))}
+            {typeIIEnzymeOptions}
           </select>
         </label>
         <label className="form-field">
           <span>3&apos; Restriction Enzyme:</span>
           <select value={enzyme3} onChange={(e) => setEnzyme3(e.target.value)}>
-            {REBASE_ENZYMES.filter((e) => !e.isTypeIIS).map((e) => (
-              <option key={e.name} value={e.name}>
-                {e.name} ({e.recognitionSeq}) — {e.bufferNEB}
-              </option>
-            ))}
+            {typeIIEnzymeOptions}
           </select>
         </label>
       </div>
       <div className="info-callout" style={{ fontSize: 11.5 }}>
-        <strong>Reaction Buffer Compatibility:</strong>{' '}
-        {cloningBufferPlan.recommendedBuffer} at {cloningBufferPlan.incubationTempC}&deg;C (
-        {cloningBufferPlan.minimumSharedActivityPct > 0
-          ? `${cloningBufferPlan.minimumSharedActivityPct}% shared activity`
-          : 'activity data not available for this pair'}
-        {cloningBufferPlan.sequentialDigestRequired ? ' • Sequential digest advised' : ' • Single-tube co-digest'}
-        )
+        {cloningBufferPlan ? (
+          <>
+            <strong>
+              Reaction Buffer Compatibility
+              {cloningPlanEnzymes.custom.length > 0 ? ` for ${cloningPlanEnzymes.builtIn.join(', ')} only` : ''}:
+            </strong>{' '}
+            {cloningBufferPlan.recommendedBuffer} at {cloningBufferPlan.incubationTempC}&deg;C (
+            {cloningBufferPlan.minimumSharedActivityPct > 0
+              ? `${cloningBufferPlan.minimumSharedActivityPct}% shared activity`
+              : 'activity data not available for this pair'}
+            {cloningBufferPlan.sequentialDigestRequired ? ' • Sequential digest advised' : ' • Single-tube co-digest'}
+            )
+          </>
+        ) : (
+          <>
+            <strong>Reaction Buffer Compatibility:</strong> none. The built-in buffer table holds no custom
+            enzyme, so no buffer or incubation is planned for this reaction.
+          </>
+        )}
+        {cloningPlanEnzymes.custom.map((label) => (
+          <div key={label} className="cloning-buffer-plan-custom">
+            {label}: activity unknown. It is not in the built-in buffer table; check its supplier&apos;s chart.
+          </div>
+        ))}
       </div>
     </>
   );

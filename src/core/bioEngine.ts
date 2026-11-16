@@ -455,13 +455,22 @@ export interface CloningOutcome {
   warnings: string[];
 }
 
+/**
+ * Cloning through the engine (US-01M7HRV4, D0153). Each enzyme argument is an enzyme KEY: a
+ * built-in's catalogue name, as before, or a custom definition's `custom:` id, which the engine
+ * resolves against `customEnzymes` and nothing else - a name never matches a definition, and a
+ * `custom:` id with no definition sent fails by that id. With no definition given the payload holds
+ * `customEnzymes: null`, which the engine reads as the key absent, so the reply is the one every
+ * caller got before this story.
+ */
 export function simulateMolecularCloning(
   vectorDoc: SequenceDocument,
   insertDoc: SequenceDocument,
   method: CloningMethodType,
   enzyme5Prime = 'EcoRI',
   enzyme3Prime = 'XhoI',
-  goldenGateEnzyme = 'BsaI-HFv2'
+  goldenGateEnzyme = 'BsaI-HFv2',
+  customEnzymes: readonly RestrictionEnzyme[] = []
 ): CloningOutcome {
   return invokeRustBioSync<CloningOutcome>('simulate_molecular_cloning', {
     vectorDoc,
@@ -470,7 +479,18 @@ export function simulateMolecularCloning(
     enzyme5Prime,
     enzyme3Prime,
     goldenGateEnzyme,
+    customEnzymes: customEnzymes.length > 0 ? customEnzymes : null,
   });
+}
+
+/**
+ * The definitions a cloning request must carry for `keys` (US-01M7HRV4): every custom definition in
+ * `enzymes` a chosen key names, so a key the active list no longer holds is sent with nothing and
+ * the engine names it by its id.
+ */
+export function cloningCustomEnzymes(keys: readonly string[], enzymes: readonly RestrictionEnzyme[]): RestrictionEnzyme[] {
+  const chosen = new Set(keys);
+  return enzymes.filter((e) => isCustomEnzyme(e) && chosen.has(e.id ?? e.name));
 }
 
 export function alignPairwiseTypeScript(

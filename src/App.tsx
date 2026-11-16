@@ -16635,6 +16635,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {operationDialog?.kind === 'cloning' && (
         <CloningOperationDialog
           candidates={catalogNonDeletedDocs}
+          enzymes={activeEnzymes}
           initialVectorId={activeDoc.topology === 'circular' ? activeDoc.id : undefined}
           initialInsertId={selectedAnalysisDocuments.find((d) => d.id !== activeDoc.id && d.moleculeType === 'DNA')?.id
             ?? (activeDoc.topology === 'linear' ? activeDoc.id : undefined)}
