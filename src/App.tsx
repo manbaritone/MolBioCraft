@@ -383,6 +383,8 @@ import {
   serializeMbcFolderZip,
   serializeMbcWorkbench,
   siteVisibilityForSession,
+  unmatchedHiddenEnzymes,
+  unmatchedHiddenEnzymesNotice,
   workbenchAutosaveNeedsRecovery,
   writeWorkbenchAutosaveDirtyFlag,
   type WorkbenchAutosaveReadResult,
@@ -4894,9 +4896,10 @@ export const App: React.FC = () => {
     // Each document's displayed sites as saved (BG-01M7DHM0), malformed entries dropped and a choice
     // made on a sequence other than the restored one dropped; the App reconciles the rest with the
     // document's own scan before a map draws them.
-    setSiteVisibilityByDoc(
-      restoredSiteVisibility(env.workspace.siteVisibility, restoredDocuments, (doc) => restrictionScanRevision(doc.sequence, doc.topology))
+    const restoredVisibility = restoredSiteVisibility(env.workspace.siteVisibility, restoredDocuments, (doc) =>
+      restrictionScanRevision(doc.sequence, doc.topology)
     );
+    setSiteVisibilityByDoc(restoredVisibility);
     setTextFormat(env.workspace.textFormat);
     // Checked here as importing a preferences file checks it: a scheme that is not a known nucleotide
     // scheme opens in the default ('standard'), whatever the session parser let through.
@@ -4923,6 +4926,18 @@ export const App: React.FC = () => {
     setStatusBanner(
       `Restored workbench "${env.sessionName}.mbc" — ${restoredDocuments.length} documents (${restoredDocuments.reduce((total, doc) => total + doc.sequence.length, 0).toLocaleString()} bp)${warnNote}`
     );
+    // Hide choices that match no catalogue name and no stored custom enzyme (US-01M7GRX2), appended
+    // after the restore sentence (set just above, which would overwrite an earlier append). With the
+    // enzyme store unreadable or unavailable, custom keys are not checked; the keys stay as saved.
+    const unmatchedNotice = unmatchedHiddenEnzymesNotice(
+      unmatchedHiddenEnzymes(
+        restoredVisibility,
+        restoredDocuments,
+        new Set(REBASE_ENZYMES.map((e) => e.name)),
+        enzymeDbRead.ok ? new Set(enzymeDbRead.definitions.map((d) => d.id)) : null
+      )
+    );
+    if (unmatchedNotice) setStatusBanner(unmatchedNotice, { append: true, keep: true });
   };
 
   /**

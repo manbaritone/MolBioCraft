@@ -7,7 +7,7 @@
  * over public/molbiocraft_wasm.wasm), and every digest the engine's own (simulateRestrictionDigest);
  * the identity tests copy one record with one field changed to show which fields the id reads.
  */
-import React from 'react';
+import React, { act } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { restrictionSiteCountsByName, scanRestrictionSites, simulateRestrictionDigest } from '../core/bioEngine';
@@ -27,9 +27,18 @@ import {
 import type { RestrictionCutSite, SequenceDocument } from '../types/bio';
 import { CircularPlasmidMap, circularCalloutNote } from '../components/CircularPlasmidMap';
 import { LinearSequenceView } from '../components/LinearSequenceView';
-import { parseMbcWorkbench, restoredSiteVisibility, serializeMbcWorkbench, siteVisibilityForSession, type MbcWorkbenchSnapshot } from '../core/mbcSessionFormat';
-import { mountApp } from './appHarness';
-import type { LiveElement } from './liveDom';
+import {
+  parseMbcWorkbench,
+  restoredSiteVisibility,
+  serializeMbcWorkbench,
+  siteVisibilityForSession,
+  unmatchedHiddenEnzymes,
+  unmatchedHiddenEnzymesNotice,
+  type MbcWorkbenchSnapshot,
+} from '../core/mbcSessionFormat';
+import { openEnzymeDatabase } from '../core/enzymeDatabase';
+import { mountApp, type AppHarness } from './appHarness';
+import { memoryStorage, type LiveElement, type LiveStorage } from './liveDom';
 
 const ENZYMES = ['EcoRI', 'BamHI', 'BsaI-HFv2'].map((n) => {
   const e = REBASE_ENZYMES.find((x) => x.name === n);
@@ -790,6 +799,216 @@ describe('BG-01M7DHM0 AC1: site visibility is saved with the session and restore
       expect(app.doc.body.textContent).toContain('Restored workbench');
       // A choice dropped at restore is never reported as cleared (the App would append that notice).
       expect(app.doc.body.textContent).not.toContain('per-site display');
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
+// ─── US-01M7GRX2: a saved hide choice that matches no enzyme is reported, never read as nothing hidden ───
+
+describe('US-01M7GRX2: a saved hide choice that matches no enzyme is reported on reopen', () => {
+  vi.setConfig({ testTimeout: 180_000 });
+  const ENZ_KEY = 'molbiocraft.enzymeDatabase';
+  const PDEMO: SequenceDocument = { ...MAP_DOC, id: 'grx2-pdemo', name: 'pDemo' };
+  const OTHER: SequenceDocument = { ...MAP_DOC, id: 'grx2-other', name: 'pOther' };
+  const CATALOGUE = new Set(REBASE_ENZYMES.map((e) => e.name));
+  /** pDemo's saved choice: BsaI (today's catalogue calls it BsaI-HFv2), EcoRI, a deleted custom enzyme and a stored one. */
+  const HIDDEN = ['BsaI', 'EcoRI', 'custom:gone', 'custom:seed-1'];
+  const hiding = (doc: SequenceDocument, hiddenEnzymes: string[]): Record<string, SiteVisibility> => ({
+    [doc.id]: { revision: sequenceRevision(doc.sequence, doc.topology), hiddenEnzymes, occurrences: {} },
+  });
+  /** Storage holding one custom definition, stored under the id `custom:seed-1`. */
+  const seededStorage = (): LiveStorage => {
+    const storage = memoryStorage();
+    const db = openEnzymeDatabase({ storage, now: () => '2026-01-01T00:00:00.000Z', newId: () => 'custom:seed-1' });
+    const r = db.add({ name: 'Mine', recognitionSeq: 'TGGTGGTGA', cutFwd: 3, cutRev: 7 });
+    if (!r.ok) throw new Error(r.error.message);
+    return storage;
+  };
+  /** Storage that refuses the enzyme store's key only, so the store reads as unavailable and the autosave still works. */
+  const enzymeKeyRefused = (): LiveStorage => {
+    const inner = memoryStorage();
+    const refuse = (k: string) => {
+      if (k === ENZ_KEY) throw new Error('SecurityError: storage is blocked');
+    };
+    return {
+      ...inner,
+      getItem: (k: string) => (refuse(k), inner.getItem(k)),
+      setItem: (k: string, v: string) => (refuse(k), inner.setItem(k, v)),
+      get length() { return inner.length; },
+    } as LiveStorage;
+  };
+  const restoreSentence = (name: string, docs: SequenceDocument[]) =>
+    `Restored workbench "${name}.mbc" — ${docs.length} documents (${docs.reduce((t, d) => t + d.sequence.length, 0).toLocaleString()} bp)`;
+  /** The whole status line: the one toast the status bar shows. */
+  const statusLine = (app: AppHarness) => {
+    const toasts = app.all('.statusbar-toast-text');
+    expect(toasts, 'the status bar shows no single status line').toHaveLength(1);
+    return toasts[0].textContent ?? '';
+  };
+  const occurrences = (text: string, part: string) => text.split(part).length - 1;
+  const STORE_NOTICE = 'Your custom restriction enzymes are not used:';
+
+  it('US-01M7GRX2 AC1 the fixture: BsaI is not a catalogue name and EcoRI is; custom:seed-1 is stored and custom:gone is not', () => {
+    expect(CATALOGUE.has('BsaI')).toBe(false);
+    expect(CATALOGUE.has('BsaI-HFv2')).toBe(true);
+    expect(CATALOGUE.has('EcoRI')).toBe(true);
+    const read = openEnzymeDatabase({ storage: seededStorage() }).read();
+    expect(read.ok && read.definitions.map((d) => d.id)).toEqual(['custom:seed-1']);
+  });
+
+  it('US-01M7GRX2 AC1 the unmatched keys are found per document in session order, built-ins by name and custom ids apart', () => {
+    const restored = { ...hiding(OTHER, ['ZzzI', 'custom:x', 'custom:y', 'AaaI', 'BamHI']), ...hiding(PDEMO, HIDDEN) };
+    const found = unmatchedHiddenEnzymes(restored, [PDEMO, OTHER], CATALOGUE, new Set(['custom:seed-1']));
+    expect(found).toEqual([
+      { docId: PDEMO.id, docName: 'pDemo', builtIns: ['BsaI'], customKeys: ['custom:gone'] },
+      { docId: OTHER.id, docName: 'pOther', builtIns: ['AaaI', 'ZzzI'], customKeys: ['custom:x', 'custom:y'] },
+    ]);
+    expect(unmatchedHiddenEnzymesNotice(found)).toBe(
+      '6 saved hide choices match no enzyme and were not applied: BsaI, A custom enzyme no longer stored in pDemo; AaaI, ZzzI, 2 custom enzymes no longer stored in pOther.'
+    );
+    // One key: the singular; none: no notice at all.
+    const one = unmatchedHiddenEnzymes(hiding(PDEMO, ['BsaI', 'EcoRI']), [PDEMO], CATALOGUE, new Set());
+    expect(unmatchedHiddenEnzymesNotice(one)).toBe('1 saved hide choice matches no enzyme and was not applied: BsaI in pDemo.');
+    const onlyCustom = unmatchedHiddenEnzymes(hiding(PDEMO, ['custom:gone']), [PDEMO], CATALOGUE, new Set());
+    expect(unmatchedHiddenEnzymesNotice(onlyCustom)).toBe('1 saved hide choice matches no enzyme and was not applied: A custom enzyme no longer stored in pDemo.');
+    const none = unmatchedHiddenEnzymes(hiding(PDEMO, ['EcoRI', 'custom:seed-1']), [PDEMO], CATALOGUE, new Set(['custom:seed-1']));
+    expect(none).toEqual([]);
+    expect(unmatchedHiddenEnzymesNotice(none)).toBeNull();
+    // A document the session does not hold is not reported.
+    expect(unmatchedHiddenEnzymes(hiding(OTHER, ['BsaI']), [PDEMO], CATALOGUE, new Set())).toEqual([]);
+  });
+
+  it('US-01M7GRX2 AC1 in the App, reopening pDemo appends one notice to the restore sentence, naming BsaI and the deleted custom enzyme only, and saves every key again', async () => {
+    let savedSession = '';
+    const app = await mountApp({ storage: seededStorage() });
+    try {
+      await app.restoreSession({
+        sessionName: 'GRX2 unmatched', documents: [PDEMO], activeDocId: PDEMO.id, viewerTab: 'sequence-view',
+        workspace: { siteVisibility: hiding(PDEMO, HIDDEN) },
+      });
+      await app.settle();
+      expect(statusLine(app)).toBe(
+        `${restoreSentence('GRX2 unmatched', [PDEMO])} · 2 saved hide choices match no enzyme and were not applied: BsaI, A custom enzyme no longer stored in pDemo.`
+      );
+      // Kept until dismissed: past the 5.2 s a passing notice lasts, the whole line is still shown.
+      await act(async () => {
+        vi.advanceTimersByTime(6_000);
+      });
+      await app.settle();
+      expect(statusLine(app)).toBe(
+        `${restoreSentence('GRX2 unmatched', [PDEMO])} · 2 saved hide choices match no enzyme and were not applied: BsaI, A custom enzyme no longer stored in pDemo.`
+      );
+      const body = app.doc.body.textContent ?? '';
+      expect(occurrences(body, 'match no enzyme')).toBe(1);
+      expect(body).not.toContain('custom:');
+      await app.menu('file:save-session');
+      await app.settle();
+      const file = app.downloads().filter((f) => f.filename.endsWith('.mbc')).pop();
+      expect(file, 'Save Session wrote no .mbc').toBeDefined();
+      savedSession = await file!.text();
+    } finally {
+      app.unmount();
+    }
+    const env = parseMbcWorkbench(savedSession).envelope;
+    expect(env.workspace.siteVisibility?.[PDEMO.id]?.hiddenEnzymes).toEqual([...HIDDEN].sort());
+  });
+
+  it('US-01M7GRX2 AC1 in the App, a session where every key matches shows the restore sentence alone', async () => {
+    const app = await mountApp({ storage: seededStorage() });
+    try {
+      await app.restoreSession({
+        sessionName: 'GRX2 matched', documents: [PDEMO], activeDocId: PDEMO.id, viewerTab: 'sequence-view',
+        workspace: { siteVisibility: hiding(PDEMO, ['EcoRI', 'custom:seed-1']) },
+      });
+      await app.settle();
+      expect(statusLine(app)).toBe(restoreSentence('GRX2 matched', [PDEMO]));
+    } finally {
+      app.unmount();
+    }
+  });
+
+  // A 120,000 bp document: the engine scans over 100,000 bp with its core catalogue only.
+  const BIG: SequenceDocument = { ...MAP_DOC, id: 'grx2-big', name: 'pBig', sequence: filler(119_940, 9) + SEQ.slice(0, 60), topology: 'linear' };
+  const bigScan = () => scanRestrictionSites(BIG.sequence, 'linear');
+  const smallScan = () => scanRestrictionSites(SEQ, 'circular');
+
+  it('US-01M7GRX2 AC2 a catalogue enzyme the scan did not read, or read with no site, is not reported', () => {
+    expect(BIG.sequence).toHaveLength(120_000);
+    const big = bigScan();
+    const scannedBig = new Set(big.siteCounts.map((c) => c.enzymeId));
+    const nonCore = REBASE_ENZYMES.find((e) => !scannedBig.has(e.name));
+    expect(nonCore, 'every catalogue enzyme was scanned on the 120,000 bp document').toBeDefined();
+    const small = smallScan();
+    const cut = new Set(small.sites.map((s) => s.enzyme.name));
+    const noSite = small.siteCounts.find((c) => c.sites === 0 && !cut.has(c.enzymeId));
+    expect(noSite, 'every scanned enzyme cuts the fixture').toBeDefined();
+    const restored = { ...hiding(BIG, [nonCore!.name]), ...hiding(PDEMO, [noSite!.enzymeId]) };
+    for (const stored of [new Set<string>(), null]) {
+      expect(unmatchedHiddenEnzymes(restored, [BIG, PDEMO], CATALOGUE, stored)).toEqual([]);
+    }
+  });
+
+  it('US-01M7GRX2 AC2 in the App, a non-core built-in hidden on a 120,000 bp document and a built-in with no site give the restore sentence alone', async () => {
+    const scannedBig = new Set(bigScan().siteCounts.map((c) => c.enzymeId));
+    const nonCore = REBASE_ENZYMES.find((e) => !scannedBig.has(e.name))!;
+    const small = smallScan();
+    const noSite = small.siteCounts.find((c) => c.sites === 0)!;
+    const app = await mountApp();
+    try {
+      await app.restoreSession({
+        sessionName: 'GRX2 large', documents: [BIG, PDEMO], activeDocId: BIG.id, viewerTab: 'sequence-view',
+        workspace: { navHistory: [BIG.id], siteVisibility: { ...hiding(BIG, [nonCore.name]), ...hiding(PDEMO, [noSite.enzymeId]) } },
+      });
+      await app.settle();
+      expect(statusLine(app)).toBe(restoreSentence('GRX2 large', [BIG, PDEMO]));
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('US-01M7GRX2 AC3 with the store unreadable or unavailable, custom keys are neither checked nor reported', () => {
+    const found = unmatchedHiddenEnzymes(hiding(PDEMO, HIDDEN), [PDEMO], CATALOGUE, null);
+    expect(found).toEqual([{ docId: PDEMO.id, docName: 'pDemo', builtIns: ['BsaI'], customKeys: [] }]);
+    expect(unmatchedHiddenEnzymesNotice(found)).toBe('1 saved hide choice matches no enzyme and was not applied: BsaI in pDemo.');
+  });
+
+  it('US-01M7GRX2 AC3 restoredSiteVisibility returns the same shape as before: the saved entry and nothing else', () => {
+    const rev = sequenceRevision(PDEMO.sequence, PDEMO.topology);
+    expect(restoredSiteVisibility(hiding(PDEMO, HIDDEN), [PDEMO])).toEqual({
+      [PDEMO.id]: { revision: rev, hiddenEnzymes: [...HIDDEN].sort(), occurrences: {} },
+    });
+  });
+
+  const unmatchedBsaI = (name: string) =>
+    `${restoreSentence(name, [PDEMO])} · 1 saved hide choice matches no enzyme and was not applied: BsaI in pDemo.`;
+
+  it('US-01M7GRX2 AC3 in the App, an unreadable store reports BsaI only, beside the one existing store notice', async () => {
+    const app = await mountApp({ storage: memoryStorage({ [ENZ_KEY]: '{"schema": 1, "definitions": [' }) });
+    try {
+      await app.restoreSession({
+        sessionName: 'GRX2 unreadable', documents: [PDEMO], activeDocId: PDEMO.id, viewerTab: 'sequence-view',
+        workspace: { siteVisibility: hiding(PDEMO, HIDDEN) },
+      });
+      await app.settle();
+      expect(statusLine(app)).toBe(unmatchedBsaI('GRX2 unreadable'));
+      expect(occurrences(app.doc.body.textContent ?? '', STORE_NOTICE)).toBe(1);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('US-01M7GRX2 AC3 in the App, an unavailable store reports BsaI only and shows no store notice', async () => {
+    const app = await mountApp({ storage: enzymeKeyRefused() });
+    try {
+      await app.restoreSession({
+        sessionName: 'GRX2 unavailable', documents: [PDEMO], activeDocId: PDEMO.id, viewerTab: 'sequence-view',
+        workspace: { siteVisibility: hiding(PDEMO, HIDDEN) },
+      });
+      await app.settle();
+      expect(statusLine(app)).toBe(unmatchedBsaI('GRX2 unavailable'));
+      expect(app.doc.body.textContent ?? '').not.toContain(STORE_NOTICE);
     } finally {
       app.unmount();
     }

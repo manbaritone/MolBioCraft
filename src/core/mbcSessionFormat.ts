@@ -148,6 +148,64 @@ export function restoredSiteVisibility(
   return restored;
 }
 
+/** A restored document's hidden-enzyme keys that match no enzyme (US-01M7GRX2): built-in names, sorted, and `custom:` ids, sorted. */
+export interface UnmatchedHiddenEnzymes {
+  docId: string;
+  docName: string;
+  builtIns: string[];
+  customKeys: string[];
+}
+
+/**
+ * The hidden-enzyme keys of a restored session that match no enzyme (US-01M7GRX2, D0156), one entry
+ * per document in `documents` order that has any. A key matches when it is a catalogue name or the
+ * id of a stored custom definition; it is never checked against a scan, so an enzyme the scan did
+ * not read (a non-core enzyme over 100,000 bp) or found no site of is not reported. With
+ * `storedCustomIds` null (the enzyme store is unreadable or unavailable) a `custom:` key is neither
+ * checked nor reported. The keys themselves are left in `restored` as they are.
+ */
+export function unmatchedHiddenEnzymes(
+  restored: Readonly<Record<string, SiteVisibility>>,
+  documents: readonly SequenceDocument[],
+  catalogueNames: ReadonlySet<string>,
+  storedCustomIds: ReadonlySet<string> | null
+): UnmatchedHiddenEnzymes[] {
+  const unmatched: UnmatchedHiddenEnzymes[] = [];
+  for (const doc of documents) {
+    const state = Object.prototype.hasOwnProperty.call(restored, doc.id) ? restored[doc.id] : undefined;
+    if (!state) continue;
+    const builtIns: string[] = [];
+    const customKeys: string[] = [];
+    for (const key of state.hiddenEnzymes) {
+      if (catalogueNames.has(key) || storedCustomIds?.has(key)) continue;
+      if (!key.startsWith('custom:')) builtIns.push(key);
+      else if (storedCustomIds) customKeys.push(key);
+    }
+    if (builtIns.length || customKeys.length) {
+      unmatched.push({ docId: doc.id, docName: doc.name, builtIns: builtIns.sort(), customKeys: customKeys.sort() });
+    }
+  }
+  return unmatched;
+}
+
+/**
+ * The one status notice for {@link unmatchedHiddenEnzymes}, or null when there is none: the count,
+ * then one group per document, its built-in names and then its custom enzymes counted, never by id.
+ */
+export function unmatchedHiddenEnzymesNotice(unmatched: readonly UnmatchedHiddenEnzymes[]): string | null {
+  const n = unmatched.reduce((total, u) => total + u.builtIns.length + u.customKeys.length, 0);
+  if (n === 0) return null;
+  const groups = unmatched.map((u) => {
+    const labels = [...u.builtIns];
+    const k = u.customKeys.length;
+    if (k === 1) labels.push('A custom enzyme no longer stored');
+    else if (k > 1) labels.push(`${k} custom enzymes no longer stored`);
+    return `${labels.join(', ')} in ${u.docName}`;
+  });
+  const verb = n === 1 ? 'saved hide choice matches no enzyme and was' : 'saved hide choices match no enzyme and were';
+  return `${n} ${verb} not applied: ${groups.join('; ')}.`;
+}
+
 export interface MbcWorkbenchSnapshot {
   sessionName: string;
   documents: SequenceDocument[];
