@@ -22,7 +22,8 @@
  * Rename and Delete, and a member picker over the active list from the window's own read (the
  * catalogue alone when the store cannot be read). A member is named by its label, never by a custom
  * id; one whose definition is gone, or cannot be read, is kept and named for why. A collection write
- * reads no scan, so it does not call `onChange`.
+ * does not call `onChange` (the definitions are unchanged); it calls `onCollectionsChange`, so the App
+ * reads the collections again and a scan of a chosen collection (US-01M7JPK6) reads what is stored now.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -302,9 +303,10 @@ const CUSTOM_ENZYME_UNREADABLE = 'A custom enzyme (the enzyme database could not
 
 /**
  * How a collection member is listed: a built-in's name, a stored definition's label, and for a key
- * neither resolves, why - a `custom:` id is never shown.
+ * neither resolves, why - a `custom:` id is never shown. The App names a member its collection scan
+ * could not read by it (US-01M7JPK6).
  */
-function collectionMemberLabel(key: string, read: EnzymeDbRead): string {
+export function collectionMemberLabel(key: string, read: EnzymeDbRead): string {
   const builtIn = REBASE_ENZYMES.find((e) => enzymeKey(e) === key);
   if (builtIn) return enzymeLabel(builtIn);
   if (read.ok) {
@@ -349,13 +351,19 @@ export interface EnzymeDatabaseWindowProps {
    */
   onChange?: () => void;
   /**
+   * Called after every collection write the window asks of the collections store (create, rename,
+   * delete, add or remove a member, and a site's Add to a collection), whatever its outcome, so the
+   * App reads the collections again and a chosen collection's scan reads them now (US-01M7JPK6).
+   */
+  onCollectionsChange?: () => void;
+  /**
    * Opened from a detected site (US-01M7JPSK): the region under the header that views the enzyme's
    * definition or adds it to a collection. Read once at mount (the window is modal); absent, none.
    */
   intent?: EnzymeWindowIntent;
 }
 
-export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onClose, returnFocusTo = null, database, onChange, intent: intentProp }) => {
+export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onClose, returnFocusTo = null, database, onChange, onCollectionsChange, intent: intentProp }) => {
   const [intent] = useState<EnzymeWindowIntent | null>(() => intentProp ?? null);
   const db = useMemo(() => database ?? openEnzymeDatabase(), [database]);
   const [version, setVersion] = useState(0);
@@ -376,8 +384,9 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
   const [intentPick, setIntentPick] = useState<string | null>(null);
   const [intentNotice, setIntentNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   /**
-   * After a collection write: the window reads the collections again and says what happened (no scan
-   * reads them, so no onChange); `alsoSay` hears the same words, for the intent region.
+   * After a collection write: the window reads the collections again and says what happened, and its
+   * owner hears of it through onCollectionsChange (the definitions are unchanged, so no onChange);
+   * `alsoSay` hears the same words, for the intent region.
    */
   function collectionWrite<T>(
     r: EnzymeDbResult<T>,
@@ -385,6 +394,7 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
     alsoSay?: (notice: { kind: 'error' | 'info'; text: string }) => void,
   ): boolean {
     setCollectionsVersion((n) => n + 1);
+    onCollectionsChange?.();
     const notice = r.ok ? { kind: 'info' as const, text: said(r.value) } : { kind: 'error' as const, text: r.error.message };
     setCollectionNotice(notice);
     alsoSay?.(notice);

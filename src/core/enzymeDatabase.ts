@@ -27,6 +27,10 @@ export const ENZYME_DATABASE_SCHEMA = 1;
 export const ENZYME_COLLECTIONS_KEY = 'molbiocraft.enzymeCollections';
 /** The collections envelope schema this build writes and the highest it can read. */
 export const ENZYME_COLLECTIONS_SCHEMA = 1;
+/** The localStorage key the collection chosen for site scans lives under (US-01M7JPK6, D0163), apart from the collections. */
+export const ENZYME_SCAN_COLLECTION_KEY = 'molbiocraft.enzymeScanCollection';
+/** The schema of the scan-collection choice this build reads and writes. */
+export const ENZYME_SCAN_COLLECTION_SCHEMA = 1;
 /** The `format` marker of a backup file. */
 export const ENZYME_BACKUP_FORMAT = 'molbiocraft-enzyme-database-backup';
 /**
@@ -969,4 +973,61 @@ export function openEnzymeCollections(env: EnzymeCollectionsEnv = {}): EnzymeCol
       });
     },
   };
+}
+
+// ─── The collection the site scans read (US-01M7JPK6, D0163) ───
+
+/**
+ * The stored choice of collection for the App's display scans: a collection id, or null for every
+ * enzyme (nothing stored, or `collectionId: null` as All enzymes writes it). `unavailable` is
+ * storage that cannot be reached; `malformed` a stored value this build cannot read (not JSON, a
+ * schema other than {@link ENZYME_SCAN_COLLECTION_SCHEMA}, no `collectionId`), kept as it is.
+ */
+export type EnzymeScanCollectionRead =
+  | { ok: true; collectionId: string | null }
+  | { ok: false; error: EnzymeDbError };
+
+function scanChoiceStorage(env: EnzymeDatabaseEnv): EnzymeStorage {
+  if (env.storage) return env.storage;
+  const ls = globalThis.localStorage;
+  if (!ls) throw new Error('localStorage is not available');
+  return ls;
+}
+
+/** Read the collection chosen for site scans; it never writes, so an unreadable value stays byte-identical. */
+export function readEnzymeScanCollection(env: EnzymeDatabaseEnv = {}): EnzymeScanCollectionRead {
+  let raw: string | null;
+  try {
+    raw = scanChoiceStorage(env).getItem(ENZYME_SCAN_COLLECTION_KEY);
+  } catch (err) {
+    return fail('unavailable', `The collection chosen for site scans (${ENZYME_SCAN_COLLECTION_KEY}) cannot be read: storage is unavailable (${errorText(err)}).`);
+  }
+  if (raw === null) return { ok: true, collectionId: null };
+  const unreadable = (why: string) =>
+    fail('malformed', `The collection chosen for site scans (${ENZYME_SCAN_COLLECTION_KEY}) cannot be read: ${why}.`, { storedValue: raw as string });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return unreadable('it is not valid JSON');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return unreadable('it is not a choice this build wrote');
+  const v = parsed as { schema?: unknown; collectionId?: unknown };
+  if (v.schema !== ENZYME_SCAN_COLLECTION_SCHEMA) return unreadable('it has no schema version this build knows');
+  if (v.collectionId === null) return { ok: true, collectionId: null };
+  if (typeof v.collectionId !== 'string' || v.collectionId === '') return unreadable('it names no collection');
+  return { ok: true, collectionId: v.collectionId };
+}
+
+/** Store the collection chosen for site scans (null: every enzyme); a write the storage does not keep is not saved. */
+export function writeEnzymeScanCollection(collectionId: string | null, env: EnzymeDatabaseEnv = {}): { ok: true } | { ok: false; error: EnzymeDbError } {
+  const text = JSON.stringify({ schema: ENZYME_SCAN_COLLECTION_SCHEMA, collectionId });
+  try {
+    const s = scanChoiceStorage(env);
+    s.setItem(ENZYME_SCAN_COLLECTION_KEY, text);
+    if (s.getItem(ENZYME_SCAN_COLLECTION_KEY) !== text) return fail('notSaved', 'Nothing was saved: the storage did not keep the choice.');
+  } catch (err) {
+    return fail('notSaved', `Nothing was saved (${errorText(err)}).`);
+  }
+  return { ok: true };
 }

@@ -594,14 +594,48 @@ const CALLOUT_NOTE_PX = 11;
 /**
  * What a restriction scan covered when it is not the whole molecule (BG-01M6RPWR): only the first
  * `firstBp` bases, read as a linear sequence, or only the engine's first `coreEnzymes` catalog
- * enzymes.
+ * enzymes, or only the members of a chosen `collection` (US-01M7JPK6).
  */
 export interface RestrictionScanScope {
   firstBp?: number;
   coreEnzymes?: number;
   /** With `coreEnzymes`, how many custom definitions were scanned beside the core (US-01M7DV52). */
   customEnzymes?: number;
+  /**
+   * The collection chosen for site scans (US-01M7JPK6), when one is: it replaces the core rule's
+   * words, and is absent (never null) when every enzyme is scanned.
+   */
+  collection?: RestrictionScanCollection;
 }
+
+/** What a scan of a chosen collection read (US-01M7JPK6). */
+export interface RestrictionScanCollection {
+  name: string;
+  /** How many of its members the scan read. */
+  scanned: number;
+  /** Its built-ins the bounded member rule left out (beyond its first CORE_CATALOG_LEN, over 100,000 bases scanned). */
+  builtInsLeftOut: number;
+  /** Each member that could not be scanned, by its label (never a `custom:` id). */
+  notScanned: string[];
+}
+
+const enzymesWord = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'enzyme' : 'enzymes'}`;
+
+/**
+ * The enzymes a collection scan read, as the words after "for" or "Only": its first built-ins and
+ * its custom ones when the bounded member rule cut it, else all of them by count, joined to the
+ * collection's name by `joiner` (US-01M7JPK6).
+ */
+export function collectionScanSet(c: RestrictionScanCollection, joiner: 'in the collection' | 'of' = 'in the collection'): string {
+  if (c.builtInsLeftOut > 0) {
+    const custom = c.scanned - CORE_CATALOG_LEN;
+    return `the first ${CORE_CATALOG_LEN} built-in enzymes of "${c.name}"${custom > 0 ? ` and its ${custom.toLocaleString()} custom ${custom === 1 ? 'enzyme' : 'enzymes'}` : ''}`;
+  }
+  return `the ${enzymesWord(c.scanned)} ${joiner} "${c.name}"`;
+}
+
+/** The sentence a scan of a collection with no enzyme that can be scanned says (US-01M7JPK6). */
+export const emptyCollectionScanWords = (name: string) => `The collection "${name}" holds no enzyme that can be scanned: no cut sites are shown.`;
 
 /**
  * How many of the catalog's first enzymes the engine scans a sequence of more than 100,000 bp
@@ -623,14 +657,24 @@ export function restrictionScannedBp(lengthBp: number): number {
 /**
  * What a restriction scan of the first `scannedBp` bases of a `lengthBp` molecule covers, as the
  * engine runs it (more than 100,000 bp with the core catalog only); null when it covers the whole
- * molecule with the whole catalog.
+ * molecule with the whole catalog. With a chosen `collection` (US-01M7JPK6) the scope names it in
+ * place of the core rule, whose words would be false for it.
  */
-export function restrictionScanScope(lengthBp: number, scannedBp = lengthBp, customEnzymes = 0): RestrictionScanScope | null {
+export function restrictionScanScope(
+  lengthBp: number,
+  scannedBp = lengthBp,
+  customEnzymes = 0,
+  collection?: RestrictionScanCollection
+): RestrictionScanScope | null {
   const scope: RestrictionScanScope = {
     ...(scannedBp < lengthBp ? { firstBp: scannedBp } : {}),
-    ...(scannedBp > 100_000 ? { coreEnzymes: CORE_CATALOG_LEN, ...(customEnzymes > 0 ? { customEnzymes } : {}) } : {}),
+    ...(collection
+      ? { collection }
+      : scannedBp > 100_000
+        ? { coreEnzymes: CORE_CATALOG_LEN, ...(customEnzymes > 0 ? { customEnzymes } : {}) }
+        : {}),
   };
-  return scope.firstBp || scope.coreEnzymes ? scope : null;
+  return scope.firstBp || scope.coreEnzymes || scope.collection ? scope : null;
 }
 
 /**
@@ -663,8 +707,37 @@ export function restrictionScopeWords(
   const custom = core && scope?.customEnzymes ? scope.customEnzymes : 0;
   // The core rule, and the custom definitions scanned beside it (US-01M7DV52).
   const coreSet = custom ? `${core} core enzymes plus ${custom.toLocaleString()} custom` : `${core} core enzymes`;
-  if (!first && !core) return null;
+  const c = scope?.collection;
+  if (!first && !core && !c) return null;
   const join = (parts: string[], sep: string) => parts.filter(Boolean).join(sep);
+  if (c) {
+    // A chosen collection (US-01M7JPK6): its name and the members scanned, then any member that
+    // could not be scanned, named by its label.
+    const named = `"${c.name}" (${enzymesWord(c.scanned)})`;
+    const left = c.builtInsLeftOut;
+    const scanned =
+      c.scanned === 0
+        ? emptyCollectionScanWords(c.name)
+        : left > 0
+          ? `Only ${collectionScanSet(c)} were scanned: its other ${left.toLocaleString()} built-in ${left === 1 ? 'enzyme' : 'enzymes'}, and other enzymes, may also cut this sequence.`
+          : `Only ${collectionScanSet(c)} ${c.scanned === 1 ? 'was' : 'were'} scanned: other enzymes may also cut this sequence.`;
+    const n = c.notScanned.length;
+    const gone = n ? `${n === 1 ? '1 member was' : `${n.toLocaleString()} members were`} not scanned: ${c.notScanned.join(', ')}.` : '';
+    return {
+      sites: join([first && `in the first ${first} bp`, `from ${named}`], ' '),
+      once: join([first && `in the first ${first} bp`, `among ${named}`], ' '),
+      short: join([first && `first ${first} bp`, named], ', '),
+      detail: join(
+        [
+          first &&
+            `Only the first ${first} of ${lengthBp.toLocaleString()} bp were scanned, as a linear sequence: an enzyme listed here may cut again past ${first} bp.`,
+          scanned,
+          gone,
+        ],
+        ' '
+      ),
+    };
+  }
   return {
     sites: join([first && `in the first ${first} bp`, core && `from ${coreSet}`], ' '),
     once: join([first && `in the first ${first} bp`, core && `among ${coreSet}`], ' '),

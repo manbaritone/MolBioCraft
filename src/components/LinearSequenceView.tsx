@@ -39,7 +39,7 @@ import { chartMaxWidth } from '../core/chartLayout';
 import { FigureExportButton } from './FigureExportButton';
 import { ResultWarnings } from './ResultWarnings';
 import { CleavagePreview } from './CleavagePreview';
-import { meanGcWords, subsetNote, type RestrictionScanScope } from './CircularPlasmidMap';
+import { collectionScanSet, emptyCollectionScanWords, meanGcWords, subsetNote, type RestrictionScanScope } from './CircularPlasmidMap';
 
 interface LinearSequenceViewProps {
   doc: SequenceDocument;
@@ -2507,12 +2507,19 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   // sequence, or only the first), so it does not read as part of the sequence left out (BG-01M6RTP1).
   const scanFirst = isProtein ? undefined : restrictionScope?.firstBp?.toLocaleString();
   const scanCore = isProtein ? undefined : restrictionScope?.coreEnzymes?.toLocaleString();
+  // A chosen collection (US-01M7JPK6) is named in place of the core enzymes, by the members scanned.
+  const scanCollection = isProtein ? undefined : restrictionScope?.collection;
+  const collectionSet = scanCollection && scanCollection.scanned > 0 ? collectionScanSet(scanCollection, 'of') : undefined;
   const cutScanNote =
     scanFirst && pageEndPos > (restrictionScope?.firstBp ?? 0)
-      ? `Cut sites are shown for the first ${scanFirst} bp${scanCore ? ` and for ${scanCore} core enzymes` : ''} only: the rest was not scanned.`
+      ? `Cut sites are shown for the first ${scanFirst} bp${scanCore ? ` and for ${scanCore} core enzymes` : collectionSet ? ` and for ${collectionSet}` : ''} only: the rest was not scanned.`
       : scanCore
         ? `Cut sites are shown for ${scanCore} core enzymes only: ${scanFirst ? `the first ${scanFirst} bp were` : 'the whole sequence was'} scanned for them, and not for other enzymes.`
-        : null;
+        : scanCollection
+          ? collectionSet
+            ? `Cut sites are shown for ${collectionSet} only: other enzymes were not scanned.`
+            : emptyCollectionScanWords(scanCollection.name)
+          : null;
 
   const pagePrimers = useMemo(
     () =>

@@ -104,7 +104,7 @@ import { AddToAlignmentDialog, ConsensusDialog, MaskAlignmentDialog, Translation
 import { ManageWorkflowsDialog, RunWorkflowDialog } from './components/WorkflowDialogs';
 import { BackTranslateDialog, CompareAnnotationsDialog, MergePairsDialog, PrimerBindingDialog, ReadQcDialog, TestSavedPrimersDialog, TrimEndsDialog } from './components/PrimerReadDialogs';
 import { openPrimerDatabase } from './core/primerDatabase';
-import { openEnzymeDatabase } from './core/enzymeDatabase';
+import { openEnzymeCollections, openEnzymeDatabase, readEnzymeScanCollection, writeEnzymeScanCollection } from './core/enzymeDatabase';
 import { REBASE_ENZYMES } from './data/rebaseEnzymes';
 import { MetadataImportDialog } from './components/MetadataImportDialog';
 import { ComputeDistancesDialog, CondenseTreeDialog, EvolutionAnalysisDialog, TimetreeDialog, ExamplesDialog, GeneDuplicationDialog, HighlightSitesDialog } from './components/EvolutionAnalysisDialogs';
@@ -233,6 +233,7 @@ import {
   NUCLEOTIDE_COLOR_SCHEMES,
   ProteinAnalysisReport,
   RestrictionCutSite,
+  RestrictionEnzyme,
   SequenceDocument,
 } from './types/bio';
 import {
@@ -303,6 +304,7 @@ import {
   clampSequenceZoom,
   primerTmText,
   customEnzymeCount,
+  type RestrictionScanCollection,
   type RestrictionScanScope,
   restrictionScanEnzymes,
   restrictionScanScope,
@@ -343,7 +345,7 @@ import {
   StaticModalDialog,
 } from './components/MenusPreferencesAndBlastModal';
 import { PrimerDatabaseWindow } from './components/PrimerDatabaseWindow';
-import { EnzymeDatabaseWindow, type EnzymeWindowIntent } from './components/EnzymeDatabaseWindow';
+import { EnzymeDatabaseWindow, collectionMemberLabel, type EnzymeWindowIntent } from './components/EnzymeDatabaseWindow';
 import {
   buildNcbiReferencePresetDocumentRust,
   ensureResidentSequenceRust,
@@ -1248,6 +1250,59 @@ export const App: React.FC = () => {
     [enzymeDbRead]
   );
   const enzymeDbNotice = !enzymeDbRead.ok && enzymeDbRead.error.kind !== 'unavailable' ? enzymeDbRead.error.message : null;
+  // The collection the main display scan reads (US-01M7JPK6, D0163, D0168): the stored choice, or one
+  // made in this run that the storage did not keep. The collections are read again on every write the
+  // Restriction Enzymes window makes to them. Only the main display scan reads `displayScanEnzymes`;
+  // digests, cloning, workflows, the Enzymes view and the split pane keep `activeEnzymes`. A choice or
+  // a collections store that cannot be read, or a chosen collection that is gone, scans every enzyme
+  // and says why once (below); storage that is unavailable says nothing, as for `enzymeDbNotice`.
+  const [enzymeCollectionsRevision, setEnzymeCollectionsRevision] = useState(0);
+  const enzymeCollectionsRead = useMemo(() => openEnzymeCollections().read(), [enzymeCollectionsRevision]);
+  const [scanChoiceRevision, setScanChoiceRevision] = useState(0);
+  const storedScanChoice = useMemo(() => readEnzymeScanCollection(), [scanChoiceRevision]);
+  const [unsavedScanChoice, setUnsavedScanChoice] = useState<{ collectionId: string | null } | null>(null);
+  const scanCollectionChoice = useMemo((): {
+    collection: { id: string; name: string; members: RestrictionEnzyme[]; notScanned: string[] } | null;
+    notice: string | null;
+  } => {
+    if (!unsavedScanChoice && !storedScanChoice.ok) {
+      const unreadable = storedScanChoice.error.kind !== 'unavailable';
+      return { collection: null, notice: unreadable ? 'The collection chosen for site scans cannot be read, so every enzyme is scanned.' : null };
+    }
+    const chosenId = unsavedScanChoice ? unsavedScanChoice.collectionId : storedScanChoice.ok ? storedScanChoice.collectionId : null;
+    if (chosenId === null) return { collection: null, notice: null };
+    if (!enzymeCollectionsRead.ok) {
+      const { kind, message } = enzymeCollectionsRead.error;
+      return { collection: null, notice: kind === 'unavailable' ? null : `The enzyme collections cannot be read, so every enzyme is scanned. ${message}` };
+    }
+    const chosen = enzymeCollectionsRead.collections.find((c) => c.id === chosenId);
+    if (!chosen) return { collection: null, notice: 'The collection chosen for site scans no longer exists: every enzyme is scanned.' };
+    // Each member by its enzymeKey, in collection order; one the active list does not hold is named, never by its id.
+    const byKey = new Map(activeEnzymes.map((e) => [enzymeKey(e), e] as const));
+    const members: RestrictionEnzyme[] = [];
+    const notScanned: string[] = [];
+    for (const key of chosen.enzymeIds) {
+      const e = byKey.get(key);
+      if (e) members.push(e);
+      else notScanned.push(collectionMemberLabel(key, enzymeDbRead));
+    }
+    return { collection: { id: chosen.id, name: chosen.name, members, notScanned }, notice: null };
+  }, [unsavedScanChoice, storedScanChoice, enzymeCollectionsRead, activeEnzymes, enzymeDbRead]);
+  const displayScanEnzymes = scanCollectionChoice.collection ? scanCollectionChoice.collection.members : activeEnzymes;
+  /** The chooser's choice: a collection's id, or '' for All enzymes (also when a choice falls back). */
+  const scanCollectionValue = scanCollectionChoice.collection?.id ?? '';
+  const scanCollectionOptions = enzymeCollectionsRead.ok ? enzymeCollectionsRead.collections : [];
+  const chooseScanCollection = (collectionId: string | null) => {
+    const written = writeEnzymeScanCollection(collectionId);
+    if (written.ok) {
+      setUnsavedScanChoice(null);
+      setScanChoiceRevision((n) => n + 1);
+    } else {
+      // Scanned for this run all the same, and said once.
+      setUnsavedScanChoice({ collectionId });
+      setStatusBanner('The choice of collection was not saved: the storage did not keep it.', { keep: true });
+    }
+  };
   const openEnzymeDatabaseWindow = () => {
     setEnzymeDbWindow({ opener: databaseWindowOpener() });
   };
@@ -2356,10 +2411,19 @@ export const App: React.FC = () => {
   // catalog only (CORE_CATALOG_LEN enzymes, the Rust constant of that name in rebase_catalog.rs).
   // The counts drawn from the scan say so: the map's note, and the Restriction Analysis header
   // and list.
+  // A chosen collection (US-01M7JPK6) is named in place of the core rule: the members the bounded
+  // member rule sends for the bases scanned, the built-ins it leaves out, and each member not scanned.
   const restrictionScope = useMemo<RestrictionScanScope | null>(() => {
     const length = activeDoc.sequence.length;
-    return restrictionScanScope(length, restrictionScannedBp(length), customEnzymeCount(activeEnzymes));
-  }, [activeDoc.sequence.length, activeEnzymes]);
+    const scannedBp = restrictionScannedBp(length);
+    const chosen = scanCollectionChoice.collection;
+    let collection: RestrictionScanCollection | undefined;
+    if (chosen) {
+      const sent = restrictionScanEnzymes(chosen.members, scannedBp).length;
+      collection = { name: chosen.name, scanned: sent, builtInsLeftOut: chosen.members.length - sent, notScanned: chosen.notScanned };
+    }
+    return restrictionScanScope(length, scannedBp, customEnzymeCount(activeEnzymes), collection);
+  }, [activeDoc.sequence.length, activeEnzymes, scanCollectionChoice]);
   const restrictionWords = restrictionScopeWords(restrictionScope, activeDoc.sequence.length);
 
   // The scan gives every enzyme's complete site count and keeps each enzyme's first sites by
@@ -2375,14 +2439,16 @@ export const App: React.FC = () => {
       return EMPTY_RESTRICTION_SCAN;
     }
     // The core cut follows the bases the scan reads (US-01M7DV52): a 60,000 bp slice is scanned
-    // with the whole catalogue, and every custom definition is always sent.
-    const scanEnzymes = restrictionScanEnzymes(activeEnzymes, restrictionScannedBp(activeDoc.sequence.length));
+    // with the whole catalogue, and every custom definition is always sent. A chosen collection is
+    // cut by the same rule (D0162); one with nothing that can be scanned is not sent at all.
+    const scanEnzymes = restrictionScanEnzymes(displayScanEnzymes, restrictionScannedBp(activeDoc.sequence.length));
+    if (scanEnzymes.length === 0) return EMPTY_RESTRICTION_SCAN;
     if (restrictionScope?.firstBp) {
       return scanRestrictionSites(activeDoc.sequence.slice(0, restrictionScope.firstBp), 'linear', scanEnzymes);
     }
     return scanRestrictionSites(activeDoc.sequence, activeDoc.topology, scanEnzymes);
   }, [
-    activeEnzymes,
+    displayScanEnzymes,
     sessionActive,
     homeViewActive,
     viewerTab,
@@ -2391,6 +2457,20 @@ export const App: React.FC = () => {
     activeDoc.moleculeType,
     restrictionScope,
   ]);
+  // Why a chosen collection is not scanned, said once in the status line when a scan runs without it
+  // (US-01M7JPK6): again only after the reason has gone and come back.
+  const scanCollectionNotice = scanCollectionChoice.notice;
+  const restrictionScanRan = restrictionScan !== EMPTY_RESTRICTION_SCAN;
+  const shownScanCollectionNotice = useRef<string | null>(null);
+  useEffect(() => {
+    if (!scanCollectionNotice) {
+      shownScanCollectionNotice.current = null;
+      return;
+    }
+    if (!restrictionScanRan || shownScanCollectionNotice.current === scanCollectionNotice) return;
+    shownScanCollectionNotice.current = scanCollectionNotice;
+    setStatusBanner(scanCollectionNotice, { append: true, keep: true });
+  }, [scanCollectionNotice, restrictionScanRan, setStatusBanner]);
   const cutSites = restrictionScan.sites;
   const restrictionSiteCounts = useMemo(() => restrictionSiteCountsByName(restrictionScan), [restrictionScan]);
   const restrictionSiteTotal = useMemo(
@@ -16230,6 +16310,21 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       </button>
                       {openRightPanels.restriction && (
                         <div className="mbc-accordion-body">
+                          {/* The enzymes the main display scan reads (US-01M7JPK6, D0164). */}
+                          <div className="mbc-scan-collection">
+                            <select
+                              aria-label="Enzymes the site scans read"
+                              value={scanCollectionValue}
+                              onChange={(e) => chooseScanCollection(e.target.value === '' ? null : e.target.value)}
+                            >
+                              <option value="">All enzymes</option>
+                              {scanCollectionOptions.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {`${c.name} (${c.enzymeIds.length.toLocaleString()} ${c.enzymeIds.length === 1 ? 'enzyme' : 'enzymes'})`}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                           {restrictionWords && <p className="mbc-summary-note">{restrictionWords.detail}</p>}
                           <ResultWarnings warnings={restrictionScan.warnings} label="Restriction scan warnings" />
                           <label className="mbc-check-row">
@@ -17358,6 +17453,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           intent={enzymeDbWindow.intent}
           onClose={() => setEnzymeDbWindow(null)}
           onChange={() => setEnzymeDbRevision((n) => n + 1)}
+          onCollectionsChange={() => setEnzymeCollectionsRevision((n) => n + 1)}
         />
       )}
       {primerDbImportOpen && (
