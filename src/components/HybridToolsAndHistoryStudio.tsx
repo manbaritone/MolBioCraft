@@ -162,6 +162,8 @@ const customRowsLeftOut = (n: number) =>
 
 /** The Enzymes view's count for an enzyme the restriction scan did not read (BG-01M6S1K2). */
 const NOT_SCANNED = 'not scanned';
+/** An enzyme table CSV cell, RFC 4180-quoted only when it holds a comma, a double quote or a line break (D0155). */
+const csvCell = (text: string) => (/[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text);
 const MS2_PLOT = plotFrame({ ...CHART_FULL, h: 280, padL: 52 });
 export type { HybridSubTabId } from '../core/analysisContext';
 
@@ -630,11 +632,13 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   };
 
   const handleExportEnzymeTableCsv = () => {
-    const header = 'Name,Recognition Sequence,Effective Length (nt),Overhang,Methylation,# Cuts';
-    // Exporting custom definitions' rows is a follow-up (US-01M7DV52): the file holds the built-ins'.
-    const exported = filteredEnzymeSummary.filter((row) => !isCustomEnzyme(row.enzyme));
-    const leftOut = filteredEnzymeSummary.length - exported.length;
-    const rows = exported.map(({ enzyme, count }) => {
+    // Every row the filter shows, custom ones too (US-01M7GRYW). The four definition columns are
+    // added only when a custom row is exported, so a catalogue-only file is today's six (D0155).
+    const extended = filteredEnzymeSummary.some((row) => isCustomEnzyme(row.enzyme));
+    const header = `Name,Recognition Sequence,Effective Length (nt),Overhang,Methylation,# Cuts${
+      extended ? ',Source,Top Cut Offset,Bottom Cut Offset,Provenance' : ''
+    }`;
+    const rows = filteredEnzymeSummary.map(({ enzyme, count }) => {
       const overhang =
         enzyme.cutFwd === enzyme.cutRev
           ? 'Blunt'
@@ -645,13 +649,22 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
         enzyme.methylationSensitivity && enzyme.methylationSensitivity.length > 0
           ? enzyme.methylationSensitivity.join(';')
           : 'None';
-      return `${enzyme.name},${enzyme.recognitionSeq},${enzLength(enzyme.recognitionSeq)},${overhang},${meth},${count}`;
+      const custom = isCustomEnzyme(enzyme);
+      const cells = [
+        enzymeLabel(enzyme),
+        enzyme.recognitionSeq,
+        String(enzLength(enzyme.recognitionSeq)),
+        overhang,
+        meth,
+        count === null ? NOT_SCANNED : String(count),
+        // A built-in's provenance is empty: the catalogue holds none.
+        ...(extended ? [custom ? 'custom' : 'built-in', String(enzyme.cutFwd), String(enzyme.cutRev), custom ? enzyme.provenance ?? '' : ''] : []),
+      ];
+      return cells.map(csvCell).join(',');
     });
     const csv = [header, ...rows].join('\n');
     saveWorkbenchFile(`${doc.name.replace(/\s+/g, '_')}_Enzymes.csv`, csv, 'text/csv;charset=utf-8');
-    setEnzymeSetStatusMsg(
-      `Exported ${exported.length} enzyme row(s) to CSV${leftOut > 0 ? ` (${leftOut} custom enzyme row(s) not exported: the CSV holds built-in enzymes only)` : ''}`
-    );
+    setEnzymeSetStatusMsg(`Exported ${rows.length} enzyme row(s) to CSV`);
   };
 
   const handleAutoAnnotateCommonFeatures = () => {
