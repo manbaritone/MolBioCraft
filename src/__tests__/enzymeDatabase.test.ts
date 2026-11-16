@@ -15,7 +15,8 @@ import {
   type EnzymeStorage,
 } from '../core/enzymeDatabase';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
-import type { CustomEnzymeDefinition } from '../types/bio';
+import { scanRestrictionSites } from '../core/bioEngine';
+import type { CustomEnzymeDefinition, RestrictionEnzyme } from '../types/bio';
 
 /** A localStorage stand-in that counts writes and records the keys written. */
 class MemoryStorage implements EnzymeStorage {
@@ -550,4 +551,72 @@ describe('Enzyme database: unreadable store and failed writes (US-01M7DVMJ AC6)'
     expect(errorOf(db.add({ ...BSAI_LIKE, name: 'Second' })).kind).toBe('notSaved');
     expect(db.read()).toEqual({ ok: true, definitions: [kept], stored: true });
   });
+});
+
+/**
+ * US-01M7DV1V AC4: a stored custom definition, sent to the engine in `customEnzymes` through the
+ * scan the maps, site lists and enzyme table read (`scanRestrictionSites` over
+ * public/molbiocraft_wasm.wasm), comes back on every one of its sites as itself - its `custom:` id,
+ * name, provenance, notes and source - and a built-in in the same scan keeps its own id.
+ */
+describe('Enzyme database: a definition keeps its id through the engine (US-01M7DV1V AC4)', () => {
+  const MINE_ID = 'custom:3f2b8c1d-5e6a-4b7c-9d8e-0f1a2b3c4d5e';
+  const TWIN_ID = 'custom:9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+  /** EcoRI at 4, the definition's GGTCTC at 14 (top) and GAGACC at 35 (its bottom-strand site). */
+  const SEQ = 'AAAGAATTCAAAAGGTCTCAAAAAAAAAAAAAAAGAGACCAAAAAAAAAAAAAAAA';
+
+  function stored(): { mine: CustomEnzymeDefinition; twin: CustomEnzymeDefinition } {
+    const ids = [MINE_ID, TWIN_ID];
+    const db = openEnzymeDatabase({ storage: new MemoryStorage(), now: () => '2026-11-16T09:00:00.000Z', newId: () => ids.shift()! });
+    const mine = okValue(db.add({ ...BSAI_LIKE, provenance: 'REBASE 5678', notes: 'Lab stock, box 3' }));
+    // A definition the user confirmed under the built-in's own name, cutting the built-in's motif bluntly.
+    const twin = okValue(
+      db.add({ name: 'EcoRI', recognitionSeq: 'GAATTC', cutFwd: 3, cutRev: 3, isTypeIIS: false, provenance: 'Own isolate', notes: 'Blunt' }, { confirmedClash: 'EcoRI' }),
+    );
+    return { mine, twin };
+  }
+
+  /** The definition as the engine reads it; `withSource: false` is a caller that omits `source`. */
+  function engineEnzyme(def: CustomEnzymeDefinition, withSource: boolean): RestrictionEnzyme {
+    const { source, ...rest } = def;
+    return { ...rest, ...(withSource ? { source } : {}), suppliers: [], bufferNEB: '', tempC: 37 };
+  }
+
+  for (const withSource of [true, false]) {
+    it(`US-01M7DV1V AC4 returns a custom definition on each of its sites as itself, and a built-in as itself (source ${withSource ? 'sent' : 'omitted'})`, () => {
+      const { mine, twin } = stored();
+      expect(mine.id).toBe(MINE_ID);
+      const sent = [engineEnzyme(mine, withSource), engineEnzyme(twin, withSource)];
+      if (!withSource) expect(sent.every((e) => !('source' in e))).toBe(true);
+      const ecoRI = REBASE_ENZYMES.find((e) => e.name === 'EcoRI')!;
+      const scan = scanRestrictionSites(SEQ, 'linear', [ecoRI, ...sent]);
+
+      const ofId = (id: string) => scan.sites.filter((s) => s.enzyme.id === id);
+      // Wrong implementations: the id dropped or read from the name, provenance or notes left
+      // behind, or the source defaulted to builtin when the caller omits it.
+      expect(ofId(MINE_ID).map((s) => [s.position, s.strand])).toEqual([[14, 1], [35, -1]]);
+      for (const site of ofId(MINE_ID)) {
+        expect(site.enzyme).toMatchObject({ id: MINE_ID, name: 'MyBsa', provenance: 'REBASE 5678', notes: 'Lab stock, box 3', source: 'custom' });
+        expect(site.id.startsWith(`${MINE_ID}-`)).toBe(true);
+      }
+      expect(ofId(TWIN_ID).map((s) => s.enzyme)).toEqual([
+        expect.objectContaining({ id: TWIN_ID, name: 'EcoRI', provenance: 'Own isolate', notes: 'Blunt', source: 'custom' }),
+      ]);
+
+      // The built-in in the same scan keeps the built-in's id, though a custom shares its name and site.
+      const builtIn = ofId('EcoRI');
+      expect(builtIn).toHaveLength(1);
+      expect(builtIn[0].enzyme).toMatchObject({ id: 'EcoRI', name: 'EcoRI', source: 'builtin', provenance: '', notes: '' });
+      expect(builtIn[0].id).toBe('EcoRI-4-1');
+      expect(builtIn[0].position).toBe(ofId(TWIN_ID)[0].position);
+      expect(new Set(scan.sites.map((s) => s.id)).size).toBe(scan.sites.length);
+
+      // Each count entry carries the enzyme's id beside its name.
+      expect(scan.siteCounts).toEqual([
+        { enzyme: 'EcoRI', enzymeId: 'EcoRI', sites: 1, methylationBlocked: 0 },
+        { enzyme: 'MyBsa', enzymeId: MINE_ID, sites: 2, methylationBlocked: 0 },
+        { enzyme: 'EcoRI', enzymeId: TWIN_ID, sites: 1, methylationBlocked: 0 },
+      ]);
+    });
+  }
 });

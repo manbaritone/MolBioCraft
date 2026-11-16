@@ -366,7 +366,18 @@ export interface SequenceFeature {
 /** How the built-in catalogue spells a host methylation an enzyme is sensitive to. */
 export type MethylationSensitivity = 'Dam' | 'Dcm' | 'CpG' | 'EcoKI';
 
+/** Where an enzyme comes from: the read-only built-in catalogue, or the user's enzyme database. */
+export type EnzymeSource = 'builtin' | 'custom';
+
 export interface RestrictionEnzyme {
+  /**
+   * Stable for the enzyme's life (US-01M7DV1V): a built-in's is its catalogue name, verbatim; a
+   * custom definition's is its `custom:` id. Every enzyme the engine returns carries one; a caller
+   * may omit it, and the engine then reads the name as the id.
+   */
+  id?: string;
+  /** Every enzyme the engine returns carries one; omitted, the engine reads `custom` exactly when the id starts with `custom:`. */
+  source?: EnzymeSource;
   name: string;
   recognitionSeq: string; // e.g., GAATTC or GGTCTC
   cutFwd: number;         // 0-indexed offset from start of recognitionSeq on top strand
@@ -376,6 +387,9 @@ export interface RestrictionEnzyme {
   methylationSensitivity: MethylationSensitivity[];
   bufferNEB: string;
   tempC: number;
+  /** Free text naming where the definition came from; '' for a built-in. */
+  provenance?: string;
+  notes?: string;
 }
 
 export interface RestrictionCutSite {

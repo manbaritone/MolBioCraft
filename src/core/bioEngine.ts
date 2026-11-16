@@ -186,7 +186,10 @@ export function findRestrictionCutSites(
  * Dcm methylation blocks; the rest are its cuts (BG-01M6S1K2).
  */
 export interface EnzymeSiteCount {
+  /** The enzyme's display name. */
   enzyme: string;
+  /** The enzyme's id (US-01M7DV1V): a built-in's is its name, a custom definition's its `custom:` id. */
+  enzymeId: string;
   sites: number;
   methylationBlocked: number;
 }

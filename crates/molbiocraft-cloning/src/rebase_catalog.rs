@@ -6,6 +6,7 @@ use molbiocraft_core::{
     clean_alpha_sequence, format_thousands, iupac_base_matches, reverse_complement_iupac,
     RestrictionCutSite, RestrictionEnzyme, SequenceDocument, Topology,
 };
+use molbiocraft_core::types::EnzymeSource;
 use molbiocraft_protein::translate_codon_standard;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -65,7 +66,11 @@ fn enz(
     buf: &str,
     temp_c: u32,
 ) -> RestrictionEnzyme {
+    // A built-in's id is its catalogue name, verbatim (US-01M7DV1V): the names are unique, so
+    // inserting or reordering an entry changes no id, and its site ids stay what they were.
     RestrictionEnzyme {
+        id: name.to_string(),
+        source: EnzymeSource::Builtin,
         name: name.to_string(),
         recognition_seq: rec.to_string(),
         cut_fwd,
@@ -75,6 +80,8 @@ fn enz(
         methylation_sensitivity: meth.iter().map(|m| (*m).to_string()).collect(),
         buffer_standard: buf.to_string(),
         temp_c,
+        provenance: String::new(),
+        notes: String::new(),
     }
 }
 
@@ -309,7 +316,11 @@ pub enum RestrictionPositionLimit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnzymeSiteCount {
+    /// The enzyme's display name.
     pub enzyme: String,
+    /// The enzyme's id (US-01M7DV1V): a built-in's is its name, a custom definition's its
+    /// `custom:` id, so two enzymes sharing a name have two distinguishable entries.
+    pub enzyme_id: String,
     pub sites: usize,
     /// Of `sites`, every one a dam+ dcm+ host's methylation blocks, by the rule each kept site's
     /// `methylation_blocked` follows; the others are the enzyme's cuts (BG-01M6S1K2).
@@ -520,7 +531,9 @@ fn record_cut_site(
     let methylation_blocked = MethylationSensitivity::of(enz).blocks(idx, motif_len, search_space, seq_len, topology);
 
     sites.push(RestrictionCutSite {
-        id: format!("{}-{}-{}", enz.name, idx + 1, strand),
+        // The enzyme's id, not its name, so two enzymes sharing a name but not an id never share a
+        // site id; a built-in's id is its name, so its site id is what it always was (US-01M7DV1V).
+        id: format!("{}-{}-{}", enz.id, idx + 1, strand),
         enzyme: enz.clone(),
         position: idx + 1,
         cut_top,
@@ -823,7 +836,12 @@ pub fn scan_restriction_sites(
             .iter()
             .enumerate()
             .filter(|(i, _)| unreadable[*i].is_empty())
-            .map(|(i, e)| EnzymeSiteCount { enzyme: e.name.clone(), sites: counts[i], methylation_blocked: blocked[i] })
+            .map(|(i, e)| EnzymeSiteCount {
+                enzyme: e.name.clone(),
+                enzyme_id: e.id.clone(),
+                sites: counts[i],
+                methylation_blocked: blocked[i],
+            })
             .collect(),
         stopped_early: !capped.is_empty(),
         capped_enzymes: capped.into_iter().map(|(name, _)| name).collect(),

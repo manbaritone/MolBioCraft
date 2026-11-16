@@ -15,11 +15,13 @@ use molbiocraft_cloning::rebase_catalog::{
     find_non_cutting_enzymes, find_non_cutting_enzymes_for_topology, get_rebase_enzymes, scan_restriction_sites,
     RestrictionPositionLimit, RestrictionSiteScan, ORIGIN_WRAP_BASES,
 };
-use molbiocraft_core::types::{RestrictionCutSite, RestrictionEnzyme, Topology};
+use molbiocraft_core::types::{EnzymeSource, RestrictionCutSite, RestrictionEnzyme, Topology};
 
 /// A custom definition: a name, a motif and its signed cut offsets, nothing from the catalogue.
 fn custom(name: &str, rec: &str, cut_fwd: i32, cut_rev: i32) -> RestrictionEnzyme {
     RestrictionEnzyme {
+        id: name.to_string(),
+        source: EnzymeSource::Custom,
         name: name.to_string(),
         recognition_seq: rec.to_string(),
         cut_fwd,
@@ -29,6 +31,8 @@ fn custom(name: &str, rec: &str, cut_fwd: i32, cut_rev: i32) -> RestrictionEnzym
         methylation_sensitivity: Vec::new(),
         buffer_standard: String::new(),
         temp_c: 37,
+        provenance: String::new(),
+        notes: String::new(),
     }
 }
 
@@ -538,4 +542,120 @@ fn bg_01m7gn42_ac1_u_spelled_palindrome_fix_reads_every_built_in_as_its_u_spelli
         }
     }
     assert!(palindromes >= 20 && reverse_sites >= 20, "the fixture reaches both: {palindromes} {reverse_sites}");
+}
+
+// ─── US-01M7DV1V: every enzyme carries a stable id and its provenance ───
+
+/// A fixed pseudo-random ACGT sequence, the same on every run.
+fn fixed_seq(n: usize, mut state: u64) -> String {
+    let bases = [b'A', b'C', b'G', b'T'];
+    (0..n)
+        .map(|_| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            bases[((state >> 33) % 4) as usize] as char
+        })
+        .collect()
+}
+
+#[test]
+fn us_01m7dv1v_ac1_a_builtin_id_is_its_catalogue_name_and_its_site_ids_are_unchanged() {
+    let catalog = get_rebase_enzymes();
+    let names: std::collections::HashSet<&str> = catalog.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names.len(), catalog.len(), "the catalogue's names are unique, so a name can be an id");
+    // Wrong implementation: an id drawn from the entry's place in the list, which an insert shifts.
+    for e in &catalog {
+        assert_eq!(e.id, e.name, "{}: a built-in's id is its catalogue name, verbatim", e.name);
+        assert_eq!(e.source, EnzymeSource::Builtin, "{}", e.name);
+    }
+    let eco = catalog.iter().find(|e| e.name == "EcoRI").expect("EcoRI is in the catalogue");
+    assert_eq!(eco.id, "EcoRI");
+
+    // A built-in's site id is the one it had before this story: name, 1-based start, strand.
+    let pinned = scan_restriction_sites("AAGAATTCAAAAAAAAGAGACCAAAA", Topology::Linear, None, RestrictionPositionLimit::All);
+    let id_of = |enzyme: &str| pinned.sites.iter().filter(|s| s.enzyme.name == enzyme).map(|s| s.id.clone()).collect::<Vec<_>>();
+    assert_eq!(id_of("EcoRI"), vec!["EcoRI-3-1".to_string()]);
+    assert_eq!(id_of("BsaI-HFv2"), vec!["BsaI-HFv2-17--1".to_string()]);
+
+    for topology in [Topology::Circular, Topology::Linear] {
+        let scan = scan_restriction_sites(&fixed_seq(6000, 5), topology, None, RestrictionPositionLimit::All);
+        assert!(scan.sites.len() > 100, "the fixture reaches many built-in sites");
+        for s in &scan.sites {
+            assert_eq!(s.id, format!("{}-{}-{}", s.enzyme.name, s.position, s.strand));
+            assert_eq!((s.enzyme.id.as_str(), s.enzyme.source), (s.enzyme.name.as_str(), EnzymeSource::Builtin));
+        }
+        for c in &scan.site_counts {
+            assert_eq!(c.enzyme_id, c.enzyme, "a built-in's count entry carries its id, its name");
+        }
+    }
+    for e in find_non_cutting_enzymes(&fixed_seq(200, 9), None) {
+        assert_eq!((e.id.as_str(), e.source), (e.name.as_str(), EnzymeSource::Builtin));
+    }
+}
+
+#[test]
+fn us_01m7dv1v_ac2_two_same_named_enzymes_stay_apart_in_sites_and_counts() {
+    const ID_A: &str = "custom:0b9c7c2e-8a51-4f8e-9d0c-5a3a2f1e6b7d";
+    const ID_B: &str = "custom:7f00aa11-2b3c-4d5e-8f90-a1b2c3d4e5f6";
+    let mut a = custom("Mine", "GAATTC", 1, 5);
+    a.id = ID_A.to_string();
+    let mut b = custom("Mine", "GAAT", 0, 4);
+    b.id = ID_B.to_string();
+    // GAATTC and GAAT both start at base 4 on the top strand: an id built from the name alone collides there.
+    let scan = scan("AAAGAATTCAAA", Topology::Linear, &[a.clone(), b.clone()]);
+
+    let by_id = |id: &str| scan.sites.iter().filter(|s| s.enzyme.id == id).collect::<Vec<_>>();
+    assert_eq!(by_id(ID_A).iter().map(|s| (s.position, s.strand)).collect::<Vec<_>>(), vec![(4, 1)]);
+    assert_eq!(by_id(ID_B).iter().map(|s| (s.position, s.strand)).collect::<Vec<_>>(), vec![(4, 1), (6, -1)]);
+    assert_eq!(scan.sites.len(), 3, "both enzymes are reported");
+    for s in &scan.sites {
+        let cutter = if s.enzyme.id == ID_A { &a } else { &b };
+        assert_eq!(s.enzyme.recognition_seq, cutter.recognition_seq, "a site names the id of the enzyme that cut");
+        assert_eq!(s.enzyme.name, "Mine");
+    }
+    let ids: std::collections::HashSet<&str> = scan.sites.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids.len(), scan.sites.len(), "no site id is used twice in one scan: {:?}", scan.sites.iter().map(|s| &s.id).collect::<Vec<_>>());
+    assert!(by_id(ID_A).iter().all(|s| s.id.starts_with(ID_A)), "a custom site id names its enzyme's id");
+
+    let counts: Vec<(&str, &str, usize)> = scan.site_counts.iter().map(|c| (c.enzyme.as_str(), c.enzyme_id.as_str(), c.sites)).collect();
+    assert_eq!(counts, vec![("Mine", ID_A, 1), ("Mine", ID_B, 2)], "two distinguishable count entries");
+}
+
+#[test]
+fn us_01m7dv1v_ac3b_enzymes_from_an_old_payload_scan_as_the_catalogue_entries_they_came_from() {
+    let catalog = get_rebase_enzymes();
+    // The catalogue as a payload written before this story: no id, source, provenance or notes.
+    let old: Vec<serde_json::Value> = catalog
+        .iter()
+        .map(|e| {
+            let mut v = serde_json::to_value(e).unwrap();
+            let o = v.as_object_mut().unwrap();
+            for k in ["id", "source", "provenance", "notes"] {
+                assert!(o.remove(k).is_some(), "the catalogue serializes `{}`", k);
+            }
+            v
+        })
+        .collect();
+    let read: Vec<RestrictionEnzyme> = serde_json::from_value(serde_json::Value::Array(old)).expect("an old payload deserializes");
+    for (topology, limit) in [
+        (Topology::Circular, RestrictionPositionLimit::PerEnzyme(2)),
+        (Topology::Linear, RestrictionPositionLimit::Total(40)),
+        (Topology::Circular, RestrictionPositionLimit::All),
+    ] {
+        let seq = fixed_seq(4000, 3);
+        let from_old = scan_restriction_sites(&seq, topology, Some(&read), limit);
+        let from_catalog = scan_restriction_sites(&seq, topology, Some(&catalog), limit);
+        if limit != RestrictionPositionLimit::All {
+            assert!(!from_catalog.warnings.is_empty(), "the fixture reaches a warning");
+        }
+        assert!(from_catalog.sites.len() > 10);
+        let ids = |s: &RestrictionSiteScan| s.sites.iter().map(|x| x.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&from_old), ids(&from_catalog), "the same site ids");
+        assert_eq!(from_old.site_counts, from_catalog.site_counts, "the same counts");
+        assert_eq!(from_old.warnings, from_catalog.warnings, "the same warnings");
+        assert_eq!(
+            serde_json::to_value(&from_old).unwrap(),
+            serde_json::to_value(&from_catalog).unwrap(),
+            "the same sites, field for field"
+        );
+    }
 }

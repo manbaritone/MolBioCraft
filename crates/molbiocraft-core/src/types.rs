@@ -239,9 +239,32 @@ pub struct SequenceDocument {
     pub folder: String,
 }
 
+/// Where an enzyme definition comes from: the read-only built-in catalogue, or the user's own
+/// enzyme database (US-01M7DV1V).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EnzymeSource {
+    #[default]
+    Builtin,
+    Custom,
+}
+
+/// The prefix of every custom definition's id (`custom:<uuid>`, D0147); no catalogue name has it.
+pub const CUSTOM_ENZYME_ID_PREFIX: &str = "custom:";
+
+/// A restriction enzyme, built-in or custom. Its `id` is stable for the definition's life: a
+/// built-in's is its catalogue name, verbatim; a custom definition's is `custom:<uuid>`, so two
+/// enzymes that share a name are told apart by their ids (US-01M7DV1V).
+///
+/// Deserializing goes through [`RestrictionEnzymeWire`], so a payload written before `id`,
+/// `source`, `provenance` and `notes` existed still reads: an absent or empty `id` is filled with
+/// the name once the payload is read, and an absent `source` is `custom` exactly when the id
+/// starts with `custom:`, `builtin` otherwise.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "RestrictionEnzymeWire")]
 pub struct RestrictionEnzyme {
+    pub id: String,
+    pub source: EnzymeSource,
     pub name: String,
     pub recognition_seq: String,
     pub cut_fwd: i32,
@@ -256,6 +279,68 @@ pub struct RestrictionEnzyme {
     pub buffer_standard: String,
     #[serde(default)]
     pub temp_c: u32,
+    /// Free text naming where the definition came from; empty for a built-in and when unset.
+    #[serde(default)]
+    pub provenance: String,
+    #[serde(default)]
+    pub notes: String,
+}
+
+/// A [`RestrictionEnzyme`] as a payload spells it: `id`, `source`, `provenance` and `notes` may
+/// be absent, as in every payload written before US-01M7DV1V.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestrictionEnzymeWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    source: Option<EnzymeSource>,
+    name: String,
+    recognition_seq: String,
+    cut_fwd: i32,
+    cut_rev: i32,
+    #[serde(rename = "isTypeIIS", default)]
+    is_type_iis: bool,
+    #[serde(default)]
+    suppliers: Vec<String>,
+    #[serde(default)]
+    methylation_sensitivity: Vec<String>,
+    #[serde(rename = "bufferNEB", default)]
+    buffer_standard: String,
+    #[serde(default)]
+    temp_c: u32,
+    #[serde(default)]
+    provenance: String,
+    #[serde(default)]
+    notes: String,
+}
+
+impl From<RestrictionEnzymeWire> for RestrictionEnzyme {
+    /// Runs after the payload is read: an absent id becomes the name (a built-in's id), and an
+    /// absent source is read from the id by the one rule.
+    fn from(w: RestrictionEnzymeWire) -> Self {
+        let id = if w.id.is_empty() { w.name.clone() } else { w.id };
+        let source = w.source.unwrap_or(if id.starts_with(CUSTOM_ENZYME_ID_PREFIX) {
+            EnzymeSource::Custom
+        } else {
+            EnzymeSource::Builtin
+        });
+        RestrictionEnzyme {
+            id,
+            source,
+            name: w.name,
+            recognition_seq: w.recognition_seq,
+            cut_fwd: w.cut_fwd,
+            cut_rev: w.cut_rev,
+            is_type_iis: w.is_type_iis,
+            suppliers: w.suppliers,
+            methylation_sensitivity: w.methylation_sensitivity,
+            buffer_standard: w.buffer_standard,
+            temp_c: w.temp_c,
+            provenance: w.provenance,
+            notes: w.notes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,5 +459,64 @@ mod us_01m7dqmy_tests {
         assert!(p.source.is_none());
         let out = serde_json::to_value(&p).unwrap();
         assert!(out.get("source").is_none(), "no source key is written for a primer without one");
+    }
+}
+
+#[cfg(test)]
+mod us_01m7dv1v_tests {
+    use super::*;
+
+    /// A catalogue entry as the engine serialized it before US-01M7DV1V: no `id`, `source`,
+    /// `provenance` or `notes` key.
+    const OLD_BUILTIN: &str = r#"{"name":"EcoRI","recognitionSeq":"GAATTC","cutFwd":1,"cutRev":5,"isTypeIIS":false,"suppliers":["NEB"],"methylationSensitivity":["CpG"],"bufferNEB":"rCutSmart","tempC":37}"#;
+
+    #[test]
+    fn us_01m7dv1v_ac3_an_old_payload_deserializes_with_its_name_as_id_and_builtin_source() {
+        let e: RestrictionEnzyme = serde_json::from_str(OLD_BUILTIN).expect("an old payload still deserializes");
+        // Wrong implementations: an id left empty (serde's default), or taken from anything but the name.
+        assert_eq!(e.id, "EcoRI", "an absent id is filled with the name, never left empty");
+        assert_eq!(e.source, EnzymeSource::Builtin);
+        assert_eq!(e.provenance, "");
+        assert_eq!(e.notes, "");
+        assert_eq!((e.name.as_str(), e.recognition_seq.as_str(), e.cut_fwd, e.cut_rev), ("EcoRI", "GAATTC", 1, 5));
+        let back = serde_json::to_value(&e).unwrap();
+        assert_eq!(back["id"], "EcoRI");
+        assert_eq!(back["source"], "builtin");
+        assert_eq!(back["provenance"], "");
+        assert_eq!(back["notes"], "");
+    }
+
+    #[test]
+    fn us_01m7dv1v_ac3_a_missing_source_is_custom_exactly_when_the_id_starts_with_custom() {
+        let with = |id: &str| -> RestrictionEnzyme {
+            let mut v: serde_json::Value = serde_json::from_str(OLD_BUILTIN).unwrap();
+            v["id"] = serde_json::Value::String(id.to_string());
+            v["name"] = serde_json::Value::String("Mine".to_string());
+            serde_json::from_value(v).unwrap()
+        };
+        let custom = with("custom:0b9c7c2e-8a51-4f8e-9d0c-5a3a2f1e6b7d");
+        assert_eq!(custom.id, "custom:0b9c7c2e-8a51-4f8e-9d0c-5a3a2f1e6b7d");
+        assert_eq!(custom.source, EnzymeSource::Custom, "an id in the custom: namespace reads as custom");
+        let builtin = with("Mine");
+        assert_eq!(builtin.source, EnzymeSource::Builtin, "any other id reads as builtin");
+        // The rule reads the id's prefix, not its mention: `custom:` elsewhere is not custom.
+        assert_eq!(with("my-custom:thing").source, EnzymeSource::Builtin);
+        // A source the payload states is kept as stated.
+        let mut v: serde_json::Value = serde_json::from_str(OLD_BUILTIN).unwrap();
+        v["source"] = serde_json::Value::String("custom".to_string());
+        let stated: RestrictionEnzyme = serde_json::from_value(v).unwrap();
+        assert_eq!((stated.id.as_str(), stated.source), ("EcoRI", EnzymeSource::Custom));
+        // An empty id is no id: it is filled with the name too.
+        assert_eq!(with("").id, "Mine");
+    }
+
+    #[test]
+    fn us_01m7dv1v_ac3_provenance_and_notes_are_kept_when_present() {
+        let mut v: serde_json::Value = serde_json::from_str(OLD_BUILTIN).unwrap();
+        v["id"] = serde_json::Value::String("custom:1".to_string());
+        v["provenance"] = serde_json::Value::String("REBASE 1234".to_string());
+        v["notes"] = serde_json::Value::String("lab stock".to_string());
+        let e: RestrictionEnzyme = serde_json::from_value(v).unwrap();
+        assert_eq!((e.provenance.as_str(), e.notes.as_str(), e.source), ("REBASE 1234", "lab stock", EnzymeSource::Custom));
     }
 }
