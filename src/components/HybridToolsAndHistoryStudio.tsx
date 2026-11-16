@@ -46,6 +46,7 @@ import { InspectorSection, useInWorkbench } from './WorkbenchInspector';
 import type { FigureTable } from '../core/figureExport';
 import { defaultHybridSubTab, hybridTabsForDocument, type HybridSubTabId } from '../core/analysisContext';
 import { cutSiteDisplayPosition, enzymeKey } from '../core/restrictionDisplay';
+import { openEnzymeCollections } from '../core/enzymeDatabase';
 import { customEnzymeCount, restrictionScanEnzymes, restrictionScanScope, restrictionScopeWords } from './CircularPlasmidMap';
 import { hasStructure, structureAtomsOf } from '../core/structureModels';
 import {
@@ -239,6 +240,21 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   const [enzymePickerValue, setEnzymePickerValue] = useState<string>(REBASE_ENZYMES[0]?.name ?? 'EcoRI');
   const [enzymeSetSubView, setEnzymeSetSubView] = useState<'Enzymes' | 'Lineage' | 'Info'>('Enzymes');
   const [enzymeSetStatusMsg, setEnzymeSetStatusMsg] = useState<string | null>(null);
+  // The named enzyme collections (US-01M7DV72, D0159): the Enzyme Set is offered as one until a
+  // collection records this document as where it came from. An unreadable store keeps the offer,
+  // and the import then says why it wrote nothing.
+  const enzymeCollections = useMemo(() => openEnzymeCollections(), []);
+  const [collectionsVersion, setCollectionsVersion] = useState(0);
+  const enzymeSetImported = useMemo(() => {
+    const r = enzymeCollections.read();
+    return r.ok && r.collections.some((c) => c.importedFrom?.documentId === doc.id);
+  }, [enzymeCollections, collectionsVersion, doc.id]);
+  /** Imports the Enzyme Set into a new collection; the document is not written. */
+  const handleImportEnzymeSetAsCollection = () => {
+    const r = enzymeCollections.importEnzymeSet({ id: doc.id, name: doc.name, enzymeNames: customEnzymeSetNames });
+    setEnzymeSetStatusMsg(r.ok ? r.value.message : r.error.message);
+    setCollectionsVersion((n) => n + 1);
+  };
 
   useEffect(() => {
     const isEnzDoc = doc.docMetadata?.['Document Type'] === 'Enzyme Set';
@@ -1875,6 +1891,11 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
               >
                 Save
               </button>
+              {customEnzymeSetNames.length > 0 && !enzymeSetImported && (
+                <button type="button" className="btn-secondary-sm" onClick={handleImportEnzymeSetAsCollection}>
+                  Import Enzyme Set as collection
+                </button>
+              )}
               {enzymeSetStatusMsg && (
                 <span style={{ fontSize: 11.5, color: 'var(--mbc-blue)', marginLeft: 'auto' }}>
                   {enzymeSetStatusMsg}

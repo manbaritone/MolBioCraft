@@ -17,12 +17,16 @@
  */
 
 import type { CustomEnzymeDefinition, MethylationSensitivity } from '../types/bio';
-import { builtInEnzymeNamed } from '../data/rebaseEnzymes';
+import { REBASE_ENZYMES, builtInEnzymeNamed } from '../data/rebaseEnzymes';
 
 /** The localStorage key the store lives under. */
 export const ENZYME_DATABASE_KEY = 'molbiocraft.enzymeDatabase';
 /** The envelope schema this build writes and the highest it can read. */
 export const ENZYME_DATABASE_SCHEMA = 1;
+/** The localStorage key named enzyme collections live under (US-01M7DV72, D0158), apart from the definitions. */
+export const ENZYME_COLLECTIONS_KEY = 'molbiocraft.enzymeCollections';
+/** The collections envelope schema this build writes and the highest it can read. */
+export const ENZYME_COLLECTIONS_SCHEMA = 1;
 /** The `format` marker of a backup file. */
 export const ENZYME_BACKUP_FORMAT = 'molbiocraft-enzyme-database-backup';
 /**
@@ -627,6 +631,342 @@ export function openEnzymeDatabase(env: EnzymeDatabaseEnv = {}): EnzymeDatabase 
       const written = write([]);
       if (!written.ok) return written;
       return { ok: true, value: null };
+    },
+  };
+}
+
+// ─── Named enzyme collections (US-01M7DV72, D0158) ───
+
+/** The document an Enzyme Set was imported from. */
+export interface EnzymeCollectionSource {
+  documentId: string;
+  documentName: string;
+}
+
+/**
+ * A named list of enzymes the user keeps together: each member is an `enzymeKey` (a built-in's
+ * catalogue name, a custom definition's `custom:` id). A member whose enzyme is no longer stored
+ * is kept, never dropped.
+ */
+export interface EnzymeCollection {
+  id: string;
+  name: string;
+  enzymeIds: string[];
+  createdAt: string;
+  modifiedAt: string;
+  importedFrom?: EnzymeCollectionSource;
+}
+
+export type EnzymeCollectionsRead =
+  | { ok: true; collections: EnzymeCollection[]; stored: boolean }
+  | { ok: false; error: EnzymeDbError };
+
+export interface EnzymeCollectionsEnv extends EnzymeDatabaseEnv {
+  /** The definitions store members are checked against; defaults to `openEnzymeDatabase` on the same storage. */
+  definitions?: EnzymeDatabase;
+}
+
+/** A document's legacy Enzyme Set, as the import reads it. */
+export interface EnzymeSetSource {
+  id: string;
+  name: string;
+  /** The document's Enzyme Names, in order. */
+  enzymeNames: readonly string[];
+}
+
+/** What an Enzyme Set import did: the collection it created (null when nothing matched) and the sentence that says so. */
+export interface EnzymeSetImport {
+  collection: EnzymeCollection | null;
+  message: string;
+}
+
+export interface EnzymeCollections {
+  /** Read the collections, or why they cannot be read (never an empty list for an unreadable value). */
+  read(): EnzymeCollectionsRead;
+  /** Create an empty collection; the name must be non-empty, one line, and unique ignoring case and surrounding spaces. */
+  create(name: string): EnzymeDbResult<EnzymeCollection>;
+  /** Rename collection `id` under the same name rules. */
+  rename(id: string, name: string): EnzymeDbResult<EnzymeCollection>;
+  /** Delete collection `id`; the definitions are never touched. */
+  remove(id: string): EnzymeDbResult<null>;
+  /**
+   * Add the enzyme `key`: a key already present returns `already` and writes nothing; a key that is
+   * neither a catalogue enzyme nor a stored definition is refused by name, and a `custom:` key while
+   * the definitions cannot be read is refused with their store's reason.
+   */
+  addMember(id: string, key: string): EnzymeDbResult<{ collection: EnzymeCollection; already: boolean }>;
+  /** Remove the member `key` from collection `id`. */
+  removeMember(id: string, key: string): EnzymeDbResult<EnzymeCollection>;
+  /**
+   * Import a document's Enzyme Set as a new collection named after the document (" (2)", " (3)" when
+   * taken), recording where it came from. Each name matches an exact catalogue name first, else the
+   * one stored definition of exactly that name; any other is listed as not matched, never created.
+   * The definitions are read here, at the moment of import. Nothing is written to the document.
+   */
+  importEnzymeSet(source: EnzymeSetSource): EnzymeDbResult<EnzymeSetImport>;
+}
+
+const ONE_LINE = /[\r\n\u2028\u2029]/;
+
+function defaultCollectionId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c?.randomUUID) return `collection:${c.randomUUID()}`;
+  return `collection:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const sameCollectionName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+function readCollection(value: unknown): EnzymeCollection | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const text = (x: unknown) => typeof x === 'string';
+  if (!text(v.id) || !text(v.name) || !text(v.createdAt) || !text(v.modifiedAt)) return null;
+  if (!Array.isArray(v.enzymeIds) || !v.enzymeIds.every(text)) return null;
+  const c: EnzymeCollection = {
+    id: v.id as string,
+    name: v.name as string,
+    enzymeIds: [...(v.enzymeIds as string[])],
+    createdAt: v.createdAt as string,
+    modifiedAt: v.modifiedAt as string,
+  };
+  if (v.importedFrom !== undefined) {
+    const f = v.importedFrom as Record<string, unknown> | null;
+    if (typeof f !== 'object' || f === null || !text(f.documentId) || !text(f.documentName)) return null;
+    c.importedFrom = { documentId: f.documentId as string, documentName: f.documentName as string };
+  }
+  return c;
+}
+
+export function openEnzymeCollections(env: EnzymeCollectionsEnv = {}): EnzymeCollections {
+  const now = env.now ?? (() => new Date().toISOString());
+  const newId = env.newId ?? defaultCollectionId;
+  const definitions = env.definitions ?? openEnzymeDatabase(env);
+
+  function storage(): EnzymeStorage {
+    if (env.storage) return env.storage;
+    const ls = globalThis.localStorage;
+    if (!ls) throw new Error('localStorage is not available');
+    return ls;
+  }
+
+  function read(): EnzymeCollectionsRead {
+    let raw: string | null;
+    try {
+      raw = storage().getItem(ENZYME_COLLECTIONS_KEY);
+    } catch (err) {
+      return fail('unavailable', `The enzyme collections (${ENZYME_COLLECTIONS_KEY}) cannot be read: storage is unavailable (${errorText(err)}).`);
+    }
+    if (raw === null) return { ok: true, collections: [], stored: false };
+    const stored = raw;
+    const unreadable = (kind: EnzymeDbErrorKind, why: string) =>
+      fail(kind, `The stored enzyme collections (${ENZYME_COLLECTIONS_KEY}) cannot be read: ${why}. They are kept as they are, and nothing is written over them.`, {
+        storedValue: stored,
+      });
+    if (raw.trim() === '') return unreadable('malformed', 'it holds an empty value');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return unreadable('malformed', 'it is not valid JSON');
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return unreadable('malformed', 'it is not a collections envelope');
+    const env1 = parsed as { schema?: unknown; collections?: unknown };
+    if (typeof env1.schema !== 'number' || !Number.isInteger(env1.schema) || env1.schema < 1) {
+      return unreadable('malformed', 'it has no schema version this build knows');
+    }
+    if (env1.schema > ENZYME_COLLECTIONS_SCHEMA) {
+      return unreadable('futureSchema', `it was written at schema ${env1.schema} by a newer MolBioCraft, and this build reads up to schema ${ENZYME_COLLECTIONS_SCHEMA}`);
+    }
+    if (!Array.isArray(env1.collections)) return unreadable('malformed', 'it holds no list of collections');
+    const collections: EnzymeCollection[] = [];
+    for (let i = 0; i < env1.collections.length; i++) {
+      const c = readCollection(env1.collections[i]);
+      if (!c) return unreadable('malformed', `collection ${i + 1} is not a collection this build wrote`);
+      collections.push(c);
+    }
+    return { ok: true, collections, stored: true };
+  }
+
+  function write(collections: EnzymeCollection[]): { ok: true } | { ok: false; error: EnzymeDbError } {
+    const text = JSON.stringify({ schema: ENZYME_COLLECTIONS_SCHEMA, collections });
+    try {
+      const s = storage();
+      s.setItem(ENZYME_COLLECTIONS_KEY, text);
+      if (s.getItem(ENZYME_COLLECTIONS_KEY) !== text) {
+        return fail('notSaved', 'Nothing was saved: the storage did not keep the change. The enzyme collections are as they were.');
+      }
+    } catch (err) {
+      return fail('notSaved', `Nothing was saved (${errorText(err)}). The enzyme collections are as they were.`);
+    }
+    return { ok: true };
+  }
+
+  /** Re-read the collections, apply `change` to what is stored now, and write the result (null: write nothing). */
+  function commit<T>(
+    change: (collections: EnzymeCollection[]) => { ok: true; collections: EnzymeCollection[] | null; value: T } | { ok: false; error: EnzymeDbError },
+  ): EnzymeDbResult<T> {
+    const current = read();
+    if (!current.ok) return current;
+    const outcome = change(current.collections);
+    if (!outcome.ok) return outcome;
+    if (outcome.collections) {
+      const written = write(outcome.collections);
+      if (!written.ok) return written;
+    }
+    return { ok: true, value: outcome.value };
+  }
+
+  /** A name's field reason, or the trimmed name: non-empty, one line, no other collection's (ignoring case and spaces). */
+  function checkName(name: string, collections: EnzymeCollection[], self?: string): { ok: true; name: string } | { ok: false; error: EnzymeDbError } {
+    const trimmed = String(name ?? '').trim();
+    let reason: string | null = null;
+    if (trimmed === '') reason = 'A collection needs a name.';
+    else if (ONE_LINE.test(trimmed)) reason = 'A collection name must be one line.';
+    else {
+      const taken = collections.find((c) => c.id !== self && sameCollectionName(c.name, trimmed));
+      if (taken) reason = `Another collection is already named "${taken.name}".`;
+    }
+    if (reason !== null) return fail('invalid', `Nothing was saved: ${reason}`, { fields: [{ field: 'name', reason }] });
+    return { ok: true, name: trimmed };
+  }
+
+  function missing(id: string) {
+    return fail('stale', `Nothing was saved: no enzyme collection has the id ${id}.`);
+  }
+
+  /** Whether `key` names an enzyme a collection may hold, or why not. */
+  function checkKey(key: string, collectionName: string): { ok: true } | { ok: false; error: EnzymeDbError } {
+    if (REBASE_ENZYMES.some((e) => (e.id ?? e.name) === key)) return { ok: true };
+    const defs = definitions.read();
+    if (defs.ok && defs.definitions.some((d) => d.id === key)) return { ok: true };
+    if (key.startsWith('custom:')) {
+      if (!defs.ok) return fail(defs.error.kind, `Nothing was saved: ${defs.error.message}`);
+      return fail('invalid', `Nothing was saved: a custom enzyme that is not stored cannot be added to "${collectionName}".`);
+    }
+    return fail('invalid', `Nothing was saved: ${key} is not in the catalogue or the enzyme database.`);
+  }
+
+  function replaced(collections: EnzymeCollection[], index: number, next: EnzymeCollection): EnzymeCollection[] {
+    const all = [...collections];
+    all[index] = next;
+    return all;
+  }
+
+  return {
+    read,
+
+    create(name) {
+      return commit((collections) => {
+        const valid = checkName(name, collections);
+        if (!valid.ok) return valid;
+        const taken = new Set(collections.map((c) => c.id));
+        let id = newId();
+        while (taken.has(id)) id = newId();
+        const time = now();
+        const c: EnzymeCollection = { id, name: valid.name, enzymeIds: [], createdAt: time, modifiedAt: time };
+        return { ok: true, collections: [...collections, c], value: c };
+      });
+    },
+
+    rename(id, name) {
+      return commit((collections) => {
+        const index = collections.findIndex((c) => c.id === id);
+        if (index < 0) return missing(id);
+        const valid = checkName(name, collections, id);
+        if (!valid.ok) return valid;
+        const stored = collections[index];
+        if (stored.name === valid.name) return { ok: true, collections: null, value: stored };
+        const next = { ...stored, name: valid.name, modifiedAt: now() };
+        return { ok: true, collections: replaced(collections, index, next), value: next };
+      });
+    },
+
+    remove(id) {
+      return commit((collections) => {
+        if (!collections.some((c) => c.id === id)) return missing(id);
+        return { ok: true, collections: collections.filter((c) => c.id !== id), value: null };
+      });
+    },
+
+    addMember(id, key) {
+      return commit<{ collection: EnzymeCollection; already: boolean }>((collections) => {
+        const index = collections.findIndex((c) => c.id === id);
+        if (index < 0) return missing(id);
+        const stored = collections[index];
+        if (stored.enzymeIds.includes(key)) return { ok: true, collections: null, value: { collection: stored, already: true } };
+        const valid = checkKey(key, stored.name);
+        if (!valid.ok) return valid;
+        const next = { ...stored, enzymeIds: [...stored.enzymeIds, key], modifiedAt: now() };
+        return { ok: true, collections: replaced(collections, index, next), value: { collection: next, already: false } };
+      });
+    },
+
+    removeMember(id, key) {
+      return commit((collections) => {
+        const index = collections.findIndex((c) => c.id === id);
+        if (index < 0) return missing(id);
+        const stored = collections[index];
+        if (!stored.enzymeIds.includes(key)) return { ok: true, collections: null, value: stored };
+        const next = { ...stored, enzymeIds: stored.enzymeIds.filter((k) => k !== key), modifiedAt: now() };
+        return { ok: true, collections: replaced(collections, index, next), value: next };
+      });
+    },
+
+    importEnzymeSet(source) {
+      const names = [...new Set(source.enzymeNames.map((n) => String(n).trim()).filter((n) => n !== ''))];
+      const docName = source.name;
+      const catalogue = new Map<string, string>();
+      for (const e of REBASE_ENZYMES) if (!catalogue.has(e.name)) catalogue.set(e.name, e.id ?? e.name);
+      // The definitions as stored at the moment of import, not as any caller last read them.
+      const defs = definitions.read();
+      if (!defs.ok && names.some((n) => !catalogue.has(n))) {
+        return fail(defs.error.kind, 'The enzyme database could not be read, so custom enzyme names cannot be matched: nothing was imported.');
+      }
+      const keys: string[] = [];
+      const unmatched: string[] = [];
+      for (const n of names) {
+        const builtIn = catalogue.get(n);
+        if (builtIn !== undefined) {
+          keys.push(builtIn);
+          continue;
+        }
+        const customs = defs.ok ? defs.definitions.filter((d) => d.name === n) : [];
+        if (customs.length === 1) keys.push(customs[0].id);
+        else if (customs.length > 1) unmatched.push(`${n} (${customs.length} stored custom enzymes share this name)`);
+        else unmatched.push(`${n} (not in the catalogue)`);
+      }
+      const notMatched = unmatched.length > 0 ? ` Not matched: ${unmatched.join('; ')}.` : '';
+      if (keys.length === 0) {
+        return {
+          ok: true,
+          value: {
+            collection: null,
+            message: `No enzyme in ${docName}'s Enzyme Set matches the catalogue or a stored custom enzyme: no collection was created.${notMatched}`,
+          },
+        };
+      }
+      return commit((collections) => {
+        const base = String(docName).replace(/\s+/g, ' ').trim() || 'Enzyme Set';
+        let name = base;
+        for (let n = 2; collections.some((c) => sameCollectionName(c.name, name)); n++) name = `${base} (${n})`;
+        const taken = new Set(collections.map((c) => c.id));
+        let id = newId();
+        while (taken.has(id)) id = newId();
+        const time = now();
+        const c: EnzymeCollection = {
+          id,
+          name,
+          enzymeIds: [...new Set(keys)],
+          createdAt: time,
+          modifiedAt: time,
+          importedFrom: { documentId: source.id, documentName: docName },
+        };
+        return {
+          ok: true,
+          collections: [...collections, c],
+          value: { collection: c, message: `Imported ${keys.length} of ${names.length} enzymes from ${docName}'s Enzyme Set into the collection "${name}".${notMatched}` },
+        };
+      });
     },
   };
 }

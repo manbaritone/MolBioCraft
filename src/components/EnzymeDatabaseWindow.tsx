@@ -17,21 +17,31 @@
  * name the store reports as unconfirmed, for a per-id choice; a refused file is named with its
  * reason; an unreadable store is named, never listed as empty, and discarded only on an explicit
  * choice; a write the storage refuses is reported as nothing saved.
+ *
+ * Below the Custom table the window keeps the named enzyme collections (US-01M7DV72, D0158): New,
+ * Rename and Delete, and a member picker over the active list from the window's own read (the
+ * catalogue alone when the store cannot be read). A member is named by its label, never by a custom
+ * id; one whose definition is gone, or cannot be read, is kept and named for why. A collection write
+ * reads no scan, so it does not call `onChange`.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CustomEnzymeDefinition, MethylationSensitivity, RestrictionCutSite, RestrictionEnzyme } from '../types/bio';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
-import { scanRestrictionSites } from '../core/bioEngine';
+import { CUSTOM_ENZYME_NO_LONGER_STORED, activeEnzymeList, enzymeLabel, scanRestrictionSites } from '../core/bioEngine';
+import { enzymeKey } from '../core/restrictionDisplay';
 import { complementAligned } from '../core/alignmentViewModel';
 import {
   MAX_CUSTOM_MOTIF_LENGTH,
   METHYLATION_SENSITIVITIES,
+  openEnzymeCollections,
   openEnzymeDatabase,
   validateFields,
   type CustomEnzymeInput,
   type EnzymeDatabase,
   type EnzymeDbError,
+  type EnzymeDbRead,
+  type EnzymeDbResult,
   type EnzymeField,
   type EnzymeFieldError,
   type EnzymeImportSummary,
@@ -287,6 +297,24 @@ function describeSave(result: PlatformSaveResult, what: string, filename: string
   }
 }
 
+/** The words a custom member is shown under while the enzyme database cannot be read. */
+const CUSTOM_ENZYME_UNREADABLE = 'A custom enzyme (the enzyme database could not be read)';
+
+/**
+ * How a collection member is listed: a built-in's name, a stored definition's label, and for a key
+ * neither resolves, why - a `custom:` id is never shown.
+ */
+function collectionMemberLabel(key: string, read: EnzymeDbRead): string {
+  const builtIn = REBASE_ENZYMES.find((e) => enzymeKey(e) === key);
+  if (builtIn) return enzymeLabel(builtIn);
+  if (read.ok) {
+    const d = read.definitions.find((x) => x.id === key);
+    if (d) return `${d.name} (custom)`;
+  }
+  if (key.startsWith('custom:')) return read.ok ? CUSTOM_ENZYME_NO_LONGER_STORED : CUSTOM_ENZYME_UNREADABLE;
+  return `${key} (not in the catalogue)`;
+}
+
 /** A backup file whose import left choices open: the ids that differ and the unconfirmed built-in names. */
 interface PendingImport {
   file: string;
@@ -318,6 +346,19 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
     onChange?.();
   };
   const read = useMemo(() => db.read(), [db, version]);
+  const collections = useMemo(() => openEnzymeCollections({ definitions: db }), [db]);
+  const [collectionsVersion, setCollectionsVersion] = useState(0);
+  const collectionsRead = useMemo(() => collections.read(), [collections, collectionsVersion]);
+  const [newCollectionName, setNewCollectionName] = useState('');
+  const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
+  const [memberPicks, setMemberPicks] = useState<Record<string, string>>({});
+  const [collectionNotice, setCollectionNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
+  /** After a collection write: the window reads the collections again and says what happened (no scan reads them, so no onChange). */
+  function collectionWrite<T>(r: EnzymeDbResult<T>, said: (value: T) => string): boolean {
+    setCollectionsVersion((n) => n + 1);
+    setCollectionNotice(r.ok ? { kind: 'info', text: said(r.value) } : { kind: 'error', text: r.error.message });
+    return r.ok;
+  }
   const [search, setSearch] = useState('');
   const [form, setForm] = useState<FormState | null>(null);
   const [submitErrors, setSubmitErrors] = useState<EnzymeFieldError[]>([]);
@@ -861,6 +902,112 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
             {listedCustoms.length === 0 && <p>{customs.length === 0 ? 'No custom enzyme yet.' : 'No custom enzyme matches the search.'}</p>}
           </>
         )}
+
+        <section aria-label="Collections">
+          <h4>Collections</h4>
+          {collectionNotice && (
+            <p role={collectionNotice.kind === 'error' ? 'alert' : 'status'}>{collectionNotice.text}</p>
+          )}
+          {!collectionsRead.ok ? (
+            <p role="note">{collectionsRead.error.message}</p>
+          ) : (
+            <>
+              <div className="cloning-action-row">
+                <input
+                  type="text"
+                  aria-label="New collection name"
+                  value={newCollectionName}
+                  onChange={(e) => setNewCollectionName(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (collectionWrite(collections.create(newCollectionName), (c) => `Created the collection "${c.name}".`)) setNewCollectionName('');
+                  }}
+                >
+                  New Collection
+                </button>
+              </div>
+              {collectionsRead.collections.length === 0 && <p>No collection yet.</p>}
+              {collectionsRead.collections.map((c) => {
+                const pickable = read.ok ? activeEnzymeList(read.definitions) : REBASE_ENZYMES;
+                const pick = memberPicks[c.id] ?? (pickable[0] ? enzymeKey(pickable[0]) : '');
+                const draft = renameDrafts[c.id] ?? c.name;
+                return (
+                  <div key={c.id} className="studio-card" data-collection-id={c.id}>
+                    <h5>{c.name}</h5>
+                    <div className="cloning-action-row">
+                      <input
+                        type="text"
+                        aria-label={`New name for ${c.name}`}
+                        value={draft}
+                        onChange={(e) => setRenameDrafts({ ...renameDrafts, [c.id]: e.target.value })}
+                      />
+                      <button
+                        type="button"
+                        aria-label={`Rename ${c.name}`}
+                        onClick={() => {
+                          if (collectionWrite(collections.rename(c.id, draft), (n) => `Renamed "${c.name}" to "${n.name}".`)) {
+                            const { [c.id]: _done, ...rest } = renameDrafts;
+                            setRenameDrafts(rest);
+                          }
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <button type="button" aria-label={`Delete ${c.name}`} onClick={() => collectionWrite(collections.remove(c.id), () => `Deleted the collection "${c.name}".`)}>
+                        Delete
+                      </button>
+                    </div>
+                    <div className="cloning-action-row">
+                      <select aria-label={`Enzyme to add to ${c.name}`} value={pick} onChange={(e) => setMemberPicks({ ...memberPicks, [c.id]: e.target.value })}>
+                        {pickable.map((e) => (
+                          <option key={enzymeKey(e)} value={enzymeKey(e)}>
+                            {enzymeLabel(e)}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        aria-label={`Add to ${c.name}`}
+                        onClick={() =>
+                          collectionWrite(collections.addMember(c.id, pick), (v) =>
+                            v.already
+                              ? `${collectionMemberLabel(pick, read)} is already in "${c.name}": nothing was changed.`
+                              : `Added ${collectionMemberLabel(pick, read)} to "${c.name}".`,
+                          )
+                        }
+                      >
+                        Add
+                      </button>
+                    </div>
+                    {c.enzymeIds.length === 0 ? (
+                      <p>{`"${c.name}" holds no enzyme yet.`}</p>
+                    ) : (
+                      <ul aria-label={`Members of ${c.name}`}>
+                        {c.enzymeIds.map((key) => {
+                          const label = collectionMemberLabel(key, read);
+                          return (
+                            <li key={key}>
+                              <span>{label}</span>{' '}
+                              <button
+                                type="button"
+                                aria-label={`Remove ${label} from ${c.name}`}
+                                onClick={() => collectionWrite(collections.removeMember(c.id, key), () => `Removed ${label} from "${c.name}".`)}
+                              >
+                                Remove
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </section>
       </div>
     </div>
   );
