@@ -87,7 +87,7 @@ export const WORKFLOW_OPS: Record<WorkflowOpId, WorkflowOpSpec> = {
     defaults: { minAa: 100, altStart: false, strands: 'both', annotateAs: 'misc_feature', replace: true },
     run: perDoc((d, v) => runFindOrfs(d, v)),
   },
-  'digest-fragments': { label: 'Digest into Fragments', input: 'each', defaults: { enzymes: '', keepAnnotations: true }, run: perDoc((d, v) => runDigest(d, v)) },
+  'digest-fragments': { label: 'Digest into Fragments', input: 'each', defaults: { enzymes: '', keepAnnotations: true }, run: perDoc((d, v, ctx) => runDigest(d, v, ctx.enzymes)) },
   'back-translate': { label: 'Back-Translate', input: 'sequences', defaults: { mode: 'likely', host: 'ecoli', geneticCode: 'Standard', addStop: false }, run: runBackTranslate },
   'compute-distances': {
     label: 'Compute Distances', input: 'sequences',

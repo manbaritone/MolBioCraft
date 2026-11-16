@@ -321,6 +321,55 @@ export function enzymeDigestSelection(enzymes: readonly RestrictionEnzyme[]): En
   return enzymes.map((e) => (isCustomEnzyme(e) ? e : e.id ?? e.name));
 }
 
+/**
+ * The words a chosen `custom:` key is shown under once the active list no longer holds its
+ * definition (US-01M7HRCD): nothing that holds the key, a dialog remounted from its last-used
+ * values or a saved workflow step, knows the label it had. The cloning studio says the same.
+ */
+export const CUSTOM_ENZYME_NO_LONGER_STORED = 'A custom enzyme no longer stored';
+
+/** Why a chosen `custom:` key whose definition the active list no longer holds is not used. */
+export const CUSTOM_ENZYME_NOT_IN_ACTIVE_LIST =
+  'it is no longer in the active enzyme list (the enzyme database could not be read, or no longer holds it)';
+
+/** Chosen enzyme keys, resolved against an active list for a digest by id (US-01M7HRCD, D0152). */
+export interface ResolvedDigestKeys {
+  /** The digest-by-id selection: each resolved enzyme as {@link enzymeDigestSelection} names it, and each other catalogue key as it is, for the engine to name. */
+  selection: EnzymeDigestSelection;
+  /** Each key's label, in the keys' order: an enzyme's {@link enzymeLabel}, a gone custom key's words above, any other key as it is. */
+  labels: string[];
+  /** Each `custom:` key whose definition the active list no longer holds, by the words above, with why. */
+  unresolved: Array<{ name: string; reason: string }>;
+}
+
+/**
+ * Resolves chosen enzyme keys (a built-in's is its catalogue name, a custom definition's its
+ * `custom:` id) against the active list `enzymes`; a built-in is also found in the catalogue,
+ * which it never leaves. A `custom:` key the list does not hold is unresolved here and never sent,
+ * so it is never read as a built-in; any other key the catalogue does not hold is sent as a
+ * catalogue id, and the engine names it unknown.
+ */
+export function resolveDigestKeys(keys: readonly string[], enzymes: readonly RestrictionEnzyme[] = REBASE_ENZYMES): ResolvedDigestKeys {
+  const byKey = new Map<string, RestrictionEnzyme>();
+  for (const e of REBASE_ENZYMES) byKey.set(e.id ?? e.name, e);
+  for (const e of enzymes) byKey.set(e.id ?? e.name, e);
+  const resolved: ResolvedDigestKeys = { selection: [], labels: [], unresolved: [] };
+  for (const key of keys) {
+    const e = byKey.get(key);
+    if (e) {
+      resolved.selection.push(...enzymeDigestSelection([e]));
+      resolved.labels.push(enzymeLabel(e));
+    } else if (key.startsWith('custom:')) {
+      resolved.labels.push(CUSTOM_ENZYME_NO_LONGER_STORED);
+      resolved.unresolved.push({ name: CUSTOM_ENZYME_NO_LONGER_STORED, reason: CUSTOM_ENZYME_NOT_IN_ACTIVE_LIST });
+    } else {
+      resolved.selection.push(key);
+      resolved.labels.push(key);
+    }
+  }
+  return resolved;
+}
+
 /** The name a fragment end is shown under: its enzyme's, marked " (custom)" when a custom definition cut it. */
 export function digestEndLabel(fragment: DigestFragment, side: 'left' | 'right'): string {
   const name = side === 'left' ? fragment.leftEnzyme : fragment.rightEnzyme;

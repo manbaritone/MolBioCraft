@@ -29,7 +29,7 @@ import {
   type WorkflowRunResult,
   type WorkflowStep,
 } from '../core/workflows';
-import type { SequenceDocument } from '../types/bio';
+import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
 
 function useWorkflows(): Workflow[] {
   const [list, setList] = useState<Workflow[]>(() => allWorkflows());
@@ -291,12 +291,14 @@ export interface RunWorkflowDialogProps {
   sourceLabel: string;
   folder?: string;
   initialWorkflowId?: string;
+  /** The active enzyme list (US-01M7HRCD): a digest step resolves its enzyme keys against it; the catalogue when not given. */
+  enzymes?: readonly RestrictionEnzyme[];
   onDone: (result: WorkflowRunResult, workflow: Workflow) => void;
   onClose: () => void;
   onDownload?: (content: string, fileName: string) => void;
 }
 
-export const RunWorkflowDialog: React.FC<RunWorkflowDialogProps> = ({ inputs, sourceLabel, folder, initialWorkflowId, onDone, onClose, onDownload }) => {
+export const RunWorkflowDialog: React.FC<RunWorkflowDialogProps> = ({ inputs, sourceLabel, folder, initialWorkflowId, enzymes, onDone, onClose, onDownload }) => {
   const list = useWorkflows();
   const [asked, setAsked] = useState<Record<string, Record<number, OptionValues>>>({});
   const byId = useMemo(() => new Map(list.map((w) => [w.id, w])), [list]);
@@ -345,7 +347,7 @@ export const RunWorkflowDialog: React.FC<RunWorkflowDialogProps> = ({ inputs, so
       }}
       onRun={async (v, signal) => {
         const w = byId.get(String(v.workflowId))!;
-        const result = await runWorkflow(w, inputs, { sourceLabel, folder, signal }, undefined, asked[w.id] ?? {});
+        const result = await runWorkflow(w, inputs, { sourceLabel, folder, signal, enzymes }, undefined, asked[w.id] ?? {});
         if (!signal.aborted) onDone(result, w);
       }}
       onClose={onClose}

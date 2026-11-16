@@ -502,16 +502,10 @@ describe('US-01M7DV52 AC4: a store write in Databases > Restriction Enzymes reac
     });
   });
 
+  // The Digest dialog's half moved to US-01M7HRCD AC6 below: that dialog now offers custom enzymes.
   it('US-01M7DV52 AC4 the Digest dialog and the restriction-cloning picker still offer the catalogue only', async () => {
     await withDoc(seeded([ADA, MINE]), docOf('pAda', SMALL), async (app) => {
       expect(panelNames(app)).toContain('AdaI (custom)');
-      await app.menu('enzymes:digest-dialog');
-      await app.settle();
-      const digest = app.one('[role="group"][aria-label="Enzymes to digest with"]', 'the Digest dialog\'s enzymes');
-      expect(words(digest.textContent)).toContain('BamHI');
-      expect(words(digest.textContent)).not.toMatch(/AdaI|\(custom\)/);
-      await app.press('Escape');
-      await app.settle();
       // The restriction-cloning dialog's unique-cutter pickers, over this vector.
       const before = app.all('select option').length;
       await app.menu('actions:clone-dialog');
@@ -520,6 +514,20 @@ describe('US-01M7DV52 AC4: a store write in Databases > Restriction Enzymes reac
       expect(options.length).toBeGreaterThan(before);
       expect(options).toContain('BamHI');
       expect(options.some((o) => /AdaI|\(custom\)/.test(o))).toBe(false);
+    });
+  });
+
+  it('US-01M7HRCD AC6 the Digest dialog offers "AdaI (custom)" as its own marked row beside the catalogue rows', async () => {
+    await withDoc(seeded([ADA, MINE]), docOf('pAda', SMALL), async (app) => {
+      await app.menu('enzymes:digest-dialog');
+      await app.settle();
+      const rows = app.all('[role="group"][aria-label="Enzymes to digest with"] label.mbc-check-row')
+        .map((r) => r.querySelectorAll('span').map((sp) => words(sp.textContent)).join(' '));
+      expect(rows).toContain(`AdaI (custom) ${ADA.recognitionSeq} · 1 cut`);
+      expect(rows).toContain('BamHI GGATCC · 1 cut');
+      expect(rows).toContain('EcoRI GAATTC · 2 cuts');
+      expect(rows).toContain(`EcoRI (custom) ${MINE.recognitionSeq} · 1 cut`);
+      expect(rows.filter((r) => r.startsWith('AdaI'))).toEqual([`AdaI (custom) ${ADA.recognitionSeq} · 1 cut`]);
     });
   });
 });

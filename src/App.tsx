@@ -16597,6 +16597,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {operationDialog?.kind === 'digest' && (
         <DigestOperationDialog
           doc={activeDoc}
+          enzymes={activeEnzymes}
           onDownload={(content, name) => void handleDownloadFile(content, name, 'application/json')}
           onCreate={(docs) => {
             activateImportedDocumentsInWorkspace(docs);
@@ -16740,6 +16741,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           sourceLabel={selectedAnalysisDocuments.length > 1 ? `${selectedAnalysisDocuments.length} selected documents` : (selectedAnalysisDocuments[0] ?? activeDoc).name}
           folder={activeDoc.folder}
           initialWorkflowId={runWorkflowFor.workflowId}
+          enzymes={activeEnzymes}
           onDownload={(content, name) => void handleDownloadFile(content, name, 'application/json')}
           onDone={(result, w) => {
             for (const d of result.updated) handleUpdateDocument(d, `Workflow: ${w.name}`);

@@ -10,7 +10,8 @@
 import { runValidatedAlignment } from './alignmentExecution';
 import { computeAlignmentConsensusAndIdentity } from './alignmentAnalysis';
 import { addSequencesToAlignment, columnRuns, columnsToMask, stripColumns, translationAlign, type MaskContent, type MaskOptions } from './alignmentTools';
-import { calculatePrimerMetrics, findORFs, mapReadAndCallVariants, runLocalBlastSearch, simulateRestrictionDigest, testSavedPrimersOnSequence } from './bioEngine';
+import { calculatePrimerMetrics, digestEndLabel, findORFs, mapReadAndCallVariants, resolveDigestKeys, runLocalBlastSearch, simulateEnzymeDigest, testSavedPrimersOnSequence } from './bioEngine';
+import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { describeSpreadsheetProblem, parsePrimerSpreadsheet, type PrimerColumnMapping } from './primerImport';
 import { analyzeEditing } from './crisprEditing';
 import { differentialExpression, type CountTable } from './expression';
@@ -41,7 +42,7 @@ import { structureTextOf } from './structureModels';
 import { isPreAlignedInputSet } from './documentViews';
 import { condenseTree, consensusTree, inferDuplications, leafNames, parseNewick, rerootAtOutgroup, rootMinimizingDuplications, toNewick } from './treeConsensus';
 import type { OptionValues } from './optionProfiles';
-import type { BlastHitRecord, DigestFragment, PrimerRecord, SequenceDocument, SequenceFeature } from '../types/bio';
+import type { BlastHitRecord, DigestFragment, PrimerRecord, RestrictionEnzyme, SequenceDocument, SequenceFeature } from '../types/bio';
 
 export interface OperationResult {
   created: SequenceDocument[];
@@ -54,6 +55,11 @@ export interface RunContext {
   sourceLabel: string;
   folder?: string;
   signal?: AbortSignal;
+  /**
+   * The active enzyme list (US-01M7HRCD, D0152): the catalogue, then every stored custom
+   * definition. A digest step resolves its enzyme keys against it; the catalogue when not given.
+   */
+  enzymes?: readonly RestrictionEnzyme[];
 }
 
 const now = () => new Date().toISOString();
@@ -559,30 +565,47 @@ export function featuresWithin(features: readonly SequenceFeature[], start: numb
     }));
 }
 
-export function runDigest(doc: SequenceDocument, v: OptionValues): OperationResult {
-  const enzymes = String(v.enzymes ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-  if (!enzymes.length) throw new Error('Choose at least one enzyme.');
-  const frags: DigestFragment[] = simulateRestrictionDigest(doc, enzymes);
+/**
+ * Digests `doc` with the enzymes `v.enzymes` names by key (US-01M7HRCD): a built-in by its catalogue
+ * name, a custom definition by its `custom:` id, each resolved against the active list `enzymes`,
+ * through the digest by id. A digest the engine cannot complete (an enzyme it could not use, or a
+ * custom enzyme and another leaving different ends at one cut, D0151) is refused with each enzyme
+ * named and why, and creates no document (D0152). Ends and names read each enzyme's label, so a
+ * built-in-only digest's documents are as before and a custom enzyme's say "(custom)".
+ */
+export function runDigest(doc: SequenceDocument, v: OptionValues, enzymes: readonly RestrictionEnzyme[] = REBASE_ENZYMES): OperationResult {
+  const keys = String(v.enzymes ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  if (!keys.length) throw new Error('Choose at least one enzyme.');
+  const chosen = resolveDigestKeys(keys, enzymes);
+  const digest = simulateEnzymeDigest(doc, chosen.selection);
+  const refused = [...chosen.unresolved, ...digest.unresolvedEnzymes];
+  if (refused.length) {
+    throw new Error(`The digest was not run, so no fragment was made: ${refused.map((u) => `${u.name}: ${u.reason}`).join('; ')}.`);
+  }
+  const frags: DigestFragment[] = digest.fragments;
   if (frags.length === 0) throw new Error('The digest produced no fragments.');
   if (frags.length > 200) throw new Error(`The digest would create ${frags.length} fragments; choose enzymes that cut less often (limit 200).`);
+  const labels = chosen.labels;
+  const left = (f: DigestFragment) => digestEndLabel(f, 'left');
+  const right = (f: DigestFragment) => digestEndLabel(f, 'right');
   const t = now();
   const created = frags.map((f, i): SequenceDocument => ({
     id: uid('frag'),
-    name: `${doc.name} ${f.leftEnzyme}–${f.rightEnzyme} (${f.lengthBp.toLocaleString()} bp)`,
+    name: `${doc.name} ${left(f)}–${right(f)} (${f.lengthBp.toLocaleString()} bp)`,
     accession: '',
-    description: `Fragment ${i + 1} of ${frags.length} from ${enzymes.join(' + ')} digest of ${doc.name} (${f.start}–${f.end})`,
+    description: `Fragment ${i + 1} of ${frags.length} from ${labels.join(' + ')} digest of ${doc.name} (${f.start}–${f.end})`,
     moleculeType: doc.moleculeType,
     topology: 'linear',
     sequence: f.sequence,
     features: v.keepAnnotations !== false ? featuresWithin(doc.features, f.start, f.end) : [],
     primers: [],
     docMetadata: {
-      'Digest enzymes': enzymes.join(', '),
-      "5' end": `${f.leftEnzyme} (${f.leftOverhangType}${f.leftOverhang ? ` ${f.leftOverhang}` : ''})`,
-      "3' end": `${f.rightEnzyme} (${f.rightOverhangType}${f.rightOverhang ? ` ${f.rightOverhang}` : ''})`,
+      'Digest enzymes': labels.join(', '),
+      "5' end": `${left(f)} (${f.leftOverhangType}${f.leftOverhang ? ` ${f.leftOverhang}` : ''})`,
+      "3' end": `${right(f)} (${f.rightOverhangType}${f.rightOverhang ? ` ${f.rightOverhang}` : ''})`,
       'Source coordinates': `${f.start}–${f.end}`,
     },
-    history: [{ id: uid('hist'), timestamp: t, operation: 'Digest into Fragments', description: `${enzymes.join(' + ')}; fragment ${i + 1} of ${frags.length} (${f.start}–${f.end})`, parentIds: [doc.id], lengthBp: f.lengthBp, topology: 'linear' }],
+    history: [{ id: uid('hist'), timestamp: t, operation: 'Digest into Fragments', description: `${labels.join(' + ')}; fragment ${i + 1} of ${frags.length} (${f.start}–${f.end})`, parentIds: [doc.id], lengthBp: f.lengthBp, topology: 'linear' }],
     createdAt: t,
     updatedAt: t,
     folder: doc.folder,

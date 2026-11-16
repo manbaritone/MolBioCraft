@@ -12,11 +12,11 @@ import React, { useMemo, useState } from 'react';
 import { OperationDialog, OptionRow } from './OperationDialog';
 import { featuresWithin, runDigest } from '../core/operationRunners';
 import { alignmentInputError } from '../core/alignmentExecution';
-import { alignPairwiseTypeScript, designPCRPrimers, scanRestrictionSites } from '../core/bioEngine';
-import { primerTmText, restrictionScanScope, restrictionScopeWords } from './CircularPlasmidMap';
+import { alignPairwiseTypeScript, CUSTOM_ENZYME_NO_LONGER_STORED, designPCRPrimers, enzymeLabel, scanRestrictionSites } from '../core/bioEngine';
+import { customEnzymeCount, primerTmText, restrictionScanEnzymes, restrictionScanScope, restrictionScopeWords } from './CircularPlasmidMap';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import type { OptionValues } from '../core/optionProfiles';
-import type { SequenceDocument } from '../types/bio';
+import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
 
 const now = () => new Date().toISOString();
 const uid = (p: string) => `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -158,28 +158,53 @@ export interface DigestOperationDialogProps {
   onCreate: (docs: SequenceDocument[]) => void;
   onClose: () => void;
   onDownload?: (content: string, fileName: string) => void;
+  /**
+   * The active enzyme list (US-01M7HRCD): the catalogue, then every stored custom definition. The
+   * catalogue itself when not given, so the scan sends no list and the engine scans its own.
+   */
+  enzymes?: RestrictionEnzyme[];
 }
 
-export const DigestOperationDialog: React.FC<DigestOperationDialogProps> = ({ doc, onCreate, onClose, onDownload }) => {
+export const DigestOperationDialog: React.FC<DigestOperationDialogProps> = ({ doc, onCreate, onClose, onDownload, enzymes = REBASE_ENZYMES }) => {
   const [filter, setFilter] = useState('');
+  // Every choice is an enzyme's key (US-01M7HRCD): a built-in's is its name, a custom definition's
+  // its `custom:` id, so a custom enzyme named like a built-in is its own row and its own choice.
+  // A built-in is also found in the catalogue, which it never leaves.
+  const enzymeByKey = useMemo(() => {
+    const byKey = new Map<string, RestrictionEnzyme>();
+    for (const e of [...REBASE_ENZYMES, ...enzymes]) byKey.set(e.id ?? e.name, e);
+    return byKey;
+  }, [enzymes]);
+  /** A chosen key that names a custom definition the active list no longer holds: the run names it and refuses. */
+  const goneCustom = (key: string) => key.startsWith('custom:') && !enzymeByKey.has(key);
+  // Nothing here knows a gone definition's label, so it is never shown by its bare id.
+  const labelOfKey = (key: string) => {
+    const e = enzymeByKey.get(key);
+    return e ? enzymeLabel(e) : goneCustom(key) ? CUSTOM_ENZYME_NO_LONGER_STORED : key;
+  };
   // Each enzyme's cuts and blocked sites come from the scan's complete counts: it keeps only the
   // first positions of an enzyme that cuts very often, so counting kept positions would stop there
   // (BG-01M6S1K2).
+  // Over 100,000 bp the scan is sent the core built-ins and every custom definition, as the maps'
+  // is (the engine cuts to its core only when it is sent no list); the catalogue itself is sent as
+  // no list (US-01M7HRCD).
   const cutters = useMemo(() => {
     if (doc.moleculeType === 'Protein' || !doc.sequence) return [];
-    const scan = scanRestrictionSites(doc.sequence, doc.topology === 'circular' ? 'circular' : 'linear');
-    const siteOf = new Map(REBASE_ENZYMES.map((e) => [e.name, e.recognitionSeq] as const));
-    for (const s of scan.sites) siteOf.set(s.enzyme.name, s.enzyme.recognitionSeq);
+    const scan = scanRestrictionSites(doc.sequence, doc.topology === 'circular' ? 'circular' : 'linear', restrictionScanEnzymes(enzymes, doc.sequence.length));
     return scan.siteCounts
       .filter((c) => c.sites > 0)
-      .map((c) => ({ name: c.enzyme, cuts: c.sites - c.methylationBlocked, blocked: c.methylationBlocked, site: siteOf.get(c.enzyme) ?? '' }))
+      .map((c) => {
+        const e = enzymeByKey.get(c.enzymeId);
+        return { key: c.enzymeId, name: e ? enzymeLabel(e) : c.enzyme, cuts: c.sites - c.methylationBlocked, blocked: c.methylationBlocked, site: e?.recognitionSeq ?? '' };
+      })
       .sort((a, b) => a.cuts - b.cuts || a.name.localeCompare(b.name));
-  }, [doc.sequence, doc.topology, doc.moleculeType]);
-  // The engine scans more than 100,000 bp with its core enzymes only (BG-01M6S1D2), so the count
-  // names that scope in the words the map and Restriction Analysis use.
+  }, [doc.sequence, doc.topology, doc.moleculeType, enzymes, enzymeByKey]);
+  // The engine scans more than 100,000 bp with its core enzymes only (BG-01M6S1D2), and every custom
+  // definition beside them, so the count names that scope in the words the map and Restriction
+  // Analysis use.
   const scopeWords = doc.moleculeType === 'Protein' || !doc.sequence
     ? null
-    : restrictionScopeWords(restrictionScanScope(doc.sequence.length), doc.sequence.length);
+    : restrictionScopeWords(restrictionScanScope(doc.sequence.length, doc.sequence.length, customEnzymeCount(enzymes)), doc.sequence.length);
   const countLine = scopeWords
     ? `${cutters.length} enzymes cut this sequence ${scopeWords.once}; sorted by number of cuts. ${scopeWords.detail} Methylation-blocked sites are not cut.`
     : `${cutters.length} enzymes cut this sequence; sorted by number of cuts. Methylation-blocked sites are not cut.`;
@@ -195,16 +220,18 @@ export const DigestOperationDialog: React.FC<DigestOperationDialogProps> = ({ do
       summary={<span><strong>{doc.name}</strong> · {doc.sequence.length.toLocaleString()} bp, {doc.topology}</span>}
       validate={(v) => {
         if (doc.moleculeType === 'Protein' || !doc.sequence) return 'Digest needs a DNA sequence.';
-        const chosen = parse(v.enzymes).filter((n) => cutters.some((c) => c.name === n && c.cuts > 0));
+        // A custom enzyme chosen earlier whose definition is no longer stored stays chosen, so the run
+        // can refuse it by name; nothing else counts unless it cuts this sequence.
+        const chosen = parse(v.enzymes).filter((k) => goneCustom(k) || cutters.some((c) => c.key === k && c.cuts > 0));
         if (chosen.length === 0) return 'Choose at least one enzyme that cuts this sequence.';
         return null;
       }}
       renderOptions={(v, set) => {
         const chosen = new Set(parse(v.enzymes));
         const shown = cutters.filter((c) => !filter || c.name.toLowerCase().includes(filter.toLowerCase()));
-        const toggle = (name: string, on: boolean) => {
+        const toggle = (key: string, on: boolean) => {
           const next = new Set(chosen);
-          if (on) next.add(name); else next.delete(name);
+          if (on) next.add(key); else next.delete(key);
           set('enzymes', Array.from(next).join(','));
         };
         return (
@@ -213,16 +240,16 @@ export const DigestOperationDialog: React.FC<DigestOperationDialogProps> = ({ do
               <input type="text" placeholder="Filter enzymes" aria-label="Filter enzymes" value={filter} onChange={(e) => setFilter(e.target.value)} />
               <div className="mbc-opdlg-checklist" role="group" aria-label="Enzymes to digest with">
                 {shown.map((c) => (
-                  <label key={c.name} className="mbc-check-row">
-                    <input type="checkbox" checked={chosen.has(c.name)} disabled={c.cuts === 0}
-                      onChange={(e) => toggle(c.name, e.target.checked)} />
+                  <label key={c.key} className="mbc-check-row">
+                    <input type="checkbox" checked={chosen.has(c.key)} disabled={c.cuts === 0}
+                      onChange={(e) => toggle(c.key, e.target.checked)} />
                     <span>{c.name}</span>
                     <span className="mbc-opdlg-muted">{c.site} · {c.cuts} cut{c.cuts === 1 ? '' : 's'}{c.blocked ? `, ${c.blocked} blocked` : ''}</span>
                   </label>
                 ))}
                 {shown.length === 0 && <span className="mbc-opdlg-muted">No matching enzymes.</span>}
               </div>
-              {chosen.size > 0 && <span className="mbc-opdlg-muted">Selected: {Array.from(chosen).join(', ')}</span>}
+              {chosen.size > 0 && <span className="mbc-opdlg-muted">Selected: {Array.from(chosen).map(labelOfKey).join(', ')}</span>}
             </OptionRow>
             <OptionRow label="Annotations:">
               <label className="mbc-check-row">
@@ -234,7 +261,7 @@ export const DigestOperationDialog: React.FC<DigestOperationDialogProps> = ({ do
         );
       }}
       onRun={(v) => {
-        onCreate(runDigest(doc, v).created);
+        onCreate(runDigest(doc, v, enzymes).created);
       }}
       onClose={onClose}
     />
