@@ -259,7 +259,8 @@ pub const CUSTOM_ENZYME_ID_PREFIX: &str = "custom:";
 /// Deserializing goes through [`RestrictionEnzymeWire`], so a payload written before `id`,
 /// `source`, `provenance` and `notes` existed still reads: an absent or empty `id` is filled with
 /// the name once the payload is read, and an absent `source` is `custom` exactly when the id
-/// starts with `custom:`, `builtin` otherwise.
+/// starts with `custom:`, `builtin` otherwise. A JSON null in any of the four reads as the key
+/// absent (BG-01M7H533).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", from = "RestrictionEnzymeWire")]
 pub struct RestrictionEnzyme {
@@ -287,12 +288,14 @@ pub struct RestrictionEnzyme {
 }
 
 /// A [`RestrictionEnzyme`] as a payload spells it: `id`, `source`, `provenance` and `notes` may
-/// be absent, as in every payload written before US-01M7DV1V.
+/// be absent, as in every payload written before US-01M7DV1V, or JSON null, as a hand-edited
+/// backup or a REST client may write them; serde reads a null `Option` as `None`, the same as an
+/// absent key (BG-01M7H533).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RestrictionEnzymeWire {
     #[serde(default)]
-    id: String,
+    id: Option<String>,
     #[serde(default)]
     source: Option<EnzymeSource>,
     name: String,
@@ -310,16 +313,20 @@ struct RestrictionEnzymeWire {
     #[serde(default)]
     temp_c: u32,
     #[serde(default)]
-    provenance: String,
+    provenance: Option<String>,
     #[serde(default)]
-    notes: String,
+    notes: Option<String>,
 }
 
 impl From<RestrictionEnzymeWire> for RestrictionEnzyme {
-    /// Runs after the payload is read: an absent id becomes the name (a built-in's id), and an
-    /// absent source is read from the id by the one rule.
+    /// Runs after the payload is read: an absent, null or empty id becomes the name (a built-in's
+    /// id), an absent or null source is read from the id by the one rule, and an absent or null
+    /// provenance or notes is empty.
     fn from(w: RestrictionEnzymeWire) -> Self {
-        let id = if w.id.is_empty() { w.name.clone() } else { w.id };
+        let id = match w.id {
+            Some(id) if !id.is_empty() => id,
+            _ => w.name.clone(),
+        };
         let source = w.source.unwrap_or(if id.starts_with(CUSTOM_ENZYME_ID_PREFIX) {
             EnzymeSource::Custom
         } else {
@@ -337,8 +344,8 @@ impl From<RestrictionEnzymeWire> for RestrictionEnzyme {
             methylation_sensitivity: w.methylation_sensitivity,
             buffer_standard: w.buffer_standard,
             temp_c: w.temp_c,
-            provenance: w.provenance,
-            notes: w.notes,
+            provenance: w.provenance.unwrap_or_default(),
+            notes: w.notes.unwrap_or_default(),
         }
     }
 }

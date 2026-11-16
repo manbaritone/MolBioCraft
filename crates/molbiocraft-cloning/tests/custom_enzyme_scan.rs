@@ -659,3 +659,63 @@ fn us_01m7dv1v_ac3b_enzymes_from_an_old_payload_scan_as_the_catalogue_entries_th
         );
     }
 }
+
+/// Reads `customEnzymes` as the WASM entry does: the payload arrives as a JSON string, is parsed to a
+/// value, and the field is deserialized from that value.
+fn custom_enzymes_from_payload(payload: &str) -> Result<Vec<RestrictionEnzyme>, String> {
+    let v: serde_json::Value = serde_json::from_str(payload).expect("the payload is valid JSON");
+    serde_json::from_value(v["customEnzymes"].clone()).map_err(|e| e.to_string())
+}
+
+#[test]
+fn bg_01m7h533_explicit_null_enzyme_fields_scan_as_the_key_absent() {
+    const ID: &str = "custom:0b9c7c2e-8a51-4f8e-9d0c-5a3a2f1e6b7d";
+    // Three GAATTC sites, so a per-enzyme limit of 2 drops one and the limited scan carries a warning.
+    let seq = "AAAGAATTCAAAAGAATTCAAAAGAATTCAAA";
+    let entry = |rest: &str| {
+        format!(r#"{{"customEnzymes":[{{"name":"Mine","recognitionSeq":"GAATTC","cutFwd":1,"cutRev":5{}}}]}}"#, rest)
+    };
+    let with_id = |rest: &str| format!(r#","id":"{}"{}"#, ID, rest);
+    // (field, the entry's extra keys with the field absent, the same with the field JSON null, the
+    // id and source the definition must read as)
+    let cases = [
+        ("id", String::new(), r#","id":null"#.to_string(), "Mine", EnzymeSource::Builtin),
+        ("provenance", with_id(""), with_id(r#","provenance":null"#), ID, EnzymeSource::Custom),
+        ("notes", with_id(""), with_id(r#","notes":null"#), ID, EnzymeSource::Custom),
+        // The boundary: `source` was already an Option on the wire, so its null already read as absent.
+        ("source", with_id(""), with_id(r#","source":null"#), ID, EnzymeSource::Custom),
+    ];
+    // Read every null case before asserting, so a red run names each field that fails to read.
+    let read: Vec<_> = cases.iter().map(|(field, _, null, _, _)| (field, custom_enzymes_from_payload(&entry(null)))).collect();
+    let failed: Vec<String> = read.iter().filter_map(|(f, r)| r.as_ref().err().map(|e| format!("`{}`: {}", f, e))).collect();
+    assert!(failed.is_empty(), "an entry with a null field reads as the key absent, not as an error: {:?}", failed);
+
+    for ((field, absent, _, want_id, want_source), (_, null)) in cases.iter().zip(read) {
+        let null = null.unwrap();
+        let absent = custom_enzymes_from_payload(&entry(absent)).expect("the entry without the key reads");
+        // Wrong implementations: a null id left empty or spelled "null" rather than filled with the
+        // name; a null provenance or notes kept as the text "null" rather than left empty.
+        let e = &null[0];
+        assert_eq!((e.id.as_str(), e.source), (*want_id, *want_source), "`{}` null: id and source", field);
+        assert_eq!((e.provenance.as_str(), e.notes.as_str()), ("", ""), "`{}` null: provenance and notes are empty", field);
+
+        for limit in [RestrictionPositionLimit::PerEnzyme(2), RestrictionPositionLimit::All] {
+            let a = scan_restriction_sites(seq, Topology::Linear, Some(&absent), limit);
+            let n = scan_restriction_sites(seq, Topology::Linear, Some(&null), limit);
+            assert_eq!(count(&a, "Mine"), Some(3), "the fixture reaches every site");
+            if limit != RestrictionPositionLimit::All {
+                assert!(!a.warnings.is_empty(), "the limited scan reaches a warning");
+            }
+            let ids = |s: &RestrictionSiteScan| s.sites.iter().map(|x| x.id.clone()).collect::<Vec<_>>();
+            assert_eq!(ids(&n), ids(&a), "`{}` null: the same site ids", field);
+            assert_eq!(n.site_counts, a.site_counts, "`{}` null: the same siteCounts", field);
+            assert_eq!(n.warnings, a.warnings, "`{}` null: the same warnings", field);
+            assert_eq!(
+                serde_json::to_value(&n).unwrap(),
+                serde_json::to_value(&a).unwrap(),
+                "`{}` null: the same sites, field for field",
+                field
+            );
+        }
+    }
+}
