@@ -301,11 +301,22 @@ export interface EnzymeDatabaseWindowProps {
   /** The element focus returns to when the window closes (its opener). */
   returnFocusTo?: HTMLElement | null;
   database?: EnzymeDatabase;
+  /**
+   * Called after every write the window asks of the store (add, update, importBackup,
+   * discardUnreadable), whatever its outcome, so the App reads the store again and its scans use
+   * what is stored now (US-01M7DV52).
+   */
+  onChange?: () => void;
 }
 
-export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onClose, returnFocusTo = null, database }) => {
+export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onClose, returnFocusTo = null, database, onChange }) => {
   const db = useMemo(() => database ?? openEnzymeDatabase(), [database]);
   const [version, setVersion] = useState(0);
+  /** After a store write: the window reads the store again, and so does its owner. */
+  const written = () => {
+    setVersion((n) => n + 1);
+    onChange?.();
+  };
   const read = useMemo(() => db.read(), [db, version]);
   const [search, setSearch] = useState('');
   const [form, setForm] = useState<FormState | null>(null);
@@ -445,7 +456,7 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
         return;
       }
       const r = db.update(form.editId, changes, { confirmedClash });
-      setVersion((n) => n + 1);
+      written();
       if (!r.ok) {
         if (r.error.kind === 'nameClash' && r.error.clash) return setPendingClash({ builtIn: r.error.clash, message: r.error.message });
         setSubmitErrors(r.error.fields);
@@ -458,7 +469,7 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
       return;
     }
     const r = db.add(input, { confirmedClash });
-    setVersion((n) => n + 1);
+    written();
     if (!r.ok) {
       if (r.error.kind === 'nameClash' && r.error.clash) return setPendingClash({ builtIn: r.error.clash, message: r.error.message });
       setSubmitErrors(r.error.fields);
@@ -494,7 +505,7 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
   /** Imports a backup's text with the user's choices so far; a refusal names the file and changes nothing. */
   const importBackup = (file: string, text: string, replace: string[], confirm: string[]) => {
     const r = db.importBackup(text, { replace, confirmClashes: confirm });
-    setVersion((n) => n + 1);
+    written();
     if (!r.ok) {
       setPendingImport(null);
       const failed = (e: EnzymeDbError) => (e.kind === 'notSaved' ? e.message : `${e.message} Nothing was changed.`);
@@ -523,7 +534,7 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
   const discardUnreadable = (storedValue: string) => {
     setConfirmDiscard(false);
     const r = db.discardUnreadable(storedValue);
-    setVersion((n) => n + 1);
+    written();
     setNotice(r.ok ? { kind: 'info', text: 'Discarded the unreadable custom enzyme store; it is now empty.' } : { kind: 'error', text: r.error.message });
   };
 

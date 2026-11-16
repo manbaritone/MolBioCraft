@@ -26,7 +26,7 @@ import {
   SequenceFeature,
   Topology,
 } from '../types/bio';
-import { analyzeProteinSequence, CODON_TABLE, reverseComplement, tmNoAnswerSentence } from '../core/bioEngine';
+import { analyzeProteinSequence, CODON_TABLE, enzymeLabel, reverseComplement, tmNoAnswerSentence } from '../core/bioEngine';
 import { basicTmHasNoAnswer } from './ConstructCockpitBar';
 import {
   getResidentTrackOverviewRust,
@@ -2424,7 +2424,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     onSelectRange({
       start: c.position,
       end: c.position + c.enzyme.recognitionSeq.length - 1,
-      label: `${c.enzyme.name} (${c.overhangType}: ${c.overhangSeq || 'blunt'})`,
+      label: `${enzymeLabel(c.enzyme)} (${c.overhangType}: ${c.overhangSeq || 'blunt'})`,
     });
     previewMarkerRef.current = marker;
     setPreviewCutId(c.id);
@@ -3856,7 +3856,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                       aria-haspopup="dialog"
                       aria-expanded={open}
                       aria-controls={open ? previewDomId : undefined}
-                      aria-label={`${c.enzyme.name} (${shownAt}) cut site: select it and open its cleavage preview`}
+                      aria-label={`${enzymeLabel(c.enzyme)} (${shownAt}) cut site: select it and open its cleavage preview`}
                       onClick={(e) => openCleavagePreview(c, e.currentTarget)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
@@ -3870,7 +3870,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                         }
                       }}
                     >
-                      ▼ {c.enzyme.name} ({shownAt})
+                      ▼ {enzymeLabel(c.enzyme)} ({shownAt})
                     </span>
                   );
                 })}

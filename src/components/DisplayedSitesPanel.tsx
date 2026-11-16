@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { RestrictionCutSite } from '../types/bio';
+import { enzymeLabel } from '../core/bioEngine';
 import {
   applySiteVisibility,
   cutSiteDisplayPosition,
@@ -306,6 +307,8 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
             const open = multi && expanded.has(row.key);
             const listId = `mbc-dsites-occ-${row.key.replace(/[^A-Za-z0-9_-]/g, '_')}`;
             const single = row.occurrences[0];
+            // The row's name as every surface shows it: a custom definition's marked "(custom)" (US-01M7DV52).
+            const label = single ? enzymeLabel(single.site.enzyme) : row.name;
             return (
               <li key={row.key} className="mbc-dsites-row">
                 <div className="mbc-dsites-enzyme">
@@ -315,7 +318,7 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                       className="mbc-dsites-expand"
                       aria-expanded={open}
                       aria-controls={listId}
-                      aria-label={`${open ? 'Collapse' : 'Expand'} the ${row.keptCount} sites of ${row.name}`}
+                      aria-label={`${open ? 'Collapse' : 'Expand'} the ${row.keptCount} sites of ${label}`}
                       onClick={() => toggleExpanded(row.key)}
                     >
                       {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
@@ -328,12 +331,12 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                     checked={row.state === 'shown'}
                     aria-checked={row.state === 'mixed' ? 'mixed' : undefined}
                     ref={boxRef(`e:${row.key}`, row.state === 'mixed')}
-                    aria-label={`Show ${row.name} sites on the maps`}
+                    aria-label={`Show ${label} sites on the maps`}
                     onChange={(e) =>
                       choose(`e:${row.key}`, setEnzymeVisibility(visibility, row.key, row.state === 'mixed' || e.target.checked))
                     }
                   />
-                  <span className="mbc-dsites-name">{row.name}</span>
+                  <span className="mbc-dsites-name">{label}</span>
                   <code className="mbc-dsites-motif">{row.recognitionSeq}</code>
                   <span className="mbc-dsites-count">
                     {row.siteCount.toLocaleString()} {row.siteCount === 1 ? 'site' : 'sites'}
@@ -343,7 +346,7 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                     <button
                       type="button"
                       className="mbc-dsites-goto"
-                      aria-label={`Go to ${row.name} site cutting after ${single.displayPosition}`}
+                      aria-label={`Go to ${label} site cutting after ${single.displayPosition}`}
                       onClick={() => onGoToSite(single.site)}
                     >
                       Go to {single.displayPosition}
@@ -358,7 +361,7 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                           type="checkbox"
                           checked={o.shownByUser}
                           ref={boxRef(`o:${o.id}`)}
-                          aria-label={`Show ${row.name} at ${o.displayPosition}, ${strandWord(o.site)} strand`}
+                          aria-label={`Show ${label} at ${o.displayPosition}, ${strandWord(o.site)} strand`}
                           onChange={(e) => choose(`o:${o.id}`, setOccurrenceVisibility(visibility, o.site, e.target.checked))}
                         />
                         <span className="mbc-dsites-pos" title={`cuts after base ${o.displayPosition}`}>
@@ -368,7 +371,7 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                         <button
                           type="button"
                           className="mbc-dsites-goto"
-                          aria-label={`Go to ${row.name} site cutting after ${o.displayPosition}, ${strandWord(o.site)} strand`}
+                          aria-label={`Go to ${label} site cutting after ${o.displayPosition}, ${strandWord(o.site)} strand`}
                           onClick={() => onGoToSite(o.site)}
                         >
                           Go to

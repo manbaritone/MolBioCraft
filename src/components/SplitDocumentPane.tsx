@@ -15,8 +15,9 @@ import { ImportedTreeViewer } from './ImportedTreeViewer';
 import { ExpressionResultsView } from './ExpressionViews';
 import { DocumentInfoPanel } from './DocumentInfoPanel';
 import { ResultWarnings } from './ResultWarnings';
-import { restrictionScanScope, restrictionScannedBp, subsetNote, type RestrictionScanScope } from './CircularPlasmidMap';
-import type { SequenceDocument } from '../types/bio';
+import { customEnzymeCount, restrictionScanEnzymes, restrictionScanScope, restrictionScannedBp, subsetNote, type RestrictionScanScope } from './CircularPlasmidMap';
+import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
+import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
 
 export interface SplitDocumentPaneProps {
   doc: SequenceDocument | null;
@@ -29,6 +30,8 @@ export interface SplitDocumentPaneProps {
   onUpdateDocument: (doc: SequenceDocument) => void;
   onDownload?: (content: string, name: string, mime: string) => void;
   onDownloadBinary?: (bytes: Uint8Array, name: string, mime: string) => void;
+  /** The active enzyme list (US-01M7DV52): the catalogue and the stored custom definitions; the catalogue alone unless given. */
+  enzymes?: RestrictionEnzyme[];
 }
 
 /** The most alignment rows the split pane draws, the first in the alignment's order. */
@@ -57,7 +60,7 @@ const AlignmentRows: React.FC<{ doc: SequenceDocument }> = ({ doc }) => {
   );
 };
 
-export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choices, onChooseDoc, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary }) => {
+export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choices, onChooseDoc, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary, enzymes = REBASE_ENZYMES }) => {
   const [range, setRange] = useState<{ start: number; end: number; label?: string } | null>(null);
   // The pane scans as the main view does (App.tsx `restrictionScope`), by the one shared rule:
   // `restrictionScannedBp` (over 150,000 bp only the first 60,000 bp, as a linear sequence) and
@@ -68,12 +71,15 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choic
   const { scan, restrictionScope } = useMemo((): { scan: RestrictionSiteScan; restrictionScope: RestrictionScanScope | null } => {
     if (!doc || doc.moleculeType !== 'DNA' || !doc.sequence || doc.alignmentMeta?.sequences?.length) return { scan: EMPTY_RESTRICTION_SCAN, restrictionScope: null };
     const length = doc.sequence.length;
-    const scope = restrictionScanScope(length, restrictionScannedBp(length));
+    const scannedBp = restrictionScannedBp(length);
+    const scope = restrictionScanScope(length, scannedBp, customEnzymeCount(enzymes));
+    // The core cut follows the bases the scan reads, not the document's length (US-01M7DV52).
+    const list = restrictionScanEnzymes(enzymes, scannedBp);
     return {
-      scan: scope?.firstBp ? scanRestrictionSites(doc.sequence.slice(0, scope.firstBp), 'linear') : scanRestrictionSites(doc.sequence, doc.topology),
+      scan: scope?.firstBp ? scanRestrictionSites(doc.sequence.slice(0, scope.firstBp), 'linear', list) : scanRestrictionSites(doc.sequence, doc.topology, list),
       restrictionScope: scope,
     };
-  }, [doc]);
+  }, [doc, enzymes]);
   const body = (() => {
     if (!doc) return <p className="mbc-help-where">Choose a document to show next to the main view.</p>;
     if (typeof doc.docMetadata?.Newick === 'string') return <ImportedTreeViewer key={doc.id} doc={doc} onUpdateDocument={onUpdateDocument} onDownload={onDownload} onDownloadBinary={onDownloadBinary} />;

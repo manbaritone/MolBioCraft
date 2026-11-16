@@ -104,6 +104,8 @@ import { AddToAlignmentDialog, ConsensusDialog, MaskAlignmentDialog, Translation
 import { ManageWorkflowsDialog, RunWorkflowDialog } from './components/WorkflowDialogs';
 import { BackTranslateDialog, CompareAnnotationsDialog, MergePairsDialog, PrimerBindingDialog, ReadQcDialog, TestSavedPrimersDialog, TrimEndsDialog } from './components/PrimerReadDialogs';
 import { openPrimerDatabase } from './core/primerDatabase';
+import { openEnzymeDatabase } from './core/enzymeDatabase';
+import { REBASE_ENZYMES } from './data/rebaseEnzymes';
 import { MetadataImportDialog } from './components/MetadataImportDialog';
 import { ComputeDistancesDialog, CondenseTreeDialog, EvolutionAnalysisDialog, TimetreeDialog, ExamplesDialog, GeneDuplicationDialog, HighlightSitesDialog } from './components/EvolutionAnalysisDialogs';
 import type { EvoAnalysis } from './core/evolutionAnalyses';
@@ -250,7 +252,9 @@ import {
   COMMON_PLASMID_FEATURES,
   convertDnaRna,
   detectCommonFeatures,
+  activeEnzymeList,
   EMPTY_RESTRICTION_SCAN,
+  enzymeLabel,
   findORFs,
   invertSequenceCoordinates,
   MSA_MAX_RESIDUES,
@@ -298,7 +302,9 @@ import {
   CircularPlasmidMap,
   clampSequenceZoom,
   primerTmText,
+  customEnzymeCount,
   type RestrictionScanScope,
+  restrictionScanEnzymes,
   restrictionScanScope,
   restrictionScannedBp,
   restrictionScopeWords,
@@ -498,6 +504,7 @@ import type {
 import {
   cutSiteDisplayPosition,
   emptySiteVisibility,
+  enzymeKey,
   reconcileSiteVisibility,
   sequenceRevision,
   type SiteVisibility,
@@ -1227,6 +1234,17 @@ export const App: React.FC = () => {
   };
   // Databases > Restriction Enzymes (US-01M7DVDV): open with the element focus returns to when it closes.
   const [enzymeDbWindow, setEnzymeDbWindow] = useState<{ opener: HTMLElement | null } | null>(null);
+  // The custom enzyme store (US-01M7DV52), read here once per write the Restriction Enzymes window
+  // makes, and handed to every display scan as the active list: the catalogue, then each stored
+  // definition. A store that cannot be read leaves the catalogue alone, and says so once (below);
+  // storage that is unavailable gives the catalogue alone and no notice, the window naming it.
+  const [enzymeDbRevision, setEnzymeDbRevision] = useState(0);
+  const enzymeDbRead = useMemo(() => openEnzymeDatabase().read(), [enzymeDbRevision]);
+  const activeEnzymes = useMemo(
+    () => (enzymeDbRead.ok ? activeEnzymeList(enzymeDbRead.definitions) : REBASE_ENZYMES),
+    [enzymeDbRead]
+  );
+  const enzymeDbNotice = !enzymeDbRead.ok && enzymeDbRead.error.kind !== 'unavailable' ? enzymeDbRead.error.message : null;
   const openEnzymeDatabaseWindow = () => {
     setEnzymeDbWindow({ opener: databaseWindowOpener() });
   };
@@ -2331,8 +2349,8 @@ export const App: React.FC = () => {
   // and list.
   const restrictionScope = useMemo<RestrictionScanScope | null>(() => {
     const length = activeDoc.sequence.length;
-    return restrictionScanScope(length, restrictionScannedBp(length));
-  }, [activeDoc.sequence.length]);
+    return restrictionScanScope(length, restrictionScannedBp(length), customEnzymeCount(activeEnzymes));
+  }, [activeDoc.sequence.length, activeEnzymes]);
   const restrictionWords = restrictionScopeWords(restrictionScope, activeDoc.sequence.length);
 
   // The scan gives every enzyme's complete site count and keeps each enzyme's first sites by
@@ -2347,11 +2365,15 @@ export const App: React.FC = () => {
     ) {
       return EMPTY_RESTRICTION_SCAN;
     }
+    // The core cut follows the bases the scan reads (US-01M7DV52): a 60,000 bp slice is scanned
+    // with the whole catalogue, and every custom definition is always sent.
+    const scanEnzymes = restrictionScanEnzymes(activeEnzymes, restrictionScannedBp(activeDoc.sequence.length));
     if (restrictionScope?.firstBp) {
-      return scanRestrictionSites(activeDoc.sequence.slice(0, restrictionScope.firstBp), 'linear');
+      return scanRestrictionSites(activeDoc.sequence.slice(0, restrictionScope.firstBp), 'linear', scanEnzymes);
     }
-    return scanRestrictionSites(activeDoc.sequence, activeDoc.topology);
+    return scanRestrictionSites(activeDoc.sequence, activeDoc.topology, scanEnzymes);
   }, [
+    activeEnzymes,
     sessionActive,
     homeViewActive,
     viewerTab,
@@ -2506,9 +2528,10 @@ export const App: React.FC = () => {
     [activeDoc.sequence.length, activeDoc.topology]
   );
 
-  // The single cutters by their complete counts (BG-01M6S1K2), in the order of their sites.
-  const uniqueCutterNames = useMemo(
-    () => cutSites.filter((c) => restrictionSiteCounts[c.enzyme.name] === 1).map((c) => c.enzyme.name),
+  // The single cutters by their complete counts (BG-01M6S1K2), in the order of their sites, each
+  // counted by its enzymeKey (US-01M7DV52): a custom definition named like a built-in is its own.
+  const uniqueCutters = useMemo(
+    () => cutSites.filter((c) => restrictionSiteCounts[enzymeKey(c.enzyme)] === 1),
     [cutSites, restrictionSiteCounts]
   );
 
@@ -15029,6 +15052,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
               </div>
             ) : (
             <>
+            {/* The one notice of a custom enzyme store that cannot be read (US-01M7DV52): every scan uses the catalogue alone. */}
+            {enzymeDbNotice && (
+              <p className="mbc-summary-note" role="alert">
+                Your custom restriction enzymes are not used: {enzymeDbNotice} Open Databases &gt; Restriction Enzymes to recover or discard it.
+              </p>
+            )}
             {/* Viewer Top Control Bar (View Tabs + Zoom + Layout Switcher) */}
             <div className="mbc-viewer-header">
               <ScrollableMenuStrip
@@ -15601,6 +15630,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     <CloningAndGelStudio
                       documents={documents}
                       activeDoc={activeDoc}
+                      enzymes={activeEnzymes}
                       onAddConstruct={handleAddConstruct}
                       initialMethod={cloningInitialMethod}
                       initialSubTool={cloningInitialSubTool}
@@ -15858,6 +15888,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   {viewerTab === 'history-hybrid' && (
                     <HybridToolsAndHistoryStudio
                       doc={activeDoc}
+                      enzymes={activeEnzymes}
                       allDocuments={documents}
                       onUpdateDocument={handleUpdateDocument}
                       initialSubTab={hybridInitialSubTab}
@@ -15898,6 +15929,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   onUpdateDocument={(d) => handleUpdateDocument(d)}
                   onDownload={(content, name, mime) => void handleDownloadFile(content, name, mime)}
                   onDownloadBinary={(bytes, name, mime) => void handleDownloadBinaryFile(bytes, name, mime)}
+                  enzymes={activeEnzymes}
                 />
               )}
               </div>
@@ -16180,30 +16212,26 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                               title={circularMapShown ? undefined : CIRCULAR_ONLY_HINT}
                               onChange={(e) => setShowUniqueCuttersOnly(e.target.checked)}
                             />
-                            <span>{onceCutterListName} ({uniqueCutterNames.length})</span>
+                            <span>{onceCutterListName} ({uniqueCutters.length})</span>
                           </label>
                           <div className="mbc-enzyme-cloud">
-                            {uniqueCutterNames.map((name) => {
-                              const site = cutSites.find((c) => c.enzyme.name === name);
+                            {uniqueCutters.map((site) => {
+                              const name = enzymeLabel(site.enzyme);
+                              const cutAt = cutSiteDisplayPosition(site.cutTop, activeDoc.sequence.length, activeDoc.topology === 'circular');
                               return (
                                 <button
                                   type="button"
-                                  key={name}
+                                  key={enzymeKey(site.enzyme)}
                                   className="mbc-enz-pill"
-                                  onClick={() => {
-                                    if (site) {
-                                      setSelectedRange({
-                                        start: site.position,
-                                        end:
-                                          site.position +
-                                          site.enzyme.recognitionSeq.length -
-                                          1,
-                                        label: `${name} cuts after ${cutSiteDisplayPosition(site.cutTop, activeDoc.sequence.length, activeDoc.topology === 'circular')}`,
-                                      });
-                                    }
-                                  }}
+                                  onClick={() =>
+                                    setSelectedRange({
+                                      start: site.position,
+                                      end: site.position + site.enzyme.recognitionSeq.length - 1,
+                                      label: `${name} cuts after ${cutAt}`,
+                                    })
+                                  }
                                 >
-                                  {name} ({site ? cutSiteDisplayPosition(site.cutTop, activeDoc.sequence.length, activeDoc.topology === 'circular') : ''})
+                                  {name} ({cutAt})
                                 </button>
                               );
                             })}
@@ -17291,7 +17319,11 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         />
       )}
       {enzymeDbWindow && (
-        <EnzymeDatabaseWindow returnFocusTo={enzymeDbWindow.opener} onClose={() => setEnzymeDbWindow(null)} />
+        <EnzymeDatabaseWindow
+          returnFocusTo={enzymeDbWindow.opener}
+          onClose={() => setEnzymeDbWindow(null)}
+          onChange={() => setEnzymeDbRevision((n) => n + 1)}
+        />
       )}
       {primerDbImportOpen && (
         <ImportPrimersToDatabaseDialog

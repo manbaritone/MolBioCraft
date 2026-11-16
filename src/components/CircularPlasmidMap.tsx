@@ -9,12 +9,15 @@ import {
   ORFRecord,
   PrimerRecord,
   RestrictionCutSite,
+  RestrictionEnzyme,
   SequenceDocument,
   SequenceFeature,
   Topology,
 } from '../types/bio';
 import { getResidentTrackOverviewRust } from '../lib/rustBioEngine';
 import { applySiteVisibility, cutSiteDisplayPosition, enzymeKey, type SiteVisibility } from '../core/restrictionDisplay';
+import { enzymeLabel, isCustomEnzyme } from '../core/bioEngine';
+import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { formatIntervalLabel, intervalUnit, normaliseInterval, selectionInterval } from '../core/activeInterval';
 import {
   WHEEL_NOTCH_PX,
@@ -596,6 +599,8 @@ const CALLOUT_NOTE_PX = 11;
 export interface RestrictionScanScope {
   firstBp?: number;
   coreEnzymes?: number;
+  /** With `coreEnzymes`, how many custom definitions were scanned beside the core (US-01M7DV52). */
+  customEnzymes?: number;
 }
 
 /**
@@ -620,13 +625,28 @@ export function restrictionScannedBp(lengthBp: number): number {
  * engine runs it (more than 100,000 bp with the core catalog only); null when it covers the whole
  * molecule with the whole catalog.
  */
-export function restrictionScanScope(lengthBp: number, scannedBp = lengthBp): RestrictionScanScope | null {
+export function restrictionScanScope(lengthBp: number, scannedBp = lengthBp, customEnzymes = 0): RestrictionScanScope | null {
   const scope: RestrictionScanScope = {
     ...(scannedBp < lengthBp ? { firstBp: scannedBp } : {}),
-    ...(scannedBp > 100_000 ? { coreEnzymes: CORE_CATALOG_LEN } : {}),
+    ...(scannedBp > 100_000 ? { coreEnzymes: CORE_CATALOG_LEN, ...(customEnzymes > 0 ? { customEnzymes } : {}) } : {}),
   };
   return scope.firstBp || scope.coreEnzymes ? scope : null;
 }
+
+/**
+ * The list a display scan of `scannedBp` bases is sent (US-01M7DV52), from the active list
+ * `enzymes` (the catalogue, then every custom definition): over 100,000 bp scanned, the core
+ * built-ins (as the engine's `default_scan_enzymes` cuts its catalogue by the length it reads) and
+ * every custom definition, which the core rule never drops; otherwise `enzymes` whole.
+ * `REBASE_ENZYMES` itself is returned as it is, so the engine scans its own catalogue as before.
+ */
+export function restrictionScanEnzymes(enzymes: RestrictionEnzyme[], scannedBp: number): RestrictionEnzyme[] {
+  if (enzymes === REBASE_ENZYMES || scannedBp <= 100_000) return enzymes;
+  return [...enzymes.filter((e) => !isCustomEnzyme(e)).slice(0, CORE_CATALOG_LEN), ...enzymes.filter(isCustomEnzyme)];
+}
+
+/** How many custom definitions an active list holds. */
+export const customEnzymeCount = (enzymes: readonly RestrictionEnzyme[]): number => enzymes.filter(isCustomEnzyme).length;
 
 /**
  * The plain words a partial scan's counts carry, so none reads as the whole molecule's:
@@ -640,17 +660,23 @@ export function restrictionScopeWords(
 ): { sites: string; once: string; short: string; detail: string } | null {
   const first = scope?.firstBp ? scope.firstBp.toLocaleString() : '';
   const core = scope?.coreEnzymes ? scope.coreEnzymes.toLocaleString() : '';
+  const custom = core && scope?.customEnzymes ? scope.customEnzymes : 0;
+  // The core rule, and the custom definitions scanned beside it (US-01M7DV52).
+  const coreSet = custom ? `${core} core enzymes plus ${custom.toLocaleString()} custom` : `${core} core enzymes`;
   if (!first && !core) return null;
   const join = (parts: string[], sep: string) => parts.filter(Boolean).join(sep);
   return {
-    sites: join([first && `in the first ${first} bp`, core && `from ${core} core enzymes`], ' '),
-    once: join([first && `in the first ${first} bp`, core && `among ${core} core enzymes`], ' '),
-    short: join([first && `first ${first} bp`, core && `${core} core enzymes`], ', '),
+    sites: join([first && `in the first ${first} bp`, core && `from ${coreSet}`], ' '),
+    once: join([first && `in the first ${first} bp`, core && `among ${coreSet}`], ' '),
+    short: join([first && `first ${first} bp`, core && coreSet], ', '),
     detail: join(
       [
         first &&
           `Only the first ${first} of ${lengthBp.toLocaleString()} bp were scanned, as a linear sequence: an enzyme listed here may cut again past ${first} bp.`,
-        core && `Only ${core} core enzymes were scanned: other enzymes may also cut this sequence.`,
+        core &&
+          (custom
+            ? `Only ${core} core enzymes and your ${custom.toLocaleString()} custom ${custom === 1 ? 'enzyme' : 'enzymes'} were scanned: other built-in enzymes may also cut this sequence.`
+            : `Only ${core} core enzymes were scanned: other enzymes may also cut this sequence.`),
       ],
       ' '
     ),
@@ -1396,17 +1422,17 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
         priority: cutsOnce ? 3 : 4,
         angleDeg: angle,
         anchorRadius: rBackbone + 2,
-        label: `${cut.enzyme.name} (${cutAt})`,
+        label: `${enzymeLabel(cut.enzyme)} (${cutAt})`,
         color,
         lineColor,
         bold: isUnique,
         hoverText: `${cut.enzyme.name} (${cut.enzyme.recognitionSeq}) cuts after ${cutAt} (${
           cut.overhangType
-        } overhang ${cut.overhangSeq || 'Blunt'})`,
+        } overhang ${cut.overhangSeq || 'Blunt'})${isCustomEnzyme(cut.enzyme) ? ' (custom)' : ''}`,
         selectRange: {
           start: cut.position,
           end: cut.position + cut.enzyme.recognitionSeq.length - 1,
-          label: `${cut.enzyme.name} cuts after ${cutAt}`,
+          label: `${enzymeLabel(cut.enzyme)} cuts after ${cutAt}`,
         },
       });
     }

@@ -236,7 +236,7 @@ describe('US-01M7GQZ6 AC1: the Displayed restriction sites panel', () => {
   it('US-01M7GQZ6 AC1 the custom row\'s checkbox hides the custom "EcoRI" alone, and the built-in\'s the built-in alone', () => {
     const rows = rowsOf(EMPTY);
     const r = renderPanel();
-    const boxes = r.labelled('Show EcoRI sites on the maps');
+    const boxes = [...r.labelled('Show EcoRI sites on the maps'), ...r.labelled('Show EcoRI (custom) sites on the maps')];
     expect(boxes).toHaveLength(2);
     // The panel draws its rows in the order displayedSitesRows gives them.
     const ecoRows = rows.filter((row) => row.name === 'EcoRI').map((row) => row.key);
@@ -254,7 +254,8 @@ describe('US-01M7GQZ6 AC1: the Displayed restriction sites panel', () => {
 
   it('US-01M7GQZ6 AC1 with the unique-cutter filter, Hide filtered hides the custom "EcoRI" and leaves the built-in shown', () => {
     const r = renderPanel({ uniqueCuttersOnly: true });
-    expect(r.labelled('Show EcoRI sites on the maps')).toHaveLength(1);
+    expect(r.labelled('Show EcoRI (custom) sites on the maps')).toHaveLength(1);
+    expect(r.labelled('Show EcoRI sites on the maps')).toHaveLength(0);
     (r.labelled('Hide filtered: hide every site of the 2 matching enzymes')[0].onClick as () => void)();
     expect(r.changes[0].hiddenEnzymes).toEqual(['BamHI', MINE_ID]);
     expect(shown(SCAN.sites, r.changes[0])).toEqual([at(ECO1), at(ECO2)].sort());
@@ -269,7 +270,7 @@ describe('US-01M7GQZ6 AC1: the Displayed restriction sites panel', () => {
     expect(cutAfter(twin41)).toBe(43);
     expect(r.html).toContain(`id="mbc-dsites-occ-${TWIN_ID.replace(/[^A-Za-z0-9_-]/g, '_')}"`);
     expect(r.html).toContain('id="mbc-dsites-occ-EcoRI"');
-    const [box] = r.labelled('Show EcoRI at 43, forward strand');
+    const [box] = r.labelled('Show EcoRI (custom) at 43, forward strand');
     r.check(box, false);
     expect(r.changes[0].occurrences).toEqual({ [siteOccurrenceId(twin41, REV)]: { enzyme: TWIN_ID, shown: false } });
     expect(shown(TWIN_SCAN.sites, r.changes[0])).toEqual(TWIN_SCAN.sites.filter((s) => s !== twin41).map(at).sort());
@@ -279,7 +280,7 @@ describe('US-01M7GQZ6 AC1: the Displayed restriction sites panel', () => {
     const builtInOpen = renderPanel({ sites: TWIN_SCAN.sites, siteCounts: TWIN_COUNTS, initialExpanded: ['EcoRI'] });
     expect(builtInOpen.html).toContain('id="mbc-dsites-occ-EcoRI"');
     expect(builtInOpen.html).not.toContain('id="mbc-dsites-occ-custom_');
-    expect(builtInOpen.labelled('Show EcoRI at 43, forward strand')).toHaveLength(0);
+    expect(builtInOpen.labelled('Show EcoRI (custom) at 43, forward strand')).toHaveLength(0);
     const both = setOccurrenceVisibility(r.changes[0], eco41, false);
     const reset = renderPanel({ sites: TWIN_SCAN.sites, siteCounts: TWIN_COUNTS, visibility: both, initialQuery: 'eco' });
     (reset.labelled('Reset display: clear every choice for the 2 matching enzymes')[0].onClick as () => void)();

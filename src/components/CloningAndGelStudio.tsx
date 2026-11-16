@@ -4,7 +4,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { TriangleAlert } from 'lucide-react';
-import { CloningMethodType, GelBufferType, SequenceDocument } from '../types/bio';
+import { CloningMethodType, GelBufferType, RestrictionEnzyme, SequenceDocument } from '../types/bio';
+import { enzymeKey } from '../core/restrictionDisplay';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { MolBioMenuGlyph, resolveMenuItemIcon } from './MolBioIcons';
 import { ScrollableMenuStrip } from './ScrollableMenuStrip';
@@ -19,6 +20,7 @@ import {
   CloningOutcome,
   complement,
   computeDnaAndLigationCalculations,
+  enzymeLabel,
   findNonCuttingEnzymes,
   simulateMolecularCloning,
   simulateRestrictionDigest,
@@ -49,6 +51,11 @@ interface CloningAndGelStudioProps {
   commandNonce?: number;
   onJumpToCoordinate?: (start: number, end: number, label?: string) => void;
   onStatusNotice?: (message: string) => void;
+  /**
+   * The active enzyme list (US-01M7DV52): the FULL catalogue and the stored custom definitions,
+   * for the noncutter list, which the engine scans without a core cut; the catalogue alone unless given.
+   */
+  enzymes?: RestrictionEnzyme[];
 }
 
 const LADDERS: Record<string, number[]> = {
@@ -100,6 +107,7 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
   commandNonce,
   onJumpToCoordinate,
   onStatusNotice,
+  enzymes = REBASE_ENZYMES,
 }) => {
   // In the workbench the reaction's enzymes and the gel's conditions and digest enzymes sit in
   // App's shared inspector; drawn on its own the studio keeps every setting where it sits, and
@@ -191,8 +199,8 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
   }, [initialSubTool, commandNonce]);
 
   const nonCuttingEnzymes = useMemo(
-    () => findNonCuttingEnzymes(activeDoc.sequence, activeDoc.topology),
-    [activeDoc.sequence, activeDoc.topology]
+    () => findNonCuttingEnzymes(activeDoc.sequence, activeDoc.topology, enzymes),
+    [activeDoc.sequence, activeDoc.topology, enzymes]
   );
 
   // Codons are read inside annotated CDS features (frame and strand of each
@@ -1291,9 +1299,9 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
               </thead>
               <tbody>
                 {nonCuttingEnzymes.map((enz) => (
-                  <tr key={enz.name}>
+                  <tr key={enzymeKey(enz)}>
                     <td>
-                      <strong>{enz.name}</strong>
+                      <strong>{enzymeLabel(enz)}</strong>
                     </td>
                     <td>
                       <code>5&apos;-{enz.recognitionSeq}-3&apos;</code>

@@ -4,13 +4,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { saveWorkbenchFile } from '../platform/macosMenuBridge';
 import { ArrowRight, ChevronRight } from 'lucide-react';
-import { SequenceDocument, SequenceFeature, type ProteinAnalysisReport } from '../types/bio';
+import { SequenceDocument, SequenceFeature, type ProteinAnalysisReport, type RestrictionEnzyme } from '../types/bio';
 import {
   analyzeProteinSequence,
   auditSequenceAlerts,
   complement,
   detectCommonFeatures,
   EMPTY_RESTRICTION_SCAN,
+  enzymeLabel,
+  isCustomEnzyme,
   predictSecondaryStructure,
   restrictionSiteCountsByName,
   reverseComplement,
@@ -43,8 +45,8 @@ import { ResultWarnings } from './ResultWarnings';
 import { InspectorSection, useInWorkbench } from './WorkbenchInspector';
 import type { FigureTable } from '../core/figureExport';
 import { defaultHybridSubTab, hybridTabsForDocument, type HybridSubTabId } from '../core/analysisContext';
-import { cutSiteDisplayPosition } from '../core/restrictionDisplay';
-import { restrictionScanScope, restrictionScopeWords } from './CircularPlasmidMap';
+import { cutSiteDisplayPosition, enzymeKey } from '../core/restrictionDisplay';
+import { customEnzymeCount, restrictionScanEnzymes, restrictionScanScope, restrictionScopeWords } from './CircularPlasmidMap';
 import { hasStructure, structureAtomsOf } from '../core/structureModels';
 import {
   arcDiagram,
@@ -167,6 +169,11 @@ interface HybridToolsAndHistoryStudioProps {
   commandNonce?: number;
   /** Opens another project document: a lineage graph's parent or descendant. */
   onSelectDocument?: (docId: string) => void;
+  /**
+   * The active enzyme list (US-01M7DV52): the catalogue and the stored custom definitions, which
+   * the Enzymes view scans and tabulates; the catalogue alone unless given.
+   */
+  enzymes?: RestrictionEnzyme[];
 }
 
 const COMMERCIAL_SUPPLIERS = [
@@ -202,6 +209,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   initialPluginId,
   commandNonce,
   onSelectDocument,
+  enzymes = REBASE_ENZYMES,
 }) => {
   // In the workbench the Protein, Secondary structure and Lineage settings sit in App's inspector;
   // drawn on its own, the studio keeps each where it sits in its result (US-01M6TANN).
@@ -413,14 +421,19 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   // Every scanned enzyme's complete site count, with each enzyme's first sites kept by position
   // and a warning naming the enzymes whose positions were cut (BG-01M6S1K2).
   const restrictionScan = useMemo(
-    () => doc.moleculeType === 'DNA' && (subTab === 'enzymes-view' || subTab === 'lineage') ? scanRestrictionSites(doc.sequence, doc.topology) : EMPTY_RESTRICTION_SCAN,
-    [subTab, doc.moleculeType, doc.sequence, doc.topology]
+    () =>
+      doc.moleculeType === 'DNA' && (subTab === 'enzymes-view' || subTab === 'lineage')
+        ? scanRestrictionSites(doc.sequence, doc.topology, restrictionScanEnzymes(enzymes, doc.sequence.length))
+        : EMPTY_RESTRICTION_SCAN,
+    [subTab, doc.moleculeType, doc.sequence, doc.topology, enzymes]
   );
   const allCutSites = restrictionScan.sites;
   // The scan above covers the whole molecule, but over 100,000 bp with the engine's core catalog
   // only (BG-01M6RPWR): an enzyme cutting once is then named for that catalog, not as unique.
   const restrictionWords =
-    doc.moleculeType === 'DNA' ? restrictionScopeWords(restrictionScanScope(doc.sequence.length), doc.sequence.length) : null;
+    doc.moleculeType === 'DNA'
+      ? restrictionScopeWords(restrictionScanScope(doc.sequence.length, doc.sequence.length, customEnzymeCount(enzymes)), doc.sequence.length)
+      : null;
 
   const sequenceAlerts = useMemo(
     () => subTab === 'lineage' ? auditSequenceAlerts(doc, allCutSites, selectedStrain, restrictionScan.stoppedEarly) : [],
@@ -482,19 +495,23 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
 
   const filteredEnzymeSummary = useMemo(() => {
     if (subTab !== 'enzymes-view') return [];
+    // Each enzyme's sites and count by its enzymeKey (US-01M7DV52), so a custom definition named
+    // like a built-in is a row of its own.
     const byEnz: Record<string, typeof allCutSites> = {};
     for (const c of allCutSites) {
-      if (!byEnz[c.enzyme.name]) byEnz[c.enzyme.name] = [];
-      byEnz[c.enzyme.name].push(c);
+      const key = enzymeKey(c.enzyme);
+      if (!byEnz[key]) byEnz[key] = [];
+      byEnz[key].push(c);
     }
     const customSetLookup = new Set(customEnzymeSetNames);
     // `count` is the enzyme's complete site count, and null for an enzyme the scan did not read
     // (over 100,000 bp only the core enzymes are scanned), which is no noncutter; `cuts` are the
     // positions the scan kept, each enzyme's first ones.
     const counts = restrictionSiteCountsByName(restrictionScan);
-    return REBASE_ENZYMES.map((enz) => {
-      const cuts = byEnz[enz.name] || [];
-      const count: number | null = enz.name in counts ? counts[enz.name] : null;
+    return enzymes.map((enz) => {
+      const key = enzymeKey(enz);
+      const cuts = byEnz[key] || [];
+      const count: number | null = key in counts ? counts[key] : null;
       return { enzyme: enz, count, cuts };
     }).filter((row) => {
       if (enzymeSetFilter === 'custom_set') return customSetLookup.has(row.enzyme.name);
@@ -504,7 +521,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
       if (enzymeSetFilter === 'type2s') return Boolean(row.enzyme.isTypeIIS);
       return true;
     });
-  }, [subTab, allCutSites, restrictionScan, enzymeSetFilter, customEnzymeSetNames]);
+  }, [subTab, allCutSites, restrictionScan, enzymeSetFilter, customEnzymeSetNames, enzymes]);
 
   function enzLength(seq: string): number {
     return seq.replace(/N/gi, '').length || seq.length;
@@ -578,7 +595,10 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
 
   const handleExportEnzymeTableCsv = () => {
     const header = 'Name,Recognition Sequence,Effective Length (nt),Overhang,Methylation,# Cuts';
-    const rows = filteredEnzymeSummary.map(({ enzyme, count }) => {
+    // Exporting custom definitions' rows is a follow-up (US-01M7DV52): the file holds the built-ins'.
+    const exported = filteredEnzymeSummary.filter((row) => !isCustomEnzyme(row.enzyme));
+    const leftOut = filteredEnzymeSummary.length - exported.length;
+    const rows = exported.map(({ enzyme, count }) => {
       const overhang =
         enzyme.cutFwd === enzyme.cutRev
           ? 'Blunt'
@@ -593,7 +613,9 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     });
     const csv = [header, ...rows].join('\n');
     saveWorkbenchFile(`${doc.name.replace(/\s+/g, '_')}_Enzymes.csv`, csv, 'text/csv;charset=utf-8');
-    setEnzymeSetStatusMsg(`Exported ${filteredEnzymeSummary.length} enzyme row(s) to CSV`);
+    setEnzymeSetStatusMsg(
+      `Exported ${exported.length} enzyme row(s) to CSV${leftOut > 0 ? ` (${leftOut} custom enzyme row(s) not exported: the CSV holds built-in enzymes only)` : ''}`
+    );
   };
 
   const handleAutoAnnotateCommonFeatures = () => {
@@ -1860,7 +1882,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                   table={{
                     headers: ['Enzyme', 'Recognition site', 'Cuts', 'Positions (bp)'],
                     rows: filteredEnzymeSummary.map((row) => [
-                      row.enzyme.name,
+                      enzymeLabel(row.enzyme),
                       row.enzyme.recognitionSeq,
                       row.count === null ? NOT_SCANNED : String(row.count),
                       row.cuts
@@ -1892,9 +1914,9 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                   const trackX = 150;
                   const trackW = CHART_FULL.w - trackX - 24;
                   return (
-                    <g key={row.enzyme.name}>
+                    <g key={enzymeKey(row.enzyme)}>
                       <text x="16" y={y + 4} fill="var(--mbc-text-main)" fontSize="11.5" fontWeight="700">
-                        {row.enzyme.name} ({row.count === null ? NOT_SCANNED : row.count})
+                        {enzymeLabel(row.enzyme)} ({row.count === null ? NOT_SCANNED : row.count})
                       </text>
                       <line x1={trackX} y1={y} x2={trackX + trackW} y2={y} stroke="var(--mbc-border-strong)" strokeWidth="2" />
                       {row.cuts.map((c) => {
@@ -1948,7 +1970,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                       const isRowSelected = selectedEnzymeRowNames.includes(enzyme.name);
                       return (
                         <tr
-                          key={enzyme.name}
+                          key={enzymeKey(enzyme)}
                           onClick={() =>
                             setSelectedEnzymeRowNames((prev) =>
                               prev.includes(enzyme.name)
@@ -1967,7 +1989,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                               checked={isRowSelected}
                               onChange={() => {}}
                               style={{ marginRight: 6 }}
-                              aria-label={`Select ${enzyme.name}`}
+                              aria-label={`Select ${enzymeLabel(enzyme)}`}
                             />
                             <strong
                               style={{
@@ -1976,7 +1998,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                                   enzyme.cutFwd === enzyme.cutRev ? '#15803d' : undefined,
                               }}
                             >
-                              {enzyme.name}
+                              {enzymeLabel(enzyme)}
                             </strong>
                           </td>
                           <td>
@@ -2003,7 +2025,9 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                           </td>
                           <td>
                             {count === null
-                              ? 'Not scanned: only the core enzymes are scanned on this sequence'
+                              ? isCustomEnzyme(enzyme)
+                                ? 'Not scanned: its recognition sequence holds a letter the scan cannot read'
+                                : 'Not scanned: only the core enzymes are scanned on this sequence'
                               : cuts.length > 0
                               ? cuts
                                   .map((c) => cutSiteDisplayPosition(c.cutTop, doc.sequence.length, doc.topology === 'circular'))

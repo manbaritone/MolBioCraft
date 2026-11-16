@@ -16,6 +16,7 @@ import type {
   CloningMethodType,
   CommonFeatureTemplate,
   CrisprGuideRecord,
+  CustomEnzymeDefinition,
   DatabasePrimer,
   DigestFragment,
   DnaLigationCalculations,
@@ -167,6 +168,50 @@ export function findORFs(
 }
 
 export const findOpenReadingFrames = findORFs;
+
+/**
+ * A stored custom definition (US-01M7DVMJ) as the engine reads an enzyme: its `custom:` id and
+ * source go with it, so every site and count the engine returns for it carries them (US-01M7DV1V).
+ */
+export function customEnzymeForScan(d: CustomEnzymeDefinition): RestrictionEnzyme {
+  return {
+    id: d.id,
+    source: 'custom',
+    name: d.name,
+    recognitionSeq: d.recognitionSeq,
+    cutFwd: d.cutFwd,
+    cutRev: d.cutRev,
+    isTypeIIS: d.isTypeIIS,
+    suppliers: [],
+    methylationSensitivity: [...d.methylationSensitivity],
+    bufferNEB: '',
+    tempC: 37,
+    provenance: d.provenance,
+    notes: d.notes,
+  };
+}
+
+/**
+ * The active enzyme list (US-01M7DV52): the built-in catalogue, then every stored definition. With
+ * none stored it is `REBASE_ENZYMES` itself, so a scan handed it sends no list and the engine scans
+ * its own catalogue exactly as before.
+ */
+export function activeEnzymeList(definitions: readonly CustomEnzymeDefinition[]): RestrictionEnzyme[] {
+  return definitions.length === 0 ? REBASE_ENZYMES : [...REBASE_ENZYMES, ...definitions.map(customEnzymeForScan)];
+}
+
+/** Whether an enzyme is a custom definition: its source says so, or, with none given, a `custom:` id (as the engine reads it). */
+export function isCustomEnzyme(enzyme: Pick<RestrictionEnzyme, 'id' | 'source'>): boolean {
+  return enzyme.source === 'custom' || (enzyme.source === undefined && (enzyme.id ?? '').startsWith('custom:'));
+}
+
+/**
+ * The name an enzyme is shown under (US-01M7DV52): a built-in's name as it is, and a custom
+ * definition's followed by " (custom)", so one named like a built-in is never read as it.
+ */
+export function enzymeLabel(enzyme: Pick<RestrictionEnzyme, 'id' | 'source' | 'name'>): string {
+  return isCustomEnzyme(enzyme) ? `${enzyme.name} (custom)` : enzyme.name;
+}
 
 export function findRestrictionCutSites(
   rawSeq: string,
@@ -720,14 +765,20 @@ export function analyzeProteinSequence(
   });
 }
 
+/**
+ * The enzymes of `enzymes` with no site on the whole molecule. The engine applies no core cut here,
+ * at any length, so a caller hands the FULL catalogue plus its definitions (US-01M7DV52); with
+ * `REBASE_ENZYMES` itself no list is sent. An enzyme whose motif the scan cannot read is not listed.
+ */
 export function findNonCuttingEnzymes(
   rawSeq: string,
-  topology: 'circular' | 'linear' = 'circular'
+  topology: 'circular' | 'linear' = 'circular',
+  enzymes: RestrictionEnzyme[] = REBASE_ENZYMES
 ): RestrictionEnzyme[] {
   return invokeRustBioSync<RestrictionEnzyme[]>('find_non_cutting_enzymes', {
     seq: rawSeq,
     topology,
-    customEnzymes: null,
+    customEnzymes: enzymes === REBASE_ENZYMES ? null : enzymes,
   });
 }
 
