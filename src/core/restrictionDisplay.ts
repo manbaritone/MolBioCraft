@@ -325,13 +325,23 @@ export function applySiteVisibility(
  * scanned on `revision` and drops every other, so a choice made on another revision (every site
  * moved or not) or on a site no longer found is gone, never moved to another site. Enzyme choices
  * are kept, by {@link enzymeKey}.
+ *
+ * Given `scannedKeys` (the {@link enzymeKey} of every enzyme the scan read, zero counts included),
+ * while the bases are unchanged (`state.revision === revision`) an occurrence choice whose enzyme
+ * the scan did not read is kept too (BG-01M7JP9Y): the scan cannot have found its site, so it has
+ * not lost it. A choice's enzyme is its own `enzyme` field, never parsed from its id. Without
+ * `scannedKeys`, or after the bases changed, every choice matching no site in `sites` is dropped.
  */
 export function reconcileSiteVisibility(
   state: SiteVisibility,
   sites: readonly RestrictionCutSite[],
-  revision: string
+  revision: string,
+  scannedKeys?: ReadonlySet<string>
 ): SiteVisibility {
   const current = new Set(sites.map((s) => siteOccurrenceId(s, revision)));
-  const occurrences = Object.fromEntries(Object.entries(state.occurrences).filter(([id]) => current.has(id)));
+  const unread = (enzyme: string) => !!scannedKeys && state.revision === revision && !scannedKeys.has(enzyme);
+  const occurrences = Object.fromEntries(
+    Object.entries(state.occurrences).filter(([id, o]) => current.has(id) || unread(o.enzyme))
+  );
   return { revision, hiddenEnzymes: [...state.hiddenEnzymes], occurrences };
 }

@@ -37,6 +37,7 @@ import {
   type MbcWorkbenchSnapshot,
 } from '../core/mbcSessionFormat';
 import { openEnzymeDatabase } from '../core/enzymeDatabase';
+import { clearedChoicesNotice } from '../components/DisplayedSitesPanel';
 import { mountApp, type AppHarness } from './appHarness';
 import { memoryStorage, type LiveElement, type LiveStorage } from './liveDom';
 
@@ -1013,4 +1014,194 @@ describe('US-01M7GRX2: a saved hide choice that matches no enzyme is reported on
       app.unmount();
     }
   });
+});
+
+// ─── BG-01M7JP9Y: a per-site choice of an enzyme the scan did not read is kept while the bases are
+// unchanged, and a choice the scan clears says truly why ───
+
+describe('BG-01M7JP9Y AC1: per-site choices of enzymes the scan did not read, and the cleared notice\'s reason', () => {
+  vi.setConfig({ testTimeout: 180_000 });
+  /** Today's sentence after a base edit, byte for byte (it was the only sentence before this bug). */
+  const TODAY_1 = "1 per-site display choice was cleared: the sequence changed, so that site is a new scan's sites. Enzyme choices are kept.";
+  const TODAY_2 = "2 per-site display choices were cleared: the sequence changed, so those sites are a new scan's sites. Enzyme choices are kept.";
+  const SAME_1 = '1 per-site display choice was cleared: the scan no longer finds that site, though the sequence is unchanged. Enzyme choices are kept.';
+  const SAME_3 = '3 per-site display choices were cleared: the scan no longer finds those sites, though the sequence is unchanged. Enzyme choices are kept.';
+  const rev0 = sequenceRevision(SEQ, 'circular');
+  const scan0 = scan(SEQ);
+  const scanned0 = new Set(Object.keys(restrictionSiteCountsByName(scan0)));
+  const [eco1] = sitesOf(scan0.sites, 'EcoRI').sort((a, b) => a.position - b.position);
+  /** A site of a custom enzyme keyed `id` at EcoRI's first site: a choice on it is made as the panel makes one. */
+  const customSite = (id: string, name: string): RestrictionCutSite => ({ ...eco1, enzyme: { ...eco1.enzyme, id, name } });
+  const gone = customSite('custom:gone', 'Gone');
+  const goneId = siteOccurrenceId(gone, rev0);
+
+  it('BG-01M7JP9Y AC1 the fixture: the scan read EcoRI and no custom enzyme', () => {
+    expect(scanned0.has('EcoRI')).toBe(true);
+    expect([...scanned0].some((k) => k.startsWith('custom:'))).toBe(false);
+    expect(goneId).toBe(`custom:gone@${eco1.position}+#${rev0}`);
+  });
+
+  it('BG-01M7JP9Y AC1 with scannedKeys omitted, reconcile returns what it returns today: every id matching no scanned site is dropped', () => {
+    let state = setEnzymeVisibility(emptySiteVisibility(rev0), 'BamHI', false);
+    state = setOccurrenceVisibility(state, eco1, false);
+    state = setOccurrenceVisibility(state, gone, false);
+    state = setOccurrenceVisibility(state, { ...eco1, position: 999 }, false);
+    expect(reconcileSiteVisibility(state, scan0.sites, rev0)).toEqual({
+      revision: rev0,
+      hiddenEnzymes: ['BamHI'],
+      occurrences: { [siteOccurrenceId(eco1, rev0)]: { enzyme: 'EcoRI', shown: false } },
+    });
+  });
+
+  it('BG-01M7JP9Y AC1 with the bases unchanged, a choice of an enzyme the scan did not read is kept; one of a read enzyme whose site is gone is dropped', () => {
+    let state = setOccurrenceVisibility(emptySiteVisibility(rev0), eco1, false);
+    state = setOccurrenceVisibility(state, gone, false);
+    state = setOccurrenceVisibility(state, { ...eco1, position: 999 }, false);
+    const next = reconcileSiteVisibility(state, scan0.sites, rev0, scanned0);
+    expect(next.occurrences).toEqual({
+      [siteOccurrenceId(eco1, rev0)]: { enzyme: 'EcoRI', shown: false },
+      [goneId]: { enzyme: 'custom:gone', shown: false },
+    });
+    // An enzyme the scan read with no site at all (a zero count) is read: its stale choice goes.
+    const zero = reconcileSiteVisibility(state, scan0.sites, rev0, new Set([...scanned0, 'custom:gone']));
+    expect(Object.keys(zero.occurrences)).toEqual([siteOccurrenceId(eco1, rev0)]);
+  });
+
+  it('BG-01M7JP9Y AC1 the enzyme a choice belongs to is read from its own enzyme field, never parsed from its id', () => {
+    const rev = rev0;
+    const state: SiteVisibility = {
+      revision: rev,
+      hiddenEnzymes: [],
+      occurrences: {
+        // The id names EcoRI, the choice names an unscanned enzyme: kept.
+        [`EcoRI@999+#${rev}`]: { enzyme: 'custom:gone', shown: false },
+        // The id names an unscanned enzyme, the choice names EcoRI: the scan read it, so dropped.
+        [`custom:gone@998+#${rev}`]: { enzyme: 'EcoRI', shown: false },
+      },
+    };
+    expect(Object.keys(reconcileSiteVisibility(state, scan0.sites, rev, scanned0).occurrences)).toEqual([`EcoRI@999+#${rev}`]);
+  });
+
+  it('BG-01M7JP9Y AC1 after a base edit every choice of the old revision is dropped, its enzyme scanned or not', () => {
+    let state = setOccurrenceVisibility(emptySiteVisibility(rev0), eco1, false);
+    state = setOccurrenceVisibility(state, gone, false);
+    const edited = 'ACA' + SEQ;
+    const next = reconcileSiteVisibility(state, scan(edited).sites, sequenceRevision(edited, 'circular'), new Set(Object.keys(restrictionSiteCountsByName(scan(edited)))));
+    expect(next.occurrences).toEqual({});
+  });
+
+  it('BG-01M7JP9Y AC1 the notice: today\'s sentence after a base edit, byte for byte; the true reason with the bases unchanged', () => {
+    expect(clearedChoicesNotice(1)).toBe(TODAY_1);
+    expect(clearedChoicesNotice(1, false)).toBe(TODAY_1);
+    expect(clearedChoicesNotice(2)).toBe(TODAY_2);
+    expect(clearedChoicesNotice(1, true)).toBe(SAME_1);
+    expect(clearedChoicesNotice(3, true)).toBe(SAME_3);
+  });
+
+  // ─── Through the App ───
+
+  const DOC: SequenceDocument = { ...MAP_DOC, id: 'jp9y-doc', name: 'pJp9y' };
+  /** Every site in the panel, not the single cutters only, so a two-site enzyme's sites are listed. */
+  const DISPLAY = {
+    showOrfs: false, minOrfAa: 50, allowAltStartCodons: false, showPrimers: true, showTranslation: false,
+    showGcGraph: false, showHydropathyGraph: false, showUniqueCuttersOnly: false,
+  };
+  const restoreSentence = (name: string) =>
+    `Restored workbench "${name}.mbc" — 1 documents (${DOC.sequence.length.toLocaleString()} bp)`;
+  const toasts = (app: AppHarness) => app.all('.statusbar-toast-text').map((t) => t.textContent ?? '').join(' ');
+  /** Storage holding MyEco, a custom G^AATTC (EcoRI's two sites), stored under the id `custom:seed-1`. */
+  const myEcoStorage = (): LiveStorage => {
+    const storage = memoryStorage();
+    const db = openEnzymeDatabase({ storage, now: () => '2026-01-01T00:00:00.000Z', newId: () => 'custom:seed-1' });
+    const r = db.add({ name: 'MyEco', recognitionSeq: 'GAATTC', cutFwd: 1, cutRev: 5 });
+    if (!r.ok) throw new Error(r.error.message);
+    return storage;
+  };
+  const savedSiteVisibility = async (app: AppHarness) => {
+    await app.menu('file:save-session');
+    await app.settle();
+    const file = app.downloads().filter((f) => f.filename.endsWith('.mbc')).pop();
+    expect(file, 'Save Session wrote no .mbc').toBeDefined();
+    return parseMbcWorkbench(await file!.text()).envelope.workspace.siteVisibility?.[DOC.id];
+  };
+
+  it('BG-01M7JP9Y AC1 in the App, a reopened session\'s hide choice on a site of a custom enzyme no longer stored is kept, saved again, and no cleared notice is shown', async () => {
+    const choice = setOccurrenceVisibility(setOccurrenceVisibility(emptySiteVisibility(rev0), gone, false), sitesOf(scan0.sites, 'BamHI')[0], false);
+    const app = await mountApp();
+    try {
+      await app.restoreSession({
+        sessionName: 'JP9Y gone', documents: [DOC], activeDocId: DOC.id, viewerTab: 'sequence-view',
+        workspace: { displaySettings: DISPLAY, siteVisibility: { [DOC.id]: choice } },
+      });
+      await app.settle();
+      // The scanned BamHI site is hidden as restored (the choices reached the scan).
+      expect(app.one('input[aria-label="Show BamHI sites on the maps"]').checked).toBe(false);
+      expect(toasts(app)).toBe(restoreSentence('JP9Y gone'));
+      expect(app.doc.body.textContent).not.toContain('per-site display');
+      expect(await savedSiteVisibility(app)).toEqual(choice);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7JP9Y AC1 in the App, a custom enzyme\'s motif edited in the Restriction Enzymes window so its hidden site is gone clears that choice with the true reason', async () => {
+    const storage = myEcoStorage();
+    const myEco1 = customSite('custom:seed-1', 'MyEco');
+    const choice = setOccurrenceVisibility(emptySiteVisibility(rev0), myEco1, false);
+    const app = await mountApp({ storage });
+    try {
+      await app.restoreSession({
+        sessionName: 'JP9Y motif', documents: [DOC], activeDocId: DOC.id, viewerTab: 'sequence-view',
+        workspace: { displaySettings: DISPLAY, siteVisibility: { [DOC.id]: choice } },
+      });
+      await app.settle();
+      // The custom site is scanned and its own choice holds: hidden in the panel, nothing cleared.
+      await app.click(app.one('button[aria-label="Expand the 2 sites of MyEco (custom)"]'));
+      expect(app.one(`input[aria-label="Show MyEco (custom) at ${cutAfter(eco1)}, forward strand"]`).checked).toBe(false);
+      expect(app.doc.body.textContent).not.toContain('per-site display');
+      // Edit MyEco's motif to one the sequence does not hold; the bases are untouched.
+      await app.menu('tools:enzyme-database');
+      const win = app.one('[role="dialog"][aria-labelledby="enzyme-db-title"]', 'the Restriction Enzymes window');
+      const named = (scope: LiveElement, name: string) => {
+        const found = scope.querySelectorAll('button').filter((b) => (b.getAttribute('aria-label') ?? b.textContent ?? '').trim() === name);
+        expect(found, `one button named ${name}`).toHaveLength(1);
+        return found[0];
+      };
+      await app.click(named(win, 'Edit MyEco'));
+      const form = app.one('[role="dialog"][aria-labelledby="enzyme-db-title"] form', 'the enzyme editor');
+      const motif = form.querySelectorAll('input').filter((f) => f.getAttribute('aria-label') === "Recognition motif (5' → 3')");
+      expect(motif).toHaveLength(1);
+      await app.input(motif[0], 'GGGGGGGG');
+      await app.click(named(form, 'Save Changes'));
+      await app.settle();
+      const line = toasts(app);
+      expect(line).toContain(SAME_1);
+      expect(line).not.toContain('the sequence changed');
+      expect(DOC.sequence).toBe(SEQ);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7JP9Y AC1 in the App, a base edit that removes the hidden sites gives today\'s sentence unchanged, an unscanned enzyme\'s choice counted with them', async () => {
+    const choice = setOccurrenceVisibility(setOccurrenceVisibility(emptySiteVisibility(rev0), eco1, false), gone, false);
+    const app = await mountApp();
+    try {
+      await app.restoreSession({
+        sessionName: 'JP9Y edit', documents: [DOC], activeDocId: DOC.id, viewerTab: 'sequence-view',
+        workspace: { displaySettings: DISPLAY, siteVisibility: { [DOC.id]: choice } },
+      });
+      await app.settle();
+      expect(app.doc.body.textContent).not.toContain('per-site display');
+      await app.menu('sequence:reverse-complement');
+      await app.settle();
+      const line = toasts(app);
+      expect(line).toContain(TODAY_2);
+      expect(line).not.toContain('though the sequence is unchanged');
+      expect(line).toContain(`Applied Reverse Complement to ${DOC.name}`);
+    } finally {
+      app.unmount();
+    }
+  });
+
 });

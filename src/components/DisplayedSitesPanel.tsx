@@ -144,11 +144,17 @@ export function clearedChoiceCount(stored: SiteVisibility, reconciled: SiteVisib
   return Object.keys(stored.occurrences).filter((id) => !(id in reconciled.occurrences)).length;
 }
 
-/** The status line's words for `n` per-site choices an edit or rescan cleared. */
-export function clearedChoicesNotice(n: number): string {
-  return `${n.toLocaleString()} per-site display ${n === 1 ? 'choice was' : 'choices were'} cleared: the sequence changed, so ${
-    n === 1 ? 'that site is' : 'those sites are'
-  } a new scan's sites. Enzyme choices are kept.`;
+/**
+ * The status line's words for `n` per-site choices an edit or rescan cleared. With `sameBases`
+ * (BG-01M7JP9Y) the bases are unchanged and the scan no longer finds the sites (an enzyme's motif
+ * was edited, say), so it never says the sequence changed.
+ */
+export function clearedChoicesNotice(n: number, sameBases = false): string {
+  const count = `${n.toLocaleString()} per-site display ${n === 1 ? 'choice was' : 'choices were'} cleared`;
+  if (sameBases) {
+    return `${count}: the scan no longer finds ${n === 1 ? 'that site' : 'those sites'}, though the sequence is unchanged. Enzyme choices are kept.`;
+  }
+  return `${count}: the sequence changed, so ${n === 1 ? 'that site is' : 'those sites are'} a new scan's sites. Enzyme choices are kept.`;
 }
 
 const strandWord = (s: RestrictionCutSite) => (s.strand === -1 ? 'reverse' : 'forward');

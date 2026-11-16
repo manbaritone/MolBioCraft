@@ -2503,17 +2503,21 @@ export const App: React.FC = () => {
   const activeSiteVisibility = useMemo(() => {
     if (!restrictionMolecule) return null;
     const stored = storedSiteVisibility ?? emptySiteVisibility(restrictionMolecule.revision);
-    return reconcileSiteVisibility(stored, cutSites, restrictionMolecule.revision);
-  }, [restrictionMolecule, storedSiteVisibility, cutSites]);
+    // The engine lists every enzyme it scanned, zero counts included: a site choice of an enzyme it
+    // did not read is kept while the bases are unchanged (BG-01M7JP9Y).
+    return reconcileSiteVisibility(stored, cutSites, restrictionMolecule.revision, new Set(Object.keys(restrictionSiteCounts)));
+  }, [restrictionMolecule, storedSiteVisibility, cutSites, restrictionSiteCounts]);
   // An edit or rescan that clears per-site choices keeps the cleared state and says how many went,
-  // in the status line (never a dialog), after the edit's own confirmation. Only a scanned view
+  // in the status line (never a dialog), after the edit's own confirmation; with the bases unchanged
+  // it says the scan no longer finds them, never that the sequence changed. Only a scanned view
   // reconciles, so nothing is cleared while the sites are not scanned.
   useEffect(() => {
     if (!storedSiteVisibility || !activeSiteVisibility) return;
     const cleared = clearedChoiceCount(storedSiteVisibility, activeSiteVisibility);
-    if (cleared === 0 && storedSiteVisibility.revision === activeSiteVisibility.revision) return;
+    const sameBases = storedSiteVisibility.revision === activeSiteVisibility.revision;
+    if (cleared === 0 && sameBases) return;
     setSiteVisibilityByDoc((prev) => ({ ...prev, [activeDoc.id]: activeSiteVisibility }));
-    if (cleared > 0) setStatusBanner(clearedChoicesNotice(cleared), { append: true });
+    if (cleared > 0) setStatusBanner(clearedChoicesNotice(cleared, sameBases), { append: true });
   }, [storedSiteVisibility, activeSiteVisibility, activeDoc.id, setStatusBanner]);
   // The maps draw only the displayed sites (US-01M7CCGA): they are handed the whole scan with these
   // choices and filter what they draw; every digest, fragment and cloning path keeps the whole scan.
