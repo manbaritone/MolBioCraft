@@ -315,6 +315,19 @@ function collectionMemberLabel(key: string, read: EnzymeDbRead): string {
   return `${key} (not in the catalogue)`;
 }
 
+/**
+ * What the window was opened to do from a detected site (US-01M7JPSK, D0160), by the site enzyme's
+ * {@link enzymeKey}: view its definition, or add it to a collection. Read once, when the window mounts.
+ */
+export type EnzymeWindowIntent = { view: string } | { addToCollection: string };
+
+/** One line of the read-only Enzyme definition region. */
+const DefinitionLine: React.FC<{ term: string; children: React.ReactNode }> = ({ term, children }) => (
+  <p style={{ margin: '2px 0' }}>
+    <strong>{term}:</strong> {children}
+  </p>
+);
+
 /** A backup file whose import left choices open: the ids that differ and the unconfirmed built-in names. */
 interface PendingImport {
   file: string;
@@ -335,9 +348,15 @@ export interface EnzymeDatabaseWindowProps {
    * what is stored now (US-01M7DV52).
    */
   onChange?: () => void;
+  /**
+   * Opened from a detected site (US-01M7JPSK): the region under the header that views the enzyme's
+   * definition or adds it to a collection. Read once at mount (the window is modal); absent, none.
+   */
+  intent?: EnzymeWindowIntent;
 }
 
-export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onClose, returnFocusTo = null, database, onChange }) => {
+export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onClose, returnFocusTo = null, database, onChange, intent: intentProp }) => {
+  const [intent] = useState<EnzymeWindowIntent | null>(() => intentProp ?? null);
   const db = useMemo(() => database ?? openEnzymeDatabase(), [database]);
   const [version, setVersion] = useState(0);
   /** After a store write: the window reads the store again, and so does its owner. */
@@ -353,10 +372,22 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
   const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
   const [memberPicks, setMemberPicks] = useState<Record<string, string>>({});
   const [collectionNotice, setCollectionNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
-  /** After a collection write: the window reads the collections again and says what happened (no scan reads them, so no onChange). */
-  function collectionWrite<T>(r: EnzymeDbResult<T>, said: (value: T) => string): boolean {
+  /** The Add intent region's chosen collection, and what its last Add said (US-01M7JPSK). */
+  const [intentPick, setIntentPick] = useState<string | null>(null);
+  const [intentNotice, setIntentNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
+  /**
+   * After a collection write: the window reads the collections again and says what happened (no scan
+   * reads them, so no onChange); `alsoSay` hears the same words, for the intent region.
+   */
+  function collectionWrite<T>(
+    r: EnzymeDbResult<T>,
+    said: (value: T) => string,
+    alsoSay?: (notice: { kind: 'error' | 'info'; text: string }) => void,
+  ): boolean {
     setCollectionsVersion((n) => n + 1);
-    setCollectionNotice(r.ok ? { kind: 'info', text: said(r.value) } : { kind: 'error', text: r.error.message });
+    const notice = r.ok ? { kind: 'info' as const, text: said(r.value) } : { kind: 'error' as const, text: r.error.message };
+    setCollectionNotice(notice);
+    alsoSay?.(notice);
     return r.ok;
   }
   const [search, setSearch] = useState('');
@@ -587,6 +618,88 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
 
   const toggle = (list: string[], id: string, on: boolean) => (on ? [...list.filter((x) => x !== id), id] : list.filter((x) => x !== id));
 
+  /**
+   * The intent region (US-01M7JPSK), under the header. View resolves the key in the catalogue first,
+   * then among the stored definitions by id; Edit is the Custom table's editor, for a custom only.
+   * Add writes through this window's `collections` and `collectionWrite`; a `custom:` id is never shown.
+   */
+  const intentRegion = (() => {
+    if (!intent) return null;
+    if ('view' in intent) {
+      const key = intent.view;
+      const builtIn = REBASE_ENZYMES.find((e) => enzymeKey(e) === key);
+      const custom = builtIn ? undefined : read.ok ? read.definitions.find((d) => d.id === key) : undefined;
+      const shown: RestrictionEnzyme | CustomEnzymeDefinition | undefined = builtIn ?? custom;
+      return (
+        <section aria-label="Enzyme definition" className="studio-card">
+          {shown ? (
+            <>
+              <h4>{enzymeLabel(shown)}</h4>
+              <DefinitionLine term="Name">{shown.name}</DefinitionLine>
+              <DefinitionLine term="Source">{custom ? 'Custom' : 'Built-in'}</DefinitionLine>
+              <DefinitionLine term="Motif (5' → 3')">
+                <span className="mono-cell">{shown.recognitionSeq}</span>
+              </DefinitionLine>
+              <DefinitionLine term="Cuts (top/bottom)">{cutText(shown)}</DefinitionLine>
+              <p style={{ margin: '2px 0' }}>{`Type IIS: ${shown.isTypeIIS ? 'Yes' : 'No'}`}</p>
+              <DefinitionLine term="Methylation sensitivity">
+                {shown.methylationSensitivity.length > 0 ? shown.methylationSensitivity.join(', ') : 'None'}
+              </DefinitionLine>
+              <DefinitionLine term="Provenance">
+                {custom ? custom.provenance || 'None given' : `MolBioCraft's built-in REBASE catalogue.`}
+              </DefinitionLine>
+              <DefinitionLine term="Notes">{shown.notes || 'None'}</DefinitionLine>
+              {custom && (
+                <button type="button" aria-label={`Edit the ${enzymeLabel(custom)} definition`} onClick={(ev) => startEdit(custom, ev.currentTarget)}>
+                  Edit
+                </button>
+              )}
+            </>
+          ) : (
+            <p role="note">{collectionMemberLabel(key, read)}</p>
+          )}
+        </section>
+      );
+    }
+    const key = intent.addToCollection;
+    const label = collectionMemberLabel(key, read);
+    const list = collectionsRead.ok ? collectionsRead.collections : [];
+    const chosen = list.find((c) => c.id === intentPick) ?? list[0];
+    return (
+      <section aria-label={`Add ${label} to a collection`} className="studio-card">
+        <h4>{`Add ${label} to a collection`}</h4>
+        {!collectionsRead.ok ? (
+          <p role="note">{collectionsRead.error.message}</p>
+        ) : !chosen ? (
+          <p role="note">No collection yet: create one in this window first.</p>
+        ) : (
+          <div className="cloning-action-row">
+            <select aria-label="Collection" value={chosen.id} onChange={(e) => setIntentPick(e.target.value)}>
+              {list.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() =>
+                collectionWrite(
+                  collections.addMember(chosen.id, key),
+                  (v) => (v.already ? `${label} is already in "${chosen.name}": nothing was changed.` : `Added ${label} to "${chosen.name}".`),
+                  setIntentNotice,
+                )
+              }
+            >
+              Add
+            </button>
+          </div>
+        )}
+        {intentNotice && <p role={intentNotice.kind === 'error' ? 'alert' : 'status'}>{intentNotice.text}</p>}
+      </section>
+    );
+  })();
+
   return (
     <div className="mbc-dialog-overlay" style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(15, 23, 42, 0.35)' }}>
       <div
@@ -609,6 +722,7 @@ export const EnzymeDatabaseWindow: React.FC<EnzymeDatabaseWindowProps> = ({ onCl
             Close
           </button>
         </div>
+        {intentRegion}
 
         {notice && (
           <p role={notice.kind === 'error' ? 'alert' : 'status'} className={notice.kind === 'error' ? 'warn-tag' : 'ok-tag'}>

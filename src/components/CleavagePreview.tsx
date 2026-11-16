@@ -3,6 +3,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import type { RestrictionCutSite } from '../types/bio';
+import { enzymeLabel } from '../core/bioEngine';
 import { cleavagePicture, type CleavageCut, type CleavagePicture } from '../core/restrictionDisplay';
 
 /**
@@ -184,13 +185,19 @@ export interface CleavagePreviewProps extends CleavageDrawingProps {
   /** Asked when the preview is dismissed (Escape or its close button). */
   onClose: () => void;
   id?: string;
+  /** View the site's enzyme definition (US-01M7JPSK); absent, the preview offers no such button. */
+  onViewEnzyme?: (site: RestrictionCutSite) => void;
+  /** Add the site's enzyme to a collection (US-01M7JPSK); absent, the preview offers no such button. */
+  onAddEnzymeToCollection?: (site: RestrictionCutSite) => void;
 }
 
 /**
  * The cleavage preview of one restriction site: a dialog holding its {@link CleavageDrawing}, brought
  * into sight and focused when it opens.
  */
-export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence, circular, flank = 4, onClose, id }) => {
+export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence, circular, flank = 4, onClose, id, onViewEnzyme, onAddEnzymeToCollection }) => {
+  // The enzyme as every surface names it: a custom definition's marked "(custom)" (US-01M7JPSK).
+  const label = enzymeLabel(site.enzyme);
   const rootRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const el = rootRef.current as unknown as RevealableElement | null;
@@ -203,7 +210,7 @@ export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence
       ref={rootRef}
       role="dialog"
       aria-modal="false"
-      aria-label={`${site.enzyme.name} cleavage preview`}
+      aria-label={`${label} cleavage preview`}
       tabIndex={-1}
       className="mbc-cleavage-preview"
       onKeyDown={(e) => {
@@ -226,11 +233,25 @@ export const CleavagePreview: React.FC<CleavagePreviewProps> = ({ site, sequence
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <strong>{`${site.enzyme.name} cleavage`}</strong>
+        <strong>{`${label} cleavage`}</strong>
         <button type="button" className="mbc-icon-btn" aria-label="Close cleavage preview" onClick={onClose}>
           ×
         </button>
       </div>
+      {(onViewEnzyme || onAddEnzymeToCollection) && (
+        <div className="cloning-action-row">
+          {onViewEnzyme && (
+            <button type="button" aria-label={`View the ${label} enzyme definition`} onClick={() => onViewEnzyme(site)}>
+              View definition
+            </button>
+          )}
+          {onAddEnzymeToCollection && (
+            <button type="button" aria-label={`Add ${label} to a collection`} onClick={() => onAddEnzymeToCollection(site)}>
+              Add to collection
+            </button>
+          )}
+        </div>
+      )}
       <CleavageDrawing site={site} sequence={sequence} circular={circular} flank={flank} />
     </section>
   );

@@ -170,6 +170,13 @@ export interface DisplayedSitesPanelProps {
   initialShownOnly?: boolean;
   /** The rows open at first, by {@link enzymeKey}. */
   initialExpanded?: readonly string[];
+  /**
+   * View a row's enzyme definition, called with one of its sites (US-01M7JPSK); absent, no row
+   * offers it. It changes no display choice.
+   */
+  onViewEnzyme?: (site: RestrictionCutSite) => void;
+  /** Add a row's enzyme to a collection, called with one of its sites (US-01M7JPSK); absent, no row offers it. */
+  onAddEnzymeToCollection?: (site: RestrictionCutSite) => void;
 }
 
 /**
@@ -182,7 +189,7 @@ export interface DisplayedSitesPanelProps {
  * to the next checkbox still listed, else the one before it, else the search (BG-01M7DH9X).
  */
 export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
-  const { sites, siteCounts, molecule, uniqueCuttersOnly, onVisibilityChange, onGoToSite } = props;
+  const { sites, siteCounts, molecule, uniqueCuttersOnly, onVisibilityChange, onGoToSite, onViewEnzyme, onAddEnzymeToCollection } = props;
   // Every choice is read and written at the scan's own revision: a state of another revision is
   // reconciled first, so a choice is never stored under an id no site carries.
   const visibility =
@@ -350,6 +357,26 @@ export function DisplayedSitesPanel(props: DisplayedSitesPanelProps) {
                       onClick={() => onGoToSite(single.site)}
                     >
                       Go to {single.displayPosition}
+                    </button>
+                  )}
+                  {onViewEnzyme && single && (
+                    <button
+                      type="button"
+                      className="mbc-dsites-goto"
+                      aria-label={`View the ${label} enzyme definition`}
+                      onClick={() => onViewEnzyme(single.site)}
+                    >
+                      Definition
+                    </button>
+                  )}
+                  {onAddEnzymeToCollection && single && (
+                    <button
+                      type="button"
+                      className="mbc-dsites-goto"
+                      aria-label={`Add ${label} to a collection`}
+                      onClick={() => onAddEnzymeToCollection(single.site)}
+                    >
+                      Add to collection
                     </button>
                   )}
                 </div>

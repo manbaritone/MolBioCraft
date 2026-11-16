@@ -343,7 +343,7 @@ import {
   StaticModalDialog,
 } from './components/MenusPreferencesAndBlastModal';
 import { PrimerDatabaseWindow } from './components/PrimerDatabaseWindow';
-import { EnzymeDatabaseWindow } from './components/EnzymeDatabaseWindow';
+import { EnzymeDatabaseWindow, type EnzymeWindowIntent } from './components/EnzymeDatabaseWindow';
 import {
   buildNcbiReferencePresetDocumentRust,
   ensureResidentSequenceRust,
@@ -1235,7 +1235,8 @@ export const App: React.FC = () => {
     setPrimerDbWindow({ opener: databaseWindowOpener() });
   };
   // Databases > Restriction Enzymes (US-01M7DVDV): open with the element focus returns to when it closes.
-  const [enzymeDbWindow, setEnzymeDbWindow] = useState<{ opener: HTMLElement | null } | null>(null);
+  // A site action (US-01M7JPSK) opens it with an intent, read once at mount: the Tools menu's never carries one.
+  const [enzymeDbWindow, setEnzymeDbWindow] = useState<{ opener: HTMLElement | null; intent?: EnzymeWindowIntent } | null>(null);
   // The custom enzyme store (US-01M7DV52), read here once per write the Restriction Enzymes window
   // makes, and handed to every display scan as the active list: the catalogue, then each stored
   // definition. A store that cannot be read leaves the catalogue alone, and says so once (below);
@@ -1250,6 +1251,12 @@ export const App: React.FC = () => {
   const openEnzymeDatabaseWindow = () => {
     setEnzymeDbWindow({ opener: databaseWindowOpener() });
   };
+  // A detected site's enzyme, by its id (US-01M7JPSK): its definition, or adding it to a collection.
+  // Neither reads the document or writes it; the window's own collections store does the Add.
+  const viewSiteEnzyme = (site: RestrictionCutSite) =>
+    setEnzymeDbWindow({ opener: databaseWindowOpener(), intent: { view: enzymeKey(site.enzyme) } });
+  const addSiteEnzymeToCollection = (site: RestrictionCutSite) =>
+    setEnzymeDbWindow({ opener: databaseWindowOpener(), intent: { addToCollection: enzymeKey(site.enzyme) } });
   const [localBlastDbs, setLocalBlastDbs] = useState<LocalSequenceDbEntry[]>(() => [
     {
       id: 'local-db-project-all',
@@ -15311,6 +15318,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             onExtractSelection={handleExtractSelectedRegion}
                             onConvertSelectionToOligo={handleConvertSelectionToOligo}
                             onStatusNotice={setStatusBanner}
+                            onViewEnzyme={viewSiteEnzyme}
+                            onAddEnzymeToCollection={addSiteEnzymeToCollection}
                           />
                         )}
                       </div>
@@ -16261,6 +16270,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                               uniqueCuttersOnly={showUniqueCuttersOnly}
                               onVisibilityChange={handleSiteVisibilityChange}
                               onGoToSite={goToCutSite}
+                              onViewEnzyme={viewSiteEnzyme}
+                              onAddEnzymeToCollection={addSiteEnzymeToCollection}
                             />
                           )}
                         </div>
@@ -17340,6 +17351,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {enzymeDbWindow && (
         <EnzymeDatabaseWindow
           returnFocusTo={enzymeDbWindow.opener}
+          intent={enzymeDbWindow.intent}
           onClose={() => setEnzymeDbWindow(null)}
           onChange={() => setEnzymeDbRevision((n) => n + 1)}
         />

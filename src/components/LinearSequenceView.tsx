@@ -84,6 +84,10 @@ interface LinearSequenceViewProps {
   onExtractSelection?: () => void;
   onConvertSelectionToOligo?: () => void;
   onStatusNotice?: (msg: string) => void;
+  /** Offered by the cleavage preview as "View the ... enzyme definition" (US-01M7JPSK); absent, not offered. */
+  onViewEnzyme?: (site: RestrictionCutSite) => void;
+  /** Offered by the cleavage preview as "Add ... to a collection" (US-01M7JPSK); absent, not offered. */
+  onAddEnzymeToCollection?: (site: RestrictionCutSite) => void;
 }
 
 export interface SchematicFeaturePlaced {
@@ -1747,6 +1751,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   onExtractSelection,
   onConvertSelectionToOligo,
   onStatusNotice,
+  onViewEnzyme,
+  onAddEnzymeToCollection,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [jumpCoordInput, setJumpCoordInput] = useState('');
@@ -3899,6 +3905,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                 sequence={doc.sequence}
                 circular={doc.topology === 'circular'}
                 onClose={closeCleavagePreview}
+                onViewEnzyme={onViewEnzyme}
+                onAddEnzymeToCollection={onAddEnzymeToCollection}
               />
             )}
 
