@@ -60,7 +60,8 @@ use molbiocraft_cloning::cloning_crispr::{
 };
 use molbiocraft_cloning::reaction_buffers::crispr_heuristic_rank_description;
 use molbiocraft_cloning::rebase_catalog::{
-    scan_restriction_sites, RestrictionPositionLimit, RESTRICTION_POSITIONS_PER_ENZYME,
+    scan_restriction_sites, simulate_enzyme_digest, DigestEnzymeChoice, RestrictionPositionLimit,
+    RESTRICTION_POSITIONS_PER_ENZYME,
 };
 use molbiocraft_core::{
     analyze_karlin_dinucleotide_islands, analyze_sequence_composition, clean_alpha_sequence,
@@ -291,6 +292,30 @@ fn parse_opt_field<T: DeserializeOwned>(v: &Value, key: &str) -> Result<Option<T
 
 fn to_val<T: Serialize>(item: T) -> Result<Value, String> {
     serde_json::to_value(item).map_err(|e| format!("Serialization error: {}", e))
+}
+
+/// One entry of a digest-by-id selection: a string is a catalogue id, an object a custom
+/// definition; an object that does not read as a definition, or anything else, is kept as an
+/// unreadable entry under the name it gives, so the digest names it rather than dropping it.
+fn digest_choice_of(entry: &Value) -> DigestEnzymeChoice {
+    match entry {
+        Value::String(id) => DigestEnzymeChoice::Catalogue(id.clone()),
+        Value::Object(obj) => match serde_json::from_value::<RestrictionEnzyme>(entry.clone()) {
+            Ok(def) => DigestEnzymeChoice::Definition(def),
+            Err(e) => DigestEnzymeChoice::Unreadable {
+                name: obj
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|n| format!("{} (custom)", n))
+                    .unwrap_or_else(|| "An unnamed definition".to_string()),
+                reason: format!("the definition cannot be read: {}", e),
+            },
+        },
+        other => DigestEnzymeChoice::Unreadable {
+            name: other.to_string(),
+            reason: "a selection entry is a catalogue id (a string) or a definition (an object)".to_string(),
+        },
+    }
 }
 
 fn parse_topology_str(raw: &str) -> Topology {
@@ -923,6 +948,15 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             let enzymes: Vec<String> = parse_field(&payload, "selectedEnzymeNames")?;
             to_val(simulate_restriction_digest(&doc, &enzymes))
+        }
+        // A digest by id (US-01M7DVD5, D0150): `selection` holds a built-in's catalogue id as a
+        // string and a custom enzyme as its whole definition (the `customEnzymes` shape). An entry
+        // that is neither is not dropped: the reply lists it among `unresolvedEnzymes`.
+        "simulate_enzyme_digest" => {
+            let doc: SequenceDocument = parse_field(&payload, "doc")?;
+            let selection: Vec<Value> = parse_field(&payload, "selection")?;
+            let choices: Vec<DigestEnzymeChoice> = selection.iter().map(digest_choice_of).collect();
+            to_val(simulate_enzyme_digest(&doc, &choices))
         }
         "compute_agarose_gel_physics" => {
             let sizes: Vec<usize> = parse_field(&payload, "fragmentSizesBp")?;

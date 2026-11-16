@@ -6,7 +6,7 @@ use molbiocraft_core::{
     clean_alpha_sequence, format_thousands, iupac_base_matches, reverse_complement_iupac,
     RestrictionCutSite, RestrictionEnzyme, SequenceDocument, Topology,
 };
-use molbiocraft_core::types::EnzymeSource;
+use molbiocraft_core::types::{EnzymeSource, CUSTOM_ENZYME_ID_PREFIX};
 use molbiocraft_protein::translate_codon_standard;
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -22,10 +22,67 @@ pub struct DigestFragment {
     pub left_enzyme: String,
     pub left_overhang: String,
     pub left_overhang_type: String,
+    /// The id of the custom definition that cut this end (US-01M7DVD5); absent for a built-in's
+    /// end and a terminus, so a built-in end serializes exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_enzyme_id: Option<String>,
+    /// `custom` when a custom definition cut this end; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_enzyme_source: Option<EnzymeSource>,
     pub right_enzyme: String,
     pub right_overhang: String,
     pub right_overhang_type: String,
+    /// As `left_enzyme_id`, for the right end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_enzyme_id: Option<String>,
+    /// As `left_enzyme_source`, for the right end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_enzyme_source: Option<EnzymeSource>,
     pub sequence: String,
+}
+
+/// One enzyme a digest by id is asked to cut with (US-01M7DVD5, D0150): a built-in by its
+/// catalogue id, a custom one by its whole definition, or a selection entry the caller could not
+/// read as either (its name, as far as it could be read, and why).
+#[derive(Debug, Clone)]
+pub enum DigestEnzymeChoice {
+    Catalogue(String),
+    Definition(RestrictionEnzyme),
+    Unreadable { name: String, reason: String },
+}
+
+/// A selected enzyme a digest by id did not use, or two enzymes whose cuts at one top-strand
+/// position disagree on the bottom strand (US-01M7DVD5). `name` is how the enzyme is shown: a
+/// custom definition's name followed by " (custom)", a built-in's name as it is; a clash names both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnresolvedDigestEnzyme {
+    pub name: String,
+    /// The ids involved, as sent (none when the entry could not be read far enough to have one).
+    pub enzyme_ids: Vec<String>,
+    /// `unknownId`, `unreadableDefinition`, `noCustomId` or `clash`.
+    pub kind: String,
+    pub reason: String,
+}
+
+/// The reply of a digest by id: the fragments, every selected enzyme it could not use (and every
+/// clash), and whether the digest is the one asked for - false whenever anything is unresolved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnzymeDigest {
+    pub fragments: Vec<DigestFragment>,
+    pub unresolved_enzymes: Vec<UnresolvedDigestEnzyme>,
+    pub complete: bool,
+}
+
+/// How an enzyme is shown (the engine's copy of the UI's `enzymeLabel`): a custom definition's name
+/// followed by " (custom)", so one named like a built-in is never read as it.
+pub fn enzyme_label(enzyme: &RestrictionEnzyme) -> String {
+    if enzyme.source == EnzymeSource::Custom {
+        format!("{} (custom)", enzyme.name)
+    } else {
+        enzyme.name.clone()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -913,23 +970,52 @@ pub fn find_non_cutting_enzymes_for_topology(
 }
 
 /// Simulate an in silico single or multi-enzyme restriction digest and compute linear/circular fragments.
+/// Each name is looked up in the catalogue; a name it does not hold cuts nothing. A digest of a
+/// custom definition, or one that must say which enzyme it could not use, is
+/// [`simulate_enzyme_digest`] (D0150); this one is kept as it was for every caller sending names.
 pub fn simulate_restriction_digest(
     doc: &SequenceDocument,
     selected_enzyme_names: &[String],
 ) -> Vec<DigestFragment> {
-    let s = clean_alpha_sequence(&doc.sequence).replace('U', "T");
-    let seq_len = s.len();
     let chosen_set: FxHashSet<&str> = selected_enzyme_names.iter().map(|n| n.as_str()).collect();
     let catalog = get_rebase_enzymes();
     let chosen: Vec<RestrictionEnzyme> = catalog
         .into_iter()
         .filter(|e| chosen_set.contains(e.name.as_str()))
         .collect();
+    digest_with(doc, &chosen).fragments
+}
+
+/// The id and source a fragment end records for the enzyme that cut it: a custom definition's,
+/// or none for a built-in, whose end then serializes exactly as before US-01M7DVD5.
+fn end_identity(enzyme: &RestrictionEnzyme) -> (Option<String>, Option<EnzymeSource>) {
+    if enzyme.source == EnzymeSource::Custom {
+        (Some(enzyme.id.clone()), Some(EnzymeSource::Custom))
+    } else {
+        (None, None)
+    }
+}
+
+/// What `digest_with` cut: the fragments, whether any site cut at all (none gives the single uncut
+/// fragment), and each pair of cuts at one top-strand position that differ on the bottom strand,
+/// the one the fragments use first.
+struct DigestCuts {
+    fragments: Vec<DigestFragment>,
+    any_cut: bool,
+    clashes: Vec<(RestrictionCutSite, RestrictionCutSite)>,
+}
+
+/// The digest by `chosen`, in the order given: the scan sorts its sites by recognition position,
+/// then name, stably, so of two enzymes sharing a name and a position the one given first leads;
+/// the cuts are then sorted by top-strand position, stably, and one cut is kept per position.
+fn digest_with(doc: &SequenceDocument, chosen: &[RestrictionEnzyme]) -> DigestCuts {
+    let s = clean_alpha_sequence(&doc.sequence).replace('U', "T");
+    let seq_len = s.len();
 
     // Every cut of the chosen enzymes (BG-01M6S1K2): a digest drawn from part of them would show
     // one band for a stretch the enzymes cut many times.
     let mut cuts: Vec<RestrictionCutSite> =
-        scan_restriction_sites(&s, doc.topology, Some(&chosen), RestrictionPositionLimit::All)
+        scan_restriction_sites(&s, doc.topology, Some(chosen), RestrictionPositionLimit::All)
             .sites
             .into_iter()
             .filter(|c| !c.methylation_blocked)
@@ -946,7 +1032,7 @@ pub fn simulate_restriction_digest(
         } else {
             "3' End"
         };
-        return vec![DigestFragment {
+        let uncut = DigestFragment {
             id: format!("{}-uncut", doc.id),
             index: 1,
             start: 1,
@@ -955,11 +1041,16 @@ pub fn simulate_restriction_digest(
             left_enzyme: term.to_string(),
             left_overhang: String::new(),
             left_overhang_type: "blunt".to_string(),
+            left_enzyme_id: None,
+            left_enzyme_source: None,
             right_enzyme: term_r.to_string(),
             right_overhang: String::new(),
             right_overhang_type: "blunt".to_string(),
+            right_enzyme_id: None,
+            right_enzyme_source: None,
             sequence: s,
-        }];
+        };
+        return DigestCuts { fragments: vec![uncut], any_cut: false, clashes: Vec::new() };
     }
 
     // A top-strand cut at an end of a linear molecule (before base 1, or after the last base as
@@ -970,9 +1061,17 @@ pub fn simulate_restriction_digest(
     cuts.sort_by_key(|c| c.cut_top);
     let mut unique_cuts: Vec<RestrictionCutSite> = Vec::with_capacity(cuts.len());
     let mut seen_pos: FxHashSet<usize> = FxHashSet::default();
+    let mut clashes: Vec<(RestrictionCutSite, RestrictionCutSite)> = Vec::new();
     for c in cuts {
         if seen_pos.insert(c.cut_top) {
             unique_cuts.push(c);
+        } else if let Some(kept) = unique_cuts.last() {
+            // A second cut at a kept top-strand position (cuts are sorted by it, so the kept one is
+            // the last): the fragments keep the first, as they always have; a bottom-strand cut or
+            // overhang that differs from it is a clash the digest by id reports (US-01M7DVD5).
+            if kept.cut_bottom != c.cut_bottom || kept.overhang_seq != c.overhang_seq || kept.overhang_type != c.overhang_type {
+                clashes.push((kept.clone(), c));
+            }
         }
     }
 
@@ -982,6 +1081,7 @@ pub fn simulate_restriction_digest(
         let mut prev_enz = "5' Terminus".to_string();
         let mut prev_oh = String::new();
         let mut prev_oh_type = "blunt".to_string();
+        let mut prev_identity: (Option<String>, Option<EnzymeSource>) = (None, None);
 
         for (idx, c) in unique_cuts.iter().enumerate() {
             let start0 = prev_pos.saturating_sub(1).min(seq_len);
@@ -1001,11 +1101,16 @@ pub fn simulate_restriction_digest(
                 left_enzyme: prev_enz,
                 left_overhang: prev_oh,
                 left_overhang_type: prev_oh_type,
+                left_enzyme_id: prev_identity.0.take(),
+                left_enzyme_source: prev_identity.1.take(),
                 right_enzyme: c.enzyme.name.clone(),
                 right_overhang: c.overhang_seq.clone(),
                 right_overhang_type: c.overhang_type.clone(),
+                right_enzyme_id: end_identity(&c.enzyme).0,
+                right_enzyme_source: end_identity(&c.enzyme).1,
                 sequence: frag_seq,
             });
+            prev_identity = end_identity(&c.enzyme);
             prev_pos = c.cut_top;
             prev_enz = c.enzyme.name.clone();
             prev_oh = c.overhang_seq.clone();
@@ -1024,9 +1129,13 @@ pub fn simulate_restriction_digest(
             left_enzyme: prev_enz,
             left_overhang: prev_oh,
             left_overhang_type: prev_oh_type,
+            left_enzyme_id: prev_identity.0,
+            left_enzyme_source: prev_identity.1,
             right_enzyme: "3' Terminus".to_string(),
             right_overhang: String::new(),
             right_overhang_type: "blunt".to_string(),
+            right_enzyme_id: None,
+            right_enzyme_source: None,
             sequence: tail_seq,
         });
     } else {
@@ -1054,16 +1163,112 @@ pub fn simulate_restriction_digest(
                 left_enzyme: left_cut.enzyme.name.clone(),
                 left_overhang: left_cut.overhang_seq.clone(),
                 left_overhang_type: left_cut.overhang_type.clone(),
+                left_enzyme_id: end_identity(&left_cut.enzyme).0,
+                left_enzyme_source: end_identity(&left_cut.enzyme).1,
                 right_enzyme: right_cut.enzyme.name.clone(),
                 right_overhang: right_cut.overhang_seq.clone(),
                 right_overhang_type: right_cut.overhang_type.clone(),
+                right_enzyme_id: end_identity(&right_cut.enzyme).0,
+                right_enzyme_source: end_identity(&right_cut.enzyme).1,
                 sequence: frag_seq,
             });
         }
     }
 
     fragments.sort_by(|a, b| b.length_bp.cmp(&a.length_bp));
-    fragments
+    DigestCuts { fragments, any_cut: true, clashes }
+}
+
+/// Simulate a digest by id (US-01M7DVD5, D0150): each built-in by its catalogue id, each custom
+/// enzyme by its own definition, so a custom one named like a built-in cuts at its own sites with
+/// its own offsets and its ends carry its id and source. Every selected enzyme the digest cannot
+/// use is listed with its reason - an id the catalogue does not hold, an entry that is not a
+/// definition, a definition whose motif the scan cannot read, a definition sent without a
+/// `custom:` id (never read as the built-in of its name) - and so is every top-strand position two
+/// cuts share while differing on the bottom strand; `complete` is then false. A digest with
+/// anything unresolved and no cut is no fragments, never the uncut molecule; an empty selection is
+/// the uncut molecule, complete. The built-ins are cut in catalogue order and before every custom
+/// definition (custom ones by id), so cuts at one position keep the old op's order whatever the
+/// selection's, and a catalogue-only digest is the one `simulate_restriction_digest` gives.
+pub fn simulate_enzyme_digest(doc: &SequenceDocument, selection: &[DigestEnzymeChoice]) -> EnzymeDigest {
+    let mut unresolved: Vec<UnresolvedDigestEnzyme> = Vec::new();
+    let mut builtin_ids: FxHashSet<&str> = FxHashSet::default();
+    let mut customs: Vec<RestrictionEnzyme> = Vec::new();
+    let catalog = get_rebase_enzymes();
+    let unresolved_one = |name: String, id: Option<&str>, kind: &str, reason: String| UnresolvedDigestEnzyme {
+        name,
+        enzyme_ids: id.map(|i| vec![i.to_string()]).unwrap_or_default(),
+        kind: kind.to_string(),
+        reason,
+    };
+    for choice in selection {
+        match choice {
+            DigestEnzymeChoice::Catalogue(id) => {
+                if catalog.iter().any(|e| &e.id == id) {
+                    builtin_ids.insert(id.as_str());
+                } else {
+                    unresolved.push(unresolved_one(
+                        id.clone(),
+                        Some(id),
+                        "unknownId",
+                        format!("the built-in catalogue holds no enzyme with the id \"{}\"", id),
+                    ));
+                }
+            }
+            DigestEnzymeChoice::Definition(def) => {
+                let label = format!("{} (custom)", def.name);
+                let letters = unreadable_letters(&def.recognition_seq);
+                if !def.id.starts_with(CUSTOM_ENZYME_ID_PREFIX) || def.source != EnzymeSource::Custom {
+                    unresolved.push(unresolved_one(
+                        label,
+                        Some(&def.id),
+                        "noCustomId",
+                        format!(
+                            "the definition was sent without a custom: id (its id is \"{}\"), so it is not used, and not read as the built-in of that name",
+                            def.id
+                        ),
+                    ));
+                } else if def.recognition_seq.trim().is_empty() || !letters.is_empty() {
+                    let why = if letters.is_empty() {
+                        "its recognition sequence is empty".to_string()
+                    } else {
+                        unreadable_motif_warning(def, &letters)
+                    };
+                    unresolved.push(unresolved_one(label, Some(&def.id), "unreadableDefinition", why));
+                } else if !customs.iter().any(|c| c.id == def.id) {
+                    customs.push(def.clone());
+                }
+            }
+            DigestEnzymeChoice::Unreadable { name, reason } => {
+                unresolved.push(unresolved_one(name.clone(), None, "unreadableDefinition", reason.clone()));
+            }
+        }
+    }
+    customs.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut chosen: Vec<RestrictionEnzyme> = catalog.into_iter().filter(|e| builtin_ids.contains(e.id.as_str())).collect();
+    chosen.extend(customs);
+
+    let cut = digest_with(doc, &chosen);
+    for (kept, other) in &cut.clashes {
+        let (a, b) = (enzyme_label(&kept.enzyme), enzyme_label(&other.enzyme));
+        unresolved.push(UnresolvedDigestEnzyme {
+            name: format!("{} and {}", a, b),
+            enzyme_ids: vec![kept.enzyme.id.clone(), other.enzyme.id.clone()],
+            kind: "clash".to_string(),
+            reason: format!(
+                "{} and {} both cut the top strand before base {} but leave different ends ({} {} and {} {}), so the digest cannot say which end that fragment has",
+                a,
+                b,
+                kept.cut_top,
+                if kept.overhang_seq.is_empty() { "-" } else { kept.overhang_seq.as_str() },
+                kept.overhang_type,
+                if other.overhang_seq.is_empty() { "-" } else { other.overhang_seq.as_str() },
+                other.overhang_type,
+            ),
+        });
+    }
+    let fragments = if !cut.any_cut && !unresolved.is_empty() { Vec::new() } else { cut.fragments };
+    EnzymeDigest { complete: unresolved.is_empty(), fragments, unresolved_enzymes: unresolved }
 }
 
 /// Empirical agarose-gel migration model: a sigmoid in log10(bp) whose midpoint and slope shift with

@@ -282,6 +282,7 @@
   "range",
   "strand"
  ],
+ "crispr_heuristic_rank_description": [],
  "crispr_nuclease_presets": [],
  "design_pcr_primers": [
   "doc",
@@ -605,9 +606,11 @@
  ],
  "scan_crispr_guides": [
   "circular",
+  "end1Based",
   "maxResults",
   "nuclease",
-  "seq"
+  "seq",
+  "start1Based"
  ],
  "scan_fuzzy_subsequence_simd": [
   "bothStrands",
@@ -667,6 +670,10 @@
  "set_circular_origin": [
   "doc",
   "newOrigin1Based"
+ ],
+ "simulate_enzyme_digest": [
+  "doc",
+  "selection"
  ],
  "simulate_molecular_cloning": [
   "enzyme3Prime",

@@ -663,10 +663,43 @@ export interface DigestFragment {
   leftEnzyme: string;
   leftOverhang: string;
   leftOverhangType: '5prime' | '3prime' | 'blunt';
+  /** The id of the custom definition that cut this end (US-01M7DVD5); absent for a built-in's end and a terminus. */
+  leftEnzymeId?: string;
+  /** 'custom' when a custom definition cut this end; absent otherwise. */
+  leftEnzymeSource?: EnzymeSource;
   rightEnzyme: string;
   rightOverhang: string;
   rightOverhangType: '5prime' | '3prime' | 'blunt';
+  /** As `leftEnzymeId`, for the right end. */
+  rightEnzymeId?: string;
+  /** As `leftEnzymeSource`, for the right end. */
+  rightEnzymeSource?: EnzymeSource;
   sequence: string;
+}
+
+/**
+ * The enzymes a digest by id cuts with (US-01M7DVD5, D0150): a built-in by its catalogue id (its
+ * name), a custom enzyme by its whole definition.
+ */
+export type EnzymeDigestSelection = Array<string | RestrictionEnzyme>;
+
+/**
+ * A selected enzyme a digest by id did not use, or two whose cuts at one top-strand position leave
+ * different ends. `name` is how it is shown (`enzymeLabel`); a clash names both.
+ */
+export interface UnresolvedDigestEnzyme {
+  name: string;
+  enzymeIds: string[];
+  kind: 'unknownId' | 'unreadableDefinition' | 'noCustomId' | 'clash';
+  reason: string;
+}
+
+/** A digest by id: its fragments, what it could not use, and whether it is the digest asked for. */
+export interface EnzymeDigest {
+  fragments: DigestFragment[];
+  unresolvedEnzymes: UnresolvedDigestEnzyme[];
+  /** False whenever `unresolvedEnzymes` is not empty. */
+  complete: boolean;
 }
 
 export interface GelLane {

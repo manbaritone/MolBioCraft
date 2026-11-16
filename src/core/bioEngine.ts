@@ -21,6 +21,8 @@ import type {
   DigestFragment,
   DnaLigationCalculations,
   DotplotHit,
+  EnzymeDigest,
+  EnzymeDigestSelection,
   MSAAlignmentResult,
   MutagenesisSimulationResult,
   ORFRecord,
@@ -302,6 +304,28 @@ export function simulateRestrictionDigest(
     doc,
     selectedEnzymeNames,
   });
+}
+
+/**
+ * A digest by id (US-01M7DVD5, D0150): each built-in by its catalogue id, each custom enzyme by its
+ * definition, so a custom one named like a built-in cuts at its own sites and its ends say so. The
+ * reply lists every selected enzyme the engine could not use; `complete` is then false and, when
+ * nothing cut, there are no fragments rather than the uncut molecule.
+ */
+export function simulateEnzymeDigest(doc: SequenceDocument, selection: EnzymeDigestSelection): EnzymeDigest {
+  return invokeRustBioSync<EnzymeDigest>('simulate_enzyme_digest', { doc, selection });
+}
+
+/** How a digest by id names `enzymes`: a custom definition whole, a built-in by its id. */
+export function enzymeDigestSelection(enzymes: readonly RestrictionEnzyme[]): EnzymeDigestSelection {
+  return enzymes.map((e) => (isCustomEnzyme(e) ? e : e.id ?? e.name));
+}
+
+/** The name a fragment end is shown under: its enzyme's, marked " (custom)" when a custom definition cut it. */
+export function digestEndLabel(fragment: DigestFragment, side: 'left' | 'right'): string {
+  const name = side === 'left' ? fragment.leftEnzyme : fragment.rightEnzyme;
+  const source = side === 'left' ? fragment.leftEnzymeSource : fragment.rightEnzymeSource;
+  return source === 'custom' ? `${name} (custom)` : name;
 }
 
 /**

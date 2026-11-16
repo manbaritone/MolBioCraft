@@ -4,7 +4,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { TriangleAlert } from 'lucide-react';
-import { CloningMethodType, GelBufferType, RestrictionEnzyme, SequenceDocument } from '../types/bio';
+import { CloningMethodType, DigestFragment, GelBufferType, RestrictionEnzyme, SequenceDocument } from '../types/bio';
 import { enzymeKey } from '../core/restrictionDisplay';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { MolBioMenuGlyph, resolveMenuItemIcon } from './MolBioIcons';
@@ -20,8 +20,12 @@ import {
   CloningOutcome,
   complement,
   computeDnaAndLigationCalculations,
+  digestEndLabel,
+  enzymeDigestSelection,
   enzymeLabel,
   findNonCuttingEnzymes,
+  isCustomEnzyme,
+  simulateEnzymeDigest,
   simulateMolecularCloning,
   simulateRestrictionDigest,
   simulateSiteDirectedMutagenesis,
@@ -97,6 +101,17 @@ function calcMigrationY(
   }
   return 160;
 }
+
+/** A digest the gel draws: its fragments, each enzyme it could not use (by label, with why), and whether it is the digest chosen. */
+interface StudioDigest {
+  fragments: DigestFragment[];
+  unresolved: { name: string; reason: string }[];
+  complete: boolean;
+}
+
+/** Why a chosen enzyme that has left the active enzyme list is not used. */
+const NOT_IN_ACTIVE_LIST =
+  'it is no longer in the active enzyme list (the enzyme database could not be read, or no longer holds it), so the digest did not use it';
 
 export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
   documents,
@@ -279,31 +294,105 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
     [documents, insertId]
   );
 
+  // The digest chips choose enzymes by key (US-01M7DVD5): a built-in's is its name, a custom
+  // definition's its `custom:` id, so a custom enzyme named like a built-in is its own choice. A
+  // chosen key is looked up in the active list (a built-in also in the catalogue, which it never
+  // leaves); the label of every custom key seen is remembered, so one that leaves the active list
+  // (the store could no longer be read, say) is still named as it was, never by its bare id.
+  const knownCustomLabels = useRef(new Map<string, string>());
+  const enzymeByKey = useMemo(() => {
+    const byKey = new Map<string, RestrictionEnzyme>();
+    for (const e of REBASE_ENZYMES) byKey.set(enzymeKey(e), e);
+    for (const e of enzymes) {
+      byKey.set(enzymeKey(e), e);
+      if (isCustomEnzyme(e)) knownCustomLabels.current.set(enzymeKey(e), enzymeLabel(e));
+    }
+    return byKey;
+  }, [enzymes]);
+  /** The enzyme a chosen key stands for now, or undefined once a custom one has left the active list. */
+  const enzymeOfKey = (key: string): RestrictionEnzyme | undefined => enzymeByKey.get(key);
+  const labelOfKey = (key: string): string => {
+    const e = enzymeOfKey(key);
+    if (e) return enzymeLabel(e);
+    return knownCustomLabels.current.get(key) ?? (key.startsWith('custom:') ? 'A custom enzyme no longer stored' : key);
+  };
+
+  /**
+   * The digest the gel draws for `keys`, through the digest by id: every enzyme it could not use,
+   * an enzyme no longer in the active list among them, is named with its reason, and the digest is
+   * then not complete.
+   */
+  const digestOfKeys = (keys: string[]): StudioDigest => {
+    const found: RestrictionEnzyme[] = [];
+    const unresolved: StudioDigest['unresolved'] = [];
+    for (const key of keys) {
+      const e = enzymeOfKey(key);
+      if (e) found.push(e);
+      else unresolved.push({ name: labelOfKey(key), reason: NOT_IN_ACTIVE_LIST });
+    }
+    const digest = simulateEnzymeDigest(activeDoc, enzymeDigestSelection(found));
+    for (const u of digest.unresolvedEnzymes) unresolved.push({ name: u.name, reason: u.reason });
+    return { fragments: digest.fragments, unresolved, complete: digest.complete && unresolved.length === 0 };
+  };
+
   // Compute restriction fragments for Lane 2 (Uncut), Lane 3 (Single Cutter), Lane 4 (Multi Digest)
   const uncutFragments = useMemo(
     () => simulateRestrictionDigest(activeDoc, []),
     [activeDoc]
   );
-  const singleDigestFragments = useMemo(
-    () => simulateRestrictionDigest(activeDoc, [selectedDigestEnzymes[0] || 'EcoRI']),
-    [activeDoc, selectedDigestEnzymes]
+  // The single cutter is the first chosen enzyme, whatever it is; with none chosen, EcoRI.
+  const singleDigestKey = selectedDigestEnzymes[0] ?? 'EcoRI';
+  const singleDigest = useMemo(
+    () => digestOfKeys([singleDigestKey]),
+    [activeDoc, singleDigestKey, enzymeByKey]
   );
-  const multiDigestFragments = useMemo(
-    () => simulateRestrictionDigest(activeDoc, selectedDigestEnzymes),
-    [activeDoc, selectedDigestEnzymes]
+  const multiDigest = useMemo(
+    () => digestOfKeys(selectedDigestEnzymes),
+    [activeDoc, selectedDigestEnzymes, enzymeByKey]
   );
+  // A lane whose digest is not complete draws no band: its fragments are not the digest chosen.
+  const singleDigestFragments = singleDigest.complete ? singleDigest.fragments : [];
+  const multiDigestFragments = multiDigest.complete ? multiDigest.fragments : [];
+  const singleLaneLabel = labelOfKey(singleDigestKey);
+  const multiLaneLabel =
+    selectedDigestEnzymes.length > 2
+      ? `${selectedDigestEnzymes.slice(0, 2).map(labelOfKey).join('+')}+${selectedDigestEnzymes.length - 2}`
+      : selectedDigestEnzymes.map(labelOfKey).join('+') || 'Digest';
+  const unresolvedDigestNotes = useMemo(() => {
+    const notes: string[] = [];
+    const seen = new Set<string>();
+    for (const u of [...singleDigest.unresolved, ...multiDigest.unresolved]) {
+      const line = `${u.name}: ${u.reason}`;
+      if (!seen.has(line)) {
+        seen.add(line);
+        notes.push(line);
+      }
+    }
+    return notes;
+  }, [singleDigest, multiDigest]);
 
+  // The buffer planner reads catalogue names (matching by prefix and "-HF"), so it is never given
+  // a custom enzyme's name (D0150): a custom enzyme's activity is unknown, and with only custom
+  // enzymes chosen no buffer or temperature is planned at all.
+  const digestPlanEnzymes = useMemo(() => {
+    if (selectedDigestEnzymes.length === 0) return { builtIn: [enzyme5, enzyme3], custom: [] as string[] };
+    const builtIn: string[] = [];
+    const custom: string[] = [];
+    for (const key of selectedDigestEnzymes) {
+      const e = enzymeOfKey(key);
+      if (e && !isCustomEnzyme(e)) builtIn.push(e.name);
+      else custom.push(labelOfKey(key));
+    }
+    return { builtIn, custom };
+  }, [selectedDigestEnzymes, enzyme5, enzyme3, enzymeByKey]);
   const digestBufferPlan = useMemo(
-    () =>
-      evaluateMultiDigestBufferPlanRust(
-        selectedDigestEnzymes.length > 0 ? selectedDigestEnzymes : [enzyme5, enzyme3]
-      ),
-    [selectedDigestEnzymes, enzyme5, enzyme3]
+    () => (digestPlanEnzymes.builtIn.length > 0 ? evaluateMultiDigestBufferPlanRust(digestPlanEnzymes.builtIn) : null),
+    [digestPlanEnzymes]
   );
 
   // Enzymes in the digest that the buffer plan flags for star activity: the caution is shown
   // beside the gel and on the plan's summary line, never only inside the closed plan.
-  const digestStarActivityEnzymes = digestBufferPlan.enzymes
+  const digestStarActivityEnzymes = (digestBufferPlan?.enzymes ?? [])
     .filter((r) => r.starActivityRisk)
     .map((r) => r.enzymeName);
 
@@ -322,9 +411,9 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
     [insertDoc.sequence]
   );
 
-  const toggleDigestEnzyme = (name: string) => {
+  const toggleDigestEnzyme = (key: string) => {
     setSelectedDigestEnzymes((prev) =>
-      prev.includes(name) ? prev.filter((e) => e !== name) : [...prev, name]
+      prev.includes(key) ? prev.filter((e) => e !== key) : [...prev, key]
     );
   };
 
@@ -387,10 +476,8 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
               : idx === 1
               ? `Uncut (${gelBuffer})`
               : idx === 2
-              ? selectedDigestEnzymes[0] || 'EcoRI'
-              : selectedDigestEnzymes.length > 2
-              ? `${selectedDigestEnzymes.slice(0, 2).join('+')}+${selectedDigestEnzymes.length - 2}`
-              : selectedDigestEnzymes.join('+') || 'Digest';
+              ? singleLaneLabel
+              : multiLaneLabel;
           return (
             <g key={wx}>
               <rect
@@ -674,17 +761,24 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
     },
   ];
 
+  // The first 14 of the catalogue, then every custom enzyme of the active list, then any chosen
+  // custom enzyme that has left it (still chosen, so it can be cleared), each by its key and label.
+  const digestChipKeys = [
+    ...REBASE_ENZYMES.slice(0, 14).map(enzymeKey),
+    ...enzymes.filter(isCustomEnzyme).map(enzymeKey),
+  ];
+  for (const key of selectedDigestEnzymes) if (!digestChipKeys.includes(key)) digestChipKeys.push(key);
   const digestEnzymeChips = (
     <div className="enzyme-picker-strip">
-      {REBASE_ENZYMES.slice(0, 14).map((enz) => {
-        const active = selectedDigestEnzymes.includes(enz.name);
+      {digestChipKeys.map((key) => {
+        const active = selectedDigestEnzymes.includes(key);
         return (
           <button
-            key={enz.name}
+            key={key}
             className={`enz-chip ${active ? 'active' : ''}`}
-            onClick={() => toggleDigestEnzyme(enz.name)}
+            onClick={() => toggleDigestEnzyme(key)}
           >
-            {enz.name}
+            {labelOfKey(key)}
           </button>
         );
       })}
@@ -1424,8 +1518,8 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
                   String(frag.lengthBp),
                   String(frag.start),
                   String(frag.end),
-                  frag.leftEnzyme,
-                  frag.rightEnzyme,
+                  digestEndLabel(frag, 'left'),
+                  digestEndLabel(frag, 'right'),
                 ]),
                 caption: `${activeDoc.name} — restriction digest fragments`,
               }}
@@ -1434,6 +1528,27 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
           <svg viewBox="0 0 430 350" className="virtual-gel-svg" ref={gelSvgRef}>
             {drawGel(gelLabelSize)}
           </svg>
+          {/* Beside the gel: a lane drawn without bands because its digest is not the one chosen,
+              and every enzyme it could not use, by its label, with the reason. */}
+          {unresolvedDigestNotes.length > 0 && (
+            <div className="cloning-warning-note cloning-digest-unresolved" role="status">
+              <TriangleAlert size={12} aria-hidden="true" />
+              <span>
+                {[
+                  !singleDigest.complete ? `Lane 3 (${singleLaneLabel})` : null,
+                  !multiDigest.complete ? `Lane 4 (${multiLaneLabel})` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' and ')}{' '}
+                not drawn: the digest could not use every enzyme chosen.
+              </span>
+              <ul>
+                {unresolvedDigestNotes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           </div>
 
           {/* Digest Fragments Table */}
@@ -1466,7 +1581,7 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
                             onJumpToCoordinate(
                               frag.start,
                               frag.end,
-                              `Digest Fragment #${frag.index} (${frag.leftEnzyme}–${frag.rightEnzyme})`
+                              `Digest Fragment #${frag.index} (${digestEndLabel(frag, 'left')}–${digestEndLabel(frag, 'right')})`
                             )
                           }
                           title={`Jump to Fragment #${frag.index} (${frag.start}..${frag.end} bp) in Sequence view`}
@@ -1477,13 +1592,13 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
                     </div>
                   </td>
                   <td>
-                    {frag.leftEnzyme}{' '}
+                    {digestEndLabel(frag, 'left')}{' '}
                     <span className="overhang-tag">
                       {frag.leftOverhang || frag.leftOverhangType}
                     </span>
                   </td>
                   <td>
-                    {frag.rightEnzyme}{' '}
+                    {digestEndLabel(frag, 'right')}{' '}
                     <span className="overhang-tag">
                       {frag.rightOverhang || frag.rightOverhangType}
                     </span>
@@ -1512,9 +1627,28 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
               className="info-callout"
               style={{ fontSize: 11.5, padding: '6px 10px', marginTop: 6 }}
             >
-              <strong>Co-Digest Buffer Plan:</strong> {digestBufferPlan.recommendedBuffer} (
-              {digestBufferPlan.incubationTempC}&deg;C • {digestBufferPlan.minimumSharedActivityPct}% min activity
-              {digestBufferPlan.enzymes.some((r) => r.starActivityRisk) ? ' • Watch star activity' : ''})
+              {digestBufferPlan ? (
+                <>
+                  {digestPlanEnzymes.custom.length > 0 ? (
+                    <strong>Co-Digest Buffer Plan for {digestPlanEnzymes.builtIn.join(', ')} only:</strong>
+                  ) : (
+                    <strong>Co-Digest Buffer Plan:</strong>
+                  )}{' '}
+                  {digestBufferPlan.recommendedBuffer} (
+                  {digestBufferPlan.incubationTempC}&deg;C • {digestBufferPlan.minimumSharedActivityPct}% min activity
+                  {digestBufferPlan.enzymes.some((r) => r.starActivityRisk) ? ' • Watch star activity' : ''})
+                </>
+              ) : (
+                <>
+                  <strong>Co-Digest Buffer Plan:</strong> none. The built-in buffer table holds no custom
+                  enzyme, so no buffer or incubation is planned for this digest.
+                </>
+              )}
+              {digestPlanEnzymes.custom.map((label) => (
+                <div key={label} className="cloning-buffer-plan-custom">
+                  {label}: activity unknown. It is not in the built-in buffer table; check its supplier&apos;s chart.
+                </div>
+              ))}
             </div>
           </details>
       </div>
