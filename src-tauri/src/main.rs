@@ -599,6 +599,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &view_split_expand_sub,
             &view_docsplit_sub,
             &view_cols_sub,
+            &item("view:restore-default-layout", "Restore Default Layout", None)?,
             &sep()?,
             &view_layout_sub,
             &view_spec_sub,

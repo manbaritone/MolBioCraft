@@ -3713,6 +3713,29 @@ export const App: React.FC = () => {
     setMapLayoutMode(mode);
   };
   /**
+   * View › Restore Default Layout (US-01M7DVJ4), the in-app item's handler and the native id's: the
+   * sidebar, the inspector and the document table shown, below the viewer, at the default sizes; Expand
+   * Viewer off; the map divider at its default; Single Pane through its one setter, the divider half
+   * each with no pane folded and the toggle opening Side by Side next; Map Layout Split, set directly,
+   * as chooseMapLayout would switch the viewer tab. No zoom, rotation, document or pane view changes.
+   */
+  const restoreDefaultLayout = () => {
+    setSidebarOpen(true);
+    setRightPanelOpen(true);
+    setSidebarWidthPx(DEFAULT_WORKSPACE_LAYOUT.sidebarWidthPx);
+    setInspectorWidthPx(DEFAULT_WORKSPACE_LAYOUT.inspectorWidthPx);
+    setDocTableHeightPx(DEFAULT_WORKSPACE_LAYOUT.docTableHeightPx);
+    setDocTableWidthPx(DEFAULT_WORKSPACE_LAYOUT.docTableWidthPx);
+    applyDocTableEvent({ kind: 'restore-session', saved: false });
+    setWorkspaceSplitMode('top-bottom');
+    setExpandedDocView(false);
+    setPaneSplit(DEFAULT_PANE_SPLIT);
+    chooseDocumentSplit('single');
+    setDocumentSplitSize(DEFAULT_DOCUMENT_SPLIT_SIZE);
+    lastDocumentSplitRef.current = 'side-by-side';
+    setMapLayoutMode('split');
+  };
+  /**
    * The Function Info of a document-editing item while the focused split pane shows another document
    * (US-01M7DV10): it still edits the main view's, and says so; otherwise the item's own (`reason`).
    */
@@ -7687,6 +7710,9 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         case 'view:expand-doc-view':
           requireActiveSession(() => handleToggleExpandDocumentView());
           break;
+        case 'view:restore-default-layout':
+          requireActiveSession(() => restoreDefaultLayout());
+          break;
         case 'view:col-preset-cloning':
           requireActiveSession(() => handleApplyColumnPreset('standard-cloning'));
           break;
@@ -10211,6 +10237,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         disabled: !sessionActive,
         minWidth: 220,
         children: buildTableColumnsMenuNodes('view-cols'),
+      },
+      {
+        kind: 'command',
+        id: 'view-restore-default-layout',
+        label: 'Restore Default Layout',
+        disabled: !sessionActive,
+        onSelect: () => requireActiveSession(() => restoreDefaultLayout()),
       },
       {
         kind: 'submenu',

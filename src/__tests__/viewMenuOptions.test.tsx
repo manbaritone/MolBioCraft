@@ -21,6 +21,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import type { SequenceDocument } from '../types/bio';
 import { parseMbcWorkbench } from '../core/mbcSessionFormat';
+import { DEFAULT_PANE_SPLIT } from '../core/paneSplit';
+import { DEFAULT_DOCUMENT_SPLIT_RATIO } from '../core/documentSplit';
 import { CIRCULAR_ONLY_HINT, circularMapUnavailableReason, buildCommandDocumentContext, commandAvailability, resolveNativeMenuItemEnabled } from '../core/commandAvailability';
 import { macHost, mountApp, type AppHarness } from './appHarness';
 import { dispatchLiveEvent, memoryStorage, type LiveElement, type LiveStorage } from './liveDom';
@@ -542,5 +544,181 @@ describe("US-01M7DVEN AC3: Map Layout's circle items are off, with the sentence,
       await restore(app, [CA], CA.id, 'split');
       expect(native(), 'circular DNA').toEqual([true, true, true]);
     }, macHost());
+  });
+});
+
+// ─── US-01M7DVJ4: View › Restore Default Layout ───
+
+const LAYOUT_KEY = 'molbiocraft.workspace.layout.v1';
+const DEFAULT_SIZES = { sidebarWidthPx: 245, inspectorWidthPx: 288, docTableHeightPx: 175, docTableWidthPx: 410 };
+/** The document split host is laid out 1,206 x 706, so the panes' ratio is drawn as chosen; every other box 0 x 0. */
+const splitHostLayout = (storage: LiveStorage): Parameters<typeof mountApp>[0] => ({
+  storage,
+  layout: (el) => (el.classList.contains('mbc-split-host') ? { width: 1206, height: 706 } : { width: 0, height: 0 }),
+});
+const separators = (app: AppHarness, label: RegExp) => app.all('[role="separator"]').filter((s) => label.test(s.getAttribute('aria-label') ?? ''));
+const valueOf = (els: LiveElement[]) => (els.length === 1 ? els[0].getAttribute('aria-valuenow') : els.length ? `${els.length} handles` : null);
+const textOf = (els: LiveElement[]) => (els.length === 1 ? els[0].getAttribute('aria-valuetext') : els.length ? `${els.length} handles` : null);
+const docSplitChooser = (app: AppHarness) => app.one('select.mbc-document-split-select', 'the document split chooser');
+/** Whether the View row on `path` is checked. */
+async function viewChecked(app: AppHarness, path: string[]): Promise<boolean> {
+  const row = await viewRow(app, path);
+  const checked = row.getAttribute('aria-checked') === 'true';
+  await closeMenus(app);
+  return checked;
+}
+/** The layout the App draws, element by element, through its handles, its classes and the View menu's checks. */
+async function layoutShown(app: AppHarness) {
+  return {
+    sidebar: valueOf(separators(app, /^Resize Project Explorer sidebar$/)),
+    inspector: app.inspectorAside() ? valueOf(separators(app, /^Resize .* inspector$/)) : null,
+    tableShown: app.all('.mbc-doc-table-pane').some((p) => !p.classList.contains('collapsed')),
+    tableHandle: separators(app, /^Resize Project Document Table (height|width)$/).map((s) => [s.getAttribute('aria-label'), s.getAttribute('aria-valuenow')]),
+    tableWidth: app.one('.mbc-center-stack').style.getPropertyValue('--mbc-split-left-w'),
+    tableBelow: await viewChecked(app, ['Split & Expand', 'Document Table Below Viewer']),
+    tableBeside: await viewChecked(app, ['Split & Expand', 'Document Table Beside Viewer']),
+    expandViewer: await viewChecked(app, ['Split & Expand', 'Expand Viewer']),
+    mapDivider: textOf(separators(app, /^Resize the circular and linear maps$/)),
+    documentSplit: docSplitChooser(app).value,
+    splitDivider: textOf(separators(app, /^Resize the main view and the split pane$/)),
+    paneFocused: app.all('section.mbc-split-pane').map((p) => p.getAttribute('aria-current') === 'true'),
+    paneRotateOpen: rotateDialogs(app.all('section.mbc-split-pane')[0] ?? app.canvas()).length,
+    mapLayout: (await layoutItems(app)).map(([label, , checked]) => [label, checked]),
+  };
+}
+const storedSizes = (storage: LiveStorage) => JSON.parse(storage.getItem(LAYOUT_KEY) ?? 'null') as unknown;
+
+/**
+ * Starts every layout element away from its default: the sizes stored at 300 / 400 / 250 / 500, Map
+ * Layout Circular with the map divider at 0.3 and the linear map collapsed, the split Top and Bottom
+ * at 30% with the main view folded (so the split pane holds focus) and its rotate control open, the
+ * table beside the viewer, then Expand Viewer on (sidebar hidden, table folded) and the inspector hidden.
+ */
+async function layoutAwayFromDefault(app: AppHarness, storage: LiveStorage) {
+  await app.restoreSession({
+    documents: [CA, CB], activeDocId: CA.id, viewerTab: 'sequence-view',
+    workspace: {
+      mapLayoutMode: 'circular',
+      paneSplit: { ratio: 0.3, collapsed: 'linear' },
+      documentSplit: { orientation: 'top-bottom', docId: CB.id, docName: CB.name, ratio: 0.3, collapsed: 'main', view: 'circular' },
+    } as never,
+  });
+  await viewCommand(app, ['Split & Expand', 'Document Table Beside Viewer']);
+  await viewCommand(app, ['Split & Expand', 'Expand Viewer']);
+  await viewCommand(app, ['Panels', 'Inspector']);
+  await app.menu('view:rotate-map');
+  expect(await layoutShown(app), 'the fixture starts every element away from its default').toEqual({
+    sidebar: null, inspector: null, tableShown: false, tableHandle: [], tableWidth: '500px',
+    tableBelow: false, tableBeside: true, expandViewer: true, mapDivider: null,
+    documentSplit: 'top-bottom', splitDivider: 'Main view collapsed', paneFocused: [true], paneRotateOpen: 1,
+    mapLayout: [['Split Map & Sequence', false], ['Circular Map', true], ['Linear Sequence', false]],
+  });
+  await autosaveRunsOut(app);
+  const ws = autosaved(storage).workspace;
+  expect([ws.paneSplit, ws.mapLayoutMode, ws.sidebarOpen, ws.docTableCollapsed], 'and autosaved so').toEqual([{ ratio: 0.3, collapsed: 'linear' }, 'circular', false, true]);
+  expect(ws.documentSplit, 'with the split moved and folded').toMatchObject({ orientation: 'top-bottom', ratio: 0.3, collapsed: 'main' });
+}
+
+describe('US-01M7DVJ4 AC1: View › Restore Default Layout returns every layout element to its default', () => {
+  it('US-01M7DVJ4 AC1 sits in the in-app View menu right after Table Columns', async () => {
+    await withApp(async (app) => {
+      await restore(app, [CA], CA.id);
+      await viewRow(app, ['Table Columns']);
+      const top = menuButtons(app).map(rowLabel);
+      await closeMenus(app);
+      expect(top.slice(top.indexOf('Table Columns'), top.indexOf('Table Columns') + 2)).toEqual(['Table Columns', 'Restore Default Layout']);
+    });
+  });
+
+  for (const route of ['in-app', 'native'] as const) {
+    it(`US-01M7DVJ4 AC1 by its ${route === 'in-app' ? 'View item' : 'native id'}, every element returns to its default, stored and autosaved`, async () => {
+      const storage = memoryStorage();
+      storage.setItem(LAYOUT_KEY, JSON.stringify({ sidebarWidthPx: 300, inspectorWidthPx: 400, docTableHeightPx: 250, docTableWidthPx: 500 }));
+      await withApp(async (app) => {
+        await layoutAwayFromDefault(app, storage);
+        if (route === 'in-app') await viewCommand(app, ['Restore Default Layout']);
+        else await app.menu('view:restore-default-layout');
+        const shown = await layoutShown(app);
+        expect(shown.mapDivider, 'the map divider is drawn, neither map collapsed').toMatch(/^Circular map \d+%, linear map \d+%$/);
+        expect(shown).toEqual({
+          sidebar: '245', inspector: '288', tableShown: true, tableHandle: [['Resize Project Document Table height', '175']], tableWidth: '410px',
+          tableBelow: true, tableBeside: false, expandViewer: false, mapDivider: shown.mapDivider,
+          documentSplit: 'single', splitDivider: null, paneFocused: [], paneRotateOpen: 0,
+          mapLayout: [['Split Map & Sequence', true], ['Circular Map', false], ['Linear Sequence', false]],
+        });
+        expect(storedSizes(storage), 'the four default sizes are stored').toEqual(DEFAULT_SIZES);
+        await autosaveRunsOut(app);
+        const ws = autosaved(storage).workspace;
+        expect([ws.paneSplit, ws.mapLayoutMode, ws.sidebarOpen, ws.docTableCollapsed], 'the autosave').toEqual([DEFAULT_PANE_SPLIT, 'split', true, false]);
+        expect(ws.documentSplit?.orientation, 'Single Pane').toBe('single');
+        expect(ws.documentSplit && 'ratio' in ws.documentSplit, 'no ratio').toBe(false);
+        expect(ws.documentSplit && 'collapsed' in ws.documentSplit, 'nothing collapsed').toBe(false);
+
+        // The split toggle then opens Side by Side, half each, on the main pane with the pane's rotate control shut.
+        await app.click(app.one('button.mbc-split-toggle'));
+        const reopened = await layoutShown(app);
+        expect([reopened.documentSplit, reopened.splitDivider, reopened.paneFocused, reopened.paneRotateOpen], 'the split reopened').toEqual([
+          'side-by-side', `Main view ${DEFAULT_DOCUMENT_SPLIT_RATIO * 100}%, split pane ${100 - DEFAULT_DOCUMENT_SPLIT_RATIO * 100}%`, [false], 0,
+        ]);
+      }, splitHostLayout(storage));
+    });
+  }
+});
+
+/** What Restore Default Layout leaves alone in the autosave, compared whole. */
+const KEPT = ['activeDocId', 'viewerTab', 'selectedRange', 'zoomLevel', 'mapRotation', 'siteVisibility', 'displaySettings'] as const;
+type MbcWorkspace = ReturnType<typeof autosaved>['workspace'];
+const keptOf = (storage: LiveStorage) => {
+  const { raw, workspace } = autosaved(storage);
+  const kept = Object.fromEntries(KEPT.map((k) => [k, workspace[k]])) as Pick<MbcWorkspace, (typeof KEPT)[number]>;
+  return { documents: parseMbcWorkbench(raw, 'Reopened').envelope.documents, ...kept };
+};
+const tabsOf = (app: AppHarness) => app.all('.mbc-doc-tab-trigger').map((t) => [words(t.textContent), t.getAttribute('aria-selected')]);
+
+describe('US-01M7DVJ4 AC2: Restore Default Layout changes no view or document state', () => {
+  it('US-01M7DVJ4 AC2 leaves the tabs, the document, the selection, both panes\' zoom and rotation and the autosave\'s view state as they were', async () => {
+    const storage = memoryStorage();
+    await withApp(async (app) => {
+      await app.restoreSession({
+        documents: [CA, CB, LIN], activeDocId: CA.id, viewerTab: 'sequence-view',
+        workspace: { selectedRange: { start: 120, end: 480 }, displaySettings: { showOrfs: false, minOrfAa: 75, allowAltStartCodons: true, showPrimers: false, showTranslation: false, showGcGraph: true, showHydropathyGraph: false, showUniqueCuttersOnly: false } } as never,
+      });
+      await app.click(app.one('button.mbc-split-toggle'));
+      if (picker(app).value !== CB.id) await app.change(picker(app), CB.id);
+      await app.change(viewSelect(app), 'circular');
+      const mainBefore = await primeMain(app);
+      const paneBefore = await primePane(app);
+      await autosaveRunsOut(app);
+      const before = keptOf(storage);
+      expect(before.selectedRange, 'a selection to keep').toMatchObject({ start: 120, end: 480 });
+      expect(before.zoomLevel, 'the main view zoomed away from 100%').not.toBe(100);
+      expect(Object.values(before.mapRotation ?? {}), 'and turned').toContain(90);
+      const tabsBefore = tabsOf(app);
+      expect(tabsBefore.length, 'open tabs to keep').toBeGreaterThan(0);
+
+      await viewCommand(app, ['Restore Default Layout']);
+      expect(docSplitChooser(app).value, 'the command ran: Single Pane').toBe('single');
+      expect([app.activeTab(), tabsOf(app)], 'the viewer tab and the open tabs').toEqual(['sequence-view', tabsBefore]);
+      expect(mainView(app), "the main view's zoom and rotation").toEqual(mainBefore);
+      await autosaveRunsOut(app);
+      expect(keptOf(storage), 'the autosave\'s documents and view state, whole').toEqual(before);
+
+      // The split pane shows its document, view, zoom and rotation again when the split is reopened.
+      await app.click(app.one('button.mbc-split-toggle'));
+      expect([picker(app).value, viewSelect(app).value], "the pane's document and view").toEqual([CB.id, 'circular']);
+      expect([scaleOf(paneMap(app)), wedge(paneMap(app))], "the pane's zoom and rotation").toEqual([paneBefore.scale, paneBefore.wedge]);
+      expect(mainView(app), 'the main view still').toEqual(mainBefore);
+
+      // From another viewer tab, by the native id: the tab stays and the autosave's view state is whole.
+      await app.clickTab('text-view');
+      await autosaveRunsOut(app);
+      const onText = keptOf(storage);
+      expect(onText.viewerTab).toBe('text-view');
+      await app.menu('view:restore-default-layout');
+      expect(docSplitChooser(app).value, 'the native command ran').toBe('single');
+      expect(app.activeTab(), 'the viewer tab stays').toBe('text-view');
+      await autosaveRunsOut(app);
+      expect(keptOf(storage), 'the autosave from another tab, whole').toEqual(onText);
+    }, { storage });
   });
 });

@@ -342,4 +342,36 @@ describe('native menu ↔ dispatcher contract', () => {
     expect(appTsx).toContain('onChange={(e) => chooseDocumentSplit(e.target.value as DocumentSplitOrientation)}');
     expect(appTsx).toContain("onClick={() => chooseDocumentSplit(documentSplit !== 'single' ? 'single' : lastDocumentSplitRef.current)}");
   });
+
+  it('US-01M7DVJ4 AC3 lists View › Restore Default Layout natively right after Table Columns, its case calling the in-app item\'s handler under a session', () => {
+    const id = 'view:restore-default-layout';
+    // In the View menu, right after Table Columns; the US-01M7DVR0 AC1 pin still holds.
+    const view = mainRs.slice(mainRs.indexOf('let view_menu'), mainRs.indexOf('let enz_select_sub'));
+    expect(view).toMatch(/&view_split_expand_sub,\s*&view_docsplit_sub,\s*&view_cols_sub,/);
+    expect(view).toMatch(/&view_cols_sub,\s*&item\(\s*"view:restore-default-layout",\s*"Restore Default Layout",\s*None\s*\)\?,/);
+    expect([...mainRs.matchAll(/item\(\s*"view:restore-default-layout"/g)], 'listed once').toHaveLength(1);
+    expect(nativeIds.has(id)).toBe(true);
+
+    const caseBody = (native: string) => {
+      const at = appTsx.indexOf(`case '${native}':`, appTsx.indexOf('    onMenuAction: (actionId: string) => {'));
+      expect(at, `the dispatcher case ${native}`).toBeGreaterThan(0);
+      return appTsx.slice(at, appTsx.indexOf('break;', at));
+    };
+    const itemSelect = (inApp: string) => {
+      const at = appTsx.indexOf(`id: '${inApp}',`);
+      expect(at, `the in-app item ${inApp}`).toBeGreaterThan(0);
+      return /onSelect: \(\) => (.+),\n/.exec(appTsx.slice(at, appTsx.indexOf('},', at)))?.[1] ?? '';
+    };
+    const call = 'requireActiveSession(() => restoreDefaultLayout())';
+    expect(itemSelect('view-restore-default-layout')).toBe(call);
+    expect(caseBody(id).trim()).toBe(`case '${id}':\n          ${call};`);
+
+    // Gated on a session, and named by no session-independent list, so both are off without one.
+    expect(dispatcher.get(id), 'the dispatcher gates it on a session').toBe(true);
+    expect(NATIVE_MENU_SESSION_INDEPENDENT_IDS).not.toContain(id);
+    expect(NATIVE_MENU_SESSION_INDEPENDENT_PREFIXES.some((p) => id.startsWith(p))).toBe(false);
+    const base = { activeDoc: null, selection: null, undoDepth: 0, redoDepth: 0 };
+    expect(resolveNativeMenuItemEnabled(id, buildNativeMenuState({ ...base, sessionActive: false })), 'no session').toBe(false);
+    expect(resolveNativeMenuItemEnabled(id, buildNativeMenuState({ ...base, sessionActive: true })), 'a session').toBe(true);
+  });
 });
