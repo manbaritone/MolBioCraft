@@ -781,6 +781,21 @@ describe('US-01M7DVVS AC1: a search waits for a pause in typing and never lists 
       expect(summary(app)).toBe(`1 hit in 1 document · ${ENTIRE} documents searched`);
     });
   });
+
+  it('US-01M7DVVS AC1 a change of mode under the same query starts its run at once, with no pause', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      await typeQuery(app, motifField(app), 'GAATTC');
+      expect(groupNames(app)).toEqual(GAATTC_GROUPS);
+      // Only typing waits for the pause: a panel that paused on a mode change shows no run here.
+      await app.change(modeSelect(app), 'Protein motif');
+      expect(cancelButtons(app), 'the Protein motif run is under way at once').toHaveLength(1);
+      expect(summary(app)).toBe(searchingFor('GAATTC'));
+      expect(groups(app), 'no Nucleotide motif group is listed under the Protein motif run').toHaveLength(0);
+      await finishSearch(app, 0);
+      expect(summary(app)).toBe(`No matches in ${PROTEINS.length} documents searched · ${MOTIF_DOCS.length - PROTEINS.length} not searched`);
+    });
+  });
 });
 
 describe('US-01M7DVVS AC2: an older run never lands after a newer query', () => {
@@ -843,6 +858,57 @@ describe('US-01M7DVVS AC3: Cancel search stops a run and shows no results', () =
         });
       });
     }
+  });
+
+  it('US-01M7DVVS AC3 clearing the query stops a run in progress, and a cancelled query typed again searches again', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      await countingEngine(async (queries) => {
+        await app.input(motifField(app), 'GAATTC');
+        await advance(app, SEARCH_PAUSE_MS);
+        await stepSearch(app);
+        expect(cancelButtons(app), 'the GAATTC run is in progress').toHaveLength(1);
+        const reached = queries.length;
+        await app.input(motifField(app), '');
+        expect(cancelButtons(app), 'an empty query stops the run: no Cancel search').toHaveLength(0);
+        expect(summary(app)).toBe(`Type a motif to search ${NUCLEIC.length} documents`);
+        await advance(app, SEARCH_PAUSE_MS * 4);
+        expect(queries, 'no document is read after the query was cleared').toHaveLength(reached);
+        expect(cancelButtons(app)).toHaveLength(0);
+      });
+      // Cancel ACGTAC, type another query, then ACGTAC again: its new run lists its results.
+      await app.input(motifField(app), 'ACGTAC');
+      await advance(app, SEARCH_PAUSE_MS);
+      await app.click(cancelButtons(app)[0]);
+      expect(summary(app)).toBe(`Cancelled after 1 of ${MOTIF_DOCS.length} documents: no results are shown`);
+      await app.input(motifField(app), 'ACGTA');
+      await app.input(motifField(app), 'ACGTAC');
+      await finishSearch(app);
+      expect(groupNames(app), 'the query typed again after Cancel is searched and listed').toEqual(['Short DNA']);
+      expect(summary(app)).toMatch(/^1 hit in 1 document · /);
+    });
+  });
+
+  it('US-01M7DVVS AC3 closing the panel mid-run stops it: no engine call after, and no error', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      const errors: unknown[] = [];
+      const spy = vi.spyOn(console, 'error').mockImplementation((...a) => { errors.push(a); });
+      try {
+        await countingEngine(async (queries) => {
+          await app.input(motifField(app), 'GAATTC');
+          await advance(app, SEARCH_PAUSE_MS);
+          await stepSearch(app);
+          expect(cancelButtons(app), 'the run is in progress when the panel closes').toHaveLength(1);
+          const before = queries.length;
+          await app.click(app.one('button[aria-label="Close Search Project"]', 'the panel close button'));
+          expect(panels(app)).toHaveLength(0);
+          await advance(app, SEARCH_PAUSE_MS * 20);
+          expect(queries, 'closed mid-run: no further engine call').toHaveLength(before);
+        });
+      } finally { spy.mockRestore(); }
+      expect(errors.map((e) => String((e as unknown[])[0]).slice(0, 200))).toEqual([]);
+    });
   });
 });
 
@@ -920,6 +986,39 @@ describe('US-01M7DVVS AC4: a change of the documents marks the results out of da
       expect(names(), 'one favourite is left').toHaveLength(1);
       expect(before).toContain(names()[0]);
       expect(summary(app)).toBe('1 hit in 1 document · 1 document searched');
+    });
+  });
+
+  it('US-01M7DVVS AC4 a folder renamed from its context menu marks the results out of date, and the rerun shows the new path', async () => {
+    await withSession(SPEC, async (app) => {
+      const OUT_OF_DATE = 'Out of date: the documents changed. Searching again…';
+      const names = () => groups(app).map((g) => part(g, 'name')).sort();
+      await searchFolder(app, 'All Project Files');
+      await typeQuery(app, queryField(app), 'zqvector');
+      expect(names()).toEqual(['Favourite insert', 'Hidden zqvector assay', 'Opened backbone']);
+      const oldPath = part(groupFor(app, 'Opened backbone'), 'path');
+      expect(oldPath).toBe('Sample Documents › Plasmids & Vectors');
+      // Folder context menu › Rename Folder… on Plasmids & Vectors: no document changes, only its folder.
+      await React.act(async () => { dispatchLiveEvent(folderRow(app, 'Plasmids & Vectors'), 'contextmenu', { bubbles: true, cancelable: true }); });
+      await app.settle();
+      const item = menuButtons(app).filter((b) => words(b.textContent) === 'Rename Folder…');
+      expect(item, 'the folder menu offers Rename Folder…').toHaveLength(1);
+      await app.click(item[0]);
+      const field = app.all('input').filter((i) => (i as unknown as { value: string }).value === 'Plasmids & Vectors');
+      expect(field, 'the rename prompt holds the folder name').toHaveLength(1);
+      await app.input(field[0], 'PV Renamed');
+      const ok = app.all('button').filter((b) => words(b.textContent) === 'Rename Folder');
+      expect(ok).toHaveLength(1);
+      await app.click(ok[0]);
+      expect(summary(app), 'a folder rename: out of date at once, before the pause').toBe(OUT_OF_DATE);
+      expect(names(), 'the old groups stay listed under it').toEqual(['Favourite insert', 'Hidden zqvector assay', 'Opened backbone']);
+      expect(part(groupFor(app, 'Opened backbone'), 'path'), 'the old path until the rerun').toBe(oldPath);
+      await advance(app, 249);
+      expect(summary(app)).toBe(OUT_OF_DATE);
+      expect(cancelButtons(app), 'no rerun before the pause').toHaveLength(0);
+      await finishSearch(app, 1);
+      expect(part(groupFor(app, 'Opened backbone'), 'path'), 'the rerun shows the new folder path').toBe('Sample Documents › PV Renamed');
+      expect(summary(app)).toBe(`3 hits in 3 documents · ${ENTIRE} documents searched`);
     });
   });
 });
