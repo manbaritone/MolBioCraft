@@ -46,9 +46,20 @@ import { originSpanningSiteCount, primerSiteStatus } from '../core/primerSiteSta
 import { primerTmText } from './CircularPlasmidMap';
 import { activePrimers, openPrimerDatabase, type DatabasePrimerInput, type PrimerDatabase } from '../core/primerDatabase';
 import { usePrimerDatabaseSave } from './PrimerDatabaseWindow';
+import { openGuideSetDatabase, type GuideSet, type GuideSetList } from '../core/guideSetDatabase';
 
 /** How many of the candidate guides the CRISPR tab lists. */
 const CRISPR_GUIDES_LISTED = 25;
+
+/**
+ * The guide table's score column headings, read by the table and by a saved guide set
+ * (US-01M7DVFD), so a set records the names the scores were shown under when it was saved. The
+ * seed-match specificity has no column of its own: it shades the seed-match cell.
+ */
+const CRISPR_SCORE_COLUMNS = {
+  onTargetScore: 'Heuristic Rank (8–98)',
+  offTargetCount: 'Exact Seed Matches (range searched)',
+} as const;
 
 /** An interval a CRISPR search may be asked for: 1-based bounds, `start > end` across the origin. */
 type CrisprInterval = { start: number; end: number; lengthBp: number; crossesOrigin: boolean };
@@ -70,6 +81,8 @@ interface CrisprRun {
   interval: CrisprInterval | null;
   /** The bases the engine was asked to search: the interval's own length, or the sequence's. */
   askedBp: number;
+  /** ISO 8601 time Run was pressed, which a saved guide set records (US-01M7DVFD). */
+  ranAt: string;
 }
 
 /** A search the engine answered with a report and no interval refusal. */
@@ -546,6 +559,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       ...(chosenPreset ? { preset: chosenPreset } : {}),
       interval,
       askedBp: interval ? interval.lengthBp : doc.sequence.length,
+      ranAt: new Date().toISOString(),
     };
     crisprSearches.status = { phase: 'running', run };
     crisprSearchesChanged();
@@ -584,6 +598,58 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   };
 
   const crisprResult: CrisprScanResult = crisprShown?.result ?? { guides: [] };
+
+  /**
+   * The saved guide sets (US-01M7DVFD): a user-local store keyed to a document id and revision,
+   * never written into the document. The list is read again after each save.
+   */
+  const guideSetDb = useMemo(() => openGuideSetDatabase(), []);
+  const [guideSetsRead, setGuideSetsRead] = useState(0);
+  const guideSetList: GuideSetList = useMemo(
+    () => guideSetDb.listForDocument(doc.id),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [guideSetDb, doc.id, guideSetsRead]
+  );
+  const [guideSetSave, setGuideSetSave] = useState<{ docId: string; ok: boolean; text: string } | null>(null);
+  /**
+   * Save this result is offered only for a completed run shown on this document's current revision:
+   * not before a run, while one runs, after a Stop or a failure on this document (even with an
+   * earlier result still shown), and not while the result is withdrawn.
+   */
+  const crisprSaveOffered =
+    crisprShown !== undefined &&
+    crisprShown.run.preset !== undefined &&
+    !(crisprStatus && crisprStatus.phase !== 'done' && crisprStatus.run.docId === doc.id);
+  const saveCrisprGuideSet = () => {
+    if (!crisprSaveOffered || !crisprShown?.run.preset) return;
+    const { run, result } = crisprShown;
+    const saved = guideSetDb.save(
+      {
+        name: run.name,
+        ranAt: run.ranAt,
+        criteria: { nuclease: run.preset!, topology: run.topology, interval: run.interval, resultCap: CRISPR_GUIDES_LISTED },
+        report: result.report,
+        guides: result.guides,
+        scoreNames: {
+          onTargetScore: CRISPR_SCORE_COLUMNS.onTargetScore,
+          specificityScore: CRISPR_SCORE_COLUMNS.offTargetCount,
+          offTargetCount: CRISPR_SCORE_COLUMNS.offTargetCount,
+        },
+        heuristicRule: crisprRankRule,
+      },
+      { id: run.docId, name: run.docName, revision: run.revision }
+    );
+    setGuideSetSave(
+      saved.ok
+        ? { docId: doc.id, ok: true, text: `Saved "${saved.value.name}" as a guide set for ${run.docName}: ${bp(saved.value.guides.length)} guides, kept on this computer and not in the document.` }
+        : { docId: doc.id, ok: false, text: saved.error.message }
+    );
+    setGuideSetsRead((n) => n + 1);
+  };
+  const guideSetWords = (set: GuideSet) =>
+    `${set.criteria.nuclease.id}, ${
+      set.criteria.interval ? `bases ${bp(set.criteria.interval.start)}..${bp(set.criteria.interval.end)}` : 'whole sequence'
+    }, revision ${set.sequenceRevision}, run ${set.ranAt}`;
   const crisprGuides = crisprResult.guides;
   /**
    * The rank's rule in the engine's own words (BG-01M7EYED): one sentence, asked for once, from the
@@ -1622,6 +1688,17 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                   Stop
                 </button>
               )}
+              {crisprSaveOffered && (
+                <button
+                  type="button"
+                  className="btn-secondary-sm"
+                  data-crispr-save-set=""
+                  title={`Keep "${crisprShown?.run.name}" as a guide set on this computer, with its nuclease, range, revision and scores`}
+                  onClick={saveCrisprGuideSet}
+                >
+                  Save this result
+                </button>
+              )}
               <button
                 className="btn-success"
                 onClick={handleAnnotateTop5Crispr}
@@ -1666,6 +1743,30 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 : `"${crisprWithdrawn.run.name}" ran on an earlier sequence of ${doc.name}: its bases or topology have changed since, so none of its guides is shown: press Run to search it again.`}
             </p>
           )}
+
+          {/* The guide sets saved for this document (US-01M7DVFD): some, none, or a store that
+              cannot be read, which is said by name and never drawn as no saved searches. */}
+          {guideSetSave && guideSetSave.docId === doc.id && (
+            <p className="mbc-opdlg-muted" role="status" data-guide-set-save={guideSetSave.ok ? 'saved' : 'refused'}>
+              {guideSetSave.text}
+            </p>
+          )}
+          <div className="mbc-guide-sets" data-guide-sets={guideSetList.kind}>
+            <strong>Saved guide sets for {doc.name}</strong>:{' '}
+            {guideSetList.kind === 'unreadable' ? (
+              `${guideSetList.error.message} Nothing is listed here until they can be read.`
+            ) : guideSetList.kind === 'none' ? (
+              `No saved searches for ${doc.name}.`
+            ) : (
+              <ul>
+                {guideSetList.sets.map((set) => (
+                  <li key={set.id} data-guide-set={set.id}>
+                    <span data-guide-set-name="">{set.name}</span> — {guideSetWords(set)}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
           <div className="info-callout">
             {/* An interval the engine refused was searched not at all, so this line claims no
@@ -1780,8 +1881,8 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 <th>Region (Cut Site)</th>
                 <th>Nuclease (PAM side)</th>
                 <th>GC%</th>
-                <th>Heuristic Rank (8–98)</th>
-                <th>Exact Seed Matches (range searched)</th>
+                <th>{CRISPR_SCORE_COLUMNS.onTargetScore}</th>
+                <th>{CRISPR_SCORE_COLUMNS.offTargetCount}</th>
                 <th>Genome-wide Specificity</th>
                 <th>Action</th>
                 <th title="Tick the guides to export; with none ticked the export writes every row the table shows">
