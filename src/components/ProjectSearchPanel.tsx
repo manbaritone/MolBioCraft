@@ -209,9 +209,33 @@ interface Props {
   onSavedSearchesChanged?: () => void;
 }
 
-/** The panel's settings a saved search holds, compared to tell whether choosing one changes the run. */
-const settingsOf = (x: Pick<ProjectSavedSearch, 'combine' | 'bothStrands' | 'includePrimers' | 'scope'> & { conditions: { mode: SearchMode; query: string }[]; filters: FilterFields }) =>
-  JSON.stringify([x.conditions.map((c) => [c.mode, c.query]), x.combine, x.bothStrands, x.filters, x.includePrimers, x.scope]);
+/** The filters as read from their fields; a field left empty, or "Any", sets no filter, and a bound that cannot be read refuses. */
+function readFilterFields(fields: FilterFields) {
+  const lengthRead = readLengthBounds(fields.lengthMin, fields.lengthMax);
+  const dateRead = readDateBounds(fields.modifiedFrom, fields.modifiedTo);
+  const lengthReason = 'refused' in lengthRead ? lengthRead.refused : null;
+  const dateReason = 'refused' in dateRead ? dateRead.refused : null;
+  const filters: SearchFilters = {};
+  if (fields.documentType !== '') filters.documentType = fields.documentType;
+  if (fields.topology !== '') filters.topology = fields.topology;
+  if ('bounds' in lengthRead && lengthRead.bounds) filters.length = lengthRead.bounds;
+  if ('bounds' in dateRead && dateRead.bounds) filters.modified = dateRead.bounds;
+  if (fields.annotationType !== '') filters.annotationType = fields.annotationType;
+  return { filters, lengthReason, dateReason, filterRefused: lengthReason !== null || dateReason !== null };
+}
+
+/**
+ * The run key of a set of settings, queries trimmed and filters read as a run reads them: the
+ * panel's own, and a saved search's, so choosing one is known to start a run only when it does.
+ */
+function runKeyOf(x: Pick<ProjectSavedSearch, 'combine' | 'bothStrands' | 'includePrimers' | 'scope'> & { conditions: { mode: SearchMode; query: string }[]; filters: FilterFields }): RunKey {
+  const read = readFilterFields(x.filters);
+  return {
+    conditions: x.conditions.map((r) => ({ mode: r.mode, query: r.query.trim() })), combine: x.combine, scope: x.scope, bothStrands: x.bothStrands,
+    filters: read.filterRefused ? `refused ${JSON.stringify(x.filters)}` : JSON.stringify(read.filters),
+    primers: x.includePrimers,
+  };
+}
 
 /** The read a run is given when the App passed none: never read as a store without records. */
 const NOT_READ: PrimerDbRead = { ok: false, error: { kind: 'unavailable', message: PRIMERS_NOT_READ, fields: [] } };
@@ -242,24 +266,10 @@ export function ProjectSearchPanel({
   const active = activeConditions(rows);
 
   // The filters as read from their fields; a bound that cannot be read refuses, never reads as none.
-  const lengthRead = readLengthBounds(fields.lengthMin, fields.lengthMax);
-  const dateRead = readDateBounds(fields.modifiedFrom, fields.modifiedTo);
-  const lengthReason = 'refused' in lengthRead ? lengthRead.refused : null;
-  const dateReason = 'refused' in dateRead ? dateRead.refused : null;
-  const filterRefused = lengthReason !== null || dateReason !== null;
-  const filters: SearchFilters = {};
-  if (fields.documentType !== '') filters.documentType = fields.documentType;
-  if (fields.topology !== '') filters.topology = fields.topology;
-  if ('bounds' in lengthRead && lengthRead.bounds) filters.length = lengthRead.bounds;
-  if ('bounds' in dateRead && dateRead.bounds) filters.modified = dateRead.bounds;
-  if (fields.annotationType !== '') filters.annotationType = fields.annotationType;
+  const { filters, lengthReason, dateReason, filterRefused } = readFilterFields(fields);
   const filtering = activeFilterNames(filters).length > 0;
 
-  const key: RunKey = {
-    conditions: rows.map((r) => ({ mode: r.mode, query: r.query.trim() })), combine, scope, bothStrands,
-    filters: filterRefused ? `refused ${JSON.stringify(fields)}` : JSON.stringify(filters),
-    primers: includePrimers,
-  };
+  const key = runKeyOf({ conditions: rows, combine, scope, bothStrands, filters: fields, includePrimers });
   const keyText = JSON.stringify(key);
   const primerRead = includePrimers ? context.primers ?? NOT_READ : null;
   const inputs = useMemo<RunInputs>(
@@ -525,8 +535,9 @@ export function ProjectSearchPanel({
     rereadStores();
   };
   const applySaved = (x: ProjectSavedSearch) => {
-    const now = { conditions: rows, combine, bothStrands, filters: fields, includePrimers, scope };
-    if (settingsOf(now) !== settingsOf(x)) runAtOnce.current = true;
+    // At once only when its run key is not the panel's: then the run effect runs and clears the flag.
+    // An equal key starts no run, so the flag is cleared here, and a rerun already pending stands.
+    runAtOnce.current = JSON.stringify(runKeyOf(x)) !== keyText;
     setRows(x.conditions.map((c, i) => ({ id: nextRowId.current + i, mode: c.mode, query: c.query })));
     nextRowId.current += x.conditions.length;
     setCombine(x.combine);

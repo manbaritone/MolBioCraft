@@ -2398,6 +2398,12 @@ async function saveTableSearch(app: AppHarness, name: string) {
   await app.click(buttonIn(tableOnly(app, 'button'), 'Save'));
 }
 
+/** The bench session with the explorer's state changed: favourites or deleted documents. */
+const withExplorer4Y = (spec: SessionSpec, over: Record<string, unknown>): SessionSpec => ({
+  ...spec, workspace: { projectExplorer: { ...spec.workspace!.projectExplorer!, ...over } } as SessionSpec['workspace'],
+});
+const closePanel4Y = async (app: AppHarness) => { await app.click(inPanel(app, 'button[aria-label="Close Search Project"]')[0]); };
+
 describe('US-01M7DV4Y AC1: a saved search keeps its settings, not its results, and reruns after a restart', () => {
   it('US-01M7DV4Y AC1 saves every setting under its own key, replaces by name, and after a remount reruns at once on the renamed folder, its new document listed', async () => {
     const { storage } = savedSearchStorage();
@@ -2461,10 +2467,121 @@ describe('US-01M7DV4Y AC1: a saved search keeps its settings, not its results, a
       const before = panel(app);
       await chooseSaved(app, 'Everywhere');
       await finishSearch(app, 0);
-      expect(panel(app), 'the panel was not reopened').toBe(before);
+      // Identity as a boolean: a failure reports an assertion, never a diff of two live DOM trees.
+      expect(panel(app) === before, 'the panel was not reopened').toBe(true);
       expect(checkedScope(app)).toEqual(['Entire project']);
       expect(groupNames(app)).toEqual(expect.arrayContaining(['Bench alpha', 'Bench beta']));
       expect(groupNames(app)).not.toContain('Bench gamma');
+    }, { storage });
+  });
+
+  // Favorites, Deleted Items and All Project Files are in no folder list: a search saved on one is
+  // still found, and reopens the panel on it. A lookup in the folder list alone says it is gone.
+  for (const [fixed, over, hit] of [
+    ['Favorites', { favoriteDocIds: ['dv4y-alpha'] }, 'Bench alpha'],
+    ['Deleted Items', { deletedDocIds: ['dv4y-gamma'] }, 'Bench gamma'],
+  ] as const) {
+    it(`US-01M7DV4Y AC1 a search saved on ${fixed} reopens the panel on ${fixed} and runs there`, async () => {
+      const { storage } = savedSearchStorage();
+      await withSession(withExplorer4Y(benchSpec(benchDocs), over), async (app) => {
+        await searchFolder(app, fixed);
+        await typeQuery(app, queryField(app), 'zqsaved');
+        expect(groupNames(app)).toEqual([hit]);
+        await savePanelSearch(app, 'Fixed');
+        const st = JSON.parse(storage.getItem(PROJECT_KEY)!).searches[0];
+        expect([st.folderId, st.scope]).toEqual([fixed, 'This folder only']);
+        await closePanel4Y(app);
+        await searchFolder(app, BENCH);
+        const before = panel(app);
+        await chooseSaved(app, 'Fixed');
+        await finishSearch(app, 0);
+        expect(savedNotice(app), 'never said to be gone').toBe('');
+        expect(panel(app) === before, 'the panel was reopened').toBe(false);
+        expect(checkedScope(app)).toEqual(['This folder only']);
+        expect(scopeLabel(app)).toContain(fixed);
+        expect(groupNames(app)).toEqual([hit]);
+      }, { storage });
+    });
+  }
+
+  it('US-01M7DV4Y AC1 a This folder only search on All Project Files reopens on it, and an Entire project search chosen on Favorites runs on the whole project', async () => {
+    const { storage } = savedSearchStorage();
+    // A document filed at the root itself: the only one This folder only lists there.
+    const rootDoc = docOf({ id: 'dv4y-root', name: 'Root note', folder: 'All Project Files', description: 'a zqsaved note' });
+    await withSession(withExplorer4Y(benchSpec([...benchDocs, rootDoc]), { favoriteDocIds: ['dv4y-alpha'] }), async (app) => {
+      await searchFolder(app, 'All Project Files');
+      await chooseScope(app, 'This folder only');
+      await typeQuery(app, queryField(app), 'zqsaved');
+      expect(groupNames(app)).toEqual(['Root note']);
+      await savePanelSearch(app, 'Root');
+      await chooseScope(app, 'Entire project');
+      await savePanelSearch(app, 'Every');
+      expect(JSON.parse(storage.getItem(PROJECT_KEY)!).searches.map((s: { folderId: string; scope: string }) => [s.folderId, s.scope]))
+        .toEqual([['All Project Files', 'This folder only'], ['All Project Files', 'Entire project']]);
+      await closePanel4Y(app);
+      await searchFolder(app, BENCH);
+      await chooseSaved(app, 'Root');
+      await finishSearch(app, 0);
+      expect(savedNotice(app), 'never said to be gone').toBe('');
+      expect(checkedScope(app)).toEqual(['This folder only']);
+      expect(scopeLabel(app)).toContain('All Project Files');
+      expect(groupNames(app)).toEqual(['Root note']);
+      await closePanel4Y(app);
+      // Favorites offers no Entire project scope of its own: the search runs on the project root.
+      await searchFolder(app, 'Favorites');
+      expect(checkedScope(app)).toEqual(['This folder only']);
+      await chooseSaved(app, 'Every');
+      await finishSearch(app, 0);
+      expect(savedNotice(app), 'never said to be gone').toBe('');
+      expect(checkedScope(app)).toEqual(['Entire project']);
+      expect(groupNames(app), 'gamma and the root note are no favourites: listed only from the root').toEqual(['Bench alpha', 'Bench gamma', 'Root note']);
+    }, { storage });
+  });
+
+  // The run-at-once flag is set only for a run choosing the search starts: a saved search whose run
+  // key is the panel's (it differs only by a trailing space, which the run trims) starts none, so
+  // the next keystroke still waits for the pause.
+  it('US-01M7DV4Y AC1 choosing a saved search that runs what the panel runs leaves the next keystroke waiting for the pause', async () => {
+    const { storage } = savedSearchStorage();
+    await withSession(benchSpec(benchDocs), async (app) => {
+      await searchFolder(app, BENCH);
+      await typeQuery(app, queryField(app), 'zqsaved ');
+      await savePanelSearch(app, 'Spaced');
+      await typeQuery(app, queryField(app), 'zqsaved');
+      expect(groupNames(app)).toEqual(['Bench alpha', 'Bench gamma']);
+      await chooseSaved(app, 'Spaced');
+      await app.settle();
+      expect(valueOf(queryField(app))).toBe('zqsaved ');
+      await app.input(queryField(app), 'gamma');
+      await finishSearch(app, 0);
+      expect(cancelButtons(app), 'no run before the pause').toHaveLength(0);
+      expect(groupNames(app), 'nothing listed for gamma before the pause').toEqual([]);
+      await advance(app, SEARCH_PAUSE_MS - 1);
+      expect(cancelButtons(app), 'still no run 1 ms before the pause ends').toHaveLength(0);
+      await finishSearch(app, 1);
+      expect(groupNames(app)).toEqual(['Bench gamma']);
+    }, { storage });
+  });
+
+  // Choosing a saved search equal to the panel's settings changes no run: a rerun the documents'
+  // change has scheduled still runs when its pause ends.
+  it('US-01M7DV4Y AC1 choosing a saved search equal to the panel\'s settings keeps the pending rerun after a change of the documents', async () => {
+    const { storage } = savedSearchStorage();
+    await withSession(benchSpec(benchDocs), async (app) => {
+      await searchFolder(app, BENCH);
+      await typeQuery(app, queryField(app), 'zqsaved');
+      await savePanelSearch(app, 'Same');
+      expect(groupNames(app)).toEqual(['Bench alpha', 'Bench gamma']);
+      // Delete Bench alpha, the active document: its rerun waits for the pause.
+      await app.menu('file:soft-delete');
+      await advance(app, SEARCH_PAUSE_MS - 100);
+      expect(cancelButtons(app), 'no rerun yet').toHaveLength(0);
+      await chooseSaved(app, 'Same');
+      await app.settle();
+      await advance(app, 100);
+      expect(cancelButtons(app), 'the pending rerun starts when its pause ends').toHaveLength(1);
+      await finishSearch(app, 0);
+      expect(groupNames(app), "the deleted document's hit is gone").toEqual(['Bench gamma']);
     }, { storage });
   });
 });
