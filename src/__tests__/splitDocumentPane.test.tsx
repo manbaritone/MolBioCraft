@@ -1186,27 +1186,40 @@ const autosavedWorkspace = (storage: LiveStorage) => {
 };
 
 /**
- * A MutationObserver stand-in over the live DOM (which has none): after each change to the page, at
- * the next microtask, as a MutationObserver's callback runs, it reads the header readout's text (or
- * none) and records it when it differs from the last it read.
+ * React DOM's commit notice, which it takes from a DevTools hook present when it loads: React DOM
+ * loads once per test file, at the first mountApp, so the hook is installed here, as this file is
+ * evaluated, before any test runs. React calls onCommitFiberRoot once per commit, after it has
+ * written that commit's changes to the page, so each call sees the page as one commit left it.
+ */
+const commitListeners = new Set<() => void>();
+(globalThis as unknown as Record<string, unknown>).__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+  supportsFiber: true,
+  isDisabled: false,
+  renderers: new Map(),
+  inject: () => 1,
+  onCommitFiberRoot: () => { for (const listener of commitListeners) listener(); },
+  onCommitFiberUnmount: () => {},
+  onPostCommitFiberRoot: () => {},
+};
+
+/**
+ * A MutationObserver stand-in over the live DOM (which has none), counted per React commit: after
+ * each commit it reads the header readout's full text (or none) and records it when it differs from
+ * the last it read. One commit writing the readout's two text nodes (the interval, then the label)
+ * is one change, as no commit ends between those two writes; a second commit that rewrites the
+ * readout (an echo of the selection) is a second change.
  */
 function observeReadout(app: AppHarness) {
   const changes: (string | null)[] = [];
+  let commits = 0;
   let last = readout(app);
-  let queued = false;
-  const doc = app.doc as unknown as { mutated: () => void };
-  const original = doc.mutated.bind(doc);
-  doc.mutated = () => {
-    original();
-    if (queued) return;
-    queued = true;
-    queueMicrotask(() => {
-      queued = false;
-      const now = readout(app);
-      if (now !== last) { changes.push(now); last = now; }
-    });
+  const listener = () => {
+    commits += 1;
+    const now = readout(app);
+    if (now !== last) { changes.push(now); last = now; }
   };
-  return { changes, stop: () => { doc.mutated = original; } };
+  commitListeners.add(listener);
+  return { changes, commits: () => commits, stop: () => { commitListeners.delete(listener); } };
 }
 
 describe("US-01M7DVQG AC1: the main view's document by a button, and the pane's view selector", () => {
@@ -1310,6 +1323,9 @@ describe("US-01M7DVQG AC1: the main view's document by a button, and the pane's 
 
 describe('US-01M7DVQG AC2: the same document in both panes shares one selection', () => {
   it('US-01M7DVQG AC2 a selection in either pane is the one selection, drawn by both and read once by the header readout', async () => {
+    // The readout's full text for each selection: its interval, then the clicked feature's label.
+    const MARK_READOUT = '5,000..6,000 (1,001 bp) • Mark (misc_feature)';
+    const OTHER_READOUT = '1,000..1,500 (501 bp) • Other (misc_feature)';
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       await withApp(async (app) => {
@@ -1320,15 +1336,16 @@ describe('US-01M7DVQG AC2: the same document in both panes shares one selection'
         const seen = observeReadout(app);
         try {
           await app.click(arcIn(paneMap(app), 'Mark'));
-          expect(readout(app), 'the header reads the selection made in the pane').toMatch(/^5,000\.\.6,000/);
-          expect(seen.changes, 'one readout change for the selection').toHaveLength(1);
+          expect(seen.commits(), 'React committed the selection').toBeGreaterThan(0);
+          expect(readout(app), 'the header reads the selection made in the pane, in full').toBe(MARK_READOUT);
+          expect(seen.changes, 'one readout change for the selection, to the selection itself').toEqual([MARK_READOUT]);
           expect(interval(mainMap(app)), 'the main map draws it').toEqual(interval(paneMap(app)));
           expect(interval(paneMap(app)), 'the pane draws it').toHaveLength(1);
           expect(mainSelection(app), "the main view's linear map draws it").toBe('5,000..6,000');
 
           await app.click(arcIn(mainMap(app), 'Other'));
-          expect(readout(app), 'the header reads the selection made in the main view').toMatch(/^1,000\.\.1,500/);
-          expect(seen.changes, 'one more readout change').toHaveLength(2);
+          expect(readout(app), 'the header reads the selection made in the main view, in full').toBe(OTHER_READOUT);
+          expect(seen.changes, 'one more readout change, to that selection').toEqual([MARK_READOUT, OTHER_READOUT]);
           expect(interval(paneMap(app)), 'the pane draws the main view’s selection').toEqual(interval(mainMap(app)));
           expect(interval(paneMap(app))).toHaveLength(1);
 
@@ -1418,6 +1435,18 @@ describe("US-01M7DVQG AC3: the pane's zoom, pan and rotation are its own", () =>
       expect(wedge(paneMap(app)), 'Circ_B again at its 120, not the 200 the pane last had').toBe('120');
       expect(wedge(mainMap(app)), 'the main view is unchanged').toBe('30');
       expect(headerZoom(app)).toBe('100%');
+    });
+  });
+
+  it("US-01M7DVQG AC3 the split's first document, chosen by the split itself, starts at the main view's rotation for it", async () => {
+    await withApp(async (app) => {
+      await onCircles(app, [CA, CB], CA.id, { mapRotation: { [CB.id]: 120 } });
+      expect(wedge(mainMap(app))).toBe('0');
+      await app.click(toggle(app));
+      expect(paneDocId(app), 'the split opens on Circ_B, its first other document').toBe(CB.id);
+      await app.change(viewSelect(app), 'circular');
+      expect(wedge(paneMap(app)), 'Circ_B at its 120, as the picker would open it').toBe('120');
+      expect(wedge(mainMap(app)), 'the main view is unchanged').toBe('0');
     });
   });
 

@@ -2356,6 +2356,8 @@ export const App: React.FC = () => {
     if (next !== 'single') {
       lastDocumentSplitRef.current = next;
       setSplitDocId((cur) => (cur !== null ? cur : openDocs.find((d) => d.id !== activeDoc.id)?.id ?? ''));
+      // The first document starts at the main view's rotation for it, as showInSplitPane opens one (US-01M7DVQG AC3).
+      if (splitDocId === null) setSplitRotation(mapRotationByDoc[openDocs.find((d) => d.id !== activeDoc.id)?.id ?? ''] ?? 0);
     }
     setDocumentSplit(next);
   };
