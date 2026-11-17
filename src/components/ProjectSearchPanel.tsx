@@ -116,8 +116,11 @@ interface Props {
   initialScope: SearchScope;
   context: SearchContext;
   onClose: () => void;
-  /** Opens a hit the core found still current; never called for a deleted or changed document. */
-  onOpenHit?: (opening: HitOpening) => void;
+  /**
+   * Opens a hit the core found still current, or returns the sentence saying why it opens nothing
+   * (no folder the explorer shows lists its document); never called for a deleted or changed one.
+   */
+  onOpenHit?: (opening: HitOpening) => string | null;
 }
 
 export function ProjectSearchPanel({ folderId, initialScope, context, onClose, onOpenHit }: Props) {
@@ -221,8 +224,7 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
       now ? { doc: now, deleted: context.deletedIds.includes(documentId) } : null,
     );
     if ('refused' in answer) { setHitNotice(answer.refused); return; }
-    setHitNotice(null);
-    onOpenHit?.(answer.opens);
+    setHitNotice(onOpenHit?.(answer.opens) ?? null);
   };
 
   const results = outcome && !('refused' in outcome) ? outcome.results : [];

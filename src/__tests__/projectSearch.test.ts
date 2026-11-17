@@ -492,12 +492,33 @@ describe('US-01M7DV78: a hit opens at its own feature, primer or field, and a st
   });
 
   it('US-01M7DV78 AC1 the folder a hit opens in: Deleted Items, its own or its alias owner, or the nearest visible ancestor of a hidden one', () => {
-    expect(hitFolderId(doc('x', 'C'), true, FOLDERS, [])).toBe('Deleted Items');
-    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, [])).toBe('C');
-    expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, [])).toBe('Genomes');
-    expect(hitFolderId(doc('x', 'Local'), false, FOLDERS, [])).toBe(PROJECT_ROOT);
-    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, ['C'])).toBe('B');
-    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, ['B']), 'a visible folder under a hidden one').toBe('A');
-    expect(hitFolderId(doc('x', 'H2'), false, FOLDERS, ['H1', 'H2'])).toBe(PROJECT_ROOT);
+    const all = () => true;
+    expect(hitFolderId(doc('x', 'C'), true, FOLDERS, [], all)).toEqual({ folderId: 'Deleted Items' });
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, [], all)).toEqual({ folderId: 'C' });
+    expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, [], all)).toEqual({ folderId: 'Genomes' });
+    expect(hitFolderId(doc('x', 'Local'), false, FOLDERS, [], all)).toEqual({ folderId: PROJECT_ROOT });
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, ['C'], all)).toEqual({ folderId: 'B' });
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, ['B'], all), 'a visible folder under a hidden one').toEqual({ folderId: 'A' });
+    expect(hitFolderId(doc('x', 'H2'), false, FOLDERS, ['H1', 'H2'], all)).toEqual({ folderId: PROJECT_ROOT });
+  });
+
+  it('US-01M7DV78 AC1 the nearest visible folder whose view lists the document, or a refusal naming why when none does', () => {
+    // The root view lists the session's documents only, never a catalog-only sample document.
+    const notRoot = (folderId: string) => folderId !== PROJECT_ROOT;
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, ['C'], (f) => f === 'A'), 'B does not list it, its parent A does').toEqual({ folderId: 'A' });
+    expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, [], notRoot)).toEqual({ folderId: 'Genomes' });
+    expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, ['Sample Documents'], notRoot)).toEqual({
+      refused: '"Doc x" is in the hidden folder "Sample Documents", and no folder the explorer shows lists it: show that folder to open this result.',
+    });
+    expect(hitFolderId(doc('x', 'H2'), false, FOLDERS, ['H2'], notRoot), 'the topmost hidden folder is named').toEqual({ folderId: 'H1' });
+    expect(hitFolderId(doc('x', 'H2'), false, FOLDERS, ['H1', 'H2'], notRoot)).toEqual({
+      refused: '"Doc x" is in the hidden folder "Hidden parent", and no folder the explorer shows lists it: show that folder to open this result.',
+    });
+    expect(hitFolderId(doc('x', 'Local'), false, FOLDERS, [], notRoot)).toEqual({
+      refused: '"Doc x" is in no folder the explorer shows, so this result cannot open.',
+    });
+    expect(hitFolderId(doc('x', 'C'), true, FOLDERS, [], () => false)).toEqual({
+      refused: '"Doc x" is in no folder the explorer shows, so this result cannot open.',
+    });
   });
 });

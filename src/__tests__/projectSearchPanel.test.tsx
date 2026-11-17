@@ -1030,8 +1030,8 @@ describe('US-01M7DVVS AC4: a change of the documents marks the results out of da
 // that selects the folder by its own rule opens the first document; one that opens the document
 // without a navigation step leaves one Back nowhere to return). A circular site and a circular
 // feature cross the origin (a selection of the site's complement reads 7..994), two features share
-// a name (a feature found by name selects the first), and a joined feature's first segment is
-// shorter than its span. Every document is dated apart from the fake clock, so an edit is seen.
+// a name (a feature found by name selects the first), and a joined feature's own start..end is
+// its first segment, shorter than its span. Every document is dated apart from the fake clock, so an edit is seen.
 
 const DATED = '2026-01-01T00:00:00Z';
 const MOTIF = 'ACGTTGCAGTCCAG';
@@ -1072,7 +1072,8 @@ const FT_DOCS: SequenceDocument[] = [
       featureOf('ft-f1', 'zqgene', 100, 200),
       featureOf('ft-f2', 'zqgene', 300, 400, { qualifiers: { note: 'zqqual' } }),
       featureOf('ft-f3', 'zqwrap', 950, 50, { type: 'misc_feature', notes: 'zqnote' }),
-      featureOf('ft-f4', 'zqjoin', 500, 650, { segments: [segment(0, 500, 520), segment(1, 600, 650)] }),
+      // Its own start..end is its first segment's, so only a span read from the segments selects 500..650.
+      featureOf('ft-f4', 'zqjoin', 500, 520, { segments: [segment(0, 500, 520), segment(1, 600, 650)] }),
     ],
     primers: [PRIMER],
     history: [{ id: 'ft-h1', timestamp: DATED, operation: 'zqop', description: 'zqhist', parentIds: [], lengthBp: 1000, topology: 'circular' }],
@@ -1151,6 +1152,61 @@ describe('US-01M7DV78 AC1: a motif hit opens its document in its folder with the
       expect(activeName(app)).toBe('Trashed site');
       expect(selectedFolderRows(app), 'a document searched in Deleted Items opens there').toEqual(['Deleted Items']);
       expect(readout(app)).toMatch(/^11\.\.24 \(14 bp\)/);
+    });
+  });
+});
+
+// The sample library is searched (US-01M7DV88 AC2) but the root view lists only the session's own
+// documents, so with Sample Documents hidden no folder the explorer shows lists a sample document:
+// a click that selected the nearest visible folder by rule alone opened the root's first document.
+const PET = 'pET-28a(+)-eGFP';
+const HIDDEN_SAMPLES_SPEC: SessionSpec = {
+  documents: [
+    nav({ id: 'hs-start', name: 'Start record', folder: 'Nav Start', sequence: 'C'.repeat(40) }),
+    nav({ id: 'hs-other', name: 'Other record', folder: 'Nav Start', sequence: 'C'.repeat(40) }),
+  ],
+  activeDocId: 'hs-start', viewerTab: 'sequence-view',
+  workspace: { projectExplorer: {
+    ...EXPLORER, customFolders: ['Nav Start'], folderParents: {}, hiddenFolders: ['Sample Documents'], favoriteDocIds: [], deletedDocIds: [],
+  } } as SessionSpec['workspace'],
+};
+const PET_NOT_SHOWN = `"${PET}" is in the hidden folder "Sample Documents", and no folder the explorer shows lists it: show that folder to open this result.`;
+
+describe('US-01M7DV78 AC1: a hit no folder the explorer shows lists refuses, never opening another document', () => {
+  it('US-01M7DV78 AC1 a motif and a Name hit of a sample document under hidden Sample Documents say why and open nothing; shown, the same hit opens it', async () => {
+    let site = '';
+    await withSession(HIDDEN_SAMPLES_SPEC, async (app) => {
+      await searchFolder(app, 'All Project Files');
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), 'GAATTC');
+      const before = { active: activeName(app), folders: selectedFolderRows(app), tab: app.activeTab(), selection: readout(app) };
+      expect(before.active).toBe('Start record');
+      const hit = groupFor(app, PET).querySelectorAll('[data-search-hit]')[0];
+      site = part(hit, 'coords');
+      await app.click(hitButton(app, PET, byCoords(site)));
+      expect(hitNotice(app), 'the refusal names why').toBe(PET_NOT_SHOWN);
+      expect(panel(app).querySelector('[data-search-hit-notice]')?.getAttribute('role')).toBe('alert');
+      expect({ active: activeName(app), folders: selectedFolderRows(app), tab: app.activeTab(), selection: readout(app) },
+        'no other document opens with the hit\'s selection').toEqual(before);
+
+      await app.change(modeSelect(app), 'Text');
+      await typeQuery(app, queryField(app), PET);
+      await app.click(hitButton(app, PET, byField('Name')));
+      expect(hitNotice(app)).toBe(PET_NOT_SHOWN);
+      expect({ active: activeName(app), folders: selectedFolderRows(app), tab: app.activeTab(), selection: readout(app) }).toEqual(before);
+      expect(searchMatchLine(app), 'no match line on another document').toEqual([]);
+    });
+    await withSession({ ...HIDDEN_SAMPLES_SPEC, workspace: { projectExplorer: {
+      ...HIDDEN_SAMPLES_SPEC.workspace!.projectExplorer!, hiddenFolders: [],
+    } } as SessionSpec['workspace'] }, async (app) => {
+      await searchFolder(app, 'All Project Files');
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), 'GAATTC');
+      await app.click(hitButton(app, PET, byCoords(site)));
+      expect(hitNotice(app)).toBe('');
+      expect(activeName(app), 'shown, the same hit opens its own document').toBe(PET);
+      const [from, to] = site.split('-');
+      expect(readout(app).replace(/,/g, '').startsWith(`${from}..${to} `), `selects ${site}, read ${readout(app)}`).toBe(true);
     });
   });
 });
@@ -1239,9 +1295,43 @@ describe('US-01M7DV78 AC3: a hit of a document edited since the search says it i
       await app.click(hitButton(app, 'Feature zqdoc', byField('name of feature zqgene'), 0));
       expect(activeName(app)).toBe('Feature zqdoc');
       expect(readout(app), 'a hit of an unchanged document still opens').toMatch(/^100\.\.200 /);
+      expect(hitNotice(app), 'a click that opens clears the refusal').toBe('');
       await app.click(hitButton(app, 'Feature zqdoc', byField('Description')));
       expect(searchMatchLine(app)).toEqual(['Search match in Description: a zqdesc record']);
       expect(summary(app), 'every click ran before the pause').toBe(OUT_OF_DATE_SENTENCE);
+
+      await app.click(hitButton(app, 'Other zqother', byField('name of feature zqfeat')));
+      expect(hitNotice(app)).toBe('"Other zqother" changed after this search ran: this result is out of date.');
+      await finishSearch(app);
+      expect(summary(app), 'the rerun has completed').not.toBe(OUT_OF_DATE_SENTENCE);
+      expect(hitNotice(app), 'a completed run clears the refusal').toBe('');
+    });
+  });
+});
+
+describe('US-01M7DV78 AC3: a sequence changed under the same updatedAt is out of date too', () => {
+  it('US-01M7DV78 AC3 reverse-complements a document with its updatedAt kept, clicks its hit before the pause: the sentence, nothing changes', async () => {
+    await withSession(FT_SPEC, async (app) => {
+      await searchFolder(app, FT_LAB);
+      await typeQuery(app, queryField(app), 'zq');
+      await app.click(hitButton(app, 'Other zqother', byField('name of feature zqfeat')));
+      expect(activeName(app)).toBe('Other zqother');
+      expect(readout(app)).toMatch(/^10\.\.20 /);
+      // Every in-App edit stamps the clock, so the clock is held at the document's own updatedAt:
+      // the edit changes the sequence and leaves updatedAt as the search read it.
+      const clock = vi.spyOn(Date.prototype, 'toISOString').mockReturnValue(DATED);
+      try {
+        await app.menu('sequence:reverse-complement');
+      } finally {
+        clock.mockRestore();
+      }
+      expect(summary(app), 'inside the out-of-date window').toBe(OUT_OF_DATE_SENTENCE);
+      const before = { active: activeName(app), folders: selectedFolderRows(app), tab: app.activeTab(), selection: readout(app) };
+
+      await app.click(hitButton(app, 'Other zqother', byField('name of feature zqfeat')));
+      expect(hitNotice(app)).toBe('"Other zqother" changed after this search ran: this result is out of date.');
+      expect({ active: activeName(app), folders: selectedFolderRows(app), tab: app.activeTab(), selection: readout(app) }, 'nothing changes').toEqual(before);
+      expect(summary(app), 'the click ran before the pause').toBe(OUT_OF_DATE_SENTENCE);
     });
   });
 });

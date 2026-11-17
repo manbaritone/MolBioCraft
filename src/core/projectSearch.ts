@@ -555,23 +555,42 @@ export function openSearchHit(
   return opens(null, hit);
 }
 
+export const notShownInExplorer = (name: string) => `"${name}" is in no folder the explorer shows, so this result cannot open.`;
+export const inHiddenFolder = (name: string, folder: string) =>
+  `"${name}" is in the hidden folder "${folder}", and no folder the explorer shows lists it: show that folder to open this result.`;
+
 /**
- * The explorer folder a hit's document opens in: Deleted Items for a deleted document, else the
- * folder it is filed in (or the folder whose aliases hold it), or, when that folder or one above it
- * is hidden, the folder just above the topmost hidden one.
+ * The explorer folder a hit's document opens in, or why it opens in none. Deleted Items for a
+ * deleted document; else the folder it is filed in (or the folder whose aliases hold it), or, when
+ * that folder or one above it is hidden, the folder just above the topmost hidden one; and from
+ * there the nearest folder up to the root whose view `lists` the document. A folder view is not
+ * the whole catalog (the root lists only the session's documents, not the catalog-only sample
+ * library ones), so when no such folder's view lists the document the answer is a refusal, naming
+ * the topmost hidden folder when one hides it, never a folder that would open another document.
  */
-export function hitFolderId(doc: SequenceDocument, deleted: boolean, folders: ExplorerFolder[], hiddenFolders: string[]): string {
-  if (deleted) return DELETED;
-  if (ROOT_NAMES.has(doc.folder)) return PROJECT_ROOT;
-  const owner = folders.find((f) => f.id === doc.folder) ?? folders.find((f) => f.matchFolders.includes(doc.folder));
-  if (!owner) return PROJECT_ROOT;
+export function hitFolderId(
+  doc: SequenceDocument, deleted: boolean, folders: ExplorerFolder[], hiddenFolders: string[],
+  lists: (folderId: string) => boolean,
+): { folderId: string } | { refused: string } {
+  if (deleted) return lists(DELETED) ? { folderId: DELETED } : { refused: notShownInExplorer(doc.name) };
+  const owner = ROOT_NAMES.has(doc.folder) ? undefined
+    : folders.find((f) => f.id === doc.folder) ?? folders.find((f) => f.matchFolders.includes(doc.folder));
   const byId = new Map(folders.map((f) => [f.id, f]));
   const hidden = new Set(hiddenFolders);
-  let shown = owner.id;
+  let shown = owner?.id ?? PROJECT_ROOT;
+  let topHidden: ExplorerFolder | undefined;
   const seen = new Set<string>();
   for (let at: ExplorerFolder | undefined = owner; at && !seen.has(at.id); at = byId.get(at.parent)) {
     seen.add(at.id);
-    if (hidden.has(at.id)) shown = at.parent;
+    if (hidden.has(at.id)) { shown = at.parent; topHidden = at; }
   }
-  return ROOT_NAMES.has(shown) ? PROJECT_ROOT : shown;
+  // Every folder above the nearest shown one is shown too, so the walk up never reaches a hidden one.
+  const climbed = new Set<string>();
+  for (let at: string | undefined = shown; at !== undefined && !climbed.has(at); at = byId.get(at)?.parent) {
+    climbed.add(at);
+    const id = ROOT_NAMES.has(at) ? PROJECT_ROOT : at;
+    if (lists(id)) return { folderId: id };
+    if (ROOT_NAMES.has(at)) break;
+  }
+  return { refused: topHidden ? inHiddenFolder(doc.name, topHidden.label) : notShownInExplorer(doc.name) };
 }

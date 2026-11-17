@@ -346,7 +346,7 @@ import {
 } from './components/MenusPreferencesAndBlastModal';
 import { PrimerDatabaseWindow } from './components/PrimerDatabaseWindow';
 import { initialFolderScope, ProjectSearchPanel } from './components/ProjectSearchPanel';
-import { hitFolderId, type HitOpening, type SearchContext, type SearchScope, type TextHit } from './core/projectSearch';
+import { hitFolderId, notShownInExplorer, type HitOpening, type SearchContext, type SearchScope, type TextHit } from './core/projectSearch';
 import { EnzymeDatabaseWindow, collectionMemberLabel, type EnzymeWindowIntent } from './components/EnzymeDatabaseWindow';
 import {
   buildNcbiReferencePresetDocumentRust,
@@ -2103,16 +2103,20 @@ export const App: React.FC = () => {
     return orderedAllDocColumns.filter((c) => c.alwaysVisible || visSet.has(c.id));
   }, [orderedAllDocColumns, visibleColumns]);
 
-  /** Selects `nextFolder`; `openDocId`, a document in it, is the one it opens (else the active one if in it, else its first). */
-  const handleSelectProjectFolder = (nextFolder: string, openDocId?: string) => {
+  /**
+   * Selects `nextFolder`; `openDocId`, a document in it, is the one it opens (else the active one if
+   * in it, else its first). Returns the id of the document it opened, '' for none.
+   */
+  const handleSelectProjectFolder = (nextFolder: string, openDocId?: string): string => {
     setSelectedFolder(nextFolder);
     const nextDocs = getDocsForFolderView(nextFolder);
+    let targetDocId = '';
     // Selection object cannot select across other folders:
     // Update activeDocId and checkedDocIds strictly scoped to the newly selected folder
     if (nextDocs.length > 0) {
       const keep = openDocId ?? activeDocId;
       const alreadyInFolder = nextDocs.some((d) => d.id === keep);
-      const targetDocId = alreadyInFolder ? keep : nextDocs[0].id;
+      targetDocId = alreadyInFolder ? keep : nextDocs[0].id;
       setActiveDocId(targetDocId);
       setCheckedDocIds([targetDocId]);
       selectDocumentWithHistory(targetDocId);
@@ -2137,18 +2141,25 @@ export const App: React.FC = () => {
         setDocColumnOrder(nextDefaults);
       }
     }
+    return targetDocId;
   };
 
   /**
-   * Opens a Search Project hit (US-01M7DV78): selects the folder the document opens in and the
-   * document in it as one navigation step, so one Back returns, then shows the hit's span in the
-   * Sequence view or its field in Document info. The panel answers a deleted or changed document
-   * itself and never calls this for one.
+   * Opens a Search Project hit (US-01M7DV78): selects the nearest shown folder whose view lists the
+   * document, and the document in it, as one navigation step, so one Back returns, then shows the
+   * hit's span in the Sequence view or its field in Document info, and returns null. When no shown
+   * folder lists the document it changes nothing and returns the sentence the panel shows. Should
+   * the folder still open another document, that document gets neither the hit's selection nor its
+   * field, and a sentence is returned too. The panel answers a deleted or changed document itself
+   * and never calls this for one.
    */
-  const handleOpenSearchHit = (opening: HitOpening) => {
+  const handleOpenSearchHit = (opening: HitOpening): string | null => {
     const doc = catalogAllDocs.find((d) => d.id === opening.documentId);
-    if (!doc) return;
-    handleSelectProjectFolder(hitFolderId(doc, deletedIdsSet.has(doc.id), explorerFolders, hiddenFolders), doc.id);
+    if (!doc) return notShownInExplorer(opening.documentId);
+    const folder = hitFolderId(doc, deletedIdsSet.has(doc.id), explorerFolders, hiddenFolders,
+      (folderId) => getDocsForFolderView(folderId).some((d) => d.id === doc.id));
+    if ('refused' in folder) return folder.refused;
+    if (handleSelectProjectFolder(folder.folderId, doc.id) !== doc.id) return notShownInExplorer(doc.name);
     if (opening.selection) {
       setViewerTab('sequence-view');
       setSelectedRange(opening.selection);
@@ -2156,6 +2167,7 @@ export const App: React.FC = () => {
       setViewerTab('document-info');
       setSearchMatchShown(opening.field ? { docId: doc.id, hit: opening.field } : null);
     }
+    return null;
   };
 
   const activeDocFilterCount =
