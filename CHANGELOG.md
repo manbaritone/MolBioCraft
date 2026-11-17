@@ -4,6 +4,11 @@ All notable changes to **MolBioCraft** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- **The desktop app opens no network port**: the embedded REST server and its `127.0.0.1:18420/api/v1` API were removed, with no replacement automation API (D0174). The app no longer listens on a loopback port, so it needs no inbound network exception; the interface reaches the analysis engine only through Tauri IPC and WebAssembly. Scripts that called the REST API no longer have an endpoint to call.
+
 ## [1.0.0] - 2026-11-09
 
 ### Added

@@ -75,7 +75,7 @@ describe('startup splash completes without a REST probe', () => {
       invoke: async (cmd: string) => {
         invoked.push(cmd);
         // The shell's reply to the REST-info command: an active server, so a discovery would go on to use it.
-        if (/rest/i.test(cmd)) return { active: true, port: 8080, base_url: 'http://127.0.0.1:8080/api/v1', ipc_calls: 0, rest_calls: 0, worker_threads: 1 };
+        if (/rest/i.test(cmd)) return { active: true, port: 8080, base_url: 'http://127.0.0.1:8080/api/v1' };
         if (cmd === 'cmd_take_pending_open_files') return [];
         if (cmd === 'plugin:event|listen') return 1;
         return null;

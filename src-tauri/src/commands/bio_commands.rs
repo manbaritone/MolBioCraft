@@ -1,7 +1,7 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-use crate::commands::{AppBackendState, RestApiEndpointInfo};
+use crate::commands::AppBackendState;
 use molbiocraft_align::align_pairwise_standard;
 use molbiocraft_core::{
     compute_batch_sequence_stats, compute_genome_track_overview, compute_sequence_stats,
@@ -48,14 +48,6 @@ pub async fn cmd_platform_diagnostics(
 ) -> Result<PlatformDiagnostics, String> {
     state.record_call();
     query_platform_diagnostics().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn cmd_rest_api_info(
-    state: State<'_, AppBackendState>,
-) -> Result<RestApiEndpointInfo, String> {
-    state.record_call();
-    Ok(state.rest_endpoint_info())
 }
 
 #[tauri::command]

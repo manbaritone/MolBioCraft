@@ -16,7 +16,7 @@ MolBioCraft makes it possible to perform the entire molecular and evolutionary b
 
 ## Positioning
 
-The meaningfully different mechanism is a unified full-stack Rust workbench: 7 pure-Rust bioinformatics crates (core, formats, align, phylo, cloning, protein, WASM) exposed via an embedded multi-threaded RESTful server, Tauri v2 IPC, and zero-import WebAssembly — all wrapped in a native Tauri v2 desktop shell with a React/SVG frontend. Unlike cloud-dependent platforms, single-focus plasmid editors, or monolithic commercial suites, MolBioCraft delivers cloning, phylogeny, protein, Sanger, and NGS in one offline-first desktop app with an extensible Rust crate ecosystem and a non-commercial academic license.
+The meaningfully different mechanism is a unified full-stack Rust workbench: 7 pure-Rust bioinformatics crates (core, formats, align, phylo, cloning, protein, WASM) exposed via Tauri v2 IPC and zero-import WebAssembly — all wrapped in a native Tauri v2 desktop shell with a React/SVG frontend. Unlike cloud-dependent platforms, single-focus plasmid editors, or monolithic commercial suites, MolBioCraft delivers cloning, phylogeny, protein, Sanger, and NGS in one offline-first desktop app with an extensible Rust crate ecosystem and a non-commercial academic license.
 
 ## Operating Context
 
@@ -42,7 +42,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 - 13 built-in Bioinformatics Plugins (eukaryotic and microbial gene prediction, CRISPR arrays, tandem repeats, haplotypes, taxonomic classification, species delimitation, protein domains/epitopes, TM topology, read trimming, synteny blocks, HPC phylogeny jobs, external CLI tools), reachable from the native and in-window Tools menus, the Workflows toolbar menu and search
 - Identical menu structure on the native macOS menu bar and the in-window (Windows, Linux, web) menu bar
 - Persisted, exportable Preferences (default folder, default Author, default export formats per molecule type, per-studio defaults, custom shortcuts)
-- Embedded RESTful API at http://127.0.0.1:18420/api/v1/* for local automation
+- No network port: the interface reaches the engine only through Tauri IPC and WebAssembly
 - Non-commercial Creative Commons license (CC BY-NC 4.0, SPDX: CC-BY-NC-4.0) — no commercial use permitted
 
 ## Brand Commitments
@@ -56,7 +56,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 ## Evidence on Hand
 
 - 7 pure-Rust crates with Cargo workspace (`crates/`) — compiled, tested, WASM-targeted
-- Tauri v2 native runtime (`src-tauri/`) with 9-menu OS bar, rfd dialogs, embedded RESTful server
+- Tauri v2 native runtime (`src-tauri/`) with 9-menu OS bar and rfd dialogs
 - React 18 + TypeScript + Vite frontend (`src/`) with 11 studio implementations and a shared right-hand inspector
 - Custom multi-tone SVG component library for all visualization types
 - Embedded font assets (subset WOFF2 in `src/assets/fonts`): Google Sans, Space Grotesk, and Google Sans Code
@@ -71,7 +71,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 1. **Offline-first, compute-local** — No cloud dependency; all computation runs in compiled Rust on the user's machine
 2. **Unified depth over fragmented breadth** — One workbench spans cloning through phylogeny to protein structure, not a collection of shallow tools
 3. **Vector-native output** — Every visualization is crisp, scalable SVG suitable for direct publication use
-4. **Extensible Rust core** — The 7-crate workspace and REST/WASM/IPC interfaces enable scripting, automation, and third-party extension
+4. **Extensible Rust core** — The 7-crate workspace and its WASM and Tauri IPC interfaces enable third-party extension
 5. **Respect the researcher's environment** — Native OS integration, keyboard-first navigation, air-gapped operation, non-commercial licensing aligned with academic values
 
 ## Accessibility & Inclusion

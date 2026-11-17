@@ -4,12 +4,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
-mod rest_api;
 
 use commands::bio_commands::{
     cmd_batch_sequence_stats, cmd_genome_tracks, cmd_genome_viewport, cmd_pairwise_align,
-    cmd_platform_diagnostics, cmd_primer_thermodynamics, cmd_rest_api_info,
-    cmd_reverse_complement, cmd_rust_bio_invoke, cmd_sequence_stats,
+    cmd_platform_diagnostics, cmd_primer_thermodynamics, cmd_reverse_complement,
+    cmd_rust_bio_invoke, cmd_sequence_stats,
 };
 use commands::fs_commands::{
     cmd_native_open_files_dialog, cmd_native_save_file_dialog, cmd_read_dropped_file_bytes,
@@ -1476,7 +1475,6 @@ fn main() {
     let backend_state = AppBackendState::default();
     // Windows / Linux file associations launch the app with the document path.
     backend_state.queue_open_files(commands::open_file_args(std::env::args().skip(1)));
-    let _ = rest_api::spawn_embedded_rest_server(backend_state.clone(), rest_api::DEFAULT_REST_PORT);
 
     let builder = tauri::Builder::default()
         .manage(backend_state)
@@ -1504,7 +1502,6 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             cmd_platform_diagnostics,
-            cmd_rest_api_info,
             cmd_sequence_stats,
             cmd_batch_sequence_stats,
             cmd_reverse_complement,

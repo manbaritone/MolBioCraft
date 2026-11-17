@@ -55,7 +55,6 @@
 | **Explore 3D structures** | Interactive Mol* 3D viewer for PDB/mmCIF files with representation presets, colour schemes, ligands, file-declared secondary structure, sequence-to-structure highlighting, a Ramachandran plot, Kabsch Cα superposition with RMSD/TM-score, and structure-based chain alignment. |
 | **Work with NGS and genomes** | VCF/FASTQ/SAM/BED inspectors, read trimming and mapping, whole-genome synteny, gene and CpG-island prediction, repeat scans and GenBank submission prep. |
 | **Run reproducible QC** | Guided multi-step pipelines that produce a report for construct QC, CRISPR knockouts, viral vector packaging and protein expression. |
-| **Automate locally** | A local REST API (`127.0.0.1:18420/api/v1`) exposes the analysis engine to scripts on the same machine. |
 
 
 ## Scientific Studios
@@ -183,7 +182,7 @@ On macOS the commands live in the native menu bar; on Windows, Linux and the web
 
 ## Under the Hood &amp; Building from Source
 
-MolBioCraft's analysis engine is written in Rust (seven crates: core, formats, align, phylo, cloning, protein and a WebAssembly bridge) and runs inside a Tauri v2 desktop shell with a TypeScript/React interface. 3D structures are rendered with [Mol*](https://molstar.org). Contributor details live in [`CONTRIBUTING.md`](./CONTRIBUTING.md), [`DESIGN.md`](./DESIGN.md) and [`AGENTS.md`](./AGENTS.md).
+MolBioCraft's analysis engine is written in Rust (seven crates: core, formats, align, phylo, cloning, protein and a WebAssembly bridge) and runs inside a Tauri v2 desktop shell with a TypeScript/React interface. The interface reaches the engine only through Tauri IPC and WebAssembly; the desktop app listens on no network port. 3D structures are rendered with [Mol*](https://molstar.org). Contributor details live in [`CONTRIBUTING.md`](./CONTRIBUTING.md), [`DESIGN.md`](./DESIGN.md) and [`AGENTS.md`](./AGENTS.md).
 
 **Prerequisites:** Rust (stable, with the `wasm32-unknown-unknown` target), Node.js 20 or later and npm. To build the macOS universal installer also add `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 

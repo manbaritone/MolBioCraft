@@ -7,82 +7,40 @@ pub mod tree_tool_commands;
 pub mod window_commands;
 
 use molbiocraft_core::SequenceStats;
-use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RestApiEndpointInfo {
-    pub active: bool,
-    /// Per-launch secret required by the loopback REST server
-    /// (`X-MolBioCraft-Token`). Only ever delivered over Tauri IPC.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub token: String,
-    pub port: u16,
-    pub base_url: String,
-    pub ipc_calls: u64,
-    pub rest_calls: u64,
-    pub worker_threads: usize,
-}
 
 struct AppBackendInner {
     ipc_calls: AtomicU64,
-    rest_calls: AtomicU64,
-    rest_port: AtomicU16,
     confirm_before_quit: AtomicBool,
     quit_approved: AtomicBool,
     stats_cache: Mutex<HashMap<u64, SequenceStats>>,
     /// Files the OS asked the app to open (file associations, `Open With…`,
     /// launch arguments) that the frontend has not collected yet.
     pending_open_files: Mutex<Vec<std::path::PathBuf>>,
-    /// Random per-launch token authenticating loopback REST requests.
-    rest_token: String,
     /// When the last unacknowledged quit confirmation was sent to the frontend.
     quit_request_sent_at: Mutex<Option<std::time::Instant>>,
     /// Close requests received since that unacknowledged confirmation was sent.
     unacked_close_attempts: std::sync::atomic::AtomicU32,
 }
 
-/// 128-bit random hex token. `RandomState` keys come from the OS RNG, so the
-/// value is unpredictable to other processes and web pages.
-fn generate_rest_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    let mut out = String::with_capacity(32);
-    for salt in 0u64..2 {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u64(salt);
-        h.write_u128(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        );
-        out.push_str(&format!("{:016x}", h.finish()));
-    }
-    out
-}
-
 impl Default for AppBackendInner {
     fn default() -> Self {
         Self {
             ipc_calls: AtomicU64::new(0),
-            rest_calls: AtomicU64::new(0),
-            rest_port: AtomicU16::new(0),
             confirm_before_quit: AtomicBool::new(true),
             quit_approved: AtomicBool::new(false),
             stats_cache: Mutex::new(HashMap::new()),
             pending_open_files: Mutex::new(Vec::new()),
-            rest_token: generate_rest_token(),
             quit_request_sent_at: Mutex::new(None),
             unacked_close_attempts: std::sync::atomic::AtomicU32::new(0),
         }
     }
 }
 
-/// Managed Tauri + Embedded Rust RESTful backend state shared safely across worker threads:
-/// - Tracks both Tauri IPC and local RESTful HTTP invocation telemetry atomically.
-/// - Publishes the active loopback port (`127.0.0.1:<port>/api/v1`) bound by `rest_api`.
+/// Managed Tauri backend state shared safely across worker threads:
+/// - Counts Tauri IPC invocations atomically.
 /// - Caches computed `SequenceStats` by FNV-1a sequence fingerprint (bounded to 256 entries)
 ///   to avoid recomputing large viral/BAC/chromosomal sequence statistics across switches.
 #[derive(Clone, Default)]
@@ -93,43 +51,6 @@ pub struct AppBackendState {
 impl AppBackendState {
     pub fn record_call(&self) -> u64 {
         self.inner.ipc_calls.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    pub fn record_rest_call(&self) -> u64 {
-        self.inner.rest_calls.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    pub fn total_calls(&self) -> u64 {
-        self.inner.ipc_calls.load(Ordering::Relaxed)
-    }
-
-    pub fn total_rest_calls(&self) -> u64 {
-        self.inner.rest_calls.load(Ordering::Relaxed)
-    }
-
-    pub fn set_rest_port(&self, port: u16) {
-        self.inner.rest_port.store(port, Ordering::Release);
-    }
-
-    pub fn rest_port(&self) -> u16 {
-        self.inner.rest_port.load(Ordering::Acquire)
-    }
-
-    pub fn rest_endpoint_info(&self) -> RestApiEndpointInfo {
-        let port = self.rest_port();
-        RestApiEndpointInfo {
-            active: port > 0,
-            port,
-            token: self.inner.rest_token.clone(),
-            base_url: if port > 0 {
-                format!("http://127.0.0.1:{}/api/v1", port)
-            } else {
-                String::new()
-            },
-            ipc_calls: self.total_calls(),
-            rest_calls: self.total_rest_calls(),
-            worker_threads: rayon::current_num_threads(),
-        }
     }
 
     pub fn fingerprint(seq: &str) -> u64 {
@@ -239,10 +160,6 @@ impl AppBackendState {
     }
 
     /// Secret the loopback REST server requires on every request.
-    pub fn rest_token(&self) -> &str {
-        &self.inner.rest_token
-    }
-
     /// Queue files the OS asked us to open; duplicates are ignored.
     pub fn queue_open_files<I: IntoIterator<Item = std::path::PathBuf>>(&self, paths: I) -> usize {
         let mut q = self
@@ -315,15 +232,6 @@ mod tests {
         let approved = AppBackendState::default();
         approved.set_quit_approved(true);
         assert!(!approved.should_veto_close(t0));
-    }
-
-    #[test]
-    fn rest_tokens_are_random_per_state() {
-        let a = AppBackendState::default();
-        let b = AppBackendState::default();
-        assert_eq!(a.rest_token().len(), 32);
-        assert!(a.rest_token().chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(a.rest_token(), b.rest_token());
     }
 
     #[test]
