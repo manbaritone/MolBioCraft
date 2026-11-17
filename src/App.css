@@ -2767,6 +2767,49 @@ fieldset > legend,
   border-color: var(--mbc-blue);
 }
 
+/* View > Rotate Circular Map… (US-01M7DVG4): a small panel over the circle's top corner, out of the
+   maps' flow, with the degree field, the slider and Reset rotation on one value. */
+.circular-rotation-control {
+  position: absolute;
+  top: var(--mbc-space-2);
+  left: calc(24px + var(--mbc-space-2));
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mbc-space-2);
+  width: 220px;
+  padding: var(--mbc-space-2) var(--mbc-space-3);
+  border: 1px solid var(--mbc-border);
+  border-radius: var(--mbc-radius-md);
+  background: var(--mbc-bg-panel);
+  color: var(--mbc-text-main);
+  font-size: var(--font-size-caption);
+}
+
+.circular-rotation-row {
+  display: flex;
+  align-items: center;
+  gap: var(--mbc-space-2);
+}
+
+.circular-rotation-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-family: var(--font-mono);
+}
+
+.circular-rotation-refusal {
+  margin: 0;
+  color: var(--mbc-red);
+}
+
+.circular-rotation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--mbc-space-2);
+}
+
 /* The divider sits in the 10px gap between the cards (centred on it, 1px into each card's border),
    where the circle's track ends: its share of the columns, held between the circle's 320px floor and
    the linear map's 300px floor, as the tracks are. Its collapse buttons sit at its top, over the

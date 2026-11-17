@@ -13,6 +13,7 @@
  */
 
 import type { MoleculeType, SequenceDocument, Topology } from '../types/bio';
+import { isContigSummaryRecord } from './contigSummary';
 
 export interface CommandDocumentContext {
   id: string;
@@ -21,6 +22,11 @@ export interface CommandDocumentContext {
   sequenceLength: number;
   /** Annotation count; an annotation-only (contig summary) record is still exportable. */
   featureCount?: number;
+  /**
+   * Whether the document is a contig-summary record (annotations with no bases), which the Sequence
+   * view shows as a summary with no sequence map. A caller that does not know leaves it out.
+   */
+  contigSummary?: boolean;
 }
 
 export interface CommandContext {
@@ -43,6 +49,14 @@ export interface CommandContext {
    * then follows the session alone.
    */
   inspectorAvailable?: boolean;
+  /**
+   * The Sequence view's map layout as drawn (the chosen one, or Linear for a document that has no
+   * circular map). A caller that does not know leaves it out, and the map commands then follow the
+   * document alone.
+   */
+  mapLayout?: 'split' | 'circular' | 'linear';
+  /** Whether the circular map is collapsed in Split; left out, it is not. */
+  circleCollapsed?: boolean;
 }
 
 export type CommandId =
@@ -51,6 +65,7 @@ export type CommandId =
   | 'strand-transform'
   | 'convert-dna-rna'
   | 'set-origin'
+  | 'rotate-map'
   | 'nucleotide-analysis'
   | 'document-edit'
   | 'export-active-document'
@@ -139,6 +154,20 @@ const RULES: Record<CommandId | WorkbenchCommandId, (ctx: CommandContext) => Com
     if (!ctx.selection) return off('Place the cursor or select a base to mark the new origin first.');
     return ENABLED;
   },
+  // Rotate Circular Map… and Reset Rotation turn the circular map (US-01M7DVG4): they are offered
+  // exactly where the Sequence view draws a circle (the App's canShowCircularMap, in a layout that
+  // shows it, not collapsed), so neither is offered where there is no circle to turn.
+  'rotate-map': (ctx) => {
+    const doc = requireDocument(ctx);
+    if (isAvailability(doc)) return doc;
+    if (doc.contigSummary) return off('This record has no sequence map.');
+    if (doc.moleculeType === 'Protein') return off('Circular maps are drawn for DNA only; this document is a protein.');
+    if (doc.moleculeType === 'RNA') return off('Circular maps are drawn for DNA only; this document is RNA.');
+    if (doc.topology !== 'circular') return off('Circular maps are drawn for circular DNA; this document is linear.');
+    if (ctx.mapLayout === 'linear') return off('Map Layout is Linear; choose Split or Circular Map to rotate the map.');
+    if (ctx.circleCollapsed) return off('The circular map is collapsed; restore it to rotate the map.');
+    return ENABLED;
+  },
   // Align Structures… aligns chains of structure documents, two of them or two chains of one.
   'align-structures': (ctx) => {
     if (!ctx.sessionActive) return off(NO_SESSION);
@@ -154,7 +183,8 @@ export function commandAvailability(id: CommandId | WorkbenchCommandId, ctx: Com
 
 export function buildCommandDocumentContext(
   doc:
-    | (Pick<SequenceDocument, 'id' | 'moleculeType' | 'topology' | 'sequence'> & { features?: readonly unknown[] })
+    | (Pick<SequenceDocument, 'id' | 'moleculeType' | 'topology' | 'sequence'> &
+        Partial<Pick<SequenceDocument, 'docMetadata'>> & { features?: readonly unknown[] })
     | null
     | undefined
 ): CommandDocumentContext | null {
@@ -165,6 +195,7 @@ export function buildCommandDocumentContext(
     topology: doc.topology,
     sequenceLength: doc.sequence.length,
     featureCount: doc.features?.length ?? 0,
+    contigSummary: isContigSummaryRecord(doc as SequenceDocument),
   };
 }
 

@@ -300,6 +300,7 @@ import {
   validateCrossPlatformFilename,
 } from './platform/osPlatform';
 import {
+  CircularMapRotationControl,
   CircularPlasmidMap,
   clampSequenceZoom,
   primerTmText,
@@ -1748,6 +1749,10 @@ export const App: React.FC = () => {
   // Restoring the sequence map (⌘0, View › Actual Size, the header's % readout) returns its zoom to
   // 100% and counts up its restore key, on which the circle recentres a pan.
   const [sequenceViewRestores, setSequenceViewRestores] = useState(0);
+  // US-01M7DVG4: the circular map's rotation is view state, held per document id (absent is 0), and
+  // whether View › Rotate Circular Map…'s control is open.
+  const [mapRotationByDoc, setMapRotationByDoc] = useState<Readonly<Record<string, number>>>({});
+  const [rotateMapControlOpen, setRotateMapControlOpen] = useState(false);
   const restoreSequenceView = () => {
     setZoomLevel(SEQUENCE_ZOOM_DEFAULT);
     setSequenceViewRestores((n) => n + 1);
@@ -2289,6 +2294,17 @@ export const App: React.FC = () => {
   // US-01M7CCT5: the circle / linear divider exists only in Split; elsewhere nothing is collapsed.
   const paneSplitShown = effectiveMapLayoutMode === 'split';
   const paneSplitCollapsed = paneSplitShown ? paneSplit.collapsed : null;
+  const activeMapRotation = mapRotationByDoc[activeDoc.id] ?? 0;
+  /** Turns the active document's circular map; it never edits the document, its history or the undo stack. */
+  const setActiveMapRotation = (rotationDeg: number) => {
+    const docId = activeDoc.id;
+    setMapRotationByDoc((prev) => {
+      if (rotationDeg !== 0) return { ...prev, [docId]: rotationDeg };
+      if (!(docId in prev)) return prev;
+      const { [docId]: _reset, ...rest } = prev;
+      return rest;
+    });
+  };
   // The ratio drawn: the chosen one, clamped to the frame while the maps are side by side.
   const paneSplitDrawn: PaneSplitState = { ...paneSplit, ratio: renderedPaneSplitRatio(paneSplit.ratio, paneSplitWidth) };
   /** Writes a ratio, and the pane a release would collapse, straight onto the Split frame mid-drag. */
@@ -3389,6 +3405,8 @@ export const App: React.FC = () => {
     redoDepth: redoStack.length,
     structureDocumentCount: activeNonDeletedDocs.filter(hasStructure).length,
     inspectorAvailable,
+    mapLayout: effectiveMapLayoutMode,
+    circleCollapsed: paneSplitCollapsed === 'circular',
   });
   const isCommandEnabled = (id: CommandId | WorkbenchCommandId, doc?: SequenceDocument): boolean =>
     commandAvailability(id, buildCommandContext(doc)).enabled;
@@ -3405,6 +3423,16 @@ export const App: React.FC = () => {
       return false;
     }
     return true;
+  };
+  /**
+   * View › Rotate Circular Map… and View › Reset Rotation (US-01M7DVG4): on another viewer tab they
+   * first switch to the Sequence view, as View › Map Layout's items do.
+   */
+  const handleRotateMapCommand = (action: 'open' | 'reset') => {
+    if (!ensureCommandAvailable('rotate-map', action === 'open' ? 'Rotate Circular Map' : 'Reset Rotation')) return;
+    setViewerTab('sequence-view');
+    if (action === 'open') setRotateMapControlOpen(true);
+    else setActiveMapRotation(0);
   };
 
   // Keep the native macOS menu bar's enabled state in step with the same
@@ -7423,6 +7451,12 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         case 'view:set-origin':
           requireActiveSession(() => handleSetOriginToSelection());
           break;
+        case 'view:rotate-map':
+          requireActiveSession(() => handleRotateMapCommand('open'));
+          break;
+        case 'view:reset-rotation':
+          requireActiveSession(() => handleRotateMapCommand('reset'));
+          break;
 
         case 'enzymes:find-sites':
           requireActiveSession(() => {
@@ -9882,6 +9916,22 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             onSelect: () => requireActiveSession(() => handleSetOriginToSelection()),
           },
         ],
+      },
+      {
+        kind: 'command',
+        id: 'view-rotate-map',
+        label: 'Rotate Circular Map…',
+        disabled: !isCommandEnabled('rotate-map'),
+        description: commandDisabledReason('rotate-map'),
+        onSelect: () => requireActiveSession(() => handleRotateMapCommand('open')),
+      },
+      {
+        kind: 'command',
+        id: 'view-reset-rotation',
+        label: 'Reset Rotation',
+        disabled: !isCommandEnabled('rotate-map'),
+        description: commandDisabledReason('rotate-map'),
+        onSelect: () => requireActiveSession(() => handleRotateMapCommand('reset')),
       },
       {
         kind: 'submenu',
@@ -15357,6 +15407,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           <span>Circular map</span>
                         </button>
                       )}
+                      {rotateMapControlOpen && circularMapShown && paneSplitCollapsed !== 'circular' && (
+                        <CircularMapRotationControl
+                          rotationDeg={activeMapRotation}
+                          onRotate={setActiveMapRotation}
+                          onClose={() => setRotateMapControlOpen(false)}
+                        />
+                      )}
                       <div className={`map-seq-grid mode-${effectiveMapLayoutMode}`}>
                         {(effectiveMapLayoutMode === 'split' || effectiveMapLayoutMode === 'circular') && (
                           <CircularPlasmidMap
@@ -15376,6 +15433,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             zoomLevel={zoomLevel}
                             onZoomChange={setZoomLevel}
                             viewRestoreKey={sequenceViewRestores}
+                            rotationDeg={activeMapRotation}
                           />
                         )}
                         {(effectiveMapLayoutMode === 'split' || effectiveMapLayoutMode === 'linear') && (

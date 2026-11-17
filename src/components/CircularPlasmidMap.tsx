@@ -15,6 +15,7 @@ import {
   Topology,
 } from '../types/bio';
 import { getResidentTrackOverviewRust } from '../lib/rustBioEngine';
+import { apply as applyRotation, MAP_ROTATION_SLIDER_MAX, parseRotationEntry } from '../core/mapRotation';
 import { applySiteVisibility, cutSiteDisplayPosition, enzymeKey, type SiteVisibility } from '../core/restrictionDisplay';
 import { enzymeLabel, isCustomEnzyme } from '../core/bioEngine';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
@@ -96,6 +97,13 @@ interface CircularPlasmidMapProps {
    * map then recentres a panned circle, as a double-click on it does.
    */
   viewRestoreKey?: number;
+  /**
+   * The map's rotation in degrees clockwise, in [0, 360) (US-01M7DVG4): view state only. It is
+   * added only to the angles elements are drawn at, so every angle-placed element turns with it
+   * while every coordinate, selection and click stays biological. Absent, the map is drawn with
+   * base 1 at twelve o'clock.
+   */
+  rotationDeg?: number;
 }
 
 /**
@@ -1031,7 +1039,9 @@ export function orfSelectRange(
  * the outer arc, down to the inner radius, the inner arc back. No bevel - a selection has no
  * strand. At least SELECTION_MIN_SPAN_DEG wide, and never past 360 degrees (a widened sector at the
  * molecule's end is moved back to end at twelve o'clock); a full turn is the whole ring (two half-turns per
- * radius, drawn even-odd so the middle stays open).
+ * radius, drawn even-odd so the middle stays open). The angles are biological; `rotationDeg` (the
+ * map's rotation, US-01M7DVG4) is added only where the sector is drawn, so it ends at the rotated
+ * origin rather than at twelve o'clock.
  */
 export function describeSelectionSector(
   cx: number,
@@ -1039,15 +1049,19 @@ export function describeSelectionSector(
   rInner: number,
   rOuter: number,
   startAngle: number,
-  endAngle: number
+  endAngle: number,
+  rotationDeg = 0
 ): string {
   const f = (p: { x: number; y: number }) => `${p.x.toFixed(2)} ${p.y.toFixed(2)}`;
+  // The widening and the pull-back are worked out in biological degrees; the rotation is added
+  // only to the angles the sector is drawn at.
+  const at = (r: number, deg: number) => polarToCartesian(cx, cy, r, deg + rotationDeg);
   const span = endAngle - startAngle;
   if (span >= 360 - 1e-9) {
-    const o0 = polarToCartesian(cx, cy, rOuter, 0);
-    const o1 = polarToCartesian(cx, cy, rOuter, 180);
-    const i0 = polarToCartesian(cx, cy, rInner, 0);
-    const i1 = polarToCartesian(cx, cy, rInner, 180);
+    const o0 = at(rOuter, 0);
+    const o1 = at(rOuter, 180);
+    const i0 = at(rInner, 0);
+    const i1 = at(rInner, 180);
     return [
       `M ${f(o0)}`,
       `A ${rOuter} ${rOuter} 0 1 1 ${f(o1)}`,
@@ -1058,19 +1072,29 @@ export function describeSelectionSector(
     ].join(' ');
   }
   const drawn = Math.max(SELECTION_MIN_SPAN_DEG, span);
-  // A sector widened to the minimum near the end of the molecule is moved back so it ends at
-  // twelve o'clock, never spilling past the origin onto base 1. A sector that already ends past
-  // 360 degrees is an origin-crossing selection and is drawn where it is.
-  const start = endAngle > 360 ? startAngle : Math.min(startAngle, 360 - drawn);
+  const start = selectionSectorDrawStart(startAngle, endAngle);
   const end = start + drawn;
   const large = drawn > 180 ? 1 : 0;
   return [
-    `M ${f(polarToCartesian(cx, cy, rOuter, start))}`,
-    `A ${rOuter} ${rOuter} 0 ${large} 1 ${f(polarToCartesian(cx, cy, rOuter, end))}`,
-    `L ${f(polarToCartesian(cx, cy, rInner, end))}`,
-    `A ${rInner} ${rInner} 0 ${large} 0 ${f(polarToCartesian(cx, cy, rInner, start))}`,
+    `M ${f(at(rOuter, start))}`,
+    `A ${rOuter} ${rOuter} 0 ${large} 1 ${f(at(rOuter, end))}`,
+    `L ${f(at(rInner, end))}`,
+    `A ${rInner} ${rInner} 0 ${large} 0 ${f(at(rInner, start))}`,
     'Z',
   ].join(' ');
+}
+
+/**
+ * The biological angle a selection sector's drawing starts at (describeSelectionSector): 0 for a
+ * full turn; otherwise its start, moved back where a sector widened to SELECTION_MIN_SPAN_DEG near
+ * the end of the molecule would spill past twelve o'clock onto base 1. A sector that already ends
+ * past 360 degrees is an origin-crossing selection and starts where it is.
+ */
+export function selectionSectorDrawStart(startAngle: number, endAngle: number): number {
+  const span = endAngle - startAngle;
+  if (span >= 360 - 1e-9) return 0;
+  const drawn = Math.max(SELECTION_MIN_SPAN_DEG, span);
+  return endAngle > 360 ? startAngle : Math.min(startAngle, 360 - drawn);
 }
 
 function describeFeatureArc(
@@ -1080,8 +1104,10 @@ function describeFeatureArc(
   rOuter: number,
   startAngle: number,
   endAngle: number,
-  strand: 1 | -1 | 0
-): string {
+  strand: 1 | -1 | 0,
+  rotationDeg = 0
+): { d: string; drawStart: number } {
+  const polarToCartesianAt = (x: number, y: number, r: number, deg: number) => polarToCartesian(x, y, r, deg + rotationDeg);
   const span = Math.max(2.5, Math.min(358, endAngle - startAngle));
   // A record that states no direction gets no bevel: the ribbon is a plain arc, so the map
   // never implies a strand the annotation does not claim.
@@ -1094,29 +1120,31 @@ function describeFeatureArc(
   const arcEnd = strand === -1 ? startAngle + span : startAngle + span - bevel;
   const largeArc = arcEnd - arcStart > 180 ? 1 : 0;
 
-  const pOuterStart = polarToCartesian(cx, cy, rOuter, arcStart);
-  const pOuterEnd = polarToCartesian(cx, cy, rOuter, arcEnd);
-  const pInnerEnd = polarToCartesian(cx, cy, rInner, arcEnd);
-  const pInnerStart = polarToCartesian(cx, cy, rInner, arcStart);
+  const pOuterStart = polarToCartesianAt(cx, cy, rOuter, arcStart);
+  const pOuterEnd = polarToCartesianAt(cx, cy, rOuter, arcEnd);
+  const pInnerEnd = polarToCartesianAt(cx, cy, rInner, arcEnd);
+  const pInnerStart = polarToCartesianAt(cx, cy, rInner, arcStart);
 
   if (strand !== -1) {
-    const pTip = polarToCartesian(cx, cy, rInner, startAngle + span);
-    return [
+    const pTip = polarToCartesianAt(cx, cy, rInner, startAngle + span);
+    const d = [
       `M ${pOuterStart.x.toFixed(2)} ${pOuterStart.y.toFixed(2)}`,
       `A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${pOuterEnd.x.toFixed(2)} ${pOuterEnd.y.toFixed(2)}`,
       `L ${pTip.x.toFixed(2)} ${pTip.y.toFixed(2)}`,
       `A ${rInner} ${rInner} 0 ${largeArc} 0 ${pInnerStart.x.toFixed(2)} ${pInnerStart.y.toFixed(2)}`,
       'Z',
     ].join(' ');
+    return { d, drawStart: arcStart };
   }
-  const pTip = polarToCartesian(cx, cy, rInner, startAngle);
-  return [
+  const pTip = polarToCartesianAt(cx, cy, rInner, startAngle);
+  const d = [
     `M ${pOuterStart.x.toFixed(2)} ${pOuterStart.y.toFixed(2)}`,
     `A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${pOuterEnd.x.toFixed(2)} ${pOuterEnd.y.toFixed(2)}`,
     `L ${pInnerEnd.x.toFixed(2)} ${pInnerEnd.y.toFixed(2)}`,
     `A ${rInner} ${rInner} 0 ${largeArc} 0 ${pTip.x.toFixed(2)} ${pTip.y.toFixed(2)}`,
     'Z',
   ].join(' ');
+  return { d, drawStart: arcStart };
 }
 
 export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
@@ -1137,6 +1165,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   zoomLevel = SEQUENCE_ZOOM_DEFAULT,
   onZoomChange,
   viewRestoreKey = 0,
+  rotationDeg = 0,
 }) => {
   const [hoveredItem, setHoveredItem] = useState<string | null>(null);
   const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -1421,7 +1450,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     for (let i = 0; i < steps; i++) {
       const ratio = gcBins[i] ?? 0.5;
       const rGc = 76 + (ratio - 0.5) * 24;
-      const angle = (i / steps) * 360;
+      const angle = (i / steps) * 360 + rotationDeg;
       const ptGc = polarToCartesian(cx, cy, rGc, angle);
       gcPts.push(`${i === 0 ? 'M' : 'L'} ${ptGc.x.toFixed(1)} ${ptGc.y.toFixed(1)}`);
 
@@ -1435,9 +1464,14 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
       gcPlotPath: `${gcPts.join(' ')} Z`,
       skewPlotPath: `${skewPts.join(' ')} Z`,
     };
-  }, [trackOverview]);
+  }, [trackOverview, rotationDeg]);
 
-  const ticks = useMemo(() => computeAdaptiveCircularTicks(seqLen), [seqLen]);
+  // The ruler at its drawn angles: the ticks and their labels are seated (and thinned) by where
+  // they are drawn, so a rotated label still sits upright inside the track.
+  const ticks = useMemo(
+    () => computeAdaptiveCircularTicks(seqLen).map((t) => ({ ...t, angle: applyRotation(t.angle, rotationDeg) })),
+    [seqLen, rotationDeg]
+  );
   const tickLabels = useMemo(
     () => layoutCircularTickLabels(ticks, { cx, cy, fontSize: tickLabelSize, innerTrackRadius: RING_INNER_TRACK_R }),
     [ticks, tickLabelSize]
@@ -1456,7 +1490,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
         id: `feat-${feat.id}`,
         kind: 'feature',
         priority: 1,
-        angleDeg: midAngle,
+        angleDeg: applyRotation(midAngle, rotationDeg),
         anchorRadius,
         label: feat.name,
         color: 'var(--mbc-text-main)',
@@ -1482,7 +1516,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
           id: `prm-${prm.id}`,
           kind: 'primer',
           priority: 2,
-          angleDeg: midAngle,
+          angleDeg: applyRotation(midAngle, rotationDeg),
           anchorRadius: rBackbone + 4,
           label: prm.name,
           color: 'var(--mbc-green)',
@@ -1525,7 +1559,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
         // feature's or primer's callout is the full-size target for its small arc or marker. (An
         // enzyme cutting once in a partial scan still comes first, drawn plain.)
         priority: cutsOnce ? 3 : 4,
-        angleDeg: angle,
+        angleDeg: applyRotation(angle, rotationDeg),
         anchorRadius: rBackbone + 2,
         label: `${enzymeLabel(cut.enzyme)} (${cutAt})`,
         color,
@@ -1624,20 +1658,24 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     measuredScale,
     scopeWords?.short,
     partialScan,
+    rotationDeg,
   ]);
 
-  const oricPt = polarToCartesian(
-    cx,
-    cy,
-    rBackbone,
-    ((trackOverview.predictedOricBp - 1) / seqLen) * 360
-  );
-  const tercPt = polarToCartesian(
-    cx,
-    cy,
-    rBackbone,
-    ((trackOverview.predictedTercBp - 1) / seqLen) * 360
-  );
+  const oricAngle = applyRotation(((trackOverview.predictedOricBp - 1) / seqLen) * 360, rotationDeg);
+  const tercAngle = applyRotation(((trackOverview.predictedTercBp - 1) / seqLen) * 360, rotationDeg);
+  const oricPt = polarToCartesian(cx, cy, rBackbone, oricAngle);
+  const tercPt = polarToCartesian(cx, cy, rBackbone, tercAngle);
+  // The origin wedge: a notch marking base 1, its tip 23 units outside the backbone and its base
+  // 10.8 wide, 12 units outside, drawn at the rotation like every other angle-placed element.
+  const wedgeBaseR = Math.hypot(rBackbone + 12, 5.4);
+  const wedgeHalfDeg = (Math.atan2(5.4, rBackbone + 12) * 180) / Math.PI;
+  const wedgePath = [
+    polarToCartesian(cx, cy, rBackbone + 23, rotationDeg),
+    polarToCartesian(cx, cy, wedgeBaseR, rotationDeg - wedgeHalfDeg),
+    polarToCartesian(cx, cy, wedgeBaseR, rotationDeg + wedgeHalfDeg),
+  ]
+    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`)
+    .join(' ');
 
   const isViewTransformed = panOffset.x !== 0 || panOffset.y !== 0;
 
@@ -1825,6 +1863,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
                 strokeDasharray="2 5"
               />
               <path
+                data-map-part="gc-trace"
+                data-draw-angle={applyRotation(0, rotationDeg)}
                 d={gcPlotPath}
                 fill="none"
                 stroke="var(--mbc-blue)"
@@ -1833,6 +1873,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
               />
               {seqLen >= 2_000 && (
                 <path
+                  data-map-part="skew-trace"
+                  data-draw-angle={applyRotation(0, rotationDeg)}
                   d={skewPlotPath}
                   fill="none"
                   stroke="var(--mbc-teal)"
@@ -1875,11 +1917,11 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
             opacity="0.75"
           />
 
-          {/* Origin wedge: a solid notch marking base 1 at twelve o'clock. */}
+          {/* Origin wedge: a solid notch marking base 1, at twelve o'clock until the map is rotated. */}
           <path
-            d={`M ${cx} ${cy - rBackbone - 23} L ${cx - 5.4} ${cy - rBackbone - 12} L ${
-              cx + 5.4
-            } ${cy - rBackbone - 12} Z`}
+            data-map-part="origin-wedge"
+            data-draw-angle={applyRotation(0, rotationDeg)}
+            d={`${wedgePath} Z`}
             fill="var(--mbc-blue)"
           />
 
@@ -1891,7 +1933,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
               data-active-interval={seg.label}
               data-start-angle={seg.startAngle}
               data-end-angle={seg.endAngle}
-              d={describeSelectionSector(cx, cy, rBackbone - 20, rBackbone + 20, seg.startAngle, seg.endAngle)}
+              data-draw-angle={applyRotation(selectionSectorDrawStart(seg.startAngle, seg.endAngle), rotationDeg)}
+              d={describeSelectionSector(cx, cy, rBackbone - 20, rBackbone + 20, seg.startAngle, seg.endAngle, rotationDeg)}
               fill="rgba(251, 188, 4, 0.24)"
               fillRule="evenodd"
               stroke="var(--mbc-amber)"
@@ -1912,7 +1955,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
                     data-guide-arc-span={seg.label}
                     data-start-angle={seg.startAngle}
                     data-end-angle={seg.endAngle}
-                    d={describeSelectionSector(cx, cy, rBackbone - 9, rBackbone + 9, seg.startAngle, seg.endAngle)}
+                    data-draw-angle={applyRotation(selectionSectorDrawStart(seg.startAngle, seg.endAngle), rotationDeg)}
+                    d={describeSelectionSector(cx, cy, rBackbone - 9, rBackbone + 9, seg.startAngle, seg.endAngle, rotationDeg)}
                     fill={part === 'spacer' ? 'rgba(22, 163, 74, 0.55)' : 'rgba(217, 119, 6, 0.35)'}
                     fillRule="evenodd"
                     stroke={part === 'spacer' ? '#15803d' : '#b45309'}
@@ -1939,6 +1983,9 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
             return (
               <line
                 key={t.bp}
+                data-map-part="tick"
+                data-bp={t.bp}
+                data-draw-angle={t.angle}
                 x1={p1.x}
                 y1={p1.y}
                 x2={p2.x}
@@ -1952,6 +1999,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
             <text
               key={t.bp}
               className="circular-tick-label"
+              data-bp={t.bp}
+              data-draw-angle={t.angle}
               x={t.x}
               y={t.y}
               textAnchor="middle"
@@ -1975,6 +2024,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
           {!isProtein && seqLen >= 20_000 && (
             <>
               <circle
+                data-map-part="oric"
+                data-draw-angle={oricAngle}
                 cx={oricPt.x}
                 cy={oricPt.y}
                 r={4.2}
@@ -1999,6 +2050,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
                 <title>{`Predicted oriC @ ${trackOverview.predictedOricBp.toLocaleString()} bp`}</title>
               </circle>
               <circle
+                data-map-part="terc"
+                data-draw-angle={tercAngle}
                 cx={tercPt.x}
                 cy={tercPt.y}
                 r={4.2}
@@ -2031,18 +2084,21 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
               const startAngle = ((orf.start - 1) / seqLen) * 360;
               // an ORF across the origin ends "after" 360°
               const endAngle = ((orf.end + (orf.end < orf.start ? seqLen : 0)) / seqLen) * 360;
-              const d = describeFeatureArc(
+              const { d, drawStart } = describeFeatureArc(
                 cx,
                 cy,
                 117,
                 126,
                 startAngle,
                 endAngle,
-                orf.strand
+                orf.strand,
+                rotationDeg
               );
               return (
                 <path
                   key={orf.id}
+                  data-map-part="orf-arc"
+                  data-draw-angle={applyRotation(drawStart, rotationDeg)}
                   d={d}
                   fill="#fbbc04"
                   stroke="#c26401"
@@ -2084,14 +2140,15 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
             const endAngle = (feat.end / seqLen) * 360;
             const rIn = feat.strand === 1 ? rBackbone + 4 : rBackbone - 17;
             const rOut = feat.strand === -1 ? rBackbone - 4 : rBackbone + 17;
-            const d = describeFeatureArc(
+            const { d, drawStart } = describeFeatureArc(
               cx,
               cy,
               rIn,
               rOut,
               startAngle,
               endAngle,
-              feat.strand
+              feat.strand,
+              rotationDeg
             );
 
             const featReadout = `${feat.name} [${feat.type}] ${feat.start.toLocaleString()}..${feat.end.toLocaleString()} (${(
@@ -2103,6 +2160,9 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
             return (
               <path
                 key={feat.id}
+                data-map-part="feature-arc"
+                data-feature-id={feat.id}
+                data-draw-angle={applyRotation(drawStart, rotationDeg)}
                 d={d}
                 fill={feat.color}
                 stroke="var(--mbc-border-strong)"
@@ -2145,12 +2205,14 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
             doc.primers.map((prm) => {
               const startAngle = ((prm.bindStart - 1) / seqLen) * 360;
               const endAngle = Math.max(startAngle + 3, (prm.bindEnd / seqLen) * 360);
-              const midAngle = (startAngle + endAngle) / 2;
+              const midAngle = applyRotation((startAngle + endAngle) / 2, rotationDeg);
               const pt = polarToCartesian(cx, cy, rBackbone + 4, midAngle);
               const prmReadout = `Primer ${prm.name}: ${prm.sequence} (${prm.bindStart}..${prm.bindEnd}, ${primerTmText(prm)})`;
               return (
                 <circle
                   key={prm.id}
+                  data-map-part="primer-marker"
+                  data-draw-angle={midAngle}
                   cx={pt.x}
                   cy={pt.y}
                   r={3.5}
@@ -2190,6 +2252,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
           {placedCallouts.map((c) => (
             <g
               key={c.id}
+              data-callout={c.id}
               className="clickable-arc"
               tabIndex={0}
               role="button"
@@ -2228,7 +2291,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
                 strokeWidth="0.75"
                 strokeOpacity="0.55"
               />
-              <circle cx={c.anchorX} cy={c.anchorY} r={c.bold ? 2.1 : 1.5} fill={c.lineColor} />
+              <circle data-map-part="callout-anchor" data-draw-angle={c.angleDeg} cx={c.anchorX} cy={c.anchorY} r={c.bold ? 2.1 : 1.5} fill={c.lineColor} />
               <rect
                 x={c.side === 'right' ? c.elbowX : c.elbowX - 2.4}
                 y={c.labelY - 2.4}
@@ -2308,6 +2371,111 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
 
       <div className="map-footer-bar" title={hoveredItem || CIRCULAR_MAP_TIP}>
         <span className="map-hover-readout">{hoveredItem || CIRCULAR_MAP_TIP}</span>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * View › Rotate Circular Map… (US-01M7DVG4): a degree field, a slider and Reset rotation, kept to
+ * the one rotation the map is drawn at. The field is text (inputmode decimal), so what is typed is
+ * read as typed: a committed entry (Enter, or leaving the field) sets the rotation to the angle in
+ * [0, 360), and an empty, blank or non-number entry is refused with its reason and changes nothing.
+ */
+export const CircularMapRotationControl: React.FC<{
+  rotationDeg: number;
+  onRotate: (rotationDeg: number) => void;
+  onClose: () => void;
+}> = ({ rotationDeg, onRotate, onClose }) => {
+  const [draft, setDraft] = useState(() => String(rotationDeg));
+  const [refused, setRefused] = useState<string | null>(null);
+  const fieldRef = useRef<HTMLInputElement | null>(null);
+  // The field shows the rotation whenever it changes (the slider, Reset rotation, another document).
+  const [shownFor, setShownFor] = useState(rotationDeg);
+  if (shownFor !== rotationDeg) {
+    setShownFor(rotationDeg);
+    setDraft(String(rotationDeg));
+    setRefused(null);
+  }
+  const commit = (text: string) => {
+    const entry = parseRotationEntry(text);
+    if (!entry.ok) {
+      setRefused(entry.reason);
+      return;
+    }
+    setRefused(null);
+    setDraft(String(entry.value));
+    onRotate(entry.value);
+  };
+  const commitRef = useRef(commit);
+  commitRef.current = commit;
+  // A text field's change event is its commit (Enter or blur); React's onChange is every keystroke.
+  useEffect(() => {
+    const field = fieldRef.current;
+    if (!field) return;
+    const onCommit = () => commitRef.current(field.value);
+    field.addEventListener('change', onCommit);
+    return () => field.removeEventListener('change', onCommit);
+  }, []);
+  return (
+    <div
+      className="circular-rotation-control"
+      role="dialog"
+      aria-label="Rotate Circular Map"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
+      <label className="circular-rotation-row">
+        <span>Rotation</span>
+        <input
+          ref={fieldRef}
+          type="text"
+          inputMode="decimal"
+          aria-label="Rotation in degrees"
+          aria-invalid={refused ? true : undefined}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commit(e.currentTarget.value);
+            }
+          }}
+        />
+        <span aria-hidden="true">°</span>
+      </label>
+      <input
+        type="range"
+        aria-label="Rotation slider"
+        min={0}
+        max={MAP_ROTATION_SLIDER_MAX}
+        step={0.1}
+        value={rotationDeg}
+        onChange={(e) => commit(e.target.value)}
+      />
+      {refused && (
+        <p className="circular-rotation-refusal" role="alert">
+          {refused}
+        </p>
+      )}
+      <div className="circular-rotation-actions">
+        <button
+          type="button"
+          onClick={() => {
+            setRefused(null);
+            setDraft('0');
+            onRotate(0);
+          }}
+        >
+          Reset rotation
+        </button>
+        <button type="button" onClick={onClose}>
+          Close
+        </button>
       </div>
     </div>
   );

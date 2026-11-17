@@ -147,6 +147,7 @@ describe('command availability state matrix', () => {
     'strand-transform',
     'convert-dna-rna',
     'set-origin',
+    'rotate-map',
     'nucleotide-analysis',
     'document-edit',
     'export-active-document',
@@ -156,37 +157,37 @@ describe('command availability state matrix', () => {
     [
       'no session',
       ctx({ sessionActive: false, undoDepth: 3, redoDepth: 1 }),
-      { undo: false, redo: false, 'strand-transform': false, 'convert-dna-rna': false, 'set-origin': false, 'nucleotide-analysis': false, 'document-edit': false, 'export-active-document': false, 'export-sequence': false },
+      { undo: false, redo: false, 'strand-transform': false, 'convert-dna-rna': false, 'set-origin': false, 'rotate-map': false, 'nucleotide-analysis': false, 'document-edit': false, 'export-active-document': false, 'export-sequence': false },
     ],
     [
       'blank session (no documents)',
       ctx({ activeDoc: buildCommandDocumentContext({ id: '', moleculeType: 'DNA', topology: 'linear', sequence: '' }), selection: null }),
-      { undo: false, redo: false, 'strand-transform': false, 'convert-dna-rna': false, 'set-origin': false, 'nucleotide-analysis': false, 'document-edit': false, 'export-active-document': false, 'export-sequence': false },
+      { undo: false, redo: false, 'strand-transform': false, 'convert-dna-rna': false, 'set-origin': false, 'rotate-map': false, 'nucleotide-analysis': false, 'document-edit': false, 'export-active-document': false, 'export-sequence': false },
     ],
     [
       'circular DNA with cursor and history',
       ctx({ undoDepth: 2, redoDepth: 1 }),
-      { undo: true, redo: true, 'strand-transform': true, 'convert-dna-rna': true, 'set-origin': true, 'nucleotide-analysis': true, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
+      { undo: true, redo: true, 'strand-transform': true, 'convert-dna-rna': true, 'set-origin': true, 'rotate-map': true, 'nucleotide-analysis': true, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
     ],
     [
       'circular DNA without a selection',
       ctx({ selection: null }),
-      { undo: false, redo: false, 'strand-transform': true, 'convert-dna-rna': true, 'set-origin': false, 'nucleotide-analysis': true, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
+      { undo: false, redo: false, 'strand-transform': true, 'convert-dna-rna': true, 'set-origin': false, 'rotate-map': true, 'nucleotide-analysis': true, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
     ],
     [
       'linear DNA',
       ctx({ activeDoc: buildCommandDocumentContext(linearDna) }),
-      { undo: false, redo: false, 'strand-transform': true, 'convert-dna-rna': true, 'set-origin': false, 'nucleotide-analysis': true, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
+      { undo: false, redo: false, 'strand-transform': true, 'convert-dna-rna': true, 'set-origin': false, 'rotate-map': false, 'nucleotide-analysis': true, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
     ],
     [
       'RNA',
       ctx({ activeDoc: buildCommandDocumentContext(rna) }),
-      { undo: false, redo: false, 'strand-transform': true, 'convert-dna-rna': true, 'set-origin': false, 'nucleotide-analysis': true, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
+      { undo: false, redo: false, 'strand-transform': true, 'convert-dna-rna': true, 'set-origin': false, 'rotate-map': false, 'nucleotide-analysis': true, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
     ],
     [
       'protein',
       ctx({ activeDoc: buildCommandDocumentContext(protein) }),
-      { undo: false, redo: false, 'strand-transform': false, 'convert-dna-rna': false, 'set-origin': false, 'nucleotide-analysis': false, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
+      { undo: false, redo: false, 'strand-transform': false, 'convert-dna-rna': false, 'set-origin': false, 'rotate-map': false, 'nucleotide-analysis': false, 'document-edit': true, 'export-active-document': true, 'export-sequence': true },
     ],
   ];
 
@@ -211,6 +212,47 @@ describe('command availability state matrix', () => {
     expect(mixed.ok).toBe(false);
     expect(mixed.ok ? '' : mixed.reason).toMatch(/mixes/);
     expect(checkMultiDocumentSelection([protein, protein], 2).ok).toBe(true);
+  });
+});
+
+describe('US-01M7DVG4 AC5: the rotate-map rule offers the rotation only where a circle is drawn', () => {
+  const summaryDoc = {
+    id: 'cs1', moleculeType: 'DNA' as const, topology: 'circular' as const, sequence: '', features: [{}],
+    docMetadata: { 'Is Contig Summary': 'true', 'Declared Length': 4_641_652 },
+  };
+  const reason = (c: CommandContext) => commandAvailability('rotate-map', c);
+
+  it('US-01M7DVG4 AC5 checks the session and document first, then each reason in order', () => {
+    expect(reason(ctx({ sessionActive: false }))).toEqual({ enabled: false, reason: 'No active session — start a New Session first.' });
+    expect(reason(ctx({ activeDoc: null }))).toEqual({ enabled: false, reason: 'Open or create a sequence document first.' });
+    // Each row also fails every later check, so a reason checked out of order shows.
+    const all = { mapLayout: 'linear' as const, circleCollapsed: true };
+    expect(buildCommandDocumentContext(summaryDoc)?.contigSummary, 'a contig summary is marked').toBe(true);
+    expect(buildCommandDocumentContext(dna)?.contigSummary, 'a plasmid is not').toBe(false);
+    const rows: Array<[CommandContext, string]> = [
+      [ctx({ ...all, activeDoc: buildCommandDocumentContext(summaryDoc) }), 'This record has no sequence map.'],
+      [ctx({ ...all, activeDoc: buildCommandDocumentContext({ ...protein, topology: 'circular' }) }), 'Circular maps are drawn for DNA only; this document is a protein.'],
+      [ctx({ ...all, activeDoc: buildCommandDocumentContext({ ...rna, topology: 'circular' }) }), 'Circular maps are drawn for DNA only; this document is RNA.'],
+      [ctx({ ...all, activeDoc: buildCommandDocumentContext(linearDna) }), 'Circular maps are drawn for circular DNA; this document is linear.'],
+      [ctx({ ...all }), 'Map Layout is Linear; choose Split or Circular Map to rotate the map.'],
+      [ctx({ mapLayout: 'split', circleCollapsed: true }), 'The circular map is collapsed; restore it to rotate the map.'],
+    ];
+    for (const [c, why] of rows) expect(reason(c)).toEqual({ enabled: false, reason: why });
+  });
+
+  it('US-01M7DVG4 AC5 is enabled on a drawn circle, and a caller that leaves the view fields out gets the document rules alone', () => {
+    expect(reason(ctx({ mapLayout: 'split', circleCollapsed: false }))).toEqual({ enabled: true });
+    expect(reason(ctx({ mapLayout: 'circular', circleCollapsed: false }))).toEqual({ enabled: true });
+    expect(reason(ctx({ mapLayout: 'circular', selection: null })), 'no selection is needed').toEqual({ enabled: true });
+    expect(reason(ctx()), 'no view fields: circular DNA is enabled').toEqual({ enabled: true });
+    expect(reason(ctx({ activeDoc: buildCommandDocumentContext(linearDna) })).enabled).toBe(false);
+    // The rule mirrors the App's canShowCircularMap (DNA and circular) for every molecule and topology.
+    for (const moleculeType of ['DNA', 'RNA', 'Protein'] as const) {
+      for (const topology of ['circular', 'linear'] as const) {
+        const c = ctx({ activeDoc: buildCommandDocumentContext({ ...dna, moleculeType, topology }), mapLayout: 'split', circleCollapsed: false });
+        expect(reason(c).enabled, `${moleculeType} ${topology}`).toBe(moleculeType === 'DNA' && topology === 'circular');
+      }
+    }
   });
 });
 
