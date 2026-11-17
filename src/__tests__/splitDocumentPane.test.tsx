@@ -2228,3 +2228,48 @@ describe("US-01M7DV10 AC4: document commands stay on the main view's document, a
     }
   });
 });
+
+// ─── BG-01M7ND2J ───
+//
+// With the same document in both panes the pane's selection is the main view's (US-01M7DVQG), so
+// the pane's Clear clears that one selection. Wrong implementations this check fails on: the shared
+// setRange dropping a null range rather than passing it to onSelectMainRange (the main view and the
+// pane keep drawing the selection, and the header keeps reading it); the pane's Clear doing nothing;
+// a Clear that empties only the pane's held selection, which the pane does not read while shared.
+
+describe('BG-01M7ND2J', () => {
+  it("BG-01M7ND2J AC1 the pane's Clear, with the main view's document in the pane, clears the one shared selection", async () => {
+    const MARK_READOUT = '5,000..6,000 (1,001 bp) • Mark (misc_feature)';
+    const CLEAR_TITLE = 'Clear active sequence selection';
+    await withApp(async (app) => {
+      await onCircles(app, [CA, CB], CA.id);
+      await showMainInPane(app);
+      expect(viewSelect(app).value, 'the pane is on Linear Map').toBe('linear');
+      expect(readout(app), 'nothing selected yet').toBeNull();
+
+      await app.click(arcIn(mainMap(app), 'Mark'));
+      expect(readout(app), 'the header reads the selection made in the main view').toBe(MARK_READOUT);
+      expect(mainSelection(app), "the main view's linear map draws it").toBe('5,000..6,000');
+      expect(interval(mainMap(app)), "the main view's circular map draws it").toHaveLength(1);
+      expect(paneSelection(app), "the pane's Linear Map draws the shared selection").toBe('5,000..6,000');
+      expect(paneHint(app), 'the pane shows no hint while it draws a selection').toBe(false);
+
+      // The pane's Clear: inline on its quickbar, or under its More menu when it does not fit.
+      const clearIn = () => pane(app).querySelectorAll('button').filter((b) => b.getAttribute('title') === CLEAR_TITLE);
+      if (!clearIn().length) {
+        const more = pane(app).querySelectorAll('button').filter((b) => (b.getAttribute('aria-label') ?? '').startsWith('More selection actions'));
+        expect(more, "the pane's quickbar More menu").toHaveLength(1);
+        await app.click(more[0]);
+      }
+      const clear = clearIn();
+      expect(clear, "the pane's one Clear action").toHaveLength(1);
+      await app.click(clear[0]);
+
+      expect(app.header().querySelectorAll('.mbc-selection-readout'), 'the header reads no selection').toHaveLength(0);
+      expect(mainSelection(app), 'the main view draws no selection region').toBeNull();
+      expect(interval(mainMap(app)), "the main view's circular map draws no interval").toEqual([]);
+      expect(paneSelection(app), 'the pane draws no selection region').toBeNull();
+      expect(paneHint(app), "the pane shows its 'Click a base' hint").toBe(true);
+    });
+  });
+});
