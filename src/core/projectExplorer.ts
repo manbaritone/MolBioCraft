@@ -73,3 +73,23 @@ export function toggleVisibleSelection(selected: string[], visible: string[]): s
     ? []
     : [...visible];
 }
+
+/**
+ * The Project Explorer labels from the root to the folder `folder` names (US-01M7DVS2): the folder
+ * whose id it is, or else the one that gathers it (`matchFolders`), then each parent up to the root.
+ * A folder the explorer does not list is named as it is, under the root; a parent loop stops at the
+ * first folder seen twice.
+ */
+export function folderPathLabels(folder: string, folders: ExplorerFolder[]): string[] {
+  if (!folder || folder === PROJECT_ROOT) return [PROJECT_ROOT];
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  const own = byId.get(folder) ?? folders.find((f) => f.matchFolders.includes(folder));
+  if (!own) return [PROJECT_ROOT, folder];
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (let f: ExplorerFolder | undefined = own; f && !seen.has(f.id); f = byId.get(f.parent)) {
+    seen.add(f.id);
+    labels.unshift(f.label);
+  }
+  return [PROJECT_ROOT, ...labels];
+}

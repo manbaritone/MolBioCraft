@@ -15801,3 +15801,114 @@ table,
   color: inherit;
   border-radius: var(--mbc-radius-xs);
 }
+
+/* US-01M7DVS2: the Map Gallery, in the main view's place: one card per checked row, each map fitted to its card. */
+.mbc-map-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--mbc-bg-canvas);
+}
+
+.mbc-map-gallery-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mbc-map-gallery-head h2 {
+  margin: 0;
+  font-size: var(--font-size-body);
+  font-weight: 600;
+}
+
+.mbc-map-gallery-head > .mbc-zoom-btn {
+  margin-left: auto;
+}
+
+.mbc-map-gallery-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-caption);
+}
+
+.mbc-map-gallery-size label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mbc-map-gallery-size-note,
+.mbc-map-gallery-scope,
+.mbc-map-gallery-nomap {
+  color: var(--mbc-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.mbc-map-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+
+.mbc-map-gallery-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--mbc-border);
+  border-radius: var(--mbc-radius-md);
+}
+
+.mbc-map-gallery-name {
+  margin: 0;
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.mbc-map-gallery-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  margin: 0;
+  font-size: var(--font-size-caption);
+}
+
+.mbc-map-gallery-meta dt {
+  color: var(--mbc-text-secondary);
+}
+
+.mbc-map-gallery-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mbc-map-gallery-map {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+/* A circle fitted to its card: the map lays itself out at the card's box (GALLERY_CARD_MAP_BOX). */
+.mbc-map-gallery-map .plasmid-svg {
+  width: 100%;
+  height: auto;
+  max-height: 238px;
+}
+
+.mbc-map-gallery-bar {
+  width: 100%;
+  height: 44px;
+}
+
+.mbc-map-gallery-card > .mbc-btn {
+  align-self: flex-start;
+}

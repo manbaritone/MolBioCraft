@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 import { ProjectFolderTree } from './components/ProjectFolderTree';
-import { documentsInFolder, folderDescendants, toggleVisibleSelection, normalizeProjectExplorer, PROJECT_ROOT, type ExplorerFolder } from './core/projectExplorer';
+import { documentsInFolder, folderDescendants, folderPathLabels, toggleVisibleSelection, normalizeProjectExplorer, PROJECT_ROOT, type ExplorerFolder } from './core/projectExplorer';
+import { MapGallery } from './components/MapGallery';
 import { DocumentInfoPanel, DocumentNotesEditor } from './components/DocumentInfoPanel';
 import { EMPTY_WORKSPACE_DOCUMENT, removeUntouchedLegacyStarter } from './core/emptyWorkspace';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -27,6 +28,7 @@ import {
   Redo2,
   RotateCcw,
   Rows2,
+  LayoutGrid,
   Search,
   Settings2,
   Sparkles,
@@ -1253,6 +1255,11 @@ export const App: React.FC = () => {
    * inside a pane hands it focus, and folding the focused pane hands it to the other.
    */
   const [focusedPane, setFocusedPane] = useState<'main' | 'second'>('main');
+  /**
+   * Whether the Map Gallery of the table's checked rows takes the main view's place (US-01M7DVS2, D0192):
+   * App state, not a viewer tab, so the tab behind it is the one saved, and nothing about it is saved.
+   */
+  const [mapGalleryOpen, setMapGalleryOpen] = useState(false);
   /** The document split (US-01M7DVR0): Single Pane, or the second pane Side by Side or Top and Bottom. */
   const [documentSplit, setDocumentSplit] = useState<DocumentSplitOrientation>('single');
   /** The split the toggle returns to from Single Pane: the last one chosen, Side by Side the first time. */
@@ -3532,6 +3539,8 @@ export const App: React.FC = () => {
 
   /** Clear per-session history when the workbench contents are replaced. */
   const resetSessionScopedState = () => {
+    // A session opened or restored opens no Map Gallery (US-01M7DVS2).
+    setMapGalleryOpen(false);
     setUndoStack([]);
     setRedoStack([]);
     allocatedDocIdsRef.current.clear();
@@ -3634,13 +3643,14 @@ export const App: React.FC = () => {
     focusedSplitPane: secondPaneFocused
       ? { circularMapShown: splitPaneCircleShown, sequenceMapShown: splitPaneShowsSequenceMap(splitDoc, splitView) }
       : undefined,
+    checkedRecordCount: selectedInFilteredDocs.length,
   });
   const isCommandEnabled = (id: CommandId | WorkbenchCommandId | ViewCommandId, doc?: SequenceDocument): boolean =>
     commandAvailability(id, buildCommandContext(doc)).enabled;
   const commandDisabledReason = (id: CommandId | WorkbenchCommandId | ViewCommandId, doc?: SequenceDocument): string | undefined =>
     commandAvailability(id, buildCommandContext(doc)).reason;
   const ensureCommandAvailable = (
-    id: CommandId | ViewCommandId,
+    id: CommandId | WorkbenchCommandId | ViewCommandId,
     label: string,
     doc: SequenceDocument = activeDoc
   ): boolean => {
@@ -3671,6 +3681,14 @@ export const App: React.FC = () => {
     t.set(!t.shown);
   };
   /**
+   * The main view's Sequence view, shown for a command that acts on it (US-01M7DVEN, US-01M7DVG4): from
+   * another viewer tab, or from the Map Gallery in its place, which closes (US-01M7DVS2).
+   */
+  const showMainSequenceView = () => {
+    setMapGalleryOpen(false);
+    setViewerTab('sequence-view');
+  };
+  /**
    * View › Rotate Circular Map… and View › Reset Rotation (US-01M7DVG4): on another viewer tab they
    * first switch to the Sequence view, as View › Map Layout's items do.
    */
@@ -3682,7 +3700,7 @@ export const App: React.FC = () => {
       else setSplitRotation(0);
       return;
     }
-    setViewerTab('sequence-view');
+    showMainSequenceView();
     if (action === 'open') setRotateMapControlOpen(true);
     else setActiveMapRotation(0);
   };
@@ -3721,7 +3739,7 @@ export const App: React.FC = () => {
       if (turnBack) setSplitRotation(0);
       return;
     }
-    setViewerTab('sequence-view');
+    showMainSequenceView();
     restoreSequenceView();
     setSequenceOverviewFits((n) => n + 1);
     if (turnBack) setActiveMapRotation(0);
@@ -3733,8 +3751,24 @@ export const App: React.FC = () => {
    */
   const chooseMapLayout = (mode: 'split' | 'circular' | 'linear') => {
     if (mode !== 'linear' && !ensureCommandAvailable('map-layout-circle', mode === 'split' ? 'Split Map & Sequence' : 'Circular Map')) return;
-    setViewerTab('sequence-view');
+    // The main view's layout either way; with the split pane focused the Map Gallery stays (US-01M7DVS2).
+    if (secondPaneFocused) setViewerTab('sequence-view');
+    else showMainSequenceView();
     setMapLayoutMode(mode);
+  };
+  /**
+   * Map Gallery (US-01M7DVS2): the table toolbar's button and View › Map Gallery, under the
+   * `multi-record-view` rule over the checked rows the table shows. It takes the main view's place;
+   * the split pane, its document, view, zoom, rotation and focus stay as they are.
+   */
+  const openMapGallery = () => {
+    if (!ensureCommandAvailable('multi-record-view', 'Map Gallery')) return;
+    setMapGalleryOpen(true);
+  };
+  /** A card's Open in viewer: the gallery closes onto the card's record, the checked rows kept so it reopens on the same cards. */
+  const openFromMapGallery = (docId: string) => {
+    setMapGalleryOpen(false);
+    selectDocumentWithHistory(docId, true);
   };
   /**
    * View › Restore Default Layout (US-01M7DVJ4), the in-app item's handler and the native id's: the
@@ -10292,6 +10326,15 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         ],
       },
       {
+        // US-01M7DVS2: the checked rows' maps, under the rule the table toolbar's button reads.
+        kind: 'command',
+        id: 'view-map-gallery',
+        label: 'Map Gallery',
+        disabled: !isCommandEnabled('multi-record-view'),
+        description: commandDisabledReason('multi-record-view'),
+        onSelect: () => requireActiveSession(() => openMapGallery()),
+      },
+      {
         kind: 'submenu',
         id: 'view-table-cols-sub',
         label: 'Table Columns',
@@ -15118,6 +15161,18 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   )}
                 </div>
 
+                {/* US-01M7DVS2: the checked rows' maps, under the rule View › Map Gallery reads. */}
+                <button
+                  type="button"
+                  className="mbc-multifile-action-btn mbc-map-gallery-btn"
+                  disabled={!isCommandEnabled('multi-record-view')}
+                  title={commandDisabledReason('multi-record-view') ?? 'Show the maps of the checked records side by side'}
+                  onClick={openMapGallery}
+                >
+                  <LayoutGrid size={13} aria-hidden="true" />
+                  <span>Map Gallery</span>
+                </button>
+
                 <div className="toolbar-dropdown-anchor">
                   <button
                     type="button"
@@ -15709,8 +15764,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
 
           {/* Document Viewer + Right-Hand Control Panel: above the expanded table in the stacked layout, right of it side by side */}
           <section className="mbc-viewer-shell">
-            {/* The vector catalog works without a document (blank session). */}
-            {!checkedIdsSet.has(activeDocId) && !(viewerTab === 'vector-library' && !activeDoc.id) ? (
+            {/* The vector catalog works without a document (blank session); the Map Gallery follows the checked rows, whichever they are (US-01M7DVS2). */}
+            {!checkedIdsSet.has(activeDocId) && !(viewerTab === 'vector-library' && !activeDoc.id) && !mapGalleryOpen ? (
               <div className="empty-doc-selection-dropzone">
                 <FileSpreadsheet size={28} className="empty-dropzone-icon" />
                 <h3>
@@ -15942,6 +15997,22 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 onPointerDownCapture={documentSplitShown ? (e) => { if (e.currentTarget.contains(e.target as Node)) setFocusedPane('main'); } : undefined}
                 onFocusCapture={documentSplitShown ? (e) => { if (e.currentTarget.contains(e.target as Node)) setFocusedPane('main'); } : undefined}
               >
+                {/* US-01M7DVS2: the Map Gallery takes the main view's place; the tab behind it is kept. */}
+                {mapGalleryOpen && (
+                  <ErrorBoundary label="Map Gallery" resetKey="map-gallery">
+                    <MapGallery
+                      docs={selectedInFilteredDocs}
+                      folderPath={(d) => folderPathLabels(d.folder, explorerFolders)}
+                      rotationOf={(id) => mapRotationByDoc[id] ?? 0}
+                      tracks={{ showFeatures, showRestrictionSites }}
+                      enzymes={activeEnzymes}
+                      scanCollection={scanCollectionChoice.collection}
+                      onOpen={openFromMapGallery}
+                      onClose={() => setMapGalleryOpen(false)}
+                    />
+                  </ErrorBoundary>
+                )}
+                {!mapGalleryOpen && (
                 <ErrorBoundary label={VIEWER_TAB_LABELS[viewerTab] ?? 'This view'} resetKey={`${activeDoc.id}:${viewerTab}`}>
                 {/* The main view's studios reach the inspector; the split view's pane and the header stay outside. */}
                 <WorkbenchInspectorProvider open={rightPanelOpen} column={inspectorColumn} onClaimsChange={handleInspectorClaims}>
@@ -16662,6 +16733,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 </React.Suspense>
                 </WorkbenchInspectorProvider>
                               </ErrorBoundary>
+                )}
               </div>
               {documentSplit !== 'single' && (
                 <DocumentSplitDivider

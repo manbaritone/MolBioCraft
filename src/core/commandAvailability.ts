@@ -64,6 +64,12 @@ export interface CommandContext {
    * focused and every rule answers for it.
    */
   focusedSplitPane?: { circularMapShown: boolean; sequenceMapShown: boolean };
+  /**
+   * The rows checked in the document table that the table shows (US-01M7DVS2), which the Map Gallery
+   * opens on (`multi-record-view`). A caller that does not count them leaves it out, and the gallery
+   * is then refused, not opened on records nobody counted.
+   */
+  checkedRecordCount?: number;
 }
 
 export type CommandId =
@@ -80,9 +86,10 @@ export type CommandId =
 
 /**
  * Commands that open on the workbench's documents rather than on the active one (their window
- * picks the documents): their rules read the workbench, not `activeDoc`.
+ * picks the documents): their rules read the workbench, not `activeDoc`. View › Map Gallery and the
+ * table toolbar's Map Gallery button (`multi-record-view`, US-01M7DVS2) read the checked rows.
  */
-export type WorkbenchCommandId = 'align-structures';
+export type WorkbenchCommandId = 'align-structures' | 'multi-record-view';
 
 /**
  * Commands on the focused pane's view rather than on a document (US-01M7DV10): View › Zoom In, Zoom
@@ -248,6 +255,13 @@ const RULES: Record<CommandId | WorkbenchCommandId | ViewCommandId, (ctx: Comman
     return ctx.structureDocumentCount === 0
       ? off('Import a structure (PDB or mmCIF) first: Align Structures aligns chains of structure documents.')
       : ENABLED;
+  },
+  // Map Gallery (US-01M7DVS2) shows two or more of the table's checked rows. It counts rows only, so
+  // DNA mixed with protein is allowed (unlike checkMultiDocumentSelection, which refuses the mix).
+  'multi-record-view': (ctx) => {
+    if (!ctx.sessionActive) return off(NO_SESSION);
+    if (ctx.checkedRecordCount === undefined) return off('The checked rows of the document table are not known.');
+    return ctx.checkedRecordCount >= 2 ? ENABLED : off(`Check two or more records in the document table (now ${ctx.checkedRecordCount}).`);
   },
 };
 

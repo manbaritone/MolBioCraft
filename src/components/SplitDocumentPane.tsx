@@ -161,9 +161,39 @@ export const SHOW_MAIN_DOC_LABEL = "Show the main view's document in the split p
 
 /**
  * The most candidates the picker lists, the first in `choices` order that pass the filter; the shown
- * document is kept as an option besides when the filter leaves it out.
+ * document is kept as an option besides when the filter leaves it out. The Map Gallery lists at most
+ * as many cards (US-01M7DVS2).
  */
-const SPLIT_PICKER_CAP = 400;
+export const SPLIT_PICKER_CAP = 400;
+
+/**
+ * The restriction scan a map of `doc` draws, the one the split pane and the Map Gallery's cards both
+ * call (US-01M7DVS2). It scans as the main view does (App.tsx `restrictionScope`), by the one shared
+ * rule: `restrictionScannedBp` (over 150,000 bp only the first 60,000 bp, as a linear sequence) and
+ * `restrictionScanScope` (more than 100,000 bp scanned with the engine's first CORE_CATALOG_LEN
+ * catalog enzymes only); the scope it returns is what the map says its cut sites cover
+ * (BG-01M6RTHN). The scan keeps each enzyme's first sites by position and warns when it left some
+ * out (BG-01M6S1K2). A chosen collection is scanned and named by the same helper as the main view's
+ * (US-01M7JX1J, D0169); one with nothing that can be scanned sends the engine nothing, as the main
+ * view's does. A document that is not DNA, has no bases or is an alignment is not scanned.
+ */
+export function scanDocumentForMap(
+  doc: SequenceDocument | null,
+  enzymes: RestrictionEnzyme[],
+  scanCollection: ChosenScanCollection | null
+): { scan: RestrictionSiteScan; restrictionScope: RestrictionScanScope | null } {
+  if (!doc || doc.moleculeType !== 'DNA' || !doc.sequence || doc.alignmentMeta?.sequences?.length) return { scan: EMPTY_RESTRICTION_SCAN, restrictionScope: null };
+  const length = doc.sequence.length;
+  const scannedBp = restrictionScannedBp(length);
+  const scope = chosenRestrictionScope(length, scannedBp, enzymes, scanCollection);
+  // The core cut follows the bases the scan reads, not the document's length (US-01M7DV52).
+  const list = restrictionScanEnzymes(scanCollection ? scanCollection.members : enzymes, scannedBp);
+  if (list.length === 0) return { scan: EMPTY_RESTRICTION_SCAN, restrictionScope: scope };
+  return {
+    scan: scope?.firstBp ? scanRestrictionSites(doc.sequence.slice(0, scope.firstBp), 'linear', list) : scanRestrictionSites(doc.sequence, doc.topology, list),
+    restrictionScope: scope,
+  };
+}
 
 /** The most alignment rows the split pane draws, the first in the alignment's order. */
 const SPLIT_ALIGNMENT_ROWS = 200;
@@ -220,27 +250,9 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
     const passing = needle ? choices.filter((d) => d.name.toLowerCase().includes(needle)) : choices;
     return { listed: passing.slice(0, SPLIT_PICKER_CAP), matched: passing.length };
   }, [choices, filter]);
-  // The pane scans as the main view does (App.tsx `restrictionScope`), by the one shared rule:
-  // `restrictionScannedBp` (over 150,000 bp only the first 60,000 bp, as a linear sequence) and
-  // `restrictionScanScope` (more than 100,000 bp scanned with the engine's first CORE_CATALOG_LEN
-  // catalog enzymes only). Its linear view is handed that scope, so it says where its cut sites
-  // stop, as the main linear view does (BG-01M6RTHN).
-  // The scan keeps each enzyme's first sites by position and warns when it left some out (BG-01M6S1K2).
-  // A chosen collection is scanned and named by the same helper as the main view's (US-01M7JX1J,
-  // D0169); one with nothing that can be scanned sends the engine nothing, as the main view's does.
-  const { scan, restrictionScope } = useMemo((): { scan: RestrictionSiteScan; restrictionScope: RestrictionScanScope | null } => {
-    if (!doc || doc.moleculeType !== 'DNA' || !doc.sequence || doc.alignmentMeta?.sequences?.length) return { scan: EMPTY_RESTRICTION_SCAN, restrictionScope: null };
-    const length = doc.sequence.length;
-    const scannedBp = restrictionScannedBp(length);
-    const scope = chosenRestrictionScope(length, scannedBp, enzymes, scanCollection);
-    // The core cut follows the bases the scan reads, not the document's length (US-01M7DV52).
-    const list = restrictionScanEnzymes(scanCollection ? scanCollection.members : enzymes, scannedBp);
-    if (list.length === 0) return { scan: EMPTY_RESTRICTION_SCAN, restrictionScope: scope };
-    return {
-      scan: scope?.firstBp ? scanRestrictionSites(doc.sequence.slice(0, scope.firstBp), 'linear', list) : scanRestrictionSites(doc.sequence, doc.topology, list),
-      restrictionScope: scope,
-    };
-  }, [doc, enzymes, scanCollection]);
+  // The pane's scan, by the one function the Map Gallery's cards call too (US-01M7DVS2); its linear
+  // view is handed the scope, so it says where its cut sites stop, as the main linear view does.
+  const { scan, restrictionScope } = useMemo(() => scanDocumentForMap(doc, enzymes, scanCollection), [doc, enzymes, scanCollection]);
   // A document with bases (not a tree, an alignment or a text document) is shown in a view of its
   // choice; a document that cannot draw a circle is shown in Linear Map whatever the view, by the rule
   // View › Rotate Circular Map… reads (circularMapUnavailableReason), whose sentence says why.
