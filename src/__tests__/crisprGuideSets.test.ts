@@ -361,3 +361,34 @@ describe('a guide set is kept with its criteria, report, rows and provenance (US
     expect(list.kind === 'unreadable' && list.error.kind).toBe('unavailable');
   });
 });
+
+/**
+ * BG-01M7M602 AC1: an empty or whitespace-only stored value is malformed, said so in its own words.
+ * Wrong implementations this kills (LC-006): the empty branch deleted (JSON.parse('') throws, so the
+ * kind alone would still read malformed - the words are what tell it apart), or the empty value read
+ * as no saved sets.
+ */
+describe('an empty stored value is reported malformed, never as no saved sets (BG-01M7M602)', () => {
+  it('BG-01M7M602 AC1 an empty or whitespace stored value is reported malformed as holding an empty value', () => {
+    const f = FIXTURES[0];
+    const run = runOf(f, scan(f));
+    for (const raw of ['', ' \n']) {
+      const label = JSON.stringify(raw);
+      const mem = memory({ [GUIDE_SET_DATABASE_KEY]: raw });
+      const db = openGuideSetDatabase({ storage: mem.storage, newId: ids });
+      const read = db.read();
+      expect(read.ok, `${label} is not read as a list`).toBe(false);
+      if (read.ok) continue;
+      expect(read.error.kind, label).toBe('malformed');
+      expect(read.error.message, label).toContain('it holds an empty value');
+      expect(read.error.storedValue, label).toBe(raw);
+      const listed = db.listForDocument(f.doc.id);
+      expect(listed.kind, `${label}: never no saved searches`).toBe('unreadable');
+      expect(listed.kind === 'unreadable' && listed.error.message, label).toContain('it holds an empty value');
+      const saved = db.save(run, docRef(f.doc));
+      expect(saved.ok, `${label}: the save refuses`).toBe(false);
+      expect(mem.writes, `${label}: nothing written`).toEqual([]);
+      expect(mem.raw(), `${label}: the stored value byte for byte`).toBe(raw);
+    }
+  });
+});

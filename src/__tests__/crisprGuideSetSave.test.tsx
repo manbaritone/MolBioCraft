@@ -223,3 +223,69 @@ describe('Save this result keeps a CRISPR search as a guide set across a restart
     }, { storage });
   });
 });
+
+/**
+ * BG-01M7M602 AC1: what the tab hands the store beyond the name and the rows. A circular record and
+ * an origin-crossing selection, so the interval's length and its crossesOrigin are both the less
+ * likely value. Wrong implementations this kills (LC-002): the interval saved as null or rebuilt
+ * without crossing the origin; the result cap written as a literal other than what the engine was
+ * asked for; ranAt a fixed time, or taken when Save is pressed rather than when Run was.
+ */
+describe('a saved guide set records the interval, the result cap and the time of its run (BG-01M7M602)', () => {
+  it('BG-01M7M602 AC1 a Save after an interval search over a selection stores the run\'s interval, the engine payload\'s maxResults and a ranAt from when Run was pressed', async () => {
+    const storage = memoryStorage();
+    const circle: SequenceDocument = { ...dnaDoc('pBG602_Circle', SAVE_DOC.sequence), topology: 'circular' };
+    // 1301..400 across the origin of 1,500 bp: 200 bases before it and 400 after, the guide at 201 inside.
+    const selected = { start: 1301, end: 400 };
+    const payloads: Record<string, unknown>[] = [];
+    await withApp(async (app) => {
+      await app.restoreSession({
+        documents: [circle],
+        activeDocId: circle.id,
+        viewerTab: 'primers-pcr',
+        workspace: { selectedRange: { label: 'Selection', ...selected } },
+      });
+      await app.menu('primers:crispr');
+      expect(app.one('select[aria-label="Search range:"]', 'the search-range chooser').value, 'the selection is the scope').toBe('interval');
+      engine.asyncReply = async (payload, real) => {
+        payloads.push(payload);
+        return real('scan_crispr_guides', payload);
+      };
+
+      const t0 = Date.now();
+      await pressRun(app);
+      await app.settle();
+      const tA = Date.now();
+      expect(payloads, 'one scan_crispr_guides call').toHaveLength(1);
+      const payload = payloads[0];
+      expect([payload.start1Based, payload.end1Based], 'the selection is what the engine searched').toEqual([selected.start, selected.end]);
+      expect(payload.maxResults, 'the cap the engine was asked for').toBe(25);
+      expect(listedGuideIds(app).length, 'the run found the planted guide').toBeGreaterThan(0);
+      expect(saveOffered(app)).toBe(true);
+      // Date is real (mountApp fakes only setTimeout and setInterval): spin until the clock moves on.
+      while (Date.now() <= tA) {
+        /* spin */
+      }
+      const t1 = Date.now();
+      await app.click(saveButtons(app)[0]);
+
+      const stored = JSON.parse(storage.getItem(GUIDE_SET_KEY) ?? 'null') as {
+        sets: { ranAt: string; criteria: { interval: unknown; resultCap: unknown } }[];
+      };
+      expect(stored.sets, 'one saved set').toHaveLength(1);
+      const set = stored.sets[0];
+      expect(set.criteria.interval, 'the run\'s interval, across the origin').toEqual({
+        start: 1301,
+        end: 400,
+        lengthBp: 600,
+        crossesOrigin: true,
+      });
+      expect(set.criteria.resultCap, 'the maxResults the engine was sent').toBe(payload.maxResults);
+      const ranAt = Date.parse(set.ranAt);
+      expect(Number.isNaN(ranAt), `ranAt ${set.ranAt} is a time`).toBe(false);
+      expect(ranAt, 'ranAt is not before Run was pressed').toBeGreaterThanOrEqual(t0);
+      expect(ranAt, 'ranAt is not after the reply settled').toBeLessThanOrEqual(tA);
+      expect(tA, 'Save is pressed after the clock moved on').toBeLessThan(t1);
+    }, { storage });
+  });
+});
