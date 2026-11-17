@@ -8,7 +8,7 @@
  */
 
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
-import { invokeRustBioSync } from '../lib/rustBioEngine';
+import { invokeRustBioNativeAsync, invokeRustBioSync } from '../lib/rustBioEngine';
 import { sequenceRevision } from './restrictionDisplay';
 import type {
   AnnealedOligoResult,
@@ -766,21 +766,71 @@ export function scanCrisprGuides(
 ): CrisprScanResult {
   let reply: unknown;
   try {
-    reply = invokeRustBioSync<unknown>('scan_crispr_guides', {
-      seq: rawSeq,
-      nuclease,
-      maxResults,
-      circular,
-      // Both bounds or neither: the engine refuses one alone rather than reading it as the whole
-      // sequence.
-      ...(interval ? { start1Based: interval.start, end1Based: interval.end } : {}),
-    });
+    reply = invokeRustBioSync<unknown>(
+      'scan_crispr_guides',
+      crisprScanPayload(rawSeq, nuclease, maxResults, circular, interval)
+    );
   } catch (e) {
-    return {
-      guides: [],
-      reportUnavailableReason: `the scan could not be run: ${e instanceof Error ? e.message : String(e)}`,
-    };
+    return crisprScanNotRun(e);
   }
+  return readCrisprScanReply(reply);
+}
+
+/**
+ * The same scan as {@link scanCrisprGuides}, asked for off the UI thread (US-01M7DVJK, D0171): one
+ * `scan_crispr_guides` call with the same payload through `invokeRustBioNativeAsync`, which reaches
+ * the desktop's worker pool and falls back to the in-process WASM engine elsewhere. The reply is read
+ * by the same reader, so the two cannot disagree on what a reply means. It never rejects: a call
+ * that threw comes back as a result with no report and the reason, as the synchronous scan's does.
+ */
+export async function scanCrisprGuidesAsync(
+  rawSeq: string,
+  nuclease = 'SpCas9 (NGG)',
+  maxResults = 30,
+  circular = false,
+  interval?: { start: number; end: number } | null
+): Promise<CrisprScanResult> {
+  let reply: unknown;
+  try {
+    reply = await invokeRustBioNativeAsync<unknown>(
+      'scan_crispr_guides',
+      crisprScanPayload(rawSeq, nuclease, maxResults, circular, interval)
+    );
+  } catch (e) {
+    return crisprScanNotRun(e);
+  }
+  return readCrisprScanReply(reply);
+}
+
+/** What both scans send the engine. */
+function crisprScanPayload(
+  rawSeq: string,
+  nuclease: string,
+  maxResults: number,
+  circular: boolean,
+  interval?: { start: number; end: number } | null
+) {
+  return {
+    seq: rawSeq,
+    nuclease,
+    maxResults,
+    circular,
+    // Both bounds or neither: the engine refuses one alone rather than reading it as the whole
+    // sequence.
+    ...(interval ? { start1Based: interval.start, end1Based: interval.end } : {}),
+  };
+}
+
+/** A scan whose call threw: no report, and the reason. */
+function crisprScanNotRun(e: unknown): CrisprScanResult {
+  return {
+    guides: [],
+    reportUnavailableReason: `the scan could not be run: ${e instanceof Error ? e.message : String(e)}`,
+  };
+}
+
+/** The one reader of a `scan_crispr_guides` reply, which both scans call. */
+function readCrisprScanReply(reply: unknown): CrisprScanResult {
   const guides = Array.isArray((reply as { guides?: unknown } | null)?.guides)
     ? ((reply as { guides: CrisprScanGuide[] }).guides ?? [])
     : [];

@@ -207,6 +207,13 @@ async function openSubTab(app: AppHarness, tab: SubTab) {
   await app.click(hit[0]);
   expect(selectedSubTab(app)).toBe(tab);
 }
+/**
+ * Presses the CRISPR card's own Run (US-01M7DVJK): the tab searches only when asked, so its guides
+ * are read after a Run with the nuclease the test chose.
+ */
+async function pressRun(app: AppHarness): Promise<void> {
+  await app.click(app.one('[data-crispr-run]', 'the CRISPR Run button'));
+}
 /** The Saved sub-tab's own count of binding sites, read from its label. */
 const savedTabCount = (app: AppHarness) => {
   const label = subTabButtons(app).map((b) => words(b.textContent)).find((t) => SUB_TABS.saved.test(t)) ?? '';
@@ -515,6 +522,7 @@ describe('the values the inspector keeps (AC5)', () => {
         expect(inSection(app, SCREENING, MISMATCHES).value, `${where}: the tolerance`).toBe('0');
         expect(savedHits(app), `${where}: the hits at 0 mismatches`).toEqual(hits);
         await openSubTab(app, 'crispr');
+        await pressRun(app);
         expect(inSection(app, GUIDES, NUCLEASE).value, `${where}: the nuclease`).toBe(CAS12A);
         expect(guideRows(app), `${where}: the Cas12a guides`).toEqual(guides);
       };
@@ -550,12 +558,15 @@ describe('the nuclease set in the inspector (AC6)', () => {
       expect([...spacersOf(cas12a)].filter((s) => spacersOf(spCas9).has(s)), 'the two lists share no spacer').toEqual([]);
 
       expect(inSection(app, GUIDES, NUCLEASE).value).toBe(SPCAS9);
+      await pressRun(app);
       expect(guideRows(app), 'SpCas9 guides are listed first').toEqual(spCas9);
       await app.change(inSection(app, GUIDES, NUCLEASE), CAS12A);
+      await pressRun(app);
       expect(guideRows(app), 'Cas12a guides are listed for Cas12a').toEqual(cas12a);
       expect(words(card(app.canvas(), CRISPR_CARD).querySelectorAll('.info-callout')[0].textContent),
         'the callout names the nuclease chosen').toContain(`candidate ${CAS12A} guides`);
       await app.change(inSection(app, GUIDES, NUCLEASE), SPCAS9);
+      await pressRun(app);
       expect(guideRows(app), 'and SpCas9 guides again').toEqual(spCas9);
     });
   });

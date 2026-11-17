@@ -180,9 +180,18 @@ function partsByBases(
 
 // ─── Reading the App ───
 
+/**
+ * Presses the CRISPR tab's own Run (US-01M7DVJK): the tab searches only when asked, so every reading
+ * of its rows follows a Run with the criteria the test chose.
+ */
+async function pressRun(app: AppHarness): Promise<void> {
+  await app.click(app.one('[data-crispr-run]', 'the CRISPR Run button'));
+}
+
 const onCrisprTab = async (app: AppHarness, doc: SequenceDocument) => {
   await app.restoreSession({ documents: [doc], activeDocId: doc.id, viewerTab: 'primers-pcr' });
   await app.menu('primers:crispr');
+  await pressRun(app);
 };
 
 /** The guide table's row for `guideId`. */
@@ -488,6 +497,7 @@ const onCrisprTabWithSelection = async (
     workspace: { selectedRange: { label: 'Selection', ...selectedRange } },
   });
   await app.menu('primers:crispr');
+  await pressRun(app);
 };
 
 /** This launch's engine over `interval` alone, as the tab asks it when a span is selected. */
@@ -774,6 +784,7 @@ const onCas12aTab = async (app: AppHarness, doc: SequenceDocument) => {
   await onCrisprTab(app, doc);
   await app.change(app.one('select[aria-label="Nuclease / PAM:"]', 'the nuclease chooser'), CAS12A);
   await app.settle();
+  await pressRun(app);
   expect(
     app.one(`[data-nuclease-facts]`, 'the chosen preset\'s facts').getAttribute('data-nuclease-facts'),
     'the tab is scanning for the 5\'-PAM preset'

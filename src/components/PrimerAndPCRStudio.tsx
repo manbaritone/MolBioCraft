@@ -1,7 +1,7 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ChevronRight } from 'lucide-react';
 import {
   CrisprGuideRecord,
@@ -16,12 +16,16 @@ import {
   designPCRPrimers,
   documentPrimerCandidate as screeningCandidateOf,
   crisprNucleasePresets,
-  scanCrisprGuides,
+  scanCrisprGuidesAsync,
   findPrimerBindings,
   primerMatchSettingsText,
   testSavedPrimersOnSequence,
+  type CrisprNucleasePreset,
   type CrisprScanGuide,
+  type CrisprScanReport,
+  type CrisprScanResult,
 } from '../core/bioEngine';
+import { sequenceRevision } from '../core/restrictionDisplay';
 import {
   crisprGuideExportTable,
   crisprHeuristicRuleText,
@@ -45,6 +49,73 @@ import { usePrimerDatabaseSave } from './PrimerDatabaseWindow';
 
 /** How many of the candidate guides the CRISPR tab lists. */
 const CRISPR_GUIDES_LISTED = 25;
+
+/** An interval a CRISPR search may be asked for: 1-based bounds, `start > end` across the origin. */
+type CrisprInterval = { start: number; end: number; lengthBp: number; crossesOrigin: boolean };
+
+/**
+ * One CRISPR search as it was asked for (US-01M7DVJK): its name, the document and the sequence
+ * revision it ran on, and the nuclease, scope and topology it ran with. A result is read through the
+ * run it came from, so its words never follow the tab's current chooser (AC6).
+ */
+interface CrisprRun {
+  serial: number;
+  name: string;
+  docId: string;
+  docName: string;
+  revision: string;
+  topology: 'circular' | 'linear';
+  nuclease: string;
+  preset?: CrisprNucleasePreset;
+  interval: CrisprInterval | null;
+  /** The bases the engine was asked to search: the interval's own length, or the sequence's. */
+  askedBp: number;
+}
+
+/** A search the engine answered with a report and no interval refusal. */
+interface CrisprCompletedSearch {
+  run: CrisprRun;
+  result: CrisprScanResult & { report: CrisprScanReport };
+}
+
+/** Where the last search asked for stands. */
+type CrisprRunStatus =
+  | { phase: 'running' | 'stopped' | 'done'; run: CrisprRun }
+  | { phase: 'failed'; run: CrisprRun; refusal?: string; unavailable?: string };
+
+/**
+ * The CRISPR searches of this app session (D0172): the last completed result per document id, and
+ * where the last search asked for stands. It is held here, outside the component, because the App
+ * draws the studio only while its tab is shown, so a guide jump to the Sequence view would otherwise
+ * drop a result that took a run to get. It is not kept across a restart.
+ */
+const crisprSearches: {
+  results: Map<string, CrisprCompletedSearch>;
+  /**
+   * Per document, the scope chosen and the interval held for it (US-01M7DVJK AC5), kept here with
+   * the results so an edit made in another view does not drop the bounds the search was set to.
+   */
+  scopes: Map<string, { choice: 'whole' | 'interval'; held: CrisprInterval | null }>;
+  /** The document of the last completed search, which a tab on another document names. */
+  lastDocId: string | null;
+  status: CrisprRunStatus | null;
+  /** The serial of the run whose reply may still be read; Stop and every new Run move it on. */
+  serial: number;
+  version: number;
+  listeners: Set<() => void>;
+} = { results: new Map(), scopes: new Map(), lastDocId: null, status: null, serial: 0, version: 0, listeners: new Set() };
+
+const crisprSearchesChanged = () => {
+  crisprSearches.version += 1;
+  for (const listener of crisprSearches.listeners) listener();
+};
+const subscribeCrisprSearches = (listener: () => void) => {
+  crisprSearches.listeners.add(listener);
+  return () => {
+    crisprSearches.listeners.delete(listener);
+  };
+};
+const crisprSearchesVersion = () => crisprSearches.version;
 
 /**
  * Why no CRISPR row has a genome-wide specificity (US-01M7DVVR AC3): the scan counts seed copies in
@@ -396,27 +467,120 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       note: '',
     };
   }, [selectedRange, doc.sequence.length, doc.topology, chosenPreset, crisprNuclease]);
-  // Which of the two scopes the scan is asked for. A user who selected a span and then asked for
-  // CRISPR sites meant that span, so the interval is preferred wherever one is on offer; choosing
-  // the whole sequence here keeps it, and a selection that cannot be searched falls back to the
-  // whole sequence rather than to nothing.
-  const [crisprScopeChoice, setCrisprScopeChoice] = useState<'whole' | 'interval'>('interval');
-  const crisprScope: 'whole' | 'interval' =
-    crisprScopeChoice === 'interval' && crisprRangeOffer.interval ? 'interval' : 'whole';
-  // The record's own topology goes to the engine: a plasmid is scanned as the circle it is, so the
-  // guides across its origin are listed (BG-01M6T6GQ). The interval goes with it where one was
-  // asked for, and the engine then searches that arc of the record alone (US-01M7DVAS).
-  const crisprResult = useMemo(
-    () =>
-      scanCrisprGuides(
-        doc.sequence,
-        crisprNuclease,
-        CRISPR_GUIDES_LISTED,
-        doc.topology === 'circular',
-        crisprScope === 'interval' ? crisprRangeOffer.interval : null
-      ),
-    [doc.sequence, doc.topology, crisprNuclease, crisprScope, crisprRangeOffer.interval]
-  );
+  // Which of the two scopes the search is asked for. A user who selected a span and then asked for
+  // CRISPR sites meant that span, so the interval is preferred wherever one is on offer.
+  // The searches of this session (D0172), read from the module's store.
+  useSyncExternalStore(subscribeCrisprSearches, crisprSearchesVersion, crisprSearchesVersion);
+  const crisprScopeState = crisprSearches.scopes.get(doc.id) ?? { choice: 'interval' as const, held: null };
+  const crisprScopeChoice = crisprScopeState.choice;
+  const setCrisprScopeChoice = (choice: 'whole' | 'interval') => {
+    crisprSearches.scopes.set(doc.id, { ...crisprScopeState, choice });
+    crisprSearchesChanged();
+  };
+  // The bounds on offer when the scope was last set to the interval (US-01M7DVJK AC5): the search
+  // holds them, so a sequence shortened under them or a record set linear under an origin-crossing
+  // interval sends them as chosen and the engine's refusal is reported, rather than the search being
+  // widened to the whole sequence on the user's behalf.
+  const offered = crisprRangeOffer.interval;
+  useEffect(() => {
+    const now = crisprSearches.scopes.get(doc.id) ?? { choice: 'interval' as const, held: null };
+    if (now.choice !== 'interval' || !offered) return;
+    if (now.held && now.held.start === offered.start && now.held.end === offered.end) return;
+    crisprSearches.scopes.set(doc.id, { ...now, held: offered });
+    crisprSearchesChanged();
+  }, [crisprScopeChoice, offered, doc.id]);
+  const crisprIntervalAsked: CrisprInterval | null =
+    crisprScopeChoice !== 'interval' ? null : offered ?? crisprScopeState.held;
+  const crisprScope: 'whole' | 'interval' = crisprIntervalAsked ? 'interval' : 'whole';
+  /** The interval held for the search that is no longer on offer as the selection. */
+  const crisprHeldOnly = crisprIntervalAsked !== null && crisprRangeOffer.interval === null;
+
+  const docTopology: 'circular' | 'linear' = doc.topology === 'circular' ? 'circular' : 'linear';
+  const docRevision = useMemo(() => sequenceRevision(doc.sequence, docTopology), [doc.sequence, docTopology]);
+  const crisprStored = crisprSearches.results.get(doc.id);
+  // A result belongs to the document and the sequence revision it ran on (US-01M7DVJK AC6): it is
+  // shown only while both are the active document's.
+  const crisprShown = crisprStored && crisprStored.run.revision === docRevision ? crisprStored : undefined;
+  const crisprWithdrawn: { why: 'earlier-sequence' | 'other-document'; run: CrisprRun } | null = crisprShown
+    ? null
+    : crisprStored
+    ? { why: 'earlier-sequence', run: crisprStored.run }
+    : crisprSearches.lastDocId !== null && crisprSearches.lastDocId !== doc.id
+    ? { why: 'other-document', run: crisprSearches.results.get(crisprSearches.lastDocId)!.run }
+    : null;
+  const crisprStatus = crisprSearches.status;
+  const crisprShownRun = crisprShown?.run;
+  /** The last search on this document failed, and nothing it said is a result. */
+  const crisprFailed = crisprStatus?.phase === 'failed' && crisprStatus.run.docId === doc.id ? crisprStatus : null;
+
+  const crisprNameDefault = `${doc.name}, ${crisprNuclease}, ${
+    crisprIntervalAsked
+      ? `bases ${bp(crisprIntervalAsked.start)}..${bp(crisprIntervalAsked.end)}`
+      : 'whole sequence'
+  }`;
+  const [crisprNameDraft, setCrisprNameDraft] = useState<string | null>(null);
+  useEffect(() => {
+    setCrisprNameDraft(null);
+  }, [doc.id]);
+  const crisprName = crisprNameDraft !== null && crisprNameDraft.trim() !== '' ? crisprNameDraft.trim() : crisprNameDefault;
+
+  /**
+   * Run the search as named (US-01M7DVJK, D0171): one engine call over the whole scope asked for,
+   * off the UI thread. Its reply is read only while its serial is the store's: Stop and a later Run
+   * each move the serial on, so a reply that comes after either is dropped unread.
+   */
+  const runCrisprSearch = () => {
+    const serial = (crisprSearches.serial += 1);
+    const interval = crisprIntervalAsked;
+    const run: CrisprRun = {
+      serial,
+      name: crisprName,
+      docId: doc.id,
+      docName: doc.name,
+      revision: docRevision,
+      topology: docTopology,
+      nuclease: crisprNuclease,
+      ...(chosenPreset ? { preset: chosenPreset } : {}),
+      interval,
+      askedBp: interval ? interval.lengthBp : doc.sequence.length,
+    };
+    crisprSearches.status = { phase: 'running', run };
+    crisprSearchesChanged();
+    void scanCrisprGuidesAsync(
+      doc.sequence,
+      crisprNuclease,
+      CRISPR_GUIDES_LISTED,
+      docTopology === 'circular',
+      interval ? { start: interval.start, end: interval.end } : null
+    ).then((result) => {
+      if (crisprSearches.serial !== serial) return;
+      const report = result.report;
+      if (!report) {
+        crisprSearches.status = {
+          phase: 'failed',
+          run,
+          unavailable: result.reportUnavailableReason ?? 'the engine sent no scan report',
+        };
+      } else if (report.intervalRefusal !== undefined) {
+        crisprSearches.status = { phase: 'failed', run, refusal: report.intervalRefusal };
+      } else {
+        crisprSearches.results.set(run.docId, { run, result: { ...result, report } });
+        crisprSearches.lastDocId = run.docId;
+        crisprSearches.status = { phase: 'done', run };
+      }
+      crisprSearchesChanged();
+    });
+  };
+  /** Stop abandons the reply (D0171): nothing the engine sends for this run is read. */
+  const stopCrisprSearch = () => {
+    const status = crisprSearches.status;
+    if (status?.phase !== 'running') return;
+    crisprSearches.serial += 1;
+    crisprSearches.status = { phase: 'stopped', run: status.run };
+    crisprSearchesChanged();
+  };
+
+  const crisprResult: CrisprScanResult = crisprShown?.result ?? { guides: [] };
   const crisprGuides = crisprResult.guides;
   /**
    * The rank's rule in the engine's own words (BG-01M7EYED): one sentence, asked for once, from the
@@ -451,6 +615,8 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
    * read here rather than copied. Every surface that prints it sits behind a scan report, so a scan
    * that sent none prints no scope at all.
    */
+  // A result is shown only on the revision it ran on, which hashes the topology with the bases, so
+  // the document's topology here is the one the run was made with (US-01M7DVJK AC6).
   const crisprReadAs = crisprScan ? crisprScanReadAs(crisprScan, doc.topology) : '';
   /**
    * What a seed count covered, as an annotation of the document has to say it (BG-01M7EQAA AC1):
@@ -477,7 +643,15 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       : crisprSeedText(crisprScan);
   const crisprTabCount =
     crisprCandidates === undefined
-      ? 'scan report unavailable'
+      ? crisprStatus?.phase === 'running'
+        ? 'running'
+        : crisprFailed?.refusal !== undefined
+        ? 'no range searched'
+        : crisprFailed
+        ? 'scan report unavailable'
+        : crisprWithdrawn
+        ? 'result withdrawn'
+        : 'no search run'
       : crisprCandidates > crisprReturned
       ? `top ${bp(crisprReturned)} of ${bp(crisprCandidates)} Guides`
       : `${bp(crisprReturned)} Guides`;
@@ -489,7 +663,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   const [crisprSelectedIds, setCrisprSelectedIds] = useState<string[]>([]);
   useEffect(() => {
     setCrisprSelectedIds([]);
-  }, [doc.id, crisprNuclease, crisprScope]);
+  }, [doc.id, crisprShownRun?.serial]);
   const crisprSelected = useMemo(() => new Set(crisprSelectedIds), [crisprSelectedIds]);
   const crisprSelectedShown = crisprGuides.filter((g) => crisprSelected.has(g.id)).length;
   /**
@@ -506,7 +680,8 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     return crisprGuideExportTable({
       guides: selected.length > 0 ? selected : shown,
       document: doc,
-      ...(chosenPreset ? { preset: chosenPreset } : {}),
+      // The preset the run was made with, never the chooser's current one (US-01M7DVJK AC6).
+      ...(crisprShownRun?.preset ? { preset: crisprShownRun.preset } : {}),
       ...(crisprScan ? { scan: crisprScan } : {}),
       // The rank's rule in the engine's own words, never restated here (BG-01M7E61C) — the same
       // sentence the callout shows, asked for once (BG-01M7EYED).
@@ -728,6 +903,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
    * call and so in one undoable step - a single undo takes both away, never the spacer alone.
    */
   const handleAnnotateCrisprGuide = (g: CrisprScanGuide) => {
+    if (!crisprShown) return;
     const { parts, features } = crisprGuideAnnotation(g, Date.now());
     onUpdateDocument({
       ...doc,
@@ -744,6 +920,8 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
    * own Annotate writes (BG-01M7EQAA AC2), in one undoable step.
    */
   const handleAnnotateTop5Crispr = () => {
+    // A withdrawn result, or none, annotates nothing (US-01M7DVJK AC6).
+    if (!crisprShown) return;
     const stamp = Date.now();
     const annotated = crisprGuides.slice(0, 5);
     const top5: SequenceFeature[] = annotated.flatMap((g) => crisprGuideAnnotation(g, stamp).features);
@@ -947,6 +1125,13 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
         {crisprRangeOffer.interval && (
           <option value="interval">
             {`The selected interval ${bp(crisprRangeOffer.interval.start)}..${bp(crisprRangeOffer.interval.end)} (${bp(crisprRangeOffer.interval.lengthBp)} bp${crisprRangeOffer.interval.crossesOrigin ? ', across the origin' : ''})`}
+          </option>
+        )}
+        {/* The interval this search was set to, held when it is no longer on offer, so Run sends
+            it as it was chosen (US-01M7DVJK AC5). */}
+        {crisprHeldOnly && crisprIntervalAsked && (
+          <option value="interval">
+            {`The interval this search was set to, ${bp(crisprIntervalAsked.start)}..${bp(crisprIntervalAsked.end)} (${bp(crisprIntervalAsked.lengthBp)} bp${crisprIntervalAsked.crossesOrigin ? ', across the origin' : ''})`}
           </option>
         )}
         <option value="whole">
@@ -1410,24 +1595,92 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             <div className="cloning-action-row">
               {!inWorkbench && nucleaseSelect}
               {!inWorkbench && searchRangeSelect}
-              <button className="btn-success" onClick={handleAnnotateTop5Crispr}>
+              <label className="form-field">
+                <span>Search name:</span>
+                <input
+                  type="text"
+                  aria-label="Search name:"
+                  data-crispr-search-name=""
+                  value={crisprNameDraft ?? crisprNameDefault}
+                  onChange={(e) => setCrisprNameDraft(e.target.value)}
+                />
+              </label>
+              <button
+                type="button"
+                className="btn-primary"
+                data-crispr-run=""
+                title={`Search ${crisprScope === 'interval' && crisprIntervalAsked ? `bases ${bp(crisprIntervalAsked.start)}..${bp(crisprIntervalAsked.end)}` : 'the whole sequence'} of ${doc.name} for ${crisprNuclease} guides`}
+                onClick={runCrisprSearch}
+              >
+                Run
+              </button>
+              {crisprStatus?.phase === 'running' && (
+                <button type="button" className="btn-secondary-sm" data-crispr-stop="" onClick={stopCrisprSearch}>
+                  Stop
+                </button>
+              )}
+              <button
+                className="btn-success"
+                onClick={handleAnnotateTop5Crispr}
+                disabled={!crisprShown}
+                title={crisprShown ? undefined : 'No search result is shown for this sequence: press Run first'}
+              >
                 + Annotate Top 5 Guides onto {doc.name}
               </button>
             </div>
           </div>
 
+          {/* Where the search stands (US-01M7DVJK): running, stopped, failed or done, by its name,
+              and why a result held for this session is not shown here (AC6). */}
+          {crisprStatus &&
+            (crisprStatus.phase === 'running' ||
+              (crisprStatus.phase === 'done'
+                ? crisprShownRun?.serial === crisprStatus.run.serial
+                : crisprStatus.run.docId === doc.id)) && (
+              <p className="mbc-opdlg-muted" role="status" data-crispr-run-status={crisprStatus.phase}>
+                {crisprStatus.phase === 'running'
+                  ? `Running "${crisprStatus.run.name}": the engine was asked for ${bp(crisprStatus.run.askedBp)} bp.`
+                  : crisprStatus.phase === 'stopped'
+                  ? `Stopped "${crisprStatus.run.name}" before the engine replied: ${bp(crisprStatus.run.askedBp)} bp were asked for and no result is shown.`
+                  : crisprStatus.phase === 'done'
+                  ? `"${crisprStatus.run.name}" searched ${bp(crisprShown!.result.report.scannedLengthBp)} bp.`
+                  : `"${crisprStatus.run.name}" failed: ${
+                      crisprStatus.phase === 'failed' && crisprStatus.refusal !== undefined
+                        ? `the engine searched no range: ${crisprStatus.refusal}`
+                        : `the CRISPR scan report is unavailable (${crisprStatus.phase === 'failed' ? crisprStatus.unavailable : ''})`
+                    }${crisprShownRun ? ` The result of "${crisprShownRun.name}" is left as it was.` : ''}`}
+              </p>
+            )}
+          {crisprWithdrawn && (
+            <p className="mbc-opdlg-muted" data-crispr-withdrawn={crisprWithdrawn.why}>
+              {crisprWithdrawn.why === 'other-document'
+                ? `"${crisprWithdrawn.run.name}" ran on another document ("${crisprWithdrawn.run.docName}"), so none of its guides is shown here: press Run to search ${doc.name}.`
+                : `"${crisprWithdrawn.run.name}" ran on an earlier sequence of ${doc.name}: its bases or topology have changed since, so none of its guides is shown: press Run to search it again.`}
+            </p>
+          )}
+
           <div className="info-callout">
             {/* An interval the engine refused was searched not at all, so this line claims no
                 range, no candidate count and no seed count for it (US-01M7DVAS AC6). */}
-            {crisprIntervalRefusal !== undefined
+            {/* With no result shown, the last failure on this document is the answer, then why a
+                result is withheld, then that no search has been run (US-01M7DVJK AC1, AC5). */}
+            {crisprShownRun === undefined
+              ? crisprFailed?.refusal !== undefined
+                ? `No range was searched: ${crisprFailed.refusal} No guide, range or seed count is claimed here.`
+                : crisprFailed
+                ? `CRISPR scan report unavailable (${crisprFailed.unavailable}): this tab cannot say how many candidate guides there are, what range was searched, or whether the scan is complete.`
+                : crisprWithdrawn
+                ? `No guide is shown for this sequence: the last search ran on ${crisprWithdrawn.why === 'other-document' ? 'another document' : 'an earlier sequence'}. Press Run to search it.`
+                : `No search has been run on ${doc.name}: choose the nuclease and the range, then press Run.`
+              : crisprIntervalRefusal !== undefined
               ? `No range was searched: ${crisprIntervalRefusal} No guide, range or seed count is claimed here.`
               : crisprCandidates === undefined
               ? `CRISPR scan report unavailable (${crisprResult.reportUnavailableReason ?? 'the engine sent no scan report'}): this tab cannot say how many candidate guides there are, what range was searched, or whether the scan is complete.`
               : crisprCandidates === 0
-              ? `No candidate ${crisprNuclease} guide: 0 of the candidates this scan looked for are in ${crisprReadAs}.`
+              ? `No candidate ${crisprShownRun.nuclease} guide: 0 of the candidates this scan looked for are in ${crisprReadAs}.`
               : crisprCandidates > crisprReturned
-              ? `Lists the ${bp(crisprReturned)} highest-scoring of the ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`
-              : `Lists all ${bp(crisprCandidates)} candidate ${crisprNuclease} guides found.`}{' '}
+              ? `Lists the ${bp(crisprReturned)} highest-scoring of the ${bp(crisprCandidates)} candidate ${crisprShownRun.nuclease} guides found.`
+              : `Lists all ${bp(crisprCandidates)} candidate ${crisprShownRun.nuclease} guides found.`}{' '}
             {/* What was searched, in the scan's own numbers: the interval, its length, the whole
                 sequence's length and the bases outside the interval that were read for a PAM — so
                 an interval scan is never read as a scan of the whole sequence (US-01M7DVAS AC4). */}

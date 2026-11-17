@@ -175,6 +175,14 @@ async function engineRevision(doc: SequenceDocument): Promise<string> {
 
 // ─── Reading and driving the App ───
 
+/**
+ * Presses the CRISPR tab's own Run (US-01M7DVJK): the tab searches only when asked, so every reading
+ * of its rows follows a Run with the criteria the test chose.
+ */
+async function pressRun(app: AppHarness): Promise<void> {
+  await app.click(app.one('[data-crispr-run]', 'the CRISPR Run button'));
+}
+
 const onCrisprTab = async (
   app: AppHarness,
   doc: SequenceDocument,
@@ -187,6 +195,7 @@ const onCrisprTab = async (
     ...(selectedRange ? { workspace: { selectedRange: { label: 'Selection', ...selectedRange } } } : {}),
   });
   await app.menu('primers:crispr');
+  await pressRun(app);
 };
 
 /** The guide ids the table lists, in the order it draws them. */
@@ -201,6 +210,7 @@ async function chooseNuclease(app: AppHarness, nuclease: string): Promise<void> 
     await app.click(toggle);
   }
   await app.change(app.one('select[aria-label="Nuclease / PAM:"]', 'the nuclease chooser'), nuclease);
+  await pressRun(app);
 }
 
 /** What the clipboard holds now, read through the same API the tab writes with. */
@@ -818,6 +828,13 @@ describe('BG-01M7EZVV AC3: the seed length is stated from one source', () => {
             ? { ...result, report: { ...result.report, seedLengthBp: (result.report.seedLengthBp ?? 0) + 7 } }
             : result;
         },
+        // The tab's Run asks through the async sibling (US-01M7DVJK): the same substitution there.
+        scanCrisprGuidesAsync: async (...args: Parameters<typeof real.scanCrisprGuidesAsync>) => {
+          const result = await real.scanCrisprGuidesAsync(...args);
+          return result.report
+            ? { ...result, report: { ...result.report, seedLengthBp: (result.report.seedLengthBp ?? 0) + 7 } }
+            : result;
+        },
       };
     });
     try {
@@ -1125,6 +1142,12 @@ const exportedBranches = (): Promise<ExportedBranch[]> =>
       }
       for (const { branch, variantOf, doc, interval } of cases) {
         await onCrisprTab(app, doc, interval);
+        // A search holds the interval it was last set to (US-01M7DVJK AC5), and this launch searched
+        // the same plasmid over an interval before: a whole-sequence case asks for the whole and runs.
+        if (!interval) {
+          await app.change(app.one('select[aria-label="Search range:"]', 'the search-range chooser'), 'whole');
+          await pressRun(app);
+        }
         const scan = await engineScan(doc, SPCAS9, interval);
         expect(scan.report, `${branch}: the engine sent a scan report`).toBeTruthy();
         expect(scan.guides.length, `${branch}: the fixture holds guides to export`).toBeGreaterThan(0);
@@ -1482,6 +1505,13 @@ describe("BG-01M7FVBN AC2: the Top 5 note's no-length path is rendered", () => {
         ...real,
         scanCrisprGuides: (...args: Parameters<typeof real.scanCrisprGuides>) => {
           const result = real.scanCrisprGuides(...args);
+          if (!result.report) return result;
+          const { seedLengthBp: _dropped, ...rest } = result.report;
+          return { ...result, report: rest };
+        },
+        // The tab's Run asks through the async sibling (US-01M7DVJK): the same substitution there.
+        scanCrisprGuidesAsync: async (...args: Parameters<typeof real.scanCrisprGuidesAsync>) => {
+          const result = await real.scanCrisprGuidesAsync(...args);
           if (!result.report) return result;
           const { seedLengthBp: _dropped, ...rest } = result.report;
           return { ...result, report: rest };

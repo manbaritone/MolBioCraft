@@ -21,10 +21,10 @@
  * - an N in a returned PAM shown as a base that was read (US-01M7DV29 AC5's row mark).
  */
 
-import React from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
-import { PrimerAndPCRStudio } from '../components/PrimerAndPCRStudio';
+import { describe, expect, it, vi } from 'vitest';
+// The studio is reached through the App (US-01M7DVJK): only its type is named here, so React DOM is
+// loaded by the harness alone, under the live DOM.
+import type { PrimerAndPCRStudio as _Studio } from '../components/PrimerAndPCRStudio';
 import { crisprNucleasePresets, scanCrisprGuides } from '../core/bioEngine';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import type { SequenceDocument } from '../types/bio';
@@ -49,17 +49,27 @@ const text = (html: string) =>
     .replace(/&#x2F;/g, '/')
     .replace(/\s+/g, ' ');
 
-/** The CRISPR tab of the studio, rendered on `doc`. */
-const crisprTab = (doc: SequenceDocument) =>
-  renderToStaticMarkup(
-    <PrimerAndPCRStudio
-      doc={doc}
-      allDocuments={[doc]}
-      onUpdateDocument={() => undefined}
-      onAddConstruct={() => undefined}
-      initialSubTab="crispr"
-    />
-  );
+/**
+ * The CRISPR tab of the real App on `doc`, after one press of its Run (US-01M7DVJK: the tab searches
+ * only when asked): the studio's markup, then the inspector's, where its nuclease chooser sits. Each
+ * call is a launch of its own, so no search of an earlier call is held.
+ */
+async function crisprTab(doc: SequenceDocument): Promise<string> {
+  const { mountApp } = await import('./appHarness');
+  const app = await mountApp();
+  try {
+    await app.restoreSession({ documents: [doc], activeDocId: doc.id, viewerTab: 'primers-pcr' });
+    await app.menu('primers:crispr');
+    await app.click(app.one('[data-crispr-run]', 'the CRISPR Run button'));
+    return app.one('.alignment-studio-wrapper', 'the studio').outerHTML + (app.inspectorAside()?.outerHTML ?? '');
+  } finally {
+    app.unmount();
+  }
+}
+export type { _Studio };
+
+// Each render launches the App, with the real WASM engine behind it (LC-038).
+vi.setConfig({ testTimeout: 120_000 });
 
 /** The nuclease chooser's markup, and the option labels it offers. */
 function nucleaseControl(html: string): { select: string; options: string[]; facts: string } {
@@ -85,7 +95,7 @@ const cas12aDoc = dnaDoc('Dv29_Cas12a', `ACACATTTA${SPACER20}ACACA`);
 const ambiguousPamDoc = dnaDoc('Dv29_AmbiguousPam', `ACACA${SPACER20}NGGACACA`);
 
 describe('the CRISPR tab offers the nucleases the engine scans for (US-01M7DV29)', () => {
-  it('US-01M7DV29 AC1 the engine lists each preset with its PAM side, pattern, spacer length, site span and cut convention, and the control offers exactly that list', () => {
+  it('US-01M7DV29 AC1 the engine lists each preset with its PAM side, pattern, spacer length, site span and cut convention, and the control offers exactly that list', async () => {
     const presets = crisprNucleasePresets();
     // The engine's own list: every fact the criterion names, for each preset.
     expect(presets).toEqual([
@@ -107,7 +117,7 @@ describe('the CRISPR tab offers the nucleases the engine scans for (US-01M7DV29)
       },
     ]);
 
-    const html = crisprTab(spcas9Doc);
+    const html = await crisprTab(spcas9Doc);
     const control = nucleaseControl(html);
     // Exactly the engine's presets, in its order, by the id the engine resolves.
     expect(optionValues(control.select)).toEqual(presets.map((n) => n.id));
@@ -122,26 +132,18 @@ describe('the CRISPR tab offers the nucleases the engine scans for (US-01M7DV29)
     expect(control.facts).toContain('between spacer nt 17 and nt 18');
 
     // The other preset, chosen: its own facts, not the first one's.
-    const cas12aHtml = renderToStaticMarkup(
-      <PrimerAndPCRStudio
-        doc={cas12aDoc}
-        allDocuments={[cas12aDoc]}
-        onUpdateDocument={() => undefined}
-        onAddConstruct={() => undefined}
-        initialSubTab="crispr"
-      />
-    );
+    const cas12aHtml = await crisprTab(cas12aDoc);
     // The default choice is the engine's first preset, so the facts shown are SpCas9's here too.
     expect(nucleaseControl(cas12aHtml).facts).toContain("PAM NGG on the 3' side");
     // Every option the control offers is a preset the engine scans for: it refuses nothing offered.
     for (const id of optionValues(control.select)) {
       expect(scanCrisprGuides(spcas9Doc.sequence, id, 5, false).report, id).toBeDefined();
     }
-  }, 55_000);
+  }, 120_000);
 
-  it('US-01M7DV29 AC6 each row names the preset and its PAM side, with the staggered second cut and an ambiguous PAM base marked', () => {
+  it('US-01M7DV29 AC6 each row names the preset and its PAM side, with the staggered second cut and an ambiguous PAM base marked', async () => {
     // SpCas9's own site: the row names the preset, its 3' PAM, and one cut position.
-    const spRows = guideRows(crisprTab(spcas9Doc));
+    const spRows = guideRows(await crisprTab(spcas9Doc));
     expect(spRows).toHaveLength(1);
     expect(spRows[0]).toContain("SpCas9 (NGG) (3' PAM)");
     expect(spRows[0], 'a blunt cutter has no second cut').not.toContain('staggered cut');
@@ -176,14 +178,14 @@ describe('the CRISPR tab offers the nucleases the engine scans for (US-01M7DV29)
     const ambiguous = scanCrisprGuides(ambiguousPamDoc.sequence, 'SpCas9 (NGG)', 5, false).guides[0];
     expect(ambiguous.pamSeq).toBe('NGG');
     expect(ambiguous.pamAmbiguityNote).toContain('N at PAM position 1');
-    const ambiguousRows = guideRows(crisprTab(ambiguousPamDoc));
+    const ambiguousRows = guideRows(await crisprTab(ambiguousPamDoc));
     expect(ambiguousRows[0]).toContain('ambiguity code, base not read');
     // And a PAM read base by base is not marked.
     expect(spGuide.pamAmbiguityNote).toBeUndefined();
     expect(spRows[0]).not.toContain('ambiguity code');
-  }, 55_000);
+  }, 120_000);
 
-  it('US-01M7DV29 AC4 a staggered target-strand cut past the end of a linear sequence has no position and says why, and a circle read whole wraps it', () => {
+  it('US-01M7DV29 AC4 a staggered target-strand cut past the end of a linear sequence has no position and says why, and a circle read whole wraps it', async () => {
     // The Cas12a site ends the molecule, so its target-strand cut (record base 32) lies past base 29.
     const endSeq = `TTTTTTTTA${SPACER20}`;
     const linear = scanCrisprGuides(endSeq, 'Cas12a / Cpf1 (TTTV)', 5, false).guides;
@@ -199,5 +201,5 @@ describe('the CRISPR tab offers the nucleases the engine scans for (US-01M7DV29)
       (g) => g.strand === 1 && g.start === 6
     )!;
     expect([circle.cutPositionTargetStrand, circle.cutPositionTargetStrandNote]).toEqual([3, undefined]);
-  }, 55_000);
+  }, 120_000);
 });

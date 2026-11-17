@@ -38,10 +38,10 @@
  * - a rank printed "/ 100" under a header stating a range it can never reach (BG-01M7E61C AC1).
  */
 
-import React from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { PrimerAndPCRStudio } from '../components/PrimerAndPCRStudio';
+// The studio is reached through the App (US-01M7DVJK): only its type is named here, so React DOM is
+// loaded by the harness alone, under the live DOM.
+import type { PrimerAndPCRStudio as _Studio } from '../components/PrimerAndPCRStudio';
 import { crisprNucleasePresets, scanCrisprGuides, type CrisprScanReport } from '../core/bioEngine';
 import { engineInputs, sourceDigestManifest } from '../../scripts/build_rust_wasm.mjs';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
@@ -95,16 +95,27 @@ const text = (html: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-const crisprTab = () =>
-  renderToStaticMarkup(
-    <PrimerAndPCRStudio
-      doc={doc}
-      allDocuments={[doc]}
-      onUpdateDocument={() => undefined}
-      onAddConstruct={() => undefined}
-      initialSubTab="crispr"
-    />
-  );
+/**
+ * The CRISPR tab of the real App on the record, after one press of its Run (US-01M7DVJK: the tab
+ * searches only when asked): the studio's markup, then the inspector's. Each call is a launch of its
+ * own, so no search of an earlier call is held.
+ */
+async function crisprTab(): Promise<string> {
+  const { mountApp } = await import('./appHarness');
+  const app = await mountApp();
+  try {
+    await app.restoreSession({ documents: [doc], activeDocId: doc.id, viewerTab: 'primers-pcr' });
+    await app.menu('primers:crispr');
+    await app.click(app.one('[data-crispr-run]', 'the CRISPR Run button'));
+    return app.one('.alignment-studio-wrapper', 'the studio').outerHTML + (app.inspectorAside()?.outerHTML ?? '');
+  } finally {
+    app.unmount();
+  }
+}
+export type { _Studio };
+
+// The CRISPR tab is read off a launch of the App, with the real WASM engine behind it (LC-038).
+vi.setConfig({ testTimeout: 120_000 });
 
 /** The guide table: its header cells and its rows, cell by cell. */
 function guideTable(html: string): { headers: string[]; rows: string[][] } {
@@ -231,8 +242,8 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
     ).toEqual([lo, hi]);
   }, 55_000);
 
-  it('US-01M7DVVR AC1 no label, header, catalogue, plugin or macro string credits a number to an unrun model, and the seed column is named for what it counts', () => {
-    const html = crisprTab();
+  it('US-01M7DVVR AC1 no label, header, catalogue, plugin or macro string credits a number to an unrun model, and the seed column is named for what it counts', async () => {
+    const html = await crisprTab();
     const { headers, rows } = guideTable(html);
     expect(rows.length, 'the fixture lists guides').toBeGreaterThan(0);
 
@@ -264,11 +275,11 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
     for (const model of UNRUN_MODELS) expect(descriptions, `menu descriptions name ${model}`).not.toContain(model);
   }, 55_000);
 
-  it('US-01M7DVVR AC3 each score names its model and inputs, and genome-wide specificity is Not evaluated with the reason', () => {
+  it('US-01M7DVVR AC3 each score names its model and inputs, and genome-wide specificity is Not evaluated with the reason', async () => {
     // The bounds are the engine's own, so the callout and the header move with the scorer and are
     // never read against a number this test wrote down (BG-01M7E61C).
     const [lo, hi] = engineRankRange();
-    const html = crisprTab();
+    const html = await crisprTab();
     const shown = callout(html);
     // The heuristic rank names the rule, every feature it reads, its real bounds, what orders the
     // list and that these SpCas9 rules of thumb are read off a Cas12a spacer unchanged. A rank
@@ -351,10 +362,10 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
    * reader sees "93 / 100" and cannot tell which bound is real; and a header or callout whose range
    * is a literal that no longer matches the scorer's own bound.
    */
-  it('BG-01M7E61C AC1 the guide table prints each rank bare under a header stating the range the engine reports', () => {
+  it('BG-01M7E61C AC1 the guide table prints each rank bare under a header stating the range the engine reports', async () => {
     const [lo, hi] = engineRankRange();
 
-    const html = crisprTab();
+    const html = await crisprTab();
     const { headers, rows } = guideTable(html);
     expect(rows.length, 'the fixture lists guides').toBeGreaterThan(0);
 
@@ -398,7 +409,7 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
    * literal did not have - an accessor returning an empty or an error string, leaving the callout
    * silent about the rule while every "does not say what it must not" check still passes.
    */
-  it('BG-01M7EYED AC3 the callout states the rule the engine runs, read from the engine', () => {
+  it('BG-01M7EYED AC3 the callout states the rule the engine runs, read from the engine', async () => {
     // The engine's own words, from the dedicated accessor that states them without scanning.
     const stated = crisprHeuristicRankDescriptionRust();
     const [lo, hi] = engineRankRange();
@@ -421,7 +432,7 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
       expect(stated, `the engine's own rank description does not name ${phrase}`).toContain(phrase);
     }
 
-    const html = crisprTab();
+    const html = await crisprTab();
     const rule = rankRule(html);
     // The reader reads the engine's sentence itself, word for word.
     expect(
@@ -446,8 +457,8 @@ describe('every CRISPR number says what it is (US-01M7DVVR)', () => {
     expect(read).toContain('Genome-wide specificity : Not evaluated');
   }, 55_000);
 
-  it('US-01M7DVVR AC5 no CRISPR surface calls a heuristic number efficiency, activity or genome-wide specificity, and an uncomputed number is unavailable, never 0 or 100', () => {
-    const html = crisprTab();
+  it('US-01M7DVVR AC5 no CRISPR surface calls a heuristic number efficiency, activity or genome-wide specificity, and an uncomputed number is unavailable, never 0 or 100', async () => {
+    const html = await crisprTab();
     const all = text(html);
     // Any word for a measured quality appears only where the sentence says the number is not it.
     // The same rule over the guided pipeline's CRISPR surfaces is `bg_01m7egf6_ac2` in
@@ -1878,21 +1889,19 @@ describe('every CRISPR seed sentence states the length the engine reports (BG-01
           const { seedLengthBp: _reported, ...rest } = result.report;
           return { ...result, report: seedLengthBp === undefined ? rest : { ...rest, seedLengthBp } };
         },
+        // The tab's Run asks through the async sibling (US-01M7DVJK): the same substitution there.
+        scanCrisprGuidesAsync: async (...args: Parameters<typeof real.scanCrisprGuidesAsync>) => {
+          const result = await real.scanCrisprGuidesAsync(...args);
+          if (!result.report) return result;
+          const { seedLengthBp: _reported, ...rest } = result.report;
+          return { ...result, report: seedLengthBp === undefined ? rest : { ...rest, seedLengthBp } };
+        },
       };
     });
     try {
-      const { PrimerAndPCRStudio: Studio } = await import('../components/PrimerAndPCRStudio');
-      return callout(
-        renderToStaticMarkup(
-          <Studio
-            doc={doc}
-            allDocuments={[doc]}
-            onUpdateDocument={() => undefined}
-            onAddConstruct={() => undefined}
-            initialSubTab="crispr"
-          />
-        )
-      );
+      // The App over the substituted engine, through the studio module it loads
+      // ('../components/PrimerAndPCRStudio', a lazy chunk the harness imports before mounting).
+      return callout(await crisprTab());
     } finally {
       vi.doUnmock('../core/bioEngine');
       vi.resetModules();

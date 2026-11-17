@@ -85,7 +85,6 @@
  * no fixture here and is BG-01M7FD7R's.
  */
 
-import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import type { SequenceDocument } from '../types/bio';
@@ -128,28 +127,23 @@ const text = (html: string) =>
     .replace(/\s+/g, ' ');
 
 /**
- * The CRISPR tab of the studio, rendered on `doc` with the selection the App holds (or none).
- *
- * React DOM and the studio are loaded on demand, never at module scope: the live-DOM harness the
- * BG-01M7EQAA case mounts the real App with refuses a process that has already loaded React DOM,
- * and that case runs first in this file.
+ * The CRISPR tab of the real App on `doc` with the selection the App holds (or none), after one
+ * press of its Run (US-01M7DVJK: the tab searches only when asked): the studio's markup, then the
+ * inspector's, where its choosers sit. Each call is a launch of its own (the studio module,
+ * '../components/PrimerAndPCRStudio', is loaded by the harness), so no search of an earlier call
+ * is held.
  */
 const crisprTab = async (
   doc: SequenceDocument,
   selectedRange?: { start: number; end: number } | null
 ): Promise<string> => {
-  const { renderToStaticMarkup } = await import('react-dom/server');
-  const { PrimerAndPCRStudio } = await import('../components/PrimerAndPCRStudio');
-  return renderToStaticMarkup(
-    <PrimerAndPCRStudio
-      doc={doc}
-      allDocuments={[doc]}
-      onUpdateDocument={() => undefined}
-      onAddConstruct={() => undefined}
-      initialSubTab="crispr"
-      selectedRange={selectedRange ?? null}
-    />
-  );
+  const app = await mountApp();
+  try {
+    await appOnCrisprTab(app, doc, selectedRange ?? undefined);
+    return app.one('.alignment-studio-wrapper', 'the studio').outerHTML + (app.inspectorAside()?.outerHTML ?? '');
+  } finally {
+    app.unmount();
+  }
 };
 
 /** The scopes the search-range chooser offers, in order, as `value` and the words beside it. */
@@ -190,6 +184,14 @@ const circular120 = dnaDoc('Crispr_Interval_Near_Full_Circle', randomDna(120, 0x
 // This criterion launches the App afresh, with the real WASM engine behind it.
 vi.setConfig({ testTimeout: 120_000 });
 
+/**
+ * Presses the CRISPR tab's own Run (US-01M7DVJK): the tab searches only when asked, so every reading
+ * of its rows follows a Run with the criteria the test chose.
+ */
+async function pressRun(app: AppHarness): Promise<void> {
+  await app.click(app.one('[data-crispr-run]', 'the CRISPR Run button'));
+}
+
 /** The CRISPR tab of the real App on `doc`, with `selectedRange` held as the App holds a selection. */
 async function appOnCrisprTab(
   app: AppHarness,
@@ -203,6 +205,7 @@ async function appOnCrisprTab(
     ...(selectedRange ? { workspace: { selectedRange: { label: 'Selection', ...selectedRange } } } : {}),
   });
   await app.menu('primers:crispr');
+  await pressRun(app);
 }
 
 /** This launch's engine (loaded after the App, one module at a time, as the harness requires). */
@@ -248,6 +251,7 @@ async function chooseSearchRange(app: AppHarness, value: 'interval' | 'whole'): 
     await app.click(toggle);
   }
   await app.change(app.one('select[aria-label="Search range:"]', 'the search-range chooser'), value);
+  await pressRun(app);
 }
 
 /** The features of `docId` in the document the App saves (File > Save Session), as it saves them. */
@@ -313,8 +317,10 @@ describe('BG-01M7EQAA AC1: the Top 5 annotation carries the scope of the count i
         expect(spacerFeat!.notes ?? '').toContain(`seed matches=${g.offTargetCount}`);
       }
 
-      // (b) A whole-sequence scan says so, in the same place.
+      // (b) A whole-sequence scan says so, in the same place. This launch searched the record over
+      // an interval just now, and a search holds that interval (US-01M7DVJK AC5): the whole is asked for.
       await appOnCrisprTab(app, linear300);
+      await chooseSearchRange(app, 'whole');
       const wholeScan = await engineScan(linear300);
       expect(wholeScan.report?.searchedInterval, 'no interval was searched').toBeUndefined();
       const wholeSaid = calloutWords(app);
@@ -518,6 +524,9 @@ const branchSurfaces = (): Promise<BranchSurfaces[]> =>
       const read: BranchSurfaces[] = [];
       for (const { branch, doc, interval } of cases) {
         await appOnCrisprTab(app, doc, interval);
+        // A search holds the interval it was last set to (US-01M7DVJK AC5), and this launch searched
+        // the same plasmid over an interval before: a whole-sequence case asks for the whole and runs.
+        if (!interval) await chooseSearchRange(app, 'whole');
         const scan = await engineScan(doc, interval);
         expect(scan.report, `${branch}: the engine sent a scan report`).toBeTruthy();
         const seedSaid = seedSentence(calloutWords(app));
