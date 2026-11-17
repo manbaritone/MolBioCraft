@@ -110,3 +110,60 @@ fn missense_position_beyond_the_sequence_is_reported_as_such() {
         assert!(rationale.contains("beyond sequence 1"), "pos {pos}: {rationale}");
     }
 }
+
+/// BG-01M7MM62: the protein dialog offers 'Poisson correction' (DISTANCE_MODELS_PROT), but that
+/// name matched no model and fell through to the p-distance, so the report said "Poisson
+/// correction" over a p-distance. 5 differences over 20 comparable residues (p = 0.25); the gap
+/// and the X column are skipped.
+const POISSON_A: &str = "MKTAYIAKQRDEFGHLNPSW-X";
+const POISSON_B: &str = "MKTAWIAKERDEFGHVNPTA-M";
+const DIALOG_POISSON: &str = "Poisson correction";
+
+#[test]
+fn poisson_correction_is_minus_ln_one_minus_p_with_its_delta_method_se() {
+    let (d, se) = calc_protein_pair_distance_and_se(POISSON_A, POISSON_B, DIALOG_POISSON);
+    // d = -ln(1 - 0.25) = 0.2877; Var(d) = p(1-p) / (L (1-p)^2) = 0.25 / (0.75 * 20), SE = 0.1291.
+    assert_eq!(d, 0.2877, "Poisson d");
+    assert_eq!(se, 0.1291, "Poisson SE (delta method), not the p-distance SE 0.0968");
+    let (p, p_se) = calc_protein_pair_distance_and_se(POISSON_A, POISSON_B, "p-distance");
+    assert_eq!(p, 0.25, "p-distance d");
+    assert_eq!(p_se, 0.0968, "p-distance SE sqrt(p(1-p)/L)");
+    // The tree report labels a protein distance "amino-acid p-distance" for any case of the name.
+    let (p, _) = calc_protein_pair_distance_and_se(POISSON_A, POISSON_B, "P-Distance");
+    assert_eq!(p, 0.25, "P-Distance is the p-distance, as its tree label says");
+}
+
+#[test]
+fn poisson_correction_report_carries_the_label_of_the_distance_it_computed() {
+    let names: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+    let seqs: Vec<String> = [POISSON_A, POISSON_B].iter().map(|s| s.to_string()).collect();
+    for (model, d, se) in [(DIALOG_POISSON, 0.2877, 0.1291), ("p-distance", 0.25, 0.0968)] {
+        let report = compute_evolutionary_distances(&names, &seqs, model, &[]);
+        assert_eq!(report.model, model, "the report names the model it computed");
+        assert_eq!(report.pairwise_matrix[1][0], d, "{model} distance");
+        assert_eq!(report.pairwise_matrix[0][1], se, "{model} SE");
+        assert_eq!(report.overall_mean_distance, d, "{model} mean");
+    }
+}
+
+#[test]
+fn poisson_correction_saturates_to_not_computable_like_the_other_corrected_models() {
+    // Every comparable residue differs (p = 1): -ln(0) is undefined, so the pair is NaN (JSON
+    // null, shown as n/c) as a saturated JC69 / K2P / TN93 nucleotide pair is, never a number.
+    let (d, se) = calc_protein_pair_distance_and_se("MKTAY", "WWWWW", DIALOG_POISSON);
+    assert!(d.is_nan() && se.is_nan(), "saturated Poisson must be not computable: {d} {se}");
+    let (p, _) = calc_protein_pair_distance_and_se("MKTAY", "WWWWW", "p-distance");
+    assert_eq!(p, 1.0, "the p-distance has no saturation");
+}
+
+#[test]
+fn poisson_correction_leaves_the_nucleotide_p_distance_and_the_hky_gtr_refusal_alone() {
+    use molbiocraft_phylo::distances::pair_distance_and_se;
+    // 2 differences over 8 bases: the nucleotide p-distance stays p, not -ln(1 - p).
+    let (p, _) = pair_distance_and_se("ACGTACGT", "ACGTACAA", "p-distance", false);
+    assert_eq!(p, 0.25, "nucleotide p-distance");
+    for model in ["Hasegawa-Kishino-Yano (HKY85)", "General Time Reversible (GTR+G+I)"] {
+        let (d, se) = calc_protein_pair_distance_and_se(POISSON_A, POISSON_B, model);
+        assert!(d.is_nan() && se.is_nan(), "{model} stays refused for proteins: {d}");
+    }
+}

@@ -3,7 +3,9 @@
 
 //! Alignment data exploration, codon-position nucleotide composition, 64-codon RSCU,
 //! Kumar-Gadagkar Disparity Index & 4x4 substitution rate matrix, analytical evolutionary
-//! distances (p-distance, JC69, K2P, T92, HKY85, TN93, MCL, GTR), and Nei population diversity.
+//! distances (p-distance, JC69, K2P, T92, TN93 and MCL for nucleotides; p-distance and the Poisson
+//! correction for amino acids), and Nei population diversity. HKY85 and GTR are refused as distance
+//! models (see [`check_distance_model`]): the Maximum Likelihood tree fits them.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -511,7 +513,11 @@ pub fn compute_substitution_rate_matrix(names: &[String], aligned_seqs: &[String
 /// proteins, and counting only A/C/G/T letters made protein alignments produce
 /// "no tree" or zero-length star trees. Proteins use the p-distance when that
 /// model is requested and the Poisson correction d = -ln(1 - p) otherwise
-/// (Nei & Kumar 2000). Gaps and ambiguity symbols (X, B, Z, J, *, ?) are skipped.
+/// (Nei & Kumar 2000), so the dialog's 'Poisson correction', a nucleotide model name and any other
+/// name check_distance_model accepts get the Poisson distance - the same rule the tree report's distance label follows
+/// (trees.rs, "amino-acid p-distance" / "Poisson-corrected amino-acid"). A saturated Poisson pair
+/// (p = 1) is not computable (NaN), as a saturated nucleotide pair is. Gaps and ambiguity symbols
+/// (X, B, Z, J, *, ?) are skipped.
 pub fn calc_protein_pair_distance_and_se(s1: &str, s2: &str, model: &str) -> (f64, f64) {
     if check_distance_model(model).is_err() {
         return (f64::NAN, f64::NAN);
@@ -533,12 +539,15 @@ pub fn calc_protein_pair_distance_and_se(s1: &str, s2: &str, model: &str) -> (f6
     }
     let l = valid as f64;
     let p = diff as f64 / l;
-    let (d, var) = if distance_model_kind(model) == DistanceModelKind::PDistance {
+    // Only a name holding "p-distance" is the p-distance; distance_model_kind would send every
+    // name it does not know, 'Poisson correction' among them, to the p-distance (BG-01M7MM62).
+    let (d, var) = if model.to_ascii_lowercase().contains("p-distance") {
         (p, p * (1.0 - p) / l)
     } else {
         if p >= 1.0 {
             return (f64::NAN, f64::NAN);
         }
+        // Delta method: Var(d) = (dd/dp)^2 Var(p) = p(1 - p) / (L (1 - p)^2) = p / ((1 - p) L).
         (-(1.0 - p).ln(), p / ((1.0 - p) * l))
     };
     let round4 = |x: f64| (x * 10000.0).round() / 10000.0;
