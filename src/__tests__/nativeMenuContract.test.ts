@@ -232,4 +232,53 @@ describe('native menu ↔ dispatcher contract', () => {
     expect(resolveNativeMenuItemEnabled('view:search-project', buildNativeMenuState({ ...base, sessionActive: false }))).toBe(false);
     expect(resolveNativeMenuItemEnabled('view:search-project', buildNativeMenuState({ ...base, sessionActive: true }))).toBe(true);
   });
+
+  it('US-01M7DVR0 AC1 lists View › Document Split natively after Split & Expand, with no check mark, each case calling the in-app item\'s setter', () => {
+    const sub = mainRs.slice(mainRs.indexOf('let view_docsplit_sub'), mainRs.indexOf('let view_cols_sub'));
+    expect(sub).toContain('"Document Split"');
+    expect([...sub.matchAll(/item\(\s*"([^"]+)",\s*"([^"]+)"/g)].map((m) => [m[1], m[2]])).toEqual([
+      ['view:document-split-single', 'Single Pane'],
+      ['view:document-split-side-by-side', 'Side by Side'],
+      ['view:document-split-top-bottom', 'Top and Bottom'],
+    ]);
+    // In the View menu, right after Split & Expand.
+    const view = mainRs.slice(mainRs.indexOf('let view_menu'), mainRs.indexOf('let enz_select_sub'));
+    expect(view).toMatch(/&view_split_expand_sub,\s*&view_docsplit_sub,\s*&view_cols_sub,/);
+    // No native item carries a check mark, so only the in-app items show the current split.
+    expect(mainRs).not.toMatch(/CheckMenuItem/);
+    // The document-table items keep their ids under their new labels.
+    const split = mainRs.slice(mainRs.indexOf('let view_split_expand_sub'), mainRs.indexOf('let view_docsplit_sub'));
+    expect([...split.matchAll(/item\(\s*"([^"]+)",\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]).slice(0, 2)).toEqual([
+      ['view:split-top-bottom', 'Document Table Below Viewer'],
+      ['view:split-left-right', 'Document Table Beside Viewer'],
+    ]);
+    expect(mainRs).not.toMatch(/"Split (Top \/ Bottom|Left \/ Right)"/);
+
+    const caseBody = (id: string) => {
+      const at = appTsx.indexOf(`case '${id}':`, appTsx.indexOf('    onMenuAction: (actionId: string) => {'));
+      expect(at, `the dispatcher case ${id}`).toBeGreaterThan(0);
+      return appTsx.slice(at, appTsx.indexOf('break;', at));
+    };
+    const itemToggle = (id: string) => {
+      const at = appTsx.indexOf(`id: '${id}',`);
+      expect(at, `the in-app item ${id}`).toBeGreaterThan(0);
+      return /onToggle: \(\) => (.+),\n/.exec(appTsx.slice(at, appTsx.indexOf('},', at)))?.[1] ?? '';
+    };
+    for (const [native, inApp, orientation] of [
+      ['view:document-split-single', 'view-docsplit-single', 'single'],
+      ['view:document-split-side-by-side', 'view-docsplit-side', 'side-by-side'],
+      ['view:document-split-top-bottom', 'view-docsplit-stacked', 'top-bottom'],
+    ]) {
+      const call = `requireActiveSession(() => chooseDocumentSplit('${orientation}'))`;
+      expect(itemToggle(inApp), inApp).toBe(call);
+      expect(caseBody(native).trim(), native).toBe(`case '${native}':\n          ${call};`);
+      expect(dispatcher.get(native), `${native} is gated on a session`).toBe(true);
+      const base = { activeDoc: null, selection: null, undoDepth: 0, redoDepth: 0 };
+      expect(resolveNativeMenuItemEnabled(native, buildNativeMenuState({ ...base, sessionActive: false })), native).toBe(false);
+      expect(resolveNativeMenuItemEnabled(native, buildNativeMenuState({ ...base, sessionActive: true })), native).toBe(true);
+    }
+    // The header chooser and the split toggle call the same setter.
+    expect(appTsx).toContain('onChange={(e) => chooseDocumentSplit(e.target.value as DocumentSplitOrientation)}');
+    expect(appTsx).toContain("onClick={() => chooseDocumentSplit(documentSplit !== 'single' ? 'single' : lastDocumentSplitRef.current)}");
+  });
 });

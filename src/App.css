@@ -15373,6 +15373,21 @@ table,
   min-width: 0;
 }
 
+/* US-01M7DVR0: Top and Bottom puts the second document's pane below the viewer. */
+.mbc-split-host.is-top-bottom {
+  flex-direction: column;
+}
+
+.mbc-split-host.is-top-bottom > .mbc-viewer-canvas {
+  min-height: 0;
+}
+
+.mbc-split-host.is-top-bottom > .mbc-split-pane {
+  min-height: 0;
+  border-left: none;
+  border-top: 2px solid var(--mbc-border);
+}
+
 .mbc-split-pane {
   flex: 1 1 0;
   min-width: 0;

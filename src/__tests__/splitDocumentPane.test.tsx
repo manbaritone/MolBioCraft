@@ -12,15 +12,30 @@
  * - AC3: the picker lists the first 400 candidates and says so by the shared subsetNote rule; a
  *   filter narrows the candidates before the cap, so a document past the 400th can be reached.
  *
+ * The document split, also through the mounted App (US-01M7DVR0):
+ *
+ * - AC1: the header's "Document split" chooser beside the split toggle, View › Document Split's three
+ *   checkbox items, and the native view:document-split-* ids, each read through the layout it gives.
+ * - AC2: Side by Side and Top and Bottom give the split host their classes (and App.css styles the
+ *   stack); Single Pane, the toggle and 'Close split view' keep the pane's document for the next split.
+ * - AC3: the split is autosaved and restored with the session, and each restore case is told apart.
+ * - AC4: the document-table items keep their behaviour under their new labels, and no document-split
+ *   change moves the circular / linear divider.
+ *
  * Every document is built here. The three the selection checks use are each 7,200 bp or more, so a
  * carried 5,000-6,000 would be drawable on any of them; the picker's fillers are 40 bp.
  */
 
+import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import type { SequenceDocument } from '../types/bio';
-import { mountApp, type AppHarness } from './appHarness';
-import type { LiveElement } from './liveDom';
+import { parseMbcWorkbench } from '../core/mbcSessionFormat';
+import { paneSplitValueNow, renderedPaneSplitRatio } from '../core/paneSplit';
+import { resolveMenuNodeFunctionDescription } from '../data/menuFunctionDescriptions';
+import { appTsxSource, mountApp, type AppHarness } from './appHarness';
+import { appCssRules, cascaded } from './cssCascade';
+import { memoryStorage, type LiveElement, type LiveStorage } from './liveDom';
 
 // Each check launches the App afresh.
 vi.setConfig({ testTimeout: 120_000 });
@@ -252,5 +267,368 @@ describe("the split pane's picker", () => {
       expect(words(pane(app).textContent)).toContain('No document matches "no-such-name".');
       expect(pickerOptions(app).filter(([id]) => id !== paneDocId(app)), 'no candidate listed').toEqual([]);
     });
+  });
+});
+
+// ─── US-01M7DVR0: the document split ───
+
+const CHOICES = [['single', 'Single Pane'], ['side-by-side', 'Side by Side'], ['top-bottom', 'Top and Bottom']] as const;
+type Orientation = (typeof CHOICES)[number][0];
+const NATIVE: Record<Orientation, string> = {
+  single: 'view:document-split-single',
+  'side-by-side': 'view:document-split-side-by-side',
+  'top-bottom': 'view:document-split-top-bottom',
+};
+const AUTOSAVE_KEY = 'molbiocraft.workbench.autosave.v1';
+const UNREADABLE = 'The saved document split could not be read; the viewer opens in Single Pane.';
+const missing = (name: string) => `The split pane's document "${name}" is no longer in this session; the viewer opens in Single Pane.`;
+
+const chooser = (app: AppHarness) => labelled(app.header(), 'select', 'Document split');
+const toggle = (app: AppHarness) => app.one('button.mbc-split-toggle', 'the split toggle');
+const host = (app: AppHarness) => app.one('.mbc-split-host', 'the split host');
+const hostClasses = (app: AppHarness) => [...host(app).classList].sort().join(' ');
+const paneCount = (app: AppHarness) => app.all('section.mbc-split-pane').length;
+/** The layout the App shows: the host's classes, and the pane's document (null with no pane). */
+const layout = (app: AppHarness) => ({ host: hostClasses(app), pane: paneCount(app) ? paneDocId(app) : null });
+const SINGLE = 'mbc-split-host';
+const SIDE = 'is-side-by-side is-split mbc-split-host';
+const STACK = 'is-split is-top-bottom mbc-split-host';
+const statusSegments = (app: AppHarness) =>
+  words(app.all('.statusbar-toast-text').map((t) => t.textContent).join(' ')).split(' · ');
+
+const menuWords = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
+const menuButtons = (app: AppHarness) => app.all('.desktop-menu-popup').flatMap((p) => p.querySelectorAll('button'));
+/** Opens View, then each submenu on `path`, and returns the last item. */
+async function openView(app: AppHarness, path: string[]): Promise<LiveElement> {
+  const trigger = app.all('.mbc-menubar [role="menuitem"]').find((b) => menuWords(b.getAttribute('aria-label') ?? b.textContent) === 'View');
+  if (!trigger) throw new Error('the menu bar has no View menu');
+  await app.click(trigger);
+  let item: LiveElement | undefined;
+  for (const label of path) {
+    item = menuButtons(app).find((b) => menuWords(b.textContent) === label);
+    if (!item) throw new Error(`no "${label}" in the open menu: ${menuButtons(app).map((b) => menuWords(b.textContent)).join(' | ')}`);
+    if (label !== path[path.length - 1]) await app.click(item);
+  }
+  return item!;
+}
+async function closeMenus(app: AppHarness) {
+  for (let i = 0; i < 4 && app.all('.desktop-menu-popup').length; i++) await app.press('Escape');
+}
+/** The View › Document Split items, as [label, checked]. */
+async function docSplitItems(app: AppHarness): Promise<[string, boolean][]> {
+  await openView(app, ['Document Split', 'Single Pane']);
+  const sub = app.all('.desktop-menu-popup').filter((p) => p.querySelectorAll('button').some((b) => menuWords(b.textContent) === 'Top and Bottom'));
+  expect(sub, 'one Document Split submenu').toHaveLength(1);
+  const rows = sub[0].querySelectorAll('button[role="menuitemcheckbox"]').map((b) => [menuWords(b.textContent), b.getAttribute('aria-checked') === 'true'] as [string, boolean]);
+  await closeMenus(app);
+  return rows;
+}
+const checkedOnly = (label: string): [string, boolean][] => CHOICES.map(([, l]) => [l, l === label]);
+async function viewDocSplit(app: AppHarness, label: string) {
+  const item = await openView(app, ['Document Split', label]);
+  expect(item.hasAttribute('disabled'), `View › Document Split › ${label} is enabled`).toBe(false);
+  await app.click(item);
+  await closeMenus(app);
+}
+
+async function autosaveRunsOut(app: AppHarness) {
+  await React.act(async () => { vi.advanceTimersByTime(600); });
+  await app.settle();
+}
+/** The documentSplit the App's autosave holds, read back through parseMbcWorkbench (the WASM codec). */
+const autosavedSplit = (storage: LiveStorage) => {
+  const raw = storage.getItem(AUTOSAVE_KEY);
+  expect(raw, 'the App autosaved the session').toBeTruthy();
+  return parseMbcWorkbench(raw!, 'Reopened').envelope.workspace.documentSplit;
+};
+
+describe('US-01M7DVR0 AC1: the document split chooser, the View items and the native ids', () => {
+  it('US-01M7DVR0 AC1 the header chooser sits beside the split toggle and, with View › Document Split, shows the current layout; each native id sets it', async () => {
+    await withApp(async (app) => {
+      await restore(app, [MAIN, DOC_A, DOC_B], MAIN.id, null);
+      const select = chooser(app);
+      const siblings = toggle(app).parentElement!.children;
+      expect(siblings.indexOf(select), 'the chooser follows the split toggle').toBe(siblings.indexOf(toggle(app)) + 1);
+      expect(select.querySelectorAll('option').map((o) => [o.getAttribute('value'), words(o.textContent)])).toEqual(CHOICES.map(([v, l]) => [v, l]));
+      expect(chooser(app).value, 'Single Pane to begin').toBe('single');
+      expect(await docSplitItems(app)).toEqual(checkedOnly('Single Pane'));
+      expect(layout(app)).toEqual({ host: SINGLE, pane: null });
+
+      await app.change(chooser(app), 'top-bottom');
+      expect(layout(app), 'the chooser stacks the panes').toEqual({ host: STACK, pane: DOC_A.id });
+      expect(chooser(app).value).toBe('top-bottom');
+      expect(await docSplitItems(app)).toEqual(checkedOnly('Top and Bottom'));
+
+      // Each in-app item, then each native id, sets the layout and the chooser and the check follow.
+      const expected: Record<Orientation, ReturnType<typeof layout>> = {
+        single: { host: SINGLE, pane: null }, 'side-by-side': { host: SIDE, pane: DOC_A.id }, 'top-bottom': { host: STACK, pane: DOC_A.id },
+      };
+      for (const [orientation, label] of [CHOICES[1], CHOICES[0], CHOICES[2]]) {
+        await viewDocSplit(app, label);
+        expect(layout(app), `View › Document Split › ${label}`).toEqual(expected[orientation]);
+        expect(chooser(app).value).toBe(orientation);
+      }
+      for (const [orientation, label] of [CHOICES[0], CHOICES[1], CHOICES[2], CHOICES[0]]) {
+        await app.menu(NATIVE[orientation]);
+        expect(layout(app), NATIVE[orientation]).toEqual(expected[orientation]);
+        expect(chooser(app).value, NATIVE[orientation]).toBe(orientation);
+        expect(await docSplitItems(app), NATIVE[orientation]).toEqual(checkedOnly(label));
+      }
+
+      // The in-app items carry the ids the story names, under the Document Split submenu.
+      const src = appTsxSource();
+      const sub = src.slice(src.indexOf("id: 'view-docsplit-sub'"), src.indexOf("id: 'view-table-cols-sub'"));
+      expect(sub).toContain("label: 'Document Split'");
+      expect([...sub.matchAll(/kind: 'checkbox',\s*id: '([^']+)',\s*label: '([^']+)'/g)].map((m) => [m[1], m[2]])).toEqual([
+        ['view-docsplit-single', 'Single Pane'], ['view-docsplit-side', 'Side by Side'], ['view-docsplit-stacked', 'Top and Bottom'],
+      ]);
+    });
+  });
+});
+
+describe('US-01M7DVR0 AC2: the split host takes the orientation, and Single Pane keeps the pane\'s document', () => {
+  it('US-01M7DVR0 AC2 Side by Side and Top and Bottom give the host their classes, and App.css stacks Top and Bottom', async () => {
+    await withApp(async (app) => {
+      await restore(app, [MAIN, DOC_A, DOC_B], MAIN.id, null);
+      const view = { window: 1280, height: 800, canvas: 900 };
+      await app.change(chooser(app), 'side-by-side');
+      expect(hostClasses(app)).toBe(SIDE);
+      expect(cascaded(host(app), 'flex-direction', view) ?? 'row', 'side by side is a row').toBe('row');
+      await app.change(chooser(app), 'top-bottom');
+      expect(hostClasses(app)).toBe(STACK);
+      expect(cascaded(host(app), 'flex-direction', view), 'top and bottom is a column').toBe('column');
+      const rules = appCssRules().filter((r) => r.selectorText.split(',').some((sel) => sel.trim() === '.mbc-split-host.is-top-bottom'));
+      expect(rules.flatMap((r) => r.decls).filter((d) => d.name === 'flex-direction').map((d) => d.value)).toEqual(['column']);
+    });
+  });
+
+  it('US-01M7DVR0 AC2 Single Pane, the toggle and Close split view keep the pane\'s document for the next split, and the pane reopens with no selection', async () => {
+    const storage = memoryStorage();
+    const app = await mountApp({ storage });
+    try {
+      await restore(app, [MAIN, DOC_A, DOC_B], MAIN.id, null);
+      await app.change(chooser(app), 'side-by-side');
+      await app.change(picker(app), DOC_B.id);
+      await selectMarkInPane(app);
+
+      await app.change(chooser(app), 'single');
+      expect(layout(app), 'Single Pane: no pane, no is-split').toEqual({ host: SINGLE, pane: null });
+      await autosaveRunsOut(app);
+      expect(autosavedSplit(storage), 'Single Pane keeps the pane\'s document in the session').toEqual({ orientation: 'single', docId: DOC_B.id, docName: 'Doc_B' });
+
+      // From the chooser.
+      await app.change(chooser(app), 'top-bottom');
+      expect(layout(app), 'the chooser brings Doc_B back').toEqual({ host: STACK, pane: DOC_B.id });
+      expect(paneSelection(app), 'with no selection').toBeNull();
+      // From the in-app menu, after Single Pane from it.
+      await viewDocSplit(app, 'Single Pane');
+      expect(layout(app)).toEqual({ host: SINGLE, pane: null });
+      await viewDocSplit(app, 'Side by Side');
+      expect(layout(app), 'the menu brings Doc_B back').toEqual({ host: SIDE, pane: DOC_B.id });
+      // From the toggle: off, then back to the last split chosen.
+      await app.click(toggle(app));
+      expect(layout(app), 'the toggle closes the split').toEqual({ host: SINGLE, pane: null });
+      expect(toggle(app).getAttribute('aria-pressed')).toBe('false');
+      await app.click(toggle(app));
+      expect(layout(app), 'the toggle brings Doc_B back, Side by Side').toEqual({ host: SIDE, pane: DOC_B.id });
+      expect(toggle(app).getAttribute('aria-pressed')).toBe('true');
+      // Close split view is Single Pane; the native id brings it back stacked.
+      await app.click(labelled(pane(app), 'button', 'Close split view'));
+      expect(layout(app), 'Close split view').toEqual({ host: SINGLE, pane: null });
+      expect(chooser(app).value).toBe('single');
+      await app.menu('view:document-split-top-bottom');
+      expect(layout(app), 'the native item brings Doc_B back').toEqual({ host: STACK, pane: DOC_B.id });
+      expect(paneSelection(app), 'with no selection').toBeNull();
+      // And the toggle now returns to Top and Bottom, the last split chosen.
+      await app.click(toggle(app));
+      await app.click(toggle(app));
+      expect(layout(app)).toEqual({ host: STACK, pane: DOC_B.id });
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
+describe('US-01M7DVR0 AC3: the document split is saved with the session and restored, each case by name', () => {
+  it('US-01M7DVR0 AC3 changing only the split autosaves it, and restoring that autosave brings back the layout and the document', async () => {
+    const storage = memoryStorage();
+    const first = await mountApp({ storage });
+    try {
+      await restore(first, [MAIN, DOC_A, DOC_B], MAIN.id, null);
+      await autosaveRunsOut(first);
+      const before = storage.getItem(AUTOSAVE_KEY);
+      expect(autosavedSplit(storage), 'a session that never split saves none').toBeUndefined();
+      await first.change(chooser(first), 'top-bottom');
+      await first.change(picker(first), DOC_B.id);
+      await autosaveRunsOut(first);
+      expect(storage.getItem(AUTOSAVE_KEY), 'the split alone is autosaved').not.toBe(before);
+      expect(autosavedSplit(storage)).toEqual({ orientation: 'top-bottom', docId: DOC_B.id, docName: 'Doc_B' });
+      const stacked = storage.getItem(AUTOSAVE_KEY);
+      await first.change(chooser(first), 'side-by-side');
+      await autosaveRunsOut(first);
+      expect(storage.getItem(AUTOSAVE_KEY), 'the orientation alone is autosaved').not.toBe(stacked);
+      expect(autosavedSplit(storage)).toEqual({ orientation: 'side-by-side', docId: DOC_B.id, docName: 'Doc_B' });
+    } finally {
+      first.unmount();
+    }
+    const second = await mountApp({ storage });
+    try {
+      await second.menu('file:restore-autosave');
+      await second.settle();
+      expect(statusSegments(second).join(' · ')).toContain('Restored workbench');
+      expect(layout(second), 'the layout and the document come back').toEqual({ host: SIDE, pane: DOC_B.id });
+      expect(chooser(second).value).toBe('side-by-side');
+    } finally {
+      second.unmount();
+    }
+  });
+
+  const restoreSplit = (app: AppHarness, documentSplit: unknown, sessionName: string) => app.restoreSession({
+    documents: [MAIN, DOC_A, DOC_B], activeDocId: MAIN.id, viewerTab: 'sequence-view', sessionName,
+    workspace: { mapLayoutMode: 'linear', ...(documentSplit === undefined ? {} : { documentSplit: documentSplit as never }) },
+  });
+  const noSplitNotice = (app: AppHarness) =>
+    expect(statusSegments(app).filter((s) => !s.startsWith('Restored workbench') && /Single Pane|document split|split pane/i.test(s)), 'no split notice').toEqual([]);
+
+  it('US-01M7DVR0 AC3 restores a saved split, and an absent one opens in Single Pane with no message', async () => {
+    await withApp(async (app) => {
+      await restoreSplit(app, { orientation: 'top-bottom', docId: DOC_B.id, docName: 'Doc_B' }, 'Split_Saved');
+      expect(layout(app), 'saved: Top and Bottom with Doc_B').toEqual({ host: STACK, pane: DOC_B.id });
+      noSplitNotice(app);
+      // A session saved before the field, restored over the open split.
+      await restoreSplit(app, undefined, 'Split_Absent');
+      expect(layout(app), 'absent: Single Pane').toEqual({ host: SINGLE, pane: null });
+      expect(chooser(app).value).toBe('single');
+      noSplitNotice(app);
+      // The absent session holds no pane document: the toggle opens on another open document, not Doc_B.
+      await app.click(toggle(app));
+      expect(paneDocId(app)).not.toBe(DOC_B.id);
+    });
+  });
+
+  it('US-01M7DVR0 AC3 a split saved with docId null reopens split, asking for a document, with no message', async () => {
+    await withApp(async (app) => {
+      await restoreSplit(app, { orientation: 'side-by-side', docId: null, docName: null }, 'Split_Null');
+      expect(layout(app), 'docId null: split, no document').toEqual({ host: SIDE, pane: '' });
+      const shown = picker(app).querySelectorAll('option').filter((o) => o.selected);
+      expect(shown.map((o) => words(o.textContent))).toEqual(['Choose a document…']);
+      noSplitNotice(app);
+    });
+  });
+
+  it('US-01M7DVR0 AC3 a docId not among the session\'s non-deleted documents opens in Single Pane and names it', async () => {
+    await withApp(async (app) => {
+      await restoreSplit(app, { orientation: 'top-bottom', docId: 'sdp-gone', docName: 'Gone_Doc' }, 'Split_Missing');
+      expect(layout(app), 'missing: Single Pane').toEqual({ host: SINGLE, pane: null });
+      const said = statusSegments(app);
+      expect(said[0], 'the restore sentence is kept').toContain('Restored workbench "Split_Missing.mbc"');
+      expect(said.filter((s) => s === missing('Gone_Doc')), 'the missing document is named, exactly').toHaveLength(1);
+      expect(said.filter((s) => s === UNREADABLE)).toEqual([]);
+
+      // A deleted document is not in the session either.
+      await app.restoreSession({
+        documents: [MAIN, DOC_A, DOC_B], activeDocId: MAIN.id, viewerTab: 'sequence-view', sessionName: 'Split_Deleted',
+        workspace: {
+          mapLayoutMode: 'linear',
+          projectExplorer: { customFolders: [], folderColors: {}, folderNames: {}, folderParents: {}, hiddenFolders: [], favoriteFolders: [], favoriteDocIds: [], deletedDocIds: [DOC_B.id], readDocIds: [] } as never,
+          documentSplit: { orientation: 'side-by-side', docId: DOC_B.id, docName: 'Doc_B' },
+        },
+      });
+      expect(layout(app), 'deleted: Single Pane').toEqual({ host: SINGLE, pane: null });
+      expect(statusSegments(app).filter((s) => s === missing('Doc_B'))).toHaveLength(1);
+    });
+  });
+
+  it('US-01M7DVR0 AC3 an orientation not one of the three, or a docId neither a string nor null, opens in Single Pane and says it could not be read', async () => {
+    await withApp(async (app) => {
+      for (const [name, saved] of [
+        ['Split_Orientation', { orientation: 'diagonal', docId: DOC_B.id, docName: 'Doc_B' }],
+        ['Split_No_Orientation', { docId: DOC_B.id, docName: 'Doc_B' }],
+        ['Split_Number_Id', { orientation: 'side-by-side', docId: 7, docName: 'Doc_B' }],
+        ['Split_Object_Id', { orientation: 'top-bottom', docId: { id: DOC_B.id }, docName: 'Doc_B' }],
+      ] as const) {
+        await restoreSplit(app, saved, name);
+        expect(layout(app), `${name}: Single Pane`).toEqual({ host: SINGLE, pane: null });
+        const said = statusSegments(app);
+        expect(said[0]).toContain(`Restored workbench "${name}.mbc"`);
+        expect(said.filter((s) => s === UNREADABLE), `${name}: the unreadable split is said, exactly`).toHaveLength(1);
+        expect(said.filter((s) => s.startsWith("The split pane's document")), name).toEqual([]);
+      }
+    });
+  });
+});
+
+describe('US-01M7DVR0 AC4: the document table items are relabelled, and the divider stays where it was', () => {
+  it('US-01M7DVR0 AC4 View › Split & Expand names the document-table items for what they place, with their descriptions', async () => {
+    await withApp(async (app) => {
+      await restore(app, [MAIN, DOC_A], MAIN.id, null);
+      await openView(app, ['Split & Expand', 'Document Table Beside Viewer']);
+      const sub = app.all('.desktop-menu-popup').filter((p) => p.querySelectorAll('button').some((b) => menuWords(b.textContent) === 'Document Table Below Viewer'));
+      expect(sub, 'one Split & Expand submenu').toHaveLength(1);
+      const labels = sub[0].querySelectorAll('button[role="menuitemcheckbox"]').map((b) => menuWords(b.textContent));
+      expect(labels.slice(0, 2)).toEqual(['Document Table Below Viewer', 'Document Table Beside Viewer']);
+      await closeMenus(app);
+      const center = () => app.one('.mbc-center-stack', 'the centre stack');
+      await viewDocSplit(app, 'Side by Side');
+      await openView(app, ['Split & Expand', 'Document Table Beside Viewer']).then((b) => app.click(b));
+      expect(center().classList.contains('split-left-right'), 'Beside: the table and viewer side by side').toBe(true);
+      expect(hostClasses(app), 'the document split is untouched').toBe(SIDE);
+      await closeMenus(app);
+      await openView(app, ['Split & Expand', 'Document Table Below Viewer']).then((b) => app.click(b));
+      expect(center().classList.contains('split-left-right'), 'Below: stacked').toBe(false);
+      expect(hostClasses(app)).toBe(SIDE);
+      await closeMenus(app);
+    });
+    const src = appTsxSource();
+    for (const [id, label] of [['view-split-tb', 'Document Table Below Viewer'], ['view-split-lr', 'Document Table Beside Viewer']]) {
+      expect(src, id).toMatch(new RegExp(`id: '${id}',\\s*label: '${label}',`));
+    }
+    expect(resolveMenuNodeFunctionDescription('view-split-tb', 'Document Table Below Viewer')).toBe('Stack the active sequence viewer canvas on top with the document table below it');
+    expect(resolveMenuNodeFunctionDescription('view-split-lr', 'Document Table Beside Viewer')).toBe('Arrange the document table and sequence viewer side by side');
+    expect(src).not.toContain("'Split Top / Bottom'");
+    expect(src).not.toContain("'Split Left / Right'");
+  });
+
+  it('US-01M7DVR0 AC4 Side by Side leaves the circular / linear divider at the ratio for the map frame\'s own width, and the saved ratio unchanged', async () => {
+    const CIRC = { ...seqDoc('sdp-circ', 'Circ_Doc', 7_300, 17), topology: 'circular' } as SequenceDocument;
+    const RATIO = 0.75;
+    let frameWidth = 700;
+    const storage = memoryStorage();
+    const app = await mountApp({
+      storage, width: 1440, height: 900,
+      layout: (el) => (el.classList.contains('map-seq-split') ? { width: frameWidth, height: 640 } : { width: 0, height: 0 }),
+    });
+    try {
+      await app.restoreSession({
+        documents: [CIRC, DOC_A], activeDocId: CIRC.id, viewerTab: 'sequence-view',
+        workspace: { mapLayoutMode: 'split', paneSplit: { ratio: RATIO, collapsed: null } },
+      });
+      const divider = () => app.one('.map-seq-split > .map-seq-divider', 'the divider');
+      const savedRatio = () => {
+        const raw = storage.getItem(AUTOSAVE_KEY);
+        return parseMbcWorkbench(raw!, 'Reopened').envelope.workspace.paneSplit;
+      };
+      for (const orientation of ['side-by-side', 'top-bottom', 'single', 'side-by-side'] as const) {
+        await app.change(chooser(app), orientation);
+        for (const w of [700, 900]) {
+          frameWidth = w;
+          await React.act(async () => {});
+          await app.settle();
+          expect(divider().getAttribute('aria-valuenow'), `${orientation} at ${w}px`)
+            .toBe(String(paneSplitValueNow({ ratio: renderedPaneSplitRatio(RATIO, w), collapsed: null })));
+        }
+        await autosaveRunsOut(app);
+        expect(savedRatio(), `${orientation}: the saved ratio and collapse are unchanged`).toEqual({ ratio: RATIO, collapsed: null });
+      }
+      expect(hostClasses(app)).toBe(SIDE);
+      // The two widths draw different ratios, so a divider that ignored the frame's width would fail above.
+      expect(renderedPaneSplitRatio(RATIO, 700)).not.toBe(renderedPaneSplitRatio(RATIO, 900));
+    } finally {
+      app.unmount();
+    }
+    // The side-by-side maps follow the canvas's own width, not the window's.
+    const rules = appCssRules();
+    expect(rules.some((r) => r.selectorText.trim() === '.mbc-viewer-canvas' && r.decls.some((d) => d.name === 'container' && /viewer-canvas\s*\/\s*inline-size/.test(d.value)))).toBe(true);
+    expect(rules.some((r) => r.at.includes('@container viewer-canvas (min-width: 760px)') && r.selectorText.includes('.map-seq-grid.mode-split'))).toBe(true);
   });
 });

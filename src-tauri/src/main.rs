@@ -502,14 +502,26 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "Split & Expand",
         true,
         &[
-            &item("view:split-top-bottom", "Split Top / Bottom", None)?,
-            &item("view:split-left-right", "Split Left / Right", None)?,
+            &item("view:split-top-bottom", "Document Table Below Viewer", None)?,
+            &item("view:split-left-right", "Document Table Beside Viewer", None)?,
             &sep()?,
             &item(
                 "view:expand-doc-view",
                 "Expand Document View",
                 Some("CmdOrCtrl+Shift+O"),
             )?,
+        ],
+    )?;
+
+    // US-01M7DVR0: the second document's pane; the in-app items show the current one checked.
+    let view_docsplit_sub = submenu_escaped(
+        app,
+        "Document Split",
+        true,
+        &[
+            &item("view:document-split-single", "Single Pane", None)?,
+            &item("view:document-split-side-by-side", "Side by Side", None)?,
+            &item("view:document-split-top-bottom", "Top and Bottom", None)?,
         ],
     )?;
 
@@ -583,6 +595,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &view_search_sub,
             &view_panels_sub,
             &view_split_expand_sub,
+            &view_docsplit_sub,
             &view_cols_sub,
             &sep()?,
             &view_layout_sub,

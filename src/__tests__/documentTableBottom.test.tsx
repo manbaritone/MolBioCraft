@@ -5,7 +5,7 @@
  * US-01M6S7T2: in the stacked layout the expanded document table sits below the sequence viewer,
  * with its resize handle between them, while the folded table (the record bar of US-01M6Q10G, or
  * the folder bar) stays on top. The side-by-side layout is as it was. BG-01M6SHDC: the help text
- * the menu shows for View > Split & Expand > Split Top / Bottom says so too.
+ * the menu shows for View > Split & Expand > Document Table Below Viewer says so too.
  *
  * Every check drives the real App, rendered on the server, through the harness of
  * documentRecordBar.test.tsx: a menu command or a handler the App hands to one of its own elements
@@ -903,7 +903,7 @@ describe('the document table below the viewer (US-01M6S7T2)', () => {
   });
 });
 
-describe('the Split Top / Bottom help text (BG-01M6SHDC)', () => {
+describe('the Document Table Below Viewer help text (BG-01M6SHDC)', () => {
   /** The wording the item kept after US-01M6S7T2 moved the table below the viewer. */
   const OLD = 'Stack the document table above the active sequence viewer canvas';
 
@@ -932,29 +932,29 @@ describe('the Split Top / Bottom help text (BG-01M6SHDC)', () => {
   /** The viewer on top and the table below it, and nothing placed the other way. */
   const VIEWER_ABOVE_TABLE = new Set(['viewer up', 'table down']);
 
-  it('describes Split Top / Bottom as the viewer above the table', () => {
+  it('describes Document Table Below Viewer as the viewer above the table', () => {
     // The reader tells the wordings apart: the old one puts the table on top, and a wording that
     // says the right thing once and the wrong thing elsewhere is not the right placement.
     expect(placements(OLD), 'the old wording').toEqual(new Set(['table up', 'viewer down']));
     expect(placements('Stack the sequence viewer on top, with the document table above the viewer'), 'a contradiction').not.toEqual(VIEWER_ABOVE_TABLE);
 
     // The call the menu makes for the hovered item (CascadingMenu's tooltip), with the item's id and label.
-    const text = resolveMenuNodeFunctionDescription('view-split-tb', 'Split Top / Bottom');
+    const text = resolveMenuNodeFunctionDescription('view-split-tb', 'Document Table Below Viewer');
     expect(placements(text), `"${text}"`).toEqual(VIEWER_ABOVE_TABLE);
     expect(text).not.toBe(OLD);
 
     // The item the App puts in View > Split & Expand is that id and label, with no description of
     // its own, so this text is the one a researcher reads on it.
     const node = menuNode(driveApp([started]).menus, 'view-split-tb');
-    if (node.kind !== 'checkbox') throw new Error('Split Top / Bottom is not a checkbox item');
-    expect([node.label, node.description], 'the item').toEqual(['Split Top / Bottom', undefined]);
+    if (node.kind !== 'checkbox') throw new Error('Document Table Below Viewer is not a checkbox item');
+    expect([node.label, node.description], 'the item').toEqual(['Document Table Below Viewer', undefined]);
     expect(resolveMenuNodeFunctionDescription(node.id, node.label, node.description, false), 'the item\'s own fields').toBe(text);
 
     // And choosing it does what the text says, from each layout where it changes something: side by
     // side with the table shown or folded, and stacked with it folded.
     const choose: Step = (menus) => {
       const item = menuNode(menus, 'view-split-tb');
-      if (item.kind !== 'checkbox') throw new Error('Split Top / Bottom is not a checkbox item');
+      if (item.kind !== 'checkbox') throw new Error('Document Table Below Viewer is not a checkbox item');
       item.onToggle();
     };
     for (const [how, steps] of [

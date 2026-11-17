@@ -9,6 +9,7 @@ import {
 } from '../lib/rustBioEngine';
 import type { ProjectExplorerState } from './projectExplorer';
 import type { SiteVisibility } from './restrictionDisplay';
+import type { SavedDocumentSplit } from './documentSplit';
 import { normalize as normalizeRotation } from './mapRotation';
 import { NucleotideColorScheme, SequenceDocument } from '../types/bio';
 
@@ -76,6 +77,12 @@ export interface MbcWorkspaceUiState {
   displaySettings: MbcDisplaySettings;
   /** The Split layout's circle / linear divider (US-01M7CCRP); absent in sessions saved before it. */
   paneSplit?: { ratio: number; collapsed: 'circular' | 'linear' | null };
+  /**
+   * The document split (US-01M7DVR0): the orientation and the second pane's document, by id and by
+   * name; absent in sessions saved before it, and while the split was never opened. The parser keeps
+   * any object here whole, so the App reads it only through `parseDocumentSplit`.
+   */
+  documentSplit?: SavedDocumentSplit;
   /**
    * Which restriction sites each document's maps display, by document id (BG-01M7DHM0); absent in
    * sessions saved before it, and when no document has a choice.

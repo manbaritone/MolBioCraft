@@ -211,6 +211,12 @@ pub struct MbcWorkspaceUiStateRust {
     /// name. A session saved before it has none, and every map opens at 0 degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_rotation: Option<serde_json::Value>,
+    /// The document split (US-01M7DVR0): `{ orientation, docId, docName }`, an object the app
+    /// validates on restore (src/core/documentSplit.ts `parseDocumentSplit`). Kept whole, as
+    /// `pane_split` is, so a key added later round-trips without a codec change. A session saved
+    /// before it has none and opens in Single Pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_split: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -693,6 +699,7 @@ pub fn parse_mbc_workbench_rust(
         pane_split: ws_obj.and_then(|w| w.get("paneSplit")).filter(|v| v.is_object()).cloned(),
         site_visibility: ws_obj.and_then(|w| w.get("siteVisibility")).and_then(sanitize_site_visibility),
         map_rotation: ws_obj.and_then(|w| w.get("mapRotation")).and_then(sanitize_map_rotation),
+        document_split: ws_obj.and_then(|w| w.get("documentSplit")).filter(|v| v.is_object()).cloned(),
         active_doc_id: resolved_active_id,
         selected_folder: ws_obj
             .and_then(|w| w.get("selectedFolder"))
@@ -1279,6 +1286,7 @@ mod tests {
                     }
                 })),
                 map_rotation: None,
+                document_split: None,
             },
         };
 
@@ -1491,6 +1499,7 @@ mod tests {
                 pane_split: None,
                 site_visibility: None,
                 map_rotation: Some(rotation.clone()),
+                document_split: None,
             },
         };
         let text = serialize_mbc_workbench_rust(&snap, "1.0.0", at);
@@ -1549,5 +1558,70 @@ mod tests {
         let short = sanitize_map_rotation(&serde_json::Value::Object(empty)).unwrap();
         assert_eq!(short, json!({ "d".repeat(SITE_VISIBILITY_MAX_ID_CHARS): 45.0 }), "a 256-char id is kept, an empty one cut");
         assert_eq!(sanitize_map_rotation(&json!({})), None, "an object with no entry keeps none");
+    }
+
+    /// US-01M7DVR0 AC3: `workspace.documentSplit` (orientation, docId, docName) survives serialize
+    /// then parse unchanged, with a key added later inside it, so the ratio and the second pane's
+    /// view need no codec change; a value that is not an object is dropped, and a session saved
+    /// before the field has none. The struct literal names `document_split`, and each round trip
+    /// reads the parse resolver's value for it.
+    #[test]
+    fn us_01m7dvr0_ac3_document_split_round_trips_whole() {
+        use serde_json::json;
+        let at = "2026-11-17T08:00:00.000Z";
+        let doc = build_ncbi_reference_preset_document("spike", at);
+        let snapshot = |split: Option<serde_json::Value>| MbcWorkbenchSnapshotInput {
+            session_name: "Split.mbc".to_string(),
+            documents: vec![doc.clone()],
+            workspace: MbcWorkspaceUiStateRust {
+                project_explorer: None,
+                active_doc_id: doc.id.clone(),
+                selected_folder: "Sample Documents".to_string(),
+                nav_history: vec![doc.id.clone()],
+                nav_index: 0,
+                viewer_tab: "sequence-view".to_string(),
+                map_layout_mode: "split".to_string(),
+                zoom_level: 100.0,
+                text_format: "genbank".to_string(),
+                color_scheme: "standard".to_string(),
+                dark_mode: false,
+                sidebar_open: true,
+                doc_table_collapsed: false,
+                selected_range: None,
+                display_settings: MbcDisplaySettingsRust::default(),
+                pane_split: None,
+                site_visibility: None,
+                map_rotation: None,
+                document_split: split,
+            },
+        };
+        let round_trip = |split: serde_json::Value| {
+            let text = serialize_mbc_workbench_rust(&snapshot(Some(split.clone())), "1.0.0", at);
+            let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(saved["workspace"]["documentSplit"], split, "the field is written as documentSplit");
+            let parsed = parse_mbc_workbench_rust(&text, "Fallback", at).unwrap();
+            assert!(parsed.checksum_verified);
+            assert_eq!(parsed.envelope.workspace.document_split, Some(split), "documentSplit round-trips unchanged");
+            saved
+        };
+        let saved = round_trip(json!({"orientation": "top-bottom", "docId": "doc-b", "docName": "Doc B"}));
+        round_trip(json!({"orientation": "side-by-side", "docId": null, "docName": null}));
+        round_trip(json!({"orientation": "single", "docId": "doc-b", "docName": "Doc B", "future": 1}));
+
+        let reparsed = |v: &serde_json::Value| parse_mbc_workbench_rust(&v.to_string(), "Fallback", at).unwrap();
+        // A session saved before the field has none.
+        let mut old = saved.clone();
+        old["workspace"].as_object_mut().unwrap().remove("documentSplit");
+        assert_eq!(reparsed(&old).envelope.workspace.document_split, None);
+        // A value that is not an object is dropped, and the rest of the workspace is still read.
+        for not_object in [json!("top-bottom"), json!(1), json!(["top-bottom"]), json!(true), serde_json::Value::Null] {
+            old["workspace"]["documentSplit"] = not_object.clone();
+            let odd = reparsed(&old);
+            assert_eq!(odd.envelope.workspace.document_split, None, "{not_object} is dropped");
+            assert_eq!(odd.envelope.workspace.active_doc_id, doc.id, "the workspace is still read");
+        }
+        // Without a serialize step: a hand-written object is kept whole, whatever its values.
+        old["workspace"]["documentSplit"] = json!({"orientation": "diagonal", "docId": 7});
+        assert_eq!(reparsed(&old).envelope.workspace.document_split, Some(json!({"orientation": "diagonal", "docId": 7})));
     }
 }

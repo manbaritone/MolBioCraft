@@ -135,6 +135,13 @@ import {
   stepPaneSplit,
   type PaneSplitState,
 } from './core/paneSplit';
+import {
+  DOCUMENT_SPLIT_CHOICES,
+  documentSplitForSession,
+  documentSplitHostClass,
+  parseDocumentSplit,
+  type DocumentSplitOrientation,
+} from './core/documentSplit';
 import { StructureAlignmentDialog } from './components/StructureAlignmentDialog';
 import { hasStructure } from './core/structureModels';
 import { ExpressionLevelsDialog, StructuralVariantsDialog, MakeBlastDbDialog, CrisprEditingDialog, AnnotateByBlastDialog, AnnotateFromDocumentsDialog, DegeneratePrimersDialog, ImportPrimersDialog, ImportPrimersToDatabaseDialog } from './components/SequenceAnalysisToolDialogs';
@@ -1206,8 +1213,15 @@ export const App: React.FC = () => {
   const [docFilterMatchMode, setDocFilterMatchMode] = useState<'all' | 'any'>('all');
   const [wholeProjectSearch, setWholeProjectSearch] = useState<boolean>(false);
   const [helpPanelOpen, setHelpPanelOpen] = useState<boolean>(false);
-  /** Split view: id of the document shown next to the main viewer ('' = choose; null = off). */
+  /**
+   * Split view's second pane: the id of the document it shows ('' = choose; null = none chosen yet).
+   * Kept through Single Pane, so the next split shows the same document (US-01M7DVR0).
+   */
   const [splitDocId, setSplitDocId] = useState<string | null>(null);
+  /** The document split (US-01M7DVR0): Single Pane, or the second pane Side by Side or Top and Bottom. */
+  const [documentSplit, setDocumentSplit] = useState<DocumentSplitOrientation>('single');
+  /** The split the toggle returns to from Single Pane: the last one chosen, Side by Side the first time. */
+  const lastDocumentSplitRef = useRef<Exclude<DocumentSplitOrientation, 'single'>>('side-by-side');
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'F1') { e.preventDefault(); setHelpPanelOpen((o) => !o); } };
     window.addEventListener('keydown', onKey);
@@ -2308,6 +2322,19 @@ export const App: React.FC = () => {
       EMPTY_WORKSPACE_DOCUMENT,
     [documents, sampleLibraryById, activeNonDeletedDocs, activeDocId]
   );
+
+  /**
+   * The one setter of the document split (US-01M7DVR0): the header chooser, View › Document Split, its
+   * native items and the split toggle all call it. A split shows the pane's document as it was left;
+   * the first time, another open document (or the picker's prompt when there is none).
+   */
+  const chooseDocumentSplit = (next: DocumentSplitOrientation) => {
+    if (next !== 'single') {
+      lastDocumentSplitRef.current = next;
+      setSplitDocId((cur) => (cur !== null ? cur : openDocs.find((d) => d.id !== activeDoc.id)?.id ?? ''));
+    }
+    setDocumentSplit(next);
+  };
 
   const viewerTab = resolveViewerTab(activeDoc, requestedViewerTab);
   // A command that requests a view the active document cannot show used to be
@@ -4819,6 +4846,7 @@ export const App: React.FC = () => {
       mapLayoutMode,
       zoomLevel,
       paneSplit,
+      documentSplit: documentSplitForSession(documentSplit, splitDocId, catalogAllDocs),
       siteVisibility: siteVisibilityForSession(siteVisibilityByDoc, documents),
       mapRotation: mapRotationForSession(mapRotationByDoc, documents),
       textFormat,
@@ -4983,6 +5011,8 @@ export const App: React.FC = () => {
     mapLayoutMode,
     zoomLevel,
     paneSplit,
+    documentSplit,
+    splitDocId,
     siteVisibilityByDoc,
     mapRotationByDoc,
     textFormat,
@@ -5098,6 +5128,18 @@ export const App: React.FC = () => {
     setZoomLevel(clampSequenceZoom(env.workspace.zoomLevel));
     // Checked on the way in: a session saved before the divider, or a malformed value, opens at the default.
     setPaneSplit(parsePaneSplit(env.workspace.paneSplit));
+    // The document split as saved (US-01M7DVR0), told apart by case: absent opens in Single Pane; a
+    // saved document the pane can no longer show (not among the restored documents or the sample
+    // library, or deleted), or a value that cannot be read, opens in Single Pane and is named once the
+    // restore is announced.
+    const restoredDeleted = new Set(explorer?.deletedDocIds ?? []);
+    const restoredSplit = parseDocumentSplit(
+      env.workspace.documentSplit,
+      [...restoredDocuments, ...SAMPLE_LIBRARY].filter((d) => !restoredDeleted.has(d.id))
+    );
+    setDocumentSplit(restoredSplit.orientation);
+    setSplitDocId(restoredSplit.docId);
+    lastDocumentSplitRef.current = restoredSplit.orientation === 'single' ? 'side-by-side' : restoredSplit.orientation;
     // Each document's displayed sites as saved (BG-01M7DHM0), malformed entries dropped and a choice
     // made on a sequence other than the restored one dropped; the App reconciles the rest with the
     // document's own scan before a map draws them.
@@ -5150,6 +5192,7 @@ export const App: React.FC = () => {
     for (const doc of restoredRotation.unreadable) {
       setStatusBanner(unreadableMapRotationNotice(doc), { append: true, keep: true });
     }
+    if (restoredSplit.notice) setStatusBanner(restoredSplit.notice, { append: true, keep: true });
   };
 
   /**
@@ -7454,6 +7497,15 @@ requireActiveSession(() => handleCopySequenceToClipboard());
             setDocTableCollapsed(false);
             setWorkspaceSplitMode('left-right');
           });
+          break;
+        case 'view:document-split-single':
+          requireActiveSession(() => chooseDocumentSplit('single'));
+          break;
+        case 'view:document-split-side-by-side':
+          requireActiveSession(() => chooseDocumentSplit('side-by-side'));
+          break;
+        case 'view:document-split-top-bottom':
+          requireActiveSession(() => chooseDocumentSplit('top-bottom'));
           break;
         case 'view:expand-doc-view':
           requireActiveSession(() => handleToggleExpandDocumentView());
@@ -9908,7 +9960,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-split-tb',
-            label: 'Split Top / Bottom',
+            label: 'Document Table Below Viewer',
             checked: sessionActive && workspaceSplitMode === 'top-bottom',
             onToggle: () =>
               requireActiveSession(() => {
@@ -9919,7 +9971,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-split-lr',
-            label: 'Split Left / Right',
+            label: 'Document Table Beside Viewer',
             checked: sessionActive && workspaceSplitMode === 'left-right',
             onToggle: () =>
               requireActiveSession(() => {
@@ -9935,6 +9987,37 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             checked: sessionActive && expandedDocView,
             shortcut: sc('O', { shift: true }),
             onToggle: () => requireActiveSession(() => handleToggleExpandDocumentView()),
+          },
+        ],
+      },
+      {
+        // US-01M7DVR0: the second document's pane, beside or below the viewer; the chooser's choices.
+        kind: 'submenu',
+        id: 'view-docsplit-sub',
+        label: 'Document Split',
+        disabled: !sessionActive,
+        minWidth: 200,
+        children: [
+          {
+            kind: 'checkbox',
+            id: 'view-docsplit-single',
+            label: 'Single Pane',
+            checked: sessionActive && documentSplit === 'single',
+            onToggle: () => requireActiveSession(() => chooseDocumentSplit('single')),
+          },
+          {
+            kind: 'checkbox',
+            id: 'view-docsplit-side',
+            label: 'Side by Side',
+            checked: sessionActive && documentSplit === 'side-by-side',
+            onToggle: () => requireActiveSession(() => chooseDocumentSplit('side-by-side')),
+          },
+          {
+            kind: 'checkbox',
+            id: 'view-docsplit-stacked',
+            label: 'Top and Bottom',
+            checked: sessionActive && documentSplit === 'top-bottom',
+            onToggle: () => requireActiveSession(() => chooseDocumentSplit('top-bottom')),
           },
         ],
       },
@@ -15388,14 +15471,25 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
 
               <button
                 type="button"
-                className={`mbc-zoom-btn mbc-split-toggle ${splitDocId !== null ? 'active' : ''}`}
-                aria-pressed={splitDocId !== null}
+                className={`mbc-zoom-btn mbc-split-toggle ${documentSplit !== 'single' ? 'active' : ''}`}
+                aria-pressed={documentSplit !== 'single'}
                 aria-label="Split view: show another document side by side"
-                title={splitDocId !== null ? 'Close split view' : 'Split view: show another document side by side'}
-                onClick={() => setSplitDocId((cur) => (cur !== null ? null : openDocs.find((d) => d.id !== activeDoc.id)?.id ?? ''))}
+                title={documentSplit !== 'single' ? 'Close split view' : 'Split view: show another document side by side'}
+                onClick={() => chooseDocumentSplit(documentSplit !== 'single' ? 'single' : lastDocumentSplitRef.current)}
               >
                 <Columns2 size={13} />
               </button>
+              <select
+                className="mbc-document-split-select"
+                aria-label="Document split"
+                title="Document split"
+                value={documentSplit}
+                onChange={(e) => chooseDocumentSplit(e.target.value as DocumentSplitOrientation)}
+              >
+                {DOCUMENT_SPLIT_CHOICES.map((c) => (
+                  <option key={c.orientation} value={c.orientation}>{c.label}</option>
+                ))}
+              </select>
 
               {/* The Sequence tab's zoom, then the inspector button on any tab with settings (alone off the Sequence tab). */}
               {(viewerTab === 'sequence-view' || inspectorAvailable) && (
@@ -15468,7 +15562,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 { '--mbc-inspector-width': `${inspectorWidthPx}px` } as React.CSSProperties
               }
             >
-              <div className={`mbc-split-host ${splitDocId !== null ? 'is-split' : ''}`}>
+              <div className={documentSplitHostClass(documentSplit)}>
               <div
                 ref={viewerCanvasRef}
                 className={`mbc-viewer-canvas ${
@@ -16191,9 +16285,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 </WorkbenchInspectorProvider>
                               </ErrorBoundary>
               </div>
-              {splitDocId !== null && (
+              {documentSplit !== 'single' && (
                 <SplitDocumentPane
-                  doc={catalogNonDeletedDocs.find((d) => d.id === splitDocId) ?? null}
+                  doc={splitDocId ? catalogNonDeletedDocs.find((d) => d.id === splitDocId) ?? null : null}
                   choices={[...openDocs.filter((d) => d.id !== activeDoc.id), ...catalogNonDeletedDocs.filter((d) => d.id !== activeDoc.id && !openDocs.some((o) => o.id === d.id))]}
                   onChooseDoc={(id) => setSplitDocId(id)}
                   mainDocId={activeDoc.id}
@@ -16206,7 +16300,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     // The pane's selection comes with its document (US-01M7DV3V); none stays none.
                     setSelectedRange(paneRange);
                   }}
-                  onClose={() => setSplitDocId(null)}
+                  onClose={() => chooseDocumentSplit('single')}
                   onUpdateDocument={(d) => handleUpdateDocument(d)}
                   onDownload={(content, name, mime) => void handleDownloadFile(content, name, mime)}
                   onDownloadBinary={(bytes, name, mime) => void handleDownloadBinaryFile(bytes, name, mime)}

@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 /**
- * Split view (two documents side by side): a second pane next to the main viewer
- * showing any document — sequences in the linear view, trees in the Tree Explorer, alignments as
- * rows, text and result documents, or the document's Info.
+ * Split view (two documents at once): a second pane beside the main viewer, or below it in Top and
+ * Bottom (US-01M7DVR0; the App sets the orientation on the host, src/core/documentSplit.ts), showing
+ * any document — sequences in the linear view, trees in the Tree Explorer, alignments as rows, text
+ * and result documents, or the document's Info. The App unmounts the pane in Single Pane, so its
+ * selection starts empty each time it opens; the document it shows is the App's and is kept.
  */
 
 import React, { useMemo, useState } from 'react';
