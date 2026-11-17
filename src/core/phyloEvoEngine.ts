@@ -15,9 +15,7 @@ export type SubstitutionModelName =
   | 'Jukes-Cantor (JC69)'
   | 'Kimura 2-parameter (K2P)'
   | 'Tamura 3-parameter (T92)'
-  | 'Hasegawa-Kishino-Yano (HKY85)'
   | 'Tamura-Nei (TN93)'
-  | 'General Time Reversible (GTR+G+I)'
   | 'Maximum Composite Likelihood (MCL)';
 
 export type PhyloTreeAlgorithm =

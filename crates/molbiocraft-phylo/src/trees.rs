@@ -773,6 +773,11 @@ pub fn construct_phylogenetic_tree_with_resampling(
         method_note: note,
         warnings,
     };
+    // A model with no distance under its name (HKY, GTR) is refused before any other check, as the
+    // only warning, so the tree runner throws it rather than building on another model's distance.
+    if let Err(e) = crate::distances::check_distance_model(model) {
+        return empty(format!("No tree: {model} is not a distance model."), vec![e]);
+    }
     if n < 2 {
         return empty("A tree needs at least two sequences.".into(), Vec::new());
     }

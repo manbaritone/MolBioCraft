@@ -513,6 +513,9 @@ pub fn compute_substitution_rate_matrix(names: &[String], aligned_seqs: &[String
 /// model is requested and the Poisson correction d = -ln(1 - p) otherwise
 /// (Nei & Kumar 2000). Gaps and ambiguity symbols (X, B, Z, J, *, ?) are skipped.
 pub fn calc_protein_pair_distance_and_se(s1: &str, s2: &str, model: &str) -> (f64, f64) {
+    if check_distance_model(model).is_err() {
+        return (f64::NAN, f64::NAN);
+    }
     let is_residue = |b: u8| b.is_ascii_alphabetic() && !matches!(b, b'X' | b'B' | b'Z' | b'J');
     let (mut valid, mut diff) = (0usize, 0usize);
     for (&x, &y) in s1.as_bytes().iter().zip(s2.as_bytes()) {
@@ -584,6 +587,10 @@ pub fn calc_pair_distance_and_se(s1: &str, s2: &str, model: &str) -> (f64, f64) 
 /// Exact analytical pairwise distance and delta-method SE; `pi` (alignment-wide A, C, G, T
 /// frequencies) replaces the pair's own composition when given.
 pub fn calc_pair_distance_and_se_with_freqs(s1: &str, s2: &str, model: &str, pi_all: Option<[f64; 4]>) -> (f64, f64) {
+    // A refused model (check_distance_model) is not computable as a pair: never another model's value.
+    if check_distance_model(model).is_err() {
+        return (f64::NAN, f64::NAN);
+    }
     let b1 = s1.as_bytes();
     let b2 = s2.as_bytes();
     let len = b1.len().min(b2.len());
@@ -666,6 +673,19 @@ pub fn calc_pair_distance_and_se_with_freqs(s1: &str, s2: &str, model: &str, pi_
     )
 }
 
+/// Refuses a distance model that has no distance computed under its name. HKY85 and GTR have no
+/// closed-form distance here (they were once the TN93 distance under their own names, D0003); the
+/// Maximum Likelihood tree fits them. Any name holding HKY or GTR is refused, so a saved option
+/// profile or workflow step that still carries one meets this error instead of another model's value.
+pub fn check_distance_model(model: &str) -> Result<(), String> {
+    if model.contains("HKY") || model.contains("GTR") {
+        return Err(format!(
+            "'{model}' is not a distance model: HKY and GTR are fitted by the Maximum Likelihood tree (choose Maximum Likelihood (ML) as the tree method and HKY or GTR as its model). The supported distance models are p-distance, Jukes-Cantor (JC69), Kimura 2-parameter (K2P), Tamura 3-parameter (T92), Tamura-Nei (TN93) and Maximum Composite Likelihood (MCL)."
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DistanceModelKind {
     PDistance,
@@ -685,11 +705,8 @@ fn distance_model_kind(model: &str) -> DistanceModelKind {
     } else if model.contains("TN93") || model.contains("Tamura-Nei") || model.contains("MCL") {
         // The Maximum Composite Likelihood distance (Tamura, Nei and Kumar 2004) is the TN93 distance.
         DistanceModelKind::Tn93
-    } else if model.contains("HKY") || model.contains("GTR") {
-        // No separate closed form is implemented: these use the TN93 distance (HKY is TN93 with
-        // equal transition rates; TN93 is the closest analytic model to GTR).
-        DistanceModelKind::Tn93
     } else {
+        // HKY and GTR never reach here as a distance: check_distance_model refuses them first.
         DistanceModelKind::PDistance
     }
 }

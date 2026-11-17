@@ -34,8 +34,6 @@ const DISTANCE_MODELS: SubstitutionModelName[] = [
   'Jukes-Cantor (JC69)',
   'Kimura 2-parameter (K2P)',
   'Tamura 3-parameter (T92)',
-  'Hasegawa-Kishino-Yano (HKY85)',
-  'General Time Reversible (GTR+G+I)',
   'Maximum Composite Likelihood (MCL)',
   'p-distance',
 ];

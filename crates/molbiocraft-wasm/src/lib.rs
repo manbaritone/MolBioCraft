@@ -780,6 +780,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let aligned_seqs: Vec<String> = parse_field(&payload, "alignedSeqs")?;
             let model = str_arg(&payload, "model", "Tamura-Nei (TN93)");
             let groups: Vec<String> = parse_field(&payload, "groups").unwrap_or_default();
+            molbiocraft_phylo::distances::check_distance_model(model)?;
             to_val(compute_evolutionary_distances(&names, &aligned_seqs, model, &groups))
         }
         "compute_population_diversity" => {
@@ -787,6 +788,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let aligned_seqs: Vec<String> = parse_field(&payload, "alignedSeqs")?;
             let model = str_arg(&payload, "model", "Tamura-Nei (TN93)");
             let groups: Vec<String> = parse_field(&payload, "groups").unwrap_or_default();
+            molbiocraft_phylo::distances::check_distance_model(model)?;
             to_val(compute_population_diversity(&names, &aligned_seqs, model, &groups))
         }
         "ml_tree_search" => {
