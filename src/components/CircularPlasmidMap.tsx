@@ -658,7 +658,8 @@ export function restrictionScannedBp(lengthBp: number): number {
  * What a restriction scan of the first `scannedBp` bases of a `lengthBp` molecule covers, as the
  * engine runs it (more than 100,000 bp with the core catalog only); null when it covers the whole
  * molecule with the whole catalog. With a chosen `collection` (US-01M7JPK6) the scope names it in
- * place of the core rule, whose words would be false for it.
+ * place of the core rule, whose words would be false for it. A collection with nothing scannable
+ * sends the engine nothing, so its scope gives no range (BG-01M7K2WS, D0169).
  */
 export function restrictionScanScope(
   lengthBp: number,
@@ -667,7 +668,7 @@ export function restrictionScanScope(
   collection?: RestrictionScanCollection
 ): RestrictionScanScope | null {
   const scope: RestrictionScanScope = {
-    ...(scannedBp < lengthBp ? { firstBp: scannedBp } : {}),
+    ...(scannedBp < lengthBp && collection?.scanned !== 0 ? { firstBp: scannedBp } : {}),
     ...(collection
       ? { collection }
       : scannedBp > 100_000

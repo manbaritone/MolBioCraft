@@ -615,3 +615,84 @@ describe('US-01M7JPK6 AC5: the window\'s collection writes reach the scans while
     });
   });
 });
+
+// ─── BG-01M7K2WS ───
+
+describe('BG-01M7K2WS AC1: an empty collection over 150,000 bp says nothing was scanned', () => {
+  // A chosen collection with nothing scannable sends the engine nothing, so no restriction word may
+  // claim the first 60,000 bp were scanned. Wrong implementations this catches: the base, whose
+  // header said "0 sites in the first 60,000 bp" and whose detail led with the first-60,000-bp
+  // sentence; a fix in restrictionScopeWords only, which leaves the linear view's note on a page
+  // past 60,000 bp saying "Cut sites are shown for the first 60,000 bp only" (that page is pinned);
+  // and dropping the range whenever any collection is chosen (the "Cloning set" case pins it kept).
+  const doc = docOf('pHuge161k', construct(200, 160_000));
+  const EMPTY: Coll = { id: 'collection:empty', name: 'Empty', enzymeIds: [] };
+  const GONE_ONLY: Coll = { id: 'collection:gone-only', name: 'Gone only', enzymeIds: ['custom:gone-1'] };
+  const emptyWords = (name: string) => `The collection "${name}" holds no enzyme that can be scanned: no cut sites are shown.`;
+
+  const orfWords = (app: AppHarness) => [
+    ...app.all('.mbc-accordion-header span').map((s) => words(s.textContent)).filter((t) => t.startsWith('ORFs (')),
+    ...restrictionNotes(app).filter((n) => /\bORFs\b/.test(n)),
+  ];
+  const restrictionDetail = (app: AppHarness) => restrictionNotes(app).filter((n) => !/\bORFs\b/.test(n));
+  const pageStart = (app: AppHarness) => Number(words(app.one('.page-indicator', 'the linear page indicator').textContent).split('–')[0].replace(/,/g, ''));
+  async function page(app: AppHarness, title: 'First page' | 'Last page'): Promise<void> {
+    await app.click(app.one(`button.btn-page[title="${title}"]`, `the linear view's ${title} button`));
+    await app.settle();
+  }
+  /** Every restriction word the App shows on the linear view's current page. */
+  const restrictionWords = (app: AppHarness) => [header(app), onceListName(app), ...restrictionDetail(app), circularNote(app), ...linearNotes(app)];
+
+  it('BG-01M7K2WS AC1 the fixture is 161,234 bp, and with All enzymes its restriction and ORF words name the first 60,000 bp', async () => {
+    expect(doc.sequence.length).toBe(161_234);
+    await withDoc(seeded({ collections: [CLONING, EMPTY] }), doc, async (app) => {
+      expect(header(app)).toMatch(/^Restriction Analysis \([\d,]+ sites? in the first 60,000 bp\)$/);
+      expect(orfWords(app).join(' ')).toContain('first 60,000 bp');
+    });
+  });
+
+  it('BG-01M7K2WS AC1 an empty collection over 150,000 bp says nothing was scanned: every restriction word says only the empty-collection sentence, on the first page and past 60,000 bp, and the ORF words are unchanged', async () => {
+    await withDoc(seeded({ collections: [CLONING, EMPTY] }), doc, async (app) => {
+      const orfBefore = orfWords(app);
+      expect(orfBefore.length).toBeGreaterThan(0);
+      await choose(app, 'Empty');
+      expect(header(app)).toBe('Restriction Analysis (0 sites from "Empty" (0 enzymes))');
+      expect(restrictionDetail(app)).toEqual([emptyWords('Empty')]);
+      expect(pageStart(app)).toBe(1);
+      expect(linearNotes(app)).toEqual([emptyWords('Empty')]);
+      for (const w of restrictionWords(app)) expect(w).not.toContain('60,000');
+
+      await page(app, 'Last page');
+      expect(pageStart(app)).toBeGreaterThan(60_000);
+      expect(linearNotes(app)).toEqual([emptyWords('Empty')]);
+      for (const w of restrictionWords(app)) expect(w).not.toContain('60,000');
+      expect(orfWords(app)).toEqual(orfBefore);
+    });
+  });
+
+  it('BG-01M7K2WS AC1 an empty collection over 150,000 bp says nothing was scanned when its only member is a gone custom enzyme', async () => {
+    await withDoc(seeded({ collections: [CLONING, GONE_ONLY] }), doc, async (app) => {
+      await choose(app, 'Gone only');
+      expect(header(app)).toBe('Restriction Analysis (0 sites from "Gone only" (0 enzymes))');
+      expect(restrictionDetail(app)).toEqual([`${emptyWords('Gone only')} 1 member was not scanned: A custom enzyme no longer stored.`]);
+      expect(linearNotes(app)).toEqual([emptyWords('Gone only')]);
+      await page(app, 'Last page');
+      expect(pageStart(app)).toBeGreaterThan(60_000);
+      expect(linearNotes(app)).toEqual([emptyWords('Gone only')]);
+      for (const w of restrictionWords(app)) expect(w).not.toContain('60,000');
+    });
+  });
+
+  it('BG-01M7K2WS AC1 next to an empty collection over 150,000 bp, a collection that is scanned still says the first 60,000 bp were', async () => {
+    await withDoc(seeded({ collections: [CLONING, EMPTY] }), doc, async (app) => {
+      await choose(app, 'Cloning set');
+      expect(header(app)).toMatch(/^Restriction Analysis \([\d,]+ sites? in the first 60,000 bp from "Cloning set" \(3 enzymes\)\)$/);
+      expect(restrictionDetail(app)).toEqual([
+        'Only the first 60,000 of 161,234 bp were scanned, as a linear sequence: an enzyme listed here may cut again past 60,000 bp. Only the 3 enzymes in the collection "Cloning set" were scanned: other enzymes may also cut this sequence.',
+      ]);
+      await page(app, 'Last page');
+      expect(pageStart(app)).toBeGreaterThan(60_000);
+      expect(linearNotes(app)).toEqual([expect.stringMatching(/^Cut sites are shown for the first 60,000 bp and for .*"Cloning set".* only: the rest was not scanned\.$/)]);
+    });
+  });
+});
