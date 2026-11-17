@@ -572,14 +572,48 @@ describe('US-01M7DVDF AC4: Rerun runs the set through the one Run path and write
     }, { storage });
   });
 
+  it('US-01M7DVDF AC4 a rerun whose reply comes while the studio is not shown is still written, and on return its notice shows and Save is not offered', async () => {
+    const { storage, sets } = seeded([STALE_WHOLE]);
+    const [w] = sets;
+    const oracle = scanOf(CURRENT, SPCAS9, 3, null);
+    await withApp(async (app) => {
+      await openStudio(app, [LAB]);
+      const pending = holdReplies();
+      await press(app, 'data-guide-set-rerun', w.id);
+      await app.clickTab('sequence-view');
+      expect(app.all('[data-guide-sets], [data-crispr-run]'), 'the studio is not mounted').toHaveLength(0);
+      pending.shift()!.release();
+      await app.settle();
+      const set = stored(storage).sets[0];
+      expect(set.id).toBe(w.id);
+      expect(set.sequenceRevision, 'written while the studio was not shown').toBe(rev(CURRENT));
+      expect(set.engineVersion).toBe(getRustEngineDiagnostics().version);
+      expect(JSON.stringify(set.guides)).toBe(JSON.stringify(oracle.guides));
+
+      await app.menu('primers:crispr');
+      expect(notice(app)).toBe(`Reran "Whole, capped": its ${oracle.guides.length} guides on revision ${rev(CURRENT)} are kept in place of the earlier ones.`);
+      expect(shownResult(app)).toEqual([`"Whole, capped" searched ${bp(1500)} bp.`]);
+      expect(app.all('[data-crispr-save-set]'), 'Save this result is not offered for a rerun').toHaveLength(0);
+      expect(staleOf(app, w.id)).toBe('no');
+    }, { storage });
+  });
+
   it('US-01M7DVDF AC4 Rerun is refused, the engine not called, for a preset the engine lacks or has changed, and for a stale interval', async () => {
     const { storage, sets } = seeded([
       { id: 'set-gone', name: 'Gone nuclease', on: CURRENT, doc: LAB_REF, patch: (s) => void (s.criteria.nuclease.id = 'XCas9 (NGN)') },
       { id: 'set-spacer', name: 'Longer spacer', on: CURRENT, doc: LAB_REF, patch: (s) => void (s.criteria.nuclease.spacerLengthBp = 21) },
       { id: 'set-pam', name: 'Other PAM', on: CURRENT, doc: LAB_REF, patch: (s) => void (s.criteria.nuclease.pamPattern = 'NAG') },
-      CURRENT_INTERVAL,
+      // The interval set was saved under another document name: the refusal names the active document.
+      { ...CURRENT_INTERVAL, doc: { id: LAB.id, name: 'pDVDF_Lab as named when saved' } },
+      { id: 'set-side', name: 'Other PAM side', on: CURRENT, doc: LAB_REF, patch: (s) => void (s.criteria.nuclease.pamSide = "5'") },
+      { id: 'set-span', name: 'Wider site', on: CURRENT, doc: LAB_REF, patch: (s) => void (s.criteria.nuclease.siteSpanBp = 99) },
+      { id: 'set-cut', name: 'Other cut', on: CURRENT, doc: LAB_REF, patch: (s) => void (s.criteria.nuclease.cutConvention = 'cuts somewhere else') },
     ]);
-    const spacer = crisprNucleasePresets().find((p) => p.id === SPCAS9)!.spacerLengthBp;
+    const preset = crisprNucleasePresets().find((p) => p.id === SPCAS9)!;
+    const spacer = preset.spacerLengthBp;
+    expect([preset.pamSide, preset.siteSpanBp, preset.cutConvention], 'the patched values differ from the engine\'s').not.toContainEqual("5'");
+    expect(preset.siteSpanBp).not.toBe(99);
+    expect(sets[3].documentName, 'the stored document name is not the active one').not.toBe(LAB.name);
     await withApp(async (app) => {
       await openStudio(app, [LAB]);
       const raw = storage.getItem(KEY);
@@ -587,10 +621,16 @@ describe('US-01M7DVDF AC4: Rerun runs the set through the one Run path and write
         ['set-gone', '"Gone nuclease" was not rerun: the engine has no XCas9 (NGN) preset now.'],
         ['set-spacer', `"Longer spacer" was not rerun: the engine's ${SPCAS9} preset is not the one it ran with (spacerLengthBp was 21, is now ${spacer}).`],
         ['set-pam', `"Other PAM" was not rerun: the engine's ${SPCAS9} preset is not the one it ran with (pamPattern was NAG, is now NGG).`],
+        ['set-side', `"Other PAM side" was not rerun: the engine's ${SPCAS9} preset is not the one it ran with (pamSide was 5', is now ${preset.pamSide}).`],
+        ['set-span', `"Wider site" was not rerun: the engine's ${SPCAS9} preset is not the one it ran with (siteSpanBp was 99, is now ${preset.siteSpanBp}).`],
+        ['set-cut', `"Other cut" was not rerun: the engine's ${SPCAS9} preset is not the one it ran with (cutConvention was cuts somewhere else, is now ${preset.cutConvention}).`],
       ];
       for (const [id, says] of refusals) {
         await press(app, 'data-guide-set-rerun', id);
-        expect(notice(app), id).toBe(says);
+        expect(notice(app), id).toBe(words(says));
+        expect(engine.calls, `${id}: the engine is not called`).toEqual([]);
+        expect(runStatus(app), `${id}: no run is started`).toEqual([]);
+        expect(storage.getItem(KEY), `${id}: the stored value byte for byte`).toBe(raw);
       }
 
       // The interval set is current: it is offered. Stale, it is refused; Undo makes it current again.
@@ -684,8 +724,15 @@ describe('US-01M7DVDF AC6: sets of documents not open are listed apart and never
       );
       expect(app.all(`[data-guide-set-rerun="${gone.id}"]`), 'no Rerun').toHaveLength(0);
       expect(app.all('[data-guide-sets-elsewhere] [data-guide-set-rerun]')).toHaveLength(0);
+      expect(app.all('[data-guide-sets-elsewhere] [data-guide-set-rename]'), 'no Rename').toHaveLength(0);
+      // Its revision is not the active document's, and it is still never marked stale against it.
+      expect(gone.sequenceRevision).not.toBe(rev(CURRENT));
+      const goneEntry = app.one(`[data-guide-set-elsewhere="${gone.id}"]`);
+      expect(goneEntry.getAttribute('data-guide-set-stale'), 'no stale state').toBeNull();
       await press(app, 'data-guide-set-show-rows', gone.id);
       expect(rowIds(app, gone.id)).toEqual(gone.guides.map((g) => g.id));
+      expect(app.all('[data-guide-sets-elsewhere] [data-guide-set-stale-note], [data-guide-sets-elsewhere] [data-guide-set-rows-note]')).toHaveLength(0);
+      expect(words(app.one('[data-guide-sets-elsewhere]').textContent)).not.toMatch(/Stale|Computed on revision/);
 
       await removeConfirmed(app, gone.id);
       expect(storage.getItem(KEY)).toBe(envelopeOf([here, open]));
