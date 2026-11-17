@@ -13,6 +13,9 @@
  * reported by name (malformed, newer schema, storage unavailable), never read as no saved sets, and
  * no save replaces it. A write the storage refuses, or does not keep, says that nothing was saved.
  * Every save re-reads storage first, so a set another tab of the standalone build saved is kept.
+ * Rename, remove and a rerun's write (US-01M7DVDF) re-read it first too, change only the one set by
+ * its id, and say `Nothing was changed: <reason>` when the store cannot be read, the set is gone or
+ * the storage refuses or does not keep the write.
  *
  * The rows and the report are typed as the engine's own `CrisprScanGuide` and `CrisprScanReport`
  * and stored as the engine sent them, never a copy of their field lists.
@@ -127,12 +130,44 @@ export type GuideSetList =
   | { kind: 'none' }
   | { kind: 'unreadable'; error: GuideSetError };
 
+/**
+ * What a rerun of a saved set replaces (US-01M7DVDF AC4): the rows, the report and the provenance of
+ * the new search. The set's id, name, document id, nuclease, interval, result cap and savedAt are
+ * not in it, so a rerun cannot change them.
+ */
+export interface GuideSetRerun {
+  /** ISO 8601 time the rerun's Run was pressed. */
+  ranAt: string;
+  /** The document's topology the rerun read. */
+  topology: 'circular' | 'linear';
+  report: CrisprScanReport;
+  guides: CrisprScanGuide[];
+  scoreNames: GuideSetScoreNames;
+  heuristicRule: string;
+}
+
 export interface GuideSetDatabase {
   read(): GuideSetRead;
   /** The sets saved for this document id, oldest first. */
   listForDocument(documentId: string): GuideSetList;
+  /**
+   * The sets saved for documents none of these ids names (US-01M7DVDF AC6): a set is listed here
+   * only while its document is not open, so a set of another open document is not in it.
+   */
+  listNotOpen(openDocumentIds: readonly string[]): GuideSetList;
   /** Keep a completed run under its name. It writes only this store's key, never the document. */
   save(run: GuideSetRun, document: GuideSetDocumentRef): GuideSetResult<GuideSet>;
+  /** Give the set with this id a new one-line name; every other field is kept as stored. */
+  rename(id: string, name: string): GuideSetResult<GuideSet>;
+  /** Delete the set with this id and no other. */
+  remove(id: string): GuideSetResult<GuideSet>;
+  /**
+   * Write a completed rerun over the set with this id, as stored when the reply came: it keeps the
+   * id, name, documentId, criteria.nuclease, criteria.interval, criteria.resultCap and savedAt, and
+   * takes the rerun's guides, report, criteria.topology, ranAt, scoreNames and heuristicRule, the
+   * document's name and revision, and the engine version now.
+   */
+  writeRerun(id: string, rerun: GuideSetRerun, document: GuideSetDocumentRef): GuideSetResult<GuideSet>;
 }
 
 const fail = (kind: GuideSetErrorKind, message: string, extra: Partial<GuideSetError> = {}): { ok: false; error: GuideSetError } => ({
@@ -238,8 +273,105 @@ export function openGuideSetDatabase(env: GuideSetDatabaseEnv = {}): GuideSetDat
     return { ok: true, sets: envelope.sets, stored: true };
   }
 
+  /** The stored sets for a change, or why nothing can be changed: the store re-read, never a copy. */
+  function readForChange(): { ok: true; sets: GuideSet[] } | { ok: false; error: GuideSetError } {
+    const current = read();
+    if (current.ok) return { ok: true, sets: current.sets };
+    return fail(current.error.kind, `Nothing was changed: ${current.error.message}`, {
+      ...(current.error.storedValue !== undefined ? { storedValue: current.error.storedValue } : {}),
+    });
+  }
+
+  /** Write the sets back and read them again: a write the storage refuses or does not keep is said. */
+  function writeSets(sets: GuideSet[]): { ok: true } | { ok: false; error: GuideSetError } {
+    const text = JSON.stringify({ schema: GUIDE_SET_DATABASE_SCHEMA, sets } satisfies GuideSetEnvelope);
+    try {
+      const s = storage();
+      s.setItem(GUIDE_SET_DATABASE_KEY, text);
+      if (s.getItem(GUIDE_SET_DATABASE_KEY) !== text) {
+        return fail('notSaved', 'Nothing was changed: the storage did not keep the change.');
+      }
+    } catch (err) {
+      return fail('notSaved', `Nothing was changed: the storage refused the write (${errorText(err)}).`);
+    }
+    return { ok: true };
+  }
+
+  const gone = (id: string) => fail('notSaved', `Nothing was changed: no guide set with the id ${id} is stored now.`);
+
   return {
     read,
+
+    listNotOpen(openDocumentIds) {
+      const current = read();
+      if (!current.ok) return { kind: 'unreadable', error: current.error };
+      const open = new Set(openDocumentIds);
+      const sets = current.sets.filter((s) => !open.has(s.documentId));
+      return sets.length > 0 ? { kind: 'saved', sets } : { kind: 'none' };
+    },
+
+    rename(id, newName) {
+      const name = newName.trim();
+      if (name === '' || /[\r\n]/.test(name)) {
+        return fail('invalid', 'Not renamed: a guide set needs a one-line name.');
+      }
+      const current = readForChange();
+      if (!current.ok) return current;
+      const at = current.sets.findIndex((s) => s.id === id);
+      if (at < 0) return gone(id);
+      // Spread over the stored set: every other key keeps its place and its value, so a value this
+      // store wrote is written back byte for byte.
+      const renamed: GuideSet = { ...current.sets[at], name };
+      const written = writeSets(current.sets.map((s, i) => (i === at ? renamed : s)));
+      return written.ok ? { ok: true, value: renamed } : written;
+    },
+
+    remove(id) {
+      const current = readForChange();
+      if (!current.ok) return current;
+      const removed = current.sets.find((s) => s.id === id);
+      if (!removed) return gone(id);
+      const written = writeSets(current.sets.filter((s) => s.id !== id));
+      return written.ok ? { ok: true, value: removed } : written;
+    },
+
+    writeRerun(id, rerun, document) {
+      const current = readForChange();
+      if (!current.ok) return current;
+      const at = current.sets.findIndex((s) => s.id === id);
+      if (at < 0) return gone(id);
+      const stored = current.sets[at];
+      if (stored.documentId !== document.id) {
+        return fail('invalid', `Nothing was changed: "${stored.name}" was saved for another document, and a set is never rerun on another document.`);
+      }
+      let version: string;
+      try {
+        version = engineVersion();
+      } catch (err) {
+        return fail('invalid', `Nothing was changed: the engine version cannot be read (${errorText(err)}).`);
+      }
+      // The rerun as it came, through JSON, over the stored set: the kept fields stay where and as
+      // they were stored.
+      const fresh = JSON.parse(
+        JSON.stringify({
+          guides: rerun.guides,
+          report: rerun.report,
+          ranAt: rerun.ranAt,
+          scoreNames: rerun.scoreNames,
+          heuristicRule: rerun.heuristicRule,
+        })
+      ) as Pick<GuideSet, 'guides' | 'report' | 'ranAt' | 'scoreNames' | 'heuristicRule'>;
+      const rewritten: GuideSet = {
+        ...stored,
+        ...fresh,
+        documentName: document.name,
+        sequenceRevision: document.revision,
+        engineVersion: version,
+        criteria: { ...stored.criteria, topology: rerun.topology },
+      };
+      const written = writeSets(current.sets.map((s, i) => (i === at ? rewritten : s)));
+      return written.ok ? { ok: true, value: rewritten } : written;
+    },
 
     listForDocument(documentId) {
       const current = read();

@@ -61,6 +61,16 @@ const CRISPR_SCORE_COLUMNS = {
   offTargetCount: 'Exact Seed Matches (range searched)',
 } as const;
 
+/** The score names a saved guide set records, from the table's own headings. */
+const CRISPR_SCORE_NAMES = {
+  onTargetScore: CRISPR_SCORE_COLUMNS.onTargetScore,
+  specificityScore: CRISPR_SCORE_COLUMNS.offTargetCount,
+  offTargetCount: CRISPR_SCORE_COLUMNS.offTargetCount,
+};
+
+/** The preset fields a saved set's rerun needs unchanged (US-01M7DVDF AC4), in the order they are named. */
+const CRISPR_PRESET_FIELDS = ['id', 'pamSide', 'pamPattern', 'spacerLengthBp', 'siteSpanBp', 'cutConvention'] as const;
+
 /** An interval a CRISPR search may be asked for: 1-based bounds, `start > end` across the origin. */
 type CrisprInterval = { start: number; end: number; lengthBp: number; crossesOrigin: boolean };
 
@@ -83,6 +93,20 @@ interface CrisprRun {
   askedBp: number;
   /** ISO 8601 time Run was pressed, which a saved guide set records (US-01M7DVFD). */
   ranAt: string;
+  /** The saved guide set this run reruns (US-01M7DVDF AC4): its completed reply is written over it. */
+  rerunOf?: string;
+}
+
+/**
+ * What a saved set's Rerun asks the Run path for (US-01M7DVDF AC4): the set's own name, nuclease
+ * preset, interval and result cap, so nothing in it is read from the tab's chooser or scope.
+ */
+interface CrisprRerunSpec {
+  setId: string;
+  name: string;
+  preset: CrisprNucleasePreset;
+  interval: CrisprInterval | null;
+  resultCap: number;
 }
 
 /** A search the engine answered with a report and no interval refusal. */
@@ -114,9 +138,27 @@ const crisprSearches: {
   status: CrisprRunStatus | null;
   /** The serial of the run whose reply may still be read; Stop and every new Run move it on. */
   serial: number;
+  /**
+   * What the last change to a saved guide set said (US-01M7DVDF): a rename, a remove, a refused
+   * rerun or a rerun's write, by the document it was made on. Kept here because a rerun's reply can
+   * come after the studio has unmounted.
+   */
+  guideSetNotice: { docId: string; ok: boolean; text: string } | null;
+  /** Moved on by each rerun write, so the saved-set lists are read from storage again. */
+  guideSetWrites: number;
   version: number;
   listeners: Set<() => void>;
-} = { results: new Map(), scopes: new Map(), lastDocId: null, status: null, serial: 0, version: 0, listeners: new Set() };
+} = {
+  results: new Map(),
+  scopes: new Map(),
+  lastDocId: null,
+  status: null,
+  serial: 0,
+  guideSetNotice: null,
+  guideSetWrites: 0,
+  version: 0,
+  listeners: new Set(),
+};
 
 const crisprSearchesChanged = () => {
   crisprSearches.version += 1;
@@ -544,29 +586,42 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
    * Run the search as named (US-01M7DVJK, D0171): one engine call over the whole scope asked for,
    * off the UI thread. Its reply is read only while its serial is the store's: Stop and a later Run
    * each move the serial on, so a reply that comes after either is dropped unread.
+   *
+   * A saved set's Rerun (US-01M7DVDF AC4) comes through here with its own spec: the set's name,
+   * preset, interval and result cap in place of the tab's chooser and scope, the document's current
+   * topology, and, once its reply completes, the set rewritten in the store by its id. Without a
+   * spec the run is exactly the tab's own.
    */
-  const runCrisprSearch = () => {
+  /**
+   * The saved guide sets (US-01M7DVFD): a user-local store keyed to a document id and revision,
+   * never written into the document. The lists are read again after each change to it.
+   */
+  const guideSetDb = useMemo(() => openGuideSetDatabase(), []);
+  const runCrisprSearch = (rerun?: CrisprRerunSpec) => {
     const serial = (crisprSearches.serial += 1);
-    const interval = crisprIntervalAsked;
+    const interval = rerun ? rerun.interval : crisprIntervalAsked;
+    const nucleaseId = rerun ? rerun.preset.id : crisprNuclease;
+    const preset = rerun ? rerun.preset : chosenPreset;
     const run: CrisprRun = {
       serial,
-      name: crisprName,
+      name: rerun ? rerun.name : crisprName,
       docId: doc.id,
       docName: doc.name,
       revision: docRevision,
       topology: docTopology,
-      nuclease: crisprNuclease,
-      ...(chosenPreset ? { preset: chosenPreset } : {}),
+      nuclease: nucleaseId,
+      ...(preset ? { preset } : {}),
       interval,
       askedBp: interval ? interval.lengthBp : doc.sequence.length,
       ranAt: new Date().toISOString(),
+      ...(rerun ? { rerunOf: rerun.setId } : {}),
     };
     crisprSearches.status = { phase: 'running', run };
     crisprSearchesChanged();
     void scanCrisprGuidesAsync(
       doc.sequence,
-      crisprNuclease,
-      CRISPR_GUIDES_LISTED,
+      nucleaseId,
+      rerun ? rerun.resultCap : CRISPR_GUIDES_LISTED,
       docTopology === 'circular',
       interval ? { start: interval.start, end: interval.end } : null
     ).then((result) => {
@@ -584,6 +639,30 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
         crisprSearches.results.set(run.docId, { run, result: { ...result, report } });
         crisprSearches.lastDocId = run.docId;
         crisprSearches.status = { phase: 'done', run };
+        if (run.rerunOf !== undefined) {
+          // The store is read again now, when the reply is in: the set is written by its id as it is
+          // stored now, or not at all, and the result stays shown either way.
+          const written = guideSetDb.writeRerun(
+            run.rerunOf,
+            {
+              ranAt: run.ranAt,
+              topology: run.topology,
+              report,
+              guides: result.guides,
+              scoreNames: CRISPR_SCORE_NAMES,
+              heuristicRule: crisprRankRule,
+            },
+            { id: run.docId, name: run.docName, revision: run.revision }
+          );
+          crisprSearches.guideSetNotice = written.ok
+            ? {
+                docId: run.docId,
+                ok: true,
+                text: `Reran "${written.value.name}": its ${bp(written.value.guides.length)} guides on revision ${written.value.sequenceRevision} are kept in place of the earlier ones.`,
+              }
+            : { docId: run.docId, ok: false, text: written.error.message };
+          crisprSearches.guideSetWrites += 1;
+        }
       }
       crisprSearchesChanged();
     });
@@ -599,16 +678,23 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
 
   const crisprResult: CrisprScanResult = crisprShown?.result ?? { guides: [] };
 
-  /**
-   * The saved guide sets (US-01M7DVFD): a user-local store keyed to a document id and revision,
-   * never written into the document. The list is read again after each save.
-   */
-  const guideSetDb = useMemo(() => openGuideSetDatabase(), []);
   const [guideSetsRead, setGuideSetsRead] = useState(0);
+  const guideSetWrites = crisprSearches.guideSetWrites;
   const guideSetList: GuideSetList = useMemo(
     () => guideSetDb.listForDocument(doc.id),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [guideSetDb, doc.id, guideSetsRead]
+    [guideSetDb, doc.id, guideSetsRead, guideSetWrites]
+  );
+  /**
+   * The sets of documents not open in this workspace (US-01M7DVDF AC6), read from the same store:
+   * every open document's id, the active one with them, is left out, so a set of another open
+   * document is listed nowhere here.
+   */
+  const openDocumentIds = useMemo(() => [doc.id, ...allDocuments.map((d) => d.id)], [doc.id, allDocuments]);
+  const guideSetsElsewhere: GuideSetList = useMemo(
+    () => guideSetDb.listNotOpen(openDocumentIds),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [guideSetDb, openDocumentIds, guideSetsRead, guideSetWrites]
   );
   const [guideSetSave, setGuideSetSave] = useState<{ docId: string; ok: boolean; text: string } | null>(null);
   /**
@@ -619,6 +705,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   const crisprSaveOffered =
     crisprShown !== undefined &&
     crisprShown.run.preset !== undefined &&
+    // A rerun's result belongs to the set it reran (US-01M7DVDF AC4), which its reply is written
+    // over: it is never offered to be saved as a second set.
+    crisprShown.run.rerunOf === undefined &&
     !(crisprStatus && crisprStatus.phase !== 'done' && crisprStatus.run.docId === doc.id);
   const saveCrisprGuideSet = () => {
     if (!crisprSaveOffered || !crisprShown?.run.preset) return;
@@ -630,11 +719,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
         criteria: { nuclease: run.preset!, topology: run.topology, interval: run.interval, resultCap: CRISPR_GUIDES_LISTED },
         report: result.report,
         guides: result.guides,
-        scoreNames: {
-          onTargetScore: CRISPR_SCORE_COLUMNS.onTargetScore,
-          specificityScore: CRISPR_SCORE_COLUMNS.offTargetCount,
-          offTargetCount: CRISPR_SCORE_COLUMNS.offTargetCount,
-        },
+        scoreNames: CRISPR_SCORE_NAMES,
         heuristicRule: crisprRankRule,
       },
       { id: run.docId, name: run.docName, revision: run.revision }
@@ -650,6 +735,188 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     `${set.criteria.nuclease.id}, ${
       set.criteria.interval ? `bases ${bp(set.criteria.interval.start)}..${bp(set.criteria.interval.end)}` : 'whole sequence'
     }, revision ${set.sequenceRevision}, run ${set.ranAt}`;
+
+  /**
+   * Rename, remove and rerun a saved set (US-01M7DVDF). None of them calls the document writer:
+   * each changes only the guide-set store, and each says what it did or why it did nothing.
+   */
+  const [guideSetRowsShown, setGuideSetRowsShown] = useState<string[]>([]);
+  const [guideSetRenaming, setGuideSetRenaming] = useState<{ id: string; draft: string } | null>(null);
+  const [guideSetRemoving, setGuideSetRemoving] = useState<string | null>(null);
+  const guideSetNotice = crisprSearches.guideSetNotice?.docId === doc.id ? crisprSearches.guideSetNotice : null;
+  const noteGuideSet = (ok: boolean, text: string) => {
+    crisprSearches.guideSetNotice = { docId: doc.id, ok, text };
+    crisprSearchesChanged();
+  };
+  const toggleGuideSetRows = (id: string) =>
+    setGuideSetRowsShown((shown) => (shown.includes(id) ? shown.filter((x) => x !== id) : [...shown, id]));
+  const renameGuideSet = () => {
+    if (!guideSetRenaming) return;
+    const renamed = guideSetDb.rename(guideSetRenaming.id, guideSetRenaming.draft);
+    // A refused name leaves the field open to be put right; any other outcome closes it.
+    if (renamed.ok || renamed.error.kind !== 'invalid') setGuideSetRenaming(null);
+    noteGuideSet(renamed.ok, renamed.ok ? `Renamed the guide set to "${renamed.value.name}".` : renamed.error.message);
+    setGuideSetsRead((n) => n + 1);
+  };
+  const removeGuideSet = (id: string) => {
+    setGuideSetRemoving(null);
+    const removed = guideSetDb.remove(id);
+    noteGuideSet(
+      removed.ok,
+      removed.ok ? `Removed the guide set "${removed.value.name}" from this computer; no document is changed.` : removed.error.message
+    );
+    setGuideSetsRead((n) => n + 1);
+  };
+  /**
+   * Rerun a set of this document through the Run path (US-01M7DVDF AC4) with the set's own preset,
+   * interval and result cap, never the chooser's. It is refused, the engine not called, when the
+   * engine no longer has the set's preset as it ran, or when a set of an interval is stale: bounds
+   * on an earlier sequence may not hold the same bases now.
+   */
+  const rerunGuideSet = (set: GuideSet) => {
+    const refuse = (why: string) => noteGuideSet(false, `"${set.name}" was not rerun: ${why}`);
+    const ranWith = set.criteria.nuclease;
+    const now = nucleasePresets.find((p) => p.id === ranWith.id);
+    if (!now) {
+      refuse(`the engine has no ${ranWith.id} preset now.`);
+      return;
+    }
+    const changed = CRISPR_PRESET_FIELDS.find((f) => now[f] !== ranWith[f]);
+    if (changed) {
+      refuse(
+        `the engine's ${ranWith.id} preset is not the one it ran with (${changed} was ${String(ranWith[changed])}, is now ${String(now[changed])}).`
+      );
+      return;
+    }
+    const interval = set.criteria.interval;
+    if (interval && set.sequenceRevision !== docRevision) {
+      refuse(
+        `it searched bases ${bp(interval.start)}..${bp(interval.end)} of an earlier sequence of ${doc.name}, and those bounds may no longer hold the same bases. Select the interval and press Run.`
+      );
+      return;
+    }
+    crisprSearches.guideSetNotice = null;
+    runCrisprSearch({ setId: set.id, name: set.name, preset: now, interval, resultCap: set.criteria.resultCap });
+  };
+  /**
+   * One saved set's entry. A set of this document is marked stale while its revision is not the
+   * document's (the rule a live result is withdrawn by, US-01M7DVJK AC6); a set of a document that
+   * is not open is listed with its document and is never offered for rerun. Its rows are shown as
+   * stored, read-only: no row jumps to a guide, annotates or draws on the map.
+   */
+  const guideSetEntry = (set: GuideSet, where: 'here' | 'elsewhere') => {
+    const here = where === 'here';
+    const stale = here && set.sequenceRevision !== docRevision;
+    const renaming = here && guideSetRenaming?.id === set.id ? guideSetRenaming : null;
+    const rowsShown = guideSetRowsShown.includes(set.id);
+    return (
+      <li
+        key={set.id}
+        {...(here
+          ? { 'data-guide-set': set.id, 'data-guide-set-stale': stale ? 'yes' : 'no' }
+          : { 'data-guide-set-elsewhere': set.id })}
+      >
+        {here ? (
+          <>
+            <span data-guide-set-name="">{set.name}</span> — {guideSetWords(set)}
+          </>
+        ) : (
+          <>
+            <span data-guide-set-elsewhere-name="">{set.name}</span> — for {set.documentName}: {guideSetWords(set)}
+          </>
+        )}
+        {stale && (
+          <p className="mbc-opdlg-muted" data-guide-set-stale-note="">
+            {`Stale: computed on revision ${set.sequenceRevision} of ${set.documentName}; its bases or topology have changed since.`}
+          </p>
+        )}
+        {!here && (
+          <p className="mbc-opdlg-muted" data-guide-set-no-rerun="">
+            {`Not offered for rerun: ${set.documentName} is not open in this workspace, and a set is never rerun on another document.`}
+          </p>
+        )}
+        <div className="cloning-action-row">
+          <button type="button" className="btn-secondary-sm" data-guide-set-show-rows={set.id} onClick={() => toggleGuideSetRows(set.id)}>
+            {rowsShown ? 'Hide rows' : 'Show rows'}
+          </button>
+          {here && (
+            <button
+              type="button"
+              className="btn-secondary-sm"
+              data-guide-set-rerun={set.id}
+              title={`Search ${doc.name} again with the nuclease, range and result cap "${set.name}" ran with`}
+              onClick={() => rerunGuideSet(set)}
+            >
+              Rerun
+            </button>
+          )}
+          {here && (
+            <button
+              type="button"
+              className="btn-secondary-sm"
+              data-guide-set-rename={set.id}
+              onClick={() => setGuideSetRenaming({ id: set.id, draft: set.name })}
+            >
+              Rename
+            </button>
+          )}
+          <button type="button" className="btn-secondary-sm" data-guide-set-remove={set.id} onClick={() => setGuideSetRemoving(set.id)}>
+            Remove
+          </button>
+        </div>
+        {renaming && (
+          <div className="cloning-action-row">
+            <input
+              type="text"
+              aria-label={`New name for "${set.name}"`}
+              data-guide-set-rename-field={set.id}
+              value={renaming.draft}
+              onChange={(e) => setGuideSetRenaming({ id: set.id, draft: e.target.value })}
+            />
+            <button type="button" className="btn-secondary-sm" data-guide-set-rename-save={set.id} onClick={renameGuideSet}>
+              Save name
+            </button>
+            <button type="button" className="btn-secondary-sm" data-guide-set-rename-cancel={set.id} onClick={() => setGuideSetRenaming(null)}>
+              Cancel
+            </button>
+          </div>
+        )}
+        {guideSetRemoving === set.id && (
+          <div className="cloning-action-row" role="alertdialog" aria-label={`Remove "${set.name}"`}>
+            <span data-guide-set-remove-confirm={set.id}>
+              {`Remove the guide set "${set.name}" from this computer? No document is changed.`}
+            </span>
+            <button type="button" className="btn-secondary-sm" data-guide-set-remove-yes={set.id} onClick={() => removeGuideSet(set.id)}>
+              Remove
+            </button>
+            <button type="button" className="btn-secondary-sm" data-guide-set-remove-cancel={set.id} onClick={() => setGuideSetRemoving(null)}>
+              Cancel
+            </button>
+          </div>
+        )}
+        {rowsShown && (
+          <div data-guide-set-rows={set.id}>
+            {stale && (
+              <p className="mbc-opdlg-muted" data-guide-set-rows-note="">
+                {`Computed on revision ${set.sequenceRevision}, not the current sequence: these coordinates are not read against it.`}
+              </p>
+            )}
+            {set.guides.length === 0 ? (
+              <p className="mbc-opdlg-muted">{`"${set.name}" holds no guide rows: its search found none.`}</p>
+            ) : (
+              <ul>
+                {set.guides.map((g) => (
+                  <li key={g.id} data-guide-set-row={g.id}>
+                    {`${g.name}: ${guideRange(g)}, ${g.strand === 1 ? 'forward' : 'reverse'} strand, spacer ${g.spacerSeq}, PAM ${g.pamSeq}, ${set.scoreNames.onTargetScore} ${g.onTargetScore}`}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </li>
+    );
+  };
   const crisprGuides = crisprResult.guides;
   /**
    * The rank's rule in the engine's own words (BG-01M7EYED): one sentence, asked for once, from the
@@ -1679,7 +1946,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
                 className="btn-primary"
                 data-crispr-run=""
                 title={`Search ${crisprScope === 'interval' && crisprIntervalAsked ? `bases ${bp(crisprIntervalAsked.start)}..${bp(crisprIntervalAsked.end)}` : 'the whole sequence'} of ${doc.name} for ${crisprNuclease} guides`}
-                onClick={runCrisprSearch}
+                onClick={() => runCrisprSearch()}
               >
                 Run
               </button>
@@ -1751,6 +2018,11 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
               {guideSetSave.text}
             </p>
           )}
+          {guideSetNotice && (
+            <p className="mbc-opdlg-muted" role="status" data-guide-set-outcome={guideSetNotice.ok ? 'done' : 'refused'}>
+              {guideSetNotice.text}
+            </p>
+          )}
           <div className="mbc-guide-sets" data-guide-sets={guideSetList.kind}>
             <strong>Saved guide sets for {doc.name}</strong>:{' '}
             {guideSetList.kind === 'unreadable' ? (
@@ -1758,15 +2030,18 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             ) : guideSetList.kind === 'none' ? (
               `No saved searches for ${doc.name}.`
             ) : (
-              <ul>
-                {guideSetList.sets.map((set) => (
-                  <li key={set.id} data-guide-set={set.id}>
-                    <span data-guide-set-name="">{set.name}</span> — {guideSetWords(set)}
-                  </li>
-                ))}
-              </ul>
+              <ul>{guideSetList.sets.map((set) => guideSetEntry(set, 'here'))}</ul>
             )}
           </div>
+          {/* The sets of documents not open here (US-01M7DVDF AC6), apart from this document's. The
+              section is drawn only when such a set is stored: a store that cannot be read is named
+              in the list above, never drawn here as no sets. */}
+          {guideSetList.kind !== 'unreadable' && guideSetsElsewhere.kind === 'saved' && (
+            <div className="mbc-guide-sets" data-guide-sets-elsewhere="">
+              <strong>Saved guide sets for documents not open</strong>
+              <ul>{guideSetsElsewhere.sets.map((set) => guideSetEntry(set, 'elsewhere'))}</ul>
+            </div>
+          )}
 
           <div className="info-callout">
             {/* An interval the engine refused was searched not at all, so this line claims no

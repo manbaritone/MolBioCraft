@@ -392,3 +392,169 @@ describe('an empty stored value is reported malformed, never as no saved sets (B
     }
   });
 });
+
+/**
+ * US-01M7DVDF AC1, AC4, AC6: rename, remove and a rerun's write change one set by its id, after a
+ * fresh read of the store, and nothing else in it; the not-open list holds only sets whose document
+ * is not open. Each store holds two sets of real scans, so a change that touches the wrong set, or
+ * every set, is seen.
+ *
+ * Wrong implementations these kill (LC-002): a rename that gives the set a new id, a new savedAt or
+ * a re-serialised field order (the whole stored value is compared, not only the name); a name kept
+ * with its surrounding spaces or a multi-line name accepted; a remove that deletes every set of the
+ * document or the first set; a change written from a list read when the store was opened rather
+ * than from storage now (a set saved by another store after it opened is kept); an unreadable store
+ * overwritten; a refused or dropped write reported as done; a rerun write that keeps the old rows,
+ * the old revision or the old engine version, or that takes the rerun's name, interval or result cap
+ * in place of the stored ones; a not-open list that includes a set of an open document, or reads an
+ * unreadable store as none.
+ */
+describe('a saved guide set is renamed, removed and rerun in place by its id (US-01M7DVDF)', () => {
+  /** A store over two real scans of two documents, and its stored value as written. */
+  function twoSets() {
+    const mem = memory();
+    const db = openGuideSetDatabase({ storage: mem.storage, now: clock, newId: ids });
+    const [fa, fb] = [FIXTURES[0], FIXTURES[3]];
+    const a = db.save(runOf(fa, scan(fa), 'First'), docRef(fa.doc));
+    const b = db.save(runOf(fb, scan(fb), 'Second'), docRef(fb.doc));
+    if (!a.ok || !b.ok) throw new Error('the fixture sets were not saved');
+    return { mem, db, a: a.value, b: b.value, fa, fb };
+  }
+  const envelopeOf = (sets: unknown[]) => JSON.stringify({ schema: 1, sets });
+
+  it('US-01M7DVDF AC1 a rename keeps the id, the rows and every other field byte for byte, and refuses an empty or multi-line name', () => {
+    const { mem, a, b } = twoSets();
+    // A store with a later clock: a rename that stamped the time would be seen.
+    const db = openGuideSetDatabase({ storage: mem.storage, now: () => '2031-01-01T00:00:00.000Z', newId: () => 'a-new-id' });
+    const renamed = db.rename(a.id, '  Exon 2, kept  ');
+    expect(renamed.ok, 'renamed').toBe(true);
+    expect(mem.raw(), 'only the name changed, every other byte as stored').toBe(envelopeOf([{ ...a, name: 'Exon 2, kept' }, b]));
+    expect(renamed.ok && renamed.value.id).toBe(a.id);
+
+    for (const bad of ['', '   ', 'two\nlines', 'a\r\nb']) {
+      const before = mem.raw();
+      const writes = mem.writes.length;
+      const refused = db.rename(a.id, bad);
+      expect(refused.ok, JSON.stringify(bad)).toBe(false);
+      expect(!refused.ok && refused.error.message, JSON.stringify(bad)).toBe('Not renamed: a guide set needs a one-line name.');
+      expect(mem.writes.length, `${JSON.stringify(bad)}: nothing written`).toBe(writes);
+      expect(mem.raw()).toBe(before);
+    }
+  });
+
+  it('US-01M7DVDF AC1 a remove deletes only that set, and every change re-reads the store first', () => {
+    const { mem, db, a, b, fa } = twoSets();
+    // A set saved by another store (another tab) after this one opened is kept by every change here.
+    const other = openGuideSetDatabase({ storage: mem.storage, now: clock, newId: ids });
+    const c = other.save(runOf(fa, scan(fa), 'Third, same document'), docRef(fa.doc));
+    if (!c.ok) throw new Error(c.error.message);
+    const removed = db.remove(a.id);
+    expect(removed.ok && removed.value.name).toBe('First');
+    expect(mem.raw(), 'only that set is gone, the others byte for byte').toBe(envelopeOf([b, c.value]));
+    const renamed = db.rename(c.value.id, 'Renamed third');
+    expect(renamed.ok).toBe(true);
+    expect(mem.raw()).toBe(envelopeOf([b, { ...c.value, name: 'Renamed third' }]));
+
+    // A set that is no longer stored is not written.
+    const before = mem.raw();
+    for (const r of [db.remove(a.id), db.rename(a.id, 'Back again')]) {
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.error.message).toMatch(/^Nothing was changed: /);
+    }
+    expect(mem.raw()).toBe(before);
+  });
+
+  it('US-01M7DVDF AC1 over an unreadable store, or a write the storage refuses or does not keep, nothing is changed and it says so', () => {
+    const { a } = twoSets();
+    const raw = '{"schema":1,"sets":[{"id":';
+    const mem = memory({ [GUIDE_SET_DATABASE_KEY]: raw });
+    const db = openGuideSetDatabase({ storage: mem.storage });
+    const rerun = { ranAt: a.ranAt, topology: 'linear' as const, report: a.report, guides: a.guides, scoreNames: a.scoreNames, heuristicRule: a.heuristicRule };
+    for (const r of [db.rename(a.id, 'New'), db.remove(a.id), db.writeRerun(a.id, rerun, { id: a.documentId, name: 'n', revision: 'r' })]) {
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.error.kind).toBe('malformed');
+      expect(!r.ok && r.error.message).toMatch(/^Nothing was changed: The saved guide sets .* cannot be read: it is not valid JSON/);
+    }
+    expect(mem.writes, 'nothing written over an unreadable store').toEqual([]);
+    expect(mem.raw()).toBe(raw);
+
+    const stored = envelopeOf([a]);
+    const thrown: GuideSetStorage = {
+      getItem: () => stored,
+      setItem: () => {
+        throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+      },
+    };
+    const dropped: GuideSetStorage = { getItem: () => stored, setItem: () => undefined };
+    for (const [label, storage] of [['refused', thrown], ['dropped', dropped]] as const) {
+      const d = openGuideSetDatabase({ storage });
+      for (const r of [d.rename(a.id, 'New'), d.remove(a.id), d.writeRerun(a.id, rerun, { id: a.documentId, name: 'n', revision: 'r' })]) {
+        expect(!r.ok && r.error.kind, label).toBe('notSaved');
+        expect(!r.ok && r.error.message, label).toMatch(/^Nothing was changed: the storage (refused the write|did not keep the change)/);
+      }
+    }
+  });
+
+  it('US-01M7DVDF AC4 a rerun write keeps the id, name, document id, nuclease, interval, result cap and savedAt, and takes everything else from the rerun', () => {
+    const { mem, a, b, fa } = twoSets();
+    // The rerun reads another sequence of the document, on another topology and engine version.
+    const longer = { ...fa, doc: { ...fa.doc, sequence: `${fa.doc.sequence}ACACATTTA${SPACER20}ACACA`, topology: 'circular' as const } };
+    const result = scan(longer);
+    expect(result.guides.map((g) => g.id), 'the rerun finds other rows').not.toEqual(a.guides.map((g) => g.id));
+    diag.version = '9.9.9-rerun';
+    try {
+      // The name as stored when the reply comes, not as the rerun began.
+      openGuideSetDatabase({ storage: mem.storage }).rename(a.id, 'Renamed while it ran');
+      const db = openGuideSetDatabase({ storage: mem.storage, now: () => '2030-01-01T00:00:00.000Z' });
+      const rerun = {
+        ranAt: '2026-11-18T08:00:00.000Z',
+        topology: 'circular' as const,
+        report: result.report,
+        guides: result.guides,
+        scoreNames: { onTargetScore: 'Rank', specificityScore: 'Seeds', offTargetCount: 'Seeds' },
+        heuristicRule: 'Another rule.',
+      };
+      const written = db.writeRerun(a.id, rerun, { id: a.documentId, name: 'Renamed document', revision: revisionOf(longer.doc) });
+      if (!written.ok) throw new Error(written.error.message);
+      const expected = {
+        ...a,
+        name: 'Renamed while it ran',
+        guides: result.guides,
+        report: result.report,
+        ranAt: rerun.ranAt,
+        scoreNames: rerun.scoreNames,
+        heuristicRule: rerun.heuristicRule,
+        documentName: 'Renamed document',
+        sequenceRevision: revisionOf(longer.doc),
+        engineVersion: '9.9.9-rerun',
+        criteria: { ...a.criteria, topology: 'circular' },
+      };
+      expect(mem.raw(), 'the kept fields byte for byte, the rest the rerun\'s, the other set untouched').toBe(envelopeOf([expected, b]));
+      expect(sequenceRevision(longer.doc.sequence, 'circular')).not.toBe(a.sequenceRevision);
+
+      // A set removed before the reply, or one of another document, is not written.
+      const before = mem.raw();
+      const elsewhere = db.writeRerun(b.id, rerun, { id: a.documentId, name: 'x', revision: 'y' });
+      expect(!elsewhere.ok && elsewhere.error.message).toMatch(/^Nothing was changed: /);
+      db.remove(a.id);
+      const afterRemove = mem.raw();
+      const removed = db.writeRerun(a.id, rerun, { id: a.documentId, name: 'x', revision: 'y' });
+      expect(!removed.ok && removed.error.message).toMatch(/^Nothing was changed: no guide set with the id/);
+      expect(mem.raw()).toBe(afterRemove);
+      expect(before).not.toBe(afterRemove);
+    } finally {
+      diag.version = null;
+    }
+  });
+
+  it('US-01M7DVDF AC6 the not-open list holds the sets of documents not open, and an unreadable store is named, never none', () => {
+    const { mem, a, b } = twoSets();
+    const db = openGuideSetDatabase({ storage: mem.storage });
+    expect(db.listNotOpen([a.documentId])).toEqual({ kind: 'saved', sets: [b] });
+    expect(db.listNotOpen([b.documentId])).toEqual({ kind: 'saved', sets: [a] });
+    expect(db.listNotOpen([a.documentId, b.documentId])).toEqual({ kind: 'none' });
+    expect(db.listNotOpen([])).toEqual({ kind: 'saved', sets: [a, b] });
+    const blocked = openGuideSetDatabase({ storage: memory({ [GUIDE_SET_DATABASE_KEY]: '' }).storage }).listNotOpen([]);
+    expect(blocked.kind).toBe('unreadable');
+  });
+});
