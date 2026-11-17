@@ -85,6 +85,8 @@ import {
   AlignmentCanvas,
   AlignmentCanvasRow,
   AlignmentCanvasSettings,
+  ALIGNMENT_ZOOM_BOUNDS,
+  clampAlignmentZoom,
   DEFAULT_NAME_COLUMN_WIDTH_PX,
 } from './AlignmentCanvas';
 import { AlignmentDotplot } from './AlignmentDotplot';
@@ -3529,7 +3531,7 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
                         className="mbc-aln-stepper-btn"
                         title="Zoom out"
                         aria-label="Zoom out"
-                        onClick={() => setZoomPct((z) => Math.max(0.5, Math.round((z / 1.25) * 10) / 10))}
+                        onClick={() => setZoomPct((z) => clampAlignmentZoom(Math.round((z / 1.25) * 10) / 10))}
                       >
                         −
                       </button>
@@ -3537,13 +3539,11 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
                         <input
                           type="number"
                           className="mbc-aln-zoom-input"
-                          min={0.5}
-                          max={400}
+                          min={ALIGNMENT_ZOOM_BOUNDS.min}
+                          max={ALIGNMENT_ZOOM_BOUNDS.max}
                           step="any"
-                          value={zoomPct}
-                          onChange={(e) =>
-                            setZoomPct(Math.max(0.5, Math.min(400, Number(e.target.value) || 100)))
-                          }
+                          value={Math.round(zoomPct * 10) / 10}
+                          onChange={(e) => setZoomPct(clampAlignmentZoom(Number(e.target.value) || 100))}
                           aria-label="Zoom Percentage"
                         />
                         <span className="mbc-aln-zoom-unit">%</span>
@@ -3553,7 +3553,7 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
                         className="mbc-aln-stepper-btn"
                         title="Zoom in"
                         aria-label="Zoom in"
-                        onClick={() => setZoomPct((z) => Math.min(400, Math.round(z * 1.25 * 10) / 10))}
+                        onClick={() => setZoomPct((z) => clampAlignmentZoom(Math.round(z * 1.25 * 10) / 10))}
                       >
                         +
                       </button>

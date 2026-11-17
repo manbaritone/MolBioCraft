@@ -34,6 +34,7 @@ import {
   threeLetterCode,
   translateAlignedRow,
 } from '../core/alignmentViewModel';
+import { classifyWheelGesture, normalizeWheelDelta, wheelZoomScale, type WheelGestureLike } from '../core/wheelZoom';
 
 export interface AlignmentCanvasRow {
   id: string;
@@ -161,6 +162,292 @@ function clamp(v: number, lo: number, hi: number) {
   return Math.min(hi, Math.max(lo, v));
 }
 
+// ------------------------------------------------------------------ zoom (US-01M7CMZ5)
+
+/**
+ * The one zoom bound of the alignment grid, in percent: a wheel or pinch zoom, the toolbar's - and +,
+ * the % field and Fit all hold the zoom to it.
+ */
+export const ALIGNMENT_ZOOM_BOUNDS = { min: 0.5, max: 400 } as const;
+
+/** `zoomPct` held to ALIGNMENT_ZOOM_BOUNDS. */
+export function clampAlignmentZoom(zoomPct: number): number {
+  return Math.min(ALIGNMENT_ZOOM_BOUNDS.max, Math.max(ALIGNMENT_ZOOM_BOUNDS.min, zoomPct));
+}
+
+/** The settings the grid's column geometry is made from. */
+export type AlignmentGeometrySettings = Pick<
+  AlignmentCanvasSettings,
+  'letterFontSize' | 'showLetters' | 'spacesEvery' | 'zoomedOutRowHeight' | 'wrap'
+>;
+
+/** The grid's column geometry at one zoom. */
+export interface AlignmentGeometry {
+  colW: number;
+  lettersVisible: boolean;
+  fontPx: number;
+  rowH: number;
+  /** Columns per spacing group; 0 while there are none (letters hidden, or spacing off). */
+  spacesEvery: number;
+  spaceW: number;
+}
+
+/**
+ * The column geometry at `zoomPct`. Spacing groups exist only while letters show (colW 7 and over),
+ * so a column's x is not proportional to the zoom across that switch.
+ */
+export function alignmentGeometry(zoomPct: number, s: AlignmentGeometrySettings): AlignmentGeometry {
+  const colW = Math.max(0.05, (s.letterFontSize * 0.8 * zoomPct) / 100);
+  const lettersVisible = s.showLetters && colW >= 7;
+  const fontPx = clamp(colW * 1.1, 7, 18);
+  const rowH = lettersVisible ? Math.max(15, Math.round(fontPx + 6)) : clamp(s.zoomedOutRowHeight, 4, 40);
+  const spacesEvery = lettersVisible && s.spacesEvery > 0 ? Math.floor(s.spacesEvery) : 0;
+  const spaceW = spacesEvery ? Math.max(4, colW * 0.6) : 0;
+  return { colW, lettersVisible, fontPx, rowH, spacesEvery, spaceW };
+}
+
+/** The x of visible column `i`'s left edge in the track. */
+export function columnX(g: AlignmentGeometry, i: number): number {
+  return i * g.colW + (g.spacesEvery ? Math.floor(i / g.spacesEvery) * g.spaceW : 0);
+}
+
+/** The visible column at track x `x` (a spacing gap counts as the column before it). */
+export function columnAtX(g: AlignmentGeometry, x: number): number {
+  if (!g.spacesEvery) return Math.floor(x / g.colW);
+  const group = g.spacesEvery * g.colW + g.spaceW;
+  const n = Math.floor(x / group);
+  const rem = x - n * group;
+  return n * g.spacesEvery + Math.min(g.spacesEvery - 1, Math.floor(rem / g.colW));
+}
+
+/** The width of the track a wrapped block may fill, for a scroll element `viewportWidth` wide. */
+function wrapTrackWidth(viewportWidth: number, nameW: number): number {
+  return Math.max(120, viewportWidth - nameW - 18);
+}
+
+/** The number of columns in each wrapped block. */
+export function wrapBlockColumns(g: AlignmentGeometry, availTrackW: number): number {
+  let per = Math.max(10, Math.floor(availTrackW / g.colW));
+  while (per > 10 && columnX(g, per) > availTrackW) per--;
+  return per;
+}
+
+/**
+ * What one wrapped block's lines are made of, so its height can be found at another zoom: every block
+ * holds the same lines. `rowLines` lines are one row high (the consensus, each sequence, its
+ * complement and its translations), `fixedPx` is the rest whatever the zoom (the ruler, graphs,
+ * annotations, a translation's numbering, the spacer), and `logo` a sequence logo, taller while
+ * letters show.
+ */
+export interface WrapBlockShape {
+  fixedPx: number;
+  rowLines: number;
+  logo: boolean;
+}
+
+const GRAPH_H = 30;
+const LOGO_LETTERS_H = 34;
+
+/** The height of one wrapped block at geometry `g`. */
+export function wrapBlockHeight(shape: WrapBlockShape, g: AlignmentGeometry): number {
+  return shape.fixedPx + shape.rowLines * g.rowH + (shape.logo ? (g.lettersVisible ? LOGO_LETTERS_H : GRAPH_H) : 0);
+}
+
+/** The grid's zoom and scroll, which a wheel zoom moves together. */
+export interface AlignmentWheelView {
+  zoomPct: number;
+  scrollLeft: number;
+  scrollTop: number;
+}
+
+/** What a wheel step needs to know of the grid; it reads nothing from the DOM. */
+export interface AlignmentWheelContext {
+  /** The scroll element's top-left corner, in the client coordinates of the event. */
+  origin: { x: number; y: number };
+  /** The scroll element's client width. */
+  viewportWidth: number;
+  /** The name column's width; the track starts after it. */
+  nameW: number;
+  /** The number of visible columns. */
+  columnCount: number;
+  settings: AlignmentGeometrySettings;
+  /** In wrap mode, what a block is made of. */
+  block: WrapBlockShape;
+}
+
+export type AlignmentWheelEvent = WheelGestureLike & { deltaMode?: number; clientX: number; clientY: number };
+
+/**
+ * The view after zooming to `toZoomPct` around the pointer at (`clientX`, `clientY`), anchored by
+ * column index rather than by a pixel ratio, since spacing groups appear and vanish as the zoom
+ * crosses colW 7.
+ *
+ * Unwrapped, the column under the pointer (idxAtX at the old zoom) keeps its left edge where it was
+ * on screen (xOf at the new zoom); the one exception is a zoom out that would leave the pointer past
+ * the narrowed column's right edge, where the column moves left just enough to stay under the
+ * pointer. A pointer over the name column anchors the first column of the visible track. scrollLeft
+ * is held to the content, so the anchor cannot hold where it would scroll past either end.
+ *
+ * Wrapped, the block line holding the hovered column keeps its top at the same height in the
+ * viewport: scrollTop moves by the change in that block's offset, the column's block changing as the
+ * zoom changes the columns a block holds.
+ */
+function alignmentZoomTo(view: AlignmentWheelView, toZoomPct: number, clientX: number, clientY: number, ctx: AlignmentWheelContext): AlignmentWheelView {
+  const zoomPct = clampAlignmentZoom(toZoomPct);
+  if (!Number.isFinite(zoomPct) || zoomPct === view.zoomPct) return view;
+  const n = ctx.columnCount;
+  const next: AlignmentWheelView = { zoomPct, scrollLeft: view.scrollLeft, scrollTop: view.scrollTop };
+  if (n <= 0 || !Number.isFinite(clientX) || !Number.isFinite(clientY)) return next;
+  const from = alignmentGeometry(view.zoomPct, ctx.settings);
+  const to = alignmentGeometry(zoomPct, ctx.settings);
+  const trackPx = Math.max(0, clientX - ctx.origin.x - ctx.nameW);
+
+  if (ctx.settings.wrap) {
+    const avail = wrapTrackWidth(ctx.viewportWidth, ctx.nameW);
+    const perFrom = wrapBlockColumns(from, avail);
+    const perTo = wrapBlockColumns(to, avail);
+    const hFrom = wrapBlockHeight(ctx.block, from);
+    const hTo = wrapBlockHeight(ctx.block, to);
+    if (!(hFrom > 0) || !(hTo > 0)) return next;
+    const blocks = Math.ceil(n / perFrom);
+    const contentY = view.scrollTop + clientY - ctx.origin.y;
+    const b = clamp(Math.floor(contentY / hFrom), 0, blocks - 1);
+    const start = b * perFrom;
+    const end = Math.min(n, start + perFrom);
+    const idx = clamp(columnAtX(from, columnX(from, start) + trackPx + view.scrollLeft), start, end - 1);
+    const bTo = Math.floor(idx / perTo);
+    next.scrollTop = Math.max(0, view.scrollTop + bTo * hTo - b * hFrom);
+    return next;
+  }
+
+  const x = view.scrollLeft + trackPx;
+  const idx = clamp(columnAtX(from, x), 0, n - 1);
+  const left = columnX(from, idx) - view.scrollLeft;
+  let leftTo = left;
+  const inside = trackPx - left;
+  if (inside >= 0 && inside < from.colW && inside >= to.colW) {
+    leftTo = trackPx - to.colW + Math.min(0.25, to.colW / 4);
+  }
+  const contentW = ctx.nameW + columnX(to, n) + 8;
+  const maxLeft = Math.max(0, contentW - ctx.viewportWidth);
+  next.scrollLeft = clamp(columnX(to, idx) - leftTo, 0, maxLeft);
+  return next;
+}
+
+/**
+ * One wheel event over the alignment grid, a 'scroll' surface (src/core/wheelZoom.ts): a zoom
+ * gesture (Ctrl or Cmd with the wheel, a ctrl-flagged pinch) is handled and moves the zoom
+ * multiplicatively, unrounded and inside ALIGNMENT_ZOOM_BOUNDS, about the hovered column; any other
+ * gesture is not handled and leaves the view as it is, for the browser to scroll. A zoom held at a
+ * bound is still handled.
+ */
+export function alignmentWheelStep(
+  event: AlignmentWheelEvent,
+  view: AlignmentWheelView,
+  ctx: AlignmentWheelContext
+): { handled: boolean; view: AlignmentWheelView } {
+  if (classifyWheelGesture(event, 'scroll') !== 'zoom') return { handled: false, view };
+  const zoomPct = wheelZoomScale(view.zoomPct, normalizeWheelDelta(event).y, ALIGNMENT_ZOOM_BOUNDS);
+  return { handled: true, view: alignmentZoomTo(view, zoomPct, event.clientX, event.clientY, ctx) };
+}
+
+type GridListener = (event: Event) => void;
+interface GridWheelTarget {
+  addEventListener(type: string, listener: GridListener, options?: AddEventListenerOptions): void;
+  removeEventListener(type: string, listener: GridListener): void;
+}
+interface GridGestureLike {
+  scale?: number;
+  clientX?: number;
+  clientY?: number;
+  preventDefault(): void;
+}
+
+/**
+ * Listens for wheels and WebKit pinches on the grid's scroll element natively and non-passively
+ * (React 18's onWheel is passive and cannot prevent the page's zoom), after the maps' binder
+ * (bindCircularMapWheel): a zoom gesture is prevented, any other keeps its default and scrolls; the
+ * wheel deltas of one animation frame are summed into one step; a gesturestart / gesturechange pinch
+ * zooms to its start zoom times its `scale`, and the ctrl-flagged wheels sent meanwhile are prevented
+ * but not applied. Returns the function that removes every listener and cancels a queued frame.
+ */
+export function bindAlignmentWheel(
+  target: GridWheelTarget,
+  hooks: { read(): AlignmentWheelView; context(): AlignmentWheelContext; apply(next: AlignmentWheelView): void }
+): () => void {
+  const options: AddEventListenerOptions = { passive: false };
+  let pending: AlignmentWheelEvent | null = null;
+  let frame: number | null = null;
+  let gestureFrom: number | null = null;
+  const changed = (a: AlignmentWheelView, b: AlignmentWheelView) =>
+    a.zoomPct !== b.zoomPct || a.scrollLeft !== b.scrollLeft || a.scrollTop !== b.scrollTop;
+
+  const flush = () => {
+    frame = null;
+    const event = pending;
+    pending = null;
+    if (!event) return;
+    const view = hooks.read();
+    const step = alignmentWheelStep(event, view, hooks.context());
+    if (step.handled && changed(step.view, view)) hooks.apply(step.view);
+  };
+  const schedule = () => {
+    if (frame !== null) return;
+    if (typeof requestAnimationFrame === 'function') {
+      frame = requestAnimationFrame(flush);
+    } else {
+      frame = -1;
+      flush();
+    }
+  };
+  const onWheel = (event: WheelEvent) => {
+    if (classifyWheelGesture(event, 'scroll') !== 'zoom') return;
+    event.preventDefault();
+    if (gestureFrom !== null) return;
+    pending = {
+      deltaX: 0,
+      deltaY: (pending?.deltaY ?? 0) + normalizeWheelDelta(event).y,
+      deltaMode: 0,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: false,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    schedule();
+  };
+  const onGestureStart = (event: GridGestureLike) => {
+    event.preventDefault();
+    gestureFrom = hooks.read().zoomPct;
+    pending = null;
+  };
+  const onGestureChange = (event: GridGestureLike) => {
+    event.preventDefault();
+    if (gestureFrom === null || !(Number(event.scale) > 0)) return;
+    const view = hooks.read();
+    const next = alignmentZoomTo(view, gestureFrom * Number(event.scale), Number(event.clientX), Number(event.clientY), hooks.context());
+    if (changed(next, view)) hooks.apply(next);
+  };
+  const onGestureEnd = (event: GridGestureLike) => {
+    event.preventDefault();
+    gestureFrom = null;
+  };
+
+  const listeners: [string, GridListener][] = [
+    ['wheel', onWheel as unknown as GridListener],
+    ['gesturestart', onGestureStart as unknown as GridListener],
+    ['gesturechange', onGestureChange as unknown as GridListener],
+    ['gestureend', onGestureEnd as unknown as GridListener],
+  ];
+  for (const [type, listener] of listeners) target.addEventListener(type, listener, options);
+  return () => {
+    for (const [type, listener] of listeners) target.removeEventListener(type, listener);
+    if (frame !== null && frame !== -1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    frame = null;
+    pending = null;
+  };
+}
+
 export const AlignmentCanvas: React.FC<AlignmentCanvasProps> = ({
   rows,
   consensus,
@@ -183,26 +470,17 @@ export const AlignmentCanvas: React.FC<AlignmentCanvasProps> = ({
   const [view, setView] = useState({ left: 0, top: 0, width: 900, height: 480 });
 
   // ---------------------------------------------------------------- geometry
-  const colW = Math.max(0.05, (s.letterFontSize * 0.8 * zoomPct) / 100);
-  const lettersVisible = s.showLetters && colW >= 7;
-  const fontPx = clamp(colW * 1.1, 7, 18);
-  const rowH = lettersVisible ? Math.max(15, Math.round(fontPx + 6)) : clamp(s.zoomedOutRowHeight, 4, 40);
-  const spacesEvery = lettersVisible && s.spacesEvery > 0 ? Math.floor(s.spacesEvery) : 0;
-  const spaceW = spacesEvery ? Math.max(4, colW * 0.6) : 0;
+  // One geometry for drawing and for the wheel's anchor (alignmentGeometry, columnX, columnAtX).
+  const geometry = alignmentGeometry(zoomPct, s);
+  const { colW, lettersVisible, fontPx, rowH, spacesEvery, spaceW } = geometry;
 
   const xOf = useCallback(
-    (i: number) => i * colW + (spacesEvery ? Math.floor(i / spacesEvery) * spaceW : 0),
-    [colW, spacesEvery, spaceW]
+    (i: number) => columnX({ colW, lettersVisible, fontPx, rowH, spacesEvery, spaceW }, i),
+    [colW, lettersVisible, fontPx, rowH, spacesEvery, spaceW]
   );
   const idxAtX = useCallback(
-    (x: number) => {
-      if (!spacesEvery) return Math.floor(x / colW);
-      const group = spacesEvery * colW + spaceW;
-      const g = Math.floor(x / group);
-      const rem = x - g * group;
-      return g * spacesEvery + Math.min(spacesEvery - 1, Math.floor(rem / colW));
-    },
-    [colW, spacesEvery, spaceW]
+    (x: number) => columnAtX({ colW, lettersVisible, fontPx, rowH, spacesEvery, spaceW }, x),
+    [colW, lettersVisible, fontPx, rowH, spacesEvery, spaceW]
   );
 
   const visibleCols = s.visibleCols;
@@ -211,15 +489,14 @@ export const AlignmentCanvas: React.FC<AlignmentCanvasProps> = ({
   const colCount = consensus.length;
 
   // Blocks (wrap) -------------------------------------------------------------
-  const availTrackW = Math.max(120, view.width - nameW - 18);
+  const availTrackW = wrapTrackWidth(view.width, nameW);
   const blocks = useMemo(() => {
     if (!s.wrap) return [{ start: 0, end: nVis }];
-    let per = Math.max(10, Math.floor(availTrackW / colW));
-    while (per > 10 && xOf(per) > availTrackW) per--;
+    const per = wrapBlockColumns({ colW, lettersVisible, fontPx, rowH, spacesEvery, spaceW }, availTrackW);
     const out: { start: number; end: number }[] = [];
     for (let i = 0; i < nVis; i += per) out.push({ start: i, end: Math.min(nVis, i + per) });
     return out.length ? out : [{ start: 0, end: 0 }];
-  }, [s.wrap, nVis, availTrackW, colW, xOf]);
+  }, [s.wrap, nVis, availTrackW, colW, lettersVisible, fontPx, rowH, spacesEvery, spaceW]);
 
   // ------------------------------------------------------------- derived data
   const coordMaps = useMemo(() => rows.map((r) => rowCoordinateMaps(r.alignedSeq)), [rows]);
@@ -362,7 +639,7 @@ export const AlignmentCanvas: React.FC<AlignmentCanvasProps> = ({
   }, [s.restrictionSites, visibleCols]);
 
   // -------------------------------------------------------------- line list
-  const graphH = 30;
+  const graphH = GRAPH_H;
   const annLaneH = s.annotationThickness + (s.annotationLabels === 'Above' ? s.annotationLabelSize + 2 : 0) + 3;
   const transH = rowH + (s.showAminoAcidNumbering ? 10 : 0);
 
@@ -382,7 +659,7 @@ export const AlignmentCanvas: React.FC<AlignmentCanvasProps> = ({
       if (graphs.hydro) target.push({ key: `ghy-${b}`, kind: 'g-hydro', height: graphH + 6, block: b });
       if (graphs.pi) target.push({ key: `gpi-${b}`, kind: 'g-pi', height: graphH, block: b });
       if (graphs.logo)
-        target.push({ key: `glogo-${b}`, kind: 'g-logo', height: lettersVisible ? 34 : graphH, block: b });
+        target.push({ key: `glogo-${b}`, kind: 'g-logo', height: lettersVisible ? LOGO_LETTERS_H : graphH, block: b });
       rows.forEach((r, ri) => {
         body.push({ key: `seq-${b}-${ri}`, kind: 'seq', height: rowH, block: b, rowIdx: ri });
         if (complements.length)
@@ -411,6 +688,21 @@ export const AlignmentCanvas: React.FC<AlignmentCanvasProps> = ({
     return offs;
   }, [bodyLines]);
   const bodyH = bodyOffsets[bodyLines.length] ?? 0;
+
+  /** What each wrapped block is made of (every block holds the same lines), for the wheel's anchor. */
+  const blockShape = useMemo((): WrapBlockShape => {
+    const shape: WrapBlockShape = { fixedPx: 0, rowLines: 0, logo: false };
+    for (const l of bodyLines) {
+      if (l.block !== 0) continue;
+      if (l.kind === 'consensus' || l.kind === 'seq' || l.kind === 'comp') shape.rowLines++;
+      else if (l.kind === 'trans') {
+        shape.rowLines++;
+        shape.fixedPx += l.height - rowH;
+      } else if (l.kind === 'g-logo') shape.logo = true;
+      else shape.fixedPx += l.height;
+    }
+    return shape;
+  }, [bodyLines, rowH]);
 
   const trackW = s.wrap ? xOf(blocks[0]?.end - blocks[0]?.start || 0) : xOf(nVis);
   const contentW = nameW + trackW + 8;
@@ -442,17 +734,62 @@ export const AlignmentCanvas: React.FC<AlignmentCanvasProps> = ({
     };
   }, []);
 
-  // Keep the cursor column centred when zoom changes.
+  // A wheel or pinch zoom's view, from the moment it asks for its zoom until that zoom is drawn.
+  const wheelView = useRef<AlignmentWheelView | null>(null);
+
+  // Keep the cursor column centred when the toolbar, the % field, 100% or Fit change the zoom; a
+  // wheel or pinch zoom instead scrolls to the view its step anchored on the hovered column.
   const prevZoom = useRef(zoomPct);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (prevZoom.current === zoomPct) return;
     prevZoom.current = zoomPct;
     const el = scrollRef.current;
-    if (!el || s.wrap) return;
+    const wheel = wheelView.current;
+    wheelView.current = null;
+    if (!el) return;
+    if (wheel && wheel.zoomPct === zoomPct) {
+      el.scrollLeft = wheel.scrollLeft;
+      el.scrollTop = wheel.scrollTop;
+      return;
+    }
+    if (s.wrap) return;
     const idx = lowerBound(visibleCols, cursorCol - 1);
     el.scrollLeft = Math.max(0, xOf(idx) - (el.clientWidth - nameW) / 2);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoomPct]);
+
+  // What the wheel binder reads; kept current on every render.
+  const wheelState = useRef({ zoomPct, context: null as AlignmentWheelContext | null, onRequestZoom });
+  wheelState.current.zoomPct = zoomPct;
+  wheelState.current.onRequestZoom = onRequestZoom;
+  wheelState.current.context = {
+    origin: { x: 0, y: 0 },
+    viewportWidth: view.width,
+    nameW,
+    columnCount: nVis,
+    settings: s,
+    block: blockShape,
+  };
+  const hasGrid = rows.length > 0 && colCount > 0;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !hasGrid) return;
+    return bindAlignmentWheel(el, {
+      read: () => {
+        const queued = wheelView.current;
+        return queued ?? { zoomPct: wheelState.current.zoomPct, scrollLeft: el.scrollLeft, scrollTop: el.scrollTop };
+      },
+      context: () => {
+        const rect = el.getBoundingClientRect();
+        const base = wheelState.current.context!;
+        return { ...base, origin: { x: rect.left + (el.clientLeft || 0), y: rect.top + (el.clientTop || 0) }, viewportWidth: el.clientWidth };
+      },
+      apply: (next) => {
+        wheelView.current = next;
+        wheelState.current.onRequestZoom(next.zoomPct);
+      },
+    });
+  }, [hasGrid]);
 
   const scrollToCol = useCallback(
     (col1: number) => {
@@ -484,7 +821,7 @@ export const AlignmentCanvas: React.FC<AlignmentCanvasProps> = ({
     if (nVis <= 0 || avail <= 0) return;
     const targetColW = avail / nVis;
     const z = (targetColW / (s.letterFontSize * 0.8)) * 100;
-    onRequestZoom(Math.max(0.5, Math.round(z * 10) / 10));
+    onRequestZoom(clampAlignmentZoom(Math.round(z * 10) / 10));
   }, [fitRequestNonce, nVis, s.letterFontSize, onRequestZoom, view.width, nameW]);
 
   // --------------------------------------------------------------- mini-map
