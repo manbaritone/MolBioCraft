@@ -15,27 +15,37 @@
  * same scope, run by the IUPAC motif engine (searchIupacMotifRust): each hit with its coordinates,
  * strand, letters and certainty, the documents the mode does not read listed under Not searched
  * with their reasons, and a refused query or an engine that cannot run each told in one sentence.
+ *
+ * Searches run through the core's run controller (US-01M7DVVS), one document per step with a
+ * timer task between documents. Typing, or a change of the documents, waits SEARCH_PAUSE_MS
+ * before a run starts; a change of scope, mode or Both strands starts one at once. Results are
+ * listed only for the query, scope, mode and strands now chosen, so an older query's groups are
+ * never shown; a change of the documents keeps the old groups under an out-of-date sentence until
+ * the rerun completes, and Cancel search ends a run with no results shown.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import {
+  createSearchRunner,
   motifNotSearchedReason,
   NUCLEOTIDE_MOTIF_STATEMENT,
   PROTEIN_MOTIF_STATEMENT,
   resolveSearchScope,
   scopesOffered,
   SEARCH_MODES,
-  searchMotif,
-  searchText,
   TEXT_SEARCH_STATEMENT,
   type DocumentMotifResult,
   type MotifHit,
   type SearchContext,
   type SearchMode,
+  type SearchRequest,
+  type SearchRunResult,
   type SearchScope,
   type TextHit,
 } from '../core/projectSearch';
+import type { ExplorerFolder } from '../core/projectExplorer';
+import type { SequenceDocument } from '../types/bio';
 import { inferDocumentTypeLabel } from '../core/workbenchBatchOperations';
 import { searchIupacMotifRust } from '../lib/rustBioEngine';
 
@@ -43,6 +53,24 @@ import { searchIupacMotifRust } from '../lib/rustBioEngine';
 export const GROUPS_PER_PAGE = 50;
 /** Characters of the field's value shown on each side of a match. */
 const SNIPPET_CONTEXT = 40;
+/** The pause after the last keystroke, or after the documents change, before a search runs. */
+export const SEARCH_PAUSE_MS = 250;
+
+/** What a run searched for: its results are listed only while all four are still the chosen ones. */
+interface RunKey { query: string; scope: SearchScope; mode: SearchMode; bothStrands: boolean }
+const sameKey = (a: RunKey, b: RunKey) =>
+  a.query === b.query && a.scope === b.scope && a.mode === b.mode && a.bothStrands === b.bothStrands;
+
+/** What a run read: the scope's documents and the folders their paths come from. */
+interface RunInputs { documents: SequenceDocument[]; foldersKey: string }
+const foldersKeyOf = (folders: ExplorerFolder[]) =>
+  JSON.stringify(folders.map((f) => [f.id, f.label, f.parent, f.matchFolders]));
+/** Whether two runs read the same: the same document objects in the same order, under the same folders. */
+const sameInputs = (a: RunInputs, b: RunInputs) => a.foldersKey === b.foldersKey
+  && a.documents.length === b.documents.length && a.documents.every((d, i) => d === b.documents[i]);
+
+interface Completed { key: RunKey; inputs: RunInputs; result: SearchRunResult }
+interface Cancelled { key: RunKey; reached: number; total: number }
 
 /** The scope a folder's Search Folder… opens on: its first offered wider scope, else the only one offered. */
 export function initialFolderScope(folderId: string): SearchScope {
@@ -94,16 +122,78 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
   const offered = scopesOffered(folderId);
   const resolved = useMemo(() => resolveSearchScope(folderId, scope, context), [folderId, scope, context]);
   const searched = 'refused' in resolved ? null : resolved.documents;
-  const outcome = useMemo(
-    () => (mode === 'Text' && searched && searched.length > 0 ? searchText(query, searched, context.folders) : null),
-    [mode, query, searched, context.folders],
+  const trimmed = query.trim();
+  const key: RunKey = { query: trimmed, scope, mode, bothStrands };
+  const inputs = useMemo<RunInputs>(
+    () => ({ documents: searched ?? [], foldersKey: foldersKeyOf(context.folders) }),
+    [searched, context.folders],
   );
-  const motif = useMemo(
-    () => (mode !== 'Text' && searched && searched.length > 0
-      ? searchMotif(query, searched, context.folders, mode, bothStrands, searchIupacMotifRust)
-      : null),
-    [mode, query, searched, context.folders, bothStrands],
-  );
+
+  const [runner] = useState(() => createSearchRunner());
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const last = useRef<{ key: RunKey; inputs: RunInputs } | null>(null);
+  const [completed, setCompleted] = useState<Completed | null>(null);
+  const [progress, setProgress] = useState<{ reached: number; total: number } | null>(null);
+  const [cancelled, setCancelled] = useState<Cancelled | null>(null);
+
+  useEffect(() => {
+    const prev = last.current;
+    last.current = { key, inputs };
+    const stopRun = () => {
+      runner.stop();
+      if (timer.current !== null) clearTimeout(timer.current);
+      timer.current = null;
+      setProgress(null);
+      setCancelled(null);
+    };
+    // An empty query, an empty scope and a refused one each have their sentence and run nothing.
+    if (trimmed === '' || !searched || searched.length === 0) { stopRun(); return; }
+    const keyChanged = prev === null || !sameKey(prev.key, key);
+    // The App passed a new context that reads the same: the run in progress or shown stands.
+    if (!keyChanged && sameInputs(prev.inputs, inputs)) return;
+    // Scope, mode or Both strands changed under the same query: run at once. Typing and a change
+    // of the documents wait for the pause.
+    const now = prev !== null && keyChanged && prev.key.query === key.query;
+    stopRun();
+    const runKey = key;
+    const runInputs = inputs;
+    const request: SearchRequest = mode === 'Text'
+      ? { mode, query: trimmed, documents: searched, folders: context.folders }
+      : { mode, query: trimmed, documents: searched, folders: context.folders, bothStrands, engine: searchIupacMotifRust };
+    const begin = () => {
+      timer.current = null;
+      setProgress({ reached: 0, total: searched.length });
+      runner.start(request, (event) => {
+        if (event.kind === 'progress') setProgress({ reached: event.reached, total: event.total });
+        else {
+          setProgress(null);
+          setCompleted({ key: runKey, inputs: runInputs, result: event.result });
+        }
+      });
+    };
+    if (now) begin();
+    else timer.current = setTimeout(begin, SEARCH_PAUSE_MS);
+    // Every value the run reads is in `key` and `inputs`, compared above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trimmed, scope, mode, bothStrands, inputs]);
+  useEffect(() => () => {
+    runner.stop();
+    if (timer.current !== null) clearTimeout(timer.current);
+  }, [runner]);
+
+  const cancelRun = () => {
+    if (!progress) return;
+    runner.stop();
+    setCancelled({ key, reached: progress.reached, total: progress.total });
+    setProgress(null);
+  };
+
+  // Listed only for what is chosen now; a cancelled run lists nothing.
+  const isCancelled = cancelled && sameKey(cancelled.key, key) ? cancelled : null;
+  const current = !isCancelled && completed && sameKey(completed.key, key) ? completed : null;
+  const outOfDate = current !== null && !sameInputs(current.inputs, inputs);
+  const outcome = current && current.result.mode === 'Text' ? current.result.outcome : null;
+  const motif = current && current.result.mode !== 'Text' ? current.result.outcome : null;
   const byId = useMemo(() => new Map((searched ?? []).map((d) => [d.id, d])), [searched]);
 
   const results = outcome && !('refused' in outcome) ? outcome.results : [];
@@ -124,10 +214,16 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
   let alert = 'refused' in resolved;
   if ('refused' in resolved) message = `This scope cannot be searched: ${resolved.refused}`;
   else if (resolved.documents.length === 0) message = `No documents in ${resolved.label}`;
-  else if (mode !== 'Text') {
-    const readable = resolved.documents.filter((d) => motifNotSearchedReason(d, mode) === null).length;
-    if (!motif || 'refused' in motif) message = `Type a motif to search ${count(readable, 'document')}`;
-    else if ('engineUnavailable' in motif) { message = `The motif engine is not available: ${motif.engineUnavailable}`; alert = true; }
+  else if (trimmed === '' || (current && 'refused' in current.result.outcome)) {
+    message = mode === 'Text'
+      ? `Type text to search ${count(resolved.documents.length, 'document')}`
+      : `Type a motif to search ${count(resolved.documents.filter((d) => motifNotSearchedReason(d, mode) === null).length, 'document')}`;
+  }
+  else if (isCancelled) message = `Cancelled after ${isCancelled.reached} of ${count(isCancelled.total, 'document')}: no results are shown`;
+  else if (!current) message = `Searching for "${trimmed}"…`;
+  else if (outOfDate) message = 'Out of date: the documents changed. Searching again…';
+  else if (motif) {
+    if ('engineUnavailable' in motif) { message = `The motif engine is not available: ${motif.engineUnavailable}`; alert = true; }
     else if ('queryRefused' in motif) { message = `This motif cannot be searched: ${motif.queryRefused}`; alert = true; }
     else {
       const skipped = motifAnswer!.notSearched.length;
@@ -140,7 +236,6 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
       if (hidden > 0) message += ` · ${motifCount(hidden, 'possible hit')} hidden`;
     }
   }
-  else if (!outcome || 'refused' in outcome) message = `Type text to search ${count(resolved.documents.length, 'document')}`;
   else if (results.length === 0) message = `No matches in ${count(resolved.documents.length, 'document')} searched`;
   else message = `${count(hitTotal, 'hit')} in ${count(results.length, 'document')} · ${count(resolved.documents.length, 'document')} searched`;
 
@@ -219,6 +314,9 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
       <p className="mbc-project-search-summary" role={alert ? 'alert' : 'status'} data-search-summary>
         {message}
       </p>
+      {progress && (
+        <button type="button" className="mbc-project-search-cancel" onClick={cancelRun}>Cancel search</button>
+      )}
       {groupCount > GROUPS_PER_PAGE && (
         <div className="mbc-project-search-pager">
           <button type="button" disabled={shownPage === 0} onClick={() => setPage(shownPage - 1)}>Previous</button>

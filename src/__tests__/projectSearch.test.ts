@@ -3,9 +3,11 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  resolveSearchScope, scopesOffered, searchText, TEXT_NOT_SEARCHED, TEXT_SEARCH_FIELDS, TEXT_SEARCH_STATEMENT,
-  type SearchContext, type SearchScope,
+  createSearchRunner, motifNotSearchedReason, nextTask, resolveSearchScope, scopesOffered, searchText, TEXT_NOT_SEARCHED, TEXT_SEARCH_FIELDS,
+  TEXT_SEARCH_STATEMENT, type MotifEngine, type SearchContext, type SearchRunEvent, type SearchScope,
 } from '../core/projectSearch';
+import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
+import { generateLargeGenomeBenchmarkRust, searchIupacMotifRust } from '../lib/rustBioEngine';
 import { PROJECT_ROOT, type ExplorerFolder } from '../core/projectExplorer';
 import type { SequenceDocument, SequenceFeature } from '../types/bio';
 
@@ -309,5 +311,92 @@ describe('text mode and residues', () => {
     });
     expect(hitsOf('GAATTC', [bind])).toEqual([]);
     expect(hitsOf('MKP', [bind])).toEqual([]);
+  });
+});
+
+// ─── US-01M7DVVS: search runs ───
+
+/** A step yield the test resolves by hand, one pending promise per call, in call order. */
+function handYield() {
+  const pending: (() => void)[] = [];
+  return { pending, yieldStep: () => new Promise<void>((resolve) => { pending.push(resolve); }) };
+}
+const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+
+describe('US-01M7DVVS search runs', () => {
+  it('US-01M7DVVS AC2 drops an older run that finishes after a newer one started, whichever order the steps resolve in', async () => {
+    const docs = [
+      doc('r1', 'A', { description: 'zqold and zqnew' }),
+      doc('r2', 'A', { description: 'zqold only' }),
+      doc('r3', 'A', { description: 'zqnew only' }),
+    ];
+    const { pending, yieldStep } = handYield();
+    const runner = createSearchRunner(yieldStep);
+    const older: SearchRunEvent[] = [];
+    const newer: SearchRunEvent[] = [];
+    runner.start({ mode: 'Text', query: 'zqold', documents: docs, folders: FOLDERS }, (e) => older.push(e));
+    // The older run read its first document and waits on its first yield (pending[0]).
+    expect(older).toEqual([{ kind: 'progress', reached: 1, total: 3 }]);
+    runner.start({ mode: 'Text', query: 'zqnew', documents: docs, folders: FOLDERS }, (e) => newer.push(e));
+    expect(pending).toHaveLength(2);
+    // Reverse order: the newer run's steps resolve first and it completes...
+    pending[1](); await flush();
+    pending[2](); await flush();
+    expect(pending).toHaveLength(3);
+    const done = newer.filter((e) => e.kind === 'done');
+    expect(done).toHaveLength(1);
+    const result = (done[0] as Extract<SearchRunEvent, { kind: 'done' }>).result;
+    expect(result.mode === 'Text' && 'results' in result.outcome ? result.outcome.results.map((r) => r.documentId) : null).toEqual(['r1', 'r3']);
+    // ...then the older run's step resolves, after the newer one finished: it reports nothing and reads no further document.
+    pending[0](); await flush();
+    expect(pending, 'the older run took no further step').toHaveLength(3);
+    expect(older, 'the older run is dropped').toEqual([{ kind: 'progress', reached: 1, total: 3 }]);
+    expect(newer.filter((e) => e.kind === 'done')).toHaveLength(1);
+
+    // stop() ends a run the same way: no document after it, and no answer.
+    const stopped: SearchRunEvent[] = [];
+    runner.start({ mode: 'Text', query: 'zqold', documents: docs, folders: FOLDERS }, (e) => stopped.push(e));
+    runner.stop();
+    pending[3](); await flush();
+    expect(stopped).toEqual([{ kind: 'progress', reached: 1, total: 3 }]);
+  });
+
+  it('US-01M7DVVS AC5 yields between documents over the sample library and a 500 kbp genome, one document per engine call', async () => {
+    const genome = generateLargeGenomeBenchmarkRust(500_000, 'Escherichia coli K-12');
+    expect(genome.sequence.length).toBe(500_000);
+    const documents = [...SAMPLE_LIBRARY, genome];
+    let step = 0;
+    let yields = 0;
+    const calls: { step: number; seq: string; ms: number }[] = [];
+    const engine: MotifEngine = (seq, query, options) => {
+      const t0 = performance.now();
+      try {
+        return searchIupacMotifRust(seq, query, options);
+      } finally {
+        calls.push({ step, seq, ms: performance.now() - t0 });
+      }
+    };
+    const runner = createSearchRunner(() => { yields += 1; step += 1; return nextTask(); });
+    const t0 = performance.now();
+    const result = await new Promise<Extract<SearchRunEvent, { kind: 'done' }>['result']>((resolve) => {
+      runner.start({ mode: 'Nucleotide motif', query: 'GAATTC', documents, folders: [], bothStrands: true, engine }, (e) => {
+        if (e.kind === 'done') resolve(e.result);
+      });
+    });
+    const elapsed = performance.now() - t0;
+    if (result.mode === 'Text' || !('results' in result.outcome)) throw new Error(`the run did not search: ${JSON.stringify(result.outcome)}`);
+    // The run yields between every two documents, and each engine call reads exactly that step's document.
+    expect(yields).toBe(documents.length - 1);
+    for (const call of calls) {
+      expect(calls.filter((c) => c.step === call.step), `step ${call.step} makes one engine call`).toHaveLength(1);
+      expect(call.seq, `step ${call.step} reads its own document`).toBe(documents[call.step].sequence);
+    }
+    expect(calls.map((c) => c.seq.length)).toContain(500_000);
+    expect(calls, 'one engine call per document the mode reads').toHaveLength(documents.filter((d) => motifNotSearchedReason(d, 'Nucleotide motif') === null).length);
+    const residues = calls.reduce((n, c) => n + c.seq.length, 0);
+    const longest = calls.reduce((a, c) => (c.ms > a.ms ? c : a));
+    console.log(`US-01M7DVVS AC5: ${documents.length} documents in scope, ${result.outcome.searched} searched, `
+      + `${residues} residues, ${elapsed.toFixed(1)} ms elapsed, longest single engine call ${longest.ms.toFixed(1)} ms `
+      + `(${longest.seq.length} residues)${longest.ms > 50 ? ' - over 50 ms: file the Web Worker follow-up' : ''}`);
   });
 });

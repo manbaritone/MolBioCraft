@@ -19,6 +19,7 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import { NUCLEOTIDE_MOTIF_STATEMENT, PROTEIN_MOTIF_STATEMENT, TEXT_SEARCH_STATEMENT } from '../core/projectSearch';
+import { SEARCH_PAUSE_MS } from '../components/ProjectSearchPanel';
 import { inferDocumentTypeLabel } from '../core/workbenchBatchOperations';
 import { resolveNativeMenuItemEnabled } from '../core/commandAvailability';
 import type { SequenceDocument } from '../types/bio';
@@ -143,6 +144,7 @@ async function chooseScope(app: AppHarness, scope: string) {
   const radio = scopeRadios(app).find((r) => (r as unknown as Radio).value === scope);
   if (!radio) throw new Error(`the panel offers no scope ${scope}: ${scopeNames(app).join(', ')}`);
   await app.change(radio, true);
+  await finishSearch(app, 0);
 }
 const groupFor = (app: AppHarness, name: string) => {
   const found = groups(app).filter((g) => part(g, 'name') === name);
@@ -150,6 +152,38 @@ const groupFor = (app: AppHarness, name: string) => {
   return found[0];
 };
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+// ─── Waiting for a search (US-01M7DVVS) ───
+
+const cancelButtons = (app: AppHarness) => panel(app).querySelectorAll('button').filter((b) => nameOf(b) === 'Cancel search');
+/**
+ * One run step: the timer task the run yields to between two documents. The fake clock schedules
+ * a zero-delay timer set while another timer fires 1 ms on, so a step advances 1 ms; the sync
+ * advance runs no promise continuation, so it never runs two steps.
+ */
+const STEP_MS = 1;
+async function stepSearch(app: AppHarness) {
+  await React.act(async () => { vi.advanceTimersByTime(STEP_MS); });
+  await app.settle();
+}
+/**
+ * Lets the pause after an input pass and steps the run it starts to its end, as a user waiting
+ * would. A change of scope or Both strands starts its run at once, so it waits no pause (`pause` 0):
+ * a panel that paused there would show no run to step and fail the assertion after it.
+ */
+async function finishSearch(app: AppHarness, pause = SEARCH_PAUSE_MS) {
+  await React.act(async () => { vi.advanceTimersByTime(pause); });
+  for (let i = 0; panels(app).length > 0 && cancelButtons(app).length > 0; i++) {
+    if (i > 10_000) throw new Error('the search never finished');
+    await React.act(async () => { vi.advanceTimersByTime(STEP_MS); });
+  }
+  await app.settle();
+}
+/** Types `value` into the search field and waits for its search to finish. */
+async function typeQuery(app: AppHarness, field: LiveElement, value: string) {
+  await app.input(field, value);
+  await finishSearch(app);
+}
 
 // ─── AC1 ───
 
@@ -224,7 +258,7 @@ describe('US-01M7DV88 AC2: the offered scopes, the label, the statements and the
       expect(words(panel(app).textContent), 'the core statement, word for word').toContain(TEXT_SEARCH_STATEMENT);
       expect(scopeLabel(app)).toBe('Sample Documents › Plasmids & Vectors and subfolders');
 
-      await app.input(queryField(app), 'zqvector');
+      await typeQuery(app, queryField(app), 'zqvector');
       // The hidden child's assay is in the subfolder scope only when the App passes every folder.
       expect(summary(app)).toBe(`3 hits in 3 documents · ${PV_SUB} documents searched`);
       expect(groups(app).map((g) => part(g, 'name')).sort()).toEqual(['Favourite insert', 'Hidden zqvector assay', 'Opened backbone']);
@@ -244,7 +278,7 @@ describe('US-01M7DV88 AC2: the offered scopes, the label, the statements and the
         // One favourite, and one deleted document (in the catalog the App passes, deleted ones included).
         expect(summary(app), `${row} searches its one document`).toBe('Type text to search 1 document');
       }
-      await app.input(queryField(app), 'zqvector');
+      await typeQuery(app, queryField(app), 'zqvector');
       expect(summary(app)).toBe('1 hit in 1 document · 1 document searched');
       expect(groups(app).map((g) => part(g, 'name'))).toEqual(['Deleted zqvector draft']);
     });
@@ -257,18 +291,18 @@ describe('US-01M7DV88 AC2: the offered scopes, the label, the statements and the
       expect(tabs, 'the open tabs').toContain('Opened backbone');
       expect(tabs, 'never opened').not.toContain('Never opened protein');
       await searchFolder(app, 'All Project Files');
-      await app.input(queryField(app), 'zqlonely');
+      await typeQuery(app, queryField(app), 'zqlonely');
       expect(summary(app)).toBe(`1 hit in 1 document · ${ENTIRE} documents searched`);
       expect(part(groupFor(app, 'Never opened protein'), 'path')).toBe('Sample Documents › Protein Documents');
 
       // A document in a hidden folder is found under its full path.
-      await app.input(queryField(app), 'hidden zqvector');
+      await typeQuery(app, queryField(app), 'hidden zqvector');
       expect(part(groupFor(app, 'Hidden zqvector assay'), 'path')).toBe('Sample Documents › Plasmids & Vectors › Hidden Assays');
 
-      await app.input(queryField(app), 'zqisolate');
+      await typeQuery(app, queryField(app), 'zqisolate');
       expect(summary(app)).toBe(`1 hit in 1 document · ${ENTIRE} documents searched`);
       await searchFolder(app, 'Bacteria');
-      await app.input(queryField(app), 'zqisolate');
+      await typeQuery(app, queryField(app), 'zqisolate');
       expect(summary(app)).toBe(`1 hit in 1 document · ${plural(BACT, 'document')} searched`);
     });
   });
@@ -283,7 +317,7 @@ describe('US-01M7DV88 AC3: grouped results, marked snippets, the header and pagi
   it('US-01M7DV88 AC3 groups each document with name, path, type and hit count, and marks the matched text as written', async () => {
     await withSession(SPEC, async (app) => {
       await searchFolder(app, 'All Project Files');
-      await app.input(queryField(app), 'ZQVECTOR');
+      await typeQuery(app, queryField(app), 'ZQVECTOR');
       expect(summary(app)).toBe(`3 hits in 3 documents · ${ENTIRE} documents searched`);
       expect(groups(app)).toHaveLength(3);
       const opened = groupFor(app, 'Opened backbone');
@@ -297,14 +331,14 @@ describe('US-01M7DV88 AC3: grouped results, marked snippets, the header and pagi
       expect(hits[0].querySelectorAll('mark').map((m) => m.textContent)).toEqual(['zqvector']);
       expect(part(hits[0], 'snippet')).toBe('a zqvector backbone');
 
-      await app.input(queryField(app), 'zqlonely');
+      await typeQuery(app, queryField(app), 'zqlonely');
       const never = groupFor(app, 'Never opened protein');
       expect(part(never, 'type')).toBe(inferDocumentTypeLabel(DOCS[5]));
       expect(part(never, 'type')).not.toBe(part(opened, 'type'));
       expect(never.querySelectorAll('mark').map((m) => m.textContent)).toEqual(['ZqLonely']);
 
       // Two hits in one document: the name and the description, counted per document.
-      await app.input(queryField(app), 'insert');
+      await typeQuery(app, queryField(app), 'insert');
       const fav = groupFor(app, 'Favourite insert');
       expect(part(fav, 'hits')).toBe('2 hits');
       expect(fav.querySelectorAll('[data-search-hit]').map((h) => part(h, 'field'))).toEqual(['Name', 'Description']);
@@ -317,7 +351,7 @@ describe('US-01M7DV88 AC3: grouped results, marked snippets, the header and pagi
     await withSession(spec, async (app) => {
       await searchFolder(app, 'All Project Files');
       const total = ENTIRE + 130;
-      await app.input(queryField(app), 'zqprobe');
+      await typeQuery(app, queryField(app), 'zqprobe');
       expect(summary(app), 'the header counts every group, not the page').toBe(`130 hits in 130 documents · ${total} documents searched`);
       expect(pager(app)).toBe('Groups 1-50 of 130');
       expect(groups(app)).toHaveLength(50);
@@ -335,13 +369,13 @@ describe('US-01M7DV88 AC3: grouped results, marked snippets, the header and pagi
       expect(pager(app)).toBe('Groups 51-100 of 130');
 
       // A narrower query starts again on its first page, under 100 groups.
-      await app.input(queryField(app), 'probe 0');
+      await typeQuery(app, queryField(app), 'probe 0');
       expect(summary(app)).toBe(`100 hits in 100 documents · ${total} documents searched`);
       expect(pager(app)).toBe('Groups 1-50 of 100');
       await app.click(panel(app).querySelectorAll('button').filter((b) => nameOf(b) === 'Next')[0]);
       expect(pager(app)).toBe('Groups 51-100 of 100');
       // 50 groups or fewer need no pages.
-      await app.input(queryField(app), 'probe 00');
+      await typeQuery(app, queryField(app), 'probe 00');
       expect(summary(app)).toBe(`10 hits in 10 documents · ${total} documents searched`);
       expect(panel(app).querySelectorAll('[data-search-pager-range]')).toHaveLength(0);
     });
@@ -359,14 +393,14 @@ describe('US-01M7DV88 AC4: no hits, an empty scope and an empty query are told a
       await app.input(queryField(app), '   ');
       expect(summary(app), 'a whitespace query runs no search').toBe(`Type text to search ${BACT} documents`);
       expect(groups(app)).toHaveLength(0);
-      await app.input(queryField(app), 'zqnothing');
+      await typeQuery(app, queryField(app), 'zqnothing');
       expect(summary(app)).toBe(`No matches in ${BACT} documents searched`);
       await app.input(queryField(app), '');
       expect(summary(app)).toBe(`Type text to search ${BACT} documents`);
 
       await searchFolder(app, 'Favorites');
       expect(summary(app)).toBe('No documents in Favorites only');
-      await app.input(queryField(app), 'zqvector');
+      await typeQuery(app, queryField(app), 'zqvector');
       expect(summary(app)).toBe('No documents in Favorites only');
       expect(words(panel(app).textContent)).not.toContain('No matches in 0 documents searched');
     });
@@ -472,7 +506,7 @@ describe('US-01M7DVE7 AC1: the Search mode select, its statements and Text mode 
 
       // Nucleotide letters in Text mode are text: only the name that holds them is found.
       await app.change(select, 'Text');
-      await app.input(queryField(app), 'GAATTC');
+      await typeQuery(app, queryField(app), 'GAATTC');
       expect(summary(app)).toBe(`1 hit in 1 document · ${MOTIF_DOCS.length} documents searched`);
       expect(groupNames(app)).toEqual(['Many GAATTC sites']);
       expect(groups(app)[0].querySelectorAll('[data-search-hit]').map((h) => part(h, 'field'))).toEqual(['Name']);
@@ -511,19 +545,21 @@ describe('US-01M7DVE7 AC2: each hit with coordinates, strand, letters and certai
       expect(isChecked(checkbox(app, 'Both strands')), 'Both strands is on by default').toBe(true);
       expect(isChecked(checkbox(app, 'Definite only'))).toBe(false);
 
-      await app.input(motifField(app), 'CCTAAG');
+      await typeQuery(app, motifField(app), 'CCTAAG');
       expect(groupNames(app)).toEqual(['RNA reverse site']);
       expect(hitRows(groupFor(app, 'RNA reverse site'))).toEqual([['5-10', '−', 'CUUAGG', 'definite']]);
       // The reverse strand is searched only while Both strands is on.
       await app.change(checkbox(app, 'Both strands'), false);
+      await finishSearch(app, 0);
       expect(groups(app)).toHaveLength(0);
       expect(summary(app)).toBe(`No matches in ${NUCLEIC.length} documents searched · 10 not searched`);
       await app.change(checkbox(app, 'Both strands'), true);
+      await finishSearch(app, 0);
 
-      await app.input(motifField(app), 'GAGACC');
+      await typeQuery(app, motifField(app), 'GAGACC');
       expect(hitRows(groupFor(app, 'Circular BsaI origin'))).toEqual([['2998-3', '−', 'GGTCTC', 'definite']]);
 
-      await app.input(motifField(app), 'GAATTC');
+      await typeQuery(app, motifField(app), 'GAATTC');
       expect(hitRows(groupFor(app, 'Circular EcoRI origin'))).toEqual([['2998-3', '+ palindrome', 'GAATTC', 'definite']]);
       expect(hitRows(groupFor(app, 'Mixed certainty'))).toEqual([
         ['1-6', '+ palindrome', 'GAATTC', 'definite'],
@@ -536,7 +572,7 @@ describe('US-01M7DVE7 AC2: each hit with coordinates, strand, letters and certai
   it('US-01M7DVE7 AC2 counts the whole molecule, lists at most 1,000 hits with the warning, and Definite only hides the possible ones', async () => {
     await withSession(MOTIF_SPEC, async (app) => {
       await openLab(app, 'Nucleotide motif');
-      await app.input(motifField(app), 'GAATTC');
+      await typeQuery(app, motifField(app), 'GAATTC');
       expect(groupNames(app)).toEqual(['Ambiguous only', 'Circular EcoRI origin', 'Many GAATTC sites', 'Mixed certainty']);
       const many = groupFor(app, 'Many GAATTC sites');
       expect(part(many, 'hits'), 'the engine counts, not the listed hits').toBe('1,100 hits (1,100 definite, 0 possible)');
@@ -562,7 +598,7 @@ describe('US-01M7DVE7 AC3: Protein motif reads protein documents on one strand',
     await withSession(MOTIF_SPEC, async (app) => {
       await openLab(app, 'Protein motif');
       expect(panel(app).querySelectorAll('label').filter((l) => words(l.textContent) === 'Both strands'), 'no strand choice for proteins').toHaveLength(0);
-      await app.input(motifField(app), 'GAC');
+      await typeQuery(app, motifField(app), 'GAC');
       // GTC is GAC's reverse complement: a panel that reverse-complements finds Protein with GTC.
       expect(groupNames(app)).toEqual(['Protein ambiguous', 'Protein with GAC']);
       expect(hitRows(groupFor(app, 'Protein with GAC'))).toEqual([['3-5', '+', 'GAC', 'definite']]);
@@ -580,7 +616,7 @@ describe('US-01M7DVE7 AC4: not searched, refusals and an engine that cannot run,
   it('US-01M7DVE7 AC4 lists each kind it does not read with its reason, counted apart from the documents searched', async () => {
     await withSession(MOTIF_SPEC, async (app) => {
       await openLab(app, 'Nucleotide motif');
-      await app.input(motifField(app), 'GAATTC');
+      await typeQuery(app, motifField(app), 'GAATTC');
       expect(skips(app)).toEqual({
         ...Object.fromEntries(PROTEINS.map((n) => [n, 'protein sequence (use Protein motif)'])),
         ...KIND_REASONS,
@@ -592,13 +628,13 @@ describe('US-01M7DVE7 AC4: not searched, refusals and an engine that cannot run,
       }
 
       // A document the engine refuses is listed with its reason, and the others are still searched after it.
-      await app.input(motifField(app), 'GAATTCAA');
+      await typeQuery(app, motifField(app), 'GAATTCAA');
       expect(skips(app)['Short DNA']).toBe('query longer than the sequence (8 > 6)');
       expect(Object.keys(skips(app))).toHaveLength(11);
       expect(groupNames(app)).toEqual(['Circular EcoRI origin', 'Mixed certainty']);
       expect(hitRows(groupFor(app, 'Circular EcoRI origin'))).toEqual([['2998-5', '+', 'GAATTCAA', 'definite']]);
       expect(summary(app)).toBe(`3 hits in 2 documents · ${NUCLEIC.length - 1} documents searched · 11 not searched`);
-      await app.input(motifField(app), 'CGCGCGCG');
+      await typeQuery(app, motifField(app), 'CGCGCGCG');
       expect(summary(app), 'no matches counts only the searched').toBe(`No matches in ${NUCLEIC.length - 1} documents searched · 11 not searched`);
     });
   });
@@ -606,7 +642,7 @@ describe('US-01M7DVE7 AC4: not searched, refusals and an engine that cannot run,
   it('US-01M7DVE7 AC4 shows a refused query once and lists no document', async () => {
     await withSession(MOTIF_SPEC, async (app) => {
       await openLab(app, 'Nucleotide motif');
-      await app.input(motifField(app), 'GAAXTC');
+      await typeQuery(app, motifField(app), 'GAAXTC');
       expect(summary(app)).toBe("This motif cannot be searched: query letter 'X' is not a nucleotide code");
       const text = words(panel(app).textContent);
       expect(text.split('query letter').length - 1, 'the refusal is told once').toBe(1);
@@ -615,7 +651,7 @@ describe('US-01M7DVE7 AC4: not searched, refusals and an engine that cannot run,
       expect(text).not.toMatch(/No matches|searched ·|not searched ·/);
 
       await app.change(modeSelect(app), 'Protein motif');
-      await app.input(motifField(app), 'MK1');
+      await typeQuery(app, motifField(app), 'MK1');
       expect(summary(app)).toBe("This motif cannot be searched: query letter '1' is not a protein code");
       expect(panel(app).querySelectorAll('[data-search-skip]')).toHaveLength(0);
     });
@@ -635,7 +671,7 @@ describe('US-01M7DVE7 AC4: not searched, refusals and an engine that cannot run,
       try {
         for (const [what, engine, said] of cases) {
           engineOverride.current = engine;
-          await app.input(motifField(app), what === 'stale engine' ? 'GAATTC' : 'GAGACC');
+          await typeQuery(app, motifField(app), what === 'stale engine' ? 'GAATTC' : 'GAGACC');
           expect(summary(app), what).toBe(said);
           expect(groups(app), what).toHaveLength(0);
           expect(panel(app).querySelectorAll('[data-search-skip]'), `${what}: no document listed`).toHaveLength(0);
@@ -644,8 +680,246 @@ describe('US-01M7DVE7 AC4: not searched, refusals and an engine that cannot run,
       } finally {
         engineOverride.current = null;
       }
-      await app.input(motifField(app), 'GAATTC');
+      await typeQuery(app, motifField(app), 'GAATTC');
       expect(summary(app), 'the real engine answers again').toBe(`1,104 hits in 4 documents · ${NUCLEIC.length} documents searched · 10 not searched`);
+    });
+  });
+});
+
+// ─── US-01M7DVVS: searches wait for a pause, can be cancelled and rerun when documents change ───
+//
+// Each criterion names the wrong panel it fails: one that keeps an older query's groups during the
+// pause, one that runs every document in one call (no step between them), one that lets an older
+// run's answer land after a newer query was typed, one that lists a cancelled run's partial
+// groups, and one that recomputes in place when the documents change, with no out-of-date sentence.
+
+/** The groups GAATTC lists in Motif Lab: none of them may be shown for a later query. */
+const GAATTC_GROUPS = ['Ambiguous only', 'Circular EcoRI origin', 'Many GAATTC sites', 'Mixed certainty'];
+/** Lets `ms` of the fake clock pass, then lets the page settle. */
+async function advance(app: AppHarness, ms: number) {
+  await React.act(async () => { vi.advanceTimersByTime(ms); });
+  await app.settle();
+}
+/** Counts the engine calls at search_iupac_motif (searchIupacMotifRust), by query, while `run` runs. */
+async function countingEngine(run: (queries: string[]) => Promise<void>) {
+  const real = await vi.importActual<typeof import('../lib/rustBioEngine')>('../lib/rustBioEngine');
+  const queries: string[] = [];
+  engineOverride.current = (...args: unknown[]) => {
+    const [seq, query, options] = args as Parameters<typeof real.searchIupacMotifRust>;
+    queries.push(query);
+    return real.searchIupacMotifRust(seq, query, options);
+  };
+  try {
+    await run(queries);
+  } finally {
+    engineOverride.current = null;
+  }
+}
+const searchingFor = (q: string) => `Searching for "${q}"…`;
+
+describe('US-01M7DVVS AC1: a search waits for a pause in typing and never lists an earlier query', () => {
+  it('US-01M7DVVS AC1 in Nucleotide motif mode makes no engine call until 250 ms after the fifth keystroke, then calls it only for the final query', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      await typeQuery(app, motifField(app), 'GAATTC');
+      expect(groupNames(app), 'an earlier query is listed before the typing starts').toEqual(GAATTC_GROUPS);
+      await countingEngine(async (queries) => {
+        const typed = ['C', 'CT', 'CTT', 'CTTA', 'CTTAG'];
+        for (const [i, q] of typed.entries()) {
+          if (i > 0) await advance(app, 50);
+          await app.input(motifField(app), q);
+          expect(summary(app), `after typing ${q}`).toBe(searchingFor(q));
+          expect(groups(app), `after typing ${q}: no group of an earlier query`).toHaveLength(0);
+        }
+        await advance(app, 249);
+        expect(queries, '249 ms after the last keystroke').toEqual([]);
+        expect(summary(app)).toBe(searchingFor('CTTAG'));
+        expect(groups(app)).toHaveLength(0);
+        await advance(app, 1);
+        // One document per step: a run that searched every document at once would have made them all.
+        expect(queries, 'the first step reads the first document only').toEqual(['CTTAG']);
+        let steps = 0;
+        while (cancelButtons(app).length > 0) {
+          expect(summary(app), `step ${steps}`).toBe(searchingFor('CTTAG'));
+          expect(groups(app), `step ${steps}: nothing listed until the run completes`).toHaveLength(0);
+          await stepSearch(app);
+          steps += 1;
+        }
+        expect(steps, 'the run took one step per document after the first').toBe(MOTIF_DOCS.length - 1);
+        expect(queries, 'engine calls only for the final query, one per DNA and RNA document').toEqual(NUCLEIC.map(() => 'CTTAG'));
+        expect(groupNames(app)).toEqual(['RNA reverse site']);
+        expect(summary(app)).toBe(`1 hit in 1 document · ${NUCLEIC.length} documents searched · 10 not searched`);
+      });
+    });
+  });
+
+  it('US-01M7DVVS AC1 in Text mode lists no group of the earlier query from the first keystroke until the final run completes', async () => {
+    await withSession(SPEC, async (app) => {
+      await searchFolder(app, 'All Project Files');
+      await typeQuery(app, queryField(app), 'zqvector');
+      expect(groups(app).map((g) => part(g, 'name')).sort()).toEqual(['Favourite insert', 'Hidden zqvector assay', 'Opened backbone']);
+      const typed = ['z', 'zq', 'zql', 'zqlo', 'zqlon'];
+      for (const [i, q] of typed.entries()) {
+        if (i > 0) await advance(app, 50);
+        await app.input(queryField(app), q);
+        expect(summary(app), `after typing ${q}`).toBe(searchingFor(q));
+        expect(groups(app), `after typing ${q}`).toHaveLength(0);
+      }
+      await advance(app, 249);
+      expect(cancelButtons(app), 'no run 249 ms after the last keystroke').toHaveLength(0);
+      expect(summary(app)).toBe(searchingFor('zqlon'));
+      await advance(app, 1);
+      let steps = 0;
+      while (cancelButtons(app).length > 0) {
+        expect(summary(app), `step ${steps}`).toBe(searchingFor('zqlon'));
+        expect(groups(app), `step ${steps}`).toHaveLength(0);
+        await stepSearch(app);
+        steps += 1;
+      }
+      expect(steps).toBe(ENTIRE - 1);
+      expect(groups(app).map((g) => part(g, 'name'))).toEqual(['Never opened protein']);
+      expect(summary(app)).toBe(`1 hit in 1 document · ${ENTIRE} documents searched`);
+    });
+  });
+});
+
+describe('US-01M7DVVS AC2: an older run never lands after a newer query', () => {
+  it('US-01M7DVVS AC2 types GAATTC, steps its run once, types GGATCC and steps both: no GAATTC group is ever listed', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      const gaattcListed = () => groups(app).map((g) => part(g, 'name')).filter((n) => GAATTC_GROUPS.includes(n));
+      await countingEngine(async (queries) => {
+        await app.input(motifField(app), 'GAATTC');
+        await advance(app, SEARCH_PAUSE_MS);
+        await stepSearch(app);
+        expect(queries, 'the GAATTC run is under way').toEqual(['GAATTC', 'GAATTC']);
+        expect(cancelButtons(app), 'and not finished').toHaveLength(1);
+        await app.input(motifField(app), 'GGATCC');
+        // Through the pause and both runs' steps, a millisecond at a time.
+        for (let ms = 0; ms < SEARCH_PAUSE_MS + 3 * MOTIF_DOCS.length; ms++) {
+          expect(gaattcListed(), `${ms} ms after typing GGATCC`).toEqual([]);
+          await stepSearch(app);
+        }
+        expect(queries.filter((q) => q === 'GAATTC'), 'the GAATTC run read no document after GGATCC was typed').toHaveLength(2);
+        expect(queries.filter((q) => q === 'GGATCC')).toHaveLength(NUCLEIC.length);
+      });
+      expect(cancelButtons(app)).toHaveLength(0);
+      expect(gaattcListed()).toEqual([]);
+      expect(summary(app)).toBe(`No matches in ${NUCLEIC.length} documents searched · 10 not searched`);
+    });
+  });
+});
+
+describe('US-01M7DVVS AC3: Cancel search stops a run and shows no results', () => {
+  it('US-01M7DVVS AC3 Cancel search after the first step stops a motif run and a text run before the next document', async () => {
+    const cases: [string, string, () => (app: AppHarness) => LiveElement][] = [
+      // Each query matches the first document, so a cancelled run has a partial group it must not list.
+      ['Nucleotide motif', 'ACGTAC', () => motifField],
+      ['Text', 'Short', () => queryField],
+    ];
+    for (const [mode, query, field] of cases) {
+      await withSession(MOTIF_SPEC, async (app) => {
+        await openLab(app, mode === 'Text' ? undefined : mode);
+        await countingEngine(async (queries) => {
+          expect(cancelButtons(app), `${mode}: no Cancel search before a run`).toHaveLength(0);
+          await app.input(field()(app), query);
+          expect(cancelButtons(app), `${mode}: none during the pause`).toHaveLength(0);
+          await advance(app, SEARCH_PAUSE_MS);
+          expect(cancelButtons(app), `${mode}: shown while the run is in progress`).toHaveLength(1);
+          expect(queries).toHaveLength(mode === 'Text' ? 0 : 1);
+          await app.click(cancelButtons(app)[0]);
+          const said = `Cancelled after 1 of ${MOTIF_DOCS.length} documents: no results are shown`;
+          expect(summary(app), mode).toBe(said);
+          expect(groups(app), `${mode}: no result group`).toHaveLength(0);
+          expect(panel(app).querySelectorAll('[data-search-skip]'), `${mode}: nothing listed`).toHaveLength(0);
+          expect(cancelButtons(app)).toHaveLength(0);
+          await advance(app, SEARCH_PAUSE_MS * 4);
+          expect(queries, `${mode}: no document after Cancel`).toHaveLength(mode === 'Text' ? 0 : 1);
+          expect(summary(app), `${mode}: still cancelled`).toBe(said);
+          expect(groups(app)).toHaveLength(0);
+          // The next query searches again.
+          await typeQuery(app, field()(app), mode === 'Text' ? 'Short DNA' : 'ACGTA');
+          expect(groupNames(app)).toEqual(['Short DNA']);
+        });
+      });
+    }
+  });
+});
+
+describe('US-01M7DVVS AC4: a change of the documents marks the results out of date and reruns after the pause', () => {
+  it('US-01M7DVVS AC4 says Out of date over the old groups at once, then reruns: a renamed group takes its new name and a deleted document leaves', async () => {
+    await withSession(SPEC, async (app) => {
+      await searchFolder(app, 'All Project Files');
+      await typeQuery(app, queryField(app), 'zqvector');
+      const names = () => groups(app).map((g) => part(g, 'name')).sort();
+      expect(names()).toEqual(['Favourite insert', 'Hidden zqvector assay', 'Opened backbone']);
+      const OUT_OF_DATE = 'Out of date: the documents changed. Searching again…';
+
+      // Rename Favourite insert in the document table (double-click its name, type, Enter).
+      const cell = app.all('span[title="Double-click to rename"]').filter((s) => words(s.textContent) === 'Favourite insert');
+      expect(cell, 'the document table lists Favourite insert').toHaveLength(1);
+      await React.act(async () => { dispatchLiveEvent(cell[0], 'dblclick', { bubbles: true, cancelable: true }); });
+      await app.settle();
+      const editor = app.one('input[aria-label="New name for Favourite insert"]', 'the name editor');
+      await app.input(editor, 'Favourite zqrenamed insert');
+      await React.act(async () => { dispatchLiveEvent(editor, 'keydown', { key: 'Enter', bubbles: true, cancelable: true }); });
+      await app.settle();
+      expect(summary(app), 'out of date at once, before the pause').toBe(OUT_OF_DATE);
+      expect(names(), 'the old groups stay listed under it').toEqual(['Favourite insert', 'Hidden zqvector assay', 'Opened backbone']);
+      await advance(app, 249);
+      expect(summary(app)).toBe(OUT_OF_DATE);
+      expect(cancelButtons(app), 'no rerun before the pause').toHaveLength(0);
+      await advance(app, 1);
+      expect(cancelButtons(app), 'the rerun starts 250 ms after the change').toHaveLength(1);
+      await finishSearch(app, 0);
+      expect(names(), 'the renamed group shows its new name').toEqual(['Favourite zqrenamed insert', 'Hidden zqvector assay', 'Opened backbone']);
+      expect(summary(app)).toBe(`3 hits in 3 documents · ${ENTIRE} documents searched`);
+
+      // Delete Opened backbone, the active document.
+      await app.menu('file:soft-delete');
+      expect(summary(app), 'out of date at once').toBe(OUT_OF_DATE);
+      expect(names()).toEqual(['Favourite zqrenamed insert', 'Hidden zqvector assay', 'Opened backbone']);
+      await advance(app, 249);
+      expect(summary(app)).toBe(OUT_OF_DATE);
+      await finishSearch(app, 1);
+      expect(names(), "the deleted document's hits are gone").toEqual(['Favourite zqrenamed insert', 'Hidden zqvector assay']);
+      expect(summary(app)).toBe(`2 hits in 2 documents · ${ENTIRE - 1} documents searched`);
+    });
+  });
+
+  it('US-01M7DVVS AC4 a restore from Deleted Items, and a favourite mark under the Favorites scope, each mark the results out of date and rerun', async () => {
+    // Two favourites, so the Favorites scope still holds a document after one mark is cleared.
+    const spec: SessionSpec = { ...SPEC, workspace: { projectExplorer: { ...EXPLORER, favoriteDocIds: ['us88-fav', 'us88-hidden'] } } as SessionSpec['workspace'] };
+    await withSession(spec, async (app) => {
+      const OUT_OF_DATE = 'Out of date: the documents changed. Searching again…';
+      const names = () => groups(app).map((g) => part(g, 'name')).sort();
+      await searchFolder(app, 'All Project Files');
+      await typeQuery(app, queryField(app), 'zqvector');
+      expect(names()).toEqual(['Favourite insert', 'Hidden zqvector assay', 'Opened backbone']);
+      // File › Restore from Deleted Items with nothing selected there restores the deleted draft.
+      await app.menu('file:restore-deleted');
+      expect(summary(app), 'restored: out of date at once').toBe(OUT_OF_DATE);
+      expect(names()).toEqual(['Favourite insert', 'Hidden zqvector assay', 'Opened backbone']);
+      await advance(app, 249);
+      expect(summary(app)).toBe(OUT_OF_DATE);
+      await finishSearch(app, 1);
+      expect(names(), 'the restored document is searched').toEqual(['Deleted zqvector draft', 'Favourite insert', 'Hidden zqvector assay', 'Opened backbone']);
+      expect(summary(app)).toBe(`4 hits in 4 documents · ${ENTIRE + 1} documents searched`);
+
+      await searchFolder(app, 'Favorites');
+      await typeQuery(app, queryField(app), 'zqvector');
+      const before = ['Favourite insert', 'Hidden zqvector assay'];
+      expect(names()).toEqual(before);
+      // File › Toggle Favorite on the App's target document clears one of the two marks.
+      await app.menu('file:toggle-favorite');
+      expect(summary(app), 'a favourite mark: out of date at once').toBe(OUT_OF_DATE);
+      expect(names(), 'the old groups stay listed').toEqual(before);
+      await advance(app, 249);
+      expect(summary(app)).toBe(OUT_OF_DATE);
+      await finishSearch(app, 1);
+      expect(names(), 'one favourite is left').toHaveLength(1);
+      expect(before).toContain(names()[0]);
+      expect(summary(app)).toBe('1 hit in 1 document · 1 document searched');
     });
   });
 });

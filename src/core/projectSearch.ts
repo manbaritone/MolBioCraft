@@ -388,3 +388,84 @@ export function searchMotif(
   }
   return { query: trimmed, searched, results, notSearched };
 }
+
+// ─── Search runs (US-01M7DVVS) ───
+
+/** What one run searches: a text query, or a motif in a motif mode through `engine`. */
+export type SearchRequest =
+  | { mode: 'Text'; query: string; documents: SequenceDocument[]; folders: ExplorerFolder[] }
+  | {
+    mode: MotifMode; query: string; documents: SequenceDocument[]; folders: ExplorerFolder[];
+    bothStrands: boolean; engine: MotifEngine;
+  };
+
+/** A completed run's answer, as searchText or searchMotif gives it over the run's documents. */
+export type SearchRunResult =
+  | { mode: 'Text'; outcome: ReturnType<typeof searchText> }
+  | { mode: MotifMode; outcome: MotifSearchOutcome };
+
+export type SearchRunEvent =
+  /** `reached` of the run's `total` documents have been read. */
+  | { kind: 'progress'; reached: number; total: number }
+  | { kind: 'done'; result: SearchRunResult };
+
+/** Hands the UI a turn between two documents: a timer task, so input and painting run in between. */
+export const nextTask = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+/**
+ * Runs searches one document per step, awaiting `yieldStep` between documents, so no single call
+ * of searchText or searchMotif (and of the engine under it) covers more than one document. Only
+ * the newest run is ever reported: `start` and `stop` each end the run before them, which then
+ * stops at its next step and never calls its listener again, whatever order the steps resolve in.
+ */
+export interface SearchRunner {
+  /** Ends any run in progress and starts `request`, reporting to `listener` while it is the newest. */
+  start(request: SearchRequest, listener: (event: SearchRunEvent) => void): void;
+  /** Ends any run in progress; it reads no further document and reports nothing more. */
+  stop(): void;
+}
+
+export function createSearchRunner(yieldStep: () => Promise<void> = nextTask): SearchRunner {
+  let generation = 0;
+  const run = async (id: number, request: SearchRequest, listener: (event: SearchRunEvent) => void) => {
+    const { documents, folders } = request;
+    const total = documents.length;
+    const textResults: DocumentTextResult[] = [];
+    const motif = { searched: 0, results: [] as DocumentMotifResult[], notSearched: [] as MotifNotSearched[] };
+    const query = request.query.trim();
+    if (query === '') {
+      listener({ kind: 'done', result: request.mode === 'Text' ? { mode: 'Text', outcome: { refused: 'empty query' } } : { mode: request.mode, outcome: { refused: 'empty query' } } });
+      return;
+    }
+    for (let i = 0; i < total; i++) {
+      if (i > 0) await yieldStep();
+      if (id !== generation) return;
+      const doc = documents[i];
+      if (request.mode === 'Text') {
+        const one = searchText(request.query, [doc], folders);
+        if ('refused' in one) { listener({ kind: 'done', result: { mode: 'Text', outcome: one } }); return; }
+        textResults.push(...one.results);
+      } else {
+        const one = searchMotif(request.query, [doc], folders, request.mode, request.bothStrands, request.engine);
+        if (!('results' in one)) { listener({ kind: 'done', result: { mode: request.mode, outcome: one } }); return; }
+        motif.searched += one.searched;
+        motif.results.push(...one.results);
+        motif.notSearched.push(...one.notSearched);
+      }
+      listener({ kind: 'progress', reached: i + 1, total });
+    }
+    if (id !== generation) return;
+    listener(request.mode === 'Text'
+      ? { kind: 'done', result: { mode: 'Text', outcome: { query, results: textResults } } }
+      : { kind: 'done', result: { mode: request.mode, outcome: { query, ...motif } } });
+  };
+  return {
+    start(request, listener) {
+      generation += 1;
+      void run(generation, request, listener);
+    },
+    stop() {
+      generation += 1;
+    },
+  };
+}
