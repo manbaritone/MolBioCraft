@@ -15397,6 +15397,122 @@ table,
   background: var(--mbc-bg-canvas);
 }
 
+/* US-01M7DVB1: the divider between the main view and the split pane. Each pane takes its share of the
+   room beside the 6px divider (DOCUMENT_SPLIT_DIVIDER_PX), as the App draws it on the host; a folded
+   pane is hidden, not unmounted, so its document and selection stay. */
+.mbc-split-host.is-split {
+  position: relative;
+}
+
+.mbc-split-host.is-split > .mbc-viewer-canvas {
+  flex: var(--mbc-doc-split-main, 1) 1 0;
+}
+
+.mbc-split-host.is-split > .mbc-split-pane {
+  flex: var(--mbc-doc-split-second, 1) 1 0;
+}
+
+.mbc-split-host.is-collapsed-main > .mbc-viewer-canvas,
+.mbc-split-host.is-collapsed-second > .mbc-split-pane {
+  display: none;
+}
+
+.mbc-split-host.is-collapsed-main > .mbc-split-pane,
+.mbc-split-host.is-collapsed-second > .mbc-viewer-canvas {
+  flex: 1 1 0;
+}
+
+.mbc-split-divider {
+  position: relative;
+  flex: 0 0 6px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  z-index: 2;
+}
+
+.mbc-split-host.is-top-bottom > .mbc-split-divider {
+  cursor: row-resize;
+}
+
+.mbc-split-divider::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  border-radius: var(--mbc-radius-xs);
+  background: var(--mbc-border-strong);
+  transition: background-color var(--mbc-duration-fast) var(--mbc-ease-standard);
+}
+
+.mbc-split-host.is-top-bottom > .mbc-split-divider::after {
+  top: 2px;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 2px;
+}
+
+.mbc-split-divider:hover::after,
+.mbc-split-divider:focus-visible::after {
+  background: var(--mbc-blue);
+}
+
+.mbc-split-divider:focus-visible {
+  outline: 2px solid var(--mbc-blue);
+  outline-offset: -2px;
+}
+
+.mbc-split-restore {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--mbc-border-strong);
+  border-radius: var(--mbc-radius-xs);
+  background: var(--mbc-bg-canvas);
+  color: var(--mbc-text-secondary, inherit);
+  cursor: pointer;
+}
+
+.mbc-split-restore:hover,
+.mbc-split-restore:focus-visible {
+  color: var(--mbc-blue);
+  border-color: var(--mbc-blue);
+}
+
+.mbc-split-host.is-side-by-side > .mbc-split-restore {
+  top: 8px;
+}
+
+.mbc-split-host.is-side-by-side > .mbc-split-restore.restore-main {
+  left: 8px;
+}
+
+.mbc-split-host.is-side-by-side > .mbc-split-restore.restore-second {
+  right: 8px;
+}
+
+.mbc-split-host.is-top-bottom > .mbc-split-restore {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.mbc-split-host.is-top-bottom > .mbc-split-restore.restore-main {
+  top: 8px;
+}
+
+.mbc-split-host.is-top-bottom > .mbc-split-restore.restore-second {
+  bottom: 8px;
+}
+
 .mbc-split-pane-head {
   display: flex;
   align-items: center;

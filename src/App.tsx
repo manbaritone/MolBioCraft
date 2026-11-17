@@ -117,7 +117,7 @@ import { FragmentTraceView, MicrosatelliteDialog } from './components/FragmentVi
 import { contigDocument, fragmentDocumentFromFsa, mapOptionsOf, runQueryCentricAlignment } from './core/operationRunners';
 import { exportReadsToFastq, fastqToReadDocuments, samToContigs, vcfToFeatures } from './core/importFormats';
 import { parseAlignedFasta, parseTextAlignment, splitFlatfileRecords, textAlignmentToDocument } from './core/alignmentFormats';
-import { SplitDocumentPane } from './components/SplitDocumentPane';
+import { DocumentSplitDivider, SplitDocumentPane } from './components/SplitDocumentPane';
 import {
   DEFAULT_PANE_SPLIT,
   PANE_SPLIT_KEY_STEP_LARGE_PX,
@@ -137,10 +137,15 @@ import {
 } from './core/paneSplit';
 import {
   DOCUMENT_SPLIT_CHOICES,
+  DEFAULT_DOCUMENT_SPLIT_SIZE,
+  documentSplitExtent,
   documentSplitForSession,
   documentSplitHostClass,
+  documentSplitStyle,
   parseDocumentSplit,
+  renderedDocumentSplitRatio,
   type DocumentSplitOrientation,
+  type DocumentSplitSize,
 } from './core/documentSplit';
 import { StructureAlignmentDialog } from './components/StructureAlignmentDialog';
 import { hasStructure } from './core/structureModels';
@@ -1222,6 +1227,14 @@ export const App: React.FC = () => {
   const [documentSplit, setDocumentSplit] = useState<DocumentSplitOrientation>('single');
   /** The split the toggle returns to from Single Pane: the last one chosen, Side by Side the first time. */
   const lastDocumentSplitRef = useRef<Exclude<DocumentSplitOrientation, 'single'>>('side-by-side');
+  /**
+   * The divider between the two documents (US-01M7DVB1): the main pane's share the user chose and the
+   * folded pane, kept through Single Pane, an orientation change and a swap. The host is measured apart,
+   * so a smaller host clamps only the drawn ratio.
+   */
+  const [documentSplitSize, setDocumentSplitSize] = useState<DocumentSplitSize>(DEFAULT_DOCUMENT_SPLIT_SIZE);
+  const [documentSplitHost, setDocumentSplitHost] = useState<HTMLDivElement | null>(null);
+  const [documentSplitHostBox, setDocumentSplitHostBox] = useState<{ width: number; height: number } | null>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'F1') { e.preventDefault(); setHelpPanelOpen((o) => !o); } };
     window.addEventListener('keydown', onKey);
@@ -2335,6 +2348,31 @@ export const App: React.FC = () => {
     }
     setDocumentSplit(next);
   };
+  // The split host's size, measured as it changes, for the ratio drawn (US-01M7DVB1).
+  useEffect(() => {
+    const host = documentSplitHost;
+    if (!host || typeof host.getBoundingClientRect !== 'function') {
+      setDocumentSplitHostBox(null);
+      return;
+    }
+    const measure = () => {
+      const r = host.getBoundingClientRect();
+      setDocumentSplitHostBox((prev) => (prev && prev.width === r.width && prev.height === r.height ? prev : { width: r.width, height: r.height }));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [documentSplitHost]);
+  const documentSplitDrawnRatio =
+    documentSplit === 'single'
+      ? documentSplitSize.ratio
+      : renderedDocumentSplitRatio(
+          documentSplitSize.ratio,
+          documentSplitHostBox ? documentSplitExtent(documentSplit, documentSplitHostBox) : null,
+          documentSplit
+        );
 
   const viewerTab = resolveViewerTab(activeDoc, requestedViewerTab);
   // A command that requests a view the active document cannot show used to be
@@ -4846,7 +4884,7 @@ export const App: React.FC = () => {
       mapLayoutMode,
       zoomLevel,
       paneSplit,
-      documentSplit: documentSplitForSession(documentSplit, splitDocId, catalogAllDocs),
+      documentSplit: documentSplitForSession(documentSplit, splitDocId, catalogAllDocs, documentSplitSize),
       siteVisibility: siteVisibilityForSession(siteVisibilityByDoc, documents),
       mapRotation: mapRotationForSession(mapRotationByDoc, documents),
       textFormat,
@@ -5013,6 +5051,7 @@ export const App: React.FC = () => {
     paneSplit,
     documentSplit,
     splitDocId,
+    documentSplitSize,
     siteVisibilityByDoc,
     mapRotationByDoc,
     textFormat,
@@ -5139,6 +5178,7 @@ export const App: React.FC = () => {
     );
     setDocumentSplit(restoredSplit.orientation);
     setSplitDocId(restoredSplit.docId);
+    setDocumentSplitSize(restoredSplit.size);
     lastDocumentSplitRef.current = restoredSplit.orientation === 'single' ? 'side-by-side' : restoredSplit.orientation;
     // Each document's displayed sites as saved (BG-01M7DHM0), malformed entries dropped and a choice
     // made on a sequence other than the restored one dropped; the App reconciles the rest with the
@@ -5193,6 +5233,7 @@ export const App: React.FC = () => {
       setStatusBanner(unreadableMapRotationNotice(doc), { append: true, keep: true });
     }
     if (restoredSplit.notice) setStatusBanner(restoredSplit.notice, { append: true, keep: true });
+    if (restoredSplit.sizeNotice) setStatusBanner(restoredSplit.sizeNotice, { append: true, keep: true });
   };
 
   /**
@@ -15562,7 +15603,11 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 { '--mbc-inspector-width': `${inspectorWidthPx}px` } as React.CSSProperties
               }
             >
-              <div className={documentSplitHostClass(documentSplit)}>
+              <div
+                ref={setDocumentSplitHost}
+                className={documentSplitHostClass(documentSplit, documentSplitSize.collapsed)}
+                style={documentSplit === 'single' ? undefined : (documentSplitStyle(documentSplitDrawnRatio) as React.CSSProperties)}
+              >
               <div
                 ref={viewerCanvasRef}
                 className={`mbc-viewer-canvas ${
@@ -16285,6 +16330,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 </WorkbenchInspectorProvider>
                               </ErrorBoundary>
               </div>
+              {documentSplit !== 'single' && (
+                <DocumentSplitDivider
+                  orientation={documentSplit}
+                  size={documentSplitSize}
+                  drawnRatio={documentSplitDrawnRatio}
+                  onChange={setDocumentSplitSize}
+                />
+              )}
               {documentSplit !== 'single' && (
                 <SplitDocumentPane
                   doc={splitDocId ? catalogNonDeletedDocs.find((d) => d.id === splitDocId) ?? null : null}

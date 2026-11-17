@@ -6,7 +6,14 @@
  * document beside it (Side by Side) or below it (Top and Bottom), and which document that second pane
  * shows. One rule per fact: this module owns the orientations, the class each one gives the split
  * host, the value a session saves, and `parseDocumentSplit`, the only reader of a saved value.
+ *
+ * The divider between the two panes (US-01M7DVB1): the main pane's share along the active axis (width
+ * side by side, height top and bottom), each expanded pane's minimum along it, which pane is folded
+ * away, and the keys. The collapse fraction and the key steps are paneSplit's; its clamp is bound to
+ * the circular and linear maps' own minimums and gap, so the clamp here applies this split's.
  */
+
+import { PANE_COLLAPSE_FRACTION, PANE_SPLIT_KEY_STEP_LARGE_PX, PANE_SPLIT_KEY_STEP_PX } from './paneSplit';
 
 export type DocumentSplitOrientation = 'single' | 'side-by-side' | 'top-bottom';
 
@@ -20,18 +27,139 @@ export const DOCUMENT_SPLIT_CHOICES: readonly { orientation: DocumentSplitOrient
 const isOrientation = (v: unknown): v is DocumentSplitOrientation =>
   DOCUMENT_SPLIT_CHOICES.some((c) => c.orientation === v);
 
-/** The split host's classes: `is-split` while a second pane shows, with the orientation's own class. */
-export function documentSplitHostClass(orientation: DocumentSplitOrientation): string {
-  if (orientation === 'side-by-side') return 'mbc-split-host is-split is-side-by-side';
-  if (orientation === 'top-bottom') return 'mbc-split-host is-split is-top-bottom';
-  return 'mbc-split-host';
+/**
+ * The split host's classes: `is-split` while a second pane shows, with the orientation's own class,
+ * and `is-collapsed-main` or `is-collapsed-second` while that pane is folded away (US-01M7DVB1).
+ */
+export function documentSplitHostClass(orientation: DocumentSplitOrientation, collapsed: DocumentSplitPane | null = null): string {
+  if (orientation === 'single') return 'mbc-split-host';
+  const folded = collapsed ? ` is-collapsed-${collapsed}` : '';
+  return `mbc-split-host is-split is-${orientation}${folded}`;
 }
 
-/** What a session saves: the orientation, and the second pane's document by id and by name (to name it if it is gone). */
+// ─── US-01M7DVB1: the divider ───
+
+/** The two panes of a split: the main view, and the second document's pane. */
+export type DocumentSplitPane = 'main' | 'second';
+/** A split that shows a second pane. */
+export type DocumentSplitAxisOrientation = Exclude<DocumentSplitOrientation, 'single'>;
+
+/**
+ * The divider's state: the main pane's share of the room along the active axis the user chose, 0..1,
+ * and the pane folded away. The ratio is kept while a pane is folded (restore returns it) and is never
+ * rewritten by a narrower window: only the drawn ratio is clamped (`renderedDocumentSplitRatio`).
+ */
+export interface DocumentSplitSize {
+  ratio: number;
+  collapsed: DocumentSplitPane | null;
+}
+
+export const DEFAULT_DOCUMENT_SPLIT_RATIO = 0.5;
+export const DEFAULT_DOCUMENT_SPLIT_SIZE: DocumentSplitSize = { ratio: DEFAULT_DOCUMENT_SPLIT_RATIO, collapsed: null };
+/** The narrowest each expanded pane may be along the active axis: 320 px wide side by side, 200 px tall top and bottom. */
+export const DOCUMENT_SPLIT_MIN_PX: Readonly<Record<DocumentSplitAxisOrientation, number>> = { 'side-by-side': 320, 'top-bottom': 200 };
+/** The divider's thickness along the active axis, as App.css gives `.mbc-split-divider`. */
+export const DOCUMENT_SPLIT_DIVIDER_PX = 6;
+
+/** The host's extent along the active axis: its width side by side, its height top and bottom. */
+export function documentSplitExtent(orientation: DocumentSplitAxisOrientation, box: { width: number; height: number }): number {
+  return orientation === 'side-by-side' ? box.width : box.height;
+}
+
+/**
+ * `ratio` clamped so each pane keeps its minimum along the axis in a host `sizePx` long. A host too
+ * short for both minimums gives each half.
+ */
+export function clampDocumentSplitRatio(ratio: number, sizePx: number, orientation: DocumentSplitAxisOrientation): number {
+  const room = sizePx - DOCUMENT_SPLIT_DIVIDER_PX;
+  const min = DOCUMENT_SPLIT_MIN_PX[orientation];
+  if (room < 2 * min) return DEFAULT_DOCUMENT_SPLIT_RATIO;
+  const r = Number.isFinite(ratio) ? ratio : DEFAULT_DOCUMENT_SPLIT_RATIO;
+  return Math.min(1 - min / room, Math.max(min / room, r));
+}
+
+/**
+ * The ratio drawn for the chosen `ratio` in a host `sizePx` long: clamped to both minimums. With no
+ * size measured (null, or a host with no layout) the chosen ratio is drawn as it is.
+ */
+export function renderedDocumentSplitRatio(ratio: number, sizePx: number | null, orientation: DocumentSplitAxisOrientation): number {
+  if (sizePx === null || !(sizePx > 0)) return ratio;
+  return clampDocumentSplitRatio(ratio, sizePx, orientation);
+}
+
+/**
+ * The state a drag that began at `start` gives with the pointer at `point` over a host laid out at
+ * `box`: the pointer's x against the width side by side, its y against the height top and bottom.
+ * A pane left under PANE_COLLAPSE_FRACTION of its minimum folds away, and the ratio stays the one the
+ * drag began with, so restoring brings back the size the pane had.
+ */
+export function dragDocumentSplit(
+  start: DocumentSplitSize,
+  point: { x: number; y: number },
+  box: { left: number; top: number; width: number; height: number },
+  orientation: DocumentSplitAxisOrientation
+): DocumentSplitSize {
+  const side = orientation === 'side-by-side';
+  const size = side ? box.width : box.height;
+  const at = side ? point.x - box.left : point.y - box.top;
+  const room = size - DOCUMENT_SPLIT_DIVIDER_PX;
+  if (!(room > 0)) return start;
+  const fold = DOCUMENT_SPLIT_MIN_PX[orientation] * PANE_COLLAPSE_FRACTION;
+  const main = at - DOCUMENT_SPLIT_DIVIDER_PX / 2;
+  if (main < fold) return { ratio: start.ratio, collapsed: 'main' };
+  if (room - main < fold) return { ratio: start.ratio, collapsed: 'second' };
+  return { ratio: clampDocumentSplitRatio(main / room, size, orientation), collapsed: null };
+}
+
+/**
+ * The state a key on the divider gives, or null for a key it does not take. Side by side the Left and
+ * Right arrows move it, top and bottom the Up and Down arrows, by PANE_SPLIT_KEY_STEP_PX (with Shift,
+ * PANE_SPLIT_KEY_STEP_LARGE_PX) from where it is drawn, clamped. Home folds the main view away, End the
+ * second pane, and Enter restores both at the last expanded ratio. An arrow leaves a folded pane folded.
+ */
+export function documentSplitKey(
+  state: DocumentSplitSize,
+  key: string,
+  shift: boolean,
+  sizePx: number,
+  orientation: DocumentSplitAxisOrientation
+): DocumentSplitSize | null {
+  if (key === 'Home') return { ratio: state.ratio, collapsed: 'main' };
+  if (key === 'End') return { ratio: state.ratio, collapsed: 'second' };
+  if (key === 'Enter') return { ratio: state.ratio, collapsed: null };
+  const [back, forward] = orientation === 'side-by-side' ? ['ArrowLeft', 'ArrowRight'] : ['ArrowUp', 'ArrowDown'];
+  if (key !== back && key !== forward) return null;
+  const room = sizePx - DOCUMENT_SPLIT_DIVIDER_PX;
+  if (state.collapsed || !(room > 0)) return state;
+  const step = (shift ? PANE_SPLIT_KEY_STEP_LARGE_PX : PANE_SPLIT_KEY_STEP_PX) * (key === back ? -1 : 1);
+  const from = clampDocumentSplitRatio(state.ratio, sizePx, orientation);
+  return { ratio: clampDocumentSplitRatio(from + step / room, sizePx, orientation), collapsed: null };
+}
+
+/** The main pane's share as the separator announces it, in whole percent: 0 with the main view folded, 100 with the second pane folded. */
+export function documentSplitValueNow(drawn: DocumentSplitSize): number {
+  if (drawn.collapsed === 'main') return 0;
+  if (drawn.collapsed === 'second') return 100;
+  return Math.round(drawn.ratio * 100);
+}
+
+/** The custom properties the split host carries: each pane's flex share. */
+export function documentSplitStyle(ratio: number): Record<string, string> {
+  const r = Math.round(ratio * 1e4) / 1e4;
+  return { '--mbc-doc-split-main': String(r), '--mbc-doc-split-second': String(Math.round((1 - r) * 1e4) / 1e4) };
+}
+
+/**
+ * What a session saves: the orientation, and the second pane's document by id and by name (to name it
+ * if it is gone); the divider's chosen ratio and folded pane only while they are not the default
+ * (US-01M7DVB1), so a split never resized saves what it saved before.
+ */
 export interface SavedDocumentSplit {
   orientation: DocumentSplitOrientation;
   docId: string | null;
   docName: string | null;
+  ratio?: number;
+  collapsed?: DocumentSplitPane;
 }
 
 /**
@@ -42,15 +170,40 @@ export interface SavedDocumentSplit {
 export function documentSplitForSession(
   orientation: DocumentSplitOrientation,
   docId: string | null,
-  docs: readonly { id: string; name: string }[]
+  docs: readonly { id: string; name: string }[],
+  size: DocumentSplitSize = DEFAULT_DOCUMENT_SPLIT_SIZE
 ): SavedDocumentSplit | undefined {
   if (orientation === 'single' && docId === null) return undefined;
   const id = docId ? docId : null;
-  return { orientation, docId: id, docName: id === null ? null : docs.find((d) => d.id === id)?.name ?? null };
+  const saved: SavedDocumentSplit = { orientation, docId: id, docName: id === null ? null : docs.find((d) => d.id === id)?.name ?? null };
+  if (size.ratio !== DEFAULT_DOCUMENT_SPLIT_RATIO) saved.ratio = size.ratio;
+  if (size.collapsed) saved.collapsed = size.collapsed;
+  return saved;
 }
 
 export const UNREADABLE_DOCUMENT_SPLIT_NOTICE =
   'The saved document split could not be read; the viewer opens in Single Pane.';
+
+export const UNREADABLE_DOCUMENT_SPLIT_SIZE_NOTICE =
+  'The saved split size could not be read; the panes open at half each.';
+
+/**
+ * The divider a readable saved split holds: an absent ratio is half each and an absent (or null)
+ * collapse is none, with no notice; a ratio that is not a finite number in [0, 1], or a collapse that
+ * is not 'main' or 'second', is half each and not collapsed, with UNREADABLE_DOCUMENT_SPLIT_SIZE_NOTICE.
+ */
+function parseDocumentSplitSize(v: Record<string, unknown>): { size: DocumentSplitSize; sizeNotice: string | null } {
+  const ratioOk = v.ratio === undefined || (typeof v.ratio === 'number' && Number.isFinite(v.ratio) && v.ratio >= 0 && v.ratio <= 1);
+  const collapsedOk = v.collapsed === undefined || v.collapsed === null || v.collapsed === 'main' || v.collapsed === 'second';
+  if (!ratioOk || !collapsedOk) return { size: { ...DEFAULT_DOCUMENT_SPLIT_SIZE }, sizeNotice: UNREADABLE_DOCUMENT_SPLIT_SIZE_NOTICE };
+  return {
+    size: {
+      ratio: v.ratio === undefined ? DEFAULT_DOCUMENT_SPLIT_RATIO : (v.ratio as number),
+      collapsed: v.collapsed === 'main' || v.collapsed === 'second' ? v.collapsed : null,
+    },
+    sizeNotice: null,
+  };
+}
 
 export function missingSplitDocumentNotice(docName: string): string {
   return `The split pane's document "${docName}" is no longer in this session; the viewer opens in Single Pane.`;
@@ -67,23 +220,30 @@ export function missingSplitDocumentNotice(docName: string): string {
  * - otherwise the saved orientation and document; a docId of null (or '') with a split orientation
  *   reopens the pane asking for a document ('').
  * `docId` is in the App's terms: null for no document, '' for the pane's "Choose a document…".
+ *
+ * The divider (US-01M7DVB1) is read apart, once the orientation and docId are readable, into `size`
+ * and `sizeNotice` (see parseDocumentSplitSize); a split that is absent or cannot be read at all opens
+ * at half each, its one notice (if any) being `notice`.
  */
 export function parseDocumentSplit(
   raw: unknown,
   available: readonly { id: string }[]
-): { orientation: DocumentSplitOrientation; docId: string | null; notice: string | null } {
-  const single = (notice: string | null) => ({ orientation: 'single' as const, docId: null, notice });
+): { orientation: DocumentSplitOrientation; docId: string | null; notice: string | null; size: DocumentSplitSize; sizeNotice: string | null } {
+  const half = { size: { ...DEFAULT_DOCUMENT_SPLIT_SIZE }, sizeNotice: null };
+  const single = (notice: string | null, sized: { size: DocumentSplitSize; sizeNotice: string | null } = half) =>
+    ({ orientation: 'single' as const, docId: null, notice, ...sized });
   if (raw === undefined) return single(null);
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return single(UNREADABLE_DOCUMENT_SPLIT_NOTICE);
   const v = raw as Record<string, unknown>;
   if (!isOrientation(v.orientation)) return single(UNREADABLE_DOCUMENT_SPLIT_NOTICE);
   if (v.docId !== null && typeof v.docId !== 'string') return single(UNREADABLE_DOCUMENT_SPLIT_NOTICE);
   const orientation = v.orientation;
-  if (!v.docId) return { orientation, docId: orientation === 'single' ? null : '', notice: null };
+  const sized = parseDocumentSplitSize(v);
+  if (!v.docId) return { orientation, docId: orientation === 'single' ? null : '', notice: null, ...sized };
   const docId = v.docId;
   if (!available.some((d) => d.id === docId)) {
     const name = typeof v.docName === 'string' && v.docName.trim() ? v.docName : docId;
-    return single(missingSplitDocumentNotice(name));
+    return single(missingSplitDocumentNotice(name), sized);
   }
-  return { orientation, docId, notice: null };
+  return { orientation, docId, notice: null, ...sized };
 }

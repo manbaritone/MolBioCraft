@@ -7,10 +7,13 @@
  * any document — sequences in the linear view, trees in the Tree Explorer, alignments as rows, text
  * and result documents, or the document's Info. The App unmounts the pane in Single Pane, so its
  * selection starts empty each time it opens; the document it shows is the App's and is kept.
+ *
+ * `DocumentSplitDivider` (US-01M7DVB1) is the separator the App places between the main view and the
+ * pane, with the button a folded pane leaves; its arithmetic is src/core/documentSplit.ts's.
  */
 
-import React, { useMemo, useState } from 'react';
-import { ArrowLeftRight, X } from 'lucide-react';
+import React, { useMemo, useRef, useState } from 'react';
+import { ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, X } from 'lucide-react';
 import { EMPTY_RESTRICTION_SCAN, scanRestrictionSites, type RestrictionSiteScan } from '../core/bioEngine';
 import { LinearSequenceView } from './LinearSequenceView';
 import { ImportedTreeViewer } from './ImportedTreeViewer';
@@ -20,6 +23,17 @@ import { ResultWarnings } from './ResultWarnings';
 import { chosenRestrictionScope, restrictionScanEnzymes, restrictionScannedBp, subsetNote, type ChosenScanCollection, type RestrictionScanScope } from './CircularPlasmidMap';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
+import {
+  documentSplitExtent,
+  documentSplitKey,
+  documentSplitStyle,
+  documentSplitValueNow,
+  dragDocumentSplit,
+  renderedDocumentSplitRatio,
+  type DocumentSplitAxisOrientation,
+  type DocumentSplitSize,
+} from '../core/documentSplit';
+import { PANE_SPLIT_KEY_STEP_LARGE_PX, PANE_SPLIT_KEY_STEP_PX } from '../core/paneSplit';
 
 /** A selected range of bases, 1-based and inclusive, as the linear view holds it. */
 export type SplitRange = { start: number; end: number; label?: string };
@@ -165,3 +179,131 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choic
     </section>
   );
 };
+
+export interface DocumentSplitDividerProps {
+  orientation: DocumentSplitAxisOrientation;
+  /** The divider as the user chose it: the ratio a restore returns to, and the folded pane. */
+  size: DocumentSplitSize;
+  /** The ratio drawn for `size.ratio` at the host's measured size (renderedDocumentSplitRatio). */
+  drawnRatio: number;
+  onChange: (next: DocumentSplitSize) => void;
+}
+
+/**
+ * The divider between the main view and the split pane (US-01M7DVB1), a child of the split host, and
+ * the restore button a folded pane leaves. A drag writes the host's custom properties as the pointer
+ * moves and hands the state over on release (a cancel puts the old one back). It stays while a pane
+ * is folded, so focus stays on it and Enter restores.
+ */
+export function DocumentSplitDivider({ orientation, size, drawnRatio, onChange }: DocumentSplitDividerProps) {
+  const dragRef = useRef<{
+    pointerId: number;
+    box: { left: number; top: number; width: number; height: number };
+    start: DocumentSplitSize;
+    pending: DocumentSplitSize;
+    handle: HTMLElement;
+    host: HTMLElement;
+  } | null>(null);
+  const side = orientation === 'side-by-side';
+  const showOnHost = (host: HTMLElement, ratio: number) => {
+    for (const [k, v] of Object.entries(documentSplitStyle(ratio))) host.style.setProperty(k, v);
+  };
+  const finish = (commit: boolean) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    const next = commit ? drag.pending : drag.start;
+    try {
+      if (drag.handle.hasPointerCapture(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
+    } catch {
+      // The pointer has already gone.
+    }
+    // The host shows what the App will draw, which a drag that folded a pane leaves unchanged.
+    showOnHost(drag.host, renderedDocumentSplitRatio(next.ratio, documentSplitExtent(orientation, drag.box), orientation));
+    if (next.ratio !== size.ratio || next.collapsed !== size.collapsed) onChange(next);
+  };
+  const now = documentSplitValueNow({ ratio: drawnRatio, collapsed: size.collapsed });
+  const keys = side ? 'Left/Right Arrow' : 'Up/Down Arrow';
+  const restoreLabel = size.collapsed === 'main' ? 'Restore the main view' : 'Restore the split pane';
+  const RestoreIcon = side
+    ? size.collapsed === 'main' ? ChevronRight : ChevronLeft
+    : size.collapsed === 'main' ? ChevronDown : ChevronUp;
+  return (
+    <>
+      <div
+        className="mbc-split-divider"
+        role="separator"
+        tabIndex={0}
+        aria-orientation={side ? 'vertical' : 'horizontal'}
+        aria-label="Resize the main view and the split pane"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={now}
+        aria-valuetext={
+          size.collapsed === 'main'
+            ? 'Main view collapsed'
+            : size.collapsed === 'second'
+              ? 'Split pane collapsed'
+              : `Main view ${now}%, split pane ${100 - now}%`
+        }
+        title={`Drag, or press ${keys} (${PANE_SPLIT_KEY_STEP_PX}px; Shift ${PANE_SPLIT_KEY_STEP_LARGE_PX}px), to resize the main view and the split pane • Home or End collapses one, Enter restores`}
+        onKeyDown={(e) => {
+          const host = e.currentTarget.parentElement;
+          const extent = host ? documentSplitExtent(orientation, host.getBoundingClientRect()) : 0;
+          const next = documentSplitKey(size, e.key, e.shiftKey, extent, orientation);
+          if (!next) return;
+          e.preventDefault();
+          if (next.ratio !== size.ratio || next.collapsed !== size.collapsed) onChange(next);
+        }}
+        onPointerDown={(e) => {
+          if (e.button !== 0 || dragRef.current) return;
+          const handle = e.currentTarget;
+          const host = handle.parentElement;
+          if (!host) return;
+          // No text selection starts, and the captured pointer never reaches either view.
+          e.preventDefault();
+          const r = host.getBoundingClientRect();
+          try {
+            handle.setPointerCapture(e.pointerId);
+          } catch {
+            // The pointer has already gone.
+          }
+          dragRef.current = {
+            pointerId: e.pointerId,
+            box: { left: r.left, top: r.top, width: r.width, height: r.height },
+            start: size,
+            pending: size,
+            handle,
+            host,
+          };
+        }}
+        onPointerMove={(e) => {
+          const drag = dragRef.current;
+          if (!drag || e.pointerId !== drag.pointerId) return;
+          drag.pending = dragDocumentSplit(drag.start, { x: e.clientX, y: e.clientY }, drag.box, orientation);
+          showOnHost(drag.host, renderedDocumentSplitRatio(drag.pending.ratio, documentSplitExtent(orientation, drag.box), orientation));
+        }}
+        onPointerUp={(e) => {
+          if (dragRef.current?.pointerId === e.pointerId) finish(true);
+        }}
+        onPointerCancel={(e) => {
+          if (dragRef.current?.pointerId === e.pointerId) finish(false);
+        }}
+        onLostPointerCapture={(e) => {
+          if (dragRef.current?.pointerId === e.pointerId) finish(true);
+        }}
+      />
+      {size.collapsed && (
+        <button
+          type="button"
+          className={`mbc-split-restore restore-${size.collapsed}`}
+          aria-label={restoreLabel}
+          title={`${restoreLabel} at the size it had`}
+          onClick={() => onChange({ ratio: size.ratio, collapsed: null })}
+        >
+          <RestoreIcon size={14} aria-hidden="true" />
+        </button>
+      )}
+    </>
+  );
+}
