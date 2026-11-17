@@ -133,26 +133,28 @@ export async function executeBioPipelineAsync(
   } = {}
 ): Promise<BioPipelineExecutionReport> {
   const hostOs = options.hostOs ?? detectHostOS();
-  const cleanSeq = cleanSequence(doc.sequence);
-
-  if (!cleanSeq || cleanSeq.length < 12) {
-    throw new MolBioCraftError(
-      'ERR_EMPTY_SEQUENCE',
-      `Document "${doc.name}" must contain at least 12 valid nucleotide/residue characters to execute pipeline "${pipelineId}".`,
-      hostOs,
-      { documentId: doc.id, length: cleanSeq.length }
-    );
-  }
 
   // Every catalogued pipeline (primer QC, CRISPR KO/HDR, CDS codon adaptation,
   // viral/Twist onboarding) works on nucleotide sequence; protein input used
-  // to be processed as if it were DNA and produced nonsense oligos.
+  // to be processed as if it were DNA and produced nonsense oligos. The type is checked before the
+  // length, so a short protein is told it is a protein rather than that it needs 12 characters.
   if (doc.moleculeType === 'Protein') {
     throw new MolBioCraftError(
       'ERR_UNSUPPORTED_INPUT',
       `Pipeline "${pipelineId}" needs a DNA or RNA document; "${doc.name}" is a protein.`,
       hostOs,
       { documentId: doc.id }
+    );
+  }
+
+  // The 12-base floor counts the cleaned bases, not the raw characters (spaces, digits).
+  const cleanSeq = cleanSequence(doc.sequence);
+  if (!cleanSeq || cleanSeq.length < 12) {
+    throw new MolBioCraftError(
+      'ERR_EMPTY_SEQUENCE',
+      `Document "${doc.name}" must contain at least 12 valid nucleotide/residue characters to execute pipeline "${pipelineId}".`,
+      hostOs,
+      { documentId: doc.id, length: cleanSeq.length }
     );
   }
   const def = BIO_PIPELINE_CATALOG.find((p) => p.id === pipelineId);
