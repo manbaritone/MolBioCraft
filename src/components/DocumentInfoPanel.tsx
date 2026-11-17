@@ -128,8 +128,10 @@ export function DocumentInfoPanel({ doc, onUpdateDocument, searchMatch = null }:
   // A record imported from a reference database carries the dates the database holds for it;
   // `createdAt`/`updatedAt` are only this workspace's own bookkeeping. Prefer the record's own
   // dates so the panel cannot show two different answers to the same question, and render the
-  // bookkeeping fallback as a readable date rather than a raw ISO timestamp.
+  // bookkeeping fallback as a readable date rather than a raw ISO timestamp. A blank one (empty or
+  // whitespace-only) is a date never recorded, which a restore keeps blank (BG-01M7N2HE), and says so.
   const readableDate = (value: string) => {
+    if (value.trim() === '') return 'No recorded date';
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleString(undefined, {

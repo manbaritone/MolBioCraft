@@ -519,11 +519,13 @@ pub fn parse_mbc_workbench_rust(
         if doc.accession.trim().is_empty() {
             doc.accession = format!("MBC_{}", idx + 1);
         }
+        // A blank date (missing, empty or whitespace-only) stays blank (BG-01M7N2HE): the file
+        // records no date, so the restore time is not one.
         if doc.created_at.trim().is_empty() {
-            doc.created_at = now.to_string();
+            doc.created_at = String::new();
         }
         if doc.updated_at.trim().is_empty() {
-            doc.updated_at = now.to_string();
+            doc.updated_at = String::new();
         }
         if doc.folder.trim().is_empty() {
             doc.folder = "Plasmids & Vectors".to_string();
@@ -1623,5 +1625,102 @@ mod tests {
         // Without a serialize step: a hand-written object is kept whole, whatever its values.
         old["workspace"]["documentSplit"] = json!({"orientation": "diagonal", "docId": 7});
         assert_eq!(reparsed(&old).envelope.workspace.document_split, Some(json!({"orientation": "diagonal", "docId": 7})));
+    }
+
+    /// BG-01M7N2HE: a document's missing createdAt or updatedAt stays missing on restore. Each date
+    /// is read on its own: a missing key, "" or a whitespace-only value comes back as "", never the
+    /// restore time (now_iso) or the 2026-10-31 placeholder, and a set date round-trips unchanged.
+    /// The checksums do not read the dates, so a blank-dated session still verifies without a
+    /// warning; a date that is not a string (null) still refuses the file.
+    #[test]
+    fn blank_dates_stay_blank() {
+        use serde_json::json;
+        let now = "2030-01-01T00:00:00.000Z";
+        let placeholder = "2026-10-31T00:00:00.000Z";
+        let set = "2025-01-02T03:04:05.000Z";
+        let base = build_ncbi_reference_preset_document("spike", set);
+        let dated = |id: &str, created: &str, updated: &str| {
+            let mut d = base.clone();
+            d.id = id.to_string();
+            d.created_at = created.to_string();
+            d.updated_at = updated.to_string();
+            d
+        };
+        let documents = vec![
+            dated("created-blank", "", set),
+            dated("updated-blank", set, ""),
+            dated("both-spaces", "   ", "   "),
+            dated("both-absent", set, set),
+            dated("both-set", set, set),
+        ];
+        let snap = MbcWorkbenchSnapshotInput {
+            session_name: "Dates.mbc".to_string(),
+            documents: documents.clone(),
+            workspace: MbcWorkspaceUiStateRust {
+                project_explorer: None,
+                active_doc_id: "both-set".to_string(),
+                selected_folder: "Sample Documents".to_string(),
+                nav_history: vec!["both-set".to_string()],
+                nav_index: 0,
+                viewer_tab: "sequence-view".to_string(),
+                map_layout_mode: "split".to_string(),
+                zoom_level: 100.0,
+                text_format: "genbank".to_string(),
+                color_scheme: "standard".to_string(),
+                dark_mode: false,
+                sidebar_open: true,
+                doc_table_collapsed: false,
+                selected_range: None,
+                display_settings: MbcDisplaySettingsRust::default(),
+                pane_split: None,
+                site_visibility: None,
+                map_rotation: None,
+                document_split: None,
+            },
+        };
+        let text = serialize_mbc_workbench_rust(&snap, "1.0.0", now);
+        let mut raw: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // Serialize writes the dates verbatim.
+        assert_eq!(raw["documents"][2]["createdAt"], json!("   "));
+        let absent = raw["documents"][3].as_object_mut().unwrap();
+        absent.remove("createdAt");
+        absent.remove("updatedAt");
+        assert!(!raw["documents"][3].as_object().unwrap().contains_key("createdAt"));
+        assert!(!raw["documents"][3].as_object().unwrap().contains_key("updatedAt"));
+
+        let parsed = parse_mbc_workbench_rust(&raw.to_string(), "Fallback", now).unwrap();
+        assert!(parsed.checksum_verified, "the checksums do not read the dates");
+        assert!(parsed.warnings.is_empty(), "a blank-dated session must not warn: {:?}", parsed.warnings);
+        let dates: Vec<(&str, &str, &str)> = parsed
+            .envelope
+            .documents
+            .iter()
+            .map(|d| (d.id.as_str(), d.created_at.as_str(), d.updated_at.as_str()))
+            .collect();
+        assert_eq!(
+            dates,
+            vec![
+                ("created-blank", "", set),
+                ("updated-blank", set, ""),
+                ("both-spaces", "", ""),
+                ("both-absent", "", ""),
+                ("both-set", set, set),
+            ]
+        );
+        for d in &parsed.envelope.documents {
+            for date in [&d.created_at, &d.updated_at] {
+                assert_ne!(date, now, "{} was stamped with the restore time", d.id);
+                assert_ne!(date, placeholder, "{} was stamped with the placeholder", d.id);
+            }
+        }
+        // now_iso still fills only the envelope's savedAt, when the file has none.
+        raw.as_object_mut().unwrap().remove("savedAt");
+        assert_eq!(parse_mbc_workbench_rust(&raw.to_string(), "Fallback", now).unwrap().envelope.saved_at, now);
+
+        // A date that is not a string still refuses the file.
+        let mut null_created: serde_json::Value = serde_json::from_str(&text).unwrap();
+        null_created["documents"][0]["createdAt"] = serde_json::Value::Null;
+        let err = parse_mbc_workbench_rust(&null_created.to_string(), "Fallback", now).unwrap_err();
+        assert!(err.starts_with("Invalid .mbc file: document at index 0 is malformed"), "{err}");
     }
 }
