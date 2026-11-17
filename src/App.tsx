@@ -16162,13 +16162,17 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
               {splitDocId !== null && (
                 <SplitDocumentPane
                   doc={catalogNonDeletedDocs.find((d) => d.id === splitDocId) ?? null}
-                  choices={[...openDocs.filter((d) => d.id !== activeDoc.id), ...catalogNonDeletedDocs.filter((d) => d.id !== activeDoc.id && !openDocs.some((o) => o.id === d.id))].slice(0, 400)}
+                  choices={[...openDocs.filter((d) => d.id !== activeDoc.id), ...catalogNonDeletedDocs.filter((d) => d.id !== activeDoc.id && !openDocs.some((o) => o.id === d.id))]}
                   onChooseDoc={(id) => setSplitDocId(id)}
-                  onSwap={() => {
+                  mainDocId={activeDoc.id}
+                  mainRange={selectedRange}
+                  onSwap={(paneRange) => {
                     const other = splitDocId;
                     if (!other) return;
                     setSplitDocId(activeDoc.id);
                     selectDocumentWithHistory(other);
+                    // The pane's selection comes with its document (US-01M7DV3V); none stays none.
+                    setSelectedRange(paneRange);
                   }}
                   onClose={() => setSplitDocId(null)}
                   onUpdateDocument={(d) => handleUpdateDocument(d)}

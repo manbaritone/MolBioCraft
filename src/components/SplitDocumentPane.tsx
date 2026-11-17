@@ -19,13 +19,25 @@ import { chosenRestrictionScope, restrictionScanEnzymes, restrictionScannedBp, s
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
 
+/** A selected range of bases, 1-based and inclusive, as the linear view holds it. */
+export type SplitRange = { start: number; end: number; label?: string };
+
 export interface SplitDocumentPaneProps {
   doc: SequenceDocument | null;
-  /** Documents offered in the picker (open tabs first). */
+  /**
+   * Every document the picker can offer (open tabs first), uncapped: the pane filters them and lists
+   * the first SPLIT_PICKER_CAP, saying how many it leaves out (US-01M7DV3V).
+   */
   choices: SequenceDocument[];
   onChooseDoc: (id: string) => void;
-  /** Makes the split document the main one (and the main one the split). */
-  onSwap: () => void;
+  /** The document in the main view and its selection, which a swap brings into the pane (US-01M7DV3V). */
+  mainDocId?: string | null;
+  mainRange?: SplitRange | null;
+  /**
+   * Makes the split document the main one (and the main one the split), handed the pane's selection
+   * (null for none) for the main view to take; the pane takes `mainRange`, or none when it is null.
+   */
+  onSwap: (paneRange: SplitRange | null) => void;
   onClose: () => void;
   onUpdateDocument: (doc: SequenceDocument) => void;
   onDownload?: (content: string, name: string, mime: string) => void;
@@ -38,6 +50,12 @@ export interface SplitDocumentPaneProps {
    */
   scanCollection?: ChosenScanCollection | null;
 }
+
+/**
+ * The most candidates the picker lists, the first in `choices` order that pass the filter; the shown
+ * document is kept as an option besides when the filter leaves it out.
+ */
+const SPLIT_PICKER_CAP = 400;
 
 /** The most alignment rows the split pane draws, the first in the alignment's order. */
 const SPLIT_ALIGNMENT_ROWS = 200;
@@ -65,8 +83,21 @@ const AlignmentRows: React.FC<{ doc: SequenceDocument }> = ({ doc }) => {
   );
 };
 
-export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choices, onChooseDoc, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary, enzymes = REBASE_ENZYMES, scanCollection = null }) => {
-  const [range, setRange] = useState<{ start: number; end: number; label?: string } | null>(null);
+export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choices, onChooseDoc, mainDocId = null, mainRange = null, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary, enzymes = REBASE_ENZYMES, scanCollection = null }) => {
+  // The pane's selection belongs to the document it was made on (US-01M7DV3V): it is held with that
+  // document's id and read only while that document is shown, so its coordinates are never drawn
+  // on another document. Choosing a document clears it; a swap exchanges it with the main view's.
+  const [held, setHeld] = useState<{ docId: string; range: SplitRange } | null>(null);
+  const range = doc && held?.docId === doc.id ? held.range : null;
+  const setRange = (r: SplitRange | null) => setHeld(r && doc ? { docId: doc.id, range: r } : null);
+  const [filter, setFilter] = useState('');
+  // The filter narrows every candidate, ignoring case, before the cap, so a document past the 400th
+  // can be reached by its name; the note counts the candidates the filter passed (subsetNote).
+  const { listed, matched } = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    const passing = needle ? choices.filter((d) => d.name.toLowerCase().includes(needle)) : choices;
+    return { listed: passing.slice(0, SPLIT_PICKER_CAP), matched: passing.length };
+  }, [choices, filter]);
   // The pane scans as the main view does (App.tsx `restrictionScope`), by the one shared rule:
   // `restrictionScannedBp` (over 150,000 bp only the first 60,000 bp, as a linear sequence) and
   // `restrictionScanScope` (more than 100,000 bp scanned with the engine's first CORE_CATALOG_LEN
@@ -113,13 +144,21 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choic
   return (
     <section className="mbc-split-pane" aria-label="Split view">
       <div className="mbc-split-pane-head">
-        <select aria-label="Document in split view" value={doc?.id ?? ''} onChange={(e) => onChooseDoc(e.target.value)}>
+        <input type="search" aria-label="Filter documents in split view" placeholder="Filter documents…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <select aria-label="Document in split view" value={doc?.id ?? ''} onChange={(e) => { setHeld(null); onChooseDoc(e.target.value); }}>
           <option value="">Choose a document…</option>
-          {choices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {/* the shown document stays its own option when the filter leaves it out, so the picker never names another */}
+          {doc && !listed.some((d) => d.id === doc.id) && <option value={doc.id}>{doc.name}</option>}
+          {listed.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
-        <button type="button" className="mbc-zoom-btn" title="Swap with the main view" aria-label="Swap with the main view" disabled={!doc} onClick={onSwap}><ArrowLeftRight size={13} /></button>
+        <button type="button" className="mbc-zoom-btn" title="Swap with the main view" aria-label="Swap with the main view" disabled={!doc} onClick={() => {
+          onSwap(range);
+          setHeld(mainRange && mainDocId ? { docId: mainDocId, range: mainRange } : null);
+        }}><ArrowLeftRight size={13} /></button>
         <button type="button" className="mbc-zoom-btn" title="Close split view" aria-label="Close split view" onClick={onClose}><X size={13} /></button>
       </div>
+      {filter.trim() && matched === 0 && <p className="mbc-help-where" role="status">No document matches "{filter.trim()}".</p>}
+      <ResultWarnings warnings={subsetNote('The picker lists', listed.length, matched, 'documents', 'first')} label="Split view picker" />
       <div className="mbc-split-pane-body">{body}</div>
     </section>
   );
