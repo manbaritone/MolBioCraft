@@ -143,22 +143,71 @@ pub fn resolve_platform_app_support_dir() -> Result<PathBuf, BioEngineError> {
     Ok(PathBuf::from(appdata).join("MolBioCraft"))
 }
 
-#[cfg(target_os = "linux")]
+/// Linux and every other non-macOS, non-Windows target read XDG_CONFIG_HOME,
+/// then HOME, and fail when neither is set.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn resolve_platform_app_support_dir() -> Result<PathBuf, BioEngineError> {
     if let Ok(xdg_cfg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg_cfg.trim().is_empty() {
             return Ok(PathBuf::from(xdg_cfg).join("molbiocraft"));
         }
     }
-    let home = std::env::var("HOME").map_err(|_| {
-        BioEngineError::IoFailure("Unable to read HOME or XDG_CONFIG_HOME on Linux".into())
-    })?;
+    let home = std::env::var("HOME")
+        .map_err(|_| BioEngineError::IoFailure("Unable to read HOME or XDG_CONFIG_HOME".into()))?;
     Ok(PathBuf::from(home).join(".config").join("molbiocraft"))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-pub fn resolve_platform_app_support_dir() -> Result<PathBuf, BioEngineError> {
-    Ok(PathBuf::from("/workspace/.config/molbiocraft"))
+/// Trims surrounding whitespace and trailing slashes from an environment value,
+/// reading an unset, empty or whitespace-only value as absent.
+fn xdg_base(value: Option<&str>) -> Option<&str> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.trim_end_matches('/'))
+    }
+}
+
+/// The logs and cache directories for Linux and every other non-macOS,
+/// non-Windows target, from the values of XDG_STATE_HOME, XDG_CACHE_HOME and
+/// HOME: `$XDG_STATE_HOME/molbiocraft/logs` and `$XDG_CACHE_HOME/molbiocraft`,
+/// falling back to `$HOME/.local/state/molbiocraft/logs` and
+/// `$HOME/.cache/molbiocraft`, the paths `resolveAppDirectories('linux')` gives
+/// for set, unset and empty values. Unlike it, a whitespace-only value falls
+/// back too, and when a fallback is needed and HOME is missing, the error names
+/// HOME and the XDG variable instead of guessing a home. Compiled on every
+/// target so its test runs everywhere.
+pub fn resolve_xdg_logs_and_cache_dirs(
+    xdg_state_home: Option<&str>,
+    xdg_cache_home: Option<&str>,
+    home: Option<&str>,
+) -> Result<(String, String), BioEngineError> {
+    let home = xdg_base(home);
+    let base = |value: Option<&str>, var: &str, what: &str, fallback: &str| match xdg_base(value) {
+        Some(dir) => Ok(dir.to_string()),
+        None => home.map(|h| format!("{h}/{fallback}")).ok_or_else(|| {
+            BioEngineError::IoFailure(format!(
+                "Unable to resolve the {what} directory: {var} and HOME are both unset or empty"
+            ))
+        }),
+    };
+    let state = base(xdg_state_home, "XDG_STATE_HOME", "logs", ".local/state")?;
+    let cache = base(xdg_cache_home, "XDG_CACHE_HOME", "cache", ".cache")?;
+    Ok((
+        format!("{state}/molbiocraft/logs"),
+        format!("{cache}/molbiocraft"),
+    ))
+}
+
+/// Reads XDG_STATE_HOME, XDG_CACHE_HOME and HOME through `lookup` and resolves
+/// the logs and cache directories from them.
+pub fn xdg_logs_and_cache_dirs_from(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<(String, String), BioEngineError> {
+    let state = lookup("XDG_STATE_HOME");
+    let cache = lookup("XDG_CACHE_HOME");
+    let home = lookup("HOME");
+    resolve_xdg_logs_and_cache_dirs(state.as_deref(), cache.as_deref(), home.as_deref())
 }
 
 pub fn query_platform_diagnostics() -> Result<PlatformDiagnostics, BioEngineError> {
@@ -207,13 +256,14 @@ pub fn query_platform_diagnostics() -> Result<PlatformDiagnostics, BioEngineErro
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
+        let (logs_dir, cache_dir) = xdg_logs_and_cache_dirs_from(|name| std::env::var(name).ok())?;
         return Ok(PlatformDiagnostics {
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
             case_sensitive_fs: true,
             app_support_dir: support.display().to_string(),
-            logs_dir: "/workspace/.local/state/molbiocraft/logs".into(),
-            cache_dir: "/workspace/.cache/molbiocraft".into(),
+            logs_dir,
+            cache_dir,
         });
     }
 }
@@ -438,6 +488,124 @@ pub fn compute_batch_sequence_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins that the diagnostics call reads the XDG rule where it is compiled in;
+    /// it only reads the environment, never sets it.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[test]
+    fn diagnostics_report_the_xdg_rule_paths() {
+        if resolve_platform_app_support_dir().is_err() {
+            return;
+        }
+        let diag = query_platform_diagnostics();
+        match xdg_logs_and_cache_dirs_from(|name| std::env::var(name).ok()) {
+            Ok((logs, cache)) => {
+                let diag = diag.unwrap();
+                assert_eq!((diag.logs_dir, diag.cache_dir), (logs, cache));
+            }
+            Err(_) => assert!(diag.is_err()),
+        }
+    }
+
+    #[test]
+    fn linux_diagnostics_use_xdg_state_and_cache_dirs() {
+        let home = Some("/home/ada");
+        // Set XDG variables are used, with trailing slashes and surrounding
+        // whitespace dropped (resolveAppDirectories('linux') strips the slashes too).
+        for (state, cache) in [
+            ("/x/state", "/x/cache"),
+            ("/x/state/", "/x/cache//"),
+            ("/x/state  ", "\t/x/cache\n"),
+        ] {
+            assert_eq!(
+                resolve_xdg_logs_and_cache_dirs(Some(state), Some(cache), home).unwrap(),
+                (
+                    "/x/state/molbiocraft/logs".to_string(),
+                    "/x/cache/molbiocraft".to_string()
+                ),
+                "XDG_STATE_HOME={state:?} XDG_CACHE_HOME={cache:?}"
+            );
+        }
+        // Unset, empty and whitespace-only all fall back to HOME.
+        let fallback = (
+            "/home/ada/.local/state/molbiocraft/logs".to_string(),
+            "/home/ada/.cache/molbiocraft".to_string(),
+        );
+        for unset in [None, Some(""), Some("   "), Some(" \t\n")] {
+            assert_eq!(
+                resolve_xdg_logs_and_cache_dirs(unset, unset, home).unwrap(),
+                fallback,
+                "XDG value {unset:?}"
+            );
+            assert_eq!(
+                resolve_xdg_logs_and_cache_dirs(unset, unset, Some(" /home/ada/ ")).unwrap(),
+                fallback,
+                "HOME with slash and whitespace, XDG value {unset:?}"
+            );
+        }
+        // Each variable falls back on its own.
+        assert_eq!(
+            resolve_xdg_logs_and_cache_dirs(Some("/x/state"), None, home).unwrap(),
+            (
+                "/x/state/molbiocraft/logs".to_string(),
+                "/home/ada/.cache/molbiocraft".to_string()
+            )
+        );
+        assert_eq!(
+            resolve_xdg_logs_and_cache_dirs(None, Some("/x/cache"), home).unwrap(),
+            (
+                "/home/ada/.local/state/molbiocraft/logs".to_string(),
+                "/x/cache/molbiocraft".to_string()
+            )
+        );
+        // HOME is not needed when both XDG variables are set.
+        assert_eq!(
+            resolve_xdg_logs_and_cache_dirs(Some("/x/state"), Some("/x/cache"), None).unwrap(),
+            (
+                "/x/state/molbiocraft/logs".to_string(),
+                "/x/cache/molbiocraft".to_string()
+            )
+        );
+        // With HOME missing too, an error naming HOME and the XDG variable, never a path.
+        for missing_home in [None, Some(""), Some("  ")] {
+            for (state, cache, var) in [
+                (None, Some("/x/cache"), "XDG_STATE_HOME"),
+                (Some("/x/state"), Some(" "), "XDG_CACHE_HOME"),
+            ] {
+                let err = resolve_xdg_logs_and_cache_dirs(state, cache, missing_home)
+                    .expect_err("HOME and the XDG variable are both missing")
+                    .to_string();
+                assert!(err.contains("HOME"), "{err}");
+                assert!(err.contains(var), "{var} not named in {err}");
+                assert!(
+                    !err.contains("/.cache") && !err.contains("/.local"),
+                    "{err}"
+                );
+            }
+        }
+        // The environment reader maps each path to its own variable.
+        let env = |name: &str| match name {
+            "XDG_STATE_HOME" => Some("/s".to_string()),
+            "XDG_CACHE_HOME" => Some("/c".to_string()),
+            "HOME" => Some("/h".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            xdg_logs_and_cache_dirs_from(env).unwrap(),
+            (
+                "/s/molbiocraft/logs".to_string(),
+                "/c/molbiocraft".to_string()
+            )
+        );
+        let home_only = |name: &str| (name == "HOME").then(|| "/h".to_string());
+        assert_eq!(
+            xdg_logs_and_cache_dirs_from(home_only).unwrap(),
+            (
+                "/h/.local/state/molbiocraft/logs".to_string(),
+                "/h/.cache/molbiocraft".to_string()
+            )
+        );
+    }
 
     #[test]
     fn computes_sequence_stats_and_iupac_reverse_complement() {
