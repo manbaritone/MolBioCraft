@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 import React, { useEffect, useState } from 'react';
 import type { SequenceDocument } from '../types/bio';
+import { snippetOf, type TextHit } from '../core/projectSearch';
 import { hasBiologicalSequence, isTreeDocument } from '../core/documentViews';
 import {
   CUSTOM_FIELD_KINDS, CUSTOM_FIELDS_EVENT, fieldDefinitionError, loadCustomFields, parseFieldValue, storeCustomFields,
@@ -108,8 +109,19 @@ export function DocumentNotesEditor({ doc, onUpdateDocument }: {
   </form>;
 }
 
-export function DocumentInfoPanel({ doc, onUpdateDocument }: {
+/** The line a Search Project hit opens Document info on (US-01M7DV78): the field it is in and its snippet, the match marked. */
+function SearchMatchLine({ hit }: { hit: TextHit }) {
+  const { clippedStart, before, match, after, clippedEnd } = snippetOf(hit);
+  return <p className="mbc-document-info-search-match" data-search-match>
+    Search match in {hit.field}:{' '}
+    <span>{clippedStart ? '…' : ''}{before}<mark>{match}</mark>{after}{clippedEnd ? '…' : ''}</span>
+  </p>;
+}
+
+export function DocumentInfoPanel({ doc, onUpdateDocument, searchMatch = null }: {
   doc: SequenceDocument; onUpdateDocument: (doc: SequenceDocument) => void;
+  /** A Search Project hit in one of this document's fields, named above the fields. */
+  searchMatch?: TextHit | null;
 }) {
   const hasSequence = hasBiologicalSequence(doc);
   const unit = doc.moleculeType === 'Protein' ? 'aa' : doc.moleculeType === 'RNA' ? 'nt' : 'bp';
@@ -145,6 +157,7 @@ export function DocumentInfoPanel({ doc, onUpdateDocument }: {
   ];
   return <section className="mbc-document-info" aria-label="Document information">
     <h3>Document information</h3>
+    {searchMatch && <SearchMatchLine hit={searchMatch} />}
     <dl>{fields.map(([name, value]) => <div key={name}>
       <dt>{name}</dt><dd>{value === '' ? 'Not recorded' : String(value)}</dd>
     </div>)}</dl>

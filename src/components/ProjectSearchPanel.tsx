@@ -22,6 +22,10 @@
  * listed only for the query, scope, mode and strands now chosen, so an older query's groups are
  * never shown; a change of the documents keeps the old groups under an out-of-date sentence until
  * the rerun completes, and Cancel search ends a run with no results shown.
+ *
+ * Each hit is a button (US-01M7DV78): the core's openSearchHit reads it against the document as the
+ * catalog holds it now, and the App opens the opening it answers. A hit whose document was deleted
+ * or changed since the run read it opens nothing and is told in its own sentence.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -30,17 +34,21 @@ import {
   createSearchRunner,
   motifNotSearchedReason,
   NUCLEOTIDE_MOTIF_STATEMENT,
+  openSearchHit,
   PROTEIN_MOTIF_STATEMENT,
   resolveSearchScope,
   scopesOffered,
   SEARCH_MODES,
+  snippetOf,
   TEXT_SEARCH_STATEMENT,
   type DocumentMotifResult,
+  type HitOpening,
   type MotifHit,
   type SearchContext,
   type SearchMode,
   type SearchRequest,
   type SearchRunResult,
+  type SearchHitRef,
   type SearchScope,
   type TextHit,
 } from '../core/projectSearch';
@@ -51,8 +59,6 @@ import { searchIupacMotifRust } from '../lib/rustBioEngine';
 
 /** Groups shown on one page. */
 export const GROUPS_PER_PAGE = 50;
-/** Characters of the field's value shown on each side of a match. */
-const SNIPPET_CONTEXT = 40;
 /** The pause after the last keystroke, or after the documents change, before a search runs. */
 export const SEARCH_PAUSE_MS = 250;
 
@@ -69,7 +75,8 @@ const foldersKeyOf = (folders: ExplorerFolder[]) =>
 const sameInputs = (a: RunInputs, b: RunInputs) => a.foldersKey === b.foldersKey
   && a.documents.length === b.documents.length && a.documents.every((d, i) => d === b.documents[i]);
 
-interface Completed { key: RunKey; inputs: RunInputs; result: SearchRunResult }
+/** A completed run, and the documents in Deleted Items when it read them. */
+interface Completed { key: RunKey; inputs: RunInputs; deletedIds: ReadonlySet<string>; result: SearchRunResult }
 interface Cancelled { key: RunKey; reached: number; total: number }
 
 /** The scope a folder's Search Folder… opens on: its first offered wider scope, else the only one offered. */
@@ -91,16 +98,15 @@ const MODE_STATEMENT: Record<SearchMode, string> = {
 const strandText = (hit: MotifHit) => (hit.strand === 1 ? (hit.palindromic ? '+ palindrome' : '+') : '\u2212');
 
 /** The hit's value around its match, the match itself marked exactly as the value holds it. */
-function Snippet({ hit }: { hit: TextHit }) {
-  const from = Math.max(0, hit.start - SNIPPET_CONTEXT);
-  const to = Math.min(hit.value.length, hit.end + SNIPPET_CONTEXT);
+export function Snippet({ hit }: { hit: TextHit }) {
+  const { clippedStart, before, match, after, clippedEnd } = snippetOf(hit);
   return (
     <span className="mbc-project-search-snippet" data-part="snippet">
-      {from > 0 ? '…' : ''}
-      {hit.value.slice(from, hit.start)}
-      <mark>{hit.value.slice(hit.start, hit.end)}</mark>
-      {hit.value.slice(hit.end, to)}
-      {to < hit.value.length ? '…' : ''}
+      {clippedStart ? '…' : ''}
+      {before}
+      <mark>{match}</mark>
+      {after}
+      {clippedEnd ? '…' : ''}
     </span>
   );
 }
@@ -110,9 +116,11 @@ interface Props {
   initialScope: SearchScope;
   context: SearchContext;
   onClose: () => void;
+  /** Opens a hit the core found still current; never called for a deleted or changed document. */
+  onOpenHit?: (opening: HitOpening) => void;
 }
 
-export function ProjectSearchPanel({ folderId, initialScope, context, onClose }: Props) {
+export function ProjectSearchPanel({ folderId, initialScope, context, onClose, onOpenHit }: Props) {
   const [scope, setScope] = useState<SearchScope>(initialScope);
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(0);
@@ -135,6 +143,9 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
   const [completed, setCompleted] = useState<Completed | null>(null);
   const [progress, setProgress] = useState<{ reached: number; total: number } | null>(null);
   const [cancelled, setCancelled] = useState<Cancelled | null>(null);
+  /** Why the last hit clicked opened nothing; a run's new results drop it. */
+  const [hitNotice, setHitNotice] = useState<string | null>(null);
+  useEffect(() => { setHitNotice(null); }, [completed]);
 
   useEffect(() => {
     const prev = last.current;
@@ -157,6 +168,7 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
     stopRun();
     const runKey = key;
     const runInputs = inputs;
+    const runDeleted = new Set(context.deletedIds);
     const request: SearchRequest = mode === 'Text'
       ? { mode, query: trimmed, documents: searched, folders: context.folders }
       : { mode, query: trimmed, documents: searched, folders: context.folders, bothStrands, engine: searchIupacMotifRust };
@@ -167,7 +179,7 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
         if (event.kind === 'progress') setProgress({ reached: event.reached, total: event.total });
         else {
           setProgress(null);
-          setCompleted({ key: runKey, inputs: runInputs, result: event.result });
+          setCompleted({ key: runKey, inputs: runInputs, deletedIds: runDeleted, result: event.result });
         }
       });
     };
@@ -194,7 +206,24 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
   const outOfDate = current !== null && !sameInputs(current.inputs, inputs);
   const outcome = current && current.result.mode === 'Text' ? current.result.outcome : null;
   const motif = current && current.result.mode !== 'Text' ? current.result.outcome : null;
+  const motifMode = current && current.result.mode !== 'Text' ? current.result.mode : null;
   const byId = useMemo(() => new Map((searched ?? []).map((d) => [d.id, d])), [searched]);
+
+  /** Opens `ref` from the document as the catalog holds it now, or says why it opens nothing. */
+  const openHit = (documentId: string, ref: SearchHitRef) => {
+    if (!current) return;
+    const searchedDoc = current.inputs.documents.find((d) => d.id === documentId);
+    if (!searchedDoc) return;
+    const now = context.documents.find((d) => d.id === documentId);
+    const answer = openSearchHit(
+      ref,
+      { doc: searchedDoc, deleted: current.deletedIds.has(documentId) },
+      now ? { doc: now, deleted: context.deletedIds.includes(documentId) } : null,
+    );
+    if ('refused' in answer) { setHitNotice(answer.refused); return; }
+    setHitNotice(null);
+    onOpenHit?.(answer.opens);
+  };
 
   const results = outcome && !('refused' in outcome) ? outcome.results : [];
   const motifAnswer = motif && 'results' in motif ? motif : null;
@@ -317,6 +346,9 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
       {progress && (
         <button type="button" className="mbc-project-search-cancel" onClick={cancelRun}>Cancel search</button>
       )}
+      {hitNotice && (
+        <p className="mbc-project-search-hit-notice" role="alert" data-search-hit-notice>{hitNotice}</p>
+      )}
       {groupCount > GROUPS_PER_PAGE && (
         <div className="mbc-project-search-pager">
           <button type="button" disabled={shownPage === 0} onClick={() => setPage(shownPage - 1)}>Previous</button>
@@ -341,8 +373,10 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
                 <ul>
                   {group.hits.map((hit, i) => (
                     <li key={`${hit.field}-${hit.start}-${i}`} data-search-hit>
-                      <span className="mbc-project-search-field" data-part="field">{hit.field}</span>
-                      <Snippet hit={hit} />
+                      <button type="button" className="mbc-project-search-hit" onClick={() => openHit(group.documentId, { mode: 'Text', hit })}>
+                        <span className="mbc-project-search-field" data-part="field">{hit.field}</span>
+                        <Snippet hit={hit} />
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -370,10 +404,12 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose }:
                 <ul>
                   {hits.map((hit, i) => (
                     <li key={`${hit.start}-${hit.strand}-${i}`} data-search-hit>
-                      <span data-part="coords">{hit.start}-{hit.end}</span>{' '}
-                      <span data-part="strand">{strandText(hit)}</span>{' '}
-                      <code data-part="letters">{hit.letters}</code>{' '}
-                      <span data-part="certainty">{hit.certainty}</span>
+                      <button type="button" className="mbc-project-search-hit" onClick={() => openHit(group.documentId, { mode: motifMode!, hit })}>
+                        <span data-part="coords">{hit.start}-{hit.end}</span>{' '}
+                        <span data-part="strand">{strandText(hit)}</span>{' '}
+                        <code data-part="letters">{hit.letters}</code>{' '}
+                        <span data-part="certainty">{hit.certainty}</span>
+                      </button>
                     </li>
                   ))}
                 </ul>

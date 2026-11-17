@@ -346,7 +346,7 @@ import {
 } from './components/MenusPreferencesAndBlastModal';
 import { PrimerDatabaseWindow } from './components/PrimerDatabaseWindow';
 import { initialFolderScope, ProjectSearchPanel } from './components/ProjectSearchPanel';
-import type { SearchContext, SearchScope } from './core/projectSearch';
+import { hitFolderId, type HitOpening, type SearchContext, type SearchScope, type TextHit } from './core/projectSearch';
 import { EnzymeDatabaseWindow, collectionMemberLabel, type EnzymeWindowIntent } from './components/EnzymeDatabaseWindow';
 import {
   buildNcbiReferencePresetDocumentRust,
@@ -1185,6 +1185,8 @@ export const App: React.FC = () => {
   const [deletedDocIds, setDeletedDocIds] = useState<string[]>([]);
   /** The open Search Project panel (US-01M7DV88): its folder and the scope it opened on; `key` remounts it on each open. */
   const [projectSearch, setProjectSearch] = useState<{ folderId: string; scope: SearchScope; key: number } | null>(null);
+  /** The Search Project hit Document info names (US-01M7DV78), shown only while its document is active; selectDocumentWithHistory drops it. */
+  const [searchMatchShown, setSearchMatchShown] = useState<{ docId: string; hit: TextHit } | null>(null);
   const [checkedDocIds, setCheckedDocIds] = useState<string[]>([SAMPLE_LIBRARY[0].id]);
   const [visibleColumns, setVisibleColumns] = useState<string[]>(
     () => DOC_TABLE_COLUMN_PRESETS['standard-cloning'].columns
@@ -1967,6 +1969,7 @@ export const App: React.FC = () => {
     setActiveDocId(docId);
     setReadDocIds((prev) => prev.includes(docId) ? prev : [...prev, docId]);
     setSelectedRange(null);
+    setSearchMatchShown(null);
     const targetDoc = catalogAllDocs.find((d) => d.id === docId);
     if (targetDoc) {
       setHybridInitialSubTab(targetDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'enzymes-view' : 'lineage');
@@ -2100,14 +2103,16 @@ export const App: React.FC = () => {
     return orderedAllDocColumns.filter((c) => c.alwaysVisible || visSet.has(c.id));
   }, [orderedAllDocColumns, visibleColumns]);
 
-  const handleSelectProjectFolder = (nextFolder: string) => {
+  /** Selects `nextFolder`; `openDocId`, a document in it, is the one it opens (else the active one if in it, else its first). */
+  const handleSelectProjectFolder = (nextFolder: string, openDocId?: string) => {
     setSelectedFolder(nextFolder);
     const nextDocs = getDocsForFolderView(nextFolder);
     // Selection object cannot select across other folders:
     // Update activeDocId and checkedDocIds strictly scoped to the newly selected folder
     if (nextDocs.length > 0) {
-      const alreadyInFolder = nextDocs.some((d) => d.id === activeDocId);
-      const targetDocId = alreadyInFolder ? activeDocId : nextDocs[0].id;
+      const keep = openDocId ?? activeDocId;
+      const alreadyInFolder = nextDocs.some((d) => d.id === keep);
+      const targetDocId = alreadyInFolder ? keep : nextDocs[0].id;
       setActiveDocId(targetDocId);
       setCheckedDocIds([targetDocId]);
       selectDocumentWithHistory(targetDocId);
@@ -2131,6 +2136,25 @@ export const App: React.FC = () => {
       if (nextFolder === 'Alignments' || nextFolder === 'Contig Assembly') {
         setDocColumnOrder(nextDefaults);
       }
+    }
+  };
+
+  /**
+   * Opens a Search Project hit (US-01M7DV78): selects the folder the document opens in and the
+   * document in it as one navigation step, so one Back returns, then shows the hit's span in the
+   * Sequence view or its field in Document info. The panel answers a deleted or changed document
+   * itself and never calls this for one.
+   */
+  const handleOpenSearchHit = (opening: HitOpening) => {
+    const doc = catalogAllDocs.find((d) => d.id === opening.documentId);
+    if (!doc) return;
+    handleSelectProjectFolder(hitFolderId(doc, deletedIdsSet.has(doc.id), explorerFolders, hiddenFolders), doc.id);
+    if (opening.selection) {
+      setViewerTab('sequence-view');
+      setSelectedRange(opening.selection);
+    } else {
+      setViewerTab('document-info');
+      setSearchMatchShown(opening.field ? { docId: doc.id, hit: opening.field } : null);
     }
   };
 
@@ -15729,7 +15753,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   </div>
                 )}
 
-                {viewerTab === 'document-info' && <DocumentInfoPanel key={activeDoc.id} doc={activeDoc} onUpdateDocument={handleUpdateDocument} />}
+                {viewerTab === 'document-info' && <DocumentInfoPanel key={activeDoc.id} doc={activeDoc} onUpdateDocument={handleUpdateDocument}
+                  searchMatch={searchMatchShown?.docId === activeDoc.id ? searchMatchShown.hit : null} />}
 
                 {viewerTab === 'text-view' && (
                   <div className="mbc-text-view-pane">
@@ -17543,6 +17568,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           initialScope={projectSearch.scope}
           context={projectSearchContext}
           onClose={() => setProjectSearch(null)}
+          onOpenHit={handleOpenSearchHit}
         />
       )}
       {primerDbWindow && (

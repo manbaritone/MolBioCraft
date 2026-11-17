@@ -923,3 +923,255 @@ describe('US-01M7DVVS AC4: a change of the documents marks the results out of da
     });
   });
 });
+
+// ─── US-01M7DV78: a click on a hit opens its document where the match is ───
+//
+// Each fixture is built so a wrong opening gives another answer: the document shown before the
+// click is in another folder, and each hit's document is not the first of its own folder (a click
+// that selects the folder by its own rule opens the first document; one that opens the document
+// without a navigation step leaves one Back nowhere to return). A circular site and a circular
+// feature cross the origin (a selection of the site's complement reads 7..994), two features share
+// a name (a feature found by name selects the first), and a joined feature's first segment is
+// shorter than its span. Every document is dated apart from the fake clock, so an edit is seen.
+
+const DATED = '2026-01-01T00:00:00Z';
+const MOTIF = 'ACGTTGCAGTCCAG';
+const NAV_LAB = 'Nav Lab';
+const NAV_HIDDEN = 'Nav Hidden';
+const nav = (over: Partial<SequenceDocument> & { id: string; name: string }) => docOf({ folder: NAV_LAB, createdAt: DATED, updatedAt: DATED, ...over });
+const NAV_DOCS: SequenceDocument[] = [
+  nav({ id: 'nav-start', name: 'Start record', folder: 'Nav Start', sequence: 'C'.repeat(40) }),
+  nav({ id: 'nav-first', name: 'Lab first', sequence: 'C'.repeat(40) }),
+  nav({ id: 'nav-wrap', name: 'Wrapped site', topology: 'circular', sequence: `${MOTIF.slice(7)}${'T'.repeat(986)}${MOTIF.slice(0, 7)}` }),
+  nav({ id: 'nav-prot', name: 'Lab protein', moleculeType: 'Protein', sequence: 'MKWQHYDEFRLLAQ' }),
+  nav({ id: 'nav-hid', name: 'Hidden site', folder: NAV_HIDDEN, sequence: `GG${MOTIF}GG` }),
+  nav({ id: 'nav-del', name: 'Trashed site', sequence: `${'C'.repeat(10)}${MOTIF}` }),
+];
+const NAV_SPEC: SessionSpec = {
+  documents: NAV_DOCS, activeDocId: 'nav-start', viewerTab: 'sequence-view',
+  workspace: { projectExplorer: {
+    ...EXPLORER, customFolders: ['Nav Start', NAV_LAB, NAV_HIDDEN], folderParents: { [NAV_HIDDEN]: 'Plasmids & Vectors' },
+    hiddenFolders: [NAV_HIDDEN], favoriteDocIds: [], deletedDocIds: ['nav-del'],
+  } } as SessionSpec['workspace'],
+};
+
+const FT_LAB = 'Feature Lab';
+const segment = (index: number, start: number, end: number) => ({ index, name: `part ${index + 1}`, start, end, color: '#888' });
+const featureOf = (id: string, name: string, start: number, end: number, over: Partial<SequenceDocument['features'][number]> = {}) =>
+  ({ id, name, type: 'CDS', start, end, strand: 1, color: '#888', ...over }) as SequenceDocument['features'][number];
+const PRIMER = {
+  id: 'ft-p1', name: 'zqprimer', sequence: 'A'.repeat(21), annealSequence: 'A'.repeat(21), tail5Prime: '', bindStart: 700, bindEnd: 720,
+  strand: 1, length: 21, gcPercent: 0, tmAnnealC: 40, tmFullC: 40, deltaG37: -10, hairpinDeltaG: 0, selfDimerDeltaG: 0, gcClamp3Prime: false,
+} as SequenceDocument['primers'][number];
+const FT_DOCS: SequenceDocument[] = [
+  nav({ id: 'ft-start', name: 'Start record', folder: 'Nav Start', sequence: 'C'.repeat(40) }),
+  nav({ id: 'ft-first', name: 'Feature first', folder: FT_LAB, sequence: 'C'.repeat(40) }),
+  nav({
+    id: 'ft-doc', name: 'Feature zqdoc', folder: FT_LAB, topology: 'circular', sequence: 'A'.repeat(1000),
+    accession: 'ZQACC1', description: 'a zqdesc record', docMetadata: { Notes: 'lab zqnotes', Organism: 'zqorg' },
+    features: [
+      featureOf('ft-f1', 'zqgene', 100, 200),
+      featureOf('ft-f2', 'zqgene', 300, 400, { qualifiers: { note: 'zqqual' } }),
+      featureOf('ft-f3', 'zqwrap', 950, 50, { type: 'misc_feature', notes: 'zqnote' }),
+      featureOf('ft-f4', 'zqjoin', 500, 650, { segments: [segment(0, 500, 520), segment(1, 600, 650)] }),
+    ],
+    primers: [PRIMER],
+    history: [{ id: 'ft-h1', timestamp: DATED, operation: 'zqop', description: 'zqhist', parentIds: [], lengthBp: 1000, topology: 'circular' }],
+  }),
+  nav({ id: 'ft-other', name: 'Other zqother', folder: FT_LAB, features: [featureOf('ft-o1', 'zqfeat', 10, 20)] }),
+];
+const FT_SPEC: SessionSpec = {
+  documents: FT_DOCS, activeDocId: 'ft-start', viewerTab: 'sequence-view',
+  workspace: { projectExplorer: {
+    ...EXPLORER, customFolders: ['Nav Start', FT_LAB], folderParents: {}, hiddenFolders: [], favoriteDocIds: [], deletedDocIds: [],
+  } } as SessionSpec['workspace'],
+};
+
+const activeName = (app: AppHarness) => words(app.one('.mbc-doc-tab.active .mbc-doc-tab-title', 'the active document tab').textContent);
+const readout = (app: AppHarness) => app.all('.mbc-selection-readout').map((r) => words(r.textContent)).join(' | ');
+const selectedFolderRows = (app: AppHarness) => app.all('.mbc-sources-pane button.source-folder-row.selected')
+  .map((b) => words(b.querySelector('.folder-label')?.textContent));
+const hitNotice = (app: AppHarness) => words(panel(app).querySelector('[data-search-hit-notice]')?.textContent);
+const searchMatchLine = (app: AppHarness) => app.all('[data-search-match]').map((m) => words(m.textContent));
+const searchMatchMarks = (app: AppHarness) => app.all('[data-search-match] mark').map((m) => m.textContent);
+/** The `nth` hit of the group `name` that `pick` accepts, as the button a click opens it by. */
+function hitButton(app: AppHarness, name: string, pick: (hit: LiveElement) => boolean, nth = 0): LiveElement {
+  const found = groupFor(app, name).querySelectorAll('[data-search-hit]').filter(pick);
+  if (found.length <= nth) throw new Error(`group "${name}" has ${found.length} such hits`);
+  const buttons = found[nth].querySelectorAll('button');
+  if (buttons.length !== 1) throw new Error(`the hit is ${buttons.length} buttons, not one`);
+  return buttons[0];
+}
+const byCoords = (coords: string) => (hit: LiveElement) => part(hit, 'coords') === coords;
+const byField = (field: string) => (hit: LiveElement) => part(hit, 'field') === field;
+const backButton = (app: AppHarness) => app.one('button[aria-label="Navigate Back"]', 'the Back button');
+
+describe('US-01M7DV78 AC1: a motif hit opens its document in its folder with the hit selected, and Back returns', () => {
+  it('US-01M7DV78 AC1 opens a circular site across the origin, a hidden-folder site, a protein site and a Deleted Items site, each in its folder, and one Back returns', async () => {
+    await withSession(NAV_SPEC, async (app) => {
+      expect(activeName(app)).toBe('Start record');
+      await searchFolder(app, 'All Project Files');
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), MOTIF);
+      const listed = summary(app);
+      const names = groups(app).map((g) => part(g, 'name'));
+      expect(names).toEqual(expect.arrayContaining(['Wrapped site', 'Hidden site']));
+      for (const hit of panel(app).querySelectorAll('[data-search-hit]')) {
+        expect(hit.querySelectorAll('button'), 'each listed hit is a button').toHaveLength(1);
+      }
+
+      await app.click(hitButton(app, 'Wrapped site', byCoords('994-7')));
+      expect(activeName(app), 'the hit\'s own document, not the first of its folder').toBe('Wrapped site');
+      expect(selectedFolderRows(app), 'its own folder is selected').toEqual([NAV_LAB]);
+      expect(app.activeTab()).toBe('sequence-view');
+      expect(readout(app), 'the span across the origin, not its complement').toMatch(/^994\.\.7 \(14 bp, across the origin\)/);
+      expect(summary(app), 'the click leaves the results current').toBe(listed);
+      expect(groups(app).map((g) => part(g, 'name')), 'and listed').toEqual(names);
+
+      await app.click(backButton(app));
+      expect(activeName(app), 'one Back returns to the document shown before').toBe('Start record');
+
+      await app.click(hitButton(app, 'Hidden site', byCoords('3-16')));
+      expect(activeName(app)).toBe('Hidden site');
+      expect(selectedFolderRows(app), 'the nearest visible ancestor of the hidden folder').toEqual(['Plasmids & Vectors']);
+      expect(readout(app)).toMatch(/^3\.\.16 \(14 bp\)/);
+
+      await app.change(modeSelect(app), 'Protein motif');
+      await typeQuery(app, motifField(app), 'HYDEF');
+      await app.click(hitButton(app, 'Lab protein', byCoords('5-9')));
+      expect(activeName(app)).toBe('Lab protein');
+      expect(selectedFolderRows(app)).toEqual([NAV_LAB]);
+      expect(app.activeTab()).toBe('sequence-view');
+      expect(readout(app), 'the residues of the protein hit').toMatch(/^5\.\.9 \(5 aa\)/);
+
+      await searchFolder(app, 'Deleted Items');
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), MOTIF);
+      expect(groups(app).map((g) => part(g, 'name'))).toEqual(['Trashed site']);
+      await app.click(hitButton(app, 'Trashed site', byCoords('11-24')));
+      expect(activeName(app)).toBe('Trashed site');
+      expect(selectedFolderRows(app), 'a document searched in Deleted Items opens there').toEqual(['Deleted Items']);
+      expect(readout(app)).toMatch(/^11\.\.24 \(14 bp\)/);
+    });
+  });
+});
+
+describe('US-01M7DV78 AC2: a text hit selects its feature or primer by id, or names its field in Document info', () => {
+  it('US-01M7DV78 AC2 selects each feature by its own id, across the origin and first-to-last, a primer\'s binding site, and names every other field', async () => {
+    await withSession(FT_SPEC, async (app) => {
+      await searchFolder(app, FT_LAB);
+      await typeQuery(app, queryField(app), 'zq');
+      const doc = 'Feature zqdoc';
+      const selects: [string, number, string][] = [
+        ['name of feature zqgene', 1, '300..400 (101 bp)'],
+        ['name of feature zqgene', 0, '100..200 (101 bp)'],
+        ['qualifier /note of feature zqgene', 0, '300..400 (101 bp)'],
+        ['notes of feature zqwrap', 0, '950..50 (101 bp, across the origin)'],
+        ['name of feature zqwrap', 0, '950..50 (101 bp, across the origin)'],
+        ['name of feature zqjoin', 0, '500..650 (151 bp)'],
+        ['name of primer zqprimer', 0, '700..720 (21 bp)'],
+      ];
+      for (const [field, nth, span] of selects) {
+        await app.click(hitButton(app, doc, byField(field), nth));
+        expect(activeName(app), field).toBe(doc);
+        expect(app.activeTab(), field).toBe('sequence-view');
+        expect(readout(app).startsWith(span), `${field} #${nth + 1} selects ${span}, read ${readout(app)}`).toBe(true);
+        expect(searchMatchLine(app), 'no match line over a selection').toEqual([]);
+      }
+      const named: [string, string, string][] = [
+        ['Name', 'Feature zqdoc', 'zq'],
+        ['Accession', 'ZQACC1', 'ZQ'],
+        ['Description', 'a zqdesc record', 'zq'],
+        ['Notes', 'lab zqnotes', 'zq'],
+        ['metadata Organism', 'zqorg', 'zq'],
+        ['operation of history step 1', 'zqop', 'zq'],
+        ['description of history step 1', 'zqhist', 'zq'],
+      ];
+      for (const [field, snippet, mark] of named) {
+        await app.click(hitButton(app, doc, byField(field)));
+        expect(activeName(app), field).toBe(doc);
+        expect(app.activeTab(), `${field} opens Document info`).toBe('document-info');
+        expect(searchMatchLine(app), field).toEqual([`Search match in ${field}: ${snippet}`]);
+        expect(searchMatchMarks(app), 'the match is marked').toEqual([mark]);
+      }
+      // A feature hit after a field hit goes back to the Sequence view and drops the match line.
+      await app.click(hitButton(app, doc, byField('name of feature zqgene'), 1));
+      expect(app.activeTab()).toBe('sequence-view');
+      expect(readout(app)).toMatch(/^300\.\.400 /);
+      await app.clickTab('document-info');
+      expect(searchMatchLine(app), 'the next hit drops the match line').toEqual([]);
+      await app.clickTab('sequence-view');
+
+      await typeQuery(app, queryField(app), 'misc_feature');
+      await app.click(hitButton(app, doc, byField('type of feature zqwrap')));
+      expect(readout(app), 'a type hit selects its feature').toMatch(/^950\.\.50 \(101 bp, across the origin\)/);
+    });
+  });
+});
+
+/** Renames `from` to `to` in the document table, as US-01M7DVVS AC4 does. */
+async function renameInTable(app: AppHarness, from: string, to: string) {
+  const cell = app.all('span[title="Double-click to rename"]').filter((s) => words(s.textContent) === from);
+  expect(cell, `the document table lists ${from}`).toHaveLength(1);
+  await React.act(async () => { dispatchLiveEvent(cell[0], 'dblclick', { bubbles: true, cancelable: true }); });
+  await app.settle();
+  const editor = app.one(`input[aria-label="New name for ${from}"]`, 'the name editor');
+  await app.input(editor, to);
+  await React.act(async () => { dispatchLiveEvent(editor, 'keydown', { key: 'Enter', bubbles: true, cancelable: true }); });
+  await app.settle();
+}
+const OUT_OF_DATE_SENTENCE = 'Out of date: the documents changed. Searching again…';
+
+describe('US-01M7DV78 AC3: a hit of a document edited since the search says it is out of date and opens nothing', () => {
+  it('US-01M7DV78 AC3 edits a document, clicks its hit before the pause: the sentence, the active document and selection unchanged; an unchanged document still opens', async () => {
+    await withSession(FT_SPEC, async (app) => {
+      await searchFolder(app, FT_LAB);
+      await typeQuery(app, queryField(app), 'zq');
+      await app.click(hitButton(app, 'Feature zqdoc', byField('name of feature zqgene'), 1));
+      expect(readout(app)).toMatch(/^300\.\.400 /);
+
+      await renameInTable(app, 'Other zqother', 'Other zqrenamed');
+      expect(summary(app), 'inside the out-of-date window').toBe(OUT_OF_DATE_SENTENCE);
+      await app.click(hitButton(app, 'Other zqother', byField('name of feature zqfeat')));
+      expect(hitNotice(app)).toBe('"Other zqother" changed after this search ran: this result is out of date.');
+      expect(activeName(app), 'the active document is unchanged').toBe('Feature zqdoc');
+      expect(readout(app), 'the selection is unchanged').toMatch(/^300\.\.400 /);
+
+      await app.click(hitButton(app, 'Feature zqdoc', byField('name of feature zqgene'), 0));
+      expect(activeName(app)).toBe('Feature zqdoc');
+      expect(readout(app), 'a hit of an unchanged document still opens').toMatch(/^100\.\.200 /);
+      await app.click(hitButton(app, 'Feature zqdoc', byField('Description')));
+      expect(searchMatchLine(app)).toEqual(['Search match in Description: a zqdesc record']);
+      expect(summary(app), 'every click ran before the pause').toBe(OUT_OF_DATE_SENTENCE);
+    });
+  });
+});
+
+describe('US-01M7DV78 AC4: a hit of a document deleted since the search says so and opens nothing', () => {
+  it('US-01M7DV78 AC4 deletes a document, clicks its hit before the pause: the sentence, and nothing opens', async () => {
+    await withSession(FT_SPEC, async (app) => {
+      await searchFolder(app, FT_LAB);
+      await typeQuery(app, queryField(app), 'zq');
+      await app.click(hitButton(app, 'Feature zqdoc', byField('name of feature zqgene'), 1));
+      expect(activeName(app)).toBe('Feature zqdoc');
+      // File › Delete moves the checked document, the one the hit opened, to Deleted Items.
+      await app.menu('file:soft-delete');
+      expect(summary(app), 'inside the out-of-date window').toBe(OUT_OF_DATE_SENTENCE);
+      const before = { active: activeName(app), folders: selectedFolderRows(app), tab: app.activeTab(), selection: readout(app) };
+      expect(before.active).not.toBe('Feature zqdoc');
+
+      await app.click(hitButton(app, 'Feature zqdoc', byField('name of feature zqgene'), 0));
+      expect(hitNotice(app)).toBe('"Feature zqdoc" was deleted after this search ran.');
+      expect({ active: activeName(app), folders: selectedFolderRows(app), tab: app.activeTab(), selection: readout(app) }, 'nothing opens').toEqual(before);
+      await app.click(hitButton(app, 'Feature zqdoc', byField('Description')));
+      expect(hitNotice(app)).toBe('"Feature zqdoc" was deleted after this search ran.');
+      expect(activeName(app)).toBe(before.active);
+      expect(searchMatchLine(app)).toEqual([]);
+
+      await app.click(hitButton(app, 'Other zqother', byField('name of feature zqfeat')));
+      expect(activeName(app), 'an undeleted document still opens').toBe('Other zqother');
+      expect(readout(app)).toMatch(/^10\.\.20 /);
+      expect(summary(app), 'every click ran before the pause').toBe(OUT_OF_DATE_SENTENCE);
+    });
+  });
+});

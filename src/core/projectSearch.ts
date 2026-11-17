@@ -91,7 +91,8 @@ export function resolveSearchScope(
   return { label: `${path} only`, documents: live.filter((d) => own.has(d.folder)) };
 }
 
-interface FieldValue { field: string; value: string }
+/** A field's value, and the feature, primer or history step it belongs to, so a hit can find it again (US-01M7DV78). */
+interface FieldValue { field: string; value: string; featureId?: string; primerId?: string; historyIndex?: number }
 
 export type TextSearchFieldId =
   | 'name' | 'accession' | 'description' | 'notes' | 'metadata' | 'featureName' | 'featureType'
@@ -125,25 +126,25 @@ export const TEXT_SEARCH_FIELDS: readonly { id: TextSearchFieldId; label: string
     values: (d) => Object.entries(d.docMetadata ?? {}).filter(([key]) => !NOT_METADATA_VALUES.has(key))
       .map(([key, value]) => ({ field: `metadata ${key}`, value: String(value) })),
   },
-  { id: 'featureName', label: 'feature name', values: (d) => d.features.map((f) => ({ field: `name of feature ${featureLabel(f)}`, value: f.name })) },
-  { id: 'featureType', label: 'feature type', values: (d) => d.features.map((f) => ({ field: `type of feature ${featureLabel(f)}`, value: f.type })) },
+  { id: 'featureName', label: 'feature name', values: (d) => d.features.map((f) => ({ field: `name of feature ${featureLabel(f)}`, value: f.name, featureId: f.id })) },
+  { id: 'featureType', label: 'feature type', values: (d) => d.features.map((f) => ({ field: `type of feature ${featureLabel(f)}`, value: f.type, featureId: f.id })) },
   {
     id: 'featureQualifier', label: "each feature qualifier value other than /translation and keys ending in 'sequence'",
     values: (d) => d.features.flatMap((f) => Object.entries(f.qualifiers ?? {}).filter(([key]) => !isResidueQualifier(key))
-      .map(([key, value]) => ({ field: `qualifier /${key} of feature ${featureLabel(f)}`, value }))),
+      .map(([key, value]) => ({ field: `qualifier /${key} of feature ${featureLabel(f)}`, value, featureId: f.id }))),
   },
   {
     id: 'featureNotes', label: 'feature notes',
-    values: (d) => d.features.flatMap((f) => f.notes === undefined ? [] : [{ field: `notes of feature ${featureLabel(f)}`, value: f.notes }]),
+    values: (d) => d.features.flatMap((f) => f.notes === undefined ? [] : [{ field: `notes of feature ${featureLabel(f)}`, value: f.notes, featureId: f.id }]),
   },
-  { id: 'primerName', label: 'document primer names', values: (d) => d.primers.map((p) => ({ field: `name of primer ${p.name}`, value: p.name })) },
+  { id: 'primerName', label: 'document primer names', values: (d) => d.primers.map((p) => ({ field: `name of primer ${p.name}`, value: p.name, primerId: p.id })) },
   {
     id: 'historyOperation', label: 'history operation',
-    values: (d) => d.history.map((h, i) => ({ field: `operation of history step ${i + 1}`, value: h.operation })),
+    values: (d) => d.history.map((h, i) => ({ field: `operation of history step ${i + 1}`, value: h.operation, historyIndex: i })),
   },
   {
     id: 'historyDescription', label: 'history description',
-    values: (d) => d.history.map((h, i) => ({ field: `description of history step ${i + 1}`, value: h.description })),
+    values: (d) => d.history.map((h, i) => ({ field: `description of history step ${i + 1}`, value: h.description, historyIndex: i })),
   },
 ];
 
@@ -165,6 +166,12 @@ export interface TextHit {
   /** UTF-16 offsets into `value`: `value.slice(start, end)` is the match. */
   start: number;
   end: number;
+  /** The id of the feature the field belongs to: two features of one name are told apart by it. */
+  featureId?: string;
+  /** The id of the primer whose name the match is in. */
+  primerId?: string;
+  /** The 0-based index of the history step the match is in. */
+  historyIndex?: number;
 }
 
 export interface DocumentTextResult {
@@ -226,9 +233,9 @@ export function searchText(
   for (const doc of documents) {
     const hits: TextHit[] = [];
     for (const field of TEXT_SEARCH_FIELDS) {
-      for (const { field: name, value } of field.values(doc)) {
+      for (const { field: name, value, ...ids } of field.values(doc)) {
         for (const [start, end] of matchesIn(value, foldedQuery)) {
-          hits.push({ fieldId: field.id, field: name, value, start, end });
+          hits.push({ fieldId: field.id, field: name, value, start, end, ...ids });
         }
       }
     }
@@ -468,4 +475,103 @@ export function createSearchRunner(yieldStep: () => Promise<void> = nextTask): S
       generation += 1;
     },
   };
+}
+
+// ─── Opening a hit (US-01M7DV78) ───
+
+/** Characters of a field's value a snippet shows on each side of its match. */
+export const SNIPPET_CONTEXT = 40;
+
+/** The text around a hit's match, `before + match + after` read from its value, and whether the value goes on past each end. */
+export function snippetOf(hit: Pick<TextHit, 'value' | 'start' | 'end'>): {
+  clippedStart: boolean; before: string; match: string; after: string; clippedEnd: boolean;
+} {
+  const from = Math.max(0, hit.start - SNIPPET_CONTEXT);
+  const to = Math.min(hit.value.length, hit.end + SNIPPET_CONTEXT);
+  return {
+    clippedStart: from > 0,
+    before: hit.value.slice(from, hit.start),
+    match: hit.value.slice(hit.start, hit.end),
+    after: hit.value.slice(hit.end, to),
+    clippedEnd: to < hit.value.length,
+  };
+}
+
+/** A listed hit and the mode that found it. */
+export type SearchHitRef = { mode: 'Text'; hit: TextHit } | { mode: MotifMode; hit: MotifHit };
+
+/** A document as the search read it, or as the catalog holds it now, and whether it is in Deleted Items. */
+export interface DocumentState { doc: SequenceDocument; deleted: boolean }
+
+/** Where a hit opens: the span the Sequence view selects, or the field Document info names. */
+export interface HitOpening {
+  documentId: string;
+  /** 1-based and inclusive; `start > end` is the span across the origin, never its complement. */
+  selection: { start: number; end: number; label?: string } | null;
+  /** The hit Document info shows, for a match in no feature or primer; null when `selection` shows it. */
+  field: TextHit | null;
+}
+
+/** A feature's span: a joined feature's from its first segment's start to its last segment's end. */
+export function featureSpan(f: SequenceFeature): { start: number; end: number } {
+  const segments = f.segments ?? [];
+  return segments.length > 0
+    ? { start: segments[0].start, end: segments[segments.length - 1].end }
+    : { start: f.start, end: f.end };
+}
+
+export const deletedAfterSearch = (name: string) => `"${name}" was deleted after this search ran.`;
+export const changedAfterSearch = (name: string) => `"${name}" changed after this search ran: this result is out of date.`;
+
+/**
+ * Where clicking `ref` opens, read from the document as the catalog holds it now (`current`), or
+ * why it opens nothing: the document was deleted since the search read it (gone from the catalog,
+ * or moved to Deleted Items when it was not there then), or its `updatedAt` or sequence is not the
+ * one searched. A feature or primer is found by its id, and one the document no longer holds is
+ * told as a change, never opened at another place.
+ */
+export function openSearchHit(
+  ref: SearchHitRef, searched: DocumentState, current: DocumentState | null,
+): { opens: HitOpening } | { refused: string } {
+  const name = searched.doc.name;
+  if (current === null || (current.deleted && !searched.deleted)) return { refused: deletedAfterSearch(name) };
+  const doc = current.doc;
+  if (doc.updatedAt !== searched.doc.updatedAt || doc.sequence !== searched.doc.sequence) {
+    return { refused: changedAfterSearch(name) };
+  }
+  const opens = (selection: HitOpening['selection'], field: TextHit | null) => ({ opens: { documentId: doc.id, selection, field } });
+  if (ref.mode !== 'Text') return opens({ start: ref.hit.start, end: ref.hit.end }, null);
+  const { hit } = ref;
+  if (hit.featureId !== undefined) {
+    const feature = doc.features.find((f) => f.id === hit.featureId);
+    if (!feature) return { refused: changedAfterSearch(name) };
+    return opens({ ...featureSpan(feature), label: featureLabel(feature) }, null);
+  }
+  if (hit.primerId !== undefined) {
+    const primer = doc.primers.find((p) => p.id === hit.primerId);
+    if (!primer) return { refused: changedAfterSearch(name) };
+    return opens({ start: primer.bindStart, end: primer.bindEnd, label: primer.name }, null);
+  }
+  return opens(null, hit);
+}
+
+/**
+ * The explorer folder a hit's document opens in: Deleted Items for a deleted document, else the
+ * folder it is filed in (or the folder whose aliases hold it), or, when that folder or one above it
+ * is hidden, the folder just above the topmost hidden one.
+ */
+export function hitFolderId(doc: SequenceDocument, deleted: boolean, folders: ExplorerFolder[], hiddenFolders: string[]): string {
+  if (deleted) return DELETED;
+  if (ROOT_NAMES.has(doc.folder)) return PROJECT_ROOT;
+  const owner = folders.find((f) => f.id === doc.folder) ?? folders.find((f) => f.matchFolders.includes(doc.folder));
+  if (!owner) return PROJECT_ROOT;
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  const hidden = new Set(hiddenFolders);
+  let shown = owner.id;
+  const seen = new Set<string>();
+  for (let at: ExplorerFolder | undefined = owner; at && !seen.has(at.id); at = byId.get(at.parent)) {
+    seen.add(at.id);
+    if (hidden.has(at.id)) shown = at.parent;
+  }
+  return ROOT_NAMES.has(shown) ? PROJECT_ROOT : shown;
 }

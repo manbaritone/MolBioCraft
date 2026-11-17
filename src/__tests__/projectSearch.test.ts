@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  createSearchRunner, motifNotSearchedReason, nextTask, resolveSearchScope, scopesOffered, searchText, TEXT_NOT_SEARCHED, TEXT_SEARCH_FIELDS,
+  changedAfterSearch, createSearchRunner, deletedAfterSearch, hitFolderId, motifNotSearchedReason, openSearchHit, nextTask, resolveSearchScope, scopesOffered, searchText, TEXT_NOT_SEARCHED, TEXT_SEARCH_FIELDS,
   TEXT_SEARCH_STATEMENT, type MotifEngine, type SearchContext, type SearchRunEvent, type SearchScope,
 } from '../core/projectSearch';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
@@ -398,5 +398,106 @@ describe('US-01M7DVVS search runs', () => {
     console.log(`US-01M7DVVS AC5: ${documents.length} documents in scope, ${result.outcome.searched} searched, `
       + `${residues} residues, ${elapsed.toFixed(1)} ms elapsed, longest single engine call ${longest.ms.toFixed(1)} ms `
       + `(${longest.seq.length} residues)${longest.ms > 50 ? ' - over 50 ms: file the Web Worker follow-up' : ''}`);
+  });
+});
+
+// ─── US-01M7DV78: where a hit opens ───
+
+describe('US-01M7DV78: a hit opens at its own feature, primer or field, and a stale one says why', () => {
+  const twin = (id: string, start: number, end: number, extra: Partial<SequenceFeature> = {}) =>
+    feature('zqgene', 'CDS', { id, start, end, ...extra });
+  const base = doc('dHit', 'A', {
+    name: 'Hit doc', topology: 'circular', sequence: 'A'.repeat(1000), updatedAt: '2026-11-17T00:00:00Z',
+    description: 'a zqdesc record',
+    features: [
+      twin('f1', 100, 200), twin('f2', 300, 400, { qualifiers: { note: 'zqqual' } }),
+      feature('zqwrap', 'misc_feature', { id: 'f3', start: 950, end: 50, notes: 'zqnote' }),
+      feature('zqjoin', 'CDS', {
+        id: 'f4', start: 500, end: 650,
+        segments: [{ index: 0, name: 'a', start: 500, end: 520, color: '#000' }, { index: 1, name: 'b', start: 600, end: 650, color: '#000' }],
+      }),
+    ],
+    primers: [{ id: 'p1', name: 'zqprimer', bindStart: 700, bindEnd: 720 } as SequenceDocument['primers'][number]],
+    history: [{ id: 'h1', timestamp: '', operation: 'zqop', description: 'zqhist', parentIds: [], lengthBp: 1000, topology: 'circular' }],
+  });
+  const live = { doc: base, deleted: false };
+  const hits = (query: string, d = base) => {
+    const found = searchText(query, [d], FOLDERS);
+    if ('refused' in found) throw new Error('refused');
+    return found.results.flatMap((r) => r.hits);
+  };
+  const open = (hit: ReturnType<typeof hits>[number], current = live) => openSearchHit({ mode: 'Text', hit }, live, current);
+  const selection = (hit: ReturnType<typeof hits>[number]) => {
+    const r = open(hit);
+    if (!('opens' in r)) throw new Error(r.refused);
+    return r.opens.selection && [r.opens.selection.start, r.opens.selection.end];
+  };
+
+  it('US-01M7DV78 AC2 two features of one name: each hit carries its own featureId and selects its own span', () => {
+    const named = hits('zqgene').filter((h) => h.fieldId === 'featureName');
+    expect(named.map((h) => h.featureId)).toEqual(['f1', 'f2']);
+    expect(named.map(selection)).toEqual([[100, 200], [300, 400]]);
+    expect(selection(hits('zqqual')[0]), 'a qualifier hit selects its feature').toEqual([300, 400]);
+    expect(selection(hits('zqnote')[0]), 'an origin-crossing feature keeps start > end').toEqual([950, 50]);
+    expect(selection(hits('zqjoin')[0]), 'a joined feature selects first-to-last').toEqual([500, 650]);
+    expect(selection(hits('misc_feature')[0]), 'a type hit selects its feature').toEqual([950, 50]);
+    expect(selection(hits('zqprimer')[0]), 'a primer name selects its binding site').toEqual([700, 720]);
+  });
+
+  it('US-01M7DV78 AC2 a joined feature whose own start..end is not first-to-last still selects first-to-last', () => {
+    const odd = { ...base, features: [feature('zqjoin', 'CDS', {
+      id: 'j', start: 1, end: 1000,
+      segments: [{ index: 0, name: 'a', start: 900, end: 950, color: '#000' }, { index: 1, name: 'b', start: 10, end: 40, color: '#000' }],
+    })] };
+    const r = openSearchHit({ mode: 'Text', hit: hits('zqjoin', odd)[0] }, { doc: odd, deleted: false }, { doc: odd, deleted: false });
+    expect('opens' in r && r.opens.selection).toEqual({ start: 900, end: 40, label: 'zqjoin' });
+  });
+
+  it('US-01M7DV78 AC2 a hit in a document field or a history step opens no selection and names the field', () => {
+    for (const [query, field, index] of [['zqdesc', 'Description', undefined], ['zqop', 'operation of history step 1', 0], ['zqhist', 'description of history step 1', 0]] as const) {
+      const hit = hits(query)[0];
+      expect(hit.historyIndex).toBe(index);
+      const r = open(hit);
+      expect(r).toEqual({ opens: { documentId: 'dHit', selection: null, field: hit } });
+      expect('opens' in r && r.opens.field?.field).toBe(field);
+    }
+  });
+
+  it('US-01M7DV78 AC1 a motif hit across the origin selects start > end, not its complement', () => {
+    const hit = { start: 998, end: 3, strand: 1, palindromic: true, certainty: 'definite', letters: 'GAATTC' } as unknown as Parameters<typeof openSearchHit>[0]['hit'];
+    expect(openSearchHit({ mode: 'Nucleotide motif', hit } as Parameters<typeof openSearchHit>[0], live, live))
+      .toEqual({ opens: { documentId: 'dHit', selection: { start: 998, end: 3 }, field: null } });
+  });
+
+  it('US-01M7DV78 AC3 a changed updatedAt, a changed sequence or a feature gone each refuse with the changed sentence', () => {
+    const hit = hits('zqgene')[1];
+    const changed = changedAfterSearch('Hit doc');
+    expect(changed).toBe('"Hit doc" changed after this search ran: this result is out of date.');
+    expect(open(hit, { doc: { ...base, updatedAt: '2026-11-18T00:00:00Z' }, deleted: false })).toEqual({ refused: changed });
+    expect(open(hit, { doc: { ...base, sequence: `C${base.sequence.slice(1)}` }, deleted: false })).toEqual({ refused: changed });
+    expect(open(hit, { doc: { ...base, features: base.features.filter((f) => f.id !== 'f2') }, deleted: false })).toEqual({ refused: changed });
+    expect(open(hits('zqprimer')[0], { doc: { ...base, primers: [] }, deleted: false })).toEqual({ refused: changed });
+    expect(open(hit, { doc: { ...base }, deleted: false }), 'an equal copy is not a change').toHaveProperty('opens');
+  });
+
+  it('US-01M7DV78 AC4 gone from the catalog, or moved to Deleted Items since, refuse with the deleted sentence; a document searched in Deleted Items opens', () => {
+    const hit = hits('zqgene')[0];
+    const deleted = deletedAfterSearch('Hit doc');
+    expect(deleted).toBe('"Hit doc" was deleted after this search ran.');
+    expect(openSearchHit({ mode: 'Text', hit }, live, null)).toEqual({ refused: deleted });
+    expect(openSearchHit({ mode: 'Text', hit }, live, { doc: base, deleted: true })).toEqual({ refused: deleted });
+    const trashed = { doc: base, deleted: true };
+    expect(openSearchHit({ mode: 'Text', hit }, trashed, trashed)).toHaveProperty('opens');
+    expect(openSearchHit({ mode: 'Text', hit }, trashed, null), 'erased from Deleted Items').toEqual({ refused: deleted });
+  });
+
+  it('US-01M7DV78 AC1 the folder a hit opens in: Deleted Items, its own or its alias owner, or the nearest visible ancestor of a hidden one', () => {
+    expect(hitFolderId(doc('x', 'C'), true, FOLDERS, [])).toBe('Deleted Items');
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, [])).toBe('C');
+    expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, [])).toBe('Genomes');
+    expect(hitFolderId(doc('x', 'Local'), false, FOLDERS, [])).toBe(PROJECT_ROOT);
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, ['C'])).toBe('B');
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, ['B']), 'a visible folder under a hidden one').toBe('A');
+    expect(hitFolderId(doc('x', 'H2'), false, FOLDERS, ['H1', 'H2'])).toBe(PROJECT_ROOT);
   });
 });
