@@ -443,7 +443,6 @@ import {
   SessionContentSnapshot,
 } from './core/sessionGuard';
 import {
-  discoverRustRestApiEndpoint,
   isTauriDesktopRuntime,
   ackQuitRequestTauri,
   printWorkbenchView,
@@ -6236,7 +6235,6 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    void discoverRustRestApiEndpoint();
     const clearDragOverlay = () => {
       fileDragDepthRef.current = 0;
       setIsFileDragActive(false);

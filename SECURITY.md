@@ -11,7 +11,7 @@
 
 - **Local-First Sequence Processing**: All DNA, RNA, protein, cloning, phylogenetic, and Sanger `.ab1` chromatogram analyses execute locally on-device with zero background telemetry or mandatory cloud uploads.
 - **Hardened Tauri v2 WebView & Least-Privilege Capabilities**:
-  - Enforces a strict `Content-Security-Policy` in [`src-tauri/tauri.conf.json`](./src-tauri/tauri.conf.json) (`object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'self'`, `form-action 'self'`, `freezePrototype: true`) restricting `connect-src` to Tauri IPC, the local `127.0.0.1:18420` embedded Rust REST server, and explicit user-triggered public database fetches (NCBI E-utilities, UniProtKB, and RCSB PDB).
+  - Enforces a strict `Content-Security-Policy` in [`src-tauri/tauri.conf.json`](./src-tauri/tauri.conf.json) (`object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'self'`, `form-action 'self'`, `freezePrototype: true`) restricting `connect-src` to Tauri IPC and explicit user-triggered public database fetches (NCBI E-utilities, UniProtKB, and RCSB PDB); the WebView may not connect to any loopback address.
   - Scopes window permissions via [`src-tauri/capabilities/default.json`](./src-tauri/capabilities/default.json).
 - **Dual-Layer IPC Path & Payload Validation**:
   - Frontend (`validateCrossPlatformFilename` and `normalizeCrossPlatformPath` in [`src/platform/osPlatform.ts`](./src/platform/osPlatform.ts)) and Rust (`sanitize_workspace_path` in [`crates/molbiocraft-core/src/lib.rs`](./crates/molbiocraft-core/src/lib.rs)) reject NUL bytes, `..` parent-directory traversal, Windows reserved DOS device names, oversized payloads, and writes to protected OS directories (`/System`, `/usr`, `/etc`, `/proc`, `/sys`, `C:\Windows`, `C:\Program Files`).

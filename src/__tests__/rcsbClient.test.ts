@@ -360,12 +360,12 @@ describe('RCSB PDB client', () => {
     expect(connects).toHaveLength(1);
     const sources = connects[0].slice(1);
     expect(sources.filter((source) => source.includes('rcsb')).sort()).toEqual([...RCSB_HOSTS].sort());
-    // The whole source list: what connect-src allowed before D0008, plus the four RCSB hosts and
-    // nothing else, so a scheme (`https:`), a wildcard (`*`, `https://*.rcsb.org`) or any other added
-    // host fails here. A unit that changes the pre-existing sources (US-01M6P2QG drops the
-    // 127.0.0.1 pair) updates this list with it.
+    // The whole source list: what connect-src allowed before D0008 less the two loopback sources of
+    // the REST server the UI no longer reaches (US-01M6P2QG, D0174), plus the four RCSB hosts and nothing else, so a
+    // scheme (`https:`), a wildcard (`*`, `https://*.rcsb.org`), a loopback source or any other added
+    // host fails here.
     const beforeRcsb = [
-      "'self'", 'ipc:', 'http://ipc.localhost', 'https://ipc.localhost', 'http://127.0.0.1:18420', 'http://127.0.0.1:*',
+      "'self'", 'ipc:', 'http://ipc.localhost', 'https://ipc.localhost',
       'https://eutils.ncbi.nlm.nih.gov', 'https://rest.uniprot.org',
     ];
     expect([...sources].sort()).toEqual([...beforeRcsb, ...RCSB_HOSTS].sort());

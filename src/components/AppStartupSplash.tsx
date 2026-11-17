@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 import React, { useEffect, useState } from 'react';
-import { discoverRustRestApiEndpoint } from '../lib/tauriIpc';
 import { BRAND_EMBLEM_SRC } from './MolBioCraftLogo';
 
 export interface AppStartupSplashProps {
@@ -72,14 +71,7 @@ export const AppStartupSplash: React.FC<AppStartupSplashProps> = ({
       timers.push(id);
     };
 
-    // Kick off real background backend & font readiness checks bounded cleanly
-    const backendReady = Promise.race([
-      discoverRustRestApiEndpoint().catch(() => null),
-      new Promise<null>((resolve) => {
-        schedule(650, () => resolve(null));
-      }),
-    ]);
-
+    // Wait for the fonts, bounded, before the splash completes
     const fontsReady =
       typeof document !== 'undefined' && document.fonts?.ready
         ? Promise.race([
@@ -100,7 +92,7 @@ export const AppStartupSplash: React.FC<AppStartupSplashProps> = ({
       setStageLabel(STARTUP_STAGES[2].label);
     });
 
-    void Promise.all([backendReady, fontsReady]).then(() => {
+    void fontsReady.then(() => {
       if (cancelled) return;
       schedule(960, () => {
         setProgress(STARTUP_STAGES[3].progress);

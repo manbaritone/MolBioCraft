@@ -230,7 +230,6 @@ function mountDesktopApp(nextReply: () => FolderReply) {
         return nextReply();
       }
       if (cmd === 'cmd_take_pending_open_files') return [];
-      if (cmd === 'cmd_rest_api_info') return { active: false };
       if (cmd === 'plugin:event|listen') return 1;
       return null;
     },

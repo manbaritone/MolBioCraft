@@ -3,15 +3,10 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  configureRustRestBaseUrl,
-  discoverRustRestApiEndpoint,
-  fetchRustRestHealth,
-  getActiveRustRestBaseUrl,
   invokeBatchSequenceStatsHybrid,
   invokePairwiseAlignHybrid,
   invokePrimerThermodynamicsHybrid,
   invokeReverseComplementHybrid,
-  invokeRustFullStackRpc,
   isTauriDesktopRuntime,
   listenTauriEvent,
   openNativeFilesDialogTauri,
@@ -38,13 +33,11 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
 
   beforeEach(() => {
     TauriIpcCache.clear();
-    configureRustRestBaseUrl(null);
     delete g.__TAURI_INTERNALS__;
   });
 
   afterEach(() => {
     TauriIpcCache.clear();
-    configureRustRestBaseUrl(null);
     delete g.__TAURI_INTERNALS__;
   });
 
@@ -233,70 +226,21 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
     expect(dropped.base64).toBe('QUJJRg==');
   });
 
-  it('executes full-stack Rust RPC across RESTful HTTP/JSON, Tauri v2 IPC, and Rust WASM with native file dialog helpers', async () => {
-    // 1. Offline / standalone fallback uses embedded synchronous Rust WASM
-    const wasmOut = await invokeRustFullStackRpc<string>('reverse_complement', {
-      seq: 'GAATTC',
-    });
-    expect(wasmOut.transport).toBe('rust-wasm-sync');
-    expect(wasmOut.data).toBe('GAATTC');
-
-    // 2. Embedded Rust RESTful HTTP API (/api/v1/health & /api/v1/rpc/<op>)
+  it('opens and saves through the native file dialogs over Tauri v2 IPC, with no REST command and no fetch', async () => {
+    // The UI no longer uses the embedded REST server (D0174): the dialogs are IPC commands, and
+    // nothing here may ask the shell for a REST endpoint or reach for the network.
     const origFetch = globalThis.fetch;
     const fetchedUrls: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {
-      const url = String(input);
-      fetchedUrls.push(url);
-      if (url.endsWith('/api/v1/health')) {
-        return new Response(
-          JSON.stringify({
-            ok: true,
-            service: 'molbiocraft-rust-restful-engine',
-            version: '1.0.0',
-            os: 'macos',
-            arch: 'aarch64',
-            port: 18420,
-            base_url: 'http://127.0.0.1:18420/api/v1',
-            worker_threads: 8,
-            ipc_calls: 2,
-            rest_calls: 1,
-            crates: [
-              'molbiocraft-core',
-              'molbiocraft-formats',
-              'molbiocraft-align',
-              'molbiocraft-phylo',
-              'molbiocraft-cloning',
-              'molbiocraft-protein',
-              'molbiocraft-wasm',
-            ],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-      if (url.endsWith('/api/v1/rpc/reverse_complement')) {
-        return new Response(
-          JSON.stringify({ ok: true, op: 'reverse_complement', data: 'AAGCTT' }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-      return new Response(JSON.stringify({ ok: false, error: 'not found' }), {
-        status: 404,
-      });
+      fetchedUrls.push(String(input));
+      throw new TypeError('Failed to fetch');
     }) as typeof fetch;
+    const invoked: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
 
     try {
       g.__TAURI_INTERNALS__ = {
-        invoke: async (cmd) => {
-          if (cmd === 'cmd_rest_api_info') {
-            return {
-              active: true,
-              port: 18420,
-              base_url: 'http://127.0.0.1:18420/api/v1',
-              ipc_calls: 1,
-              rest_calls: 0,
-              worker_threads: 8,
-            };
-          }
+        invoke: async (cmd, args) => {
+          invoked.push({ cmd, args });
           if (cmd === 'cmd_native_open_files_dialog') {
             // the backend's reply (OpenedFilesReply, fs_commands.rs): the files read, and how many
             // supported files of a picked folder it left out (BG-01M6S17Y)
@@ -312,23 +256,6 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
         },
       };
 
-      const info = await discoverRustRestApiEndpoint();
-      expect(info?.active).toBe(true);
-      expect(getActiveRustRestBaseUrl()).toBe('http://127.0.0.1:18420/api/v1');
-
-      const health = await fetchRustRestHealth();
-      expect(health.service).toBe('molbiocraft-rust-restful-engine');
-      expect(health.crates).toHaveLength(7);
-
-      const restRpc = await invokeRustFullStackRpc<string>(
-        'reverse_complement',
-        { seq: 'AAGCTT' },
-        { cacheKey: 'rest:rc:AAGCTT' }
-      );
-      expect(restRpc.transport).toBe('rust-rest-http');
-      expect(restRpc.data).toBe('AAGCTT');
-      expect(fetchedUrls).toContain('http://127.0.0.1:18420/api/v1/rpc/reverse_complement');
-
       const picked = await openNativeFilesDialogTauri('import');
       expect(picked).toEqual({
         files: [{ file_name: 'pET28a.gb', base64: 'TE9DVVM=', byte_len: 5 }],
@@ -337,6 +264,14 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
 
       const saved = await saveNativeFileDialogTauri('Saved_Construct.mbc', '{"magic":"MBC1"}');
       expect(saved).toBe('Saved_Construct.mbc');
+
+      expect(invoked.map((entry) => entry.cmd)).toEqual([
+        'cmd_native_open_files_dialog',
+        'cmd_native_save_file_dialog',
+      ]);
+      expect(invoked[0].args?.mode).toBe('import');
+      expect(invoked[1].args).toMatchObject({ filename: 'Saved_Construct.mbc', content: '{"magic":"MBC1"}' });
+      expect(fetchedUrls).toEqual([]);
     } finally {
       globalThis.fetch = origFetch;
     }
