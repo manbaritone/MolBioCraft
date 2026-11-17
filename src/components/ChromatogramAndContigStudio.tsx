@@ -84,6 +84,17 @@ function spanBounds(readLength: number) {
   return { min: CHROMATOGRAM_WINDOW_MIN, max: Math.max(CHROMATOGRAM_WINDOW_MIN, Math.min(CHROMATOGRAM_WINDOW_MAX, readLength)) };
 }
 
+/**
+ * The span a zoom step starts from: the stored span held to this read's bounds. The stored span is
+ * kept as it is across reads (US-01M7CM8J AC4), so after a shorter read is picked it can be wider
+ * than the read, and a step from it would be held back to the read's length and show no change
+ * (BG-01M7ME5A).
+ */
+function heldSpan(span: number, readLength: number): number {
+  const bounds = spanBounds(readLength);
+  return Math.min(bounds.max, Math.max(bounds.min, span));
+}
+
 /** The window drawn for a span: the span rounded, within 10 to 180 bases, and held to the read's length. */
 export function chromatogramWindow(span: number, readLength: number): number {
   const bases = Math.max(CHROMATOGRAM_WINDOW_MIN, Math.min(CHROMATOGRAM_WINDOW_MAX, Math.round(Number.isFinite(span) ? span : CHROMATOGRAM_WINDOW_DEFAULT)));
@@ -179,7 +190,7 @@ export function chromatogramWheelStep(
   context: ChromatogramWheelContext
 ): ChromatogramWheelStep {
   if (classifyWheelGesture(event, 'scroll') !== 'zoom') return { handled: false, view };
-  const span = wheelZoomScale(view.span, -normalizeWheelDelta(event).y, spanBounds(context.readLength));
+  const span = wheelZoomScale(heldSpan(view.span, context.readLength), -normalizeWheelDelta(event).y, spanBounds(context.readLength));
   return { handled: true, view: chromatogramZoomTo(view, span, event.clientX, context) };
 }
 
@@ -250,7 +261,8 @@ function bindChromatogramWheel(
   };
   const onGestureStart = (event: GestureLike) => {
     event.preventDefault();
-    gestureFrom = hooks.read().view.span;
+    const { view, context } = hooks.read();
+    gestureFrom = heldSpan(view.span, context.readLength);
     pendingWheel = null;
   };
   const onGestureChange = (event: GestureLike) => {

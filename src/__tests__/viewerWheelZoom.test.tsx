@@ -407,6 +407,48 @@ describe('US-01M7CM8J AC4', () => {
   });
 });
 
+// ─── BG-01M7ME5A ───
+
+/** A 120-base Sanger trace: shorter than the 180-base widest window, so the read holds the window. */
+const SHORT_TRACE = traceDoc('bg5a-short', 'BG5A_Short.ab1', TEMPLATE.slice(200, 320), PHRED.slice(0, 120), 0x53);
+
+describe('BG-01M7ME5A AC1', () => {
+  // Wrong implementations: a step that starts from the stored 180-base span (the first notch gives
+  // 166.7, held to 120, and nothing moves); a fix to the wheel step that leaves the pinch's start
+  // span stale (180 / 1.1 = 163.6, held to 120 again). Each path is checked on a fresh switch.
+  it('BG-01M7ME5A AC1: the first notch after a read change to a shorter read narrows the trace window, by Ctrl/Cmd+wheel and by a WebKit pinch', async () => {
+    await withApp(async (app) => {
+      await onTraceTab(app, [FWD, SHORT_TRACE]);
+      const svg = () => drawing(app, TRACE_LABEL);
+      const size = () => windowOf(svg(), TRACE_LABEL).size;
+      const widenTo180OnFwd = async () => {
+        await pickRead(app, FWD.id);
+        for (let i = 0; i < 6; i++) await fire(app, svg(), 'wheel', { deltaY: 400, ctrlKey: true, clientX: clientXOf(400) });
+        expect(size(), 'the 300-base read zoomed out to 180').toBe(180);
+        await pickRead(app, SHORT_TRACE.id);
+        expect(size(), 'the 120-base read holds the window').toBe(120);
+      };
+
+      // Ctrl+wheel: the first notch in after the switch narrows the window.
+      await widenTo180OnFwd();
+      const notch = await fire(app, svg(), 'wheel', { deltaY: -100, ctrlKey: true, clientX: clientXOf(400) });
+      expect(notch.defaultPrevented).toBe(true);
+      expect(size()).toBeLessThan(120);
+      expect(size()).toBe(Math.round(120 / 1.08));
+
+      // A WebKit pinch started after the switch: its first change narrows the window.
+      await widenTo180OnFwd();
+      await fire(app, svg(), 'gesturestart', { scale: 1, clientX: clientXOf(400) });
+      const change = await fire(app, svg(), 'gesturechange', { scale: 1.1, clientX: clientXOf(400) });
+      expect(change.defaultPrevented).toBe(true);
+      expect(size()).toBeLessThan(120);
+      expect(size()).toBe(Math.round(120 / 1.1));
+      await fire(app, svg(), 'gestureend', { scale: 1.1, clientX: clientXOf(400) });
+      expect(windowOf(svg(), TRACE_LABEL).to).toBeLessThanOrEqual(120);
+    });
+  });
+});
+
 // ─── The 3D viewer, alone ───
 
 /** A 40-residue helix about the z axis. */
