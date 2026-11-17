@@ -3562,7 +3562,7 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
                     <div className="mbc-aln-btn-group" role="group" aria-label="View presets">
                       <button
                         type="button"
-                        className={`mbc-aln-tool-btn mbc-aln-group-left ${zoomPct === 100 ? 'active' : ''}`}
+                        className={`mbc-aln-tool-btn mbc-aln-group-left ${Math.round(zoomPct * 10) / 10 === 100 ? 'active' : ''}`}
                         title="Zoom to 100% (residue letters visible)"
                         onClick={() => setZoomPct(100)}
                       >

@@ -448,3 +448,88 @@ describe('US-01M7CMZ5 AC5: a wheel zoom changes the zoom and the scroll, and not
     });
   });
 });
+
+// ─── BG-01M7MEXT ───
+
+/** Column `idx`'s left edge in the track at 400% with spacing every 10: colW 41.6, a 24.96 px gap. */
+const X400 = (idx: number) => idx * 41.6 + Math.floor(idx / 10) * 24.96;
+const isLit = (b: LiveElement) => b.className.split(/\s+/).includes('active');
+
+describe('BG-01M7MEXT: the zoom-out edge, the pinch bound and the 100% button', () => {
+  it('BG alignment zoom pins the zoom-out edge: at 400% one and four notches out keep the hovered column, its right edge min(0.25, colW/4) px right of the pointer', async () => {
+    await withGrid(ALN, async (g) => {
+      // One notch out narrows 41.6 px to 38.5 px, four to 30.6 px: a pointer 40.35 px into the column is past both.
+      const cases: [string, number[], number][] = [['one notch', [100], 41.6 / 1.08], ['four notches in one wheel', [400], 41.6 / Math.pow(1.08, 4)], ['four notches one by one', [100, 100, 100, 100], 41.6 / Math.pow(1.08, 4)]];
+      for (const [name, deltas, colW] of cases) {
+        await setZoomField(g, '400');
+        expect(zoomShown(g), `${name}: starts at 400%`).toBe('400');
+        await clickTrack(g, X400(205) + 5);
+        const col = cursorColumn(g);
+        const before = cursorBox(g);
+        expect(before.width, `${name}: a column is 41.6 px at 400%`).toBeCloseTo(41.6, 6);
+        const screenLeft = 200;
+        await scrollTo(g, { left: before.left - screenLeft });
+        const w = nameW(g);
+        const pointer = screenLeft + 0.97 * before.width;
+        for (const deltaY of deltas) {
+          const ev = await wheel(g, { clientX: ORIGIN.x + w + pointer, clientY: ORIGIN.y + 200, deltaY, ctrlKey: true });
+          expect(ev.defaultPrevented, `${name}: the wheel zoom is prevented`).toBe(true);
+        }
+        const after = cursorBox(g);
+        expect(after.width, `${name}: the zoom narrowed the column past the pointer`).toBeCloseTo(colW, 6);
+        expect(pointer - screenLeft, `${name}: the pointer is past the narrowed column's width`).toBeGreaterThan(after.width);
+        const leftAfter = after.left - g.el.scrollLeft;
+        const rightAfter = leftAfter + after.width;
+        expect(cursorColumn(g), `${name}: the cursor stays on its column`).toBe(col);
+        expect(pointer, `${name}: the same column is under the pointer`).toBeGreaterThanOrEqual(leftAfter);
+        expect(pointer, `${name}: the same column is under the pointer`).toBeLessThan(rightAfter);
+        const want = Math.min(0.25, after.width / 4);
+        expect(Math.abs(rightAfter - pointer - want), `${name}: its right edge is ${want} px right of the pointer (is ${rightAfter - pointer})`).toBeLessThanOrEqual(0.01);
+      }
+    });
+  });
+
+  it('BG alignment zoom pins the pinch bound: from a gesturestart at 100%, a scale of 10 reads 400 and one of 0.001 reads 0.5', async () => {
+    await withGrid(ALN, async (g) => {
+      const at = { clientX: ORIGIN.x + 400, clientY: ORIGIN.y + 200 };
+      expect(zoomShown(g)).toBe('100');
+      await gesture(g, 'gesturestart', { ...at, scale: 1 });
+      await gesture(g, 'gesturechange', { ...at, scale: 10 });
+      expect(zoomShown(g), 'a pinch to 1000% stops at 400').toBe('400');
+      expect(cursorBox(g).width, 'the grid draws 400%').toBeCloseTo(41.6, 6);
+      await gesture(g, 'gesturechange', { ...at, scale: 0.001 });
+      expect(zoomShown(g), 'a pinch to 0.1% stops at 0.5').toBe('0.5');
+      await gesture(g, 'gestureend', { ...at, scale: 0.001 });
+    });
+  });
+
+  it('BG alignment zoom pins the 100% button: lit exactly when the % field reads 100, after a wheel in and out, and the wheel zoom stays unrounded', async () => {
+    await withGrid(ALN, async (g) => {
+      const at = { clientX: ORIGIN.x + 400, clientY: ORIGIN.y + 200 };
+      const hundred = () => button(g, '100%');
+      const expectLitIffHundred = (why: string) => expect(isLit(hundred()), `${why}: the field reads ${zoomShown(g)}`).toBe(zoomShown(g) === '100');
+      expect(zoomShown(g)).toBe('100');
+      expect(isLit(hundred()), 'lit at 100%').toBe(true);
+      await wheel(g, { ...at, deltaY: -100, ctrlKey: true });
+      expect(zoomShown(g)).toBe('108');
+      expect(isLit(hundred()), 'unlit at 108%').toBe(false);
+      await wheel(g, { ...at, deltaY: 100, ctrlKey: true });
+      expect(zoomShown(g), 'one notch in and one out reads 100').toBe('100');
+      expect(isLit(hundred()), 'lit after one notch in and one out').toBe(true);
+      // The field's own reading decides it: either side of each rounding boundary.
+      for (const [typed, shown] of [['99.9', '99.9'], ['100.1', '100.1'], ['99.6', '99.6'], ['99.94', '99.9'], ['100.06', '100.1'], ['99.96', '100'], ['100.04', '100']]) {
+        await setZoomField(g, typed);
+        expect(zoomShown(g), `${typed} reads ${shown}`).toBe(shown);
+        expectLitIffHundred(`typed ${typed}`);
+      }
+      await g.app.click(hundred());
+      expectLitIffHundred('after the 100% button');
+      // A fractional wheel zoom is stored as the wheel computed it, not as the field shows it.
+      await wheel(g, { ...at, deltaY: -37, ctrlKey: true });
+      const z = 100 * Math.pow(1.08, 0.37);
+      expect(zoomShown(g)).toBe(String(Math.round(z * 10) / 10));
+      expect(Math.abs(cursorBox(g).width - (13 * 0.8 * z) / 100), 'the grid draws the unrounded wheel zoom').toBeLessThan(1e-6);
+      expectLitIffHundred('after a fractional wheel');
+    });
+  });
+});
