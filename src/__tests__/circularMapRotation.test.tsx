@@ -698,6 +698,22 @@ describe('US-01M7DVNS AC1: workspace.mapRotation is saved with the session and r
     );
   });
 
+  it('US-01M7DVNS AC1 the notice for an unreadable angle is kept in the status bar after the time a passing notice clears', async () => {
+    await withSession(
+      { documents: [PA, PB], activeDocId: PA.id, viewerTab: 'sequence-view', sessionName: 'Rot_Kept', workspace: { mapRotation: { [PA.id]: 120, [PB.id]: 'abc' as unknown as number } } },
+      async (app) => {
+        expect(statusText(app)).toContain(unreadableNotice(PB.name));
+        // A notice that is not kept clears 5.2 s after it is set; this one stays, appended to the restore sentence.
+        await React.act(async () => { vi.advanceTimersByTime(6_000); });
+        await app.settle();
+        const said = statusText(app);
+        expect(said, 'the notice is kept past the clear').toContain(unreadableNotice(PB.name));
+        expect(said, 'appended to the restore sentence, which stays with it').toContain('Restored workbench "Rot_Kept.mbc"');
+        expect(wedgeAngle(app), 'pRotA still at its saved angle').toBe('120');
+      }
+    );
+  });
+
   it('US-01M7DVNS AC1 changing only the rotation autosaves it, and restoring that autosave brings it back', async () => {
     const storage = memoryStorage();
     const first = await mountApp({ storage });

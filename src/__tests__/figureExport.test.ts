@@ -536,5 +536,7 @@ describe('US-01M7DVNS AC3: the PNG and PDF of a rotated circular map rasterize i
       (globalThis as { Image?: unknown }).Image = realImage;
       app.unmount();
     }
-  });
+    // It mounts the whole App, as the App-mount suites do, so it has their 120 s timeout; the rest of
+    // this file keeps the default.
+  }, 120_000);
 });
