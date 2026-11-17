@@ -5431,8 +5431,8 @@ export const App: React.FC = () => {
       setStatusBanner(unreadableMapRotationNotice(doc), { append: true, keep: true });
     }
     // An unreadable track setting (US-01M7DV8W) is named, past the one warning the restore sentence
-    // carries. The autosave restore hands in its first parse's warnings, since the envelope it passes
-    // here holds the setting already read as shown.
+    // carries. The autosave restore and the zipped-session open hand in their first parse's warnings,
+    // since the envelope each passes here holds the setting already read as shown.
     for (const warning of new Set([...(options.earlierWarnings ?? []), ...parsed.warnings])) {
       if (warning !== parsed.warnings[0] && UNREADABLE_TRACK_SETTING_WARNINGS.includes(warning)) {
         setStatusBanner(warning, { append: true, keep: true });
@@ -5769,7 +5769,9 @@ export const App: React.FC = () => {
       const buf = await file.arrayBuffer();
       if (isMbcZipArchiveBytes(buf)) {
         const parsedZip = parseMbcFolderZip(buf, file.name);
-        applyParsedMbcSession(JSON.stringify(parsedZip.envelope), file.name, mbcMode);
+        // The envelope holds an unreadable track setting already read as shown; hand in the
+        // warnings that named it (US-01M7DV8W), as the autosave restore does.
+        applyParsedMbcSession(JSON.stringify(parsedZip.envelope), file.name, mbcMode, { earlierWarnings: parsedZip.warnings });
         return;
       }
     }

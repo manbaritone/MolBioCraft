@@ -21,7 +21,7 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import type { SequenceDocument } from '../types/bio';
-import { parseMbcWorkbench } from '../core/mbcSessionFormat';
+import { createZipArchiveBytes, isMbcZipArchiveBytes, parseMbcWorkbench } from '../core/mbcSessionFormat';
 import { DEFAULT_PANE_SPLIT } from '../core/paneSplit';
 import { DEFAULT_DOCUMENT_SPLIT_RATIO } from '../core/documentSplit';
 import { CIRCULAR_ONLY_HINT, circularMapUnavailableReason, buildCommandDocumentContext, commandAvailability, resolveNativeMenuItemEnabled } from '../core/commandAvailability';
@@ -959,6 +959,8 @@ describe('US-01M7DV8W AC2: hiding Features or Restriction Sites removes them fro
       expect(asShown.linear.sites, 'and a cut site').toBeGreaterThan(0);
       expect(asShown.circleLabels.some((l) => l.startsWith(`${firstEnzyme} (`)), 'the hidden enzyme stays hidden').toBe(false);
       expect(asShown.panel, 'the displayed-sites panel shows the choices').not.toBe('');
+      const note = () => words(mainMap(app).querySelectorAll('text.circular-callout-note')[0]?.textContent);
+      expect(note(), "positive control: the circle's note counts the sites the user hid").toMatch(/hidden/);
       await autosaveRunsOut(app);
       const before = autosavedRaw(storage);
       expect(await undoDisabled(app), 'nothing to undo').toBe(true);
@@ -973,6 +975,7 @@ describe('US-01M7DV8W AC2: hiding Features or Restriction Sites removes them fro
       expect(circle(), 'Sites hidden: no cut site or label on the circle, the features stay').toEqual({ ...asShown.circle, sites: 0 });
       expect(linear(), 'none on the linear map').toEqual({ ...asShown.linear, sites: 0 });
       expect(dsitesText(app), 'the displayed-sites panel shows the same choices').toBe(asShown.panel);
+      expect(note(), 'Sites hidden: the note counts no per-enzyme hidden site').not.toMatch(/hidden/);
       await toggleTrack(app, 'Features');
       expect([circle(), linear()], 'both hidden').toEqual([NOTHING, NOTHING]);
 
@@ -1219,6 +1222,86 @@ describe('US-01M7DV8W AC4: Features and Restriction Sites are saved with the ses
     const list = deps.slice(deps.lastIndexOf('}, ['));
     expect(list, 'the dependency list').toMatch(/\n\s+showFeatures,\n/);
     expect(list).toMatch(/\n\s+showRestrictionSites,\n/);
+  });
+});
+
+// ─── Round 2: the routes and maps round 1 left unpinned ───
+
+/** Drops `file` on the workbench: the App's own open route for a file the user drags in. */
+async function dropFile(app: AppHarness, file: File) {
+  const root = app.one('.mbc-workbench', 'the workbench root');
+  const dataTransfer = { files: [file], types: ['Files'], items: [], dropEffect: 'copy', effectAllowed: 'all' };
+  await React.act(async () => { dispatchLiveEvent(root, 'drop', { dataTransfer }); });
+  await app.settle();
+}
+const occurrences = (text: string, sentence: string) => text.split(sentence).length - 1;
+/** The autosaved session with one track setting unreadable ('no') and the other saved hidden. */
+async function unreadableSession(app: AppHarness, storage: LiveStorage, key: 'showFeatures' | 'showRestrictionSites', name: string): Promise<string> {
+  await restoreTracks(app, [TRK], TRK.id);
+  await autosaveRunsOut(app);
+  const copy = autosavedRaw(storage) as ReturnType<typeof autosavedRaw> & { sessionName: string };
+  copy.sessionName = name;
+  const ds = copy.workspace.displaySettings as Record<string, unknown>;
+  ds[key] = 'no';
+  ds[key === 'showFeatures' ? 'showRestrictionSites' : 'showFeatures'] = false;
+  return JSON.stringify(copy);
+}
+const UNREADABLE_CASES = [['Features', 'showFeatures', FEATURES_UNREADABLE, 'arcs'], ['Restriction Sites', 'showRestrictionSites', SITES_UNREADABLE, 'sites']] as const;
+
+describe('US-01M7DV8W round 2: an opened session names an unreadable track, and the genome map hides features', () => {
+  it('US-01M7DV8W AC4 a zipped .mbc session with one unreadable track opens with it shown, and the restore notice names it once', async () => {
+    const storage = memoryStorage();
+    await withApp(async (app) => {
+      for (const [label, key, sentence, part] of UNREADABLE_CASES) {
+        const raw = await unreadableSession(app, storage, key, `DV8W_Zipped_${key}`);
+        const zip = createZipArchiveBytes([{ path: 'DV8W_Zipped/workbench.mbc.json', data: new TextEncoder().encode(raw) }]);
+        expect(isMbcZipArchiveBytes(zip), 'the fixture is a PKZIP session').toBe(true);
+        // Hidden before the open, so 'shown' can only come from the session.
+        if (await shownOf(app, label)) await toggleTrack(app, label);
+        await dropFile(app, new File([zip as Uint8Array<ArrayBuffer>], 'dv8w_zipped.mbc'));
+        expect(words(app.doc.body.textContent), 'the App opened the zipped session').toContain(`Restored workbench "DV8W_Zipped_${key}.mbc"`);
+        expect(await shownOf(app, label), `${label} unreadable: shown`).toBe(true);
+        expect(await shownOf(app, label === 'Features' ? 'Restriction Sites' : 'Features'), 'the other one as saved').toBe(false);
+        expect(drawn(mainMap(app))[part], `${label}: drawn`).toBeGreaterThan(0);
+        expect(occurrences(noticeText(app), sentence), `${label}: the restore notice holds the exact sentence once`).toBe(1);
+      }
+    }, { storage });
+  });
+
+  it('US-01M7DV8W AC4 a plain .mbc session with one unreadable track names it in the restore notice exactly once', async () => {
+    const storage = memoryStorage();
+    await withApp(async (app) => {
+      for (const [label, key, sentence, part] of UNREADABLE_CASES) {
+        const raw = await unreadableSession(app, storage, key, `DV8W_Plain_${key}`);
+        if (await shownOf(app, label)) await toggleTrack(app, label);
+        await dropFile(app, new File([raw], 'dv8w_plain.mbc'));
+        expect(words(app.doc.body.textContent), 'the App opened the plain session').toContain(`Restored workbench "DV8W_Plain_${key}.mbc"`);
+        expect(await shownOf(app, label), `${label} unreadable: shown`).toBe(true);
+        expect(drawn(mainMap(app))[part], `${label}: drawn`).toBeGreaterThan(0);
+        expect(occurrences(noticeText(app), sentence), `${label}: the sentence once, not again past the restore sentence`).toBe(1);
+      }
+    }, { storage });
+  });
+
+  it("US-01M7DV8W AC2 the main view's wrapped multi-row genome map draws no feature box with Features hidden, with a positive control", async () => {
+    const GENOME = doc('dv8w-genome', 'Genome_Doc', dna(6_000, 41), {
+      folder: 'Genomes/Viruses', topology: 'linear',
+      features: [
+        { id: 'g1', name: 'Gene_1', type: 'CDS', start: 200, end: 900, strand: 1, color: '#3b82f6', qualifiers: {} },
+        { id: 'g2', name: 'Gene_2', type: 'CDS', start: 3_100, end: 4_400, strand: -1, color: '#ef4444', qualifiers: {} },
+      ],
+    } as Partial<SequenceDocument>);
+    await withApp(async (app) => {
+      await restoreTracks(app, [GENOME], GENOME.id, 'linear');
+      const wrapped = () => app.one('svg.mbc-wrapped-genome-svg', 'the wrapped multi-row genome map');
+      const shown = parts(wrapped(), 'feature-box');
+      expect(shown, 'positive control: the genome map draws a feature box').toBeGreaterThan(0);
+      await toggleTrack(app, 'Features');
+      expect(parts(wrapped(), 'feature-box'), 'Features hidden: no feature box in the genome map').toBe(0);
+      expect(drawn(app.canvas()).boxes, 'nor anywhere in the main view').toBe(0);
+      await toggleTrack(app, 'Features');
+      expect(parts(wrapped(), 'feature-box'), 'shown again').toBe(shown);
+    });
   });
 });
 
