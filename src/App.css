@@ -15530,3 +15530,117 @@ table,
 .mbc-dark-mode .mbc-figure-export-ext {
   color: #94a3b8;
 }
+
+/* Search Project (US-01M7DV88): a floating panel over the workbench, its results scrolled inside it. */
+.mbc-project-search {
+  position: fixed;
+  inset-block-start: 72px;
+  inset-inline-end: var(--mbc-space-4);
+  z-index: 900;
+  inline-size: min(560px, calc(100vw - 32px));
+  max-block-size: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--mbc-space-2);
+  padding: var(--mbc-space-3);
+  overflow: auto;
+  background: var(--mbc-bg-elevated);
+  border: 1px solid var(--mbc-border);
+  border-radius: var(--mbc-radius-md);
+  box-shadow: var(--mbc-shadow-lg);
+  color: var(--mbc-text-main);
+}
+
+.mbc-project-search-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mbc-project-search-head h2 {
+  margin: 0;
+  font-size: var(--font-size-title);
+}
+
+.mbc-project-search-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mbc-space-3);
+  margin: 0;
+  padding: var(--mbc-space-1) var(--mbc-space-2);
+  border: 1px solid var(--mbc-border-light);
+  border-radius: var(--mbc-radius-sm);
+}
+
+.mbc-project-search-scopes label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--mbc-space-1);
+}
+
+.mbc-project-search-scope,
+.mbc-project-search-fields,
+.mbc-project-search-summary {
+  margin: 0;
+}
+
+.mbc-project-search-fields {
+  color: var(--mbc-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.mbc-project-search-summary {
+  font-weight: 600;
+}
+
+.mbc-project-search-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--mbc-space-2);
+}
+
+.mbc-project-search-results,
+.mbc-project-search-results ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mbc-project-search-group {
+  padding-block: var(--mbc-space-2);
+  border-block-start: 1px solid var(--mbc-border-light);
+}
+
+.mbc-project-search-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mbc-space-2);
+  align-items: baseline;
+}
+
+.mbc-project-search-group-head span {
+  color: var(--mbc-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.mbc-project-search-results li[data-search-hit] {
+  display: flex;
+  gap: var(--mbc-space-2);
+  padding-inline-start: var(--mbc-space-3);
+  font-size: var(--font-size-label);
+}
+
+.mbc-project-search-field {
+  flex: none;
+  color: var(--mbc-text-muted);
+}
+
+.mbc-project-search-snippet {
+  overflow-wrap: anywhere;
+}
+
+.mbc-project-search-snippet mark {
+  background: var(--mbc-amber-soft);
+  color: inherit;
+  border-radius: var(--mbc-radius-xs);
+}

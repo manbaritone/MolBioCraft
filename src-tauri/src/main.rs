@@ -474,6 +474,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 "Search Tools & Files",
                 Some("CmdOrCtrl+Shift+F"),
             )?,
+            &item("view:search-project", "Search Project…", None)?,
         ],
     )?;
 

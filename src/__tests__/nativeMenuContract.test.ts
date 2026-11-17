@@ -213,4 +213,23 @@ describe('native menu ↔ dispatcher contract', () => {
     }
     expect([...seen].sort(), 'the contexts reach both states').toEqual([false, true]);
   });
+  it('lists View › Search & Filter › Search Project… natively, its dispatcher case gated on a session (US-01M7DV88 AC1)', () => {
+    const sub = mainRs.slice(mainRs.indexOf('let view_search_sub'), mainRs.indexOf('let view_panels_sub'));
+    expect(sub.length).toBeGreaterThan(0);
+    const items = [...sub.matchAll(/item\(\s*"([^"]+)",\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]);
+    // Beside the table filter's two items, which stay.
+    expect(items).toEqual([
+      ['view:filter-folder', 'Filter Folder'],
+      ['view:search-tools', 'Search Tools & Files'],
+      ['view:search-project', 'Search Project…'],
+    ]);
+    expect(nativeIds.has('view:search-project')).toBe(true);
+    // The case's first line is requireActiveSession, so no session-independent list may name it.
+    expect(dispatcher.get('view:search-project')).toBe(true);
+    expect(NATIVE_MENU_SESSION_INDEPENDENT_IDS).not.toContain('view:search-project');
+    expect(NATIVE_MENU_SESSION_INDEPENDENT_PREFIXES.some((p) => 'view:search-project'.startsWith(p))).toBe(false);
+    const base = { activeDoc: null, selection: null, undoDepth: 0, redoDepth: 0 };
+    expect(resolveNativeMenuItemEnabled('view:search-project', buildNativeMenuState({ ...base, sessionActive: false }))).toBe(false);
+    expect(resolveNativeMenuItemEnabled('view:search-project', buildNativeMenuState({ ...base, sessionActive: true }))).toBe(true);
+  });
 });

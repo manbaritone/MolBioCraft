@@ -345,6 +345,8 @@ import {
   StaticModalDialog,
 } from './components/MenusPreferencesAndBlastModal';
 import { PrimerDatabaseWindow } from './components/PrimerDatabaseWindow';
+import { initialFolderScope, ProjectSearchPanel } from './components/ProjectSearchPanel';
+import type { SearchContext, SearchScope } from './core/projectSearch';
 import { EnzymeDatabaseWindow, collectionMemberLabel, type EnzymeWindowIntent } from './components/EnzymeDatabaseWindow';
 import {
   buildNcbiReferencePresetDocumentRust,
@@ -1181,6 +1183,8 @@ export const App: React.FC = () => {
   const [folderColors, setFolderColors] = useState<Record<string, string>>({});
   const [favoriteDocIds, setFavoriteDocIds] = useState<string[]>(['doc-pet28-egfp']);
   const [deletedDocIds, setDeletedDocIds] = useState<string[]>([]);
+  /** The open Search Project panel (US-01M7DV88): its folder and the scope it opened on; `key` remounts it on each open. */
+  const [projectSearch, setProjectSearch] = useState<{ folderId: string; scope: SearchScope; key: number } | null>(null);
   const [checkedDocIds, setCheckedDocIds] = useState<string[]>([SAMPLE_LIBRARY[0].id]);
   const [visibleColumns, setVisibleColumns] = useState<string[]>(
     () => DOC_TABLE_COLUMN_PRESETS['standard-cloning'].columns
@@ -2022,6 +2026,18 @@ export const App: React.FC = () => {
     }));
   }, [customFolders, documents, folderNames, folderParents]);
   const visibleExplorerFolders = useMemo(() => explorerFolders.filter((folder) => !hiddenFolders.includes(folder.id)), [explorerFolders, hiddenFolders]);
+  // Search Project reads the whole catalog (deleted documents included, for Deleted Items) and every
+  // folder, hidden ones included, as projectSearch.ts's SearchContext asks - not the visible tree.
+  const projectSearchContext = useMemo<SearchContext>(
+    () => ({ documents: catalogAllDocs, folders: explorerFolders, deletedIds: deletedDocIds, favoriteIds: favoriteDocIds }),
+    [catalogAllDocs, explorerFolders, deletedDocIds, favoriteDocIds]
+  );
+  const openProjectSearch = (folderId: string, scope: SearchScope) =>
+    setProjectSearch((prev) => ({ folderId, scope, key: (prev?.key ?? 0) + 1 }));
+  // The panel searches a session; closing the session closes it, so the next session does not reopen it.
+  useEffect(() => {
+    if (!sessionActive) setProjectSearch(null);
+  }, [sessionActive]);
   const explorerFolderCounts = useMemo(() => Object.fromEntries(explorerFolders.map((folder) => [folder.id,
     documentsInFolder(folder.id, explorerFolders, catalogNonDeletedDocs).length,
   ])), [explorerFolders, catalogNonDeletedDocs]);
@@ -6145,6 +6161,13 @@ export const App: React.FC = () => {
       },
       {
         kind: 'command',
+        id: 'folder-search',
+        label: 'Search Folder…',
+        icon: <Search size={14} />,
+        onSelect: () => requireActiveSession(() => openProjectSearch(target, initialFolderScope(target))),
+      },
+      {
+        kind: 'command',
         id: 'folder-export',
         label: 'Export Folder…',
         icon: null,
@@ -7346,6 +7369,9 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           window.setTimeout(() => {
             document.getElementById('mbc-toolbar-global-search-input')?.focus();
           }, 30);
+          break;
+        case 'view:search-project':
+          requireActiveSession(() => openProjectSearch(PROJECT_ROOT, 'Entire project'));
           break;
         case 'view:split-top-bottom':
           requireActiveSession(() => {
@@ -9761,6 +9787,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 document.getElementById('mbc-toolbar-global-search-input')?.focus();
               }, 30);
             },
+          },
+          {
+            kind: 'command',
+            id: 'view-search-project',
+            label: 'Search Project…',
+            onSelect: () => requireActiveSession(() => openProjectSearch(PROJECT_ROOT, 'Entire project')),
           },
         ],
       },
@@ -17504,6 +17536,15 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         );
       })()}
 
+      {projectSearch && (
+        <ProjectSearchPanel
+          key={projectSearch.key}
+          folderId={projectSearch.folderId}
+          initialScope={projectSearch.scope}
+          context={projectSearchContext}
+          onClose={() => setProjectSearch(null)}
+        />
+      )}
       {primerDbWindow && (
         <PrimerDatabaseWindow
           returnFocusTo={primerDbWindow.opener}
