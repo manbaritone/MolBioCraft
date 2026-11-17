@@ -15,7 +15,12 @@
  * Every save re-reads storage first, so a set another tab of the standalone build saved is kept.
  * Rename, remove and a rerun's write (US-01M7DVDF) re-read it first too, change only the one set by
  * its id, and say `Nothing was changed: <reason>` when the store cannot be read, the set is gone or
- * the storage refuses or does not keep the write.
+ * the storage refuses or does not keep the write. A stored envelope with a top-level key this
+ * version does not know is malformed, naming the key, so no writer drops it (US-01M7M67J).
+ *
+ * The backup (US-01M7M67J) is `{ format, schema, exportedAt, sets }` holding every stored set as
+ * stored. An import adds each new id as the file holds it, leaves an identical id as it is and keeps
+ * a differing id as stored; a file, or a store, it cannot read changes nothing.
  *
  * The rows and the report are typed as the engine's own `CrisprScanGuide` and `CrisprScanReport`
  * and stored as the engine sent them, never a copy of their field lists.
@@ -31,6 +36,9 @@ import { getRustEngineDiagnostics } from '../lib/rustBioEngine';
 export const GUIDE_SET_DATABASE_KEY = 'molbiocraft.crisprGuideSets';
 /** The envelope schema this build writes and the highest it can read. */
 export const GUIDE_SET_DATABASE_SCHEMA = 1;
+
+/** The `format` a guide set backup file names itself with (US-01M7M67J). */
+export const GUIDE_SET_BACKUP_FORMAT = 'molbiocraft-crispr-guide-set-backup';
 
 /** The two calls of the Web Storage API the store uses. */
 export interface GuideSetStorage {
@@ -146,8 +154,28 @@ export interface GuideSetRerun {
   heuristicRule: string;
 }
 
+/** What an import did, by id (US-01M7M67J): only `added` were written. */
+export interface GuideSetImport {
+  added: string[];
+  /** Ids whose stored set serialises to the same JSON as the file's set. */
+  unchanged: string[];
+  /** Ids whose stored set serialises to other JSON than the file's set: kept as stored. */
+  kept: string[];
+}
+
 export interface GuideSetDatabase {
   read(): GuideSetRead;
+  /**
+   * The backup of every stored set, as stored, documents not open included (US-01M7M67J), or why
+   * the store cannot be read.
+   */
+  exportBackup(): GuideSetResult<string>;
+  /**
+   * Import a backup file's text. A refusal's message is the whole sentence,
+   * `<file> was not imported: <why>. Nothing was changed.`; a file or a store that cannot be read
+   * is refused before any write.
+   */
+  importBackup(file: string, text: string): GuideSetResult<GuideSetImport>;
   /** The sets saved for this document id, oldest first. */
   listForDocument(documentId: string): GuideSetList;
   /**
@@ -207,6 +235,11 @@ function unreadableSet(v: unknown): string | null {
   return null;
 }
 
+const unknownKeys = (keys: string[]) =>
+  keys.length === 1
+    ? `it has a top-level key this version does not know: ${keys[0]}`
+    : `it has top-level keys this version does not know: ${keys.join(', ')}`;
+
 /**
  * The sets an envelope holds, if it is one of the current schema. A higher schema is
  * `futureSchema`; anything else, including a set that cannot be read or a repeated id, is `malformed`.
@@ -224,6 +257,8 @@ function readEnvelope(value: unknown): { ok: true; sets: GuideSet[] } | { ok: fa
       why: `it was written with schema ${schema}, newer than the schema ${GUIDE_SET_DATABASE_SCHEMA} this version of MolBioCraft reads`,
     };
   }
+  const unknown = Object.keys(value).filter((k) => k !== 'schema' && k !== 'sets');
+  if (unknown.length > 0) return { ok: false, kind: 'malformed', why: unknownKeys(unknown) };
   if (!Array.isArray(sets)) return { ok: false, kind: 'malformed', why: 'it holds no list of guide sets' };
   const ids = new Set<string>();
   for (const [i, s] of sets.entries()) {
@@ -248,19 +283,18 @@ export function openGuideSetDatabase(env: GuideSetDatabaseEnv = {}): GuideSetDat
     return ls;
   }
 
-  function read(): GuideSetRead {
+  /** The stored sets, or why they cannot be read (and the stored value, when there is one). */
+  function readStore():
+    | { ok: true; sets: GuideSet[]; stored: boolean }
+    | { ok: false; kind: GuideSetErrorKind; why: string; storedValue?: string } {
     let raw: string | null;
     try {
       raw = storage().getItem(GUIDE_SET_DATABASE_KEY);
     } catch (err) {
-      return fail('unavailable', `The saved guide sets (${GUIDE_SET_DATABASE_KEY}) cannot be read: storage is unavailable (${errorText(err)}).`);
+      return { ok: false, kind: 'unavailable', why: `storage is unavailable (${errorText(err)})` };
     }
     if (raw === null) return { ok: true, sets: [], stored: false };
-    const stored = raw;
-    const unreadable = (kind: GuideSetErrorKind, why: string) =>
-      fail(kind, `The saved guide sets (${GUIDE_SET_DATABASE_KEY}) cannot be read: ${why}. They are kept as they are.`, {
-        storedValue: stored,
-      });
+    const unreadable = (kind: GuideSetErrorKind, why: string) => ({ ok: false as const, kind, why, storedValue: raw as string });
     if (raw.trim() === '') return unreadable('malformed', 'it holds an empty value');
     let parsed: unknown;
     try {
@@ -271,6 +305,15 @@ export function openGuideSetDatabase(env: GuideSetDatabaseEnv = {}): GuideSetDat
     const envelope = readEnvelope(parsed);
     if (!envelope.ok) return unreadable(envelope.kind, envelope.why);
     return { ok: true, sets: envelope.sets, stored: true };
+  }
+
+  function read(): GuideSetRead {
+    const r = readStore();
+    if (r.ok) return r;
+    const tail = r.kind === 'unavailable' ? '.' : '. They are kept as they are.';
+    return fail(r.kind, `The saved guide sets (${GUIDE_SET_DATABASE_KEY}) cannot be read: ${r.why}${tail}`, {
+      ...(r.storedValue !== undefined ? { storedValue: r.storedValue } : {}),
+    });
   }
 
   /** The stored sets for a change, or why nothing can be changed: the store re-read, never a copy. */
@@ -301,6 +344,60 @@ export function openGuideSetDatabase(env: GuideSetDatabaseEnv = {}): GuideSetDat
 
   return {
     read,
+
+    exportBackup() {
+      const current = read();
+      if (!current.ok) return current;
+      // The sets as read from storage, which this store wrote with JSON.stringify: serialised again
+      // they are the stored bytes.
+      return {
+        ok: true,
+        value: JSON.stringify({ format: GUIDE_SET_BACKUP_FORMAT, schema: GUIDE_SET_DATABASE_SCHEMA, exportedAt: now(), sets: current.sets }),
+      };
+    },
+
+    importBackup(file, text) {
+      const refuse = (why: string) => fail('invalid', `${file} was not imported: ${why}. Nothing was changed.`);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return refuse('it is not valid JSON');
+      }
+      if (!isObject(parsed) || parsed.format !== GUIDE_SET_BACKUP_FORMAT) {
+        return refuse('it is not a MolBioCraft CRISPR guide set backup');
+      }
+      const { format: _format, exportedAt: _exportedAt, ...envelope } = parsed;
+      // The schema is read before the keys: a newer schema may add keys, and is named as newer.
+      const fromFile = readEnvelope(envelope);
+      if (!fromFile.ok) return refuse(fromFile.why);
+      const current = readStore();
+      if (!current.ok) {
+        return fail(current.kind, `${file} was not imported: the saved guide sets (${GUIDE_SET_DATABASE_KEY}) cannot be read: ${current.why}. Nothing was changed.`, {
+          ...(current.storedValue !== undefined ? { storedValue: current.storedValue } : {}),
+        });
+      }
+      const byId = new Map(current.sets.map((s) => [s.id, JSON.stringify(s)]));
+      const summary: GuideSetImport = { added: [], unchanged: [], kept: [] };
+      const added: GuideSet[] = [];
+      for (const set of fromFile.sets) {
+        const storedText = byId.get(set.id);
+        if (storedText === undefined) {
+          added.push(set);
+          summary.added.push(set.id);
+        } else if (storedText === JSON.stringify(set)) {
+          summary.unchanged.push(set.id);
+        } else {
+          summary.kept.push(set.id);
+        }
+      }
+      if (added.length === 0) return { ok: true, value: summary };
+      const written = writeSets([...current.sets, ...added]);
+      if (!written.ok) {
+        return fail('notSaved', `${file} was not imported: ${written.error.message.replace(/^Nothing was changed: /, '').replace(/\.$/, '')}. Nothing was changed.`);
+      }
+      return { ok: true, value: summary };
+    },
 
     listNotOpen(openDocumentIds) {
       const current = read();

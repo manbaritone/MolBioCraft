@@ -27,6 +27,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CrisprScanGuide, CrisprScanReport, CrisprScanResult } from '../core/bioEngine';
 import { crisprNucleasePresets, scanCrisprGuides } from '../core/bioEngine';
 import {
+  GUIDE_SET_BACKUP_FORMAT,
   GUIDE_SET_DATABASE_KEY,
   openGuideSetDatabase,
   type GuideSetRun,
@@ -556,5 +557,86 @@ describe('a saved guide set is renamed, removed and rerun in place by its id (US
     expect(db.listNotOpen([])).toEqual({ kind: 'saved', sets: [a, b] });
     const blocked = openGuideSetDatabase({ storage: memory({ [GUIDE_SET_DATABASE_KEY]: '' }).storage }).listNotOpen([]);
     expect(blocked.kind).toBe('unreadable');
+  });
+});
+
+describe('a stored envelope with a top-level key this version does not know is malformed, and no writer drops it (US-01M7M67J)', () => {
+  /**
+   * Wrong implementations these kill (LC-002, LC-006): an unknown key accepted, so a save, rename,
+   * remove, rerun or import rebuilds the envelope from `{ schema, sets }` and drops it; the key not
+   * named; the store listed as no saved sets; a newer schema with a new key named as malformed.
+   */
+  function storeWithKey(extra: Record<string, unknown>) {
+    const seed = memory();
+    const f = FIXTURES[0];
+    const saved = openGuideSetDatabase({ storage: seed.storage, now: clock, newId: ids }).save(runOf(f, scan(f), 'Kept'), docRef(f.doc));
+    if (!saved.ok) throw new Error(saved.error.message);
+    const raw = JSON.stringify({ schema: 1, sets: [saved.value], ...extra });
+    const mem = memory({ [GUIDE_SET_DATABASE_KEY]: raw });
+    return { mem, raw, set: saved.value, f, db: openGuideSetDatabase({ storage: mem.storage, now: clock, newId: ids }) };
+  }
+
+  it('US-01M7M67J AC3 an unknown top-level key reads as malformed naming it, never as no saved sets, and every writer keeps the stored bytes', () => {
+    const { mem, raw, set, f, db } = storeWithKey({ pinned: ['x'] });
+    const read = db.read();
+    expect(read.ok).toBe(false);
+    expect(!read.ok && read.error.kind).toBe('malformed');
+    expect(!read.ok && read.error.message).toBe(
+      `The saved guide sets (${GUIDE_SET_DATABASE_KEY}) cannot be read: it has a top-level key this version does not know: pinned. They are kept as they are.`
+    );
+    expect(!read.ok && read.error.storedValue).toBe(raw);
+    expect(db.listForDocument(set.documentId).kind, 'never no saved sets').toBe('unreadable');
+    expect(db.listNotOpen([]).kind).toBe('unreadable');
+    expect(db.exportBackup().ok, 'nothing to export is not claimed').toBe(false);
+
+    const rerun = { ranAt: set.ranAt, topology: 'linear' as const, report: set.report, guides: set.guides, scoreNames: set.scoreNames, heuristicRule: set.heuristicRule };
+    const backup = JSON.stringify({ format: GUIDE_SET_BACKUP_FORMAT, schema: 1, exportedAt: clock(), sets: [{ ...set, id: 'set-new' }] });
+    const writers = {
+      save: () => db.save(runOf(f, scan(f), 'Another'), docRef(f.doc)),
+      rename: () => db.rename(set.id, 'Renamed'),
+      remove: () => db.remove(set.id),
+      rerun: () => db.writeRerun(set.id, rerun, docRef(f.doc)),
+      import: () => db.importBackup('lab.json', backup),
+    };
+    for (const [label, write] of Object.entries(writers)) {
+      const r = write();
+      expect(r.ok, label).toBe(false);
+      expect(!r.ok && r.error.kind, label).toBe('malformed');
+      expect(!r.ok && r.error.message, label).toContain('it has a top-level key this version does not know: pinned');
+    }
+    expect(mem.writes, 'nothing written').toEqual([]);
+    expect(mem.raw()).toBe(raw);
+  });
+
+  it('US-01M7M67J AC3 every unknown key is named, and a newer schema is named as newer before its keys', () => {
+    const two = storeWithKey({ pinned: 1, notes: 'n' }).db.read();
+    expect(!two.ok && two.error.message).toContain('it has top-level keys this version does not know: pinned, notes');
+    const newer = storeWithKey({ schema: 2, pinned: 1 }).db.read();
+    expect(!newer.ok && newer.error.kind).toBe('futureSchema');
+  });
+
+  it('US-01M7M67J AC3 a backup file is refused whole, by name, and the store keeps its bytes', () => {
+    const { mem, raw, set } = storeWithKey({});
+    const db = openGuideSetDatabase({ storage: mem.storage });
+    const fresh = { ...set, id: 'set-fresh' };
+    const { name: _n, ...noName } = { ...set, id: 'set-bad' };
+    const file = (extra: Record<string, unknown>, sets: unknown[] = [fresh]) =>
+      JSON.stringify({ format: GUIDE_SET_BACKUP_FORMAT, schema: 1, exportedAt: clock(), sets, ...extra });
+    const cases: [string, string][] = [
+      ['{', 'it is not valid JSON'],
+      [JSON.stringify({ schema: 1, sets: [fresh] }), 'it is not a MolBioCraft CRISPR guide set backup'],
+      [file({ comment: 'c' }), 'it has a top-level key this version does not know: comment'],
+      [file({ schema: 3 }), 'it was written with schema 3, newer than the schema 1 this version of MolBioCraft reads'],
+      [file({}, [fresh, noName]), 'set 2 cannot be read: it has no name'],
+    ];
+    for (const [text, why] of cases) {
+      const r = db.importBackup('f.json', text);
+      expect(!r.ok && r.error.message, why).toBe(`f.json was not imported: ${why}. Nothing was changed.`);
+    }
+    expect(mem.writes).toEqual([]);
+    expect(mem.raw()).toBe(raw);
+    const ok = db.importBackup('f.json', file({}, [set, fresh]));
+    expect(ok.ok && ok.value).toEqual({ added: ['set-fresh'], unchanged: [set.id], kept: [] });
+    expect(mem.raw()).toBe(JSON.stringify({ schema: 1, sets: [set, fresh] }));
   });
 });

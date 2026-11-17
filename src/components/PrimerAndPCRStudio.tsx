@@ -45,8 +45,26 @@ import { WorkbenchSmartTable } from './WorkbenchSmartTable';
 import { originSpanningSiteCount, primerSiteStatus } from '../core/primerSiteStatus';
 import { primerTmText } from './CircularPlasmidMap';
 import { activePrimers, openPrimerDatabase, type DatabasePrimerInput, type PrimerDatabase } from '../core/primerDatabase';
-import { usePrimerDatabaseSave } from './PrimerDatabaseWindow';
+import { savePlatformFile, usePrimerDatabaseSave, type PlatformSaveResult } from './PrimerDatabaseWindow';
 import { openGuideSetDatabase, type GuideSet, type GuideSetList } from '../core/guideSetDatabase';
+
+/** What a guide set export reports: "Exported" only for a file the platform says it wrote. */
+function describeGuideSetExport(result: PlatformSaveResult, filename: string): { ok: boolean; text: string } {
+  switch (result.kind) {
+    case 'saved':
+      return { ok: true, text: `Exported the saved guide sets to ${result.where}.` };
+    case 'cancelled':
+      return { ok: true, text: 'Export cancelled: no file was saved.' };
+    case 'unconfirmed':
+      return result.how === 'downloaded'
+        ? { ok: true, text: `Export: handed to your browser to download as ${filename}; the browser does not say whether it was kept.` }
+        : { ok: true, text: `Export: sent to the save dialog as ${filename}; this build is not told whether it was saved.` };
+    case 'failed':
+      return { ok: false, text: `Export failed: ${result.message}. No file was saved.` };
+    default:
+      return { ok: false, text: 'Export is not possible here: this build has no save path.' };
+  }
+}
 
 /** How many of the candidate guides the CRISPR tab lists. */
 const CRISPR_GUIDES_LISTED = 25;
@@ -696,6 +714,12 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [guideSetDb, openDocumentIds, guideSetsRead, guideSetWrites]
   );
+  /** The whole store, for the backup (US-01M7M67J): Export is offered only while it reads and holds a set. */
+  const guideSetStore = useMemo(
+    () => guideSetDb.read(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [guideSetDb, guideSetsRead, guideSetWrites]
+  );
   const [guideSetSave, setGuideSetSave] = useState<{ docId: string; ok: boolean; text: string } | null>(null);
   /**
    * Save this result is offered only for a completed run shown on this document's current revision:
@@ -747,6 +771,33 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   const noteGuideSet = (ok: boolean, text: string) => {
     crisprSearches.guideSetNotice = { docId: doc.id, ok, text };
     crisprSearchesChanged();
+  };
+  /** Export every saved set, documents not open included, as the versioned backup (US-01M7M67J). */
+  const exportGuideSets = async () => {
+    const backup = guideSetDb.exportBackup();
+    setGuideSetsRead((n) => n + 1);
+    if (!backup.ok) return noteGuideSet(false, backup.error.message);
+    const filename = `crispr-guide-sets-${new Date().toISOString().slice(0, 10)}.json`;
+    const said = describeGuideSetExport(await savePlatformFile(filename, backup.value), filename);
+    noteGuideSet(said.ok, said.text);
+  };
+  /** Import a backup file; the saved-sets lists are read again, and the document is never touched. */
+  const importGuideSets = async (file: File | undefined) => {
+    if (!file) return;
+    let text: string;
+    try {
+      text = await file.text();
+    } catch (err) {
+      return noteGuideSet(false, `${file.name} was not imported: it could not be read (${err instanceof Error ? err.message : String(err)}). Nothing was changed.`);
+    }
+    const r = guideSetDb.importBackup(file.name, text);
+    setGuideSetsRead((n) => n + 1);
+    if (!r.ok) return noteGuideSet(false, r.error.message);
+    const { added, unchanged, kept } = r.value;
+    noteGuideSet(
+      true,
+      `Imported ${file.name}: ${added.length} added, ${unchanged.length} unchanged, ${kept.length} kept as stored${kept.length > 0 ? ` (${kept.join(', ')})` : ''}.`
+    );
   };
   const toggleGuideSetRows = (id: string) =>
     setGuideSetRowsShown((shown) => (shown.includes(id) ? shown.filter((x) => x !== id) : [...shown, id]));
@@ -2032,6 +2083,34 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             ) : (
               <ul>{guideSetList.sets.map((set) => guideSetEntry(set, 'here'))}</ul>
             )}
+          </div>
+          {/* The backup (US-01M7M67J): Export only while the store reads and holds a set; over a
+              store that cannot be read the list above names why, and nothing here claims it is empty.
+              Import is always offered, and refuses by name what it cannot read. */}
+          <div className="cloning-action-row" data-guide-set-backup="">
+            {guideSetStore.ok && guideSetStore.sets.length > 0 && (
+              <button type="button" className="btn-secondary-sm" data-guide-set-export="" onClick={() => void exportGuideSets()}>
+                Export guide sets…
+              </button>
+            )}
+            {guideSetStore.ok && guideSetStore.sets.length === 0 && (
+              <span className="mbc-opdlg-muted" data-guide-set-export-none="">
+                No saved guide sets to export.
+              </span>
+            )}
+            <label className="form-field">
+              <span>Import guide sets (.json)</span>
+              <input
+                type="file"
+                accept=".json,application/json"
+                aria-label="Import guide sets"
+                data-guide-set-import=""
+                onChange={(e) => {
+                  void importGuideSets(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+            </label>
           </div>
           {/* The sets of documents not open here (US-01M7DVDF AC6), apart from this document's. The
               section is drawn only when such a set is stored: a store that cannot be read is named
