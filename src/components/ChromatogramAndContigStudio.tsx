@@ -1,7 +1,7 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Settings2, TriangleAlert } from 'lucide-react';
 import { FigureExportButton } from './FigureExportButton';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
@@ -20,6 +20,7 @@ import { ResultWarnings } from './ResultWarnings';
 import { WorkbenchSmartTable } from './WorkbenchSmartTable';
 import { InspectorSection, useInWorkbench } from './WorkbenchInspector';
 import { BASE_COLOR, baseColor, qualityColor } from '../core/basePalette';
+import { classifyWheelGesture, normalizeWheelDelta, wheelZoomScale, type WheelGestureLike } from '../core/wheelZoom';
 
 /** A quality-trimmed read shorter than this is warned about before it can be saved as a read. */
 const MIN_READ_BP = 20;
@@ -37,6 +38,247 @@ const NO_QUALITY_VALUES = 'No quality values in this file';
 const NO_QUALITY_VALUES_SHORT = 'No quality values';
 
 const counted = (n: number, unit: string) => `${n.toLocaleString()} ${unit}${n === 1 ? '' : 's'}`;
+
+// ─── Wheel and pinch zoom of the base window (US-01M7CM8J, CR-01M7CCSD) ───
+
+/** The base window the chromatogram opens at, and the bounds a zoom holds it to. */
+const CHROMATOGRAM_WINDOW_DEFAULT = 45;
+const CHROMATOGRAM_WINDOW_MIN = 10;
+const CHROMATOGRAM_WINDOW_MAX = 180;
+/** The width of the trace and the quality strip's view, and the plot inside it. */
+const CHROMATOGRAM_VIEW_WIDTH = 830;
+const PLOT_LEFT = 25;
+const PLOT_WIDTH = 780;
+
+/**
+ * The zoom of the chromatogram: the window's first base (0-based) and its span in bases, kept
+ * unrounded so that a trackpad's small deltas add up; the window drawn is the span rounded.
+ */
+export interface ChromatogramWheelView {
+  offset: number;
+  span: number;
+}
+
+/** What a chromatogram zoom reads besides the view. Nothing here is read from the DOM by the step. */
+export interface ChromatogramWheelContext {
+  /** The read's length in bases. */
+  readLength: number;
+  /** The drawing's svg box on screen, or null when it is not laid out. */
+  rect: { left: number; top: number; width: number; height: number } | null;
+  /** The height of the drawing's view (its width is 830). */
+  viewHeight: number;
+  /**
+   * The trace's geometry, for the trace, whose bases sit at their recorded peaks; absent for the
+   * quality strip, whose bases sit on an even grid.
+   */
+  trace?: { peakLocations: number[]; samples: number; baseCount: number };
+}
+
+export interface ChromatogramWheelStep {
+  handled: boolean;
+  view: ChromatogramWheelView;
+}
+
+/** The bounds a zoom holds the span to: 10 to 180 bases, and no more than the read. */
+function spanBounds(readLength: number) {
+  return { min: CHROMATOGRAM_WINDOW_MIN, max: Math.max(CHROMATOGRAM_WINDOW_MIN, Math.min(CHROMATOGRAM_WINDOW_MAX, readLength)) };
+}
+
+/** The window drawn for a span: the span rounded, within 10 to 180 bases, and held to the read's length. */
+export function chromatogramWindow(span: number, readLength: number): number {
+  const bases = Math.max(CHROMATOGRAM_WINDOW_MIN, Math.min(CHROMATOGRAM_WINDOW_MAX, Math.round(Number.isFinite(span) ? span : CHROMATOGRAM_WINDOW_DEFAULT)));
+  return readLength > 0 ? Math.min(bases, readLength) : bases;
+}
+
+/**
+ * The x, in view units, at which the trace draws base `i` of the window of `window` bases from
+ * `offset`: written out from `compute_chromatogram_viewport` (chromatogram_mbc.rs), which places a
+ * base at its recorded peak within the samples from the boundary before the window's first base to
+ * the boundary after its last, or proportionally when the file records no peak for every base.
+ */
+function traceBaseX(trace: NonNullable<ChromatogramWheelContext['trace']>, offset: number, window: number, i: number): number {
+  const total = trace.baseCount;
+  const pts = trace.samples;
+  const peaks = trace.peakLocations;
+  const havePeaks = peaks.length === total && total > 0 && pts > 0;
+  const sampleOf = (k: number) => (havePeaks ? peaks[Math.min(k, total - 1)] : ((k + 0.5) * pts) / Math.max(1, total));
+  const boundary = (k: number) => (k === 0 ? 0 : k >= total ? pts : Math.min(pts, Math.round((sampleOf(k - 1) + sampleOf(k)) / 2)));
+  const start = Math.min(offset, Math.max(0, total - 1));
+  const end = Math.min(start + Math.max(1, window), total);
+  const startPt = boundary(start);
+  const endPt = Math.max(boundary(end), startPt);
+  const span = Math.max(1, endPt - startPt - 1);
+  const x = Math.min(PLOT_LEFT + PLOT_WIDTH, Math.max(PLOT_LEFT, PLOT_LEFT + ((sampleOf(i) - startPt) / span) * PLOT_WIDTH));
+  return Math.round(x * 10) / 10;
+}
+
+/** The x, in view units, at which the drawing places base `i` (0-based in the read). */
+function baseX(context: ChromatogramWheelContext, offset: number, window: number, i: number): number {
+  if (context.trace) return traceBaseX(context.trace, offset, window, i);
+  return PLOT_LEFT + ((i - offset + 0.5) / window) * PLOT_WIDTH;
+}
+
+/**
+ * A client x in the drawing's view units, through the svg's default "xMidYMid meet" fit of its
+ * 830-unit view into `rect`; undefined when the box is not laid out or the point is not a number.
+ */
+function viewXOf(clientX: number, context: ChromatogramWheelContext): number | undefined {
+  const rect = context.rect;
+  if (!rect || !(rect.width > 0) || !(rect.height > 0) || !Number.isFinite(clientX)) return undefined;
+  const k = Math.min(rect.width / CHROMATOGRAM_VIEW_WIDTH, context.viewHeight > 0 ? rect.height / context.viewHeight : Infinity);
+  const x = (clientX - rect.left - (rect.width - CHROMATOGRAM_VIEW_WIDTH * k) / 2) / k;
+  return Number.isFinite(x) ? x : undefined;
+}
+
+/**
+ * The view after zooming `view` to `span` bases about client x `clientX`: the base drawn nearest the
+ * pointer before the zoom is placed nearest it after (exactly on the quality strip's even grid,
+ * within a base on the trace's peaks), unless the window is held at either end of the read. With no
+ * usable pointer the zoom keeps the base at the middle of the plot.
+ */
+export function chromatogramZoomTo(view: ChromatogramWheelView, span: number, clientX: number, context: ChromatogramWheelContext): ChromatogramWheelView {
+  const length = Math.max(0, context.readLength);
+  const bounds = spanBounds(length);
+  const nextSpan = Math.min(bounds.max, Math.max(bounds.min, Number.isFinite(span) ? span : view.span));
+  const from = chromatogramWindow(view.span, length);
+  const to = chromatogramWindow(nextSpan, length);
+  if (length === 0) return { offset: 0, span: nextSpan };
+  const fromOffset = Math.max(0, Math.min(length - from, view.offset));
+  const px = viewXOf(clientX, context) ?? PLOT_LEFT + PLOT_WIDTH / 2;
+  const nearest = (offset: number, window: number) => {
+    let best = offset;
+    for (let i = offset + 1; i < Math.min(length, offset + window); i++) {
+      if (Math.abs(baseX(context, offset, window, i) - px) < Math.abs(baseX(context, offset, window, best) - px)) best = i;
+    }
+    return best;
+  };
+  const anchor = nearest(fromOffset, from);
+  // Of the windows that hold the anchor, the one whose base nearest the pointer is the anchor, or
+  // the base closest to it, and of those the one that draws the anchor nearest the pointer.
+  let offset = Math.max(0, Math.min(length - to, anchor));
+  let best = [Infinity, Infinity];
+  for (let o = Math.max(0, anchor - to + 1); o <= Math.min(anchor, length - to); o++) {
+    const score = [Math.abs(nearest(o, to) - anchor), Math.abs(baseX(context, o, to, anchor) - px)];
+    if (score[0] < best[0] || (score[0] === best[0] && score[1] < best[1])) {
+      best = score;
+      offset = o;
+    }
+  }
+  return { offset, span: nextSpan };
+}
+
+/**
+ * One wheel event over the trace or the quality strip, scroll surfaces in CR-01M7CCSD's policy: a
+ * plain wheel is the page's and is not handled; Ctrl or Cmd with the wheel, and a trackpad pinch (a
+ * ctrl-flagged wheel), zoom the base window by the shared multiplicative step, a notch toward the
+ * user showing fewer bases, about the base under the pointer.
+ */
+export function chromatogramWheelStep(
+  event: WheelGestureLike & { deltaMode?: number; clientX: number; clientY: number },
+  view: ChromatogramWheelView,
+  context: ChromatogramWheelContext
+): ChromatogramWheelStep {
+  if (classifyWheelGesture(event, 'scroll') !== 'zoom') return { handled: false, view };
+  const span = wheelZoomScale(view.span, -normalizeWheelDelta(event).y, spanBounds(context.readLength));
+  return { handled: true, view: chromatogramZoomTo(view, span, event.clientX, context) };
+}
+
+type AnyListener = (event: Event) => void;
+interface GestureLike {
+  scale?: number;
+  clientX?: number;
+  preventDefault(): void;
+}
+
+/**
+ * Listens for wheels and WebKit pinches on the drawing `target`, non-passively, as the maps do: a
+ * zoom the drawing takes has its default (page zoom) prevented, a plain or horizontal wheel keeps
+ * its scroll. The wheel deltas of one animation frame are summed into one step, and a pinch's
+ * changes of one frame into one zoom. A WebKit pinch (gesturestart / gesturechange) zooms to the
+ * gesture's start span over its `scale`; the ctrl-flagged wheels a pinch may send while it is under
+ * way are prevented but not applied. Returns the function that removes every listener.
+ */
+function bindChromatogramWheel(
+  target: Element,
+  hooks: { read(): { view: ChromatogramWheelView; context: ChromatogramWheelContext }; apply(view: ChromatogramWheelView): void }
+): () => void {
+  const options: AddEventListenerOptions = { passive: false };
+  let pendingWheel: { deltaY: number; ctrlKey: boolean; metaKey: boolean; clientX: number; clientY: number } | null = null;
+  let pendingPinch: { span: number; clientX: number } | null = null;
+  let frame: number | null = null;
+  let gestureFrom: number | null = null;
+  const rectOf = () => {
+    const r = target.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  };
+
+  const flush = () => {
+    frame = null;
+    const wheel = pendingWheel;
+    const pinch = pendingPinch;
+    pendingWheel = null;
+    pendingPinch = null;
+    const { view, context } = hooks.read();
+    const ctx = { ...context, rect: rectOf() };
+    let next = view;
+    if (pinch) next = chromatogramZoomTo(view, pinch.span, pinch.clientX, ctx);
+    else if (wheel) next = chromatogramWheelStep({ ...wheel, deltaX: 0, deltaMode: 0, altKey: false }, view, ctx).view;
+    if (next.offset !== view.offset || next.span !== view.span) hooks.apply(next);
+  };
+  const schedule = () => {
+    if (frame !== null) return;
+    if (typeof requestAnimationFrame === 'function') {
+      frame = requestAnimationFrame(flush);
+    } else {
+      frame = -1;
+      flush();
+    }
+  };
+
+  const onWheel = (event: WheelEvent) => {
+    if (classifyWheelGesture(event, 'scroll') !== 'zoom') return;
+    event.preventDefault();
+    if (gestureFrom !== null) return;
+    pendingWheel = {
+      deltaY: (pendingWheel?.deltaY ?? 0) + normalizeWheelDelta(event).y,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    schedule();
+  };
+  const onGestureStart = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = hooks.read().view.span;
+    pendingWheel = null;
+  };
+  const onGestureChange = (event: GestureLike) => {
+    event.preventDefault();
+    if (gestureFrom === null || !(Number(event.scale) > 0)) return;
+    pendingPinch = { span: gestureFrom / Number(event.scale), clientX: Number(event.clientX) };
+    schedule();
+  };
+  const onGestureEnd = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = null;
+  };
+
+  const listeners: [string, AnyListener][] = [
+    ['wheel', onWheel as unknown as AnyListener],
+    ['gesturestart', onGestureStart as unknown as AnyListener],
+    ['gesturechange', onGestureChange as unknown as AnyListener],
+    ['gestureend', onGestureEnd as unknown as AnyListener],
+  ];
+  for (const [type, listener] of listeners) target.addEventListener(type, listener, options);
+  return () => {
+    for (const [type, listener] of listeners) target.removeEventListener(type, listener);
+    if (frame !== null && frame !== -1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    frame = null;
+    pendingWheel = null;
+    pendingPinch = null;
+  };
+}
 
 /**
  * What keeps this read's quality values from scoring its base calls, or null when it has one for
@@ -96,6 +338,9 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
   const [selectedReadId, setSelectedReadId] = useState(initialRead?.id ?? '');
   const [selectedRefId, setSelectedRefId] = useState('');
   const [baseOffset, setBaseOffset] = useState(0);
+  // The base window's span, zoomed by Ctrl/Cmd+wheel and pinch (US-01M7CM8J); unrounded, so small
+  // trackpad deltas add up.
+  const [windowSpan, setWindowSpan] = useState(CHROMATOGRAM_WINDOW_DEFAULT);
   const [assemblyRequested, setAssemblyRequested] = useState(false);
   const selectionKey = selectedDocuments.map((doc) => doc.id + ':' + doc.updatedAt).join('|');
   useEffect(() => { setAssemblyRequested(false); }, [selectionKey]);
@@ -149,7 +394,9 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
   // FASTQ / SAM reads keep base calls and Phred qualities in a chromatogram with no trace channels
   const hasTraces = Boolean(chrom && (chrom.traceA.length || chrom.traceC.length || chrom.traceG.length || chrom.traceT.length));
   const isNgsRead = Boolean(chrom) && !hasTraces;
-  const WINDOW_BASES = 45;
+  // The base window every reader uses: the viewport call, the prev/next steps, the overview's
+  // window rect, the jump centring and both drawings.
+  const windowBases = chromatogramWindow(windowSpan, readDoc.sequence.length);
 
   const svgHeight = fullHeightView ? 344 : 248;
   const baselineY = showBasesAbove ? svgHeight - 20 : svgHeight - 48;
@@ -160,7 +407,7 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
     return computeChromatogramViewportRust(
       chrom,
       baseOffset,
-      WINDOW_BASES,
+      windowBases,
       traceSubTab === 'raw',
       heightScaleMode === 'autoscaled',
       verticalScale,
@@ -170,6 +417,7 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
   }, [
     chrom,
     baseOffset,
+    windowBases,
     traceSubTab,
     heightScaleMode,
     verticalScale,
@@ -244,9 +492,43 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
   }, [chrom]);
 
   const readLength = readDoc.sequence.length;
-  const maxOffset = Math.max(0, readLength - WINDOW_BASES);
-  const windowEnd = Math.min(readLength, baseOffset + WINDOW_BASES);
+  const maxOffset = Math.max(0, readLength - windowBases);
+  const windowEnd = Math.min(readLength, baseOffset + windowBases);
   const jumpToBase = (base1: number) => setBaseOffset(Math.max(0, Math.min(maxOffset, base1 - 1)));
+
+  // The trace or the quality strip, whichever is drawn, takes Ctrl/Cmd+wheel and pinch through a
+  // native non-passive listener (React attaches onWheel passively, so it could not prevent the page
+  // zoom). The listener reads the view as it stands through a ref.
+  const [zoomSurface, setZoomSurface] = useState<SVGSVGElement | null>(null);
+  const wheelState = useRef<{ view: ChromatogramWheelView; context: ChromatogramWheelContext }>({
+    view: { offset: 0, span: CHROMATOGRAM_WINDOW_DEFAULT },
+    context: { readLength: 0, rect: null, viewHeight: 0 },
+  });
+  wheelState.current = {
+    view: { offset: baseOffset, span: windowSpan },
+    context: {
+      readLength,
+      rect: null,
+      viewHeight: isNgsRead ? 150 : svgHeight,
+      trace: chrom && hasTraces
+        ? {
+          peakLocations: chrom.peakLocations,
+          samples: Math.min(chrom.traceA.length, chrom.traceC.length, chrom.traceG.length, chrom.traceT.length),
+          baseCount: chrom.baseCalls.length,
+        }
+        : undefined,
+    },
+  };
+  useEffect(() => {
+    if (!zoomSurface) return undefined;
+    return bindChromatogramWheel(zoomSurface, {
+      read: () => wheelState.current,
+      apply: (next) => {
+        setWindowSpan(next.span);
+        setBaseOffset(next.offset);
+      },
+    });
+  }, [zoomSurface]);
   const firstMixedPeak = viewportReport?.heterozygotePeaks[0];
   // The peak table holds the viewport's list, which stops at 32: name the cap when it cuts the list short.
   const listedPeaks = viewportReport?.heterozygotePeaks.length ?? 0;
@@ -598,15 +880,15 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
               onClick={(e) => {
                 const box = e.currentTarget.getBoundingClientRect();
                 if (box.width === 0) return;
-                jumpToBase(Math.round(((e.clientX - box.left) / box.width) * readLength) - Math.floor(WINDOW_BASES / 2));
+                jumpToBase(Math.round(((e.clientX - box.left) / box.width) * readLength) - Math.floor(windowBases / 2));
               }}
               onKeyDown={(e) => {
                 if (e.key === 'ArrowLeft') {
                   e.preventDefault();
-                  setBaseOffset((o) => Math.max(0, o - WINDOW_BASES));
+                  setBaseOffset((o) => Math.max(0, o - windowBases));
                 } else if (e.key === 'ArrowRight') {
                   e.preventDefault();
-                  setBaseOffset((o) => Math.min(maxOffset, o + WINDOW_BASES));
+                  setBaseOffset((o) => Math.min(maxOffset, o + windowBases));
                 }
               }}
             >
@@ -643,7 +925,7 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
                 <rect
                   x={(baseOffset / readLength) * 1000}
                   y={0}
-                  width={Math.max(3, (WINDOW_BASES / readLength) * 1000)}
+                  width={Math.max(3, (windowBases / readLength) * 1000)}
                   height={22}
                   fill="rgba(0, 114, 178, 0.22)"
                   stroke="#0072B2"
@@ -798,7 +1080,7 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
               </div>
             {/* Per-base Phred quality strip for reads without trace channels (Q0-45 scale,
                 Q20 and Q30 guides; the same base palette as the trace view). */}
-            <svg viewBox="0 0 830 150" className="chromatogram-svg" role="img" aria-label={`Phred quality of bases ${baseOffset + 1} to ${windowEnd}`}>
+            <svg ref={setZoomSurface} viewBox="0 0 830 150" className="chromatogram-svg" role="img" aria-label={`Phred quality of bases ${baseOffset + 1} to ${windowEnd}`}>
               <rect x="0" y="0" width="830" height="150" rx="6" fill="var(--mbc-bg-canvas)" stroke="var(--mbc-border)" />
               {[20, 30, 40].map((q) => {
                 const y = 100 - (q / 45) * 84;
@@ -810,12 +1092,12 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
                 );
               })}
               <line x1="25" x2="805" y1="100" y2="100" stroke="var(--mbc-border)" />
-              {Array.from({ length: WINDOW_BASES }, (_, idx) => {
+              {Array.from({ length: windowBases }, (_, idx) => {
                 const baseIdx = baseOffset + idx;
                 if (baseIdx >= chrom.baseCalls.length) return null;
                 const base = chrom.baseCalls[baseIdx];
                 const phred: number | undefined = chrom.phredScores[baseIdx];
-                const x = 25 + ((idx + 0.5) / WINDOW_BASES) * 780;
+                const x = 25 + ((idx + 0.5) / windowBases) * 780;
                 const h = phred === undefined ? 0 : (Math.min(45, phred) / 45) * 84;
                 const color = baseColor(base);
                 return (
@@ -890,18 +1172,18 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
                   }}
                 />
               </div>
-            <svg viewBox={`0 0 830 ${svgHeight}`} className="chromatogram-svg">
+            <svg ref={setZoomSurface} viewBox={`0 0 830 ${svgHeight}`} className="chromatogram-svg" aria-label={`Trace of bases ${baseOffset + 1} to ${windowEnd}`}>
               <rect x="0" y="0" width="830" height={svgHeight} rx="6" fill="var(--mbc-bg-canvas)" stroke="var(--mbc-border)" />
 
               {/* Phred Quality Score Bars & Base Calls (Google Core Four Fluorescence Palette) */}
-              {Array.from({ length: WINDOW_BASES }, (_, idx) => {
+              {Array.from({ length: windowBases }, (_, idx) => {
                 const baseIdx = baseOffset + idx;
                 if (baseIdx >= chrom.baseCalls.length) return null;
                 const base = chrom.baseCalls[baseIdx];
                 // Missing qualities stay missing (some ABIF files carry no PCON tag).
                 const phred: number | undefined = chrom.phredScores[baseIdx];
                 // Bases sit at their recorded trace peaks, not on an even grid.
-                const x = viewportReport.baseXPositions?.[idx] ?? 25 + ((idx + 0.5) / WINDOW_BASES) * 780;
+                const x = viewportReport.baseXPositions?.[idx] ?? 25 + ((idx + 0.5) / windowBases) * 780;
                 const qHeight = phred === undefined ? 0 : Math.min(24, (phred / 60) * 24);
                 const color = baseColor(base);
 

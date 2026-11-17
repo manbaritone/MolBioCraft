@@ -11,7 +11,129 @@ import {
   caAtomIndicesOf, chainOf, featureResidues, ligandsOfChains, residueNumberLabel, withFileSecondaryStructure,
   type MappedResidue, type Structure, type StructureLigand,
 } from '../core/structureView';
+import { classifyWheelGesture, normalizeWheelDelta, wheelZoomScale, type WheelGestureLike } from '../core/wheelZoom';
 import 'molstar/build/viewer/molstar.css';
+
+// ─── Wheel and pinch zoom of the Calpha canvas (US-01M7CM8J, CR-01M7CCSD) ───
+
+/** The Calpha canvas's zoom bounds, and the factor one wheel notch toward the user zooms in by. */
+export const STRUCTURE_ZOOM_MIN = 0.35;
+export const STRUCTURE_ZOOM_MAX = 4.5;
+export const STRUCTURE_ZOOM_IN_PER_NOTCH = 1.09;
+
+/** The Calpha canvas's view: its zoom, pan in CSS pixels and rotation in radians. */
+export interface StructureWheelView {
+  zoom: number;
+  pan: { x: number; y: number };
+  rotX: number;
+  rotY: number;
+}
+
+export interface StructureWheelStep {
+  handled: boolean;
+  view: StructureWheelView;
+}
+
+const clampStructureZoom = (zoom: number) => Math.min(STRUCTURE_ZOOM_MAX, Math.max(STRUCTURE_ZOOM_MIN, zoom));
+
+/**
+ * One wheel event over the Calpha canvas, a canvas in CR-01M7CCSD's policy: a vertical wheel,
+ * plain or with Ctrl, Cmd or Alt, and a Chromium trackpad pinch (a ctrl-flagged wheel), zoom by the
+ * shared multiplicative step at 1.09 a notch, within 0.35 to 4.5; a mostly horizontal or empty
+ * wheel is not the canvas's. The zoom pivots on the rotation centre, the point the canvas draws at
+ * its centre plus the pan, so the pan and the rotation are returned as they came.
+ */
+export function structureWheelStep(
+  event: WheelGestureLike & { deltaMode?: number; clientX: number; clientY: number },
+  view: StructureWheelView
+): StructureWheelStep {
+  if (classifyWheelGesture(event, 'canvas') !== 'zoom') return { handled: false, view };
+  const zoom = wheelZoomScale(view.zoom, normalizeWheelDelta(event).y, {
+    min: STRUCTURE_ZOOM_MIN,
+    max: STRUCTURE_ZOOM_MAX,
+    zoomInPerNotch: STRUCTURE_ZOOM_IN_PER_NOTCH,
+  });
+  return { handled: true, view: { ...view, zoom } };
+}
+
+type AnyListener = (event: Event) => void;
+interface GestureLike {
+  scale?: number;
+  preventDefault(): void;
+}
+
+/**
+ * Listens for wheels and WebKit pinches on the Calpha canvas alone, non-passively, so that a zoom
+ * it takes has its default (page scroll, page zoom) prevented and a horizontal wheel keeps it. The
+ * Mol* viewport beside it keeps its own handling: nothing is bound on their shared parent. The
+ * wheel deltas of one animation frame are summed into one step; a pinch zooms to its start zoom
+ * times its `scale`, and the ctrl-flagged wheels it may send while under way are prevented but not
+ * applied. Returns the function that removes every listener.
+ */
+function bindStructureWheel(target: Element, hooks: { read(): StructureWheelView; apply(zoom: number): void }): () => void {
+  const options: AddEventListenerOptions = { passive: false };
+  let pendingDelta: number | null = null;
+  let pendingZoom: number | null = null;
+  let frame: number | null = null;
+  let gestureFrom: number | null = null;
+  const flush = () => {
+    frame = null;
+    const delta = pendingDelta;
+    const pinch = pendingZoom;
+    pendingDelta = null;
+    pendingZoom = null;
+    const view = hooks.read();
+    let zoom = view.zoom;
+    if (pinch !== null) zoom = clampStructureZoom(pinch);
+    else if (delta !== null) zoom = structureWheelStep({ deltaX: 0, deltaY: delta, deltaMode: 0, ctrlKey: false, metaKey: false, altKey: false, clientX: 0, clientY: 0 }, view).view.zoom;
+    if (zoom !== view.zoom) hooks.apply(zoom);
+  };
+  const schedule = () => {
+    if (frame !== null) return;
+    if (typeof requestAnimationFrame === 'function') {
+      frame = requestAnimationFrame(flush);
+    } else {
+      frame = -1;
+      flush();
+    }
+  };
+  const onWheel = (event: WheelEvent) => {
+    if (classifyWheelGesture(event, 'canvas') !== 'zoom') return;
+    event.preventDefault();
+    if (gestureFrom !== null) return;
+    pendingDelta = (pendingDelta ?? 0) + normalizeWheelDelta(event).y;
+    schedule();
+  };
+  const onGestureStart = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = hooks.read().zoom;
+    pendingDelta = null;
+  };
+  const onGestureChange = (event: GestureLike) => {
+    event.preventDefault();
+    if (gestureFrom === null || !(Number(event.scale) > 0)) return;
+    pendingZoom = gestureFrom * Number(event.scale);
+    schedule();
+  };
+  const onGestureEnd = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = null;
+  };
+  const listeners: [string, AnyListener][] = [
+    ['wheel', onWheel as unknown as AnyListener],
+    ['gesturestart', onGestureStart as unknown as AnyListener],
+    ['gesturechange', onGestureChange as unknown as AnyListener],
+    ['gestureend', onGestureEnd as unknown as AnyListener],
+  ];
+  for (const [type, listener] of listeners) target.addEventListener(type, listener, options);
+  return () => {
+    for (const [type, listener] of listeners) target.removeEventListener(type, listener);
+    if (frame !== null && frame !== -1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    frame = null;
+    pendingDelta = null;
+    pendingZoom = null;
+  };
+}
 
 export type Protein3DStyle = 'cartoon' | 'backbone' | 'ball-stick' | 'spacefill';
 export type Protein3DColorScheme = 'secondary' | 'plddt' | 'hydropathy' | 'chain' | 'rainbow';
@@ -1302,11 +1424,15 @@ export const ProteinStructure3DViewer: React.FC<ProteinStructure3DViewerProps> =
     dragStateRef.current.pointerId = -1;
   };
 
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.09 : 0.92;
-    setZoom((z) => Math.max(0.35, Math.min(4.5, z * factor)));
-  };
+  // The Calpha canvas takes the wheel and pinch through a native non-passive listener bound on it
+  // alone (React attaches onWheel passively, so it could not prevent the page's scroll or zoom).
+  const structureView = useRef<StructureWheelView>({ zoom, pan, rotX, rotY });
+  structureView.current = { zoom, pan, rotX, rotY };
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    return bindStructureWheel(canvas, { read: () => structureView.current, apply: setZoom });
+  }, []);
 
   const handleResetView = async () => {
     setRotX(-0.32);
@@ -1576,7 +1702,8 @@ export const ProteinStructure3DViewer: React.FC<ProteinStructure3DViewerProps> =
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
           onLostPointerCapture={handleLostPointerCapture}
-          onWheel={handleWheel}
+          role="img"
+          aria-label={`3D structure, zoom ${Math.round(zoom * 100)}%`}
           style={{
             width: '100%',
             height: '100%',
