@@ -124,23 +124,17 @@ pub struct PlatformDiagnostics {
     pub cache_dir: String,
 }
 
+/// macOS: `$HOME/Library/Application Support/org.molbiocraft.desktop`, by the
+/// rule of `macos_app_support_dir_from`.
 #[cfg(target_os = "macos")]
 pub fn resolve_platform_app_support_dir() -> Result<PathBuf, BioEngineError> {
-    let home = std::env::var("HOME").map_err(|_| {
-        BioEngineError::IoFailure("Unable to read HOME environment variable on macOS".into())
-    })?;
-    Ok(PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("org.molbiocraft.desktop"))
+    macos_app_support_dir_from(|name| std::env::var(name).ok())
 }
 
+/// Windows: `%APPDATA%\MolBioCraft`, by the rule of `windows_app_support_dir_from`.
 #[cfg(target_os = "windows")]
 pub fn resolve_platform_app_support_dir() -> Result<PathBuf, BioEngineError> {
-    let appdata = std::env::var("APPDATA").map_err(|_| {
-        BioEngineError::IoFailure("Unable to read APPDATA environment variable on Windows".into())
-    })?;
-    Ok(PathBuf::from(appdata).join("MolBioCraft"))
+    windows_app_support_dir_from(|name| std::env::var(name).ok())
 }
 
 /// Linux and every other non-macOS, non-Windows target: `$XDG_CONFIG_HOME/molbiocraft`,
@@ -154,16 +148,58 @@ pub fn resolve_platform_app_support_dir() -> Result<PathBuf, BioEngineError> {
     xdg_app_support_dir_from(|name| std::env::var(name).ok()).map(PathBuf::from)
 }
 
-/// Reads an unset, empty or whitespace-only environment value as absent, and
-/// strips only the trailing slashes from any other value, keeping its
-/// whitespace, as `resolveAppDirectories('linux')` does.
+/// The one blank rule: reads an unset, empty or whitespace-only environment
+/// value as absent, and returns any other value unchanged.
+fn non_blank(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+/// Reads a blank environment value as absent by `non_blank`, and strips only
+/// the trailing slashes from any other value, keeping its whitespace, as
+/// `resolveAppDirectories('linux')` does.
 fn xdg_base(value: Option<&str>) -> Option<&str> {
-    let value = value?;
-    if value.trim().is_empty() {
-        None
-    } else {
-        Some(value.trim_end_matches('/'))
-    }
+    non_blank(value).map(|value| value.trim_end_matches('/'))
+}
+
+/// Reads `var` through `lookup` and, when it is unset, empty or
+/// whitespace-only by `non_blank`, returns the error naming it.
+fn app_support_base(
+    lookup: impl Fn(&str) -> Option<String>,
+    var: &str,
+) -> Result<String, BioEngineError> {
+    let value = lookup(var);
+    non_blank(value.as_deref())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            BioEngineError::IoFailure(format!(
+                "Unable to resolve the app-support directory: {var} is unset or empty"
+            ))
+        })
+}
+
+/// The macOS app-support directory, from HOME read through `lookup`:
+/// `$HOME/Library/Application Support/org.molbiocraft.desktop`, built from the
+/// value as given. When HOME is unset, empty or whitespace-only, an error naming
+/// HOME instead of a path. Compiled on every target so its test runs everywhere.
+pub fn macos_app_support_dir_from(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<PathBuf, BioEngineError> {
+    let home = app_support_base(lookup, "HOME")?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("org.molbiocraft.desktop"))
+}
+
+/// The Windows app-support directory, from APPDATA read through `lookup`:
+/// `%APPDATA%\MolBioCraft`, built from the value as given. When APPDATA is
+/// unset, empty or whitespace-only, an error naming APPDATA instead of a path.
+/// Compiled on every target so its test runs everywhere.
+pub fn windows_app_support_dir_from(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<PathBuf, BioEngineError> {
+    let appdata = app_support_base(lookup, "APPDATA")?;
+    Ok(PathBuf::from(appdata).join("MolBioCraft"))
 }
 
 /// The logs and cache directories for Linux and every other non-macOS,
@@ -727,6 +763,85 @@ mod tests {
                 .expect_err("HOME is empty")
                 .to_string(),
             refused
+        );
+    }
+
+    #[test]
+    fn macos_and_windows_app_support_dirs_refuse_blank() {
+        let no_home = "[ERR_IO_FAILURE] Unable to resolve the app-support directory: \
+                       HOME is unset or empty";
+        let no_appdata = "[ERR_IO_FAILURE] Unable to resolve the app-support directory: \
+                          APPDATA is unset or empty";
+        let only = |var: &'static str, value: Option<&'static str>| {
+            move |name: &str| (name == var).then_some(value).flatten().map(String::from)
+        };
+        // A blank variable is the exact error, never a path.
+        for value in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                macos_app_support_dir_from(only("HOME", value))
+                    .expect_err("HOME is blank")
+                    .to_string(),
+                no_home,
+                "HOME={value:?}"
+            );
+            assert_eq!(
+                windows_app_support_dir_from(only("APPDATA", value))
+                    .expect_err("APPDATA is blank")
+                    .to_string(),
+                no_appdata,
+                "APPDATA={value:?}"
+            );
+        }
+        // Each reader reads its own variable, not the other OS's.
+        assert_eq!(
+            macos_app_support_dir_from(only("APPDATA", Some(r"C:\Users\a\AppData\Roaming")))
+                .expect_err("only APPDATA is set")
+                .to_string(),
+            no_home
+        );
+        assert_eq!(
+            windows_app_support_dir_from(only("HOME", Some("/Users/a")))
+                .expect_err("only HOME is set")
+                .to_string(),
+            no_appdata
+        );
+        // A set value is used as given.
+        assert_eq!(
+            macos_app_support_dir_from(only("HOME", Some("/Users/a"))).unwrap(),
+            PathBuf::from("/Users/a")
+                .join("Library")
+                .join("Application Support")
+                .join("org.molbiocraft.desktop")
+        );
+        let root = macos_app_support_dir_from(only("HOME", Some("/"))).unwrap();
+        assert_eq!(
+            root,
+            PathBuf::from("/")
+                .join("Library")
+                .join("Application Support")
+                .join("org.molbiocraft.desktop")
+        );
+        assert_eq!(
+            root,
+            PathBuf::from("/Library/Application Support/org.molbiocraft.desktop")
+        );
+        assert!(root.is_absolute(), "{root:?}");
+        assert_eq!(
+            windows_app_support_dir_from(only("APPDATA", Some(r"C:\Users\a\AppData\Roaming")))
+                .unwrap(),
+            PathBuf::from(r"C:\Users\a\AppData\Roaming").join("MolBioCraft")
+        );
+        // A non-blank value keeps its whitespace, as non_blank leaves it.
+        assert_eq!(
+            macos_app_support_dir_from(only("HOME", Some(" /Users/a "))).unwrap(),
+            PathBuf::from(" /Users/a ")
+                .join("Library")
+                .join("Application Support")
+                .join("org.molbiocraft.desktop")
+        );
+        assert_eq!(
+            windows_app_support_dir_from(only("APPDATA", Some(" C:\\a "))).unwrap(),
+            PathBuf::from(" C:\\a ").join("MolBioCraft")
         );
     }
 
