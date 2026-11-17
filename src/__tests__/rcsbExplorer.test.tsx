@@ -476,7 +476,9 @@ describe('RCSB PDB in the Database Explorer', () => {
     // structure's chains go to the workspace activation that adds them to the open session.
     const route = appSrc.slice(appSrc.indexOf('const processIncomingFile = async ('), appSrc.indexOf('const importIncomingFilesBatch = async ('));
     expect(route.match(/\bmbcMode\b/g)).toHaveLength(3);
-    expect(route.match(/applyParsedMbcSession\(.*\bmbcMode\);/g)).toHaveLength(2);
+    // The zipped-session open also hands the restore its first parse's warnings (US-01M7DV8W), so a
+    // call may carry an options object after mbcMode.
+    expect(route.match(/applyParsedMbcSession\(.*\bmbcMode(?:, \{[^}]*\})?\);/g)).toHaveLength(2);
     expect(route).toMatch(/lowerName\.endsWith\('\.cif'\)[\s\S]*?activateImportedDocumentsInWorkspace\(chainDocs\);/);
   });
 
