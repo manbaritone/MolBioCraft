@@ -59,10 +59,11 @@ export interface CommandContext {
   circleCollapsed?: boolean;
   /**
    * The split view's second pane, given only while it is the focused pane (US-01M7DV10): whether it
-   * shows a circular map. The map commands (`zoom-map`, `rotate-map`) then answer for that pane; left
-   * out, the main view is focused and every rule answers for it.
+   * shows a circular map, and whether it shows a sequence map at all (US-01M7DVEN). The map commands
+   * (`zoom-map`, `rotate-map`, `fit-view`) then answer for that pane; left out, the main view is
+   * focused and every rule answers for it.
    */
-  focusedSplitPane?: { circularMapShown: boolean };
+  focusedSplitPane?: { circularMapShown: boolean; sequenceMapShown: boolean };
 }
 
 export type CommandId =
@@ -85,9 +86,11 @@ export type WorkbenchCommandId = 'align-structures';
 
 /**
  * Commands on the focused pane's view rather than on a document (US-01M7DV10): View › Zoom In, Zoom
- * Out and Actual Size. Their rule reads the session and `focusedSplitPane`.
+ * Out and Actual Size (`zoom-map`); View › Fit and Reset View (`fit-view`, US-01M7DVEN). Their rules
+ * read the session, the main view's map and `focusedSplitPane`. View › Map Layout's Split Map &
+ * Sequence and Circular Map (`map-layout-circle`, US-01M7DVEN) read the main view's document.
  */
-export type ViewCommandId = 'zoom-map';
+export type ViewCommandId = 'zoom-map' | 'fit-view' | 'map-layout-circle';
 
 export interface CommandAvailability {
   enabled: boolean;
@@ -101,6 +104,12 @@ const NO_SESSION = 'No active session — start a New Session first.';
 const NO_DOCUMENT = 'Open or create a sequence document first.';
 /** Why the map commands are off while the focused split pane draws no circle (US-01M7DV10). */
 export const FOCUSED_SPLIT_PANE_NO_CIRCLE = 'The focused split pane shows no circular map.';
+/** Why View › Zoom In, Zoom Out and Actual Size are off while the main view draws no circular map (US-01M7DVEN). */
+export const CIRCULAR_ONLY_HINT = 'Applies to the circular map (switch View › Map Layout to Circular or Split)';
+/** Why View › Fit and Reset View are off for a main-view document that has no sequence map (US-01M7DVEN). */
+export const NO_SEQUENCE_MAP = 'This record has no sequence map.';
+/** Why View › Fit and Reset View are off while the focused split pane draws no sequence map (US-01M7DVEN). */
+export const FOCUSED_SPLIT_PANE_NO_SEQUENCE_MAP = 'The focused split pane shows no sequence map.';
 
 function requireDocument(ctx: CommandContext): CommandAvailability | CommandDocumentContext {
   if (!ctx.sessionActive) return off(NO_SESSION);
@@ -184,12 +193,38 @@ const RULES: Record<CommandId | WorkbenchCommandId | ViewCommandId, (ctx: Comman
     if (ctx.circleCollapsed) return off('The circular map is collapsed; restore it to rotate the map.');
     return ENABLED;
   },
-  // View › Zoom In, Zoom Out and Actual Size (US-01M7DV10) zoom the focused pane's circular map: on
-  // the main view they follow the session alone, as before; on the split pane, only while it draws one.
+  // View › Zoom In, Zoom Out and Actual Size (US-01M7DV10) zoom the focused pane's circular map, so
+  // they are offered only while it draws one: on the split pane by `focusedSplitPane`; on the main
+  // view while its layout as drawn is Split or Circular and its document can draw a circle
+  // (US-01M7DVEN). The viewer header's −, % and + read this rule too.
   'zoom-map': (ctx) => {
     if (!ctx.sessionActive) return off(NO_SESSION);
-    if (ctx.focusedSplitPane && !ctx.focusedSplitPane.circularMapShown) return off(FOCUSED_SPLIT_PANE_NO_CIRCLE);
+    if (ctx.focusedSplitPane) {
+      return ctx.focusedSplitPane.circularMapShown ? ENABLED : off(FOCUSED_SPLIT_PANE_NO_CIRCLE);
+    }
+    if (ctx.mapLayout === 'linear') return off(CIRCULAR_ONLY_HINT);
+    if (!ctx.activeDoc || circularMapUnavailableReason(ctx.activeDoc)) return off(CIRCULAR_ONLY_HINT);
     return ENABLED;
+  },
+  // View › Fit and Reset View (US-01M7DVEN) fit the focused pane's sequence map: offered wherever it
+  // draws one, circular or linear. The main view draws none for a document with no bases (a contig
+  // summary has none either); the split pane none in Info, for a tree, an alignment, a text document
+  // or no document.
+  'fit-view': (ctx) => {
+    if (!ctx.sessionActive) return off(NO_SESSION);
+    if (ctx.focusedSplitPane) {
+      return ctx.focusedSplitPane.sequenceMapShown ? ENABLED : off(FOCUSED_SPLIT_PANE_NO_SEQUENCE_MAP);
+    }
+    if (!ctx.activeDoc || ctx.activeDoc.sequenceLength === 0) return off(NO_SEQUENCE_MAP);
+    return ENABLED;
+  },
+  // View › Map Layout's Split Map & Sequence and Circular Map (US-01M7DVEN) draw a circle, so they are
+  // offered only for a document that can draw one, with the sentence circularMapUnavailableReason gives.
+  'map-layout-circle': (ctx) => {
+    const doc = requireDocument(ctx);
+    if (isAvailability(doc)) return doc;
+    const cannotDraw = circularMapUnavailableReason(doc);
+    return cannotDraw ? off(cannotDraw) : ENABLED;
   },
   // Align Structures… aligns chains of structure documents, two of them or two chains of one.
   'align-structures': (ctx) => {
@@ -202,8 +237,9 @@ const RULES: Record<CommandId | WorkbenchCommandId | ViewCommandId, (ctx: Comman
 
 /**
  * Why a document cannot draw a circular map, or null when it can (US-01M7DVQG): the one rule that
- * View › Rotate Circular Map… (`rotate-map`) and the split pane's 'Circular Map' view both read, in
- * this order: a contig summary, a protein, RNA, a linear molecule. A caller that does not know
+ * View › Rotate Circular Map… (`rotate-map`), the split pane's 'Circular Map' view, and View › Map
+ * Layout's circle items and View › Zoom's zoom items (`map-layout-circle`, `zoom-map`, US-01M7DVEN)
+ * read, in this order: a contig summary, a protein, RNA, a linear molecule. A caller that does not know
  * whether the document is a contig summary leaves `contigSummary` out.
  */
 export function circularMapUnavailableReason(
@@ -322,6 +358,11 @@ export const NATIVE_MENU_COMMAND_RULES: Record<string, CommandId | WorkbenchComm
   'view:zoom-out': 'zoom-map',
   'view:zoom-reset': 'zoom-map',
   'view:reset-rotation': 'rotate-map',
+  // US-01M7DVEN: Fit and Reset View, on the focused pane, under Fit's rule; Map Layout's circle items.
+  'view:fit': 'fit-view',
+  'view:reset-view': 'fit-view',
+  'view:layout-split': 'map-layout-circle',
+  'view:layout-circular': 'map-layout-circle',
   'file:save-gb': 'export-active-document',
   'file:save-fasta': 'export-sequence',
   'file:export-embl': 'export-active-document',

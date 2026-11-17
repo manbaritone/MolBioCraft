@@ -575,6 +575,8 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &item("view:zoom-in", "Zoom In", Some("CmdOrCtrl+="))?,
             &item("view:zoom-out", "Zoom Out", Some("CmdOrCtrl+-"))?,
             &item("view:zoom-reset", "Actual Size (100%)", Some("CmdOrCtrl+0"))?,
+            &item("view:fit", "Fit", None)?,
+            &item("view:reset-view", "Reset View", None)?,
             &sep()?,
             &item(
                 "view:set-origin",

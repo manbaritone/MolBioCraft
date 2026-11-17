@@ -159,6 +159,8 @@ describe('native menu ↔ dispatcher contract', () => {
       ['view:zoom-in', 'Zoom In'],
       ['view:zoom-out', 'Zoom Out'],
       ['view:zoom-reset', 'Actual Size (100%)'],
+      ['view:fit', 'Fit'],
+      ['view:reset-view', 'Reset View'],
       ['view:set-origin', 'Set Origin'],
       ['view:rotate-map', 'Rotate Circular Map\u2026'],
       ['view:reset-rotation', 'Reset Rotation'],
@@ -212,6 +214,65 @@ describe('native menu ↔ dispatcher contract', () => {
       expect(resolveNativeMenuItemEnabled('view:reset-rotation', state), JSON.stringify(ctx)).toBe(want);
     }
     expect([...seen].sort(), 'the contexts reach both states').toEqual([false, true]);
+  });
+  it('US-01M7DVEN AC4 lists Fit and Reset View in View > Zoom after Actual Size, under Fit\'s rule, each case calling the in-app items\' handler', () => {
+    const zoom = mainRs.slice(mainRs.indexOf('let view_zoom_sub'), mainRs.indexOf('let view_menu'));
+    expect(zoom).toContain('"Zoom"');
+    // The submenu's entries in order, separators included.
+    const entries = [...zoom.matchAll(/item\(\s*"([^"]+)"|sep\(\)/g)].map((m) => m[1] ?? '---');
+    expect(entries).toEqual([
+      'view:zoom-in', 'view:zoom-out', 'view:zoom-reset', 'view:fit', 'view:reset-view', '---',
+      'view:set-origin', 'view:rotate-map', 'view:reset-rotation',
+    ]);
+    expect([...zoom.matchAll(/item\(\s*"(view:fit|view:reset-view)",\s*"([^"]+)"/g)].map((m) => [m[1], m[2]])).toEqual([
+      ['view:fit', 'Fit'],
+      ['view:reset-view', 'Reset View'],
+    ]);
+    // view:reset-rotation stays the one Reset Rotation id; each new id is listed once in the whole menu.
+    expect([...mainRs.matchAll(/item\(\s*"([^"]+)",\s*"Reset Rotation"/g)].map((m) => m[1])).toEqual(['view:reset-rotation']);
+    for (const id of ['view:fit', 'view:reset-view']) {
+      expect([...mainRs.matchAll(new RegExp(`item\\(\\s*"${id}"`, 'g'))], id).toHaveLength(1);
+      expect(nativeIds.has(id)).toBe(true);
+      expect(NATIVE_MENU_COMMAND_RULES[id], `${id} follows Fit's rule`).toBe('fit-view');
+      expect(dispatcher.get(id), `${id}: the dispatcher gates it on a session`).toBe(true);
+      expect(NATIVE_MENU_SESSION_INDEPENDENT_IDS).not.toContain(id);
+    }
+    expect(NATIVE_MENU_COMMAND_RULES['view:reset-rotation']).toBe('rotate-map');
+
+    const caseBody = (id: string) => {
+      const at = appTsx.indexOf(`case '${id}':`, appTsx.indexOf('    onMenuAction: (actionId: string) => {'));
+      return appTsx.slice(at, appTsx.indexOf('break;', at));
+    };
+    const itemSelect = (id: string) => {
+      const at = appTsx.indexOf(`id: '${id}',`);
+      expect(at, `the in-app item ${id}`).toBeGreaterThan(0);
+      return /onSelect: \(\) => (.+),\n/.exec(appTsx.slice(at, appTsx.indexOf('},', at)))?.[1] ?? '';
+    };
+    for (const [native, inApp, call] of [
+      ['view:fit', 'view-fit', "fitFocusedPane('fit')"],
+      ['view:reset-view', 'view-reset-view', "fitFocusedPane('reset')"],
+    ]) {
+      expect(itemSelect(inApp), inApp).toBe(`requireActiveSession(() => ${call})`);
+      expect(caseBody(native).trim(), native).toBe(`case '${native}':\n          requireActiveSession(() => ${call});`);
+    }
+
+    // The native items are on exactly where Fit's rule is, for each pane, and the two ids agree.
+    const doc = (id: string, sequence: string, more: Record<string, unknown> = {}) =>
+      buildCommandDocumentContext({ id, moleculeType: 'DNA', topology: 'circular', sequence, ...more });
+    const base = { sessionActive: true, selection: null, undoDepth: 0, redoDepth: 0 };
+    const cases: [string, Parameters<typeof buildNativeMenuState>[0], boolean][] = [
+      ['no session', { ...base, sessionActive: false, activeDoc: null }, false],
+      ['a circle in Split', { ...base, activeDoc: doc('c', 'ATGC'.repeat(50)), mapLayout: 'split' }, true],
+      ['Map Layout Linear', { ...base, activeDoc: doc('c', 'ATGC'.repeat(50)), mapLayout: 'linear' }, true],
+      ['a record with no bases', { ...base, activeDoc: doc('e', ''), mapLayout: 'linear' }, false],
+      ['the focused pane on Linear Map', { ...base, activeDoc: doc('c', 'ATGC'.repeat(50)), focusedSplitPane: { circularMapShown: false, sequenceMapShown: true } }, true],
+      ['the focused pane on Info', { ...base, activeDoc: doc('c', 'ATGC'.repeat(50)), focusedSplitPane: { circularMapShown: false, sequenceMapShown: false } }, false],
+    ];
+    for (const [what, ctx, want] of cases) {
+      expect(commandAvailability('fit-view', ctx).enabled, `${what}: Fit's rule`).toBe(want);
+      const state = buildNativeMenuState(ctx);
+      expect(['view:fit', 'view:reset-view'].map((id) => resolveNativeMenuItemEnabled(id, state)), what).toEqual([want, want]);
+    }
   });
   it('lists View › Search & Filter › Search Project… natively, its dispatcher case gated on a session (US-01M7DV88 AC1)', () => {
     const sub = mainRs.slice(mainRs.indexOf('let view_search_sub'), mainRs.indexOf('let view_panels_sub'));

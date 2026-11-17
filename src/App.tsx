@@ -117,7 +117,7 @@ import { FragmentTraceView, MicrosatelliteDialog } from './components/FragmentVi
 import { contigDocument, fragmentDocumentFromFsa, mapOptionsOf, runQueryCentricAlignment } from './core/operationRunners';
 import { exportReadsToFastq, fastqToReadDocuments, samToContigs, vcfToFeatures } from './core/importFormats';
 import { parseAlignedFasta, parseTextAlignment, splitFlatfileRecords, textAlignmentToDocument } from './core/alignmentFormats';
-import { DocumentSplitDivider, SplitDocumentPane, splitPaneShowsCircularMap } from './components/SplitDocumentPane';
+import { DocumentSplitDivider, SplitDocumentPane, splitPaneShowsCircularMap, splitPaneShowsSequenceMap } from './components/SplitDocumentPane';
 import {
   DEFAULT_PANE_SPLIT,
   PANE_SPLIT_KEY_STEP_LARGE_PX,
@@ -421,7 +421,7 @@ import {
   commandAvailability,
   CommandContext,
   CommandId,
-  FOCUSED_SPLIT_PANE_NO_CIRCLE,
+  CIRCULAR_ONLY_HINT,
   type ViewCommandId,
   type WorkbenchCommandId,
 } from './core/commandAvailability';
@@ -1062,6 +1062,12 @@ function restrictionScanRevision(sequence: string, topology: SequenceDocument['t
 
 /** The Flatfile tab's record formats, as its toolbar names the one shown. */
 const FLATFILE_FORMAT_NAMES = { genbank: 'GenBank', fasta: 'FASTA', embl: 'EMBL-EBI', gff3: 'GFF3 Annotations' } as const;
+/**
+ * The in-app items whose shortcut, while a rule disables the item, still runs its handler, which
+ * refuses with the rule's reason (US-01M7DVEN): View › Zoom's Zoom In, Zoom Out and Actual Size, and
+ * View › Map Layout's Split Map & Sequence and Circular Map.
+ */
+const RULE_REFUSED_SHORTCUT_IDS: ReadonlySet<string> = new Set(['view-zoom-in', 'view-zoom-out', 'view-zoom-100', 'view-lay-split', 'view-lay-circ']);
 
 export const App: React.FC = () => {
   const [sessionActive, setSessionActive] = useState<boolean>(false);
@@ -1817,6 +1823,11 @@ export const App: React.FC = () => {
   // Restoring the sequence map (⌘0, View › Actual Size, the header's % readout) returns its zoom to
   // 100% and counts up its restore key, on which the circle recentres a pan.
   const [sequenceViewRestores, setSequenceViewRestores] = useState(0);
+  // View › Fit and Reset View (US-01M7DVEN) count up the linear overview's fit key, on which it fits
+  // the whole molecule; the split pane has its own restore and fit keys, so each acts on one pane.
+  const [sequenceOverviewFits, setSequenceOverviewFits] = useState(0);
+  const [splitViewRestores, setSplitViewRestores] = useState(0);
+  const [splitOverviewFits, setSplitOverviewFits] = useState(0);
   // US-01M7DVG4: the circular map's rotation is view state, held per document id (absent is 0), and
   // whether View › Rotate Circular Map…'s control is open.
   const [mapRotationByDoc, setMapRotationByDoc] = useState<Readonly<Record<string, number>>>({});
@@ -2478,7 +2489,8 @@ export const App: React.FC = () => {
   const hasSequenceData = hasBiologicalSequence(activeDoc);
   const isDnaSequence = activeDoc.moleculeType === 'DNA' && hasSequenceData;
   const sequenceUnit = isProteinSequence ? 'aa' : activeDoc.moleculeType === 'RNA' ? 'nt' : 'bp';
-  const canShowCircularMap = activeDoc.moleculeType === 'DNA' && activeDoc.topology === 'circular';
+  // By the rule View › Map Layout and Rotate Circular Map… read (US-01M7DVEN): a contig summary draws no map.
+  const canShowCircularMap = circularMapUnavailableReason(buildCommandDocumentContext(activeDoc) ?? activeDoc) === null;
   const effectiveMapLayoutMode = canShowCircularMap ? mapLayoutMode : 'linear';
   // Zoom and the primer / ORF / unique-cutter toggles only drive the circular
   // map; with no circular map shown they changed a readout and nothing else.
@@ -2554,10 +2566,6 @@ export const App: React.FC = () => {
     setPaneSplit(next);
     setPaneSplitDragging(false);
   };
-  const CIRCULAR_ONLY_HINT = 'Applies to the circular map (switch View › Map Layout to Circular or Split)';
-  // The viewer header's −, % and + zoom the focused pane's circular map (US-01M7DV10), so they are off where it has none.
-  const headerZoomShown = secondPaneFocused ? splitPaneCircleShown : circularMapShown;
-  const headerZoomOffHint = secondPaneFocused ? FOCUSED_SPLIT_PANE_NO_CIRCLE : CIRCULAR_ONLY_HINT;
 
   // Statistics are the whole sequence's at any length (BG-01M6RRSV): the engine counts it in one
   // pass, asked for only while the panel is open. Over 60,000 bp they were scaled up from the first
@@ -3618,7 +3626,9 @@ export const App: React.FC = () => {
     inspectorAvailable,
     mapLayout: effectiveMapLayoutMode,
     circleCollapsed: paneSplitCollapsed === 'circular',
-    focusedSplitPane: secondPaneFocused ? { circularMapShown: splitPaneCircleShown } : undefined,
+    focusedSplitPane: secondPaneFocused
+      ? { circularMapShown: splitPaneCircleShown, sequenceMapShown: splitPaneShowsSequenceMap(splitDoc, splitView) }
+      : undefined,
   });
   const isCommandEnabled = (id: CommandId | WorkbenchCommandId | ViewCommandId, doc?: SequenceDocument): boolean =>
     commandAvailability(id, buildCommandContext(doc)).enabled;
@@ -3659,9 +3669,48 @@ export const App: React.FC = () => {
    */
   const zoomFocusedPane = (step: 1 | -1 | 'actual') => {
     if (!ensureCommandAvailable('zoom-map', step === 'actual' ? 'Actual Size' : step > 0 ? 'Zoom In' : 'Zoom Out')) return;
-    if (secondPaneFocused) setSplitZoom((z) => (step === 'actual' ? SEQUENCE_ZOOM_DEFAULT : stepSequenceZoom(z, step)));
-    else if (step === 'actual') restoreSequenceView();
+    if (secondPaneFocused) {
+      setSplitZoom((z) => (step === 'actual' ? SEQUENCE_ZOOM_DEFAULT : stepSequenceZoom(z, step)));
+      // Actual Size recentres the pane's circle as it does the main view's (US-01M7DVEN).
+      if (step === 'actual') setSplitViewRestores((n) => n + 1);
+    } else if (step === 'actual') restoreSequenceView();
     else setZoomLevel((z) => stepSequenceZoom(z, step));
+  };
+  // The viewer header's −, % and + zoom the focused pane's circular map, by the rule View › Zoom's
+  // items and the native menu state read (US-01M7DVEN), so they are off, with its reason, where it has none.
+  const headerZoomOn = isCommandEnabled('zoom-map');
+  const headerZoomOffReason = commandDisabledReason('zoom-map');
+  /**
+   * View › Fit ('fit') and Reset View ('reset') on the focused pane (US-01M7DVEN): the one handler of
+   * the in-app items and the native ids. Fit puts the circle at 100% and recentred and the linear
+   * overview at the whole sequence; Reset View does Fit and, where Reset Rotation is enabled, turns
+   * the map back to 0 degrees. On the main view, from another viewer tab, they first switch to the
+   * Sequence view, as Rotate Circular Map… does.
+   */
+  const fitFocusedPane = (action: 'fit' | 'reset') => {
+    if (!ensureCommandAvailable('fit-view', action === 'fit' ? 'Fit' : 'Reset View')) return;
+    const turnBack = action === 'reset' && isCommandEnabled('rotate-map');
+    if (secondPaneFocused) {
+      setSplitZoom(SEQUENCE_ZOOM_DEFAULT);
+      setSplitViewRestores((n) => n + 1);
+      setSplitOverviewFits((n) => n + 1);
+      if (turnBack) setSplitRotation(0);
+      return;
+    }
+    setViewerTab('sequence-view');
+    restoreSequenceView();
+    setSequenceOverviewFits((n) => n + 1);
+    if (turnBack) setActiveMapRotation(0);
+  };
+  /**
+   * View › Map Layout's three items (US-01M7DVEN): the one handler of the in-app items, the native ids
+   * and ⌘1 / ⌘2 / ⌘4. Split and Circular are refused, with circularMapUnavailableReason's sentence, for
+   * a document that cannot draw a circle, so the stored layout and the autosave stay as they are.
+   */
+  const chooseMapLayout = (mode: 'split' | 'circular' | 'linear') => {
+    if (mode !== 'linear' && !ensureCommandAvailable('map-layout-circle', mode === 'split' ? 'Split Map & Sequence' : 'Circular Map')) return;
+    setViewerTab('sequence-view');
+    setMapLayoutMode(mode);
   };
   /**
    * The Function Info of a document-editing item while the focused split pane shows another document
@@ -7521,22 +7570,13 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           requireActiveSession(() => handleToggleInspector());
           break;
         case 'view:layout-split':
-          requireActiveSession(() => {
-            setViewerTab('sequence-view');
-            setMapLayoutMode('split');
-          });
+          requireActiveSession(() => chooseMapLayout('split'));
           break;
         case 'view:layout-circular':
-          requireActiveSession(() => {
-            setViewerTab('sequence-view');
-            setMapLayoutMode('circular');
-          });
+          requireActiveSession(() => chooseMapLayout('circular'));
           break;
         case 'view:layout-linear':
-          requireActiveSession(() => {
-            setViewerTab('sequence-view');
-            setMapLayoutMode('linear');
-          });
+          requireActiveSession(() => chooseMapLayout('linear'));
           break;
         case 'view:enzymes':
         case 'enzymes:choose':
@@ -7744,6 +7784,12 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           break;
         case 'view:zoom-reset':
           requireActiveSession(() => zoomFocusedPane('actual'));
+          break;
+        case 'view:fit':
+          requireActiveSession(() => fitFocusedPane('fit'));
+          break;
+        case 'view:reset-view':
+          requireActiveSession(() => fitFocusedPane('reset'));
           break;
         case 'view:set-origin':
           requireActiveSession(() => handleSetOriginToSelection());
@@ -10207,37 +10253,29 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'checkbox',
             id: 'view-lay-split',
             label: 'Split Map & Sequence',
-            checked: sessionActive && mapLayoutMode === 'split',
+            checked: sessionActive && effectiveMapLayoutMode === 'split',
             shortcut: sc('1'),
-            onToggle: () =>
-              requireActiveSession(() => {
-                setViewerTab('sequence-view');
-                setMapLayoutMode('split');
-              }),
+            disabled: !isCommandEnabled('map-layout-circle'),
+            description: commandDisabledReason('map-layout-circle'),
+            onToggle: () => requireActiveSession(() => chooseMapLayout('split')),
           },
           {
             kind: 'checkbox',
             id: 'view-lay-circ',
             label: 'Circular Map',
-            checked: sessionActive && mapLayoutMode === 'circular',
+            checked: sessionActive && effectiveMapLayoutMode === 'circular',
             shortcut: sc('2'),
-            onToggle: () =>
-              requireActiveSession(() => {
-                setViewerTab('sequence-view');
-                setMapLayoutMode('circular');
-              }),
+            disabled: !isCommandEnabled('map-layout-circle'),
+            description: commandDisabledReason('map-layout-circle'),
+            onToggle: () => requireActiveSession(() => chooseMapLayout('circular')),
           },
           {
             kind: 'checkbox',
             id: 'view-lay-lin',
             label: 'Linear Sequence',
-            checked: sessionActive && mapLayoutMode === 'linear',
+            checked: sessionActive && effectiveMapLayoutMode === 'linear',
             shortcut: sc('4'),
-            onToggle: () =>
-              requireActiveSession(() => {
-                setViewerTab('sequence-view');
-                setMapLayoutMode('linear');
-              }),
+            onToggle: () => requireActiveSession(() => chooseMapLayout('linear')),
           },
           { kind: 'separator', id: 'view-lay-sep' },
           {
@@ -10344,6 +10382,22 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             disabled: !isCommandEnabled('zoom-map'),
             description: commandDisabledReason('zoom-map'),
             onSelect: () => requireActiveSession(() => zoomFocusedPane('actual')),
+          },
+          {
+            kind: 'command',
+            id: 'view-fit',
+            label: 'Fit',
+            disabled: !isCommandEnabled('fit-view'),
+            description: commandDisabledReason('fit-view'),
+            onSelect: () => requireActiveSession(() => fitFocusedPane('fit')),
+          },
+          {
+            kind: 'command',
+            id: 'view-reset-view',
+            label: 'Reset View',
+            disabled: !isCommandEnabled('fit-view'),
+            description: commandDisabledReason('fit-view'),
+            onSelect: () => requireActiveSession(() => fitFocusedPane('reset')),
           },
         ],
       },
@@ -11762,7 +11816,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         if (sel && !sel.isCollapsed && sel.toString().trim()) return;
       }
       ev.preventDefault();
-      if (binding.disabled) {
+      // A shortcut whose item a rule disables runs its handler, which refuses it with the rule's own
+      // reason (US-01M7DVEN): ⌘= / ⌘- / ⌘0 and ⌘1 / ⌘2 then say why in the status bar.
+      if (binding.disabled && !RULE_REFUSED_SHORTCUT_IDS.has(binding.id)) {
         setStatusBanner(`${binding.label} is not available right now.`);
         return;
       }
@@ -15649,10 +15705,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     type="button"
                     className="mbc-zoom-btn"
                     onClick={() => zoomFocusedPane(-1)}
-                    disabled={!headerZoomShown}
+                    disabled={!headerZoomOn}
                     aria-label="Zoom Out"
-                    aria-keyshortcuts={headerZoomShown ? ariaSc('-') : undefined}
-                    title={headerZoomShown ? `Zoom Out (${sc('-')})` : headerZoomOffHint}
+                    aria-keyshortcuts={headerZoomOn ? ariaSc('-') : undefined}
+                    title={headerZoomOn ? `Zoom Out (${sc('-')})` : headerZoomOffReason}
                   >
                     <ZoomOut size={13} />
                   </button>
@@ -15660,9 +15716,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     type="button"
                     className="mbc-zoom-btn zoom-pct-btn"
                     onClick={() => zoomFocusedPane('actual')}
-                    disabled={!headerZoomShown}
-                    aria-keyshortcuts={headerZoomShown ? ariaSc('0') : undefined}
-                    title={headerZoomShown ? `Reset Zoom to 100% (${sc('0')})` : headerZoomOffHint}
+                    disabled={!headerZoomOn}
+                    aria-keyshortcuts={headerZoomOn ? ariaSc('0') : undefined}
+                    title={headerZoomOn ? `Reset Zoom to 100% (${sc('0')})` : headerZoomOffReason}
                   >
                     {sequenceZoomLabel(secondPaneFocused ? splitZoom : zoomLevel)}
                   </button>
@@ -15670,10 +15726,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     type="button"
                     className="mbc-zoom-btn"
                     onClick={() => zoomFocusedPane(1)}
-                    disabled={!headerZoomShown}
+                    disabled={!headerZoomOn}
                     aria-label="Zoom In"
-                    aria-keyshortcuts={headerZoomShown ? ariaSc('=') : undefined}
-                    title={headerZoomShown ? `Zoom In (${sc('=')})` : headerZoomOffHint}
+                    aria-keyshortcuts={headerZoomOn ? ariaSc('=') : undefined}
+                    title={headerZoomOn ? `Zoom In (${sc('=')})` : headerZoomOffReason}
                   >
                     <ZoomIn size={13} />
                   </button>
@@ -15794,6 +15850,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                         {(effectiveMapLayoutMode === 'split' || effectiveMapLayoutMode === 'linear') && (
                           <LinearSequenceView
                             doc={activeDoc}
+                            overviewFitKey={sequenceOverviewFits}
                             cutSites={cutSites}
                             siteVisibility={mapSiteVisibility}
                             restrictionScope={restrictionScope}
@@ -16460,6 +16517,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   onRotate={setSplitRotation}
                   rotateOpen={splitRotateOpen}
                   onRotateOpenChange={setSplitRotateOpen}
+                  viewRestoreKey={splitViewRestores}
+                  overviewFitKey={splitOverviewFits}
                   focused={secondPaneFocused}
                   onFocusPane={() => setFocusedPane('second')}
                   onSwap={(paneRange) => {

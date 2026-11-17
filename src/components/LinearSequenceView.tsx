@@ -88,6 +88,8 @@ interface LinearSequenceViewProps {
   onViewEnzyme?: (site: RestrictionCutSite) => void;
   /** Offered by the cleavage preview as "Add ... to a collection" (US-01M7JPSK); absent, not offered. */
   onAddEnzymeToCollection?: (site: RestrictionCutSite) => void;
+  /** Counted up by View › Fit and Reset View (US-01M7DVEN): each new value fits the whole molecule in the overview. */
+  overviewFitKey?: number;
 }
 
 export interface SchematicFeaturePlaced {
@@ -1753,6 +1755,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   onStatusNotice,
   onViewEnzyme,
   onAddEnzymeToCollection,
+  overviewFitKey = 0,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [jumpCoordInput, setJumpCoordInput] = useState('');
@@ -2048,6 +2051,11 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   const overviewResizeRef = useRef<ResizeObserver | null>(null);
   // The overview's own zoom (US-01M7CCG9), kept per document: another document opens fitted.
   const [overviewZoom, setOverviewZoom] = useState<{ docId: string; view: OverviewView }>({ docId: doc.id, view: OVERVIEW_FIT });
+  const [overviewFittedFor, setOverviewFittedFor] = useState(overviewFitKey);
+  if (overviewFittedFor !== overviewFitKey) {
+    setOverviewFittedFor(overviewFitKey);
+    setOverviewZoom({ docId: doc.id, view: OVERVIEW_FIT });
+  }
   const overviewView = overviewZoom.docId === doc.id ? clampOverviewView(overviewZoom.view, overviewLen) : OVERVIEW_FIT;
   const overviewViewRef = useRef(overviewView);
   overviewViewRef.current = overviewView;

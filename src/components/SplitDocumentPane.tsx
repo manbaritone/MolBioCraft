@@ -117,6 +117,10 @@ export interface SplitDocumentPaneProps {
   focused?: boolean;
   /** Called on a pointer down or keyboard focus inside the pane (US-01M7DV10). */
   onFocusPane?: () => void;
+  /** Counted up by Actual Size, Fit and Reset View on the focused pane (US-01M7DVEN): each new value recentres its circle. */
+  viewRestoreKey?: number;
+  /** Counted up by Fit and Reset View on the focused pane (US-01M7DVEN): each new value fits the whole molecule in its linear overview. */
+  overviewFitKey?: number;
 }
 
 /**
@@ -126,6 +130,14 @@ export interface SplitDocumentPaneProps {
  */
 export function splitPaneShowsCircularMap(doc: SequenceDocument | null, view: SplitPaneView): boolean {
   return view === 'circular' && splitPaneHasBases(doc) && splitPaneCircleRefused(doc!) === null;
+}
+/**
+ * Whether the pane draws a sequence map for `doc` in `view` (US-01M7DVEN): a document with bases in
+ * Circular Map or Linear Map, not Info, a tree, an alignment, a text document or no document. The App
+ * reads it for View › Fit and Reset View while the pane is focused.
+ */
+export function splitPaneShowsSequenceMap(doc: SequenceDocument | null, view: SplitPaneView): boolean {
+  return view !== 'info' && splitPaneHasBases(doc);
 }
 function splitPaneHasBases(doc: SequenceDocument | null): boolean {
   return Boolean(
@@ -176,7 +188,7 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
   doc, choices, onChooseDoc, mainDocId = null, mainRange = null, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary,
   enzymes = REBASE_ENZYMES, scanCollection = null, onSelectMainRange, onShowMainDoc,
   view = DEFAULT_SPLIT_PANE_VIEW, onViewChange, zoomLevel = SEQUENCE_ZOOM_DEFAULT, onZoomChange, rotationDeg = 0, onRotate,
-  rotateOpen: rotateOpenProp, onRotateOpenChange, focused = false, onFocusPane,
+  rotateOpen: rotateOpenProp, onRotateOpenChange, focused = false, onFocusPane, viewRestoreKey = 0, overviewFitKey = 0,
 }) => {
   // The pane's selection belongs to the document it was made on (US-01M7DV3V): it is held with that
   // document's id and read only while that document is shown, so its coordinates are never drawn
@@ -262,6 +274,7 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
             zoomLevel={zoomLevel}
             onZoomChange={onZoomChange}
             rotationDeg={rotationDeg}
+            viewRestoreKey={viewRestoreKey}
           />
         </>
       );
@@ -270,7 +283,7 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
       return (
         <>
           <ResultWarnings warnings={scan.warnings} label="Restriction scan warnings" />
-          <LinearSequenceView key={doc.id} doc={doc} cutSites={scan.sites} restrictionScope={restrictionScope} selectedRange={range} onSelectRange={setRange} onUpdateDocument={onUpdateDocument} onClearSelection={() => setRange(null)} />
+          <LinearSequenceView key={doc.id} doc={doc} cutSites={scan.sites} restrictionScope={restrictionScope} selectedRange={range} onSelectRange={setRange} onUpdateDocument={onUpdateDocument} onClearSelection={() => setRange(null)} overviewFitKey={overviewFitKey} />
         </>
       );
     }
