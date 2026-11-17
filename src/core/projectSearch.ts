@@ -4,10 +4,17 @@
 /**
  * Project text search (US-01M7DVC0): resolves a search scope to documents and matches a word
  * field by field, naming the field each match is in. Pure: the App passes the documents and
- * folders; nothing here reads tabs, storage or residues.
+ * folders; nothing here reads tabs or storage, and text search never reads residues.
+ *
+ * Motif search (US-01M7DVE7) is the residue search: it sorts each document into searched or not
+ * searched (with the reason), and hands each searched document's sequence to the IUPAC motif
+ * engine the caller passes (US-01M7DVBH's search_iupac_motif), which finds and counts the hits.
  */
 
 import type { SequenceDocument, SequenceFeature } from '../types/bio';
+import type { IupacMotifHit, IupacMotifSearch, MotifSearchMode } from '../lib/rustBioEngine';
+import { isContigSummaryRecord } from './contigSummary';
+import { isTreeDocument } from './documentViews';
 import { documentsInFolder, PROJECT_ROOT, type ExplorerFolder } from './projectExplorer';
 
 export type SearchScope = 'This folder only' | 'Folder and subfolders' | 'Entire project';
@@ -230,4 +237,154 @@ export function searchText(
     }
   }
   return { query: trimmed, results };
+}
+
+// ─── Motif search (US-01M7DVE7) ───
+
+export type MotifMode = 'Nucleotide motif' | 'Protein motif';
+export type SearchMode = 'Text' | MotifMode;
+/** The panel's modes, Text first and the default. */
+export const SEARCH_MODES: readonly SearchMode[] = ['Text', 'Nucleotide motif', 'Protein motif'];
+
+export const NUCLEOTIDE_MOTIF_STATEMENT =
+  'Motif search reads the bases of each DNA and RNA document by IUPAC codes, on both strands when Both strands is on, '
+  + 'and across the origin of a circular molecule. A hit is definite when every base is one the motif allows there, '
+  + 'and possible when an ambiguous base in the document, such as N, may or may not be one. '
+  + 'Not searched in this mode: protein documents, alignments, trees, text documents, enzyme sets and contig summaries.';
+
+export const PROTEIN_MOTIF_STATEMENT =
+  'Motif search reads the residues of each protein document by IUPAC codes (B, Z, J, X), on one strand. '
+  + 'A hit is definite when every residue is one the motif allows there, and possible when an ambiguous residue in '
+  + 'the document, such as X, may or may not be one. Not searched in this mode: DNA and RNA documents (translated '
+  + 'search is not available), alignments, trees, text documents, enzyme sets and contig summaries.';
+
+/** The most hits the engine is asked to list for one document; its counts still cover the whole molecule. */
+export const MOTIF_HITS_PER_DOCUMENT = 1000;
+
+/**
+ * Why `doc` is not searched in `mode`, or null when it is. An alignment carries its first row in
+ * `sequence`, so it is named by its kind, never by having a sequence.
+ */
+export function motifNotSearchedReason(doc: SequenceDocument, mode: MotifMode): string | null {
+  const documentType = String(doc.docMetadata?.['Document Type'] ?? '');
+  if (isTreeDocument(doc)) return 'tree (no sequence)';
+  if (documentType === 'Text Document') return 'text document (no sequence)';
+  if (documentType === 'Enzyme Set') return 'enzyme set (no sequence)';
+  if (doc.documentKind === 'alignment' || (doc.alignmentMeta?.sequences?.length ?? 0) > 0) {
+    return 'alignment (motif search reads single sequences)';
+  }
+  if (isContigSummaryRecord(doc)) return 'contig summary (annotations only, no bases)';
+  if (doc.sequence.length === 0) return 'empty sequence';
+  if (mode === 'Nucleotide motif' && doc.moleculeType === 'Protein') return 'protein sequence (use Protein motif)';
+  if (mode === 'Protein motif' && doc.moleculeType !== 'Protein') return 'translated search is not available';
+  return null;
+}
+
+/** The engine call the search makes, `searchIupacMotifRust`'s shape. */
+export type MotifEngine = (
+  seq: string,
+  query: string,
+  options: { mode: MotifSearchMode; circular: boolean; searchBothStrands: boolean; maxHits: number },
+) => IupacMotifSearch;
+
+export interface MotifHit extends IupacMotifHit {
+  /** The top-strand letters of the hit as the document stores them, start..L then 1..end across the origin. */
+  letters: string;
+}
+
+export interface DocumentMotifResult {
+  documentId: string;
+  documentName: string;
+  folderPath: string;
+  /** The first MOTIF_HITS_PER_DOCUMENT hits by start. */
+  hits: MotifHit[];
+  /** The engine's counts over the whole molecule, never the listed hits. */
+  totalHits: number;
+  definiteHits: number;
+  possibleHits: number;
+  warnings: string[];
+}
+
+export interface MotifNotSearched {
+  documentId: string;
+  documentName: string;
+  folderPath: string;
+  reason: string;
+}
+
+export type MotifSearchOutcome =
+  | Refusal<'empty query'>
+  /** The engine refused the query itself, so no document was searched. */
+  | { queryRefused: string }
+  /** The engine could not run the op at all (not loaded, or a build without it). */
+  | { engineUnavailable: string }
+  | { query: string; searched: number; results: DocumentMotifResult[]; notSearched: MotifNotSearched[] };
+
+const ENGINE_REASON = /^\[MolBioCraft Rust Engine :: [^\]]*\] ([\s\S]*)$/;
+const UNKNOWN_OP = 'Unknown MolBioCraft Rust bioinformatics RPC operation';
+
+/** The top-strand letters from 1-based `start` to `end`, wrapping past the end when `start > end`. */
+function hitLetters(seq: string, start: number, end: number): string {
+  return start <= end ? seq.slice(start - 1, end) : seq.slice(start - 1) + seq.slice(0, end);
+}
+
+/**
+ * Searches each document of `documents` that `mode` reads, through `engine`, at most
+ * MOTIF_HITS_PER_DOCUMENT hits each. A document the engine refuses is listed as not searched with
+ * the engine's reason and the search goes on; a refusal of the query itself, or an engine that
+ * cannot run the op, ends it with that answer and no document counted as searched.
+ */
+export function searchMotif(
+  query: string,
+  documents: SequenceDocument[],
+  folders: ExplorerFolder[],
+  mode: MotifMode,
+  bothStrands: boolean,
+  engine: MotifEngine,
+): MotifSearchOutcome {
+  const trimmed = query.trim();
+  if (trimmed === '') return { refused: 'empty query' };
+  const results: DocumentMotifResult[] = [];
+  const notSearched: MotifNotSearched[] = [];
+  let searched = 0;
+  for (const doc of documents) {
+    const where = { documentId: doc.id, documentName: doc.name, folderPath: documentFolderPath(doc.folder, folders) };
+    const skip = motifNotSearchedReason(doc, mode);
+    if (skip !== null) {
+      notSearched.push({ ...where, reason: skip });
+      continue;
+    }
+    let answer: IupacMotifSearch;
+    try {
+      answer = engine(doc.sequence, trimmed, {
+        mode: mode === 'Nucleotide motif' ? 'nucleotide' : 'protein',
+        circular: mode === 'Nucleotide motif' && doc.topology === 'circular',
+        searchBothStrands: mode === 'Nucleotide motif' && bothStrands,
+        maxHits: MOTIF_HITS_PER_DOCUMENT,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const engineReason = ENGINE_REASON.exec(message)?.[1];
+      if (engineReason === undefined || engineReason.startsWith(UNKNOWN_OP)) {
+        return { engineUnavailable: engineReason ?? message };
+      }
+      if (engineReason.startsWith('query letter') || engineReason === 'query is empty') {
+        return { queryRefused: engineReason };
+      }
+      notSearched.push({ ...where, reason: engineReason });
+      continue;
+    }
+    searched += 1;
+    if (answer.totalHits > 0) {
+      results.push({
+        ...where,
+        hits: answer.hits.map((h) => ({ ...h, letters: hitLetters(doc.sequence, h.start, h.end) })),
+        totalHits: answer.totalHits,
+        definiteHits: answer.definiteHits,
+        possibleHits: answer.possibleHits,
+        warnings: answer.warnings,
+      });
+    }
+  }
+  return { query: trimmed, searched, results, notSearched };
 }

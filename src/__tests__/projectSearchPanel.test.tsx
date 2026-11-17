@@ -18,7 +18,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
-import { TEXT_SEARCH_STATEMENT } from '../core/projectSearch';
+import { NUCLEOTIDE_MOTIF_STATEMENT, PROTEIN_MOTIF_STATEMENT, TEXT_SEARCH_STATEMENT } from '../core/projectSearch';
 import { inferDocumentTypeLabel } from '../core/workbenchBatchOperations';
 import { resolveNativeMenuItemEnabled } from '../core/commandAvailability';
 import type { SequenceDocument } from '../types/bio';
@@ -369,6 +369,283 @@ describe('US-01M7DV88 AC4: no hits, an empty scope and an empty query are told a
       await app.input(queryField(app), 'zqvector');
       expect(summary(app)).toBe('No documents in Favorites only');
       expect(words(panel(app).textContent)).not.toContain('No matches in 0 documents searched');
+    });
+  });
+});
+
+// ─── US-01M7DVE7: motif mode ───
+//
+// The motif fixture lives in its own folder, Motif Lab, so each count is the fixture's and no
+// sample-library document is in scope. Each document is built to tell a wrong panel apart: an RNA
+// site on the reverse strand (a panel that writes the reverse complement shows CCTAAG, not CUUAGG),
+// two circular sites across the origin (a panel that drops the topology finds neither; one that
+// slices start..end shows no letters), a palindromic site (a plain "+" fails), a document with more
+// than 1,000 hits (a panel counting its listed hits says 1,000), and alignments, a tree, a text
+// document and an enzyme set that all carry GAATTC in `sequence` (a panel that searches whatever has
+// letters lists them as hits). The engine is the real WASM; only AC4's unavailable-engine case
+// swaps it, through the override below.
+
+const engineOverride = vi.hoisted(() => ({ current: null as null | ((...args: unknown[]) => unknown) }));
+vi.mock('../lib/rustBioEngine', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/rustBioEngine')>();
+  return {
+    ...actual,
+    searchIupacMotifRust: (...args: Parameters<typeof actual.searchIupacMotifRust>) =>
+      (engineOverride.current ? engineOverride.current(...args) : actual.searchIupacMotifRust(...args)),
+  };
+});
+
+const LAB = 'Motif Lab';
+const lab = (over: Partial<SequenceDocument> & { id: string; name: string }) => docOf({ folder: LAB, ...over });
+const MOTIF_DOCS: SequenceDocument[] = [
+  // First, so a refusal that stopped the search would leave every later document unsearched.
+  lab({ id: 'm-short', name: 'Short DNA', sequence: 'ACGTAC' }),
+  lab({ id: 'm-rna', name: 'RNA reverse site', moleculeType: 'RNA', sequence: 'AAAACUUAGGAAAA' }),
+  lab({ id: 'm-eco', name: 'Circular EcoRI origin', topology: 'circular', sequence: `TTC${'A'.repeat(2994)}GAA` }),
+  lab({ id: 'm-bsa', name: 'Circular BsaI origin', topology: 'circular', sequence: `CTC${'A'.repeat(2994)}GGT` }),
+  lab({ id: 'm-many', name: 'Many GAATTC sites', sequence: 'GAATTC'.repeat(1100) }),
+  lab({ id: 'm-ambig', name: 'Ambiguous only', sequence: 'CCCCGAANTCCCCC' }),
+  lab({ id: 'm-mixed', name: 'Mixed certainty', sequence: 'GAATTCAAAGAATNCAAA' }),
+  lab({ id: 'm-pgac', name: 'Protein with GAC', moleculeType: 'Protein', sequence: 'MKGACWW' }),
+  lab({ id: 'm-pgtc', name: 'Protein with GTC', moleculeType: 'Protein', sequence: 'MKGTCWW' }),
+  lab({ id: 'm-pamb', name: 'Protein ambiguous', moleculeType: 'Protein', sequence: 'MKGXCWW' }),
+  lab({ id: 'm-alnk', name: 'Alignment by kind', documentKind: 'alignment', sequence: 'GAATTCGAATTC' }),
+  lab({
+    id: 'm-alnm', name: 'Alignment by rows', sequence: 'GAATTCGAATTC',
+    alignmentMeta: { sequences: [{ id: 'r1', name: 'r1', sequence: 'GAATTCGAATTC' }, { id: 'r2', name: 'r2', sequence: 'GAATTCGAATTA' }] },
+  }),
+  lab({ id: 'm-tree', name: 'Lab tree', sequence: 'GAATTC', docMetadata: { Newick: '(a,b);' } }),
+  lab({ id: 'm-text', name: 'Lab notes', sequence: 'GAATTC', docMetadata: { 'Document Type': 'Text Document' } }),
+  lab({ id: 'm-enz', name: 'Lab enzymes', sequence: 'GAATTC', docMetadata: { 'Document Type': 'Enzyme Set' } }),
+  lab({ id: 'm-contig', name: 'Contig summary', sequence: '', docMetadata: { 'Is Contig Summary': 'yes', 'Declared Length': '5000' } }),
+  lab({ id: 'm-empty', name: 'Empty record', sequence: '' }),
+];
+const MOTIF_SPEC: SessionSpec = {
+  documents: MOTIF_DOCS, activeDocId: 'm-short', viewerTab: 'sequence-view',
+  workspace: { projectExplorer: { ...EXPLORER, customFolders: [LAB], folderParents: {}, hiddenFolders: [] } } as SessionSpec['workspace'],
+};
+/** The reasons AC4 names for the kinds no motif mode reads, by document. */
+const KIND_REASONS: Record<string, string> = {
+  'Alignment by kind': 'alignment (motif search reads single sequences)',
+  'Alignment by rows': 'alignment (motif search reads single sequences)',
+  'Lab tree': 'tree (no sequence)',
+  'Lab notes': 'text document (no sequence)',
+  'Lab enzymes': 'enzyme set (no sequence)',
+  'Contig summary': 'contig summary (annotations only, no bases)',
+  'Empty record': 'empty sequence',
+};
+const PROTEINS = ['Protein with GAC', 'Protein with GTC', 'Protein ambiguous'];
+const NUCLEIC = ['Short DNA', 'RNA reverse site', 'Circular EcoRI origin', 'Circular BsaI origin', 'Many GAATTC sites', 'Ambiguous only', 'Mixed certainty'];
+
+const modeSelect = (app: AppHarness) => app.one('[role="dialog"][aria-label="Search Project"] select[aria-label="Search mode"]', 'the Search mode select');
+const motifField = (app: AppHarness) => app.one('[role="dialog"][aria-label="Search Project"] input[aria-label="Search motif"]', 'the motif field');
+const checkbox = (app: AppHarness, label: string) => {
+  const found = panel(app).querySelectorAll('label').filter((l) => words(l.textContent) === label).flatMap((l) => l.querySelectorAll('input[type="checkbox"]'));
+  if (found.length !== 1) throw new Error(`expected one "${label}" checkbox, found ${found.length}`);
+  return found[0];
+};
+const isChecked = (el: LiveElement) => (el as unknown as Radio).checked;
+const statement = (app: AppHarness) => words(panel(app).querySelector('.mbc-project-search-fields')?.textContent);
+const skips = (app: AppHarness) => Object.fromEntries(panel(app).querySelectorAll('[data-search-skip]').map((s) => [part(s, 'name'), part(s, 'reason')]));
+const hitRows = (group: LiveElement) => group.querySelectorAll('[data-search-hit]')
+  .map((h) => [part(h, 'coords'), part(h, 'strand'), part(h, 'letters'), part(h, 'certainty')]);
+const groupNames = (app: AppHarness) => groups(app).map((g) => part(g, 'name')).sort();
+async function openLab(app: AppHarness, mode?: string) {
+  await searchFolder(app, LAB);
+  if (mode) await app.change(modeSelect(app), mode);
+}
+
+describe('US-01M7DVE7 AC1: the Search mode select, its statements and Text mode unchanged', () => {
+  it('US-01M7DVE7 AC1 offers Text, Nucleotide motif and Protein motif, Text the default, and the scope radios stay the only radios', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app);
+      const select = modeSelect(app);
+      expect(select.querySelectorAll('option').map((o) => words(o.textContent))).toEqual(['Text', 'Nucleotide motif', 'Protein motif']);
+      expect((select as unknown as { value: string }).value).toBe('Text');
+      expect(statement(app)).toBe(TEXT_SEARCH_STATEMENT);
+      for (const mode of ['Text', 'Nucleotide motif', 'Protein motif']) {
+        await app.change(select, mode);
+        const radios = panel(app).querySelectorAll('input[type="radio"]');
+        expect(radios.map((r) => (r as unknown as Radio).value), `${mode}: the radios are the scopes`).toEqual(scopeNames(app));
+        expect(radios.map((r) => r.getAttribute('name')), `${mode}: one radio group`).toEqual(radios.map(() => 'mbc-project-search-scope'));
+      }
+
+      // Nucleotide letters in Text mode are text: only the name that holds them is found.
+      await app.change(select, 'Text');
+      await app.input(queryField(app), 'GAATTC');
+      expect(summary(app)).toBe(`1 hit in 1 document · ${MOTIF_DOCS.length} documents searched`);
+      expect(groupNames(app)).toEqual(['Many GAATTC sites']);
+      expect(groups(app)[0].querySelectorAll('[data-search-hit]').map((h) => part(h, 'field'))).toEqual(['Name']);
+      expect(panel(app).querySelectorAll('[data-search-not-searched]')).toHaveLength(0);
+    });
+  });
+
+  it('US-01M7DVE7 AC1 shows each motif statement word for word in place of the text one, and an empty motif query asks for a motif', async () => {
+    expect(NUCLEOTIDE_MOTIF_STATEMENT).toBe('Motif search reads the bases of each DNA and RNA document by IUPAC codes, on both strands when Both strands is on, and across the origin of a circular molecule. A hit is definite when every base is one the motif allows there, and possible when an ambiguous base in the document, such as N, may or may not be one. Not searched in this mode: protein documents, alignments, trees, text documents, enzyme sets and contig summaries.');
+    expect(PROTEIN_MOTIF_STATEMENT).toBe('Motif search reads the residues of each protein document by IUPAC codes (B, Z, J, X), on one strand. A hit is definite when every residue is one the motif allows there, and possible when an ambiguous residue in the document, such as X, may or may not be one. Not searched in this mode: DNA and RNA documents (translated search is not available), alignments, trees, text documents, enzyme sets and contig summaries.');
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      expect(statement(app)).toBe(NUCLEOTIDE_MOTIF_STATEMENT);
+      expect(words(panel(app).textContent)).not.toContain(TEXT_SEARCH_STATEMENT);
+      // Seven DNA and RNA documents are read in this mode; the empty record is not.
+      expect(summary(app)).toBe(`Type a motif to search ${NUCLEIC.length} documents`);
+      await app.input(motifField(app), '   ');
+      expect(summary(app)).toBe(`Type a motif to search ${NUCLEIC.length} documents`);
+      expect(groups(app)).toHaveLength(0);
+
+      await app.change(modeSelect(app), 'Protein motif');
+      expect(statement(app)).toBe(PROTEIN_MOTIF_STATEMENT);
+      expect(words(panel(app).textContent)).not.toContain(NUCLEOTIDE_MOTIF_STATEMENT);
+      expect(summary(app)).toBe(`Type a motif to search ${PROTEINS.length} documents`);
+
+      await app.change(modeSelect(app), 'Text');
+      expect(statement(app)).toBe(TEXT_SEARCH_STATEMENT);
+    });
+  });
+});
+
+describe('US-01M7DVE7 AC2: each hit with coordinates, strand, letters and certainty, the counts and Definite only', () => {
+  it('US-01M7DVE7 AC2 shows a reverse-strand RNA site in U, origin-crossing sites read across the origin, and the palindrome', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      expect(isChecked(checkbox(app, 'Both strands')), 'Both strands is on by default').toBe(true);
+      expect(isChecked(checkbox(app, 'Definite only'))).toBe(false);
+
+      await app.input(motifField(app), 'CCTAAG');
+      expect(groupNames(app)).toEqual(['RNA reverse site']);
+      expect(hitRows(groupFor(app, 'RNA reverse site'))).toEqual([['5-10', '−', 'CUUAGG', 'definite']]);
+      // The reverse strand is searched only while Both strands is on.
+      await app.change(checkbox(app, 'Both strands'), false);
+      expect(groups(app)).toHaveLength(0);
+      expect(summary(app)).toBe(`No matches in ${NUCLEIC.length} documents searched · 10 not searched`);
+      await app.change(checkbox(app, 'Both strands'), true);
+
+      await app.input(motifField(app), 'GAGACC');
+      expect(hitRows(groupFor(app, 'Circular BsaI origin'))).toEqual([['2998-3', '−', 'GGTCTC', 'definite']]);
+
+      await app.input(motifField(app), 'GAATTC');
+      expect(hitRows(groupFor(app, 'Circular EcoRI origin'))).toEqual([['2998-3', '+ palindrome', 'GAATTC', 'definite']]);
+      expect(hitRows(groupFor(app, 'Mixed certainty'))).toEqual([
+        ['1-6', '+ palindrome', 'GAATTC', 'definite'],
+        ['10-15', '+ palindrome', 'GAATNC', 'possible'],
+      ]);
+      expect(part(groupFor(app, 'Mixed certainty'), 'hits')).toBe('2 hits (1 definite, 1 possible)');
+    });
+  });
+
+  it('US-01M7DVE7 AC2 counts the whole molecule, lists at most 1,000 hits with the warning, and Definite only hides the possible ones', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      await app.input(motifField(app), 'GAATTC');
+      expect(groupNames(app)).toEqual(['Ambiguous only', 'Circular EcoRI origin', 'Many GAATTC sites', 'Mixed certainty']);
+      const many = groupFor(app, 'Many GAATTC sites');
+      expect(part(many, 'hits'), 'the engine counts, not the listed hits').toBe('1,100 hits (1,100 definite, 0 possible)');
+      expect(part(many, 'warning')).toBe('Showing the first 1,000 of 1,100 hits.');
+      expect(many.querySelectorAll('[data-search-hit]')).toHaveLength(1000);
+      expect(hitRows(many)[999]).toEqual(['5995-6000', '+ palindrome', 'GAATTC', 'definite']);
+      expect(part(groupFor(app, 'Ambiguous only'), 'hits')).toBe('1 hit (0 definite, 1 possible)');
+      expect(summary(app)).toBe(`1,104 hits in 4 documents · ${NUCLEIC.length} documents searched · 10 not searched`);
+      expect(panel(app).querySelectorAll('[data-part="warning"]'), 'only the cut document warns').toHaveLength(1);
+
+      await app.change(checkbox(app, 'Definite only'), true);
+      expect(groupNames(app), 'a document of possible hits only leaves the list').toEqual(['Circular EcoRI origin', 'Many GAATTC sites', 'Mixed certainty']);
+      expect(hitRows(groupFor(app, 'Mixed certainty'))).toEqual([['1-6', '+ palindrome', 'GAATTC', 'definite']]);
+      expect(summary(app)).toBe(`1,102 hits in 3 documents · ${NUCLEIC.length} documents searched · 10 not searched · 2 possible hits hidden`);
+      await app.change(checkbox(app, 'Definite only'), false);
+      expect(groupNames(app)).toHaveLength(4);
+    });
+  });
+});
+
+describe('US-01M7DVE7 AC3: Protein motif reads protein documents on one strand', () => {
+  it('US-01M7DVE7 AC3 searches only proteins, never their reverse complement, and lists DNA and RNA as not searched', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Protein motif');
+      expect(panel(app).querySelectorAll('label').filter((l) => words(l.textContent) === 'Both strands'), 'no strand choice for proteins').toHaveLength(0);
+      await app.input(motifField(app), 'GAC');
+      // GTC is GAC's reverse complement: a panel that reverse-complements finds Protein with GTC.
+      expect(groupNames(app)).toEqual(['Protein ambiguous', 'Protein with GAC']);
+      expect(hitRows(groupFor(app, 'Protein with GAC'))).toEqual([['3-5', '+', 'GAC', 'definite']]);
+      expect(hitRows(groupFor(app, 'Protein ambiguous'))).toEqual([['3-5', '+', 'GXC', 'possible']]);
+      expect(summary(app)).toBe(`2 hits in 2 documents · ${PROTEINS.length} documents searched · 14 not searched`);
+      expect(skips(app)).toEqual({
+        ...Object.fromEntries(NUCLEIC.map((n) => [n, 'translated search is not available'])),
+        ...KIND_REASONS,
+      });
+    });
+  });
+});
+
+describe('US-01M7DVE7 AC4: not searched, refusals and an engine that cannot run, each told apart', () => {
+  it('US-01M7DVE7 AC4 lists each kind it does not read with its reason, counted apart from the documents searched', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      await app.input(motifField(app), 'GAATTC');
+      expect(skips(app)).toEqual({
+        ...Object.fromEntries(PROTEINS.map((n) => [n, 'protein sequence (use Protein motif)'])),
+        ...KIND_REASONS,
+      });
+      expect(words(panel(app).querySelector('[data-search-not-searched] h3')?.textContent)).toBe('Not searched');
+      expect(summary(app)).toBe(`1,104 hits in 4 documents · ${NUCLEIC.length} documents searched · 10 not searched`);
+      for (const name of [...PROTEINS, ...Object.keys(KIND_REASONS)]) {
+        expect(groups(app).filter((g) => part(g, 'name') === name), `${name} has no hit group`).toHaveLength(0);
+      }
+
+      // A document the engine refuses is listed with its reason, and the others are still searched after it.
+      await app.input(motifField(app), 'GAATTCAA');
+      expect(skips(app)['Short DNA']).toBe('query longer than the sequence (8 > 6)');
+      expect(Object.keys(skips(app))).toHaveLength(11);
+      expect(groupNames(app)).toEqual(['Circular EcoRI origin', 'Mixed certainty']);
+      expect(hitRows(groupFor(app, 'Circular EcoRI origin'))).toEqual([['2998-5', '+', 'GAATTCAA', 'definite']]);
+      expect(summary(app)).toBe(`3 hits in 2 documents · ${NUCLEIC.length - 1} documents searched · 11 not searched`);
+      await app.input(motifField(app), 'CGCGCGCG');
+      expect(summary(app), 'no matches counts only the searched').toBe(`No matches in ${NUCLEIC.length - 1} documents searched · 11 not searched`);
+    });
+  });
+
+  it('US-01M7DVE7 AC4 shows a refused query once and lists no document', async () => {
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      await app.input(motifField(app), 'GAAXTC');
+      expect(summary(app)).toBe("This motif cannot be searched: query letter 'X' is not a nucleotide code");
+      const text = words(panel(app).textContent);
+      expect(text.split('query letter').length - 1, 'the refusal is told once').toBe(1);
+      expect(groups(app)).toHaveLength(0);
+      expect(panel(app).querySelectorAll('[data-search-skip]')).toHaveLength(0);
+      expect(text).not.toMatch(/No matches|searched ·|not searched ·/);
+
+      await app.change(modeSelect(app), 'Protein motif');
+      await app.input(motifField(app), 'MK1');
+      expect(summary(app)).toBe("This motif cannot be searched: query letter '1' is not a protein code");
+      expect(panel(app).querySelectorAll('[data-search-skip]')).toHaveLength(0);
+    });
+  });
+
+  it('US-01M7DVE7 AC4 says the motif engine is not available when the op is unknown or the WASM fails, and lists no document', async () => {
+    const real = await vi.importActual<typeof import('../lib/rustBioEngine')>('../lib/rustBioEngine');
+    const cases: [string, (...args: unknown[]) => unknown, string][] = [
+      // A build without the op: the real engine's own answer to an op it does not know.
+      ['stale engine', (seq, query) => real.invokeRustBioSync('search_iupac_motif_not_built', { seq, query }),
+        "The motif engine is not available: Unknown MolBioCraft Rust bioinformatics RPC operation: 'search_iupac_motif_not_built'"],
+      ['WASM fails to load', () => { throw new WebAssembly.CompileError('WebAssembly.Module(): expected magic word'); },
+        'The motif engine is not available: WebAssembly.Module(): expected magic word'],
+    ];
+    await withSession(MOTIF_SPEC, async (app) => {
+      await openLab(app, 'Nucleotide motif');
+      try {
+        for (const [what, engine, said] of cases) {
+          engineOverride.current = engine;
+          await app.input(motifField(app), what === 'stale engine' ? 'GAATTC' : 'GAGACC');
+          expect(summary(app), what).toBe(said);
+          expect(groups(app), what).toHaveLength(0);
+          expect(panel(app).querySelectorAll('[data-search-skip]'), `${what}: no document listed`).toHaveLength(0);
+          expect(words(panel(app).textContent), what).not.toMatch(/No matches|documents searched/);
+        }
+      } finally {
+        engineOverride.current = null;
+      }
+      await app.input(motifField(app), 'GAATTC');
+      expect(summary(app), 'the real engine answers again').toBe(`1,104 hits in 4 documents · ${NUCLEIC.length} documents searched · 10 not searched`);
     });
   });
 });
