@@ -15423,6 +15423,16 @@ table,
   flex: 1 1 0;
 }
 
+/* US-01M7DV10: the focused one of the two panes, the one View › Zoom and Rotate act on, is outlined
+   inside its own box, so the outline neither moves the divider nor is clipped by the host. */
+.mbc-split-host.is-split > .mbc-viewer-canvas.is-focused-pane,
+.mbc-split-host.is-split > .mbc-split-pane.is-focused-pane {
+  outline-width: 2px;
+  outline-style: solid;
+  outline-color: var(--mbc-blue);
+  outline-offset: -2px;
+}
+
 .mbc-split-divider {
   position: relative;
   flex: 0 0 6px;

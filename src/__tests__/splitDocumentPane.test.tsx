@@ -48,6 +48,12 @@ import { resolveMenuNodeFunctionDescription } from '../data/menuFunctionDescript
 import { appTsxSource, mountApp, type AppHarness } from './appHarness';
 import { appCssRules, cascaded, gridTracks } from './cssCascade';
 import { dispatchLiveEvent, memoryStorage, type LiveElement, type LiveStorage } from './liveDom';
+import { macHost } from './appHarness';
+import { resolveNativeMenuItemEnabled } from '../core/commandAvailability';
+
+// A macOS host's Tauri runtime, for the native menu state (US-01M7DV10 AC2); every other mount is a
+// Linux host, which the mock reports as no Tauri runtime, as the real module does under test.
+vi.mock('../lib/tauriIpc', async (importOriginal) => (await import('./appHarness')).tauriIpcMock(await importOriginal<object>()));
 
 // Each check launches the App afresh.
 vi.setConfig({ testTimeout: 120_000 });
@@ -1165,6 +1171,7 @@ async function rotatePane(app: AppHarness, deg: string) {
 }
 /** Rotates the main view's circular map from View › Rotate Circular Map…'s degree field. */
 async function rotateMain(app: AppHarness, deg: string) {
+  await focusMainView(app); // US-01M7DV10: View › Rotate Circular Map… acts on the focused pane
   await app.menu('view:rotate-map');
   const field = app.canvas().querySelectorAll('[role="dialog"][aria-label="Rotate Circular Map"] input[aria-label="Rotation in degrees"]');
   expect(field, "the main view's degree field").toHaveLength(1);
@@ -1395,6 +1402,7 @@ describe("US-01M7DVQG AC3: the pane's zoom, pan and rotation are its own", () =>
       expect(viewport(paneMap(app)), 'the drag panned the pane').not.toBe(zoomed);
       await rotatePane(app, '90');
       expect(wedge(paneMap(app))).toBe('90');
+      await focusMainView(app); // US-01M7DV10: the header's % reads the focused pane's zoom
       expect(main(), "the main view's zoom, pan and rotation are unchanged").toEqual(mainBefore);
       await autosaveRunsOut(app);
       const ws = autosavedWorkspace(storage);
@@ -1434,6 +1442,7 @@ describe("US-01M7DVQG AC3: the pane's zoom, pan and rotation are its own", () =>
       await app.change(picker(app), CB.id);
       expect(wedge(paneMap(app)), 'Circ_B again at its 120, not the 200 the pane last had').toBe('120');
       expect(wedge(mainMap(app)), 'the main view is unchanged').toBe('30');
+      await focusMainView(app); // US-01M7DV10: the header's % reads the focused pane's zoom
       expect(headerZoom(app)).toBe('100%');
     });
   });
@@ -1468,6 +1477,7 @@ describe("US-01M7DVQG AC3: the pane's zoom, pan and rotation are its own", () =>
 
       expect(mainDocName(app)).toBe('Circ_B');
       expect(wedge(mainMap(app)), "Circ_B's 90 came with it").toBe('90');
+      await focusMainView(app); // US-01M7DV10: Swap was pressed in the pane, so the pane is focused
       expect(headerZoom(app), "the main view takes the pane's zoom").toBe(`${Math.round(paneScale * 100)}%`);
       expect(paneDocId(app)).toBe(CA.id);
       expect(wedge(paneMap(app)), "Circ_A's 30 came with it").toBe('30');
@@ -1498,6 +1508,7 @@ describe("US-01M7DVQG AC3: the pane's zoom, pan and rotation are its own", () =>
 
       expect(wedge(mainMap(app)), "the main view takes the pane's 90").toBe('90');
       expect(wedge(paneMap(app)), "the pane takes the main view's 30").toBe('30');
+      await focusMainView(app); // US-01M7DV10: Swap was pressed in the pane, so the pane is focused
       expect(headerZoom(app)).toBe(`${Math.round(paneScale * 100)}%`);
       expect(scaleOf(paneMap(app))).toBeCloseTo(1.1, 4);
       const after = autosavedWorkspace(storage);
@@ -1751,5 +1762,457 @@ describe('US-01M7DVQG AC6: the pane\'s view and rotation are saved with its docu
         expect(splitNotices(app), `${what}: the one notice`).toEqual([notice]);
       }
     });
+  });
+});
+
+// ─── US-01M7DV10: the focused pane, and the View commands and figure export that act on it ───
+//
+// Through the mounted App. A pointer down or focus is dispatched on its own where a click would also
+// run the control: the harness fires no focus events, so keyboard focus is a focusin dispatched on the
+// element, as the browser fires when Tab lands on it.
+
+const FOCUS_CLASS = 'is-focused-pane';
+const NO_CIRCLE = 'The focused split pane shows no circular map.';
+const paneBody = (app: AppHarness) => pane(app).querySelectorAll('.mbc-split-pane-body')[0];
+
+/** Which pane carries the focus markers ('main', 'second', both joined by '+', or 'none'); aria-current only ever 'true', and only with the class. */
+function focusedPaneOf(app: AppHarness): string {
+  const panes: [string, LiveElement][] = [['main', app.canvas()], ...app.all('section.mbc-split-pane').map((p): [string, LiveElement] => ['second', p])];
+  const marked = panes.filter(([name, el]) => {
+    const has = el.classList.contains(FOCUS_CLASS);
+    expect(el.getAttribute('aria-current'), `${name}: aria-current is "true" with the class and absent without it, never "false"`).toBe(has ? 'true' : null);
+    return has;
+  });
+  return marked.length ? marked.map(([n]) => n).join('+') : 'none';
+}
+/** A primary pointer down and up on `el` alone, with no click. */
+async function pointerDown(app: AppHarness, el: LiveElement) {
+  const p = { pointerId: 7, pointerType: 'mouse', isPrimary: true, button: 0, clientX: 0, clientY: 0 };
+  await React.act(async () => { dispatchLiveEvent(el, 'pointerdown', { ...p, buttons: 1 }); });
+  await React.act(async () => { dispatchLiveEvent(el, 'pointerup', { ...p, buttons: 0 }); });
+  await app.settle();
+}
+/** Keyboard focus landing on `el`: the focusin a browser fires (the harness fires none). */
+async function focusIn(app: AppHarness, el: LiveElement) {
+  el.focus();
+  await React.act(async () => { dispatchLiveEvent(el, 'focusin', {}); });
+  await app.settle();
+}
+/** Focuses the main view by a pointer down on its canvas. */
+async function focusMainView(app: AppHarness) {
+  await pointerDown(app, app.canvas());
+}
+/** The label a menu row shows (its shortcut apart). */
+const rowLabel = (b: LiveElement) => menuWords(b.querySelectorAll('.desktop-menu-label')[0]?.textContent ?? b.textContent);
+/** Opens the top menu `top`, then each submenu on `path`, and returns the last row. */
+async function menuRow(app: AppHarness, top: string, path: string[]): Promise<LiveElement> {
+  const trigger = app.all('.mbc-menubar [role="menuitem"]').find((b) => menuWords(b.getAttribute('aria-label') ?? b.textContent) === top);
+  if (!trigger) throw new Error(`the menu bar has no ${top} menu`);
+  await app.click(trigger);
+  let row: LiveElement | undefined;
+  for (const label of path) {
+    row = menuButtons(app).find((b) => rowLabel(b) === label);
+    if (!row) throw new Error(`no "${label}" in the open menu: ${menuButtons(app).map(rowLabel).join(' | ')}`);
+    if (label !== path[path.length - 1]) await app.click(row);
+  }
+  return row!;
+}
+/** Clicks View › `path` (which must be enabled). */
+async function viewCommand(app: AppHarness, path: string[]) {
+  const row = await menuRow(app, 'View', path);
+  expect(row.hasAttribute('disabled'), `View › ${path.join(' › ')} is enabled`).toBe(false);
+  await app.click(row);
+  await closeMenus(app);
+}
+/** Whether each View row on its path is disabled. */
+async function viewRowsDisabled(app: AppHarness, paths: string[][]): Promise<boolean[]> {
+  const out: boolean[] = [];
+  for (const path of paths) {
+    out.push((await menuRow(app, 'View', path)).hasAttribute('disabled'));
+    await closeMenus(app);
+  }
+  return out;
+}
+/** The Function Info the menu shows on hover for `top` › `path`. */
+async function functionInfo(app: AppHarness, top: string, path: string[]): Promise<string> {
+  const row = await menuRow(app, top, path);
+  await React.act(async () => { dispatchLiveEvent(row, 'pointerover', { pointerId: 1, pointerType: 'mouse', isPrimary: true }); });
+  await app.settle();
+  const tips = app.all('[role="tooltip"]').map((t) => words(t.textContent));
+  await closeMenus(app);
+  expect(tips, `one Function Info for ${path.join(' › ')}`).toHaveLength(1);
+  return tips[0];
+}
+const ZOOM_ROWS = [['Zoom', 'Zoom In'], ['Zoom', 'Zoom Out'], ['Zoom', 'Actual Size (100%)'], ['Rotate Circular Map…'], ['Reset Rotation']];
+const MAP_IDS: [string, string][] = [
+  ['view:zoom-in', 'Zoom In'], ['view:zoom-out', 'Zoom Out'], ['view:zoom-reset', 'Actual Size'],
+  ['view:rotate-map', 'Rotate Circular Map'], ['view:reset-rotation', 'Reset Rotation'],
+];
+const headerZoomButtons = (app: AppHarness) => [
+  labelled(app.header(), 'button', 'Zoom Out'),
+  app.header().querySelectorAll('button.zoom-pct-btn')[0],
+  labelled(app.header(), 'button', 'Zoom In'),
+];
+const rotateDialogs = (scope: LiveElement) => scope.querySelectorAll('[role="dialog"][aria-label="Rotate Circular Map"]');
+/** Sets the pane's rotate control's degree field, the control already open. */
+async function paneDegrees(app: AppHarness, deg: string) {
+  const field = pane(app).querySelectorAll('[role="dialog"][aria-label="Rotate Circular Map"] input[aria-label="Rotation in degrees"]');
+  expect(field, "the pane's degree field").toHaveLength(1);
+  await app.change(field[0], deg);
+}
+async function closePaneRotate(app: AppHarness) {
+  const close = rotateDialogs(pane(app))[0].querySelectorAll('button').filter((b) => menuWords(b.getAttribute('aria-label') ?? b.textContent) === 'Close');
+  expect(close, "the pane's rotate control's Close").toHaveLength(1);
+  await app.click(close[0]);
+  expect(rotateDialogs(pane(app))).toHaveLength(0);
+}
+/** Exports the circular map in `scope` as SVG from its FigureExportButton: the file's name and its origin wedge's angle. */
+async function exportMapSvg(app: AppHarness, scope: LiveElement): Promise<{ filename: string; wedge: string | null }> {
+  const triggers = scope.querySelectorAll('.circular-hud-actions .mbc-figure-export-trigger');
+  expect(triggers, "the map's one figure export").toHaveLength(1);
+  await app.click(triggers[0]);
+  const items = scope.querySelectorAll('.circular-hud-actions .mbc-figure-export-item').filter((b) => words(b.textContent).startsWith('SVG'));
+  expect(items, 'the figure menu offers SVG').toHaveLength(1);
+  const before = app.downloads().length;
+  await app.click(items[0]);
+  await app.settle();
+  const files = app.downloads().slice(before).filter((f) => f.filename.endsWith('.svg'));
+  expect(files, 'one .svg saved').toHaveLength(1);
+  const text = await files[0].text();
+  const tags = text.match(/<[^>]*data-map-part="origin-wedge"[^>]*>/g) ?? [];
+  expect(tags, 'the file draws one origin wedge').toHaveLength(1);
+  return { filename: files[0].filename, wedge: /data-draw-angle="([^"]*)"/.exec(tags[0] ?? '')?.[1] ?? null };
+}
+/** The sequence of each document the App's autosave holds. */
+const autosavedSequences = (storage: LiveStorage) => {
+  const raw = storage.getItem(AUTOSAVE_KEY);
+  expect(raw, 'the App autosaved the session').toBeTruthy();
+  return Object.fromEntries(parseMbcWorkbench(raw!, 'Reopened').envelope.documents.map((d) => [d.id, d.sequence ?? '']));
+};
+/** Opens the split on Circ_A with Circ_B in the pane on Circular Map, and focuses the pane. */
+async function paneOnCircle(app: AppHarness, more: Record<string, unknown> = {}) {
+  await onCircles(app, [CA, CB], CA.id, more);
+  await showInPane(app, CB.id);
+  await app.change(viewSelect(app), 'circular');
+  await pointerDown(app, paneBody(app));
+  expect(focusedPaneOf(app), 'the pane is focused').toBe('second');
+}
+
+describe('US-01M7DV10 AC1: exactly one pane has focus while the split is shown, and it is marked', () => {
+  it('US-01M7DV10 AC1 the split opens on the main pane; a pointer down or focus inside a pane takes focus, and nothing outside both moves it', async () => {
+    await withApp(async (app) => {
+      await onCircles(app, [CA, CB], CA.id);
+      expect(focusedPaneOf(app), 'Single Pane marks no pane').toBe('none');
+      await app.click(toggle(app));
+      expect(focusedPaneOf(app), 'the split opens with the main pane focused').toBe('main');
+      const view = { window: 1280, height: 800, canvas: 900 };
+      const outlined = (el: LiveElement) => cascaded(el, 'outline-style', view) ?? 'none';
+      expect([outlined(app.canvas()), outlined(pane(app))], 'App.css outlines the focused pane only').toEqual(['solid', 'none']);
+
+      await pointerDown(app, paneBody(app));
+      expect(focusedPaneOf(app), 'a pointer down in the pane').toBe('second');
+      expect([outlined(app.canvas()), outlined(pane(app))]).toEqual(['none', 'solid']);
+
+      const inspector = app.inspectorAside();
+      expect(inspector, 'the inspector column is shown').not.toBeNull();
+      const outside: [string, () => LiveElement][] = [
+        ['the header', () => app.header()],
+        ["the header's Zoom In", () => labelled(app.header(), 'button', 'Zoom In')],
+        ["the header's %", () => app.header().querySelectorAll('button.zoom-pct-btn')[0]],
+        ['the divider', () => divider(app)],
+        ['the inspector', () => app.inspectorAside()!.querySelectorAll('button')[0] ?? app.inspectorAside()!],
+        ['the menu bar', () => app.one('.mbc-menubar')],
+      ];
+      for (const focused of ['second', 'main'] as const) {
+        for (const [what, el] of outside) {
+          await pointerDown(app, el());
+          expect(focusedPaneOf(app), `a pointer down on ${what} leaves the ${focused} pane focused`).toBe(focused);
+          await focusIn(app, el());
+          expect(focusedPaneOf(app), `focus on ${what} leaves the ${focused} pane focused`).toBe(focused);
+        }
+        const viewMenu = await menuRow(app, 'View', ['Zoom', 'Zoom In']);
+        await pointerDown(app, viewMenu);
+        await closeMenus(app);
+        expect(focusedPaneOf(app), `the View menu leaves the ${focused} pane focused`).toBe(focused);
+        if (focused === 'second') {
+          await focusIn(app, mainMap(app));
+          expect(focusedPaneOf(app), 'keyboard focus inside the main view').toBe('main');
+        }
+      }
+      await focusIn(app, picker(app));
+      expect(focusedPaneOf(app), "keyboard focus on the pane's picker").toBe('second');
+      await pointerDown(app, mainMap(app));
+      expect(focusedPaneOf(app), "a pointer down on the main view's map").toBe('main');
+      await pointerDown(app, paneBody(app));
+      expect(focusedPaneOf(app)).toBe('second');
+      await focusMainView(app);
+      expect(focusedPaneOf(app), 'a pointer down on the main view').toBe('main');
+    });
+  });
+
+  it('US-01M7DV10 AC1 folding the focused pane hands focus to the other and restoring keeps it there; Swap leaves it; Single Pane clears it and the next split opens on the main pane', async () => {
+    await withSizedApp(async (app) => {
+      await restore(app, [MAIN, DOC_A, DOC_B], MAIN.id, null);
+      await showInPane(app, DOC_A.id);
+      expect(focusedPaneOf(app)).toBe('main');
+
+      await pressOnDivider(app, 'End');
+      expect(restoreButtons(app)).toEqual(['Restore the split pane']);
+      expect(focusedPaneOf(app), 'folding the other pane leaves focus').toBe('main');
+      await clickRestore(app, 'Restore the split pane');
+      expect(focusedPaneOf(app)).toBe('main');
+
+      await pressOnDivider(app, 'Home');
+      expect(restoreButtons(app)).toEqual(['Restore the main view']);
+      expect(focusedPaneOf(app), 'Home folds the focused main view: focus goes to the pane').toBe('second');
+      await clickRestore(app, 'Restore the main view');
+      expect(focusedPaneOf(app), 'restoring the main view does not take focus back').toBe('second');
+
+      await pressOnDivider(app, 'End');
+      expect(focusedPaneOf(app), 'End folds the focused pane: focus goes to the main view').toBe('main');
+      await clickRestore(app, 'Restore the split pane');
+      expect(focusedPaneOf(app), 'restoring the pane does not take focus back').toBe('main');
+
+      await pointerDown(app, paneBody(app));
+      expect(focusedPaneOf(app)).toBe('second');
+      await dragDivider(app, { x: HOST_W - 20, y: 10 });
+      expect(restoreButtons(app), 'the drag folded the pane').toEqual(['Restore the split pane']);
+      expect(focusedPaneOf(app), 'a drag that folds the focused pane hands focus to the main view').toBe('main');
+      await app.click(app.one('.mbc-split-host > button[aria-label="Restore the split pane"]'));
+      expect(focusedPaneOf(app)).toBe('main');
+
+      await pointerDown(app, paneBody(app));
+      await app.click(labelled(pane(app), 'button', 'Swap with the main view'));
+      expect(mainDocName(app), 'the documents swapped').toBe('Doc_A');
+      expect(focusedPaneOf(app), 'Swap leaves focus on the pane').toBe('second');
+      await focusMainView(app);
+      await React.act(async () => { dispatchLiveEvent(labelled(pane(app), 'button', 'Swap with the main view'), 'click', { button: 0 }); });
+      await app.settle();
+      expect(mainDocName(app), 'swapped back').toBe('Main_Doc');
+      expect(focusedPaneOf(app), 'Swap leaves focus on the main view').toBe('main');
+
+      await pointerDown(app, paneBody(app));
+      await app.click(toggle(app));
+      expect(paneCount(app), 'Single Pane').toBe(0);
+      expect(focusedPaneOf(app), 'Single Pane marks no pane').toBe('none');
+      await app.click(toggle(app));
+      expect(focusedPaneOf(app), 'the next split opens on the main pane').toBe('main');
+      await pointerDown(app, paneBody(app));
+      await app.change(chooser(app), 'single');
+      await app.change(chooser(app), 'top-bottom');
+      expect(focusedPaneOf(app), 'and by the chooser too').toBe('main');
+    });
+  });
+});
+
+describe('US-01M7DV10 AC2: View › Zoom and Rotate act on the focused pane', () => {
+  it("US-01M7DV10 AC2 with the pane focused every route zooms and turns the pane's map only, and the header reads its zoom", async () => {
+    const storage = memoryStorage();
+    const app = await mountApp({ storage });
+    try {
+      await paneOnCircle(app);
+      const mainBefore = { wedge: wedge(mainMap(app)), viewport: viewport(mainMap(app)), tab: app.activeTab() };
+      expect(mainBefore).toEqual({ wedge: '0', viewport: null, tab: 'sequence-view' });
+      const zoomIn = () => app.menu('view:zoom-in');
+      const routes: [string, () => Promise<void>, number][] = [
+        ['native view:zoom-in', zoomIn, 110],
+        ['View › Zoom › Zoom In', () => viewCommand(app, ['Zoom', 'Zoom In']), 120],
+        ['Ctrl+=', () => app.press('=', { mod: true }), 130],
+        ["the header's +", () => app.click(headerZoomButtons(app)[2]), 140],
+        ['native view:zoom-out', () => app.menu('view:zoom-out'), 130],
+        ['View › Zoom › Zoom Out', () => viewCommand(app, ['Zoom', 'Zoom Out']), 120],
+        ['Ctrl+-', () => app.press('-', { mod: true }), 110],
+        ["the header's −", () => app.click(headerZoomButtons(app)[0]), 100],
+        ['native view:zoom-in', zoomIn, 110],
+        ['native view:zoom-reset', () => app.menu('view:zoom-reset'), 100],
+        ['native view:zoom-in', zoomIn, 110],
+        ['View › Zoom › Actual Size (100%)', () => viewCommand(app, ['Zoom', 'Actual Size (100%)']), 100],
+        ['native view:zoom-in', zoomIn, 110],
+        ['Ctrl+0', () => app.press('0', { mod: true }), 100],
+        ['native view:zoom-in', zoomIn, 110],
+        ["the header's %", () => app.click(headerZoomButtons(app)[1]), 100],
+        ['native view:zoom-in', zoomIn, 110],
+      ];
+      for (const [what, run, pct] of routes) {
+        (app.doc.activeElement as unknown as { blur?: () => void }).blur?.();
+        await run();
+        expect(focusedPaneOf(app), `${what}: the pane stays focused`).toBe('second');
+        expect(scaleOf(paneMap(app)), `${what}: the pane's map is at ${pct}%`).toBeCloseTo(pct / 100, 4);
+        expect(headerZoom(app), `${what}: the header reads the pane's zoom`).toBe(`${pct}%`);
+        expect({ wedge: wedge(mainMap(app)), viewport: viewport(mainMap(app)), tab: app.activeTab() }, `${what}: the main view is unchanged`).toEqual(mainBefore);
+      }
+
+      await app.menu('view:rotate-map');
+      expect(rotateDialogs(pane(app)), "native Rotate opens the pane's control").toHaveLength(1);
+      expect(rotateDialogs(app.canvas()), "and not the main view's").toHaveLength(0);
+      await paneDegrees(app, '90');
+      expect([wedge(paneMap(app)), wedge(mainMap(app))]).toEqual(['90', '0']);
+      await app.menu('view:reset-rotation');
+      expect([wedge(paneMap(app)), wedge(mainMap(app))], 'native Reset Rotation turns the pane back').toEqual(['0', '0']);
+      await closePaneRotate(app);
+      await viewCommand(app, ['Rotate Circular Map…']);
+      expect([rotateDialogs(pane(app)).length, rotateDialogs(app.canvas()).length], 'View › Rotate Circular Map… opens the pane’s control').toEqual([1, 0]);
+      await paneDegrees(app, '45');
+      expect([wedge(paneMap(app)), wedge(mainMap(app))]).toEqual(['45', '0']);
+      await viewCommand(app, ['Reset Rotation']);
+      expect([wedge(paneMap(app)), wedge(mainMap(app))], 'View › Reset Rotation turns the pane back').toEqual(['0', '0']);
+      await closePaneRotate(app);
+
+      await app.clickTab('text-view');
+      expect(focusedPaneOf(app), 'the header tab leaves the pane focused').toBe('second');
+      await app.menu('view:rotate-map');
+      expect(app.activeTab(), "Rotate leaves the main view's tab").toBe('text-view');
+      expect(rotateDialogs(pane(app)), "and opens the pane's control").toHaveLength(1);
+      await paneDegrees(app, '90');
+      await closePaneRotate(app);
+      await app.clickTab('sequence-view');
+      expect([wedge(paneMap(app)), wedge(mainMap(app))]).toEqual(['90', '0']);
+
+      await autosaveRunsOut(app);
+      const ws = autosavedWorkspace(storage);
+      expect(ws.zoomLevel, 'workspace.zoomLevel is unchanged').toBe(100);
+      expect(ws.mapRotation ?? {}, 'workspace.mapRotation is unchanged').toEqual({});
+
+      await focusMainView(app);
+      expect(headerZoom(app), "the main view's % read again once it is focused").toBe('100%');
+      expect({ wedge: wedge(mainMap(app)), viewport: viewport(mainMap(app)), tab: app.activeTab() }).toEqual(mainBefore);
+      // With the main pane focused they act on it, as before.
+      await app.menu('view:zoom-in');
+      await app.menu('view:zoom-in');
+      expect(headerZoom(app), 'the main view zooms').toBe('120%');
+      expect(scaleOf(mainMap(app))).toBeCloseTo(1.2, 4);
+      expect(scaleOf(paneMap(app)), 'the pane keeps its zoom').toBeCloseTo(1.1, 4);
+      await app.menu('view:rotate-map');
+      expect([rotateDialogs(pane(app)).length, rotateDialogs(app.canvas()).length], "Rotate opens the main view's control").toEqual([0, 1]);
+      await app.menu('view:reset-rotation');
+      expect(wedge(paneMap(app)), 'the pane keeps its rotation').toBe('90');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it("US-01M7DV10 AC2 with the focused pane on Linear Map or Info, or showing no document, the items, ids, shortcuts and header buttons are off with exactly the sentence; on the main pane as before", async () => {
+    await withApp(async (app) => {
+      await paneOnCircle(app);
+      expect(await viewRowsDisabled(app, ZOOM_ROWS), 'all on while the pane draws its circle').toEqual([false, false, false, false, false]);
+      const states: [string, () => Promise<void>][] = [
+        ['Linear Map', () => app.change(viewSelect(app), 'linear')],
+        ['Info', () => app.change(viewSelect(app), 'info')],
+        ['no document', () => app.change(picker(app), '')],
+      ];
+      for (const [state, choose] of states) {
+        await choose();
+        expect(focusedPaneOf(app), `${state}: the pane stays focused`).toBe('second');
+        expect(paneMaps(app), `${state}: the pane draws no circle`).toHaveLength(0);
+        expect(await viewRowsDisabled(app, ZOOM_ROWS), `${state}: the View items are disabled`).toEqual([true, true, true, true, true]);
+        expect(headerZoomButtons(app).map((b) => [b.hasAttribute('disabled'), b.getAttribute('title')]), `${state}: the header's − % + are off, saying why`).toEqual([[true, NO_CIRCLE], [true, NO_CIRCLE], [true, NO_CIRCLE]]);
+        for (const [id, label] of MAP_IDS) {
+          await app.menu(id);
+          expect(statusSegments(app), `${state}: ${id} says exactly why`).toContain(`${label}: ${NO_CIRCLE}`);
+        }
+        await app.press('=', { mod: true });
+        expect(rotateDialogs(app.canvas()), `${state}: nothing opened in the main view`).toHaveLength(0);
+        expect([headerZoom(app), wedge(mainMap(app))], `${state}: the main view is unchanged`).toEqual(['100%', '0']);
+      }
+      await focusMainView(app);
+      expect(await viewRowsDisabled(app, ZOOM_ROWS), 'the main pane focused: as before').toEqual([false, false, false, false, false]);
+      expect(headerZoomButtons(app).map((b) => [b.hasAttribute('disabled'), b.getAttribute('title')]), 'the header as before').toEqual([
+        [false, 'Zoom Out (Ctrl+-)'], [false, 'Reset Zoom to 100% (Ctrl+0)'], [false, 'Zoom In (Ctrl+=)'],
+      ]);
+      await app.menu('view:zoom-in');
+      expect(headerZoom(app), 'and the main view zooms').toBe('110%');
+    });
+  });
+
+  it('US-01M7DV10 AC2 the native menu state turns the five ids off with the focused pane on Linear Map, and back on with the main pane focused', async () => {
+    const app = await mountApp(macHost());
+    try {
+      const nativeOn = () => {
+        const states = app.nativeMenuStates();
+        expect(states.length, 'the App sent the native menu state').toBeGreaterThan(0);
+        return MAP_IDS.map(([id]) => resolveNativeMenuItemEnabled(id, states[states.length - 1]));
+      };
+      await paneOnCircle(app);
+      expect(nativeOn(), 'on while the focused pane draws its circle').toEqual([true, true, true, true, true]);
+      await app.change(viewSelect(app), 'linear');
+      expect(nativeOn(), 'off with the focused pane on Linear Map').toEqual([false, false, false, false, false]);
+      await app.change(picker(app), '');
+      expect(nativeOn(), 'off with no document in the focused pane').toEqual([false, false, false, false, false]);
+      await focusMainView(app);
+      expect(nativeOn(), 'as before with the main pane focused').toEqual([true, true, true, true, true]);
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
+describe("US-01M7DV10 AC3: the pane's figure export draws the pane's map", () => {
+  it("US-01M7DV10 AC3 the pane map's SVG names the pane's document and draws its 90 degrees; the main map's keeps 0 and its name", async () => {
+    await withApp(async (app) => {
+      await paneOnCircle(app);
+      for (let i = 0; i < 5; i++) await app.menu('view:zoom-in');
+      expect(headerZoom(app)).toBe('150%');
+      expect(scaleOf(paneMap(app))).toBeCloseTo(1.5, 4);
+      await app.menu('view:rotate-map');
+      await paneDegrees(app, '90');
+      await closePaneRotate(app);
+      expect([wedge(paneMap(app)), wedge(mainMap(app))]).toEqual(['90', '0']);
+      await focusMainView(app);
+      expect(headerZoom(app), 'the main view at 100%').toBe('100%');
+
+      const paneFile = await exportMapSvg(app, pane(app));
+      expect(paneFile.filename, "the pane's export names its document").toContain('Circ_B');
+      expect(paneFile.filename).not.toContain('Circ_A');
+      expect(paneFile.wedge, "the pane's export draws its rotation").toBe('90');
+      const mainFile = await exportMapSvg(app, app.canvas());
+      expect(mainFile.filename, "the main map's export names the main document").toContain('Circ_A');
+      expect(mainFile.filename).not.toContain('Circ_B');
+      expect(mainFile.wedge, "the main map's export keeps 0").toBe('0');
+    });
+  });
+});
+
+describe("US-01M7DV10 AC4: document commands stay on the main view's document, and say so", () => {
+  it('US-01M7DV10 AC4 with the pane focused on another document, Reverse Complement and Set Origin name the main document, act on it, and the inspector stays', async () => {
+    const storage = memoryStorage();
+    const app = await mountApp({ storage });
+    try {
+      await onCircles(app, [CA, CB], CA.id, { selectedRange: { start: 100, end: 100, label: 'Selection' } });
+      await showInPane(app, CB.id);
+      const SUFFIX = ' Acts on "Circ_A" in the main view.';
+      const rc = () => functionInfo(app, 'Sequence', ['Strand', 'Reverse Complement']);
+      const origin = () => functionInfo(app, 'View', ['Map Layout', 'Set Origin']);
+      const asBefore = { rc: await rc(), origin: await origin() };
+      expect(asBefore.rc, 'the main pane focused: its own Function Info').toBe(resolveMenuNodeFunctionDescription('seq-rc', 'Reverse Complement'));
+      expect(asBefore.origin).toBe(resolveMenuNodeFunctionDescription('view-set-origin', 'Set Origin'));
+      const inspectorText = () => words(app.inspectorAside()?.textContent ?? '');
+      const inspectorBefore = inspectorText();
+      expect(inspectorBefore, 'the inspector is shown').not.toBe('');
+
+      await pointerDown(app, paneBody(app));
+      expect(focusedPaneOf(app)).toBe('second');
+      for (const [what, read, own] of [['Reverse Complement', rc, asBefore.rc], ['Set Origin', origin, asBefore.origin]] as const) {
+        const info = await read();
+        expect(info.endsWith(SUFFIX), `${what}: "${info}" ends naming the main document`).toBe(true);
+        expect(info.startsWith(own), `${what}: after its own Function Info`).toBe(true);
+      }
+      expect(inspectorText(), 'the inspector stays with the main view').toBe(inspectorBefore);
+      expect(pane(app).querySelectorAll('aside'), 'and is not drawn in the pane').toHaveLength(0);
+
+      await autosaveRunsOut(app);
+      const before = autosavedSequences(storage);
+      await app.menu('sequence:reverse-complement');
+      await autosaveRunsOut(app);
+      const after = autosavedSequences(storage);
+      expect(after[CA.id], "Reverse Complement changed the main view's document").not.toBe(before[CA.id]);
+      expect(after[CA.id].length).toBe(CA.sequence.length);
+      expect(after[CB.id], "and not the pane's").toBe(before[CB.id]);
+
+      await app.click(showMain(app));
+      expect(focusedPaneOf(app)).toBe('second');
+      expect({ rc: await rc(), origin: await origin() }, 'the same document in both panes: as before').toEqual(asBefore);
+    } finally {
+      app.unmount();
+    }
   });
 });

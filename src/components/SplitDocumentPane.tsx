@@ -14,6 +14,11 @@
  * pane's own: nothing here moves the main view's. While the pane shows the main view's document, the
  * two share one selection, the main view's.
  *
+ * While the split is shown one of the two panes is focused (US-01M7DV10), the App's state: a pointer
+ * down or keyboard focus inside the pane hands it focus (`onFocusPane`), and the focused pane is marked
+ * `is-focused-pane` and `aria-current="true"`. View › Zoom and View › Rotate Circular Map… then act on
+ * the pane's own zoom and rotation, and open its rotate control (`rotateOpen`).
+ *
  * `DocumentSplitDivider` (US-01M7DVB1) is the separator the App places between the main view and the
  * pane, with the button a folded pane leaves; its arithmetic is src/core/documentSplit.ts's.
  */
@@ -102,6 +107,34 @@ export interface SplitDocumentPaneProps {
   /** The pane's own rotation of its circular map, in degrees clockwise; 0 unless given. */
   rotationDeg?: number;
   onRotate?: (rotationDeg: number) => void;
+  /**
+   * Whether the pane's rotate control is open, for the App to open it from View › Rotate Circular Map…
+   * (US-01M7DV10); the pane holds it itself unless given.
+   */
+  rotateOpen?: boolean;
+  onRotateOpenChange?: (open: boolean) => void;
+  /** Whether the pane is the focused one (US-01M7DV10): it is then marked `is-focused-pane` and `aria-current="true"`. */
+  focused?: boolean;
+  /** Called on a pointer down or keyboard focus inside the pane (US-01M7DV10). */
+  onFocusPane?: () => void;
+}
+
+/**
+ * Whether the pane draws a circular map for `doc` in `view` (US-01M7DV10, US-01M7DVQG): a document with
+ * bases (not a tree, an alignment or a text document) in Circular Map that can draw a circle, by the
+ * rule View › Rotate Circular Map… reads. The App reads it for the focused pane's map commands.
+ */
+export function splitPaneShowsCircularMap(doc: SequenceDocument | null, view: SplitPaneView): boolean {
+  return view === 'circular' && splitPaneHasBases(doc) && splitPaneCircleRefused(doc!) === null;
+}
+function splitPaneHasBases(doc: SequenceDocument | null): boolean {
+  return Boolean(
+    doc && typeof doc.docMetadata?.Newick !== 'string' && (doc.alignmentMeta?.sequences?.length ?? 0) <= 1 &&
+      doc.docMetadata?.['Document Type'] !== 'Text Document' && doc.sequence.length > 0
+  );
+}
+function splitPaneCircleRefused(doc: SequenceDocument): string | null {
+  return circularMapUnavailableReason(buildCommandDocumentContext(doc) ?? doc);
 }
 
 /** The pane head's button that shows the main view's document in the pane (US-01M7DVQG). */
@@ -143,6 +176,7 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
   doc, choices, onChooseDoc, mainDocId = null, mainRange = null, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary,
   enzymes = REBASE_ENZYMES, scanCollection = null, onSelectMainRange, onShowMainDoc,
   view = DEFAULT_SPLIT_PANE_VIEW, onViewChange, zoomLevel = SEQUENCE_ZOOM_DEFAULT, onZoomChange, rotationDeg = 0, onRotate,
+  rotateOpen: rotateOpenProp, onRotateOpenChange, focused = false, onFocusPane,
 }) => {
   // The pane's selection belongs to the document it was made on (US-01M7DV3V): it is held with that
   // document's id and read only while that document is shown, so its coordinates are never drawn
@@ -156,7 +190,9 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
     if (shared) onSelectMainRange?.(r);
     else setHeld(r && doc ? { docId: doc.id, range: r } : null);
   };
-  const [rotateOpen, setRotateOpen] = useState(false);
+  const [ownRotateOpen, setOwnRotateOpen] = useState(false);
+  const rotateOpen = rotateOpenProp ?? ownRotateOpen;
+  const setRotateOpen = onRotateOpenChange ?? setOwnRotateOpen;
   const [filter, setFilter] = useState('');
   // The filter narrows every candidate, ignoring case, before the cap, so a document past the 400th
   // can be reached by its name; the note counts the candidates the filter passed (subsetNote).
@@ -189,11 +225,8 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
   // A document with bases (not a tree, an alignment or a text document) is shown in a view of its
   // choice; a document that cannot draw a circle is shown in Linear Map whatever the view, by the rule
   // View › Rotate Circular Map… reads (circularMapUnavailableReason), whose sentence says why.
-  const hasBases = Boolean(
-    doc && typeof doc.docMetadata?.Newick !== 'string' && (doc.alignmentMeta?.sequences?.length ?? 0) <= 1 &&
-      doc.docMetadata?.['Document Type'] !== 'Text Document' && doc.sequence.length > 0
-  );
-  const circleRefused = doc && hasBases ? circularMapUnavailableReason(buildCommandDocumentContext(doc) ?? doc) : null;
+  const hasBases = splitPaneHasBases(doc);
+  const circleRefused = doc && hasBases ? splitPaneCircleRefused(doc) : null;
   const shownView: SplitPaneView = view === 'circular' && circleRefused ? 'linear' : view;
   const body = (() => {
     if (!doc) return <p className="mbc-help-where">Choose a document to show next to the main view.</p>;
@@ -244,7 +277,14 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
     return <DocumentInfoPanel doc={doc} onUpdateDocument={onUpdateDocument} />;
   })();
   return (
-    <section className="mbc-split-pane" aria-label="Split view">
+    <section
+      className={`mbc-split-pane${focused ? ' is-focused-pane' : ''}`}
+      aria-label="Split view"
+      aria-current={focused ? 'true' : undefined}
+      // A pointer down or focus inside the pane, in its DOM (not a portal it renders elsewhere), focuses it.
+      onPointerDownCapture={(e) => { if (e.currentTarget.contains(e.target as Node)) onFocusPane?.(); }}
+      onFocusCapture={(e) => { if (e.currentTarget.contains(e.target as Node)) onFocusPane?.(); }}
+    >
       <div className="mbc-split-pane-head">
         <input type="search" aria-label="Filter documents in split view" placeholder="Filter documents…" value={filter} onChange={(e) => setFilter(e.target.value)} />
         <select aria-label="Document in split view" value={doc?.id ?? ''} onChange={(e) => { setHeld(null); onChooseDoc(e.target.value); }}>
@@ -273,7 +313,7 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
           </select>
           {circleRefused && <span className="mbc-split-pane-view-note">{circleRefused}</span>}
           {shownView === 'circular' && onRotate && (
-            <button type="button" className="mbc-zoom-btn" title="Rotate the circular map in the split pane" aria-label="Rotate the circular map in the split pane" aria-pressed={rotateOpen} onClick={() => setRotateOpen((o) => !o)}>
+            <button type="button" className="mbc-zoom-btn" title="Rotate the circular map in the split pane" aria-label="Rotate the circular map in the split pane" aria-pressed={rotateOpen} onClick={() => setRotateOpen(!rotateOpen)}>
               <RotateCw size={13} />
             </button>
           )}

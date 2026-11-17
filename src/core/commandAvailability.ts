@@ -57,6 +57,12 @@ export interface CommandContext {
   mapLayout?: 'split' | 'circular' | 'linear';
   /** Whether the circular map is collapsed in Split; left out, it is not. */
   circleCollapsed?: boolean;
+  /**
+   * The split view's second pane, given only while it is the focused pane (US-01M7DV10): whether it
+   * shows a circular map. The map commands (`zoom-map`, `rotate-map`) then answer for that pane; left
+   * out, the main view is focused and every rule answers for it.
+   */
+  focusedSplitPane?: { circularMapShown: boolean };
 }
 
 export type CommandId =
@@ -77,6 +83,12 @@ export type CommandId =
  */
 export type WorkbenchCommandId = 'align-structures';
 
+/**
+ * Commands on the focused pane's view rather than on a document (US-01M7DV10): View › Zoom In, Zoom
+ * Out and Actual Size. Their rule reads the session and `focusedSplitPane`.
+ */
+export type ViewCommandId = 'zoom-map';
+
 export interface CommandAvailability {
   enabled: boolean;
   reason?: string;
@@ -87,6 +99,8 @@ const off = (reason: string): CommandAvailability => ({ enabled: false, reason }
 
 const NO_SESSION = 'No active session — start a New Session first.';
 const NO_DOCUMENT = 'Open or create a sequence document first.';
+/** Why the map commands are off while the focused split pane draws no circle (US-01M7DV10). */
+export const FOCUSED_SPLIT_PANE_NO_CIRCLE = 'The focused split pane shows no circular map.';
 
 function requireDocument(ctx: CommandContext): CommandAvailability | CommandDocumentContext {
   if (!ctx.sessionActive) return off(NO_SESSION);
@@ -98,7 +112,7 @@ function isAvailability(v: CommandAvailability | CommandDocumentContext): v is C
   return typeof (v as CommandAvailability).enabled === 'boolean';
 }
 
-const RULES: Record<CommandId | WorkbenchCommandId, (ctx: CommandContext) => CommandAvailability> = {
+const RULES: Record<CommandId | WorkbenchCommandId | ViewCommandId, (ctx: CommandContext) => CommandAvailability> = {
   undo: (ctx) =>
     !ctx.sessionActive ? off(NO_SESSION) : ctx.undoDepth > 0 ? ENABLED : off('Nothing to undo.'),
   redo: (ctx) =>
@@ -157,13 +171,24 @@ const RULES: Record<CommandId | WorkbenchCommandId, (ctx: CommandContext) => Com
   // Rotate Circular Map… and Reset Rotation turn the circular map (US-01M7DVG4): they are offered
   // exactly where the Sequence view draws a circle (the App's canShowCircularMap, in a layout that
   // shows it, not collapsed), so neither is offered where there is no circle to turn.
+  // With the split pane focused (US-01M7DV10) they turn its map, offered only while it draws one.
   'rotate-map': (ctx) => {
+    if (ctx.sessionActive && ctx.focusedSplitPane) {
+      return ctx.focusedSplitPane.circularMapShown ? ENABLED : off(FOCUSED_SPLIT_PANE_NO_CIRCLE);
+    }
     const doc = requireDocument(ctx);
     if (isAvailability(doc)) return doc;
     const cannotDraw = circularMapUnavailableReason(doc);
     if (cannotDraw) return off(cannotDraw);
     if (ctx.mapLayout === 'linear') return off('Map Layout is Linear; choose Split or Circular Map to rotate the map.');
     if (ctx.circleCollapsed) return off('The circular map is collapsed; restore it to rotate the map.');
+    return ENABLED;
+  },
+  // View › Zoom In, Zoom Out and Actual Size (US-01M7DV10) zoom the focused pane's circular map: on
+  // the main view they follow the session alone, as before; on the split pane, only while it draws one.
+  'zoom-map': (ctx) => {
+    if (!ctx.sessionActive) return off(NO_SESSION);
+    if (ctx.focusedSplitPane && !ctx.focusedSplitPane.circularMapShown) return off(FOCUSED_SPLIT_PANE_NO_CIRCLE);
     return ENABLED;
   },
   // Align Structures… aligns chains of structure documents, two of them or two chains of one.
@@ -191,7 +216,7 @@ export function circularMapUnavailableReason(
   return null;
 }
 
-export function commandAvailability(id: CommandId | WorkbenchCommandId, ctx: CommandContext): CommandAvailability {
+export function commandAvailability(id: CommandId | WorkbenchCommandId | ViewCommandId, ctx: CommandContext): CommandAvailability {
   return RULES[id](ctx);
 }
 
@@ -282,7 +307,7 @@ export const NATIVE_MENU_SESSION_INDEPENDENT_IDS = [
 ];
 
 /** Native ids whose availability follows a specific command rule (not just "session active"). */
-export const NATIVE_MENU_COMMAND_RULES: Record<string, CommandId | WorkbenchCommandId> = {
+export const NATIVE_MENU_COMMAND_RULES: Record<string, CommandId | WorkbenchCommandId | ViewCommandId> = {
   'edit:undo': 'undo',
   'edit:redo': 'redo',
   'sequence:reverse-complement': 'strand-transform',
@@ -292,6 +317,10 @@ export const NATIVE_MENU_COMMAND_RULES: Record<string, CommandId | WorkbenchComm
   'view:set-origin': 'set-origin',
   // US-01M7DVNS: the native View > Zoom items run the in-app View items' handler, under its rule.
   'view:rotate-map': 'rotate-map',
+  // US-01M7DV10: View > Zoom's three items, on the focused pane.
+  'view:zoom-in': 'zoom-map',
+  'view:zoom-out': 'zoom-map',
+  'view:zoom-reset': 'zoom-map',
   'view:reset-rotation': 'rotate-map',
   'file:save-gb': 'export-active-document',
   'file:save-fasta': 'export-sequence',

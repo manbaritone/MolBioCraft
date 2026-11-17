@@ -117,7 +117,7 @@ import { FragmentTraceView, MicrosatelliteDialog } from './components/FragmentVi
 import { contigDocument, fragmentDocumentFromFsa, mapOptionsOf, runQueryCentricAlignment } from './core/operationRunners';
 import { exportReadsToFastq, fastqToReadDocuments, samToContigs, vcfToFeatures } from './core/importFormats';
 import { parseAlignedFasta, parseTextAlignment, splitFlatfileRecords, textAlignmentToDocument } from './core/alignmentFormats';
-import { DocumentSplitDivider, SplitDocumentPane } from './components/SplitDocumentPane';
+import { DocumentSplitDivider, SplitDocumentPane, splitPaneShowsCircularMap } from './components/SplitDocumentPane';
 import {
   DEFAULT_PANE_SPLIT,
   PANE_SPLIT_KEY_STEP_LARGE_PX,
@@ -239,6 +239,7 @@ import { ConstructCockpitBar, basicTmHasNoAnswer } from './components/ConstructC
 import {
   MENU_FUNCTION_INFO_EVENT,
   readStoredShowMenuFunctionInfo,
+  resolveMenuNodeFunctionDescription,
   writeStoredShowMenuFunctionInfo,
 } from './data/menuFunctionDescriptions';
 import {
@@ -420,6 +421,8 @@ import {
   commandAvailability,
   CommandContext,
   CommandId,
+  FOCUSED_SPLIT_PANE_NO_CIRCLE,
+  type ViewCommandId,
   type WorkbenchCommandId,
 } from './core/commandAvailability';
 import { assignUniqueDocumentIds } from './core/documentIds';
@@ -1234,6 +1237,14 @@ export const App: React.FC = () => {
   const [splitView, setSplitView] = useState<SplitPaneView>(DEFAULT_SPLIT_PANE_VIEW);
   const [splitZoom, setSplitZoom] = useState<number>(SEQUENCE_ZOOM_DEFAULT);
   const [splitRotation, setSplitRotation] = useState<number>(0);
+  /** Whether the second pane's rotate control is open: View › Rotate Circular Map… opens it while the pane is focused. */
+  const [splitRotateOpen, setSplitRotateOpen] = useState(false);
+  /**
+   * The focused pane while the split is shown (US-01M7DV10): the one View › Zoom and View › Rotate
+   * Circular Map… act on. The main pane each time a split opens; a pointer down or keyboard focus
+   * inside a pane hands it focus, and folding the focused pane hands it to the other.
+   */
+  const [focusedPane, setFocusedPane] = useState<'main' | 'second'>('main');
   /** The document split (US-01M7DVR0): Single Pane, or the second pane Side by Side or Top and Bottom. */
   const [documentSplit, setDocumentSplit] = useState<DocumentSplitOrientation>('single');
   /** The split the toggle returns to from Single Pane: the last one chosen, Side by Side the first time. */
@@ -2358,12 +2369,23 @@ export const App: React.FC = () => {
       setSplitDocId((cur) => (cur !== null ? cur : openDocs.find((d) => d.id !== activeDoc.id)?.id ?? ''));
       // The first document starts at the main view's rotation for it, as showInSplitPane opens one (US-01M7DVQG AC3).
       if (splitDocId === null) setSplitRotation(mapRotationByDoc[openDocs.find((d) => d.id !== activeDoc.id)?.id ?? ''] ?? 0);
+    } else {
+      // Single Pane shows no focus, and the next split opens on the main pane with the pane's rotate control shut.
+      setFocusedPane('main');
+      setSplitRotateOpen(false);
     }
     setDocumentSplit(next);
   };
   // The split host's size, measured as it changes, for the ratio drawn (US-01M7DVB1); only while a
   // split is shown, as Single Pane draws no divider. Opening a split measures the host afresh.
   const documentSplitShown = documentSplit !== 'single';
+  // A folded pane is not shown, so folding the focused one hands focus to the other; restoring it does not take it back.
+  useEffect(() => {
+    const folded = documentSplitSize.collapsed;
+    if (folded && folded === focusedPane) setFocusedPane(folded === 'main' ? 'second' : 'main');
+  }, [documentSplitSize.collapsed, focusedPane]);
+  const mainPaneFocused = documentSplitShown && focusedPane === 'main';
+  const secondPaneFocused = documentSplitShown && focusedPane === 'second';
   useEffect(() => {
     const host = documentSplitHost;
     if (!host || typeof host.getBoundingClientRect !== 'function') {
@@ -2484,6 +2506,8 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (splitView === 'circular' && splitCircleRefused) setSplitView('linear');
   }, [splitView, splitCircleRefused]);
+  /** Whether the second pane draws a circular map, for the map commands while it is focused (US-01M7DV10). */
+  const splitPaneCircleShown = splitPaneShowsCircularMap(splitDoc, splitView);
   /** Shows `docId` in the split pane at the main view's rotation for it; the pane keeps its zoom and view. */
   const showInSplitPane = (docId: string) => {
     setSplitDocId(docId);
@@ -2531,6 +2555,9 @@ export const App: React.FC = () => {
     setPaneSplitDragging(false);
   };
   const CIRCULAR_ONLY_HINT = 'Applies to the circular map (switch View › Map Layout to Circular or Split)';
+  // The viewer header's −, % and + zoom the focused pane's circular map (US-01M7DV10), so they are off where it has none.
+  const headerZoomShown = secondPaneFocused ? splitPaneCircleShown : circularMapShown;
+  const headerZoomOffHint = secondPaneFocused ? FOCUSED_SPLIT_PANE_NO_CIRCLE : CIRCULAR_ONLY_HINT;
 
   // Statistics are the whole sequence's at any length (BG-01M6RRSV): the engine counts it in one
   // pass, asked for only while the panel is open. Over 60,000 bp they were scaled up from the first
@@ -3591,13 +3618,14 @@ export const App: React.FC = () => {
     inspectorAvailable,
     mapLayout: effectiveMapLayoutMode,
     circleCollapsed: paneSplitCollapsed === 'circular',
+    focusedSplitPane: secondPaneFocused ? { circularMapShown: splitPaneCircleShown } : undefined,
   });
-  const isCommandEnabled = (id: CommandId | WorkbenchCommandId, doc?: SequenceDocument): boolean =>
+  const isCommandEnabled = (id: CommandId | WorkbenchCommandId | ViewCommandId, doc?: SequenceDocument): boolean =>
     commandAvailability(id, buildCommandContext(doc)).enabled;
-  const commandDisabledReason = (id: CommandId | WorkbenchCommandId, doc?: SequenceDocument): string | undefined =>
+  const commandDisabledReason = (id: CommandId | WorkbenchCommandId | ViewCommandId, doc?: SequenceDocument): string | undefined =>
     commandAvailability(id, buildCommandContext(doc)).reason;
   const ensureCommandAvailable = (
-    id: CommandId,
+    id: CommandId | ViewCommandId,
     label: string,
     doc: SequenceDocument = activeDoc
   ): boolean => {
@@ -3614,9 +3642,35 @@ export const App: React.FC = () => {
    */
   const handleRotateMapCommand = (action: 'open' | 'reset') => {
     if (!ensureCommandAvailable('rotate-map', action === 'open' ? 'Rotate Circular Map' : 'Reset Rotation')) return;
+    // US-01M7DV10: with the split pane focused, they turn its map, and the main view's tab and control stay.
+    if (secondPaneFocused) {
+      if (action === 'open') setSplitRotateOpen(true);
+      else setSplitRotation(0);
+      return;
+    }
     setViewerTab('sequence-view');
     if (action === 'open') setRotateMapControlOpen(true);
     else setActiveMapRotation(0);
+  };
+
+  /**
+   * View › Zoom In (1), Zoom Out (-1) and Actual Size ('actual') on the focused pane (US-01M7DV10): the
+   * one handler of the in-app items, the native ids, their shortcuts and the viewer header's buttons.
+   */
+  const zoomFocusedPane = (step: 1 | -1 | 'actual') => {
+    if (!ensureCommandAvailable('zoom-map', step === 'actual' ? 'Actual Size' : step > 0 ? 'Zoom In' : 'Zoom Out')) return;
+    if (secondPaneFocused) setSplitZoom((z) => (step === 'actual' ? SEQUENCE_ZOOM_DEFAULT : stepSequenceZoom(z, step)));
+    else if (step === 'actual') restoreSequenceView();
+    else setZoomLevel((z) => stepSequenceZoom(z, step));
+  };
+  /**
+   * The Function Info of a document-editing item while the focused split pane shows another document
+   * (US-01M7DV10): it still edits the main view's, and says so; otherwise the item's own (`reason`).
+   */
+  const actsOnMainViewDescription = (id: string, label: string, reason: string | undefined): string | undefined => {
+    if (!secondPaneFocused || !splitDoc || splitDoc.id === activeDoc.id) return reason;
+    const own = resolveMenuNodeFunctionDescription(id, label, reason);
+    return `${/[.!?]$/.test(own) ? own : `${own}.`} Acts on "${activeDoc.name}" in the main view.`;
   };
 
   // Keep the native macOS menu bar's enabled state in step with the same
@@ -5216,6 +5270,9 @@ export const App: React.FC = () => {
     setSplitView(restoredSplit.view ?? DEFAULT_SPLIT_PANE_VIEW);
     setSplitRotation(restoredSplit.rotation ?? 0);
     setSplitZoom(SEQUENCE_ZOOM_DEFAULT);
+    // A restored split opens on the main pane (US-01M7DV10).
+    setFocusedPane('main');
+    setSplitRotateOpen(false);
     lastDocumentSplitRef.current = restoredSplit.orientation === 'single' ? 'side-by-side' : restoredSplit.orientation;
     // Each document's displayed sites as saved (BG-01M7DHM0), malformed entries dropped and a choice
     // made on a sequence other than the restored one dropped; the App reconciles the rest with the
@@ -7680,13 +7737,13 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           requireActiveSession(() => openHybridSubTab('lineage'));
           break;
         case 'view:zoom-in':
-          requireActiveSession(() => setZoomLevel((z) => stepSequenceZoom(z, 1)));
+          requireActiveSession(() => zoomFocusedPane(1));
           break;
         case 'view:zoom-out':
-          requireActiveSession(() => setZoomLevel((z) => stepSequenceZoom(z, -1)));
+          requireActiveSession(() => zoomFocusedPane(-1));
           break;
         case 'view:zoom-reset':
-          requireActiveSession(restoreSequenceView);
+          requireActiveSession(() => zoomFocusedPane('actual'));
           break;
         case 'view:set-origin':
           requireActiveSession(() => handleSetOriginToSelection());
@@ -10189,7 +10246,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             label: 'Set Origin',
             shortcut: sc('0', { shift: true }),
             disabled: !isCommandEnabled('set-origin'),
-            description: commandDisabledReason('set-origin'),
+            description: actsOnMainViewDescription('view-set-origin', 'Set Origin', commandDisabledReason('set-origin')),
             onSelect: () => requireActiveSession(() => handleSetOriginToSelection()),
           },
         ],
@@ -10266,23 +10323,27 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'view-zoom-in',
             label: 'Zoom In',
             shortcut: sc('='),
-            onSelect: () =>
-              requireActiveSession(() => setZoomLevel((z) => stepSequenceZoom(z, 1))),
+            disabled: !isCommandEnabled('zoom-map'),
+            description: commandDisabledReason('zoom-map'),
+            onSelect: () => requireActiveSession(() => zoomFocusedPane(1)),
           },
           {
             kind: 'command',
             id: 'view-zoom-out',
             label: 'Zoom Out',
             shortcut: sc('-'),
-            onSelect: () =>
-              requireActiveSession(() => setZoomLevel((z) => stepSequenceZoom(z, -1))),
+            disabled: !isCommandEnabled('zoom-map'),
+            description: commandDisabledReason('zoom-map'),
+            onSelect: () => requireActiveSession(() => zoomFocusedPane(-1)),
           },
           {
             kind: 'command',
             id: 'view-zoom-100',
             label: 'Actual Size (100%)',
             shortcut: sc('0'),
-            onSelect: () => requireActiveSession(restoreSequenceView),
+            disabled: !isCommandEnabled('zoom-map'),
+            description: commandDisabledReason('zoom-map'),
+            onSelect: () => requireActiveSession(() => zoomFocusedPane('actual')),
           },
         ],
       },
@@ -11280,7 +11341,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             label: 'Reverse Complement',
             shortcut: sc('R', { shift: true }),
             disabled: !isCommandEnabled('strand-transform'),
-            description: commandDisabledReason('strand-transform'),
+            description: actsOnMainViewDescription('seq-rc', 'Reverse Complement', commandDisabledReason('strand-transform')),
             onSelect: () =>
               requireActiveSession(() => handleReverseComplementActiveDoc()),
           },
@@ -15587,32 +15648,32 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   <button
                     type="button"
                     className="mbc-zoom-btn"
-                    onClick={() => setZoomLevel((z) => stepSequenceZoom(z, -1))}
-                    disabled={!circularMapShown}
+                    onClick={() => zoomFocusedPane(-1)}
+                    disabled={!headerZoomShown}
                     aria-label="Zoom Out"
-                    aria-keyshortcuts={circularMapShown ? ariaSc('-') : undefined}
-                    title={circularMapShown ? `Zoom Out (${sc('-')})` : CIRCULAR_ONLY_HINT}
+                    aria-keyshortcuts={headerZoomShown ? ariaSc('-') : undefined}
+                    title={headerZoomShown ? `Zoom Out (${sc('-')})` : headerZoomOffHint}
                   >
                     <ZoomOut size={13} />
                   </button>
                   <button
                     type="button"
                     className="mbc-zoom-btn zoom-pct-btn"
-                    onClick={restoreSequenceView}
-                    disabled={!circularMapShown}
-                    aria-keyshortcuts={circularMapShown ? ariaSc('0') : undefined}
-                    title={circularMapShown ? `Reset Zoom to 100% (${sc('0')})` : CIRCULAR_ONLY_HINT}
+                    onClick={() => zoomFocusedPane('actual')}
+                    disabled={!headerZoomShown}
+                    aria-keyshortcuts={headerZoomShown ? ariaSc('0') : undefined}
+                    title={headerZoomShown ? `Reset Zoom to 100% (${sc('0')})` : headerZoomOffHint}
                   >
-                    {sequenceZoomLabel(zoomLevel)}
+                    {sequenceZoomLabel(secondPaneFocused ? splitZoom : zoomLevel)}
                   </button>
                   <button
                     type="button"
                     className="mbc-zoom-btn"
-                    onClick={() => setZoomLevel((z) => stepSequenceZoom(z, 1))}
-                    disabled={!circularMapShown}
+                    onClick={() => zoomFocusedPane(1)}
+                    disabled={!headerZoomShown}
                     aria-label="Zoom In"
-                    aria-keyshortcuts={circularMapShown ? ariaSc('=') : undefined}
-                    title={circularMapShown ? `Zoom In (${sc('=')})` : CIRCULAR_ONLY_HINT}
+                    aria-keyshortcuts={headerZoomShown ? ariaSc('=') : undefined}
+                    title={headerZoomShown ? `Zoom In (${sc('=')})` : headerZoomOffHint}
                   >
                     <ZoomIn size={13} />
                   </button>
@@ -15651,7 +15712,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 ref={viewerCanvasRef}
                 className={`mbc-viewer-canvas ${
                   viewerTab === 'sequence-view' ? 'is-sequence-view' : ''
-                }`}
+                }${mainPaneFocused ? ' is-focused-pane' : ''}`}
+                aria-current={mainPaneFocused ? 'true' : undefined}
+                // US-01M7DV10: a pointer down or focus inside the main view (in its DOM, not the inspector
+                // its studios portal into the column) focuses it while the split is shown.
+                onPointerDownCapture={documentSplitShown ? (e) => { if (e.currentTarget.contains(e.target as Node)) setFocusedPane('main'); } : undefined}
+                onFocusCapture={documentSplitShown ? (e) => { if (e.currentTarget.contains(e.target as Node)) setFocusedPane('main'); } : undefined}
               >
                 <ErrorBoundary label={VIEWER_TAB_LABELS[viewerTab] ?? 'This view'} resetKey={`${activeDoc.id}:${viewerTab}`}>
                 {/* The main view's studios reach the inspector; the split view's pane and the header stay outside. */}
@@ -16392,6 +16458,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   onZoomChange={setSplitZoom}
                   rotationDeg={splitRotation}
                   onRotate={setSplitRotation}
+                  rotateOpen={splitRotateOpen}
+                  onRotateOpenChange={setSplitRotateOpen}
+                  focused={secondPaneFocused}
+                  onFocusPane={() => setFocusedPane('second')}
                   onSwap={(paneRange) => {
                     const other = splitDocId;
                     if (!other) return;
