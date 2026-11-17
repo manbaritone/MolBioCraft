@@ -5,9 +5,13 @@
  * Genome-scale map for contig-summary records (annotations without downloaded bases).
  * Everything is drawn at true genomic coordinates on the declared length; no bases, GC,
  * restriction sites or translations are shown because none exist in the record.
+ *
+ * The annotation map's zoom is its window of bases (US-01M7CM97): its buttons, and a wheel or a
+ * pinch over the map, which narrow or widen the window along the bp axis about the base under the
+ * pointer. Its export draws the window shown.
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FigureExportButton } from './FigureExportButton';
 import { ResultWarnings } from './ResultWarnings';
 import { subsetNote } from './CircularPlasmidMap';
@@ -17,6 +21,7 @@ import {
   downloadSummarySequence,
   MAX_SUMMARY_DOWNLOAD_BP,
 } from '../core/contigSummary';
+import { classifyWheelGesture, normalizeWheelDelta, wheelZoomScale, type WheelGestureLike } from '../core/wheelZoom';
 
 interface Props {
   doc: SequenceDocument;
@@ -34,6 +39,164 @@ const MAX_LANES = 10;
  * is drawn as a ring) and is not counted here.
  */
 const SUMMARY_CIRCLE_ARCS = 400;
+
+/** The narrowest window the annotation map shows, in bases (the whole record when it is shorter). */
+const MIN_WINDOW_BP = 50;
+
+/** The annotation map's window: its first and last base, 1-based and inclusive. */
+export interface ContigMapView {
+  start: number;
+  end: number;
+}
+
+/** The map svg's box on screen, as `getBoundingClientRect` gives it. */
+export interface ContigMapRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** What a wheel over the map is measured against: the record's length and the map svg's box. */
+export interface ContigMapContext {
+  total: number;
+  rect: ContigMapRect | null;
+}
+
+export interface ContigMapWheelEvent extends WheelGestureLike {
+  deltaMode?: number;
+  clientX: number;
+  clientY: number;
+}
+
+/**
+ * Where a client x falls along the map's bp axis, from 0 at the first base shown to 1 past the last:
+ * the svg draws its W-unit view at the width of its box (its height follows), and the bases run
+ * from MARGIN to W - MARGIN. A pointer over a margin counts as the axis end beside it. With no box
+ * laid out, or no usable x, it is the middle of the window.
+ */
+function contigMapFraction(clientX: number, rect: ContigMapRect | null): number {
+  if (!rect || !(rect.width > 0) || !Number.isFinite(clientX)) return 0.5;
+  const x = ((clientX - rect.left) / rect.width) * W;
+  return Math.min(1, Math.max(0, (x - MARGIN) / (W - 2 * MARGIN)));
+}
+
+/**
+ * The window `span` bases wide that keeps the base under `clientX` where it is: the map draws base
+ * b from x(b) to x(b + 1), so the point under the pointer is base start + fraction × span, and the
+ * new start is rounded to a whole base (the point moves less than 1 bp). The span is held to
+ * MIN_WINDOW_BP up to the whole record, and the window to the record: at base 1 or at the record's
+ * end it is held there instead of moving past it.
+ */
+export function contigMapZoomTo(view: ContigMapView, span: number, clientX: number, context: ContigMapContext): ContigMapView {
+  const total = Math.max(1, Math.floor(context.total));
+  const from = Math.max(1, view.end - view.start + 1);
+  const width = Math.min(total, Math.max(Math.min(MIN_WINDOW_BP, total), Math.round(Number.isFinite(span) ? span : from)));
+  const fraction = contigMapFraction(clientX, context.rect);
+  const point = view.start + fraction * from;
+  const start = Math.min(total - width + 1, Math.max(1, Math.round(point - fraction * width)));
+  return { start, end: start + width - 1 };
+}
+
+/**
+ * One wheel event over the annotation map (CR-01M7CCSD's policy for a canvas): a vertical wheel,
+ * plain or with Ctrl, Cmd or Alt, and a ctrl-flagged trackpad pinch, zoom the window along the bp
+ * axis by the shared `wheelZoomScale` per pixel of delta, about the base under the pointer; every
+ * event that zooms moves the window by at least one base until it is held. A horizontal wheel, and
+ * one with no delta, is not the map's (`handled` false) and leaves the window as it was.
+ */
+export function contigMapWheelStep(event: ContigMapWheelEvent, view: ContigMapView, context: ContigMapContext): { handled: boolean; view: ContigMapView } {
+  if (classifyWheelGesture(event, 'canvas') !== 'zoom') return { handled: false, view };
+  const span = Math.max(1, view.end - view.start + 1);
+  const factor = wheelZoomScale(1, normalizeWheelDelta(event).y, { min: 0, max: Number.POSITIVE_INFINITY });
+  const target = span / factor;
+  const next = factor > 1 ? Math.min(span - 1, Math.round(target)) : factor < 1 ? Math.max(span + 1, Math.round(target)) : span;
+  return { handled: true, view: contigMapZoomTo(view, next, event.clientX, context) };
+}
+
+type AnyListener = (event: unknown) => void;
+interface WheelListenerTarget {
+  addEventListener(type: string, listener: AnyListener, options?: AddEventListenerOptions): void;
+  removeEventListener(type: string, listener: AnyListener): void;
+}
+interface GestureLike {
+  scale?: number;
+  clientX?: number;
+  clientY?: number;
+  preventDefault(): void;
+}
+
+/**
+ * Listens for wheels and WebKit pinches on the map svg, non-passively (the pattern of the sequence
+ * maps' binders, CircularPlasmidMap.tsx): a gesture the map takes has its default (page scroll, page
+ * zoom) prevented, and one it does not (a horizontal scroll) keeps it. The wheel deltas of one
+ * animation frame are summed into one step. A WebKit pinch (gesturestart / gesturechange) zooms to
+ * the window it started from divided by the gesture's `scale`; the ctrl-flagged wheels a pinch may
+ * also send while it is under way are prevented but not applied. Returns the function that removes
+ * every listener and cancels a queued frame.
+ */
+export function bindContigMapWheel(
+  target: WheelListenerTarget,
+  hooks: { read(): { view: ContigMapView; context: ContigMapContext }; apply(view: ContigMapView): void },
+): () => void {
+  const options: AddEventListenerOptions = { passive: false };
+  let pending: ContigMapWheelEvent | null = null;
+  let frame: number | null = null;
+  let gestureFrom: number | null = null;
+  const applyIfMoved = (now: ContigMapView, next: ContigMapView) => {
+    if (next.start !== now.start || next.end !== now.end) hooks.apply(next);
+  };
+  const flush = () => {
+    frame = null;
+    const event = pending;
+    pending = null;
+    if (!event) return;
+    const { view, context } = hooks.read();
+    const step = contigMapWheelStep(event, view, context);
+    if (step.handled) applyIfMoved(view, step.view);
+  };
+  const onWheel = (event: WheelEvent) => {
+    if (classifyWheelGesture(event, 'canvas') !== 'zoom') return;
+    event.preventDefault();
+    if (gestureFrom !== null) return;
+    pending = {
+      deltaX: 0, deltaY: (pending?.deltaY ?? 0) + normalizeWheelDelta(event).y, deltaMode: 0,
+      ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, clientX: event.clientX, clientY: event.clientY,
+    };
+    if (frame !== null) return;
+    if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(flush);
+    else { frame = -1; flush(); }
+  };
+  const onGestureStart = (event: GestureLike) => {
+    event.preventDefault();
+    const { view } = hooks.read();
+    gestureFrom = view.end - view.start + 1;
+    pending = null;
+  };
+  const onGestureChange = (event: GestureLike) => {
+    event.preventDefault();
+    if (gestureFrom === null || !(Number(event.scale) > 0)) return;
+    const { view, context } = hooks.read();
+    applyIfMoved(view, contigMapZoomTo(view, gestureFrom / Number(event.scale), Number(event.clientX), context));
+  };
+  const onGestureEnd = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = null;
+  };
+  const listeners: [string, AnyListener][] = [
+    ['wheel', onWheel as unknown as AnyListener],
+    ['gesturestart', onGestureStart as unknown as AnyListener],
+    ['gesturechange', onGestureChange as unknown as AnyListener],
+    ['gestureend', onGestureEnd as unknown as AnyListener],
+  ];
+  for (const [type, listener] of listeners) target.addEventListener(type, listener, options);
+  return () => {
+    for (const [type, listener] of listeners) target.removeEventListener(type, listener);
+    if (frame !== null && frame !== -1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    frame = null;
+    pending = null;
+  };
+}
 
 function niceStep(span: number, targetTicks = 8): number {
   const raw = span / targetTicks;
@@ -62,12 +225,31 @@ export const ContigSummaryView: React.FC<Props> = ({ doc, onUpdateDocument, onSt
   const [view, setView] = useState<[number, number]>([1, total]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [downloadState, setDownloadState] = useState<{ busy: boolean; message: string }>({ busy: false, message: '' });
+  const mapRef = useRef<SVGSVGElement>(null);
+  // The listener reads the window and the record length the map last drew.
+  const wheelState = useRef({ view, total });
+  wheelState.current = { view, total };
 
   useEffect(() => {
     setView([1, total]);
     setSelectedId(null);
     setDownloadState({ busy: false, message: '' });
   }, [doc.id, total]);
+
+  useEffect(() => {
+    const svg = mapRef.current;
+    if (!svg) return undefined;
+    return bindContigMapWheel(svg as unknown as WheelListenerTarget, {
+      read: () => {
+        const { view: [start, end], total: length } = wheelState.current;
+        return { view: { start, end }, context: { total: length, rect: svg.getBoundingClientRect() } };
+      },
+      apply: (next) => {
+        wheelState.current = { ...wheelState.current, view: [next.start, next.end] };
+        setView([next.start, next.end]);
+      },
+    });
+  }, []);
 
   const [vStart, vEnd] = view;
   const span = Math.max(1, vEnd - vStart + 1);
@@ -253,7 +435,7 @@ export const ContigSummaryView: React.FC<Props> = ({ doc, onUpdateDocument, onSt
               <FigureExportButton compact baseName={`${doc.name} — Annotation Map`} title={`${doc.name} — annotation map ${vStart}-${vEnd}`} table={{ headers: ['Name', 'Type', 'Start', 'End', 'Length', 'Strand'], rows: doc.features.map((f) => [f.name, String(f.type), String(f.start), String(f.end), String(f.end - f.start + 1), f.strand === -1 ? '-' : '+']), caption: `${doc.name} — ${doc.features.length} annotations over ${total.toLocaleString()} ${unit}` }} />
             </div>
           </div>
-          <svg viewBox={`0 0 ${W} ${height}`} className="mbc-summary-svg" role="img"
+          <svg ref={mapRef} viewBox={`0 0 ${W} ${height}`} className="mbc-summary-svg" role="img"
             aria-label={`${doc.name} annotation map ${vStart}–${vEnd}`}>
             <line x1={MARGIN} x2={W - MARGIN} y1={rulerY} y2={rulerY} className="mbc-summary-ruler" />
             {ticks.map((t) => (

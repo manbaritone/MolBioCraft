@@ -19,6 +19,11 @@
  * the pairwise path implied by the alignment, axis annotations, gridlines and PNG export.
  * In the workbench those options are a Dotplot section of App's inspector (US-01M6TAA4), while the
  * X and Y pickers and Export PNG stay with the plot; drawn on its own, every one sits in its box.
+ *
+ * A wheel or a pinch over the plot zooms both axes by one factor, keeping the aspect ratio, from 1x
+ * to 64x about the point under the pointer (US-01M7CM97); Reset zoom returns it to the whole plot.
+ * A readout beside it names the X and Y ranges shown, and so does the canvas label once zoomed in
+ * (at 1x it stays "Dotplot of X vs Y"). Export PNG writes the whole plot whatever the zoom.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -27,6 +32,9 @@ import type { SequenceFeature } from '../types/bio';
 import { computeDotplot, rulerStep, type DotplotSegment } from '../core/alignmentViewModel';
 import { computeDotplotHits } from '../core/bioEngine';
 import { InspectorSection } from './WorkbenchInspector';
+import {
+  anchoredOffset, classifyWheelGesture, normalizeWheelDelta, wheelZoomScale, zoomAnchorPoint, type Point, type WheelGestureLike,
+} from '../core/wheelZoom';
 
 export interface DotplotSequence {
   id: string;
@@ -98,6 +106,166 @@ function baseMatches(a: string, b: string, x: number, y: number, strand: number)
   return m;
 }
 
+export const DOTPLOT_ZOOM_MIN = 1;
+export const DOTPLOT_ZOOM_MAX = 64;
+
+/** The plot's zoom: one factor on both axes, and the offset of the zoomed plot in its area, in CSS px. */
+export interface DotplotView {
+  zoom: number;
+  offset: Point;
+}
+
+/** The whole plot, unzoomed. */
+const DOTPLOT_WHOLE: DotplotView = { zoom: 1, offset: { x: 0, y: 0 } };
+
+/**
+ * Where the plot is: the canvas's box on screen (as `getBoundingClientRect` gives it) and the plot
+ * area within the canvas, in CSS px.
+ */
+export interface DotplotPlotBox {
+  rect: { left: number; top: number; width: number; height: number } | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DotplotWheelEvent extends WheelGestureLike {
+  deltaMode?: number;
+  clientX: number;
+  clientY: number;
+}
+
+/**
+ * A zoom held to DOTPLOT_ZOOM_MIN..DOTPLOT_ZOOM_MAX, and its offset to the plot area: the zoomed plot
+ * always covers the area (offset from size × (1 - zoom) to 0 on each axis), so at 1x it is the
+ * whole plot.
+ */
+function clampDotplotView(zoom: number, offset: Point, plot: DotplotPlotBox): DotplotView {
+  const z = Math.min(DOTPLOT_ZOOM_MAX, Math.max(DOTPLOT_ZOOM_MIN, Number.isFinite(zoom) ? zoom : DOTPLOT_ZOOM_MIN));
+  if (z === DOTPLOT_ZOOM_MIN) return DOTPLOT_WHOLE;
+  const hold = (v: number, size: number) => Math.min(0, Math.max(Math.max(0, size) * (1 - z), Number.isFinite(v) ? v : 0));
+  return { zoom: z, offset: { x: hold(offset.x, plot.width), y: hold(offset.y, plot.height) } };
+}
+
+/**
+ * The view after zooming `view` to `zoom` about a client point: with screen = plot point × zoom +
+ * offset (from the plot area's top left), the plot point under the pointer stays where it is. A
+ * pointer over a margin counts as the plot edge beside it; with no canvas box it zooms about the
+ * plot's centre.
+ */
+export function dotplotZoomTo(view: DotplotView, zoom: number, clientX: number, clientY: number, plot: DotplotPlotBox): DotplotView {
+  const to = clampDotplotView(zoom, view.offset, plot).zoom;
+  const inside = (v: number, size: number) => Math.min(Math.max(0, size), Math.max(0, v));
+  const pointer = zoomAnchorPoint({
+    pointer: plot.rect
+      ? { x: inside(clientX - plot.rect.left - plot.x, plot.width), y: inside(clientY - plot.rect.top - plot.y, plot.height) }
+      : undefined,
+    viewport: { width: plot.width, height: plot.height },
+  });
+  return clampDotplotView(to, anchoredOffset({ pointer, offset: view.offset, fromScale: view.zoom, toScale: to }), plot);
+}
+
+/**
+ * One wheel event over the plot (CR-01M7CCSD's policy for a canvas): a vertical wheel, plain or
+ * with Ctrl, Cmd or Alt, and a ctrl-flagged trackpad pinch, zoom both axes by the shared
+ * `wheelZoomScale` about the pointer. A horizontal wheel, and one with no delta, is not the plot's
+ * (`handled` false) and leaves the view as it was.
+ */
+export function dotplotWheelStep(event: DotplotWheelEvent, view: DotplotView, plot: DotplotPlotBox): { handled: boolean; view: DotplotView } {
+  if (classifyWheelGesture(event, 'canvas') !== 'zoom') return { handled: false, view };
+  const zoom = wheelZoomScale(view.zoom, normalizeWheelDelta(event).y, { min: DOTPLOT_ZOOM_MIN, max: DOTPLOT_ZOOM_MAX });
+  return { handled: true, view: dotplotZoomTo(view, zoom, event.clientX, event.clientY, plot) };
+}
+
+/** The 1-based first and last position an axis of `len` positions shows, `k` px each from `offset`, in `extent` px. */
+function shownRange(len: number, offset: number, extent: number, k: number): [number, number] {
+  return [Math.max(1, Math.floor(-offset / k) + 1), Math.min(len, Math.ceil((extent - offset) / k))];
+}
+
+type AnyListener = (event: unknown) => void;
+interface WheelListenerTarget {
+  addEventListener(type: string, listener: AnyListener, options?: AddEventListenerOptions): void;
+  removeEventListener(type: string, listener: AnyListener): void;
+}
+interface GestureLike {
+  scale?: number;
+  clientX?: number;
+  clientY?: number;
+  preventDefault(): void;
+}
+
+/**
+ * Listens for wheels and WebKit pinches on the plot canvas, non-passively (the pattern of the
+ * sequence maps' binders, CircularPlasmidMap.tsx): a gesture the plot takes has its default
+ * prevented, and one it does not (a horizontal scroll) keeps it. The wheel deltas of one animation
+ * frame are summed into one step. A WebKit pinch (gesturestart / gesturechange) zooms to the zoom it
+ * started from times the gesture's `scale`; the ctrl-flagged wheels a pinch may also send while it
+ * is under way are prevented but not applied. Returns the function that removes every listener and
+ * cancels a queued frame.
+ */
+export function bindDotplotWheel(
+  target: WheelListenerTarget,
+  hooks: { read(): { view: DotplotView; plot: DotplotPlotBox }; apply(view: DotplotView): void },
+): () => void {
+  const options: AddEventListenerOptions = { passive: false };
+  let pending: DotplotWheelEvent | null = null;
+  let frame: number | null = null;
+  let gestureFrom: number | null = null;
+  const applyIfMoved = (now: DotplotView, next: DotplotView) => {
+    if (next.zoom !== now.zoom || next.offset.x !== now.offset.x || next.offset.y !== now.offset.y) hooks.apply(next);
+  };
+  const flush = () => {
+    frame = null;
+    const event = pending;
+    pending = null;
+    if (!event) return;
+    const { view, plot } = hooks.read();
+    const step = dotplotWheelStep(event, view, plot);
+    if (step.handled) applyIfMoved(view, step.view);
+  };
+  const onWheel = (event: WheelEvent) => {
+    if (classifyWheelGesture(event, 'canvas') !== 'zoom') return;
+    event.preventDefault();
+    if (gestureFrom !== null) return;
+    pending = {
+      deltaX: 0, deltaY: (pending?.deltaY ?? 0) + normalizeWheelDelta(event).y, deltaMode: 0,
+      ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, clientX: event.clientX, clientY: event.clientY,
+    };
+    if (frame !== null) return;
+    if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(flush);
+    else { frame = -1; flush(); }
+  };
+  const onGestureStart = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = hooks.read().view.zoom;
+    pending = null;
+  };
+  const onGestureChange = (event: GestureLike) => {
+    event.preventDefault();
+    if (gestureFrom === null || !(Number(event.scale) > 0)) return;
+    const { view, plot } = hooks.read();
+    applyIfMoved(view, dotplotZoomTo(view, gestureFrom * Number(event.scale), Number(event.clientX), Number(event.clientY), plot));
+  };
+  const onGestureEnd = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = null;
+  };
+  const listeners: [string, AnyListener][] = [
+    ['wheel', onWheel as unknown as AnyListener],
+    ['gesturestart', onGestureStart as unknown as AnyListener],
+    ['gesturechange', onGestureChange as unknown as AnyListener],
+    ['gestureend', onGestureEnd as unknown as AnyListener],
+  ];
+  for (const [type, listener] of listeners) target.addEventListener(type, listener, options);
+  return () => {
+    for (const [type, listener] of listeners) target.removeEventListener(type, listener);
+    if (frame !== null && frame !== -1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    frame = null;
+    pending = null;
+  };
+}
+
 /** `window`: the engine's sliding-window dotplot (F11). `word`: exact word matches merged along diagonals. */
 type DotplotMethod = 'window' | 'word';
 
@@ -117,6 +285,7 @@ export const AlignmentDotplot: React.FC<Props> = ({ sequences, isProtein }) => {
   const [showAnnotations, setShowAnnotations] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [view, setView] = useState<DotplotView>(DOTPLOT_WHOLE);
 
   useEffect(() => {
     setXIdx(0);
@@ -204,9 +373,38 @@ export const AlignmentDotplot: React.FC<Props> = ({ sequences, isProtein }) => {
   const plotW = MARGIN_L + W + 16;
   const totalH = MARGIN_T + H + 24;
 
+  // The listener reads the zoom and the plot area the canvas last drew.
+  const wheelState = useRef({ view, area: { x: MARGIN_L, y: MARGIN_T, width: W, height: H } });
+  wheelState.current = { view, area: { x: MARGIN_L, y: MARGIN_T, width: W, height: H } };
+  // Another pair of sequences is another plot: it is shown whole.
+  useEffect(() => setView(DOTPLOT_WHOLE), [X, Y]);
+  const plotted = sequences.length > 0;
   useEffect(() => {
     const cv = canvasRef.current;
-    if (!cv) return;
+    // A canvas stand-in that takes no listeners (a server render's probe) has nothing to bind.
+    if (!cv || typeof cv.addEventListener !== 'function') return undefined;
+    return bindDotplotWheel(cv as unknown as WheelListenerTarget, {
+      read: () => ({ view: wheelState.current.view, plot: { ...wheelState.current.area, rect: cv.getBoundingClientRect() } }),
+      apply: (next) => {
+        wheelState.current = { ...wheelState.current, view: next };
+        setView(next);
+      },
+    });
+  }, [plotted]);
+
+  const whole = view.zoom === 1;
+  const k = scale * view.zoom;
+  const [shownX0, shownX1] = shownRange(xLen, view.offset.x, W, k);
+  const [shownY0, shownY1] = shownRange(yLen, view.offset.y, H, k);
+  const shownRanges = `X ${shownX0.toLocaleString()}–${shownX1.toLocaleString()} of ${xLen.toLocaleString()} ${unit}, Y ${shownY0.toLocaleString()}–${shownY1.toLocaleString()} of ${yLen.toLocaleString()} ${unit}`;
+
+  /**
+   * Draws the plot on `cv` as `shown` zooms it: positions at `scale × zoom` px on both axes from the
+   * plot area's corner moved by the offset and, while zoomed in, the matches, the path and the axis
+   * annotations clipped to the area. At 1x it is the whole plot, drawn as before, as Export PNG
+   * writes it.
+   */
+  const paint = (cv: HTMLCanvasElement, shown: DotplotView) => {
     const ctx = cv.getContext('2d');
     if (!ctx) return;
     // Widen the canvas when the method label runs past a narrow plot, so the export keeps all of it.
@@ -228,11 +426,18 @@ export const AlignmentDotplot: React.FC<Props> = ({ sequences, isProtein }) => {
 
     const ox = MARGIN_L;
     const oy = MARGIN_T;
-    const step = rulerStep(scale, 60);
+    // Plot point (x, y) is drawn at (bx + x × kk, by + y × kk).
+    const kk = scale * shown.zoom;
+    const zoomedIn = shown.zoom !== 1;
+    const bx = ox + shown.offset.x;
+    const by = oy + shown.offset.y;
+    const step = rulerStep(kk, 60);
+    const firstTick = (offset: number) => Math.max(step, Math.ceil(-offset / kk / step) * step);
     ctx.font = '10px system-ui, sans-serif';
     ctx.textBaseline = 'middle';
-    for (let v = step; v < xLen; v += step) {
-      const gx = ox + v * scale;
+    for (let v = firstTick(shown.offset.x); v < xLen; v += step) {
+      const gx = bx + v * kk;
+      if (gx > ox + W) break;
       if (showGrid) {
         ctx.strokeStyle = border;
         ctx.globalAlpha = 0.6;
@@ -246,8 +451,9 @@ export const AlignmentDotplot: React.FC<Props> = ({ sequences, isProtein }) => {
       ctx.textAlign = 'center';
       ctx.fillText(String(v), gx, oy - (showAnnotations ? ANN_H + 8 : 8));
     }
-    for (let v = step; v < yLen; v += step) {
-      const gy = oy + v * scale;
+    for (let v = firstTick(shown.offset.y); v < yLen; v += step) {
+      const gy = by + v * kk;
+      if (gy > oy + H) break;
       if (showGrid) {
         ctx.strokeStyle = border;
         ctx.globalAlpha = 0.6;
@@ -262,62 +468,79 @@ export const AlignmentDotplot: React.FC<Props> = ({ sequences, isProtein }) => {
       ctx.fillText(String(v), ox - (showAnnotations ? ANN_H + 6 : 6), gy);
     }
 
-    // segments
-    ctx.lineWidth = Math.max(1, Math.min(2, scale));
-    ctx.lineCap = 'round';
-    for (const s of result.segments) {
-      let color = fg;
-      if (colorMode === 'Strand') color = s.strand === 1 ? '#2563eb' : '#dc2626';
-      else if (colorMode === 'Score') {
-        const t =
-          method === 'window'
-            ? Math.min(1, ((s.score ?? F11_MIN_MATCHES) - F11_MIN_MATCHES) / (F11_WINDOW - F11_MIN_MATCHES))
-            : Math.min(1, (s.len - wordSize) / Math.max(1, maxLen - wordSize));
-        const r = Math.round(37 + (220 - 37) * t);
-        const g = Math.round(99 + (38 - 99) * t);
-        const b = Math.round(235 + (38 - 235) * t);
-        color = `rgb(${r},${g},${b})`;
-      }
-      ctx.strokeStyle = color;
+    /** Draws `draw` clipped to a box while zoomed in, and as it is at 1x. */
+    const clipped = (x: number, y: number, w: number, h: number, draw: () => void) => {
+      if (!zoomedIn) return draw();
+      ctx.save();
       ctx.beginPath();
-      if (s.strand === 1) {
-        ctx.moveTo(ox + s.x * scale, oy + s.y * scale);
-        ctx.lineTo(ox + (s.x + s.len) * scale, oy + (s.y + s.len) * scale);
-      } else {
-        ctx.moveTo(ox + s.x * scale, oy + (s.y + s.len) * scale);
-        ctx.lineTo(ox + (s.x + s.len) * scale, oy + s.y * scale);
-      }
-      ctx.stroke();
-    }
+      ctx.rect(x, y, w, h);
+      ctx.clip();
+      draw();
+      ctx.restore();
+    };
 
-    if (showPath && path.length > 1) {
-      ctx.strokeStyle = '#f59e0b';
-      ctx.globalAlpha = 0.8;
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash([5, 3]);
-      ctx.beginPath();
-      path.forEach(([x, y], i) => {
-        const px = ox + x * scale;
-        const py = oy + y * scale;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      });
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-    }
+    clipped(ox, oy, W, H, () => {
+      // segments
+      ctx.lineWidth = Math.max(1, Math.min(2, kk));
+      ctx.lineCap = 'round';
+      for (const s of result.segments) {
+        let color = fg;
+        if (colorMode === 'Strand') color = s.strand === 1 ? '#2563eb' : '#dc2626';
+        else if (colorMode === 'Score') {
+          const t =
+            method === 'window'
+              ? Math.min(1, ((s.score ?? F11_MIN_MATCHES) - F11_MIN_MATCHES) / (F11_WINDOW - F11_MIN_MATCHES))
+              : Math.min(1, (s.len - wordSize) / Math.max(1, maxLen - wordSize));
+          const r = Math.round(37 + (220 - 37) * t);
+          const g = Math.round(99 + (38 - 99) * t);
+          const b = Math.round(235 + (38 - 235) * t);
+          color = `rgb(${r},${g},${b})`;
+        }
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        if (s.strand === 1) {
+          ctx.moveTo(bx + s.x * kk, by + s.y * kk);
+          ctx.lineTo(bx + (s.x + s.len) * kk, by + (s.y + s.len) * kk);
+        } else {
+          ctx.moveTo(bx + s.x * kk, by + (s.y + s.len) * kk);
+          ctx.lineTo(bx + (s.x + s.len) * kk, by + s.y * kk);
+        }
+        ctx.stroke();
+      }
+
+      if (showPath && path.length > 1) {
+        ctx.strokeStyle = '#f59e0b';
+        ctx.globalAlpha = 0.8;
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        path.forEach(([x, y], i) => {
+          const px = bx + x * kk;
+          const py = by + y * kk;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+    });
 
     if (showAnnotations) {
-      for (const f of sx?.features ?? []) {
-        if (String(f.type) === 'source') continue;
-        ctx.fillStyle = f.color;
-        ctx.fillRect(ox + (f.start - 1) * scale, oy - ANN_H - 2, Math.max(1, (f.end - f.start + 1) * scale), ANN_H);
-      }
-      for (const f of sy?.features ?? []) {
-        if (String(f.type) === 'source') continue;
-        ctx.fillStyle = f.color;
-        ctx.fillRect(ox - ANN_H - 2, oy + (f.start - 1) * scale, ANN_H, Math.max(1, (f.end - f.start + 1) * scale));
-      }
+      clipped(ox, 0, W, oy, () => {
+        for (const f of sx?.features ?? []) {
+          if (String(f.type) === 'source') continue;
+          ctx.fillStyle = f.color;
+          ctx.fillRect(bx + (f.start - 1) * kk, oy - ANN_H - 2, Math.max(1, (f.end - f.start + 1) * kk), ANN_H);
+        }
+      });
+      clipped(0, oy, ox, H, () => {
+        for (const f of sy?.features ?? []) {
+          if (String(f.type) === 'source') continue;
+          ctx.fillStyle = f.color;
+          ctx.fillRect(ox - ANN_H - 2, by + (f.start - 1) * kk, ANN_H, Math.max(1, (f.end - f.start + 1) * kk));
+        }
+      });
     }
 
     ctx.strokeStyle = fg;
@@ -330,14 +553,24 @@ export const AlignmentDotplot: React.FC<Props> = ({ sequences, isProtein }) => {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(methodLabel, ox, oy + H + 14);
-  }, [result, colorMode, showPath, showAnnotations, showGrid, path, sx, sy, scale, W, H, plotW, totalH, xLen, yLen, wordSize, maxLen, method, methodLabel]);
+  };
 
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (cv) paint(cv, view);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result, colorMode, showPath, showAnnotations, showGrid, path, sx, sy, scale, W, H, plotW, totalH, xLen, yLen, wordSize, maxLen, method, methodLabel, view]);
+
+  /** The whole plot as a PNG: a zoomed canvas draws the whole plot for the file, then the zoom again. */
   const exportPng = () => {
     const cv = canvasRef.current;
     if (!cv) return;
+    if (!whole) paint(cv, DOTPLOT_WHOLE);
+    const png = cv.toDataURL('image/png');
+    if (!whole) paint(cv, view);
     saveWorkbenchFile(
       `dotplot-${(sx?.name ?? 'x').replace(/\W+/g, '_')}-vs-${(sy?.name ?? 'y').replace(/\W+/g, '_')}-${methodTag}.png`,
-      dataUrlToBytes(cv.toDataURL('image/png')),
+      dataUrlToBytes(png),
       'image/png'
     );
   };
@@ -359,7 +592,7 @@ export const AlignmentDotplot: React.FC<Props> = ({ sequences, isProtein }) => {
           <div className="mbc-dotplot-axis-y">
             ↓ {sy?.name} ({yLen.toLocaleString()} {unit})
           </div>
-          <canvas ref={canvasRef} role="img" aria-label={`Dotplot of ${sx?.name} vs ${sy?.name}`} />
+          <canvas ref={canvasRef} role="img" aria-label={`Dotplot of ${sx?.name} vs ${sy?.name}${whole ? '' : `, ${shownRanges}`}`} />
         </div>
         <div className="mbc-aln-hint">{methodLabel}</div>
         <div className="mbc-aln-hint">
@@ -373,6 +606,14 @@ export const AlignmentDotplot: React.FC<Props> = ({ sequences, isProtein }) => {
             : sampled
               ? ` · from ${ENGINE_SAMPLES_FROM} nt the engine compares a sample of window pairs, so some matches are not drawn`
               : ''}
+        </div>
+        <div className="mbc-dotplot-zoom-bar">
+          <span className="mbc-dotplot-zoom" aria-live="polite">
+            {Number(view.zoom.toFixed(1))}× · {shownRanges.replace(', Y', ' · Y')}
+          </span>
+          <button type="button" className="btn-secondary-sm" disabled={whole} onClick={() => setView(DOTPLOT_WHOLE)}>
+            Reset zoom
+          </button>
         </div>
       </div>
 

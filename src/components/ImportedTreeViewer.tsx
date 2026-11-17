@@ -11,6 +11,11 @@
  * Display section of the workbench's shared inspector (US-01M6TAT0). Drawn on its own, as in the
  * split view's pane, it keeps them in its header toolbar. Find taxa, the edits, the exports and the
  * selected-node bar stay above the tree in both.
+ *
+ * A wheel or a pinch over the tree zooms it on both axes by one factor, 1x to 16x, about the point
+ * under the pointer, in every layout (US-01M7CM97). The zoom is view state: it is a transform on the
+ * box the drawing sits in, so the exported SVG and PNG, which clone the drawing, are unchanged by
+ * it, and it never marks the display edited or reaches the document.
  */
 
 import { FigureExportButton } from './FigureExportButton';
@@ -22,6 +27,154 @@ import {
   type TreeStyle,
 } from '../core/treeLayout';
 import type { SequenceDocument } from '../types/bio';
+import {
+  anchoredOffset, classifyWheelGesture, normalizeWheelDelta, wheelZoomScale, zoomAnchorPoint, type Point, type WheelGestureLike,
+} from '../core/wheelZoom';
+
+/** The tree's zoom: a factor on both axes and the offset of the zoomed drawing in its frame, in CSS px. */
+export interface TreeZoomView {
+  zoom: number;
+  offset: Point;
+}
+
+/** The frame the zoomed drawing is shown in, as `getBoundingClientRect` gives it. */
+export interface TreeZoomFrame {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface TreeWheelEvent extends WheelGestureLike {
+  deltaMode?: number;
+  clientX: number;
+  clientY: number;
+}
+
+export const TREE_ZOOM_MIN = 1;
+export const TREE_ZOOM_MAX = 16;
+const TREE_UNZOOMED: TreeZoomView = { zoom: 1, offset: { x: 0, y: 0 } };
+
+/**
+ * A zoom held to TREE_ZOOM_MIN..TREE_ZOOM_MAX, and its offset to the frame: the zoomed drawing
+ * always covers the frame (offset from frame × (1 - zoom) to 0 on each axis), so at 1x it is
+ * exactly where it is drawn unzoomed. With no frame laid out there is nowhere to pan to.
+ */
+function clampTreeZoom(zoom: number, offset: Point, frame: TreeZoomFrame | null): TreeZoomView {
+  const z = Math.min(TREE_ZOOM_MAX, Math.max(TREE_ZOOM_MIN, Number.isFinite(zoom) ? zoom : TREE_ZOOM_MIN));
+  if (z === TREE_ZOOM_MIN) return TREE_UNZOOMED;
+  const hold = (v: number, size: number) => Math.min(0, Math.max((size > 0 ? size : 0) * (1 - z), Number.isFinite(v) ? v : 0));
+  return { zoom: z, offset: { x: hold(offset.x, frame?.width ?? 0), y: hold(offset.y, frame?.height ?? 0) } };
+}
+
+/**
+ * The view after zooming `view` to `zoom` about a client point: with screen = drawing × zoom +
+ * offset (from the frame's top left), the drawing point under the pointer stays where it is. With
+ * no usable pointer it zooms about the frame's centre.
+ */
+export function treeZoomTo(view: TreeZoomView, zoom: number, clientX: number, clientY: number, frame: TreeZoomFrame | null): TreeZoomView {
+  const to = clampTreeZoom(zoom, view.offset, frame).zoom;
+  const pointer = zoomAnchorPoint({
+    pointer: frame ? { x: clientX - frame.left, y: clientY - frame.top } : undefined,
+    viewport: { width: frame?.width ?? 0, height: frame?.height ?? 0 },
+  });
+  return clampTreeZoom(to, anchoredOffset({ pointer, offset: view.offset, fromScale: view.zoom, toScale: to }), frame);
+}
+
+/**
+ * One wheel event over the tree (CR-01M7CCSD's policy for a canvas): a vertical wheel, plain or
+ * with Ctrl, Cmd or Alt, and a ctrl-flagged trackpad pinch, zoom by the shared `wheelZoomScale`
+ * about the pointer. A horizontal wheel, and one with no delta, is not the tree's (`handled` false)
+ * and leaves the view as it was.
+ */
+export function treeWheelStep(event: TreeWheelEvent, view: TreeZoomView, frame: TreeZoomFrame | null): { handled: boolean; view: TreeZoomView } {
+  if (classifyWheelGesture(event, 'canvas') !== 'zoom') return { handled: false, view };
+  const zoom = wheelZoomScale(view.zoom, normalizeWheelDelta(event).y, { min: TREE_ZOOM_MIN, max: TREE_ZOOM_MAX });
+  return { handled: true, view: treeZoomTo(view, zoom, event.clientX, event.clientY, frame) };
+}
+
+type AnyListener = (event: unknown) => void;
+interface WheelListenerTarget {
+  addEventListener(type: string, listener: AnyListener, options?: AddEventListenerOptions): void;
+  removeEventListener(type: string, listener: AnyListener): void;
+}
+interface GestureLike {
+  scale?: number;
+  clientX?: number;
+  clientY?: number;
+  preventDefault(): void;
+}
+
+/**
+ * Listens for wheels and WebKit pinches on the tree's frame, non-passively (the pattern of the
+ * sequence maps' binders, CircularPlasmidMap.tsx): a gesture the tree takes has its default
+ * prevented, and one it does not (a horizontal scroll) keeps it. The wheel deltas of one animation
+ * frame are summed into one step. A WebKit pinch (gesturestart / gesturechange) zooms to the zoom it
+ * started from times the gesture's `scale`; the ctrl-flagged wheels a pinch may also send while it
+ * is under way are prevented but not applied. Returns the function that removes every listener and
+ * cancels a queued frame.
+ */
+export function bindTreeWheel(
+  target: WheelListenerTarget,
+  hooks: { read(): { view: TreeZoomView; frame: TreeZoomFrame | null }; apply(view: TreeZoomView): void },
+): () => void {
+  const options: AddEventListenerOptions = { passive: false };
+  let pending: TreeWheelEvent | null = null;
+  let frame: number | null = null;
+  let gestureFrom: number | null = null;
+  const applyIfMoved = (now: TreeZoomView, next: TreeZoomView) => {
+    if (next.zoom !== now.zoom || next.offset.x !== now.offset.x || next.offset.y !== now.offset.y) hooks.apply(next);
+  };
+  const flush = () => {
+    frame = null;
+    const event = pending;
+    pending = null;
+    if (!event) return;
+    const { view, frame: box } = hooks.read();
+    const step = treeWheelStep(event, view, box);
+    if (step.handled) applyIfMoved(view, step.view);
+  };
+  const onWheel = (event: WheelEvent) => {
+    if (classifyWheelGesture(event, 'canvas') !== 'zoom') return;
+    event.preventDefault();
+    if (gestureFrom !== null) return;
+    pending = {
+      deltaX: 0, deltaY: (pending?.deltaY ?? 0) + normalizeWheelDelta(event).y, deltaMode: 0,
+      ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, clientX: event.clientX, clientY: event.clientY,
+    };
+    if (frame !== null) return;
+    if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(flush);
+    else { frame = -1; flush(); }
+  };
+  const onGestureStart = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = hooks.read().view.zoom;
+    pending = null;
+  };
+  const onGestureChange = (event: GestureLike) => {
+    event.preventDefault();
+    if (gestureFrom === null || !(Number(event.scale) > 0)) return;
+    const { view, frame: box } = hooks.read();
+    applyIfMoved(view, treeZoomTo(view, gestureFrom * Number(event.scale), Number(event.clientX), Number(event.clientY), box));
+  };
+  const onGestureEnd = (event: GestureLike) => {
+    event.preventDefault();
+    gestureFrom = null;
+  };
+  const listeners: [string, AnyListener][] = [
+    ['wheel', onWheel as unknown as AnyListener],
+    ['gesturestart', onGestureStart as unknown as AnyListener],
+    ['gesturechange', onGestureChange as unknown as AnyListener],
+    ['gestureend', onGestureEnd as unknown as AnyListener],
+  ];
+  for (const [type, listener] of listeners) target.addEventListener(type, listener, options);
+  return () => {
+    for (const [type, listener] of listeners) target.removeEventListener(type, listener);
+    if (frame !== null && frame !== -1 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    frame = null;
+    pending = null;
+  };
+}
 
 interface DisplayState {
   style: TreeStyle;
@@ -74,6 +227,11 @@ export const ImportedTreeViewer: React.FC<ImportedTreeViewerProps> = ({ doc, onU
   const canvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [width, setWidth] = useState(900);
+  // The zoom is the viewer's own: not in `display`, so it is never saved and never makes it dirty.
+  const [zoomView, setZoomView] = useState<TreeZoomView>(TREE_UNZOOMED);
+  const zoomRef = useRef(zoomView);
+  zoomRef.current = zoomView;
+  const frameRef = useRef<HTMLDivElement>(null);
   const isTimetree = doc.docMetadata?.['Source Format'] === 'Timetree';
   const timeUnit = String(doc.docMetadata?.['Branch lengths'] ?? '');
   const inWorkbench = useInWorkbench();
@@ -91,6 +249,17 @@ export const ImportedTreeViewer: React.FC<ImportedTreeViewerProps> = ({ doc, onU
     update();
     return () => { ro.disconnect(); cancelAnimationFrame(frame); };
   }, []);
+
+  useEffect(() => setZoomView(TREE_UNZOOMED), [doc.id]);
+  const drawn = Boolean(tree);
+  useEffect(() => {
+    const el = frameRef.current;
+    if (!el) return undefined;
+    return bindTreeWheel(el as unknown as WheelListenerTarget, {
+      read: () => ({ view: zoomRef.current, frame: el.getBoundingClientRect() }),
+      apply: (next) => { zoomRef.current = next; setZoomView(next); },
+    });
+  }, [drawn]);
 
   const setD = (patch: Partial<DisplayState>) => { setDisplay((d) => ({ ...d, ...patch })); setDisplayDirty(true); };
   const edit = (fn: (t: TreeNode) => TreeNode) => {
@@ -202,6 +371,7 @@ export const ImportedTreeViewer: React.FC<ImportedTreeViewerProps> = ({ doc, onU
   }
 
   const tips = layout.nodes.filter((n) => n.isTip);
+  const zoomed = zoomView.zoom !== 1;
   const circularLike = display.style === 'circular' || display.style === 'radial';
   const scaleBar = layout.scale > 0 && !isTimetree ? niceLength(layout.maxDepth / 5) : 0;
   const ageOf = (depth: number) => layout.maxDepth - depth;
@@ -324,6 +494,8 @@ export const ImportedTreeViewer: React.FC<ImportedTreeViewerProps> = ({ doc, onU
       )}
       <p>{tips.length} tips shown · {layout.nodes.length - tips.length} internal nodes · {String(doc.docMetadata?.['Source Format'] ?? 'Imported')} tree · click a branch or node for actions</p>
       <div ref={canvasRef} className="mbc-imported-tree-canvas">
+        <div ref={frameRef} className="mbc-imported-tree-zoom-frame" style={zoomed ? { height: '100%', overflow: 'hidden' } : { height: '100%' }}>
+        <div className="mbc-imported-tree-zoom" style={zoomed ? { height: '100%', transform: `translate(${zoomView.offset.x}px, ${zoomView.offset.y}px) scale(${zoomView.zoom})`, transformOrigin: '0 0' } : { height: '100%' }}>
         <svg ref={svgRef} viewBox={`0 0 ${layout.width} ${layout.height + (layout.scale > 0 && !circularLike ? 34 : 0)}`}
           style={{ maxWidth: circularLike ? Math.max(480, layout.width) : undefined, fontSize: display.fontSize }}
           role="img" aria-label={`Phylogenetic tree ${doc.name}`}>
@@ -424,6 +596,8 @@ export const ImportedTreeViewer: React.FC<ImportedTreeViewerProps> = ({ doc, onU
             );
           })()}
         </svg>
+        </div>
+        </div>
       </div>
       <details>
         <summary>Newick source</summary>
