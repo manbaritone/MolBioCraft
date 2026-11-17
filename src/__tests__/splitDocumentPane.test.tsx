@@ -2001,6 +2001,14 @@ describe('US-01M7DV10 AC1: exactly one pane has focus while the split is shown, 
       await app.change(chooser(app), 'single');
       await app.change(chooser(app), 'top-bottom');
       expect(focusedPaneOf(app), 'and by the chooser too').toBe('main');
+
+      // A restored split opens on the main pane, even when the pane had focus before the restore.
+      await pointerDown(app, paneBody(app));
+      expect(focusedPaneOf(app), 'the pane is focused before the restore').toBe('second');
+      await restoreWithSplit(app, { orientation: 'side-by-side', docId: DOC_B.id, docName: 'Doc_B' }, 'Focus_Restored');
+      expect(paneCount(app), 'the restored session shows the split').toBe(1);
+      expect(chooser(app).value, 'side by side, as saved').toBe('side-by-side');
+      expect(focusedPaneOf(app), 'a restored split opens with the main pane focused').toBe('main');
     });
   });
 });
@@ -2024,12 +2032,16 @@ describe('US-01M7DV10 AC2: View › Zoom and Rotate act on the focused pane', ()
         ['Ctrl+-', () => app.press('-', { mod: true }), 110],
         ["the header's −", () => app.click(headerZoomButtons(app)[0]), 100],
         ['native view:zoom-in', zoomIn, 110],
+        ['native view:zoom-in', zoomIn, 120], // from 120%, Actual Size and Zoom Out part: 100% against 110%
         ['native view:zoom-reset', () => app.menu('view:zoom-reset'), 100],
         ['native view:zoom-in', zoomIn, 110],
+        ['native view:zoom-in', zoomIn, 120], // from 120%, Actual Size and Zoom Out part: 100% against 110%
         ['View › Zoom › Actual Size (100%)', () => viewCommand(app, ['Zoom', 'Actual Size (100%)']), 100],
         ['native view:zoom-in', zoomIn, 110],
+        ['native view:zoom-in', zoomIn, 120], // from 120%, Actual Size and Zoom Out part: 100% against 110%
         ['Ctrl+0', () => app.press('0', { mod: true }), 100],
         ['native view:zoom-in', zoomIn, 110],
+        ['native view:zoom-in', zoomIn, 120], // from 120%, Actual Size and Zoom Out part: 100% against 110%
         ["the header's %", () => app.click(headerZoomButtons(app)[1]), 100],
         ['native view:zoom-in', zoomIn, 110],
       ];
