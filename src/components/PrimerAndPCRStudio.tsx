@@ -509,6 +509,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     ? { why: 'other-document', run: crisprSearches.results.get(crisprSearches.lastDocId)!.run }
     : null;
   const crisprStatus = crisprSearches.status;
+  /** The search in progress on this document: a run on another one is not offered here. */
+  const crisprRunningHere =
+    crisprStatus?.phase === 'running' && crisprStatus.run.docId === doc.id ? crisprStatus : null;
   const crisprShownRun = crisprShown?.run;
   /** The last search on this document failed, and nothing it said is a result. */
   const crisprFailed = crisprStatus?.phase === 'failed' && crisprStatus.run.docId === doc.id ? crisprStatus : null;
@@ -643,7 +646,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       : crisprSeedText(crisprScan);
   const crisprTabCount =
     crisprCandidates === undefined
-      ? crisprStatus?.phase === 'running'
+      ? crisprRunningHere
         ? 'running'
         : crisprFailed?.refusal !== undefined
         ? 'no range searched'
@@ -1614,7 +1617,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
               >
                 Run
               </button>
-              {crisprStatus?.phase === 'running' && (
+              {crisprRunningHere && (
                 <button type="button" className="btn-secondary-sm" data-crispr-stop="" onClick={stopCrisprSearch}>
                   Stop
                 </button>
@@ -1630,20 +1633,25 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             </div>
           </div>
 
-          {/* Where the search stands (US-01M7DVJK): running, stopped, failed or done, by its name,
-              and why a result held for this session is not shown here (AC6). */}
+          {/* The result shown, by its own name (US-01M7DVJK AC2, AC3): read from this document's
+              entry in the store, so it is named whatever ran since, here or on another document. */}
+          {crisprShown && (
+            <p className="mbc-opdlg-muted" data-crispr-shown-result="">
+              {`"${crisprShown.run.name}" searched ${bp(crisprShown.result.report.scannedLengthBp)} bp.`}
+            </p>
+          )}
+          {/* Where the last search on this document stands (US-01M7DVJK): running, stopped or failed,
+              by its name, and the result still shown beside it named (AC3). */}
           {crisprStatus &&
-            (crisprStatus.phase === 'running' ||
-              (crisprStatus.phase === 'done'
-                ? crisprShownRun?.serial === crisprStatus.run.serial
-                : crisprStatus.run.docId === doc.id)) && (
+            crisprStatus.phase !== 'done' &&
+            crisprStatus.run.docId === doc.id && (
               <p className="mbc-opdlg-muted" role="status" data-crispr-run-status={crisprStatus.phase}>
                 {crisprStatus.phase === 'running'
                   ? `Running "${crisprStatus.run.name}": the engine was asked for ${bp(crisprStatus.run.askedBp)} bp.`
                   : crisprStatus.phase === 'stopped'
-                  ? `Stopped "${crisprStatus.run.name}" before the engine replied: ${bp(crisprStatus.run.askedBp)} bp were asked for and no result is shown.`
-                  : crisprStatus.phase === 'done'
-                  ? `"${crisprStatus.run.name}" searched ${bp(crisprShown!.result.report.scannedLengthBp)} bp.`
+                  ? `Stopped "${crisprStatus.run.name}" before the engine replied: ${bp(crisprStatus.run.askedBp)} bp were asked for and no result is shown.${
+                      crisprShownRun ? ` The result of "${crisprShownRun.name}" is left as it was.` : ''
+                    }`
                   : `"${crisprStatus.run.name}" failed: ${
                       crisprStatus.phase === 'failed' && crisprStatus.refusal !== undefined
                         ? `the engine searched no range: ${crisprStatus.refusal}`

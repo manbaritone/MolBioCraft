@@ -171,6 +171,11 @@ const runButton = (app: AppHarness) => app.one('[data-crispr-run]', 'the Run but
 const pressRun = (app: AppHarness) => app.click(runButton(app));
 const pressStop = (app: AppHarness) => app.click(app.one('[data-crispr-stop]', 'the Stop button'));
 const statusText = (app: AppHarness) => app.all('[data-crispr-run-status]').map((e) => words(e.textContent)).join(' | ');
+/** The line that names the result shown, by its own name (empty where none is shown). */
+const shownText = (app: AppHarness) => app.all('[data-crispr-shown-result]').map((e) => words(e.textContent)).join(' | ');
+/** Everything the CRISPR tab and the inspector say, as one reads it. */
+const tabWords = (app: AppHarness) =>
+  words(app.one('.alignment-studio-wrapper', 'the studio').textContent + ' ' + (app.inspectorAside()?.textContent ?? ''));
 const withdrawnText = (app: AppHarness) => app.all('[data-crispr-withdrawn]').map((e) => words(e.textContent)).join(' | ');
 const listedGuideIds = (app: AppHarness) =>
   app.all('[data-crispr-guide-row]').map((r) => r.getAttribute('data-crispr-guide-row') ?? '');
@@ -316,7 +321,8 @@ describe('a CRISPR search runs when Run is pressed, by name, and can be stopped 
         await held.reply(0);
         const scan = await engineScan(CIRCLE, SPCAS9, ACROSS);
         expect(scan.report?.scannedLengthBp).toBe(60);
-        expect(statusText(app)).toBe(`"${name}" searched ${bp(scan.report!.scannedLengthBp)} bp.`);
+        expect(shownText(app)).toBe(`"${name}" searched ${bp(scan.report!.scannedLengthBp)} bp.`);
+        expect(statusText(app), 'nothing is left running').toBe('');
         expect(listedGuideIds(app)).toEqual(scan.guides.map((g) => g.id));
 
         // A name of the user's own is the one the sentences use.
@@ -324,7 +330,7 @@ describe('a CRISPR search runs when Run is pressed, by name, and can be stopped 
         await pressRun(app);
         expect(statusText(app)).toBe('Running "Origin guides, run two": the engine was asked for 60 bp.');
         await held.reply(1);
-        expect(statusText(app)).toBe('"Origin guides, run two" searched 60 bp.');
+        expect(shownText(app)).toBe('"Origin guides, run two" searched 60 bp.');
       } finally {
         held.release();
       }
@@ -342,7 +348,7 @@ describe('a CRISPR search runs when Run is pressed, by name, and can be stopped 
         await pressRun(app);
         expect(statusText(app)).toBe(`Running "${name}": the engine was asked for 8,000,100 bp.`);
         await held.reply(0);
-        expect(statusText(app)).toBe(`"${name}" searched 8,000,000 bp.`);
+        expect(shownText(app)).toBe(`"${name}" searched 8,000,000 bp.`);
       } finally {
         held.release();
       }
@@ -373,21 +379,29 @@ describe('a CRISPR search runs when Run is pressed, by name, and can be stopped 
         await held.reply(1);
         const spcas9 = await engineScan(RUN_DOC, SPCAS9);
         expect(listedGuideIds(app)).toEqual(spcas9.guides.map((g) => g.id));
-        const doneName = words(nameField(app).value);
+        // The completed search's name, as the tab states it beside its rows: the default the name
+        // field offered (document, nuclease, scope), written out here rather than read back.
+        const doneName = `${RUN_DOC.name}, ${SPCAS9}, whole sequence`;
+        const named = `"${doneName}" searched ${bp(spcas9.report!.scannedLengthBp)} bp.`;
+        expect(shownText(app), 'the tab names the result it shows').toBe(named);
 
         await chooseNuclease(app, CAS12A);
         await app.input(nameField(app), 'Cas12a sweep');
         await pressRun(app);
+        expect(shownText(app), 'while the next search runs, the result shown is still named').toBe(named);
+        expect(tabWords(app)).toContain(`"${doneName}"`);
         await pressStop(app);
         expect(statusText(app)).toBe(
-          `Stopped "Cas12a sweep" before the engine replied: ${bp(RUN_DOC.sequence.length)} bp were asked for and no result is shown.`
+          `Stopped "Cas12a sweep" before the engine replied: ${bp(RUN_DOC.sequence.length)} bp were asked for and no result is shown. The result of "${doneName}" is left as it was.`
         );
+        expect(shownText(app), 'after Stop, the result shown keeps its name').toBe(named);
         expect(listedGuideIds(app), 'the previous search stays as it was').toEqual(spcas9.guides.map((g) => g.id));
         expect(callout(app)).toContain(`candidate ${SPCAS9} guides`);
 
         // A new Run from the same criteria; the stopped reply resolves while it is running.
         await pressRun(app);
         expect(statusText(app)).toBe(`Running "Cas12a sweep": the engine was asked for ${bp(RUN_DOC.sequence.length)} bp.`);
+        expect(shownText(app), 'during the rerun too').toBe(named);
         await held.reply(2);
         expect(listedGuideIds(app), 'the stopped reply, resolved after a new Run began, is dropped').toEqual(
           spcas9.guides.map((g) => g.id)
@@ -396,8 +410,8 @@ describe('a CRISPR search runs when Run is pressed, by name, and can be stopped 
         await held.reply(3);
         const cas12a = await engineScan(RUN_DOC, CAS12A);
         expect(listedGuideIds(app), 'the rerun gives what an unstopped run gives').toEqual(cas12a.guides.map((g) => g.id));
-        expect(statusText(app)).toBe(`"Cas12a sweep" searched ${bp(cas12a.report!.scannedLengthBp)} bp.`);
-        expect(doneName).not.toBe('Cas12a sweep');
+        expect(shownText(app)).toBe(`"Cas12a sweep" searched ${bp(cas12a.report!.scannedLengthBp)} bp.`);
+        expect(tabWords(app), 'the replaced result is no longer named').not.toContain(`"${doneName}"`);
       } finally {
         held.release();
       }
@@ -544,6 +558,7 @@ describe('a CRISPR search runs when Run is pressed, by name, and can be stopped 
         expect(top5Button(app).disabled, 'no Annotate Top 5 Guides').toBe(true);
         expect(tabLabel(app), 'no count').toBe('Find CRISPR Sites & Off-Targets (result withdrawn)');
         expect(statusText(app), 'no searched-bp count').not.toMatch(/searched/);
+        expect(shownText(app), 'and no result named as shown').toBe('');
       };
 
       // Another document chosen in the document table, and the CRISPR tab opened on it.
@@ -584,7 +599,7 @@ describe('a CRISPR search runs when Run is pressed, by name, and can be stopped 
       expect(app.activeTab()).toBe('sequence-view');
       await app.menu('primers:crispr');
       expect(listedGuideIds(app), 'the result survives the studio unmounting').toEqual(ids);
-      expect(statusText(app)).toBe(`"${name}" searched ${bp(scan.report!.scannedLengthBp)} bp.`);
+      expect(shownText(app)).toBe(`"${name}" searched ${bp(scan.report!.scannedLengthBp)} bp.`);
       expect(scanCount(), 'no scan_crispr_guides call on the way back').toBe(before);
 
       // The chooser set to Cas12a without Run: the shown SpCas9 rows export labelled SpCas9.
@@ -619,6 +634,58 @@ describe('a CRISPR search runs when Run is pressed, by name, and can be stopped 
       expect(callout(app)).toContain(crisprIntervalSpecificityText(scan.report!));
       const rows = await exportTsv(app);
       expect(rows.map((r) => Object.values(r).join(' ')).join('\n')).toMatch(/interval/i);
+    });
+  });
+
+  it('US-01M7DVJK AC3 a search running on one document is not shown, or offered to Stop, on another', async () => {
+    await withApp(async (app) => {
+      await openStudio(app, [RUN_DOC, OTHER_DOC]);
+      await app.menu('primers:crispr');
+      const held = holdDesktopScans(app);
+      try {
+        await pressRun(app);
+        const name = words(nameField(app).value);
+        const running = `Running "${name}": the engine was asked for ${bp(RUN_DOC.sequence.length)} bp.`;
+        expect(statusText(app)).toBe(running);
+
+        await app.click(documentRow(app, OTHER_DOC.name));
+        await app.menu('primers:crispr');
+        expect(statusText(app), "another document's run is not this tab's").toBe('');
+        expect(tabWords(app)).not.toContain(`"${name}"`);
+        expect(app.all('[data-crispr-stop]'), 'no Stop for a search on another document').toHaveLength(0);
+        expect(tabLabel(app)).toBe('Find CRISPR Sites & Off-Targets (no search run)');
+
+        await app.click(documentRow(app, RUN_DOC.name));
+        await app.menu('primers:crispr');
+        expect(statusText(app), 'back on its own document, it is running still').toBe(running);
+        expect(app.all('[data-crispr-stop]')).toHaveLength(1);
+        expect(tabLabel(app)).toBe('Find CRISPR Sites & Off-Targets (running)');
+        await held.reply(0);
+        expect(shownText(app)).toBe(`"${name}" searched ${bp(RUN_DOC.sequence.length)} bp.`);
+      } finally {
+        held.release();
+      }
+    }, macHost());
+  });
+
+  it('US-01M7DVJK AC6 a result shown again on its own document after a run on another one keeps its name', async () => {
+    await withApp(async (app) => {
+      await openStudio(app, [RUN_DOC, OTHER_DOC]);
+      await app.menu('primers:crispr');
+      await pressRun(app);
+      const scan = await engineScan(RUN_DOC);
+      const named = `"${RUN_DOC.name}, ${SPCAS9}, whole sequence" searched ${bp(scan.report!.scannedLengthBp)} bp.`;
+      expect(shownText(app)).toBe(named);
+
+      await app.click(documentRow(app, OTHER_DOC.name));
+      await app.menu('primers:crispr');
+      await pressRun(app);
+      expect(shownText(app)).toBe(`"${OTHER_DOC.name}, ${SPCAS9}, whole sequence" searched ${bp(OTHER_DOC.sequence.length)} bp.`);
+
+      await app.click(documentRow(app, RUN_DOC.name));
+      await app.menu('primers:crispr');
+      expect(listedGuideIds(app)).toEqual(scan.guides.map((g) => g.id));
+      expect(shownText(app), "named from its own document's search, not the last one run").toBe(named);
     });
   });
 });
