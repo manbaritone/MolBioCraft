@@ -381,12 +381,15 @@ import {
   autosaveWorkbenchWithin,
   QUIT_AUTOSAVE_TIMEOUT_MS,
   readNewestLocalStorageWorkbenchAutosave,
+  mapRotationForSession,
+  restoredMapRotation,
   restoredSiteVisibility,
   serializeMbcFolderZip,
   serializeMbcWorkbench,
   siteVisibilityForSession,
   unmatchedHiddenEnzymes,
   unmatchedHiddenEnzymesNotice,
+  unreadableMapRotationNotice,
   workbenchAutosaveNeedsRecovery,
   writeWorkbenchAutosaveDirtyFlag,
   type WorkbenchAutosaveReadResult,
@@ -4731,6 +4734,7 @@ export const App: React.FC = () => {
       zoomLevel,
       paneSplit,
       siteVisibility: siteVisibilityForSession(siteVisibilityByDoc, documents),
+      mapRotation: mapRotationForSession(mapRotationByDoc, documents),
       textFormat,
       colorScheme,
       darkMode,
@@ -4894,6 +4898,7 @@ export const App: React.FC = () => {
     zoomLevel,
     paneSplit,
     siteVisibilityByDoc,
+    mapRotationByDoc,
     textFormat,
     colorScheme,
     darkMode,
@@ -5014,6 +5019,10 @@ export const App: React.FC = () => {
       restrictionScanRevision(doc.sequence, doc.topology)
     );
     setSiteVisibilityByDoc(restoredVisibility);
+    // Each map's rotation as saved (US-01M7DVNS); a session saved before it opens every map at 0, and a
+    // saved angle that is not a number opens its map at 0 and is named once the restore is announced.
+    const restoredRotation = restoredMapRotation(env.workspace.mapRotation, restoredDocuments);
+    setMapRotationByDoc(restoredRotation.byDoc);
     setTextFormat(env.workspace.textFormat);
     // Checked here as importing a preferences file checks it: a scheme that is not a known nucleotide
     // scheme opens in the default ('standard'), whatever the session parser let through.
@@ -5052,6 +5061,9 @@ export const App: React.FC = () => {
       )
     );
     if (unmatchedNotice) setStatusBanner(unmatchedNotice, { append: true, keep: true });
+    for (const doc of restoredRotation.unreadable) {
+      setStatusBanner(unreadableMapRotationNotice(doc), { append: true, keep: true });
+    }
   };
 
   /**

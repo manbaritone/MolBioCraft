@@ -276,6 +276,9 @@ export const NATIVE_MENU_COMMAND_RULES: Record<string, CommandId | WorkbenchComm
   'sequence:reverse-only': 'strand-transform',
   'sequence:convert-dna-rna': 'convert-dna-rna',
   'view:set-origin': 'set-origin',
+  // US-01M7DVNS: the native View > Zoom items run the in-app View items' handler, under its rule.
+  'view:rotate-map': 'rotate-map',
+  'view:reset-rotation': 'rotate-map',
   'file:save-gb': 'export-active-document',
   'file:save-fasta': 'export-sequence',
   'file:export-embl': 'export-active-document',

@@ -205,6 +205,12 @@ pub struct MbcWorkspaceUiStateRust {
     /// none, and every site is shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_visibility: Option<serde_json::Value>,
+    /// The circular map's rotation per document id (US-01M7DVNS): degrees clockwise from twelve
+    /// o'clock, kept by [`sanitize_map_rotation`]. A value, not a typed map, so one angle that is
+    /// not a number never refuses the workspace: it is kept as null under its id for the app to
+    /// name. A session saved before it has none, and every map opens at 0 degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_rotation: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -377,6 +383,40 @@ pub fn sanitize_site_visibility(value: &serde_json::Value) -> Option<serde_json:
             doc_id.clone(),
             serde_json::json!({ "revision": revision, "hiddenEnzymes": hidden, "occurrences": occurrences }),
         );
+    }
+    (!docs.is_empty()).then_some(Value::Object(docs))
+}
+
+/// An angle in [0, 360), as the app's `normalize` (src/core/mapRotation.ts) has it: `a % 360`, plus
+/// 360 when that is negative, -0 as +0, and 0 where `m + 360` is exactly 360.
+fn normalize_map_rotation(a: f64) -> f64 {
+    let m = a % 360.0;
+    let r = if m < 0.0 { m + 360.0 } else { m + 0.0 };
+    if r == 360.0 { 0.0 } else { r }
+}
+
+/// A saved `workspace.mapRotation` (US-01M7DVNS) kept to the shape the app writes: an object from
+/// document id to an angle. A finite number is normalized into [0, 360); anything else under an id
+/// (a string, bool, null, object or array) is kept as null, so the app can say which document's
+/// rotation could not be read. An id that is empty or over the `siteVisibility` id limit is cut,
+/// and past its document limit the rest are dropped. None for a value that is not an object, or
+/// keeps no entry.
+pub fn sanitize_map_rotation(value: &serde_json::Value) -> Option<serde_json::Value> {
+    use serde_json::{Map, Value};
+    let mut docs = Map::new();
+    for (doc_id, angle) in value.as_object()? {
+        if docs.len() >= SITE_VISIBILITY_MAX_DOCS {
+            break;
+        }
+        if doc_id.is_empty() || doc_id.chars().count() > SITE_VISIBILITY_MAX_ID_CHARS {
+            continue;
+        }
+        let kept = angle
+            .as_f64()
+            .filter(|a| a.is_finite())
+            .and_then(|a| serde_json::Number::from_f64(normalize_map_rotation(a)))
+            .map_or(Value::Null, Value::Number);
+        docs.insert(doc_id.clone(), kept);
     }
     (!docs.is_empty()).then_some(Value::Object(docs))
 }
@@ -652,6 +692,7 @@ pub fn parse_mbc_workbench_rust(
         project_explorer: ws_obj.and_then(|w| w.get("projectExplorer")).filter(|v| v.is_object()).cloned(),
         pane_split: ws_obj.and_then(|w| w.get("paneSplit")).filter(|v| v.is_object()).cloned(),
         site_visibility: ws_obj.and_then(|w| w.get("siteVisibility")).and_then(sanitize_site_visibility),
+        map_rotation: ws_obj.and_then(|w| w.get("mapRotation")).and_then(sanitize_map_rotation),
         active_doc_id: resolved_active_id,
         selected_folder: ws_obj
             .and_then(|w| w.get("selectedFolder"))
@@ -1237,6 +1278,7 @@ mod tests {
                         "occurrences": {"EcoRI@396+#c2686.abc": {"enzyme": "EcoRI", "shown": false}}
                     }
                 })),
+                map_rotation: None,
             },
         };
 
@@ -1415,5 +1457,97 @@ mod tests {
         assert!(!big.contains_key(&"d".repeat(SITE_VISIBILITY_MAX_ID_CHARS + 1)));
         assert_eq!(big["doc-00000"]["hiddenEnzymes"].as_array().unwrap().len(), SITE_VISIBILITY_MAX_ENZYMES);
         assert_eq!(big["doc-00000"]["occurrences"].as_object().unwrap().len(), SITE_VISIBILITY_MAX_OCCURRENCES);
+    }
+
+    /// US-01M7DVNS AC2: `workspace.mapRotation` survives serialize then parse unchanged, is cut at
+    /// the id and document limits `siteVisibility` uses, keeps a non-number angle as null under its
+    /// id, and normalizes a finite angle into [0, 360). The struct literal below names
+    /// `map_rotation`, and the round-trip assertion reads the parse resolver's value for it.
+    #[test]
+    fn us_01m7dvns_ac2_map_rotation_round_trips_and_is_kept_to_its_shape() {
+        use serde_json::json;
+        let at = "2026-10-31T08:00:00.000Z";
+        let doc = build_ncbi_reference_preset_document("spike", at);
+        let rotation = json!({ doc.id.clone(): 90.0, "doc-b": 12.5 });
+        let snap = MbcWorkbenchSnapshotInput {
+            session_name: "Rot.mbc".to_string(),
+            documents: vec![doc.clone()],
+            workspace: MbcWorkspaceUiStateRust {
+                project_explorer: None,
+                active_doc_id: doc.id.clone(),
+                selected_folder: "Sample Documents".to_string(),
+                nav_history: vec![doc.id.clone()],
+                nav_index: 0,
+                viewer_tab: "sequence-view".to_string(),
+                map_layout_mode: "circular".to_string(),
+                zoom_level: 100.0,
+                text_format: "genbank".to_string(),
+                color_scheme: "standard".to_string(),
+                dark_mode: false,
+                sidebar_open: true,
+                doc_table_collapsed: false,
+                selected_range: None,
+                display_settings: MbcDisplaySettingsRust::default(),
+                pane_split: None,
+                site_visibility: None,
+                map_rotation: Some(rotation.clone()),
+            },
+        };
+        let text = serialize_mbc_workbench_rust(&snap, "1.0.0", at);
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(saved["workspace"]["mapRotation"], rotation, "the field is written as mapRotation");
+        let reparsed = |v: &serde_json::Value| parse_mbc_workbench_bytes_rust(v.to_string().as_bytes(), "Fallback", at).unwrap();
+        let parsed = parse_mbc_workbench_bytes_rust(text.as_bytes(), "Fallback", at).unwrap();
+        assert_eq!(parsed.envelope.workspace.map_rotation, Some(rotation.clone()), "mapRotation round-trips unchanged");
+
+        // A session saved before the field has none.
+        let mut old = saved.clone();
+        old["workspace"].as_object_mut().unwrap().remove("mapRotation");
+        assert_eq!(reparsed(&old).envelope.workspace.map_rotation, None);
+        // A value that is not an object is dropped.
+        for not_object in [json!(90), json!("90"), json!([90]), serde_json::Value::Null] {
+            old["workspace"]["mapRotation"] = not_object.clone();
+            assert_eq!(reparsed(&old).envelope.workspace.map_rotation, None, "{not_object} is dropped");
+        }
+        // One string angle never refuses the workspace: the rest of it is read, and each
+        // non-number angle is kept as null under its id so the app can name the document.
+        old["workspace"]["mapRotation"] = json!({
+            "a": "90", "b": true, "c": null, "d": {"deg": 90}, "e": [90],
+            "f": -90, "g": 450.5, "h": 360, "i": -0.0, "j": -1e-20, "k": 359.9
+        });
+        let odd = reparsed(&old);
+        assert_eq!(odd.envelope.workspace.active_doc_id, doc.id, "the workspace is still read");
+        assert_eq!(odd.envelope.workspace.viewer_tab, "sequence-view");
+        let kept = odd.envelope.workspace.map_rotation.unwrap();
+        for id in ["a", "b", "c", "d", "e"] {
+            assert!(kept.get(id).is_some_and(serde_json::Value::is_null), "{id} is kept as null: {kept}");
+        }
+        let angle = |id: &str| kept[id].as_f64().unwrap_or_else(|| panic!("{id} is a number: {kept}"));
+        assert_eq!(angle("f"), 270.0);
+        assert_eq!(angle("g"), 90.5);
+        assert_eq!(angle("h"), 0.0);
+        assert!(angle("i") == 0.0 && angle("i").is_sign_positive(), "-0 becomes +0");
+        assert_eq!(angle("j"), 0.0, "a negative angle 360 cannot hold apart is 0");
+        assert_eq!(angle("k"), 359.9);
+
+        // Past the limits: an over-long id is cut, and past 4,096 documents the rest are dropped.
+        let mut docs = serde_json::Map::new();
+        for i in 0..(SITE_VISIBILITY_MAX_DOCS + 10) {
+            docs.insert(format!("doc-{i:05}"), json!(45));
+        }
+        docs.insert("d".repeat(SITE_VISIBILITY_MAX_ID_CHARS + 1), json!(45));
+        docs.insert("d".repeat(SITE_VISIBILITY_MAX_ID_CHARS), json!(45));
+        old["workspace"]["mapRotation"] = serde_json::Value::Object(docs.clone());
+        let big = reparsed(&old).envelope.workspace.map_rotation.unwrap();
+        let big = big.as_object().unwrap();
+        assert_eq!(big.len(), SITE_VISIBILITY_MAX_DOCS);
+        assert!(!big.contains_key(&"d".repeat(SITE_VISIBILITY_MAX_ID_CHARS + 1)));
+        assert!(!big.contains_key(""), "an empty id is never kept");
+        let mut empty = serde_json::Map::new();
+        empty.insert(String::new(), json!(45));
+        empty.insert("d".repeat(SITE_VISIBILITY_MAX_ID_CHARS), json!(45));
+        let short = sanitize_map_rotation(&serde_json::Value::Object(empty)).unwrap();
+        assert_eq!(short, json!({ "d".repeat(SITE_VISIBILITY_MAX_ID_CHARS): 45.0 }), "a 256-char id is kept, an empty one cut");
+        assert_eq!(sanitize_map_rotation(&json!({})), None, "an object with no entry keeps none");
     }
 }

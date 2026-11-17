@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCommandDocumentContext,
   buildNativeMenuState,
+  commandAvailability,
   NATIVE_MENU_COMMAND_RULES,
   NATIVE_MENU_SESSION_INDEPENDENT_IDS,
   NATIVE_MENU_SESSION_INDEPENDENT_PREFIXES,
@@ -149,5 +150,67 @@ describe('native menu ↔ dispatcher contract', () => {
     expect(resolveNativeMenuItemEnabled('file:save-gb', proteinSession)).toBe(true);
     // Text-field undo must keep working, so Undo is never greyed out.
     expect(resolveNativeMenuItemEnabled('edit:undo', proteinSession)).toBe(true);
+  });
+
+  it('US-01M7DVNS AC4 lists Rotate Circular Map… and Reset Rotation in View > Zoom after Set Origin, under the in-app items\' rule and handler', () => {
+    const zoom = mainRs.slice(mainRs.indexOf('let view_zoom_sub'), mainRs.indexOf('let view_menu'));
+    expect(zoom).toContain('"Zoom"');
+    expect([...zoom.matchAll(/item\(\s*"([^"]+)",\s*"([^"]+)"/g)].map((m) => [m[1], m[2]])).toEqual([
+      ['view:zoom-in', 'Zoom In'],
+      ['view:zoom-out', 'Zoom Out'],
+      ['view:zoom-reset', 'Actual Size (100%)'],
+      ['view:set-origin', 'Set Origin'],
+      ['view:rotate-map', 'Rotate Circular Map\u2026'],
+      ['view:reset-rotation', 'Reset Rotation'],
+    ]);
+    // view:reset-rotation is the only native id for Reset Rotation, and the only one for rotation reset.
+    expect([...mainRs.matchAll(/item\(\s*"([^"]+)",\s*"Reset Rotation"/g)].map((m) => m[1])).toEqual(['view:reset-rotation']);
+    expect([...nativeIds].filter((id) => /rotat/.test(id)).sort()).toEqual(['view:reset-rotation', 'view:rotate-map']);
+    expect(NATIVE_MENU_COMMAND_RULES['view:rotate-map']).toBe('rotate-map');
+    expect(NATIVE_MENU_COMMAND_RULES['view:reset-rotation']).toBe('rotate-map');
+    expect(dispatcher.get('view:rotate-map'), 'the dispatcher gates it on a session').toBe(true);
+    expect(dispatcher.get('view:reset-rotation')).toBe(true);
+
+    // Each dispatcher case runs the handler the matching in-app View item runs.
+    const caseBody = (id: string) => {
+      const at = appTsx.indexOf(`case '${id}':`, appTsx.indexOf('    onMenuAction: (actionId: string) => {'));
+      return appTsx.slice(at, appTsx.indexOf('break;', at));
+    };
+    const itemSelect = (id: string) => {
+      const at = appTsx.indexOf(`id: '${id}',`);
+      expect(at, `the in-app item ${id}`).toBeGreaterThan(0);
+      return /onSelect: \(\) => (.+),\n/.exec(appTsx.slice(at, appTsx.indexOf('},', at)))?.[1] ?? '';
+    };
+    for (const [native, inApp, call] of [
+      ['view:rotate-map', 'view-rotate-map', "handleRotateMapCommand('open')"],
+      ['view:reset-rotation', 'view-reset-rotation', "handleRotateMapCommand('reset')"],
+    ]) {
+      expect(itemSelect(inApp), inApp).toBe(`requireActiveSession(() => ${call})`);
+      expect(caseBody(native).trim(), native).toBe(`case '${native}':\n          requireActiveSession(() => ${call});`);
+    }
+
+    // So the native items are enabled exactly where the in-app items are.
+    const circular = buildCommandDocumentContext({ id: 'c', moleculeType: 'DNA', topology: 'circular', sequence: 'ATGC'.repeat(50) });
+    const linear = buildCommandDocumentContext({ id: 'l', moleculeType: 'DNA', topology: 'linear', sequence: 'ATGC'.repeat(50) });
+    const protein = buildCommandDocumentContext({ id: 'p', moleculeType: 'Protein', topology: 'linear', sequence: 'MKT' });
+    const base = { sessionActive: true, selection: null, undoDepth: 0, redoDepth: 0 };
+    const contexts = [
+      { ...base, sessionActive: false, activeDoc: null },
+      { ...base, activeDoc: circular, mapLayout: 'split' as const },
+      { ...base, activeDoc: circular, mapLayout: 'circular' as const },
+      { ...base, activeDoc: circular, mapLayout: 'linear' as const },
+      { ...base, activeDoc: circular, mapLayout: 'split' as const, circleCollapsed: true },
+      { ...base, activeDoc: linear, mapLayout: 'split' as const },
+      { ...base, activeDoc: protein, mapLayout: 'split' as const },
+    ];
+    const seen = new Set<boolean>();
+    for (const ctx of contexts) {
+      const want = commandAvailability('rotate-map', ctx).enabled;
+      seen.add(want);
+      const state = buildNativeMenuState(ctx);
+      expect(resolveNativeMenuItemEnabled('view:rotate-map', state), JSON.stringify(ctx)).toBe(want);
+      expect(resolveNativeMenuItemEnabled('view:reset-rotation', state), JSON.stringify(ctx)).toBe(want);
+    }
+    expect([...seen].sort(), 'the contexts reach both states').toEqual([false, true]);
   });
 });

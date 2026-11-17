@@ -9,6 +9,7 @@ import {
 } from '../lib/rustBioEngine';
 import type { ProjectExplorerState } from './projectExplorer';
 import type { SiteVisibility } from './restrictionDisplay';
+import { normalize as normalizeRotation } from './mapRotation';
 import { NucleotideColorScheme, SequenceDocument } from '../types/bio';
 
 export const MBC_FORMAT_MAGIC = 'MBC_WORKBENCH_V1' as const;
@@ -80,6 +81,61 @@ export interface MbcWorkspaceUiState {
    * sessions saved before it, and when no document has a choice.
    */
   siteVisibility?: Record<string, SiteVisibility>;
+  /**
+   * The circular map's rotation by document id, degrees clockwise from twelve o'clock (US-01M7DVNS);
+   * absent in sessions saved before it, and when no map is turned. The parser keeps an angle that is
+   * not a number as null under its id, so the App can name the map it opens at 0 degrees.
+   */
+  mapRotation?: Record<string, number | null>;
+}
+
+/**
+ * The rotation a session saves (US-01M7DVNS): the angle of each of the session's documents whose map
+ * is turned, and none for a map at 0 degrees; undefined when no map is turned.
+ */
+export function mapRotationForSession(
+  byDoc: Readonly<Record<string, number>>,
+  documents: readonly SequenceDocument[]
+): Record<string, number> | undefined {
+  const saved: Record<string, number> = {};
+  for (const doc of documents) {
+    const angle = byDoc[doc.id];
+    if (typeof angle === 'number' && Number.isFinite(angle) && normalizeRotation(angle) !== 0) saved[doc.id] = normalizeRotation(angle);
+  }
+  return Object.keys(saved).length ? saved : undefined;
+}
+
+/**
+ * The rotation a restored session opens with (US-01M7DVNS), from the parser's `workspace.mapRotation`
+ * (`raw`): each restored document's angle, normalized into [0, 360), and none for 0. A document whose
+ * saved angle is not a finite number (the parser's null) opens at 0 and is listed in `unreadable`, so
+ * the App can say so; an entry for a document not in the session is dropped. Anything that is not an
+ * object gives none, and a session saved before the field lists nothing unreadable.
+ */
+export function restoredMapRotation(
+  raw: unknown,
+  documents: readonly SequenceDocument[]
+): { byDoc: Record<string, number>; unreadable: SequenceDocument[] } {
+  const byDoc: Record<string, number> = {};
+  const unreadable: SequenceDocument[] = [];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { byDoc, unreadable };
+  const entries = raw as Record<string, unknown>;
+  for (const doc of documents) {
+    if (!Object.prototype.hasOwnProperty.call(entries, doc.id)) continue;
+    const angle = entries[doc.id];
+    if (typeof angle !== 'number' || !Number.isFinite(angle)) {
+      unreadable.push(doc);
+      continue;
+    }
+    const at = normalizeRotation(angle);
+    if (at !== 0) byDoc[doc.id] = at;
+  }
+  return { byDoc, unreadable };
+}
+
+/** The notice for a document whose saved rotation could not be read (US-01M7DVNS AC1). */
+export function unreadableMapRotationNotice(doc: Pick<SequenceDocument, 'name'>): string {
+  return `The saved rotation for ${doc.name} could not be read; it opens at 0 degrees.`;
 }
 
 /**

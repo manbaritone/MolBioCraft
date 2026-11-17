@@ -26,7 +26,7 @@ import { apply, normalize, parseRotationEntry } from '../core/mapRotation';
 import { buildDocumentRevisionKey } from '../lib/rustBioEngine';
 import type { ORFRecord, PrimerRecord, RestrictionCutSite, SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness, type SessionSpec } from './appHarness';
-import { LiveDocument, LiveElement, parseMarkup } from './liveDom';
+import { LiveDocument, LiveElement, memoryStorage, parseMarkup } from './liveDom';
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -609,5 +609,189 @@ describe('US-01M7DVG4 AC5: the mounted App greys Rotate Circular Map… and Rese
       await app.click(app.one('button.map-seq-restore.restore-circular'));
       expect(await viewItemDisabled(app, ROTATE), 'restored, the circle can be turned').toBe(false);
     });
+  });
+});
+
+// ─── US-01M7DVNS: the rotation is kept with the session, drawn in exported figures ───
+
+const AUTOSAVE_KEY = 'molbiocraft.workbench.autosave.v1';
+const statusText = (app: AppHarness) => words(app.all('.statusbar-toast-text').map((t) => t.textContent).join(' '));
+const unreadableNotice = (name: string) => `The saved rotation for ${name} could not be read; it opens at 0 degrees.`;
+/** Lets the App's 500 ms autosave timer run out (the harness's timers are fake), then the write it starts. */
+async function autosaveRunsOut(app: AppHarness) {
+  await React.act(async () => { vi.advanceTimersByTime(600); });
+  await app.settle();
+}
+/** The mapRotation a session text holds once it is read back through parseMbcWorkbench (the WASM codec). */
+async function reopenedRotation(text: string): Promise<unknown> {
+  const { parseMbcWorkbench } = await import('../core/mbcSessionFormat');
+  return parseMbcWorkbench(text, 'Reopened').envelope.workspace.mapRotation;
+}
+/** The rotation the App's own session save writes. */
+async function savedRotation(app: AppHarness): Promise<unknown> {
+  const before = app.downloads().length;
+  await app.menu('file:export-mbc-json');
+  await app.settle();
+  const files = app.downloads().slice(before).filter((f) => f.filename.endsWith('.mbc'));
+  expect(files).toHaveLength(1);
+  return reopenedRotation(await files[0].text());
+}
+/** The root <svg> of an exported file's markup. */
+function svgOfFile(markup: string): LiveElement {
+  const at = markup.indexOf('<svg');
+  expect(at, 'the file holds an <svg>').toBeGreaterThanOrEqual(0);
+  const root = parseMarkup(markup.slice(at), new LiveDocument()).find((n): n is LiveElement => n instanceof LiveElement);
+  if (!root) throw new Error('the file holds no element');
+  return root;
+}
+/** Where each origin wedge and feature arc is drawn: its data-draw-angle and its start point. */
+function drawnParts(root: LiveElement) {
+  const parts = [...part(root, 'origin-wedge'), ...part(root, 'feature-arc')];
+  return parts.map((el) => ({ part: el.getAttribute('data-map-part'), angle: el.getAttribute('data-draw-angle'), start: startPoint(el) }));
+}
+
+describe('US-01M7DVNS AC1: workspace.mapRotation is saved with the session and restored on reopen', () => {
+  it('US-01M7DVNS AC1 session text reopened through parseMbcWorkbench (the WASM) keeps each angle, a non-number as null, and a session saved before the field has none', async () => {
+    const { serializeMbcWorkbench } = await import('../core/mbcSessionFormat');
+    const workspace = {
+      activeDocId: PA.id, selectedFolder: 'All Project Files', navHistory: [PA.id], navIndex: 0,
+      viewerTab: 'sequence-view' as const, mapLayoutMode: 'split' as const, zoomLevel: 100, textFormat: 'genbank' as const,
+      colorScheme: 'standard' as const, darkMode: false, sidebarOpen: true, docTableCollapsed: false, selectedRange: null,
+      displaySettings: {
+        showOrfs: true, minOrfAa: 50, allowAltStartCodons: false, showPrimers: true, showTranslation: true,
+        showGcGraph: false, showHydropathyGraph: false, showUniqueCuttersOnly: true,
+      },
+    };
+    const text = serializeMbcWorkbench({ sessionName: 'Rot', documents: [PA, PB], workspace: { ...workspace, mapRotation: { [PA.id]: 120, [PB.id]: 45.5 } } });
+    expect(await reopenedRotation(text), 'each angle comes back as saved').toEqual({ [PA.id]: 120, [PB.id]: 45.5 });
+    const json = JSON.parse(text) as { workspace: Record<string, unknown> };
+    json.workspace.mapRotation = { [PA.id]: '120', [PB.id]: 45.5 };
+    expect(await reopenedRotation(JSON.stringify(json)), 'a string angle is kept as null under its id; the rest is read').toEqual({ [PA.id]: null, [PB.id]: 45.5 });
+    json.workspace.mapRotation = { [PA.id]: null, [PB.id]: true };
+    expect(await reopenedRotation(JSON.stringify(json))).toEqual({ [PA.id]: null, [PB.id]: null });
+    delete json.workspace.mapRotation;
+    expect(await reopenedRotation(JSON.stringify(json)), 'a session saved before the field has none').toBeUndefined();
+  });
+
+  it('US-01M7DVNS AC1 the App reopens each map at its saved angle, names a non-number angle once in the status bar, and opens a session saved before the field at 0', async () => {
+    await withSession(
+      { documents: [PA, PB], activeDocId: PA.id, viewerTab: 'sequence-view', sessionName: 'Rot_Saved', workspace: { mapRotation: { [PA.id]: 120, [PB.id]: 'abc' as unknown as number } } },
+      async (app) => {
+        expect(wedgeAngle(app), 'pRotA opens with its origin wedge at the saved 120 degrees').toBe('120');
+        const said = statusText(app);
+        expect(said, 'the restore sentence is kept').toContain('Restored workbench "Rot_Saved.mbc"');
+        expect(said, 'the unreadable angle is named, appended').toContain(unreadableNotice(PB.name));
+        expect(said.split(unreadableNotice(PB.name)), 'named once').toHaveLength(2);
+        expect(said, 'pRotA was read').not.toContain(unreadableNotice(PA.name));
+        expect(said.indexOf('Restored workbench'), 'appended after the restore sentence').toBeLessThan(said.indexOf(unreadableNotice(PB.name)));
+        await app.click(row(app, PB.name));
+        expect(wedgeAngle(app), 'pRotB opens at 0').toBe('0');
+        await app.click(row(app, PA.name));
+        expect(await savedRotation(app), 'saving keeps pRotA\'s angle and writes none for pRotB at 0').toEqual({ [PA.id]: 120 });
+
+        // A session saved before the field, reopened over a turned map, opens it at 0.
+        await app.restoreSession({ documents: [PA], activeDocId: PA.id, viewerTab: 'sequence-view', sessionName: 'Rot_Old' });
+        expect(wedgeAngle(app), 'a session with no mapRotation opens at 0').toBe('0');
+        expect(statusText(app)).not.toContain('could not be read');
+        expect(await savedRotation(app)).toBeUndefined();
+      }
+    );
+  });
+
+  it('US-01M7DVNS AC1 changing only the rotation autosaves it, and restoring that autosave brings it back', async () => {
+    const storage = memoryStorage();
+    const first = await mountApp({ storage });
+    try {
+      await first.restoreSession({ documents: [PA], activeDocId: PA.id, viewerTab: 'sequence-view' });
+      await autosaveRunsOut(first);
+      const before = storage.getItem(AUTOSAVE_KEY);
+      expect(before, 'the restored session is autosaved').not.toBeNull();
+      expect(await reopenedRotation(before!), 'unrotated, the autosave holds no rotation').toBeUndefined();
+      // The rotation alone changes: the open control, then the angle (the control opening changes nothing saved).
+      await viewItem(first, ROTATE);
+      await autosaveRunsOut(first);
+      expect(storage.getItem(AUTOSAVE_KEY), 'opening the control is no change to save').toBe(before);
+      await first.change(degreeField(first), '120');
+      expect(wedgeAngle(first)).toBe('120');
+      await autosaveRunsOut(first);
+      const after = storage.getItem(AUTOSAVE_KEY);
+      expect(after, 'the rotation alone is autosaved').not.toBe(before);
+      expect(await reopenedRotation(after!), 'the autosave holds the new angle').toEqual({ [PA.id]: 120 });
+    } finally {
+      first.unmount();
+    }
+    const second = await mountApp({ storage });
+    try {
+      await second.menu('file:restore-autosave');
+      await second.settle();
+      expect(statusText(second)).toContain('Restored workbench');
+      expect(wedgeAngle(second), 'restoring the autosave brings the angle back').toBe('120');
+    } finally {
+      second.unmount();
+    }
+  });
+});
+
+describe('US-01M7DVNS AC3: the exported figures draw the map at its rotation', () => {
+  it('US-01M7DVNS AC3 the HUD SVG file and the FigureExportButton SVG draw the origin wedge and feature arcs where the rotated map on screen does', async () => {
+    await withSession({ documents: [PA], activeDocId: PA.id, viewerTab: 'sequence-view' }, async (app) => {
+      await rotateTo(app, '90');
+      await app.click(button(control(app)!, 'Close'));
+      const onScreen = drawnParts(svg(app));
+      expect(onScreen.map((p) => p.part)).toEqual(['origin-wedge', 'feature-arc', 'feature-arc']);
+      expect(onScreen[0].angle, 'the wedge is drawn at the rotation').toBe('90');
+      const unrotated = drawnParts(renderMap(0));
+      expect(unrotated[0].angle).toBe('0');
+
+      const hud = app.all('.circular-hud-actions');
+      expect(hud, 'one circular map HUD').toHaveLength(1);
+      const svgButton = hud[0].querySelectorAll('button').filter((b) => b.getAttribute('title') === 'Export circular map as vector SVG');
+      expect(svgButton).toHaveLength(1);
+      let before = app.downloads().length;
+      await app.click(svgButton[0]);
+      await app.settle();
+      const hudFiles = app.downloads().slice(before).filter((f) => f.filename.endsWith('.svg'));
+      expect(hudFiles, 'the HUD button saves one .svg').toHaveLength(1);
+      expect(drawnParts(svgOfFile(await hudFiles[0].text())), 'the HUD SVG file is drawn as the screen is').toEqual(onScreen);
+
+      await app.click(hud[0].querySelectorAll('.mbc-figure-export-trigger')[0]);
+      const svgItem = app.all('.circular-hud-actions .mbc-figure-export-item').filter((b) => words(b.textContent).startsWith('SVG'));
+      expect(svgItem, 'the figure menu offers SVG').toHaveLength(1);
+      before = app.downloads().length;
+      await app.click(svgItem[0]);
+      await app.settle();
+      const figureFiles = app.downloads().slice(before).filter((f) => f.filename.endsWith('.svg'));
+      expect(figureFiles, 'the figure export saves one .svg').toHaveLength(1);
+      expect(drawnParts(svgOfFile(await figureFiles[0].text())), 'the FigureExportButton SVG is drawn as the screen is').toEqual(onScreen);
+    });
+  });
+});
+
+describe('US-01M7DVNS AC5: Set Origin on a rotated map', () => {
+  it('US-01M7DVNS AC5 changes the sequence exactly as on an unrotated map and keeps the rotation angle', async () => {
+    const at = { start: 1201, end: 1201 };
+    const originEdit = async (rotation: number | undefined) => {
+      let result: { sequence: string; features: unknown; wedge: string | null; saved: unknown } | null = null;
+      await withSession(
+        { documents: [PA], activeDocId: PA.id, viewerTab: 'sequence-view', workspace: { selectedRange: at, ...(rotation === undefined ? {} : { mapRotation: { [PA.id]: rotation } }) } },
+        async (app) => {
+          expect(wedgeAngle(app)).toBe(String(rotation ?? 0));
+          await app.menu('view:set-origin');
+          await app.settle();
+          expect(statusText(app)).toContain('to base 1201');
+          const { documents } = await saved(app);
+          result = { sequence: documents[0].sequence, features: documents[0].features, wedge: wedgeAngle(app), saved: await savedRotation(app) };
+        }
+      );
+      return result!;
+    };
+    const plain = await originEdit(undefined);
+    expect(plain.sequence, 'Set Origin moved base 1201 to base 1').toBe(PA.sequence.slice(1200) + PA.sequence.slice(0, 1200));
+    expect(plain.saved).toBeUndefined();
+    const turned = await originEdit(90);
+    expect(turned.sequence, 'the same sequence edit as on the unrotated map').toBe(plain.sequence);
+    expect(turned.features, 'the same features').toEqual(plain.features);
+    expect(turned.wedge, 'the rotation angle is kept on screen').toBe('90');
+    expect(turned.saved, 'and in the session').toEqual({ [PA.id]: 90 });
   });
 });

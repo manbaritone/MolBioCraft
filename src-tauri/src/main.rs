@@ -568,6 +568,8 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 "Set Origin",
                 Some("CmdOrCtrl+Shift+0"),
             )?,
+            &item("view:rotate-map", "Rotate Circular Map…", None)?,
+            &item("view:reset-rotation", "Reset Rotation", None)?,
         ],
     )?;
 

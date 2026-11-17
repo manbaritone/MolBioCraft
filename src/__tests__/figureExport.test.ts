@@ -436,3 +436,105 @@ describe('exporting a figure', () => {
     });
   });
 });
+
+describe('US-01M7DVNS AC3: the PNG and PDF of a rotated circular map rasterize its rotated SVG', () => {
+  it('US-01M7DVNS AC3 the FigureExportButton PNG and PDF paint the same rotated markup as its SVG file, drawn where the screen draws the map', async () => {
+    const React = await import('react');
+    const { mountApp } = await import('./appHarness');
+    const { LiveDocument, LiveElement, parseMarkup } = await import('./liveDom');
+    const seq = 'ATGC'.repeat(750);
+    const doc = {
+      id: 'rot-x', name: 'pRotX', accession: 'ROT-X', sequence: seq, topology: 'circular' as const, moleculeType: 'DNA' as const,
+      organism: '', description: '', primers: [], history: [], updatedAt: '2026-11-17T00:00:00.000Z',
+      features: [
+        { id: 'f1', name: 'bla', type: 'CDS', start: 1001, end: 1600, strand: 1 as const, color: '#e57373' },
+        { id: 'f2', name: 'rop', type: 'gene', start: 2001, end: 2400, strand: -1 as const, color: '#64b5f6' },
+      ],
+    };
+    const app = await mountApp();
+    const realCreate = URL.createObjectURL;
+    const realImage = (globalThis as { Image?: unknown }).Image;
+    const blobs = new Map<string, Blob>();
+    const painted: string[] = [];
+    try {
+      await app.restoreSession({ documents: [doc as never], activeDocId: doc.id, viewerTab: 'sequence-view', workspace: { mapRotation: { [doc.id]: 90 } } });
+      const drawn = (root: InstanceType<typeof LiveElement>) =>
+        [...root.querySelectorAll('[data-map-part="origin-wedge"]'), ...root.querySelectorAll('[data-map-part="feature-arc"]')].map((el) => [
+          el.getAttribute('data-map-part'), el.getAttribute('data-draw-angle'), el.getAttribute('d') ?? el.getAttribute('x1'),
+        ]);
+      const onScreen = drawn(app.one('svg.plasmid-svg'));
+      expect(onScreen.map((p) => p[0])).toEqual(['origin-wedge', 'feature-arc', 'feature-arc']);
+      expect(onScreen[0][1], 'the restored map is turned to 90 degrees').toBe('90');
+      const fileOf = (markup: string) => {
+        const root = parseMarkup(markup.slice(markup.indexOf('<svg')), new LiveDocument()).find((n) => n instanceof LiveElement);
+        if (!root) throw new Error('no <svg> in the markup');
+        return root as InstanceType<typeof LiveElement>;
+      };
+
+      // The rasterizer's inputs, read where it takes them: the markup blob the Image loads, painted on a canvas.
+      URL.createObjectURL = (obj: Blob | MediaSource) => {
+        const url = realCreate(obj as Blob);
+        blobs.set(url, obj as Blob);
+        return url;
+      };
+      (globalThis as { Image?: unknown }).Image = class {
+        decoding = '';
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        markup = '';
+        set src(url: string) {
+          const blob = blobs.get(url);
+          if (!blob) { queueMicrotask(() => this.onerror?.()); return; }
+          void blob.text().then((t) => { this.markup = t; this.onload?.(); });
+        }
+      };
+      const liveCreate = app.doc.createElement.bind(app.doc);
+      vi.spyOn(app.doc, 'createElement').mockImplementation(((tag: string) => {
+        if (tag !== 'canvas') return liveCreate(tag);
+        const canvas = { width: 0, height: 0, markup: '' };
+        return Object.assign(canvas, {
+          getContext: () => ({
+            fillStyle: '',
+            fillRect() {},
+            drawImage(image: { markup: string }) { canvas.markup = image.markup; painted.push(image.markup); },
+            getImageData: (_x: number, _y: number, w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4).fill(255) }),
+          }),
+          toBlob: (cb: (b: Blob) => void, type: string) => cb(new Blob([`${type} ${canvas.width}x${canvas.height}`], { type })),
+        });
+      }) as never);
+
+      const exportAs = async (ext: string) => {
+        const trigger = app.all('.circular-hud-actions .mbc-figure-export-trigger');
+        expect(trigger, 'the circular map has one figure export').toHaveLength(1);
+        await app.click(trigger[0]);
+        const item = app.all('.circular-hud-actions .mbc-figure-export-item').filter((b) => b.textContent.trim().startsWith(ext));
+        expect(item, `the figure menu offers ${ext}`).toHaveLength(1);
+        const before = app.downloads().length;
+        await app.click(item[0]);
+        // The PDF encoder deflates the painted pixels before the file is saved: wait for the file, up to a bound.
+        const until = performance.now() + 20_000;
+        while (app.downloads().length === before && performance.now() < until) {
+          await React.act(async () => { await new Promise((r) => setImmediate(r)); });
+        }
+        await app.settle();
+        const files = app.downloads().slice(before).filter((f) => f.filename.toLowerCase().endsWith(`.${ext.toLowerCase()}`));
+        expect(files, `one .${ext.toLowerCase()} saved: ${app.all(".mbc-figure-export-note, .statusbar-toast-text").map((n) => n.textContent).join(" / ")}`).toHaveLength(1);
+        return files[0];
+      };
+      const svgFile = await (await exportAs('SVG')).text();
+      expect(drawn(fileOf(svgFile)), 'the SVG file is drawn as the screen is').toEqual(onScreen);
+      expect(painted, 'an SVG is not rasterized').toEqual([]);
+      await exportAs('PNG');
+      await exportAs('PDF');
+      expect(painted, 'the PNG and the PDF each paint one drawing').toHaveLength(2);
+      for (const [i, markup] of painted.entries()) {
+        expect(drawn(fileOf(markup)), `${['PNG', 'PDF'][i]}: the painted markup is the rotated map`).toEqual(onScreen);
+        expect(markup, `${['PNG', 'PDF'][i]}: the same markup as the SVG file`).toBe(svgFile);
+      }
+    } finally {
+      URL.createObjectURL = realCreate;
+      (globalThis as { Image?: unknown }).Image = realImage;
+      app.unmount();
+    }
+  });
+});
