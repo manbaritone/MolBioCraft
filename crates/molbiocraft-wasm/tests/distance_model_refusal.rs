@@ -155,3 +155,21 @@ fn the_maximum_likelihood_tree_still_fits_hky_and_gtr() {
         assert!(v["model"].as_str().unwrap().starts_with(&model[..3]), "{model}: fitted as {}", v["model"]);
     }
 }
+
+/// BG-01M7MW0Z: through the RPC the UI calls, a protein request worded 'p-distance (Uncorrected
+/// Proportion)' computes and names the p-distance and carries no note claiming the Poisson
+/// correction was computed.
+#[test]
+fn a_worded_p_distance_on_proteins_gets_no_note() {
+    let worded = "p-distance (Uncorrected Proportion)";
+    let plain = dispatch_bio_rpc("compute_evolutionary_distances", payload(&PROTEIN, "p-distance")).expect("p-distance");
+    let v = dispatch_bio_rpc("compute_evolutionary_distances", payload(&PROTEIN, worded)).expect("worded p-distance");
+    assert_eq!(v["model"], json!("p-distance"), "distances model: {v}");
+    assert!(v.get("modelNote").is_none(), "distances must carry no modelNote: {v}");
+    assert_eq!(matrix(&v), matrix(&plain), "the worded request computes the p-distance matrix");
+    let mut p = payload(&PROTEIN, worded);
+    p["groups"] = json!(["x", "x", "y", "y"]);
+    let d = dispatch_bio_rpc("compute_population_diversity", p).expect("worded p-distance diversity");
+    assert_eq!(d["model"], json!("p-distance"), "diversity model: {d}");
+    assert!(d.get("modelNote").is_none(), "diversity must carry no modelNote: {d}");
+}

@@ -793,10 +793,13 @@ pub struct BetweenGroupMeanRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistanceAnalysisReport {
-    /// The distance computed: the requested model on nucleotides, [`protein_distance_name`] on proteins.
+    /// The distance computed: the requested model on nucleotides, [`protein_distance_name`] on proteins;
+    /// the requested name verbatim when [`check_distance_model`] refuses it (no distance was computed).
     pub model: String,
-    /// Set only on a protein alignment whose requested model is neither the p-distance nor the
-    /// Poisson correction: says the requested model does not apply and the Poisson correction was computed.
+    /// The refusal text of [`check_distance_model`] when it refuses the requested model, on any
+    /// alignment. Otherwise set only on a protein alignment where [`protein_distance_name`] gives the
+    /// Poisson correction for a request not named 'Poisson correction' (ignoring ASCII case): says the
+    /// requested model does not apply and the Poisson correction was computed. Absent when the p-distance was computed.
     #[serde(rename = "modelNote", default, skip_serializing_if = "Option::is_none")]
     pub model_note: Option<String>,
     #[serde(rename = "taxaNames")]
@@ -898,10 +901,15 @@ pub fn compute_evolutionary_distances(
     }
 
     let pc = pair_count.max(1) as f64;
-    let (computed, model_note) = if protein {
+    // A refused model computed no distance: the report names the request and carries the refusal,
+    // as the tree report does. Otherwise a protein report names the distance computed, with a note
+    // only when the Poisson correction was computed for a request not named for it.
+    let (computed, model_note) = if let Err(refusal) = check_distance_model(model) {
+        (model.to_string(), Some(refusal))
+    } else if protein {
         let computed = protein_distance_name(model);
-        let asked_for_it = model.eq_ignore_ascii_case(PROTEIN_P_DISTANCE) || model.eq_ignore_ascii_case(PROTEIN_POISSON_CORRECTION);
-        let note = (!asked_for_it).then(|| format!("{model} does not apply to proteins: the Poisson correction was computed instead."));
+        let substituted = computed == PROTEIN_POISSON_CORRECTION && !model.eq_ignore_ascii_case(PROTEIN_POISSON_CORRECTION);
+        let note = substituted.then(|| format!("{model} does not apply to proteins: the Poisson correction was computed instead."));
         (computed.to_string(), note)
     } else {
         (model.to_string(), None)
@@ -922,7 +930,8 @@ pub fn compute_evolutionary_distances(
 pub struct DiversityAnalysisReport {
     /// The distance the diversities average: the distance report's own `model` (BG-01M7MW9R).
     pub model: String,
-    /// The distance report's own `modelNote`, set only when a protein alignment was asked for a nucleotide model.
+    /// The distance report's own `modelNote`: the refusal of a model [`check_distance_model`] refuses,
+    /// or the protein note set when the Poisson correction was computed for a request not named for it.
     #[serde(rename = "modelNote", default, skip_serializing_if = "Option::is_none")]
     pub model_note: Option<String>,
     #[serde(rename = "withinSubpopulationPiS")]

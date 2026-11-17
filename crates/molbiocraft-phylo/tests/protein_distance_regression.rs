@@ -282,3 +282,81 @@ fn diversity_report_label_names_the_distance_computed() {
     }
     assert_eq!(src.matches("does not apply to proteins").count(), 1, "one note in distances.rs");
 }
+
+/// BG-01M7MW0Z: the protein note was decided by an exact name, so 'p-distance (Uncorrected
+/// Proportion)' computed and was labelled the p-distance yet carried a note saying the Poisson
+/// correction was computed. The note now follows the one rule: only when the Poisson correction
+/// was computed for a request not named 'Poisson correction' (in any case).
+#[test]
+fn protein_note_only_when_poisson_was_computed() {
+    use molbiocraft_phylo::distances::{compute_population_diversity, protein_distance_name};
+    let names: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+    let seqs: Vec<String> = [POISSON_A, POISSON_B].iter().map(|s| s.to_string()).collect();
+    let note = |m: &str| format!("{m} does not apply to proteins: the Poisson correction was computed instead.");
+    let cases: [(&str, &str, Option<String>, f64, f64); 6] = [
+        ("p-distance (Uncorrected Proportion)", "p-distance", None, 0.25, 0.0968),
+        ("P-DISTANCE (uncorrected)", "p-distance", None, 0.25, 0.0968),
+        ("p-distance", "p-distance", None, 0.25, 0.0968),
+        ("Jukes-Cantor (JC69)", DIALOG_POISSON, Some(note("Jukes-Cantor (JC69)")), 0.2877, 0.1291),
+        (DIALOG_POISSON, DIALOG_POISSON, None, 0.2877, 0.1291),
+        ("poisson CORRECTION", DIALOG_POISSON, None, 0.2877, 0.1291),
+    ];
+    for (requested, computed, expected_note, d, se) in cases {
+        assert_eq!(protein_distance_name(requested), computed, "{requested}: the shared rule");
+        let dist = compute_evolutionary_distances(&names, &seqs, requested, &[]);
+        assert_eq!(dist.model, computed, "{requested}: distance report model");
+        assert_eq!(dist.model_note, expected_note, "{requested}: distance report note");
+        assert_eq!(dist.pairwise_matrix[1][0], d, "{requested}: distance");
+        assert_eq!(dist.pairwise_matrix[0][1], se, "{requested}: SE");
+        let div = compute_population_diversity(&names, &seqs, requested, &[]);
+        assert_eq!(div.model, computed, "{requested}: diversity report model");
+        assert_eq!(div.model_note, expected_note, "{requested}: diversity report note");
+        assert_eq!(div.entire_population_pi_t, d, "{requested}: pi_T is the distance computed");
+        for (which, json) in [("distances", serde_json::to_value(&dist).unwrap()), ("diversity", serde_json::to_value(&div).unwrap())] {
+            assert_eq!(json["model"], computed, "{requested}: {which} JSON model");
+            match &expected_note {
+                Some(n) => assert_eq!(json["modelNote"], n.as_str(), "{requested}: {which} JSON modelNote"),
+                None => assert!(json.get("modelNote").is_none(), "{requested}: {which} modelNote must be absent: {json}"),
+            }
+        }
+    }
+}
+
+/// BG-01M7MW0Z: a direct call with a model check_distance_model refuses (HKY, GTR) labelled the
+/// all-NaN protein matrix 'Poisson correction' with a note saying that distance was computed. A
+/// refused model's report names the request and carries the refusal itself, on proteins and on
+/// nucleotides, as the tree report does (trees.rs, "No tree: ... is not a distance model").
+#[test]
+fn refused_model_report_names_the_refusal_not_a_distance() {
+    use molbiocraft_phylo::distances::{check_distance_model, compute_population_diversity};
+    let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+    let prot: Vec<String> = [POISSON_A, POISSON_B, "MKTAWIAKERDEFGHVNPTW-M"].iter().map(|s| s.to_string()).collect();
+    let dna: Vec<String> =
+        ["ACGTACGTACGTACGTACGT", "ACGTACGAACGTACGTTCGT", "ACGAACGTACGTACCTTCGT"].iter().map(|s| s.to_string()).collect();
+    for (kind, seqs) in [("protein", &prot), ("nucleotide", &dna)] {
+        for requested in ["Hasegawa-Kishino-Yano (HKY85)", "General Time Reversible (GTR+G+I)"] {
+            let refusal = check_distance_model(requested).expect_err("a refused model");
+            let dist = compute_evolutionary_distances(&names, seqs, requested, &[]);
+            assert_eq!(dist.model, requested, "{kind} {requested}: the report names the request verbatim");
+            assert_eq!(dist.model_note.as_deref(), Some(refusal.as_str()), "{kind} {requested}: the note is the refusal");
+            for (i, row) in dist.pairwise_matrix.iter().enumerate() {
+                for (j, v) in row.iter().enumerate() {
+                    if i != j {
+                        assert!(v.is_nan(), "{kind} {requested}: entry {i},{j} must be NaN, got {v}");
+                    }
+                }
+            }
+            assert!(dist.overall_mean_distance.is_nan(), "{kind} {requested}: mean {}", dist.overall_mean_distance);
+            let div = compute_population_diversity(&names, seqs, requested, &[]);
+            assert_eq!(div.model, requested, "{kind} {requested}: diversity model");
+            assert_eq!(div.model_note.as_deref(), Some(refusal.as_str()), "{kind} {requested}: diversity note");
+            for (which, json) in [("distances", serde_json::to_value(&dist).unwrap()), ("diversity", serde_json::to_value(&div).unwrap())] {
+                assert_eq!(json["model"], requested, "{kind} {requested}: {which} JSON model");
+                assert_eq!(json["modelNote"], refusal.as_str(), "{kind} {requested}: {which} JSON modelNote");
+                let label = json["model"].as_str().unwrap();
+                assert!(label != "Poisson correction" && label != "p-distance", "{kind} {requested}: {which} labelled {label}");
+                assert!(!json["modelNote"].as_str().unwrap().contains("was computed"), "{kind} {requested}: {which} note claims a distance");
+            }
+        }
+    }
+}
