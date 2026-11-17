@@ -1211,6 +1211,96 @@ describe('US-01M7DV78 AC1: a hit no folder the explorer shows lists refuses, nev
   });
 });
 
+// ─── BG-01M7MRF8: Favorites is the last shown folder a hit opens in ───
+// With Sample Documents hidden, Favorites is the one shown folder whose view lists a favorited
+// sample document, so its hit opens there; never before its own folder, nor for a deleted one.
+const PET_ID = 'doc-pet28-egfp';
+const PET_FOLDER = SAMPLE_LIBRARY.find((s) => s.id === PET_ID)!.folder;
+const favoritedSpec = (over: Partial<NonNullable<SessionSpec['workspace']>['projectExplorer']>, documents = HIDDEN_SAMPLES_SPEC.documents): SessionSpec => ({
+  ...HIDDEN_SAMPLES_SPEC, documents,
+  workspace: { projectExplorer: { ...HIDDEN_SAMPLES_SPEC.workspace!.projectExplorer!, favoriteDocIds: [PET_ID], ...over } } as SessionSpec['workspace'],
+});
+const SITE = 'GAATTC';
+
+describe('BG-01M7MRF8 AC1: a favorited document no other shown folder lists opens under Favorites', () => {
+  it('BG-01M7MRF8 AC1 under hidden Sample Documents the favorited sample\'s motif and Name hits open under Favorites, and one Back returns; not favorited they refuse', async () => {
+    let site = '';
+    await withSession(favoritedSpec({}), async (app) => {
+      await searchFolder(app, 'All Project Files');
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), SITE);
+      expect(activeName(app)).toBe('Start record');
+      site = part(groupFor(app, PET).querySelectorAll('[data-search-hit]')[0], 'coords');
+      await app.click(hitButton(app, PET, byCoords(site)));
+      expect(hitNotice(app), 'no refusal').toBe('');
+      expect(selectedFolderRows(app), 'the Favorites row is selected').toEqual(['Favorites']);
+      expect(activeName(app)).toBe(PET);
+      expect(app.activeTab()).toBe('sequence-view');
+      const [from, to] = site.split('-');
+      expect(readout(app).replace(/,/g, '').startsWith(`${from}..${to} `), `selects ${site}, read ${readout(app)}`).toBe(true);
+      await app.click(backButton(app));
+      expect(activeName(app), 'one Back returns').toBe('Start record');
+
+      await app.change(modeSelect(app), 'Text');
+      await typeQuery(app, queryField(app), PET);
+      await app.click(hitButton(app, PET, byField('Name')));
+      expect(hitNotice(app)).toBe('');
+      expect(selectedFolderRows(app)).toEqual(['Favorites']);
+      expect(activeName(app)).toBe(PET);
+      expect(app.activeTab(), 'the Name hit opens Document info').toBe('document-info');
+      expect(searchMatchLine(app), 'the field is named').toEqual([`Search match in Name: ${PET}`]);
+      await app.click(backButton(app));
+      expect(activeName(app), 'one Back returns').toBe('Start record');
+    });
+    // With another favorite listed first, the hit opens its own document, and Back skips no step.
+    await withSession(favoritedSpec({ favoriteDocIds: ['hs-other', PET_ID] }), async (app) => {
+      await searchFolder(app, 'All Project Files');
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), SITE);
+      await app.click(hitButton(app, PET, byCoords(site)));
+      expect(selectedFolderRows(app)).toEqual(['Favorites']);
+      expect(activeName(app), 'the hit\'s own document, not the first favorite').toBe(PET);
+      await app.click(backButton(app));
+      expect(activeName(app), 'one Back returns to the document shown before').toBe('Start record');
+    });
+    await withSession(favoritedSpec({ favoriteDocIds: ['hs-other'] }), async (app) => {
+      await searchFolder(app, 'All Project Files');
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), SITE);
+      await app.click(hitButton(app, PET, byCoords(site)));
+      expect(hitNotice(app), 'another document favorited: the hidden-folder sentence').toBe(PET_NOT_SHOWN);
+      expect(activeName(app)).toBe('Start record');
+      await app.change(modeSelect(app), 'Text');
+      await typeQuery(app, queryField(app), PET);
+      await app.click(hitButton(app, PET, byField('Name')));
+      expect(hitNotice(app)).toBe(PET_NOT_SHOWN);
+      expect(activeName(app)).toBe('Start record');
+    });
+  });
+
+  it('BG-01M7MRF8 AC1 a favorited document opens in its own folder when shown, and a deleted favorited one in Deleted Items, never under Favorites', async () => {
+    const trashed = nav({ id: 'hs-trash', name: 'Trashed favorite', folder: 'Nav Start', sequence: `CCCC${SITE}CCCC` });
+    await withSession(favoritedSpec({ hiddenFolders: [], favoriteDocIds: [PET_ID, 'hs-trash'], deletedDocIds: ['hs-trash'] },
+      [...HIDDEN_SAMPLES_SPEC.documents!, trashed]), async (app) => {
+      await searchFolder(app, 'All Project Files');
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), SITE);
+      const site = part(groupFor(app, PET).querySelectorAll('[data-search-hit]')[0], 'coords');
+      await app.click(hitButton(app, PET, byCoords(site)));
+      expect(activeName(app)).toBe(PET);
+      expect(selectedFolderRows(app), 'its own folder, not Favorites').toEqual([PET_FOLDER.split('/').pop()]);
+
+      await searchFolder(app, 'Deleted Items');
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), SITE);
+      await app.click(hitButton(app, 'Trashed favorite', byCoords('5-10')));
+      expect(activeName(app)).toBe('Trashed favorite');
+      expect(selectedFolderRows(app), 'a deleted favorite opens in Deleted Items').toEqual(['Deleted Items']);
+      expect(readout(app)).toMatch(/^5\.\.10 \(6 bp\)/);
+    });
+  });
+});
+
 describe('US-01M7DV78 AC2: a text hit selects its feature or primer by id, or names its field in Document info', () => {
   it('US-01M7DV78 AC2 selects each feature by its own id, across the origin and first-to-last, a primer\'s binding site, and names every other field', async () => {
     await withSession(FT_SPEC, async (app) => {

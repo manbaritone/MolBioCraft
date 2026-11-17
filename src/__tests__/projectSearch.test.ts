@@ -504,8 +504,9 @@ describe('US-01M7DV78: a hit opens at its own feature, primer or field, and a st
   });
 
   it('US-01M7DV78 AC1 the nearest visible folder whose view lists the document, or a refusal naming why when none does', () => {
-    // The root view lists the session's documents only, never a catalog-only sample document.
-    const notRoot = (folderId: string) => folderId !== PROJECT_ROOT;
+    // The root view lists the session's documents only, never a catalog-only sample document, and
+    // Favorites lists only the favorited ones: these documents are not favorited (BG-01M7MRF8).
+    const notRoot = (folderId: string) => folderId !== PROJECT_ROOT && folderId !== 'Favorites';
     expect(hitFolderId(doc('x', 'C'), false, FOLDERS, ['C'], (f) => f === 'A'), 'B does not list it, its parent A does').toEqual({ folderId: 'A' });
     expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, [], notRoot)).toEqual({ folderId: 'Genomes' });
     expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, ['Sample Documents'], notRoot)).toEqual({
@@ -521,6 +522,37 @@ describe('US-01M7DV78: a hit opens at its own feature, primer or field, and a st
     expect(hitFolderId(doc('x', 'C'), true, FOLDERS, [], () => false)).toEqual({
       refused: '"Doc x" is in no folder the explorer shows, so this result cannot open.',
     });
+  });
+});
+
+// ─── BG-01M7MRF8: Favorites is the last folder a hit opens in ───
+
+describe('BG-01M7MRF8: a favorited document no other shown folder lists opens under Favorites', () => {
+  /** A view per folder as App's getDocsForFolderView answers it: the root never lists it, `also` do. */
+  const views = (...also: string[]) => (folderId: string) => also.includes(folderId);
+  const hiddenSamples = '"Doc x" is in the hidden folder "Sample Documents", and no folder the explorer shows lists it: show that folder to open this result.';
+  const notShown = '"Doc x" is in no folder the explorer shows, so this result cannot open.';
+
+  it('BG-01M7MRF8 AC1 opens under Favorites only when no folder up from its own lists it, and refuses as before when not favorited', () => {
+    expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, ['Sample Documents'], views('Favorites')),
+      'hidden Sample Documents, favorited').toEqual({ folderId: 'Favorites' });
+    expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, ['Sample Documents'], views()),
+      'hidden Sample Documents, not favorited: the hidden-folder sentence').toEqual({ refused: hiddenSamples });
+    expect(hitFolderId(doc('x', 'Local'), false, FOLDERS, [], views('Favorites')), 'a root document the root view does not list').toEqual({ folderId: 'Favorites' });
+    expect(hitFolderId(doc('x', 'Local'), false, FOLDERS, [], views()), 'not favorited').toEqual({ refused: notShown });
+  });
+
+  it('BG-01M7MRF8 AC1 Favorites is the last folder tried: its own folder, or a shown folder above it, opens it first', () => {
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, [], views('C', 'B', 'A', PROJECT_ROOT, 'Favorites')), 'its own folder').toEqual({ folderId: 'C' });
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, [], views('A', 'Favorites')), 'a shown folder above it').toEqual({ folderId: 'A' });
+    expect(hitFolderId(doc('x', 'C'), false, FOLDERS, ['B'], views('A', 'Favorites')), 'above a hidden one').toEqual({ folderId: 'A' });
+    expect(hitFolderId(doc('x', 'Local'), false, FOLDERS, [], views(PROJECT_ROOT, 'Favorites')), 'the root').toEqual({ folderId: PROJECT_ROOT });
+    expect(hitFolderId(doc('x', 'Genomes & NGS'), false, FOLDERS, [], views('Genomes', 'Favorites'))).toEqual({ folderId: 'Genomes' });
+  });
+
+  it('BG-01M7MRF8 AC1 a deleted favorited document opens in Deleted Items, never under Favorites', () => {
+    expect(hitFolderId(doc('x', 'C'), true, FOLDERS, [], views('Deleted Items', 'Favorites'))).toEqual({ folderId: 'Deleted Items' });
+    expect(hitFolderId(doc('x', 'C'), true, FOLDERS, [], views('Favorites', 'C')), 'Deleted Items does not list it').toEqual({ refused: notShown });
   });
 });
 

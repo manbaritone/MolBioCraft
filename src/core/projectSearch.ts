@@ -834,8 +834,10 @@ export const inHiddenFolder = (name: string, folder: string) =>
  * that folder or one above it is hidden, the folder just above the topmost hidden one; and from
  * there the nearest folder up to the root whose view `lists` the document. A folder view is not
  * the whole catalog (the root lists only the session's documents, not the catalog-only sample
- * library ones), so when no such folder's view lists the document the answer is a refusal, naming
- * the topmost hidden folder when one hides it, never a folder that would open another document.
+ * library ones), so when none of those lists it, Favorites is tried last (it lists a favorited
+ * document). When Favorites does not list it either the answer is a refusal, naming the topmost
+ * hidden folder when one hides it, never a folder that would open another document. A deleted
+ * document opens in Deleted Items or nowhere, never under Favorites.
  */
 export function hitFolderId(
   doc: SequenceDocument, deleted: boolean, folders: ExplorerFolder[], hiddenFolders: string[],
@@ -861,5 +863,6 @@ export function hitFolderId(
     if (lists(id)) return { folderId: id };
     if (ROOT_NAMES.has(at)) break;
   }
+  if (lists(FAVORITES)) return { folderId: FAVORITES };
   return { refused: topHidden ? inHiddenFolder(doc.name, topHidden.label) : notShownInExplorer(doc.name) };
 }
