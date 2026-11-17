@@ -692,9 +692,18 @@ async function layoutAwayFromDefault(app: AppHarness, storage: LiveStorage) {
 }
 
 describe('US-01M7DVJ4 AC1: View › Restore Default Layout returns every layout element to its default', () => {
-  it('US-01M7DVJ4 AC1 sits in the in-app View menu right after Table Columns', async () => {
+  it('US-01M7DVJ4 AC1 sits in the in-app View menu right after Table Columns, off before a session and on with one (AC3)', async () => {
     await withApp(async (app) => {
+      // AC3: the in-app row is off before a session starts and on once one is active.
+      const offRow = await viewRow(app, ['Restore Default Layout']);
+      const offBeforeSession = offRow.hasAttribute('disabled');
+      await closeMenus(app);
+      expect(offBeforeSession, 'View › Restore Default Layout is off before a session starts').toBe(true);
       await restore(app, [CA], CA.id);
+      const onRow = await viewRow(app, ['Restore Default Layout']);
+      const onWithSession = !onRow.hasAttribute('disabled');
+      await closeMenus(app);
+      expect(onWithSession, 'and on once a session is active').toBe(true);
       await viewRow(app, ['Table Columns']);
       const top = menuButtons(app).map(rowLabel);
       await closeMenus(app);
@@ -755,6 +764,12 @@ describe('US-01M7DVJ4 AC2: Restore Default Layout changes no view or document st
         documents: [CA, CB, LIN], activeDocId: CA.id, viewerTab: 'sequence-view',
         workspace: { selectedRange: { start: 120, end: 480 }, displaySettings: { showOrfs: false, minOrfAa: 75, allowAltStartCodons: true, showPrimers: false, showTranslation: false, showGcGraph: true, showHydropathyGraph: false, showUniqueCuttersOnly: false } } as never,
       });
+      // A site choice to keep: one enzyme hidden through the Displayed restriction sites panel.
+      const showBoxes = app.all('section[aria-label="Displayed restriction sites"] input')
+        .filter((b) => /^Show .+ sites on the maps$/.test(b.getAttribute('aria-label') ?? ''));
+      expect(showBoxes.length, 'an enzyme to hide').toBeGreaterThan(0);
+      const hidden = /^Show (.+) sites on the maps$/.exec(showBoxes[0].getAttribute('aria-label')!)![1];
+      await app.change(showBoxes[0], false);
       await app.click(app.one('button.mbc-split-toggle'));
       if (picker(app).value !== CB.id) await app.change(picker(app), CB.id);
       await app.change(viewSelect(app), 'circular');
@@ -765,6 +780,7 @@ describe('US-01M7DVJ4 AC2: Restore Default Layout changes no view or document st
       expect(before.selectedRange, 'a selection to keep').toMatchObject({ start: 120, end: 480 });
       expect(before.zoomLevel, 'the main view zoomed away from 100%').not.toBe(100);
       expect(Object.values(before.mapRotation ?? {}), 'and turned').toContain(90);
+      expect(before.siteVisibility?.[CA.id]?.hiddenEnzymes, `${hidden} hidden, so the site choices are compared defined`).toHaveLength(1);
       const tabsBefore = tabsOf(app);
       expect(tabsBefore.length, 'open tabs to keep').toBeGreaterThan(0);
 
