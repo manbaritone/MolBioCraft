@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  activeConditions, combineConditions, filterDocument, noSingleSequenceReason, type CombineChoice, type ConditionsOutcome, type SearchCondition, type SearchFilters, type SearchRequest,
   changedAfterSearch, createSearchRunner, deletedAfterSearch, hitFolderId, motifNotSearchedReason, openSearchHit, nextTask, resolveSearchScope, scopesOffered, searchText, TEXT_NOT_SEARCHED, TEXT_SEARCH_FIELDS,
   TEXT_SEARCH_STATEMENT, type MotifEngine, type SearchContext, type SearchRunEvent, type SearchScope,
 } from '../core/projectSearch';
@@ -520,5 +521,175 @@ describe('US-01M7DV78: a hit opens at its own feature, primer or field, and a st
     expect(hitFolderId(doc('x', 'C'), true, FOLDERS, [], () => false)).toEqual({
       refused: '"Doc x" is in no folder the explorer shows, so this result cannot open.',
     });
+  });
+});
+
+// ─── US-01M7DVHA: conditions combined with ALL or ANY, and filters that always narrow ───
+//
+// Each case names the wrong implementation it fails: ANY read as ALL, an empty condition counted
+// as one with no hits, Definite only applied after the conditions are combined, a filter dropped
+// under ANY (or read as another condition), an inapplicable filter read as a non-match, and a run
+// that passes each condition over every document in turn instead of reading one document a step.
+
+/** Runs `request` to its end with no wait between steps, collecting what each step read. */
+async function runToEnd(request: SearchRequest, onStep: () => void = () => {}) {
+  const runner = createSearchRunner(async () => { onStep(); });
+  return new Promise<Extract<SearchRunEvent, { kind: 'done' }>['result']>((resolve) => {
+    runner.start(request, (e) => { if (e.kind === 'done') resolve(e.result); });
+  });
+}
+const conditionsAnswer = (outcome: ConditionsOutcome) => {
+  if (!('documents' in outcome)) throw new Error(`the run did not search: ${JSON.stringify(outcome)}`);
+  return outcome;
+};
+async function combined(rows: SearchCondition[], choice: CombineChoice, definiteOnly: boolean, documents: SequenceDocument[], filters?: SearchFilters) {
+  const result = await runToEnd({ mode: 'Conditions', conditions: rows, documents, folders: FOLDERS, bothStrands: true, engine: searchIupacMotifRust, filters });
+  if (result.mode !== 'Conditions') throw new Error(`a ${result.mode} run`);
+  const answer = conditionsAnswer(result.outcome);
+  return { ...combineConditions(answer.documents, answer.conditions, choice, definiteOnly), searched: answer.searched, filtering: result.filtering };
+}
+const ids = (results: { documentId: string }[]) => results.map((r) => r.documentId).sort();
+
+const HVA_DOCS: SequenceDocument[] = [
+  doc('both', 'A', { description: 'a zqalpha vector', sequence: 'CCCGAATTCCCC' }),
+  doc('text-only', 'A', { description: 'zqalpha only', sequence: 'CCCCCCCCCCCC' }),
+  doc('motif-only', 'A', { sequence: 'CCCGAATTCCCC' }),
+  // Its only GAATTC site is possible (N), so Definite only leaves the motif condition no hit here.
+  doc('possible', 'A', { description: 'zqalpha with an N', sequence: 'CCCGAANTCCCC' }),
+  // Nucleotide motif does not read a protein: under ALL never a result, under ANY one through Text.
+  doc('protein', 'A', { description: 'zqalpha protein', moleculeType: 'Protein', sequence: 'MKWWGAATTC' }),
+  doc('neither', 'A', { sequence: 'TTTTTTTTTTTT' }),
+];
+const TEXT_ALPHA: SearchCondition = { mode: 'Text', query: 'zqalpha' };
+const MOTIF_ECO: SearchCondition = { mode: 'Nucleotide motif', query: 'GAATTC' };
+
+describe('US-01M7DVHA conditions and filters in the core', () => {
+  it('US-01M7DVHA AC1 ALL needs every condition with a query, ANY at least one, and an empty condition takes no part', async () => {
+    const all = await combined([TEXT_ALPHA, MOTIF_ECO], 'ALL', false, HVA_DOCS);
+    expect(ids(all.results), 'ALL: Text and motif both hit (the possible site counts without Definite only)').toEqual(['both', 'possible']);
+    const any = await combined([TEXT_ALPHA, MOTIF_ECO], 'ANY', false, HVA_DOCS);
+    expect(ids(any.results), 'ANY: at least one condition, the protein through Text').toEqual(['both', 'motif-only', 'possible', 'protein', 'text-only']);
+    // A blank row between them: counted as a condition with no hits, ALL would list nothing.
+    const withEmpty = await combined([TEXT_ALPHA, { mode: 'Text', query: '   ' }, MOTIF_ECO], 'ALL', false, HVA_DOCS);
+    expect(ids(withEmpty.results), 'the empty condition takes no part').toEqual(['both', 'possible']);
+    expect(activeConditions([TEXT_ALPHA, { mode: 'Protein motif', query: '' }, MOTIF_ECO]).map((c) => c.condition), 'conditions keep their row numbers').toEqual([1, 3]);
+    // Each result's hits sit under the condition that found them, numbered by row.
+    const both = withEmpty.results.find((r) => r.documentId === 'both')!;
+    expect(both.sections.map((s) => [s.condition.condition, s.condition.mode, s.condition.query])).toEqual([[1, 'Text', 'zqalpha'], [3, 'Nucleotide motif', 'GAATTC']]);
+    const textSection = both.sections[0];
+    expect('textHits' in textSection ? textSection.textHits.map((h) => h.field) : null).toEqual(['Description']);
+    const motifSection = both.sections[1];
+    expect('motif' in motifSection ? motifSection.motif.hits.map((h) => [h.start, h.end]) : null).toEqual([[4, 9]]);
+    // The protein is not read by the motif condition: listed as not searched, prefixed with its condition.
+    expect(withEmpty.notSearched.map((n) => [n.documentId, n.reason])).toEqual([['protein', 'condition 3: protein sequence (use Protein motif)']]);
+  });
+
+  it('US-01M7DVHA AC1 Definite only drops possible hits before the conditions are combined', async () => {
+    const all = await combined([TEXT_ALPHA, MOTIF_ECO], 'ALL', true, HVA_DOCS);
+    expect(ids(all.results), 'a document whose only motif hits are possible is no ALL result').toEqual(['both']);
+    const any = await combined([TEXT_ALPHA, MOTIF_ECO], 'ANY', true, HVA_DOCS);
+    const possible = any.results.find((r) => r.documentId === 'possible')!;
+    expect(possible.sections.map((s) => s.condition.condition), 'under ANY it stays a result through Text alone').toEqual([1]);
+    const motifOnly = await combined([MOTIF_ECO], 'ALL', true, [HVA_DOCS[3]]);
+    expect(motifOnly.results, 'a motif condition alone with only possible hits finds nothing').toEqual([]);
+  });
+
+  it('US-01M7DVHA AC1 filters narrow the documents searched under ANY as under ALL, and are never one more condition', async () => {
+    const filters: SearchFilters = { documentType: 'Nucleotide Sequence' };
+    const any = await combined([TEXT_ALPHA, MOTIF_ECO], 'ANY', false, HVA_DOCS, filters);
+    // The protein meets the Text condition but is not of the type; "neither" is of the type but meets none.
+    expect(ids(any.results)).toEqual(['both', 'motif-only', 'possible', 'text-only']);
+    expect(any.searched, 'documents searched are those that pass the filters').toBe(5);
+    expect(any.filtering?.filteredOut).toBe(1);
+    const all = await combined([TEXT_ALPHA, MOTIF_ECO], 'ALL', false, HVA_DOCS, filters);
+    expect(ids(all.results)).toEqual(['both', 'possible']);
+    expect(all.notSearched, 'a filtered-out document is read by no condition').toEqual([]);
+  });
+
+  it('US-01M7DVHA AC4 topology and length do not apply to a document with no single sequence; type, date and annotation type apply to every one', async () => {
+    const kinds: SequenceDocument[] = [
+      doc('tree', 'A', { sequence: 'GAATTC', docMetadata: { Newick: '(a,b);' } }),
+      doc('text', 'A', { sequence: 'GAATTC', docMetadata: { 'Document Type': 'Text Document' } }),
+      doc('enzymes', 'A', { sequence: 'GAATTC', docMetadata: { 'Document Type': 'Enzyme Set' } }),
+      doc('aln-kind', 'A', { documentKind: 'alignment', sequence: 'GAATTC' }),
+      doc('aln-rows', 'A', { sequence: 'GAATTC', alignmentMeta: { sequences: [{ id: 'r1', name: 'r1', sequence: 'GAATTC' }, { id: 'r2', name: 'r2', sequence: 'GAATTA' }] } }),
+      doc('contig', 'A', { sequence: '', docMetadata: { 'Is Contig Summary': 'yes', 'Declared Length': '5000' } }),
+    ];
+    // motifNotSearchedReason's words for each kind, written out by hand.
+    const words: Record<string, string> = {
+      tree: 'tree (no sequence)', text: 'text document (no sequence)', enzymes: 'enzyme set (no sequence)',
+      'aln-kind': 'alignment (motif search reads single sequences)', 'aln-rows': 'alignment (motif search reads single sequences)',
+      contig: 'contig summary (annotations only, no bases)',
+    };
+    for (const d of kinds) {
+      expect(noSingleSequenceReason(d), d.id).toBe(words[d.id]);
+      expect(filterDocument(d, { topology: 'linear' }), `${d.id}: topology`).toEqual({ notApplicable: `Topology does not apply: ${words[d.id]}` });
+      expect(filterDocument(d, { length: { min: 0, max: null } }), `${d.id}: length`).toEqual({ notApplicable: `Length does not apply: ${words[d.id]}` });
+      // Never a match: not "passes" even where the document's own topology or length would pass.
+      expect(filterDocument(d, { topology: d.topology }), `${d.id}: its own topology`).not.toBe('passes');
+      expect(filterDocument(d, { annotationType: 'CDS' }), `${d.id}: annotation type applies`).toBe('filtered out');
+      expect(filterDocument(d, { modified: { from: '2000-01-01', to: null } }), `${d.id}: date applies`).toBe('filtered out');
+    }
+    // An empty sequence, a protein and a DNA record hold a single sequence: topology and length apply.
+    const single = [doc('empty', 'A', { sequence: '' }), doc('prot', 'A', { moleculeType: 'Protein', sequence: 'MKW' }), doc('dna', 'A', { sequence: 'ACGT' })];
+    for (const d of single) {
+      expect(noSingleSequenceReason(d), d.id).toBeNull();
+      expect(filterDocument(d, { topology: 'linear' }), d.id).toBe('passes');
+      expect(filterDocument(d, { topology: 'circular' }), d.id).toBe('filtered out');
+    }
+    expect(filterDocument(single[0], { length: { min: 0, max: 0 } }), 'an empty sequence is 0 long').toBe('passes');
+    expect(filterDocument(single[1], { length: { min: 3, max: 3 } }), 'a protein counts aa').toBe('passes');
+    expect(filterDocument(single[2], { length: { min: 5, max: null } })).toBe('filtered out');
+
+    // In a run: listed apart, read by no condition, and counted neither as passing nor as filtered out.
+    let calls = 0;
+    const engine: MotifEngine = (...args) => { calls += 1; return searchIupacMotifRust(...args); };
+    const result = await runToEnd({ mode: 'Conditions', conditions: [{ mode: 'Text', query: 'Doc' }, MOTIF_ECO], documents: [...kinds, ...single], folders: FOLDERS, bothStrands: true, engine, filters: { topology: 'linear' } });
+    expect(result.filtering?.notApplicable.map((n) => [n.documentId, n.reason])).toEqual(kinds.map((d) => [d.id, `Topology does not apply: ${words[d.id]}`]));
+    expect(result.filtering?.passed).toBe(3);
+    expect(result.filtering?.filteredOut).toBe(0);
+    expect(result.mode === 'Conditions' ? ids(conditionsAnswer(result.outcome).documents) : null, 'no inapplicable document is read').toEqual(['dna', 'empty', 'prot']);
+    expect(calls, 'the motif engine read only the DNA record').toBe(1);
+    // A single-condition run counts them the same way.
+    const text = await runToEnd({ mode: 'Text', query: 'Doc', documents: [...kinds, ...single], folders: FOLDERS, filters: { length: { min: null, max: 10 } } });
+    expect(text.filtering?.notApplicable).toHaveLength(kinds.length);
+    expect(text.mode === 'Text' && 'results' in text.outcome ? ids(text.outcome.results) : null).toEqual(['dna', 'empty', 'prot']);
+  });
+
+  it('US-01M7DVHA AC5 reads one document per step with every condition evaluated in it, and a filtered-out document in none', async () => {
+    const documents = [
+      doc('s1', 'A', { sequence: 'GAATTCAAAAAA' }), doc('s2', 'A', { sequence: 'GGATCCAAAAAA' }),
+      doc('s3', 'A', { sequence: 'AAAAAAAAAAAA', topology: 'circular' }), doc('s4', 'A', { sequence: 'GAATTCGGATCC' }),
+    ];
+    let step = 0;
+    const calls: { step: number; seq: string; query: string }[] = [];
+    const engine: MotifEngine = (seq, query, options) => { calls.push({ step, seq, query }); return searchIupacMotifRust(seq, query, options); };
+    const rows: SearchCondition[] = [{ mode: 'Nucleotide motif', query: 'GAATTC' }, { mode: 'Text', query: 'Doc' }, { mode: 'Nucleotide motif', query: 'GGATCC' }];
+    const result = await runToEnd({ mode: 'Conditions', conditions: rows, documents, folders: FOLDERS, bothStrands: true, engine, filters: { topology: 'linear' } }, () => { step += 1; });
+    expect(step, 'one yield between every two documents').toBe(documents.length - 1);
+    // Condition-major order (each condition over every document) would give steps 0,1,3 then 0,1,3.
+    expect(calls.map((c) => [c.step, c.query])).toEqual([[0, 'GAATTC'], [0, 'GGATCC'], [1, 'GAATTC'], [1, 'GGATCC'], [3, 'GAATTC'], [3, 'GGATCC']]);
+    for (const call of calls) expect(call.seq, `step ${call.step} reads its own document`).toBe(documents[call.step].sequence);
+    if (result.mode !== 'Conditions') throw new Error('not a conditions run');
+    const answer = conditionsAnswer(result.outcome);
+    expect(ids(combineConditions(answer.documents, answer.conditions, 'ALL', false).results)).toEqual(['s4']);
+
+    // US-01M7DVVS holds for the set: a newer run ends the older one, and stop() ends a run.
+    const pending: (() => void)[] = [];
+    const runner = createSearchRunner(() => new Promise<void>((resolve) => { pending.push(resolve); }));
+    const flush = () => new Promise<void>((r) => { setTimeout(r, 0); });
+    const older: SearchRunEvent[] = [];
+    const newer: SearchRunEvent[] = [];
+    runner.start({ mode: 'Conditions', conditions: rows, documents, folders: FOLDERS, bothStrands: true, engine: searchIupacMotifRust }, (e) => older.push(e));
+    runner.start({ mode: 'Conditions', conditions: rows.slice(0, 2), documents, folders: FOLDERS, bothStrands: true, engine: searchIupacMotifRust }, (e) => newer.push(e));
+    pending[0](); await flush();
+    expect(older, 'the older run is dropped at its next step').toEqual([{ kind: 'progress', reached: 1, total: 4 }]);
+    while (pending.length > 1 && newer.every((e) => e.kind !== 'done')) { pending[pending.length - 1](); await flush(); }
+    expect(newer.filter((e) => e.kind === 'done')).toHaveLength(1);
+    const stopped: SearchRunEvent[] = [];
+    runner.start({ mode: 'Conditions', conditions: rows, documents, folders: FOLDERS, bothStrands: true, engine: searchIupacMotifRust }, (e) => stopped.push(e));
+    runner.stop();
+    pending[pending.length - 1](); await flush();
+    expect(stopped).toEqual([{ kind: 'progress', reached: 1, total: 4 }]);
   });
 });

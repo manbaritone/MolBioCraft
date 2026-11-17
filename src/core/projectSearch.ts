@@ -9,6 +9,10 @@
  * Motif search (US-01M7DVE7) is the residue search: it sorts each document into searched or not
  * searched (with the reason), and hands each searched document's sequence to the IUPAC motif
  * engine the caller passes (US-01M7DVBH's search_iupac_motif), which finds and counts the hits.
+ *
+ * Conditions and filters (US-01M7DVHA): a run may hold several conditions, each a mode and a
+ * query, combined with ALL or ANY as evaluateTableRowFilters combines its rows, and filters that
+ * narrow the documents searched whatever that choice (D0126).
  */
 
 import type { SequenceDocument, SequenceFeature } from '../types/bio';
@@ -16,6 +20,7 @@ import type { IupacMotifHit, IupacMotifSearch, MotifSearchMode } from '../lib/ru
 import { isContigSummaryRecord } from './contigSummary';
 import { isTreeDocument } from './documentViews';
 import { documentsInFolder, PROJECT_ROOT, type ExplorerFolder } from './projectExplorer';
+import { inferDocumentTypeLabel } from './workbenchBatchOperations';
 
 export type SearchScope = 'This folder only' | 'Folder and subfolders' | 'Entire project';
 
@@ -268,6 +273,9 @@ export const PROTEIN_MOTIF_STATEMENT =
 /** The most hits the engine is asked to list for one document; its counts still cover the whole molecule. */
 export const MOTIF_HITS_PER_DOCUMENT = 1000;
 
+/** motifNotSearchedReason's words for a record with no residues that is no other kind. */
+export const EMPTY_SEQUENCE = 'empty sequence';
+
 /**
  * Why `doc` is not searched in `mode`, or null when it is. An alignment carries its first row in
  * `sequence`, so it is named by its kind, never by having a sequence.
@@ -281,7 +289,7 @@ export function motifNotSearchedReason(doc: SequenceDocument, mode: MotifMode): 
     return 'alignment (motif search reads single sequences)';
   }
   if (isContigSummaryRecord(doc)) return 'contig summary (annotations only, no bases)';
-  if (doc.sequence.length === 0) return 'empty sequence';
+  if (doc.sequence.length === 0) return EMPTY_SEQUENCE;
   if (mode === 'Nucleotide motif' && doc.moleculeType === 'Protein') return 'protein sequence (use Protein motif)';
   if (mode === 'Protein motif' && doc.moleculeType !== 'Protein') return 'translated search is not available';
   return null;
@@ -396,20 +404,259 @@ export function searchMotif(
   return { query: trimmed, searched, results, notSearched };
 }
 
+// ─── Conditions and filters (US-01M7DVHA) ───
+
+/** How conditions combine, with evaluateTableRowFilters' meaning: ALL every condition, ANY at least one. */
+export type CombineChoice = 'ALL' | 'ANY';
+export const COMBINE_CHOICES: readonly CombineChoice[] = ['ALL', 'ANY'];
+
+/** One condition row: a mode and its query. A condition whose query is empty takes no part. */
+export interface SearchCondition { mode: SearchMode; query: string }
+
+/** A condition that takes part in a run: its 1-based row number, mode and trimmed query. */
+export interface ActiveCondition { condition: number; mode: SearchMode; query: string }
+
+/** The conditions of `rows` that have a query, numbered by their row. */
+export function activeConditions(rows: SearchCondition[]): ActiveCondition[] {
+  return rows.flatMap((row, i) => (row.query.trim() === '' ? [] : [{ condition: i + 1, mode: row.mode, query: row.query.trim() }]));
+}
+
+export type FilterName = 'Document type' | 'Topology' | 'Length' | 'Modified date' | 'Annotation type';
+
+/**
+ * The filters a run applies, each absent when not set. Document type is the label each result
+ * group shows (inferDocumentTypeLabel); length counts residues, bp or nt for a nucleotide document
+ * and aa for a protein; modified dates are local calendar days (YYYY-MM-DD) compared with
+ * updatedAt; annotation type is a feature's type exactly as stored. Every bound is inclusive.
+ */
+export interface SearchFilters {
+  documentType?: string;
+  topology?: 'circular' | 'linear';
+  length?: { min: number | null; max: number | null };
+  modified?: { from: string | null; to: string | null };
+  annotationType?: string;
+}
+
+/** The filters set in `filters`, in the order the panel shows them. */
+export function activeFilterNames(filters: SearchFilters): FilterName[] {
+  const names: FilterName[] = [];
+  if (filters.documentType !== undefined) names.push('Document type');
+  if (filters.topology !== undefined) names.push('Topology');
+  if (filters.length !== undefined) names.push('Length');
+  if (filters.modified !== undefined) names.push('Modified date');
+  if (filters.annotationType !== undefined) names.push('Annotation type');
+  return names;
+}
+
+export const MIN_ABOVE_MAX = 'Minimum is above maximum.';
+export const NOT_A_NUMBER = 'Not a number.';
+export const NOT_A_DATE = 'Not a date.';
+export const FILTER_REFUSED = 'A filter cannot be read, so nothing was searched.';
+
+/** A bound field's value: null when empty, undefined when it cannot be read. */
+function readBound<T>(text: string, read: (s: string) => T | undefined): T | null | undefined {
+  const s = text.trim();
+  return s === '' ? null : read(s);
+}
+
+/**
+ * The length bounds typed in two fields. Both empty is no filter. A field that is not a whole
+ * number of residues refuses ("Not a number."), and so does a minimum above the maximum: a refused
+ * bound is never read as no bound.
+ */
+export function readLengthBounds(minText: string, maxText: string):
+  { bounds: { min: number | null; max: number | null } | null } | Refusal<string> {
+  const read = (s: string) => (/^\d+$/.test(s) ? Number(s) : undefined);
+  const min = readBound(minText, read);
+  const max = readBound(maxText, read);
+  if (min === undefined || max === undefined) return { refused: NOT_A_NUMBER };
+  if (min === null && max === null) return { bounds: null };
+  if (min !== null && max !== null && min > max) return { refused: MIN_ABOVE_MAX };
+  return { bounds: { min, max } };
+}
+
+const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+const pad = (n: number, width: number) => String(n).padStart(width, '0');
+
+/** A calendar day typed as YYYY-MM-DD, or undefined when it names no day (2026-02-30, 26-1-1). */
+function readDay(s: string): string | undefined {
+  const m = DAY.exec(s);
+  if (!m) return undefined;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(y, mo - 1, d);
+  return date.getFullYear() === y && date.getMonth() === mo - 1 && date.getDate() === d ? s : undefined;
+}
+
+/** The modified-date bounds typed in two fields, as readLengthBounds reads lengths. */
+export function readDateBounds(fromText: string, toText: string):
+  { bounds: { from: string | null; to: string | null } | null } | Refusal<string> {
+  const from = readBound(fromText, readDay);
+  const to = readBound(toText, readDay);
+  if (from === undefined || to === undefined) return { refused: NOT_A_DATE };
+  if (from === null && to === null) return { bounds: null };
+  if (from !== null && to !== null && from > to) return { refused: MIN_ABOVE_MAX };
+  return { bounds: { from, to } };
+}
+
+/** The local calendar day (YYYY-MM-DD) of an ISO timestamp, or null when it names no instant. */
+export function localDay(iso: string): string | null {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const d = new Date(t);
+  return `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)}`;
+}
+
+/**
+ * Why `doc` holds no single sequence, in motifNotSearchedReason's words, or null when it holds one.
+ * These are the reasons it gives in every mode alike (the document's kind), an empty sequence aside.
+ */
+export function noSingleSequenceReason(doc: SequenceDocument): string | null {
+  const reason = motifNotSearchedReason(doc, 'Nucleotide motif');
+  return reason !== null && reason !== EMPTY_SEQUENCE && reason === motifNotSearchedReason(doc, 'Protein motif') ? reason : null;
+}
+
+/** The filters that read a single sequence, and so do not apply to a document with none. */
+const SEQUENCE_FILTERS: readonly FilterName[] = ['Topology', 'Length'];
+
+export type FilterVerdict = 'passes' | 'filtered out' | { notApplicable: string };
+
+/**
+ * Whether `doc` passes `filters`. A document an active filter does not apply to is neither: it is
+ * not applicable, named "<Filter> does not apply: <reason>" for each such filter. A document whose
+ * updatedAt names no instant is not shown to be in a date range, so it does not pass one.
+ */
+export function filterDocument(doc: SequenceDocument, filters: SearchFilters): FilterVerdict {
+  const noSequence = noSingleSequenceReason(doc);
+  if (noSequence !== null) {
+    const inapplicable = activeFilterNames(filters).filter((name) => SEQUENCE_FILTERS.includes(name));
+    if (inapplicable.length > 0) return { notApplicable: inapplicable.map((name) => `${name} does not apply: ${noSequence}`).join('; ') };
+  }
+  if (filters.documentType !== undefined && inferDocumentTypeLabel(doc) !== filters.documentType) return 'filtered out';
+  if (filters.topology !== undefined && doc.topology !== filters.topology) return 'filtered out';
+  if (filters.length) {
+    const { min, max } = filters.length;
+    const n = doc.sequence.length;
+    if ((min !== null && n < min) || (max !== null && n > max)) return 'filtered out';
+  }
+  if (filters.modified) {
+    const { from, to } = filters.modified;
+    const day = localDay(doc.updatedAt);
+    if (day === null || (from !== null && day < from) || (to !== null && day > to)) return 'filtered out';
+  }
+  if (filters.annotationType !== undefined && !doc.features.some((f) => f.type === filters.annotationType)) return 'filtered out';
+  return 'passes';
+}
+
+/** A document an active filter does not apply to, and why. */
+export interface NotApplicable { documentId: string; documentName: string; folderPath: string; reason: string }
+
+/** What the filters did over a run's documents: `passed` were searched, the rest were not. */
+export interface FilterTally { passed: number; filteredOut: number; notApplicable: NotApplicable[] }
+
+/** One condition's answer for one document: its hits, or why its mode does not read the document. */
+export type ConditionAnswer =
+  | { condition: number; textHits: TextHit[] }
+  | { condition: number; motif: Omit<DocumentMotifResult, 'documentId' | 'documentName' | 'folderPath'> }
+  | { condition: number; notSearched: string };
+
+/** A document some condition found hits in or did not read, with each such condition's answer. */
+export interface DocumentConditionAnswers { documentId: string; documentName: string; folderPath: string; answers: ConditionAnswer[] }
+
+export type ConditionsOutcome =
+  | Refusal<'empty query'>
+  /** The engine refused one condition's query itself, so no document was searched. */
+  | { condition: number; queryRefused: string }
+  | { engineUnavailable: string }
+  /** `searched` documents passed the filters and were read by every condition whose mode reads them. */
+  | { conditions: ActiveCondition[]; searched: number; documents: DocumentConditionAnswers[] };
+
+/**
+ * Every condition of `conditions` on one document, through searchText and searchMotif. A refusal
+ * of a condition's query or an engine that cannot run ends the run, as it does with one condition.
+ */
+export function searchConditionsIn(
+  doc: SequenceDocument, conditions: ActiveCondition[], folders: ExplorerFolder[], bothStrands: boolean, engine: MotifEngine,
+): DocumentConditionAnswers | { condition: number; queryRefused: string } | { engineUnavailable: string } {
+  const answers: ConditionAnswer[] = [];
+  for (const { condition, mode, query } of conditions) {
+    if (mode === 'Text') {
+      const one = searchText(query, [doc], folders);
+      if ('results' in one && one.results.length > 0) answers.push({ condition, textHits: one.results[0].hits });
+      continue;
+    }
+    const one = searchMotif(query, [doc], folders, mode, bothStrands, engine);
+    if ('queryRefused' in one) return { condition, queryRefused: one.queryRefused };
+    if ('engineUnavailable' in one) return one;
+    if (!('results' in one)) continue;
+    if (one.notSearched.length > 0) answers.push({ condition, notSearched: one.notSearched[0].reason });
+    else if (one.results.length > 0) {
+      const { documentId: _id, documentName: _name, folderPath: _path, ...motif } = one.results[0];
+      answers.push({ condition, motif });
+    }
+  }
+  return { documentId: doc.id, documentName: doc.name, folderPath: documentFolderPath(doc.folder, folders), answers };
+}
+
+/** A result's hits under the condition that found them. */
+export type ConditionSection =
+  | { condition: ActiveCondition; textHits: TextHit[] }
+  | { condition: ActiveCondition; motif: Omit<DocumentMotifResult, 'documentId' | 'documentName' | 'folderPath'> };
+
+export interface CombinedResult { documentId: string; documentName: string; folderPath: string; sections: ConditionSection[] }
+
+/**
+ * The results of a conditions run under `choice`. Definite only first drops each motif condition's
+ * possible hits, so a condition whose hits in a document are all possible has none there. ALL keeps
+ * a document every condition has a hit in, ANY one that at least one has; a condition whose mode
+ * does not read a document has no hit in it, and is listed under Not searched as "condition N: ...".
+ */
+export function combineConditions(
+  answers: DocumentConditionAnswers[], conditions: ActiveCondition[], choice: CombineChoice, definiteOnly: boolean,
+): { results: CombinedResult[]; notSearched: MotifNotSearched[] } {
+  const byNumber = new Map(conditions.map((c) => [c.condition, c]));
+  const results: CombinedResult[] = [];
+  const notSearched: MotifNotSearched[] = [];
+  for (const doc of answers) {
+    const where = { documentId: doc.documentId, documentName: doc.documentName, folderPath: doc.folderPath };
+    const sections: ConditionSection[] = [];
+    for (const answer of doc.answers) {
+      const condition = byNumber.get(answer.condition);
+      if (!condition) continue;
+      if ('notSearched' in answer) notSearched.push({ ...where, reason: `condition ${answer.condition}: ${answer.notSearched}` });
+      else if ('textHits' in answer) sections.push({ condition, textHits: answer.textHits });
+      else if ((definiteOnly ? answer.motif.definiteHits : answer.motif.totalHits) > 0) sections.push({ condition, motif: answer.motif });
+    }
+    const met = choice === 'ALL' ? sections.length === conditions.length : sections.length > 0;
+    if (met && conditions.length > 0) results.push({ ...where, sections });
+  }
+  return { results, notSearched };
+}
+
 // ─── Search runs (US-01M7DVVS) ───
 
-/** What one run searches: a text query, or a motif in a motif mode through `engine`. */
+/**
+ * What one run searches: a text query, a motif in a motif mode through `engine`, or several
+ * conditions (US-01M7DVHA). `filters`, when set, narrow the documents every kind searches.
+ */
 export type SearchRequest =
-  | { mode: 'Text'; query: string; documents: SequenceDocument[]; folders: ExplorerFolder[] }
+  | { mode: 'Text'; query: string; documents: SequenceDocument[]; folders: ExplorerFolder[]; filters?: SearchFilters }
   | {
     mode: MotifMode; query: string; documents: SequenceDocument[]; folders: ExplorerFolder[];
-    bothStrands: boolean; engine: MotifEngine;
+    bothStrands: boolean; engine: MotifEngine; filters?: SearchFilters;
+  }
+  | {
+    mode: 'Conditions'; conditions: SearchCondition[]; documents: SequenceDocument[]; folders: ExplorerFolder[];
+    bothStrands: boolean; engine: MotifEngine; filters?: SearchFilters;
   };
 
-/** A completed run's answer, as searchText or searchMotif gives it over the run's documents. */
+/**
+ * A completed run's answer, as searchText, searchMotif or searchConditionsIn gives it over the
+ * documents that passed the filters; `filtering` says what the filters did, when any is set.
+ */
 export type SearchRunResult =
-  | { mode: 'Text'; outcome: ReturnType<typeof searchText> }
-  | { mode: MotifMode; outcome: MotifSearchOutcome };
+  | { mode: 'Text'; outcome: ReturnType<typeof searchText>; filtering?: FilterTally }
+  | { mode: MotifMode; outcome: MotifSearchOutcome; filtering?: FilterTally }
+  | { mode: 'Conditions'; outcome: ConditionsOutcome; filtering?: FilterTally };
 
 export type SearchRunEvent =
   /** `reached` of the run's `total` documents have been read. */
@@ -421,9 +668,11 @@ export const nextTask = (): Promise<void> => new Promise((resolve) => { setTimeo
 
 /**
  * Runs searches one document per step, awaiting `yieldStep` between documents, so no single call
- * of searchText or searchMotif (and of the engine under it) covers more than one document. Only
- * the newest run is ever reported: `start` and `stop` each end the run before them, which then
- * stops at its next step and never calls its listener again, whatever order the steps resolve in.
+ * of searchText or searchMotif (and of the engine under it) covers more than one document: with
+ * several conditions, every condition reads a document in that document's step. The filters are
+ * read in the same step, and a document they leave out is read by no condition. Only the newest
+ * run is ever reported: `start` and `stop` each end the run before them, which then stops at its
+ * next step and never calls its listener again, whatever order the steps resolve in.
  */
 export interface SearchRunner {
   /** Ends any run in progress and starts `request`, reporting to `listener` while it is the newest. */
@@ -437,10 +686,16 @@ export function createSearchRunner(yieldStep: () => Promise<void> = nextTask): S
   const run = async (id: number, request: SearchRequest, listener: (event: SearchRunEvent) => void) => {
     const { documents, folders } = request;
     const total = documents.length;
+    const filters = request.filters && activeFilterNames(request.filters).length > 0 ? request.filters : null;
+    const tally: FilterTally = { passed: 0, filteredOut: 0, notApplicable: [] };
+    const withTally = <R extends SearchRunResult>(result: R): R => (filters ? { ...result, filtering: tally } : result);
     const textResults: DocumentTextResult[] = [];
     const motif = { searched: 0, results: [] as DocumentMotifResult[], notSearched: [] as MotifNotSearched[] };
-    const query = request.query.trim();
-    if (query === '') {
+    const conditions = request.mode === 'Conditions' ? activeConditions(request.conditions) : [];
+    const conditionAnswers: DocumentConditionAnswers[] = [];
+    const query = request.mode === 'Conditions' ? '' : request.query.trim();
+    const empty = request.mode === 'Conditions' ? conditions.length === 0 : query === '';
+    if (empty) {
       listener({ kind: 'done', result: request.mode === 'Text' ? { mode: 'Text', outcome: { refused: 'empty query' } } : { mode: request.mode, outcome: { refused: 'empty query' } } });
       return;
     }
@@ -448,23 +703,37 @@ export function createSearchRunner(yieldStep: () => Promise<void> = nextTask): S
       if (i > 0) await yieldStep();
       if (id !== generation) return;
       const doc = documents[i];
-      if (request.mode === 'Text') {
-        const one = searchText(request.query, [doc], folders);
-        if ('refused' in one) { listener({ kind: 'done', result: { mode: 'Text', outcome: one } }); return; }
-        textResults.push(...one.results);
+      const verdict = filters ? filterDocument(doc, filters) : 'passes';
+      if (verdict === 'filtered out') tally.filteredOut += 1;
+      else if (verdict !== 'passes') {
+        tally.notApplicable.push({ documentId: doc.id, documentName: doc.name, folderPath: documentFolderPath(doc.folder, folders), reason: verdict.notApplicable });
       } else {
-        const one = searchMotif(request.query, [doc], folders, request.mode, request.bothStrands, request.engine);
-        if (!('results' in one)) { listener({ kind: 'done', result: { mode: request.mode, outcome: one } }); return; }
-        motif.searched += one.searched;
-        motif.results.push(...one.results);
-        motif.notSearched.push(...one.notSearched);
+        tally.passed += 1;
+        if (request.mode === 'Text') {
+          const one = searchText(request.query, [doc], folders);
+          if ('refused' in one) { listener({ kind: 'done', result: withTally({ mode: 'Text', outcome: one }) }); return; }
+          textResults.push(...one.results);
+        } else if (request.mode === 'Conditions') {
+          const one = searchConditionsIn(doc, conditions, folders, request.bothStrands, request.engine);
+          if (!('answers' in one)) { listener({ kind: 'done', result: withTally({ mode: 'Conditions', outcome: one }) }); return; }
+          if (one.answers.length > 0) conditionAnswers.push(one);
+        } else {
+          const one = searchMotif(request.query, [doc], folders, request.mode, request.bothStrands, request.engine);
+          if (!('results' in one)) { listener({ kind: 'done', result: withTally({ mode: request.mode, outcome: one }) }); return; }
+          motif.searched += one.searched;
+          motif.results.push(...one.results);
+          motif.notSearched.push(...one.notSearched);
+        }
       }
       listener({ kind: 'progress', reached: i + 1, total });
     }
     if (id !== generation) return;
-    listener(request.mode === 'Text'
-      ? { kind: 'done', result: { mode: 'Text', outcome: { query, results: textResults } } }
-      : { kind: 'done', result: { mode: request.mode, outcome: { query, ...motif } } });
+    const result: SearchRunResult = request.mode === 'Text'
+      ? { mode: 'Text', outcome: { query, results: textResults } }
+      : request.mode === 'Conditions'
+        ? { mode: 'Conditions', outcome: { conditions, searched: tally.passed, documents: conditionAnswers } }
+        : { mode: request.mode, outcome: { query, ...motif } };
+    listener({ kind: 'done', result: withTally(result) });
   };
   return {
     start(request, listener) {

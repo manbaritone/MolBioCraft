@@ -26,25 +26,44 @@
  * Each hit is a button (US-01M7DV78): the core's openSearchHit reads it against the document as the
  * catalog holds it now, and the App opens the opening it answers. A hit whose document was deleted
  * or changed since the run read it opens nothing and is told in its own sentence.
+ *
+ * Add condition (US-01M7DVHA) adds a row with its own mode and query, combined with the others by
+ * ALL or ANY; with one row the panel is the one above. Filters by document type, topology, length,
+ * modified date and annotation type narrow the documents searched whatever that choice, show as
+ * chips while set, and a bound that cannot be read stops the search with its reason. Every row, the
+ * choice and the filters are in the run's key, so a change of any lists no other set's groups.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import {
+  activeConditions,
+  activeFilterNames,
+  combineConditions,
+  COMBINE_CHOICES,
   createSearchRunner,
+  FILTER_REFUSED,
   motifNotSearchedReason,
   NUCLEOTIDE_MOTIF_STATEMENT,
   openSearchHit,
   PROTEIN_MOTIF_STATEMENT,
+  readDateBounds,
+  readLengthBounds,
   resolveSearchScope,
   scopesOffered,
   SEARCH_MODES,
   snippetOf,
   TEXT_SEARCH_STATEMENT,
+  type CombineChoice,
+  type CombinedResult,
   type DocumentMotifResult,
+  type FilterName,
   type HitOpening,
   type MotifHit,
+  type MotifMode,
+  type MotifNotSearched,
   type SearchContext,
+  type SearchFilters,
   type SearchMode,
   type SearchRequest,
   type SearchRunResult,
@@ -62,10 +81,35 @@ export const GROUPS_PER_PAGE = 50;
 /** The pause after the last keystroke, or after the documents change, before a search runs. */
 export const SEARCH_PAUSE_MS = 250;
 
-/** What a run searched for: its results are listed only while all four are still the chosen ones. */
-interface RunKey { query: string; scope: SearchScope; mode: SearchMode; bothStrands: boolean }
-const sameKey = (a: RunKey, b: RunKey) =>
-  a.query === b.query && a.scope === b.scope && a.mode === b.mode && a.bothStrands === b.bothStrands;
+/** One condition row as typed: its mode and its query. */
+interface Row { id: number; mode: SearchMode; query: string }
+
+/**
+ * What a run searched for: its results are listed only while every part is still the chosen one.
+ * `conditions` holds every row, empty ones included, so adding or removing one is a change.
+ */
+interface RunKey {
+  conditions: { mode: SearchMode; query: string }[]; combine: CombineChoice; scope: SearchScope; bothStrands: boolean; filters: string;
+}
+const sameKey = (a: RunKey, b: RunKey) => JSON.stringify(a) === JSON.stringify(b);
+/** Whether only a query differs between two keys of the same rows: typing, which waits for the pause. */
+const queryTyped = (a: RunKey, b: RunKey) => a.conditions.length === b.conditions.length
+  && a.conditions.some((c, i) => c.query !== b.conditions[i].query);
+
+/** The filter fields as typed; a field left empty, or "Any", sets no filter. */
+interface FilterFields {
+  documentType: string; topology: '' | 'circular' | 'linear'; lengthMin: string; lengthMax: string;
+  modifiedFrom: string; modifiedTo: string; annotationType: string;
+}
+const NO_FILTERS: FilterFields = { documentType: '', topology: '', lengthMin: '', lengthMax: '', modifiedFrom: '', modifiedTo: '', annotationType: '' };
+export const LENGTH_LABEL = 'Length (bp or nt; aa for proteins)';
+/** The fields each filter's chip clears. */
+const FILTER_FIELDS: Record<FilterName, (keyof FilterFields)[]> = {
+  'Document type': ['documentType'], Topology: ['topology'], Length: ['lengthMin', 'lengthMax'],
+  'Modified date': ['modifiedFrom', 'modifiedTo'], 'Annotation type': ['annotationType'],
+};
+const FILTER_ORDER: FilterName[] = ['Document type', 'Topology', 'Length', 'Modified date', 'Annotation type'];
+const rangeText = (min: string, max: string) => (min.trim() === '' ? `up to ${max.trim()}` : max.trim() === '' ? `from ${min.trim()}` : `${min.trim()} to ${max.trim()}`);
 
 /** What a run read: the scope's documents and the folders their paths come from. */
 interface RunInputs { documents: SequenceDocument[]; foldersKey: string }
@@ -125,16 +169,41 @@ interface Props {
 
 export function ProjectSearchPanel({ folderId, initialScope, context, onClose, onOpenHit }: Props) {
   const [scope, setScope] = useState<SearchScope>(initialScope);
-  const [query, setQuery] = useState('');
+  const nextRowId = useRef(1);
+  const [rows, setRows] = useState<Row[]>([{ id: 0, mode: 'Text', query: '' }]);
+  const [combine, setCombine] = useState<CombineChoice>('ALL');
+  const [fields, setFields] = useState<FilterFields>(NO_FILTERS);
   const [page, setPage] = useState(0);
-  const [mode, setMode] = useState<SearchMode>('Text');
   const [bothStrands, setBothStrands] = useState(true);
   const [definiteOnly, setDefiniteOnly] = useState(false);
+  // One row is today's panel: its mode and query are the panel's own.
+  const { mode, query } = rows[0];
+  const multi = rows.length > 1;
   const offered = scopesOffered(folderId);
   const resolved = useMemo(() => resolveSearchScope(folderId, scope, context), [folderId, scope, context]);
   const searched = 'refused' in resolved ? null : resolved.documents;
   const trimmed = query.trim();
-  const key: RunKey = { query: trimmed, scope, mode, bothStrands };
+  const active = activeConditions(rows);
+
+  // The filters as read from their fields; a bound that cannot be read refuses, never reads as none.
+  const lengthRead = readLengthBounds(fields.lengthMin, fields.lengthMax);
+  const dateRead = readDateBounds(fields.modifiedFrom, fields.modifiedTo);
+  const lengthReason = 'refused' in lengthRead ? lengthRead.refused : null;
+  const dateReason = 'refused' in dateRead ? dateRead.refused : null;
+  const filterRefused = lengthReason !== null || dateReason !== null;
+  const filters: SearchFilters = {};
+  if (fields.documentType !== '') filters.documentType = fields.documentType;
+  if (fields.topology !== '') filters.topology = fields.topology;
+  if ('bounds' in lengthRead && lengthRead.bounds) filters.length = lengthRead.bounds;
+  if ('bounds' in dateRead && dateRead.bounds) filters.modified = dateRead.bounds;
+  if (fields.annotationType !== '') filters.annotationType = fields.annotationType;
+  const filtering = activeFilterNames(filters).length > 0;
+
+  const key: RunKey = {
+    conditions: rows.map((r) => ({ mode: r.mode, query: r.query.trim() })), combine, scope, bothStrands,
+    filters: filterRefused ? `refused ${JSON.stringify(fields)}` : JSON.stringify(filters),
+  };
+  const keyText = JSON.stringify(key);
   const inputs = useMemo<RunInputs>(
     () => ({ documents: searched ?? [], foldersKey: foldersKeyOf(context.folders) }),
     [searched, context.folders],
@@ -160,21 +229,27 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
       setProgress(null);
       setCancelled(null);
     };
-    // An empty query, an empty scope and a refused one each have their sentence and run nothing.
-    if (trimmed === '' || !searched || searched.length === 0) { stopRun(); return; }
+    // No query, an empty scope, a refused one and a filter that cannot be read each have their
+    // sentence and run nothing.
+    if (active.length === 0 || !searched || searched.length === 0 || filterRefused) { stopRun(); return; }
     const keyChanged = prev === null || !sameKey(prev.key, key);
     // The App passed a new context that reads the same: the run in progress or shown stands.
     if (!keyChanged && sameInputs(prev.inputs, inputs)) return;
-    // Scope, mode or Both strands changed under the same query: run at once. Typing and a change
-    // of the documents wait for the pause.
-    const now = prev !== null && keyChanged && prev.key.query === key.query;
+    // A change of scope, a condition (added, removed or its mode), ALL / ANY, Both strands or a
+    // filter runs at once. Typing in a query and a change of the documents wait for the pause.
+    const now = prev !== null && keyChanged && !queryTyped(prev.key, key);
     stopRun();
     const runKey = key;
     const runInputs = inputs;
     const runDeleted = new Set(context.deletedIds);
-    const request: SearchRequest = mode === 'Text'
-      ? { mode, query: trimmed, documents: searched, folders: context.folders }
-      : { mode, query: trimmed, documents: searched, folders: context.folders, bothStrands, engine: searchIupacMotifRust };
+    const request: SearchRequest = multi
+      ? {
+        mode: 'Conditions', conditions: rows.map((r) => ({ mode: r.mode, query: r.query })), documents: searched,
+        folders: context.folders, bothStrands, engine: searchIupacMotifRust, filters,
+      }
+      : mode === 'Text'
+        ? { mode, query: trimmed, documents: searched, folders: context.folders, filters }
+        : { mode, query: trimmed, documents: searched, folders: context.folders, bothStrands, engine: searchIupacMotifRust, filters };
     const begin = () => {
       timer.current = null;
       setProgress({ reached: 0, total: searched.length });
@@ -190,7 +265,7 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
     else timer.current = setTimeout(begin, SEARCH_PAUSE_MS);
     // Every value the run reads is in `key` and `inputs`, compared above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trimmed, scope, mode, bothStrands, inputs]);
+  }, [keyText, inputs]);
   useEffect(() => () => {
     runner.stop();
     if (timer.current !== null) clearTimeout(timer.current);
@@ -203,14 +278,21 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
     setProgress(null);
   };
 
-  // Listed only for what is chosen now; a cancelled run lists nothing.
+  // Listed only for what is chosen now; a cancelled run lists nothing. A refused filter's key holds
+  // its fields as typed, which no run's key does, so no earlier run is listed under it.
   const isCancelled = cancelled && sameKey(cancelled.key, key) ? cancelled : null;
   const current = !isCancelled && completed && sameKey(completed.key, key) ? completed : null;
   const outOfDate = current !== null && !sameInputs(current.inputs, inputs);
   const outcome = current && current.result.mode === 'Text' ? current.result.outcome : null;
-  const motif = current && current.result.mode !== 'Text' ? current.result.outcome : null;
-  const motifMode = current && current.result.mode !== 'Text' ? current.result.mode : null;
+  const motif = current && current.result.mode !== 'Text' && current.result.mode !== 'Conditions' ? current.result.outcome : null;
+  const motifMode = current && current.result.mode !== 'Text' && current.result.mode !== 'Conditions' ? current.result.mode : null;
+  const conditionsOutcome = current && current.result.mode === 'Conditions' ? current.result.outcome : null;
+  const tally = current?.result.filtering ?? null;
   const byId = useMemo(() => new Map((searched ?? []).map((d) => [d.id, d])), [searched]);
+
+  // The choices the type and annotation filters offer: those the scope's documents hold.
+  const typeOptions = useMemo(() => [...new Set((searched ?? []).map((d) => inferDocumentTypeLabel(d)))].sort(), [searched]);
+  const annotationOptions = useMemo(() => [...new Set((searched ?? []).flatMap((d) => d.features.map((f) => f.type)))].sort(), [searched]);
 
   /** Opens `ref` from the document as the catalog holds it now, or says why it opens nothing. */
   const openHit = (documentId: string, ref: SearchHitRef) => {
@@ -232,33 +314,60 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
   // Definite only drops the possible hits, and with them a document whose hits are all possible.
   const motifResults: DocumentMotifResult[] = !motifAnswer ? []
     : definiteOnly ? motifAnswer.results.filter((r) => r.definiteHits > 0) : motifAnswer.results;
-  const groupCount = mode === 'Text' ? results.length : motifResults.length;
+  const conditionsAnswer = conditionsOutcome && 'documents' in conditionsOutcome ? conditionsOutcome : null;
+  const combined = conditionsAnswer
+    ? combineConditions(conditionsAnswer.documents, conditionsAnswer.conditions, combine, definiteOnly)
+    : { results: [] as CombinedResult[], notSearched: [] as MotifNotSearched[] };
+  const groupCount = multi ? combined.results.length : mode === 'Text' ? results.length : motifResults.length;
   const pages = Math.max(1, Math.ceil(groupCount / GROUPS_PER_PAGE));
   const shownPage = Math.min(page, pages - 1);
   const first = shownPage * GROUPS_PER_PAGE;
-  const shown = results.slice(first, first + GROUPS_PER_PAGE);
-  const shownMotif = motifResults.slice(first, first + GROUPS_PER_PAGE);
-  const shownCount = mode === 'Text' ? shown.length : shownMotif.length;
+  const shown = multi ? [] : results.slice(first, first + GROUPS_PER_PAGE);
+  const shownMotif = multi ? [] : motifResults.slice(first, first + GROUPS_PER_PAGE);
+  const shownCombined = combined.results.slice(first, first + GROUPS_PER_PAGE);
+  const shownCount = multi ? shownCombined.length : mode === 'Text' ? shown.length : shownMotif.length;
   const hitTotal = results.reduce((n, r) => n + r.hits.length, 0);
+  const notSearched = multi ? combined.notSearched : motifAnswer?.notSearched ?? [];
+
+  /** The hits a section lists and counts: under Definite only, a motif condition's definite ones. */
+  const sectionHits = (section: CombinedResult['sections'][number]) => ('textHits' in section
+    ? section.textHits.length : definiteOnly ? section.motif.definiteHits : section.motif.totalHits);
+  /** What the filters left out, said after the documents searched while one is set. */
+  const filterTail = filtering && tally ? ` · ${tally.filteredOut} filtered out · ${tally.notApplicable.length} not applicable` : '';
 
   let message: string;
   let alert = 'refused' in resolved;
   if ('refused' in resolved) message = `This scope cannot be searched: ${resolved.refused}`;
   else if (resolved.documents.length === 0) message = `No documents in ${resolved.label}`;
-  else if (trimmed === '' || (current && 'refused' in current.result.outcome)) {
+  else if (filterRefused) { message = FILTER_REFUSED; alert = true; }
+  else if (active.length === 0 || (current && 'refused' in current.result.outcome)) {
     message = mode === 'Text'
       ? `Type text to search ${count(resolved.documents.length, 'document')}`
       : `Type a motif to search ${count(resolved.documents.filter((d) => motifNotSearchedReason(d, mode) === null).length, 'document')}`;
   }
   else if (isCancelled) message = `Cancelled after ${isCancelled.reached} of ${count(isCancelled.total, 'document')}: no results are shown`;
-  else if (!current) message = `Searching for "${trimmed}"…`;
+  else if (!current) message = `Searching for "${multi ? active.map((c) => c.query).join(`" ${combine === 'ALL' ? 'and' : 'or'} "`) : trimmed}"…`;
   else if (outOfDate) message = 'Out of date: the documents changed. Searching again…';
+  else if (conditionsOutcome) {
+    if ('engineUnavailable' in conditionsOutcome) { message = `The motif engine is not available: ${conditionsOutcome.engineUnavailable}`; alert = true; }
+    else if ('queryRefused' in conditionsOutcome) {
+      message = `This motif cannot be searched: condition ${conditionsOutcome.condition}: ${conditionsOutcome.queryRefused}`;
+      alert = true;
+    }
+    else {
+      const tail = `${count(conditionsAnswer!.searched, 'document')} searched${filterTail}`;
+      const listedHits = combined.results.reduce((n, r) => n + r.sections.reduce((m, sec) => m + sectionHits(sec), 0), 0);
+      message = combined.results.length === 0
+        ? `No matches in ${tail}`
+        : `${motifCount(listedHits, 'hit')} in ${count(combined.results.length, 'document')} · ${tail}`;
+    }
+  }
   else if (motif) {
     if ('engineUnavailable' in motif) { message = `The motif engine is not available: ${motif.engineUnavailable}`; alert = true; }
     else if ('queryRefused' in motif) { message = `This motif cannot be searched: ${motif.queryRefused}`; alert = true; }
     else {
       const skipped = motifAnswer!.notSearched.length;
-      const tail = `${count(motifAnswer!.searched, 'document')} searched · ${skipped} not searched`;
+      const tail = `${count(motifAnswer!.searched, 'document')} searched · ${skipped} not searched${filterTail}`;
       const listedHits = motifResults.reduce((n, r) => n + (definiteOnly ? r.definiteHits : r.totalHits), 0);
       const hidden = definiteOnly ? motifAnswer!.results.reduce((n, r) => n + r.possibleHits, 0) : 0;
       message = motifResults.length === 0
@@ -267,8 +376,85 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
       if (hidden > 0) message += ` · ${motifCount(hidden, 'possible hit')} hidden`;
     }
   }
-  else if (results.length === 0) message = `No matches in ${count(resolved.documents.length, 'document')} searched`;
-  else message = `${count(hitTotal, 'hit')} in ${count(results.length, 'document')} · ${count(resolved.documents.length, 'document')} searched`;
+  else {
+    // With a filter set, the documents searched are those that passed it.
+    const searchedCount = tally ? tally.passed : resolved.documents.length;
+    message = results.length === 0
+      ? `No matches in ${count(searchedCount, 'document')} searched${filterTail}`
+      : `${count(hitTotal, 'hit')} in ${count(results.length, 'document')} · ${count(searchedCount, 'document')} searched${filterTail}`;
+  }
+
+  const setRow = (index: number, change: Partial<Row>) => {
+    setRows((all) => all.map((r, i) => (i === index ? { ...r, ...change } : r)));
+    setPage(0);
+  };
+  const addRow = () => {
+    setRows((all) => [...all, { id: nextRowId.current++, mode: 'Text', query: '' }]);
+    setPage(0);
+  };
+  const removeRow = (index: number) => {
+    setRows((all) => all.filter((_, i) => i !== index));
+    setPage(0);
+  };
+  const setField = (change: Partial<FilterFields>) => { setFields((f) => ({ ...f, ...change })); setPage(0); };
+  const queryLabel = (row: Row, n: number) => `${row.mode === 'Text' ? 'Search text' : 'Search motif'}${n > 1 ? `, condition ${n}` : ''}`;
+  /** A condition row's own marks: why an empty one takes no part, and its Remove button. */
+  const rowMarks = (row: Row, n: number) => (multi ? (
+    <>
+      {row.query.trim() === '' && <span className="mbc-project-search-empty-condition" data-part="empty-condition">(empty: not used)</span>}
+      <button type="button" className="nav-cluster-icon-btn" aria-label={`Remove condition ${n}`} onClick={() => removeRow(n - 1)}>
+        <X size={12} />
+      </button>
+    </>
+  ) : null);
+  const modeSelect = (row: Row, n: number) => (
+    <select
+      aria-label={n > 1 ? `Search mode, condition ${n}` : 'Search mode'}
+      value={row.mode}
+      onChange={(e) => setRow(n - 1, { mode: e.target.value as SearchMode })}
+    >
+      {SEARCH_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+    </select>
+  );
+  const anyNucleotide = rows.some((r) => r.mode === 'Nucleotide motif');
+  const anyMotif = rows.some((r) => r.mode !== 'Text');
+  const modesShown = [...new Set(rows.map((r) => r.mode))];
+
+  const chips = FILTER_ORDER.filter((name) => FILTER_FIELDS[name].some((f) => fields[f] !== '')).map((name) => {
+    const value = name === 'Document type' ? fields.documentType
+      : name === 'Topology' ? fields.topology
+        : name === 'Annotation type' ? fields.annotationType
+          : name === 'Length' ? rangeText(fields.lengthMin, fields.lengthMax)
+            : rangeText(fields.modifiedFrom, fields.modifiedTo);
+    return { name, text: `${name}: ${value}` };
+  });
+
+  const motifHitRows = (hits: MotifHit[], documentId: string, hitMode: MotifMode) => (
+    <ul>
+      {hits.map((hit, i) => (
+        <li key={`${hit.start}-${hit.strand}-${i}`} data-search-hit>
+          <button type="button" className="mbc-project-search-hit" onClick={() => openHit(documentId, { mode: hitMode, hit })}>
+            <span data-part="coords">{hit.start}-{hit.end}</span>{' '}
+            <span data-part="strand">{strandText(hit)}</span>{' '}
+            <code data-part="letters">{hit.letters}</code>{' '}
+            <span data-part="certainty">{hit.certainty}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+  const textHitRows = (hits: TextHit[], documentId: string) => (
+    <ul>
+      {hits.map((hit, i) => (
+        <li key={`${hit.field}-${hit.start}-${i}`} data-search-hit>
+          <button type="button" className="mbc-project-search-hit" onClick={() => openHit(documentId, { mode: 'Text', hit })}>
+            <span className="mbc-project-search-field" data-part="field">{hit.field}</span>
+            <Snippet hit={hit} />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
 
   return (
     <section
@@ -291,12 +477,13 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
       <input
         type="search"
         className="mbc-project-search-input"
-        aria-label={mode === 'Text' ? 'Search text' : 'Search motif'}
+        aria-label={queryLabel(rows[0], 1)}
         placeholder={mode === 'Text' ? 'Search text…' : 'Search motif…'}
         value={query}
         autoFocus
-        onChange={(e) => { setQuery(e.target.value); setPage(0); }}
+        onChange={(e) => setRow(0, { query: e.target.value })}
       />
+      {rowMarks(rows[0], 1)}
       <fieldset className="mbc-project-search-scopes">
         <legend>Scope</legend>
         {offered.map((s) => (
@@ -315,33 +502,112 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
       <div className="mbc-project-search-mode">
         <label>
           Search mode{' '}
-          <select
-            aria-label="Search mode"
-            value={mode}
-            onChange={(e) => { setMode(e.target.value as SearchMode); setPage(0); }}
-          >
-            {SEARCH_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
+          {modeSelect(rows[0], 1)}
         </label>
-        {mode === 'Nucleotide motif' && (
+        {anyNucleotide && (
           <label>
             <input type="checkbox" checked={bothStrands} onChange={(e) => { setBothStrands(e.target.checked); setPage(0); }} />
             Both strands
           </label>
         )}
-        {mode !== 'Text' && (
+        {anyMotif && (
           <label>
             <input type="checkbox" checked={definiteOnly} onChange={(e) => { setDefiniteOnly(e.target.checked); setPage(0); }} />
             Definite only
           </label>
         )}
       </div>
+      {multi && (
+        <div className="mbc-project-search-conditions">
+          <label>
+            Combine conditions{' '}
+            <select aria-label="Combine conditions" value={combine} onChange={(e) => { setCombine(e.target.value as CombineChoice); setPage(0); }}>
+              {COMBINE_CHOICES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          {rows.slice(1).map((row, i) => {
+            const n = i + 2;
+            return (
+              <div key={row.id} className="mbc-project-search-condition" data-search-condition-row={n}>
+                <span className="mbc-project-search-joiner" data-part="joiner">{combine === 'ALL' ? 'and' : 'or'}</span>
+                <input
+                  type="search"
+                  className="mbc-project-search-input"
+                  aria-label={queryLabel(row, n)}
+                  placeholder={row.mode === 'Text' ? 'Search text…' : 'Search motif…'}
+                  value={row.query}
+                  onChange={(e) => setRow(n - 1, { query: e.target.value })}
+                />
+                {modeSelect(row, n)}
+                {rowMarks(row, n)}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <button type="button" className="mbc-project-search-add-condition" onClick={addRow}>Add condition</button>
+      <fieldset className="mbc-project-search-filters">
+        <legend>Filters</legend>
+        <label>
+          Document type{' '}
+          <select aria-label="Document type" value={fields.documentType} onChange={(e) => setField({ documentType: e.target.value })}>
+            <option value="">Any</option>
+            {typeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </label>
+        <label>
+          Topology{' '}
+          <select aria-label="Topology" value={fields.topology} onChange={(e) => setField({ topology: e.target.value as FilterFields['topology'] })}>
+            <option value="">Any</option>
+            <option value="circular">circular</option>
+            <option value="linear">linear</option>
+          </select>
+        </label>
+        <span role="group" aria-label={LENGTH_LABEL} className="mbc-project-search-range">
+          {LENGTH_LABEL}{' '}
+          <input inputMode="numeric" aria-label={`${LENGTH_LABEL}, minimum`} placeholder="min" value={fields.lengthMin} onChange={(e) => setField({ lengthMin: e.target.value })} />
+          {' – '}
+          <input inputMode="numeric" aria-label={`${LENGTH_LABEL}, maximum`} placeholder="max" value={fields.lengthMax} onChange={(e) => setField({ lengthMax: e.target.value })} />
+          {lengthReason && <span className="mbc-project-search-filter-reason" data-filter-reason="Length">{lengthReason}</span>}
+        </span>
+        <span role="group" aria-label="Modified date" className="mbc-project-search-range">
+          Modified date{' '}
+          <input aria-label="Modified date, from" placeholder="YYYY-MM-DD" value={fields.modifiedFrom} onChange={(e) => setField({ modifiedFrom: e.target.value })} />
+          {' – '}
+          <input aria-label="Modified date, to" placeholder="YYYY-MM-DD" value={fields.modifiedTo} onChange={(e) => setField({ modifiedTo: e.target.value })} />
+          {dateReason && <span className="mbc-project-search-filter-reason" data-filter-reason="Modified date">{dateReason}</span>}
+        </span>
+        <label>
+          Annotation type{' '}
+          <select aria-label="Annotation type" value={fields.annotationType} onChange={(e) => setField({ annotationType: e.target.value })}>
+            <option value="">Any</option>
+            {annotationOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </label>
+      </fieldset>
+      {chips.length > 0 && (
+        <ul className="mbc-project-search-chips">
+          {chips.map((chip) => (
+            <li key={chip.name} data-search-filter-chip={chip.name}>
+              <span data-part="chip">{chip.text}</span>
+              <button
+                type="button"
+                className="nav-cluster-icon-btn"
+                aria-label={`Remove ${chip.name.toLowerCase()} filter`}
+                onClick={() => setField(Object.fromEntries(FILTER_FIELDS[chip.name].map((f) => [f, ''])))}
+              >
+                <X size={12} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {'refused' in resolved ? null : (
         <p className="mbc-project-search-scope">
           Searching: <strong data-search-scope-label>{resolved.label}</strong>
         </p>
       )}
-      <p className="mbc-project-search-fields">{MODE_STATEMENT[mode]}</p>
+      {modesShown.map((m) => <p key={m} className="mbc-project-search-fields">{MODE_STATEMENT[m]}</p>)}
       <p className="mbc-project-search-summary" role={alert ? 'alert' : 'status'} data-search-summary>
         {message}
       </p>
@@ -372,16 +638,7 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
                   <span data-part="type">{doc ? inferDocumentTypeLabel(doc) : ''}</span>
                   <span data-part="hits">{count(group.hits.length, 'hit')}</span>
                 </div>
-                <ul>
-                  {group.hits.map((hit, i) => (
-                    <li key={`${hit.field}-${hit.start}-${i}`} data-search-hit>
-                      <button type="button" className="mbc-project-search-hit" onClick={() => openHit(group.documentId, { mode: 'Text', hit })}>
-                        <span className="mbc-project-search-field" data-part="field">{hit.field}</span>
-                        <Snippet hit={hit} />
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+                {textHitRows(group.hits, group.documentId)}
               </li>
             );
           })}
@@ -403,32 +660,69 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
                   </span>
                 </div>
                 {group.warnings.map((w) => <p key={w} className="mbc-project-search-warning" data-part="warning">{w}</p>)}
-                <ul>
-                  {hits.map((hit, i) => (
-                    <li key={`${hit.start}-${hit.strand}-${i}`} data-search-hit>
-                      <button type="button" className="mbc-project-search-hit" onClick={() => openHit(group.documentId, { mode: motifMode!, hit })}>
-                        <span data-part="coords">{hit.start}-{hit.end}</span>{' '}
-                        <span data-part="strand">{strandText(hit)}</span>{' '}
-                        <code data-part="letters">{hit.letters}</code>{' '}
-                        <span data-part="certainty">{hit.certainty}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+                {motifHitRows(hits, group.documentId, motifMode!)}
               </li>
             );
           })}
         </ol>
       )}
-      {motifAnswer && motifAnswer.notSearched.length > 0 && (
+      {shownCombined.length > 0 && (
+        <ol className="mbc-project-search-results">
+          {shownCombined.map((group) => {
+            const doc = byId.get(group.documentId);
+            return (
+              <li key={group.documentId} data-search-group={group.documentId} className="mbc-project-search-group">
+                <div className="mbc-project-search-group-head">
+                  <strong data-part="name">{group.documentName}</strong>
+                  <span data-part="path">{group.folderPath}</span>
+                  <span data-part="type">{doc ? inferDocumentTypeLabel(doc) : ''}</span>
+                  <span data-part="hits">{motifCount(group.sections.reduce((n, sec) => n + sectionHits(sec), 0), 'hit')}</span>
+                </div>
+                {group.sections.map((section) => {
+                  const { condition, mode: conditionMode, query: conditionQuery } = section.condition;
+                  return (
+                    <div key={condition} className="mbc-project-search-condition-hits" data-search-condition={condition}>
+                      <h4 data-part="condition">Condition {condition}: {conditionMode} {conditionQuery}</h4>
+                      {'textHits' in section ? textHitRows(section.textHits, group.documentId) : (
+                        <>
+                          {section.motif.warnings.map((w) => <p key={w} className="mbc-project-search-warning" data-part="warning">{w}</p>)}
+                          {motifHitRows(
+                            definiteOnly ? section.motif.hits.filter((h) => h.certainty === 'definite') : section.motif.hits,
+                            group.documentId, conditionMode as MotifMode,
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {notSearched.length > 0 && (
         <section className="mbc-project-search-not-searched" data-search-not-searched>
           <h3>Not searched</h3>
           <ul>
-            {motifAnswer.notSearched.map((skip) => (
-              <li key={skip.documentId} data-search-skip={skip.documentId}>
+            {notSearched.map((skip) => (
+              <li key={`${skip.documentId} ${skip.reason}`} data-search-skip={skip.documentId}>
                 <strong data-part="name">{skip.documentName}</strong>{' '}
                 <span data-part="path">{skip.folderPath}</span>{' '}
                 <span data-part="reason">{skip.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {current && tally && tally.notApplicable.length > 0 && (
+        <section className="mbc-project-search-not-applicable" data-search-not-applicable>
+          <h3>Not applicable</h3>
+          <ul>
+            {tally.notApplicable.map((na) => (
+              <li key={na.documentId} data-search-not-applicable-doc={na.documentId}>
+                <strong data-part="name">{na.documentName}</strong>{' '}
+                <span data-part="path">{na.folderPath}</span>{' '}
+                <span data-part="reason">{na.reason}</span>
               </li>
             ))}
           </ul>

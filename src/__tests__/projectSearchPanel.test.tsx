@@ -18,7 +18,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
-import { NUCLEOTIDE_MOTIF_STATEMENT, PROTEIN_MOTIF_STATEMENT, TEXT_SEARCH_STATEMENT } from '../core/projectSearch';
+import { motifNotSearchedReason, NUCLEOTIDE_MOTIF_STATEMENT, PROTEIN_MOTIF_STATEMENT, TEXT_SEARCH_STATEMENT } from '../core/projectSearch';
 import { SEARCH_PAUSE_MS } from '../components/ProjectSearchPanel';
 import { inferDocumentTypeLabel } from '../core/workbenchBatchOperations';
 import { resolveNativeMenuItemEnabled } from '../core/commandAvailability';
@@ -1361,6 +1361,414 @@ describe('US-01M7DV78 AC4: a hit of a document deleted since the search says so 
       expect(activeName(app), 'an undeleted document still opens').toBe('Other zqother');
       expect(readout(app)).toMatch(/^10\.\.20 /);
       expect(summary(app), 'every click ran before the pause').toBe(OUT_OF_DATE_SENTENCE);
+    });
+  });
+});
+
+// ─── US-01M7DVHA: conditions combined with ALL or ANY, and filters that always narrow ───
+//
+// Each case names the wrong panel it fails: ANY read as ALL, an empty condition counted, Definite
+// only applied after the conditions are combined, Both strands given to the first motif condition
+// only, a filter dropped under ANY, a refused bound applied as no filter, an inapplicable filter
+// read as a non-match, and a control left out of the run key (its change shows another set's groups).
+
+const HVA_LAB = 'Combine Lab';
+const hva = (over: Partial<SequenceDocument> & { id: string; name: string }) => docOf({ folder: HVA_LAB, accession: 'ZQLAB', sequence: 'C'.repeat(12), ...over });
+/** Auckland is UTC+13 in November: each instant's local day differs from its UTC date. */
+const HVA_TZ = 'Pacific/Auckland';
+const HVA_DOCS: SequenceDocument[] = [
+  // Active, so Sequence › Toggle topology turns it circular.
+  hva({ id: 'h-both', name: 'Both conditions', description: 'a zqbeta vector', sequence: 'CCCGAATTCCCC', updatedAt: '2026-11-03T11:00:00Z',
+    features: [{ id: 'h-f1', name: 'orf', type: 'CDS', start: 1, end: 6, strand: 1, color: '#888' }] }),
+  hva({ id: 'h-text', name: 'Text only', description: 'zqbeta only', updatedAt: '2026-11-04T10:59:00Z',
+    // Stored lower case, as an imported file may store it: not the CDS of annotation type CDS.
+    features: [{ id: 'h-f2', name: 'orf', type: 'cds' as SequenceDocument['features'][number]['type'], start: 1, end: 6, strand: 1, color: '#888' }] }),
+  hva({ id: 'h-motif', name: 'Motif only', topology: 'circular', sequence: 'CCCGAATTCCCC', updatedAt: '2026-11-04T11:00:00Z' }),
+  // Its only GAATTC site is possible (N).
+  hva({ id: 'h-possible', name: 'Possible site', description: 'zqbeta with an N', sequence: 'CCCGAANTCCCC' }),
+  hva({ id: 'h-protein', name: 'Beta protein', description: 'zqbeta protein', moleculeType: 'Protein', sequence: 'MKWWGAATTC' }),
+  hva({ id: 'h-tree', name: 'Beta tree', description: 'zqbeta tree', sequence: 'GAATTC', docMetadata: { Newick: '(a,b);' } }),
+  // GAGACC and GCGATG only on the reverse strand (GGTCTC, CATCGC).
+  hva({ id: 'h-rev', name: 'Reverse sites', sequence: 'AAGGTCTCAACATCGCAA' }),
+  hva({ id: 'h-neither', name: 'Neither', sequence: 'TTTTTTTTTTTT' }),
+  // An RNA Transcript, not a Nucleotide Sequence: a type filter read from the molecule type would take it.
+  hva({ id: 'h-rna', name: 'Beta RNA', description: 'zqbeta rna', moleculeType: 'RNA' }),
+];
+const HVA_SPEC: SessionSpec = {
+  documents: HVA_DOCS, activeDocId: 'h-both', viewerTab: 'sequence-view',
+  workspace: { projectExplorer: { ...EXPLORER, customFolders: [HVA_LAB], folderParents: {}, hiddenFolders: [], favoriteDocIds: [], deletedDocIds: [] } } as SessionSpec['workspace'],
+};
+const LENGTH = 'Length (bp or nt; aa for proteins)';
+const inPanel = (app: AppHarness, selector: string) => panel(app).querySelectorAll(selector);
+const field = (app: AppHarness, label: string) => {
+  const found = inPanel(app, `[aria-label="${label}"]`);
+  if (found.length !== 1) throw new Error(`expected one "${label}" in the panel, found ${found.length}`);
+  return found[0];
+};
+const has = (app: AppHarness, label: string) => inPanel(app, `[aria-label="${label}"]`).length;
+const button = (app: AppHarness, name: string) => {
+  const found = inPanel(app, 'button').filter((b) => nameOf(b) === name);
+  if (found.length !== 1) throw new Error(`expected one "${name}" button, found ${found.length}`);
+  return found[0];
+};
+const valueOf = (el: LiveElement) => (el as unknown as { value: string }).value;
+const optionsOf = (el: LiveElement) => el.querySelectorAll('option').map((o) => words(o.textContent));
+const joiners = (app: AppHarness) => inPanel(app, '[data-part="joiner"]').map((j) => words(j.textContent));
+const emptyNotes = (app: AppHarness) => inPanel(app, '[data-part="empty-condition"]').map((j) => words(j.textContent));
+const sections = (group: LiveElement) => group.querySelectorAll('[data-search-condition]').map((s) => part(s, 'condition'));
+const skipList = (app: AppHarness) => inPanel(app, '[data-search-skip]').map((s) => `${part(s, 'name')}: ${part(s, 'reason')}`).sort();
+const notApplicable = (app: AppHarness) => inPanel(app, '[data-search-not-applicable-doc]').map((s) => `${part(s, 'name')}: ${part(s, 'reason')}`);
+const chipsShown = (app: AppHarness) => inPanel(app, '[data-search-filter-chip]').map((c) => part(c, 'chip'));
+const filterReason = (app: AppHarness, name: string) => words(panel(app).querySelector(`[data-filter-reason="${name}"]`)?.textContent);
+
+/** Opens Combine Lab, types `first` as condition 1 and adds condition 2 in `mode2` with `second`. */
+async function twoConditions(app: AppHarness, first: string, mode2: string, second: string) {
+  await searchFolder(app, HVA_LAB);
+  await typeQuery(app, queryField(app), first);
+  await app.click(button(app, 'Add condition'));
+  await finishSearch(app, 0);
+  if (mode2 !== 'Text') { await app.change(field(app, 'Search mode, condition 2'), mode2); await finishSearch(app, 0); }
+  await typeQuery(app, field(app, `${mode2 === 'Text' ? 'Search text' : 'Search motif'}, condition 2`), second);
+}
+async function withTimeZone(tz: string, run: () => Promise<void>) {
+  const before = process.env.TZ;
+  process.env.TZ = tz;
+  try { await run(); } finally { if (before === undefined) delete process.env.TZ; else process.env.TZ = before; }
+}
+
+describe('US-01M7DVHA AC1: conditions added and removed, combined with ALL or ANY', () => {
+  it('US-01M7DVHA AC1 opens with one condition as today, and Add condition and Remove condition N add and remove labelled rows', async () => {
+    await withSession(HVA_SPEC, async (app) => {
+      await searchFolder(app, HVA_LAB);
+      expect(has(app, 'Search text'), 'one condition: today\'s field').toBe(1);
+      expect(has(app, 'Search mode')).toBe(1);
+      expect(has(app, 'Combine conditions'), 'no choice with one condition').toBe(0);
+      expect(joiners(app)).toEqual([]);
+      expect(inPanel(app, 'button').filter((b) => nameOf(b).startsWith('Remove condition'))).toHaveLength(0);
+
+      await app.click(button(app, 'Add condition'));
+      expect(has(app, 'Search text, condition 2')).toBe(1);
+      expect(has(app, 'Search mode, condition 2')).toBe(1);
+      expect(has(app, 'Search text'), 'condition 1 keeps its labels').toBe(1);
+      const combine = field(app, 'Combine conditions');
+      expect(optionsOf(combine)).toEqual(['ALL', 'ANY']);
+      expect(valueOf(combine), 'ALL is the default').toBe('ALL');
+      expect(joiners(app)).toEqual(['and']);
+      expect(emptyNotes(app), 'both rows are empty').toEqual(['(empty: not used)', '(empty: not used)']);
+      await app.change(field(app, 'Search mode, condition 2'), 'Nucleotide motif');
+      expect(has(app, 'Search motif, condition 2'), 'a motif row is labelled as one').toBe(1);
+      await app.click(button(app, 'Add condition'));
+      await app.change(field(app, 'Search mode, condition 3'), 'Protein motif');
+      expect(has(app, 'Search motif, condition 3')).toBe(1);
+      await app.change(field(app, 'Combine conditions'), 'ANY');
+      expect(joiners(app)).toEqual(['or', 'or']);
+
+      await app.click(button(app, 'Remove condition 2'));
+      expect(has(app, 'Search motif, condition 2'), 'condition 3 is now condition 2').toBe(1);
+      expect(valueOf(field(app, 'Search mode, condition 2'))).toBe('Protein motif');
+      expect(has(app, 'Search mode, condition 3')).toBe(0);
+      await app.click(button(app, 'Remove condition 2'));
+      expect(has(app, 'Combine conditions'), 'one condition again: today\'s panel').toBe(0);
+      expect(has(app, 'Search text')).toBe(1);
+      expect(joiners(app)).toEqual([]);
+      expect(emptyNotes(app)).toEqual([]);
+    });
+  });
+
+  it('US-01M7DVHA AC1 ALL lists a document every condition with a query has a hit in, ANY one at least one has, each hit under its condition', async () => {
+    await withSession(HVA_SPEC, async (app) => {
+      await twoConditions(app, 'zqbeta', 'Nucleotide motif', 'GAATTC');
+      expect(groupNames(app), 'ALL').toEqual(['Both conditions', 'Possible site']);
+      expect(sections(groupFor(app, 'Both conditions'))).toEqual(['Condition 1: Text zqbeta', 'Condition 2: Nucleotide motif GAATTC']);
+      expect(skipList(app), 'a document condition 2 does not read, its reason prefixed').toEqual([
+        'Beta protein: condition 2: protein sequence (use Protein motif)', 'Beta tree: condition 2: tree (no sequence)',
+      ]);
+      expect(summary(app)).toBe(`4 hits in 2 documents · ${HVA_DOCS.length} documents searched`);
+
+      // A blank third row takes no part: counted as a condition with no hits, ALL would list nothing.
+      await app.click(button(app, 'Add condition'));
+      await finishSearch(app, 0);
+      expect(emptyNotes(app)).toEqual(['(empty: not used)']);
+      expect(groupNames(app), 'ALL with an empty condition').toEqual(['Both conditions', 'Possible site']);
+
+      await app.change(field(app, 'Combine conditions'), 'ANY');
+      await finishSearch(app, 0);
+      expect(groupNames(app), 'ANY: the protein and the tree through condition 1, Motif only through condition 2').toEqual(
+        ['Beta RNA', 'Beta protein', 'Beta tree', 'Both conditions', 'Motif only', 'Possible site', 'Text only'],
+      );
+      expect(sections(groupFor(app, 'Beta tree')), 'not read by condition 2, a result through condition 1').toEqual(['Condition 1: Text zqbeta']);
+      expect(sections(groupFor(app, 'Motif only'))).toEqual(['Condition 2: Nucleotide motif GAATTC']);
+
+      // Every hit opens as US-01M7DV78 says: its own document, the site selected.
+      const site = groupFor(app, 'Motif only').querySelectorAll('[data-search-condition="2"] [data-search-hit] button');
+      expect(site.map((b) => part(b, 'coords'))).toEqual(['4-9']);
+      await app.click(site[0]);
+      expect(activeName(app)).toBe('Motif only');
+      expect(readout(app)).toMatch(/^4\.\.9 \(6 bp/);
+      const text = groupFor(app, 'Beta tree').querySelectorAll('[data-search-hit] button');
+      expect(text.map((b) => part(b, 'field'))).toEqual(['Description']);
+    });
+  });
+
+  it('US-01M7DVHA AC1 Definite only drops possible hits before combining, and Both strands applies to every nucleotide condition', async () => {
+    await withSession(HVA_SPEC, async (app) => {
+      await twoConditions(app, 'zqbeta', 'Nucleotide motif', 'GAATTC');
+      await app.change(checkbox(app, 'Definite only'), true);
+      expect(groupNames(app), 'ALL under Definite only: the possible-only document is no result').toEqual(['Both conditions']);
+      await app.change(field(app, 'Combine conditions'), 'ANY');
+      await finishSearch(app, 0);
+      expect(sections(groupFor(app, 'Possible site')), 'under ANY it stays, through Text alone').toEqual(['Condition 1: Text zqbeta']);
+    });
+    await withSession(HVA_SPEC, async (app) => {
+      // Condition 1 a motif too: two nucleotide conditions, each found only on the reverse strand.
+      await searchFolder(app, HVA_LAB);
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await twoConditionsFromOpen(app, 'GAGACC', 'GCGATG');
+      expect(groupNames(app), 'both strands read for both conditions').toEqual(['Reverse sites']);
+      expect(sections(groupFor(app, 'Reverse sites'))).toEqual(['Condition 1: Nucleotide motif GAGACC', 'Condition 2: Nucleotide motif GCGATG']);
+      await app.change(checkbox(app, 'Both strands'), false);
+      await finishSearch(app, 0);
+      expect(groupNames(app), 'top strand only, for both').toEqual([]);
+      await app.change(field(app, 'Combine conditions'), 'ANY');
+      await finishSearch(app, 0);
+      expect(groupNames(app), 'neither condition finds a top-strand site').toEqual([]);
+    });
+  });
+
+  it('US-01M7DVHA AC1 filters narrow the documents searched under ANY: only documents of the type that meet at least one condition', async () => {
+    await withSession(HVA_SPEC, async (app) => {
+      await twoConditions(app, 'zqbeta', 'Nucleotide motif', 'GAATTC');
+      await app.change(field(app, 'Combine conditions'), 'ANY');
+      await finishSearch(app, 0);
+      expect(groupNames(app)).toContain('Beta protein');
+      await app.change(field(app, 'Document type'), 'Nucleotide Sequence');
+      await finishSearch(app, 0);
+      // Neither is a Nucleotide Sequence that meets no condition; the protein and the RNA meet one but are not of the type.
+      const names = groupNames(app);
+      expect(names).toEqual(['Beta tree', 'Both conditions', 'Possible site', 'Text only']);
+      for (const name of names) expect(part(groupFor(app, name), 'type')).toBe('Nucleotide Sequence');
+    });
+  });
+});
+
+/** In an open Combine Lab whose condition 1 is a motif mode: types `first`, adds a nucleotide condition 2 with `second`. */
+async function twoConditionsFromOpen(app: AppHarness, first: string, second: string) {
+  await typeQuery(app, motifField(app), first);
+  await app.click(button(app, 'Add condition'));
+  await finishSearch(app, 0);
+  await app.change(field(app, 'Search mode, condition 2'), 'Nucleotide motif');
+  await finishSearch(app, 0);
+  await typeQuery(app, field(app, 'Search motif, condition 2'), second);
+}
+
+describe('US-01M7DVHA AC2: filters by type, topology, length, modified date and annotation type, shown as chips', () => {
+  it('US-01M7DVHA AC2 each filter narrows as stated, shows a chip with its Remove button, and runs at once', async () => {
+    await withTimeZone(HVA_TZ, () => withSession(HVA_SPEC, async (app) => {
+      await searchFolder(app, HVA_LAB);
+      await typeQuery(app, queryField(app), 'zqlab');
+      const all = groupNames(app);
+      expect(all, 'every accession is ZQLAB').toHaveLength(HVA_DOCS.length);
+      expect(summary(app)).toBe(`${HVA_DOCS.length} hits in ${HVA_DOCS.length} documents · ${HVA_DOCS.length} documents searched`);
+      expect(chipsShown(app)).toEqual([]);
+
+      const cases: [string, string | [string, string], string, string[]][] = [
+        ['Document type', 'Plasmid / Vector', 'document type', ['Motif only']],
+        ['Topology', 'circular', 'topology', ['Motif only']],
+        // Inclusive bounds, and a protein measured in aa: 10 aa, never 30.
+        [LENGTH, ['10', '10'], 'length', ['Beta protein']],
+        [LENGTH, ['12', '12'], 'length', ['Beta RNA', 'Both conditions', 'Motif only', 'Neither', 'Possible site', 'Text only']],
+        // Local calendar days in Auckland: 11:00Z on the 3rd is the 4th at 00:00, 10:59Z on the 4th its 23:59, 11:00Z the 5th.
+        ['Modified date', ['2026-11-04', '2026-11-04'], 'modified date', ['Both conditions', 'Text only']],
+        ['Annotation type', 'CDS', 'annotation type', ['Both conditions']],
+      ];
+      for (const [label, value, name, expected] of cases) {
+        if (Array.isArray(value)) {
+          const [lo, hi] = label === LENGTH ? [`${LENGTH}, minimum`, `${LENGTH}, maximum`] : ['Modified date, from', 'Modified date, to'];
+          await app.input(field(app, lo), value[0]);
+          expect(cancelButtons(app), `${name}: a filter change runs at once`).toHaveLength(1);
+          await app.input(field(app, hi), value[1]);
+        } else {
+          await app.change(field(app, label), value);
+        }
+        expect(cancelButtons(app), `${name}: the run starts at once, with no pause`).toHaveLength(1);
+        expect(groups(app), `${name}: no group of the unfiltered set`).toHaveLength(0);
+        await finishSearch(app, 0);
+        expect(groupNames(app), name).toEqual(expected);
+        expect(chipsShown(app), `${name}: its chip`).toHaveLength(1);
+        const notApplicableCount = label === 'Topology' || label === LENGTH ? 1 : 0;
+        const filteredOut = HVA_DOCS.length - expected.length - notApplicableCount;
+        expect(summary(app), name).toBe(
+          `${plural(expected.length, 'hit')} in ${plural(expected.length, 'document')} · ${plural(expected.length, 'document')} searched · ${filteredOut} filtered out · ${notApplicableCount} not applicable`,
+        );
+        await app.click(button(app, `Remove ${name} filter`));
+        expect(chipsShown(app), `${name}: removed`).toEqual([]);
+        expect(cancelButtons(app), `${name}: removing the chip runs at once`).toHaveLength(1);
+        await finishSearch(app, 0);
+        expect(groupNames(app), `${name}: removed, every document again`).toEqual(all);
+        expect(summary(app), `${name}: no filter, no filtered-out count`).toBe(`${HVA_DOCS.length} hits in ${HVA_DOCS.length} documents · ${HVA_DOCS.length} documents searched`);
+      }
+
+      // Two filters at once, one chip each, both applied.
+      await app.change(field(app, 'Topology'), 'linear');
+      await app.input(field(app, `${LENGTH}, minimum`), '13');
+      await finishSearch(app, 0);
+      expect(chipsShown(app)).toEqual(['Topology: linear', 'Length: from 13']);
+      expect(groupNames(app)).toEqual(['Reverse sites']);
+    }));
+  });
+});
+
+describe('US-01M7DVHA AC3: a bound that cannot be read is refused and nothing is searched', () => {
+  it('US-01M7DVHA AC3 names the reason by the field, lists no earlier group, starts no run, and never searches as if unfiltered', async () => {
+    await withSession(HVA_SPEC, async (app) => {
+      await searchFolder(app, HVA_LAB);
+      await typeQuery(app, queryField(app), 'zqbeta');
+      expect(groups(app).length).toBeGreaterThan(0);
+      const cases: [string, string, string, string][] = [
+        [`${LENGTH}, minimum`, 'ten', 'Length', 'Not a number.'],
+        [`${LENGTH}, maximum`, '12.5', 'Length', 'Not a number.'],
+        [`${LENGTH}, minimum`, '20', 'Length', 'Minimum is above maximum.'],
+        ['Modified date, from', '2026-13-01', 'Modified date', 'Not a date.'],
+        ['Modified date, to', '2026-02-30', 'Modified date', 'Not a date.'],
+      ];
+      for (const [label, value, filter, reason] of cases) {
+        if (label === `${LENGTH}, minimum` && value === '20') await app.input(field(app, `${LENGTH}, maximum`), '12');
+        await app.input(field(app, label), value);
+        expect(filterReason(app, filter), `${value}: the reason by its field`).toBe(reason);
+        expect(summary(app), value).toBe('A filter cannot be read, so nothing was searched.');
+        expect(groups(app), `${value}: no earlier group`).toHaveLength(0);
+        expect(cancelButtons(app), `${value}: no run`).toHaveLength(0);
+        await advance(app, SEARCH_PAUSE_MS * 4);
+        expect(cancelButtons(app), `${value}: no run after the pause`).toHaveLength(0);
+        expect(groups(app), `${value}: still nothing listed, never the unfiltered results`).toHaveLength(0);
+        expect(summary(app)).toBe('A filter cannot be read, so nothing was searched.');
+        await app.input(field(app, label), '');
+        if (label === `${LENGTH}, minimum` && value === '20') await app.input(field(app, `${LENGTH}, maximum`), '');
+        await finishSearch(app, 0);
+        expect(filterReason(app, filter), `${value}: cleared`).toBe('');
+        expect(groups(app).length, `${value}: readable again, the search runs`).toBeGreaterThan(0);
+      }
+      // A refused bound beside a readable one: the readable one alone is never applied either.
+      await app.change(field(app, 'Topology'), 'circular');
+      await app.input(field(app, `${LENGTH}, minimum`), 'x');
+      await advance(app, SEARCH_PAUSE_MS);
+      expect(groups(app)).toHaveLength(0);
+      expect(summary(app)).toBe('A filter cannot be read, so nothing was searched.');
+      // The empty query asks for text; a refused filter is told first.
+      await app.input(queryField(app), '');
+      expect(summary(app)).toBe('A filter cannot be read, so nothing was searched.');
+    });
+  });
+});
+
+describe('US-01M7DVHA AC4: a filter that does not apply leaves the document out, listed apart', () => {
+  it('US-01M7DVHA AC4 lists the tree under Not applicable for topology and length, counted apart, while type and annotation type apply to it', async () => {
+    await withSession(HVA_SPEC, async (app) => {
+      await searchFolder(app, HVA_LAB);
+      await typeQuery(app, queryField(app), 'zqbeta');
+      expect(groupNames(app)).toContain('Beta tree');
+      await app.change(field(app, 'Topology'), 'linear');
+      await finishSearch(app, 0);
+      expect(groupNames(app), 'not a match: left out').toEqual(['Beta RNA', 'Beta protein', 'Both conditions', 'Possible site', 'Text only']);
+      expect(notApplicable(app)).toEqual(['Beta tree: Topology does not apply: tree (no sequence)']);
+      // Motif only is circular: filtered out. The tree is neither searched nor filtered out.
+      expect(summary(app), 'counted apart, never as filtered out').toBe(`5 hits in 5 documents · ${HVA_DOCS.length - 2} documents searched · 1 filtered out · 1 not applicable`);
+      await app.input(field(app, `${LENGTH}, maximum`), '100');
+      await finishSearch(app, 0);
+      expect(notApplicable(app)).toEqual(['Beta tree: Topology does not apply: tree (no sequence); Length does not apply: tree (no sequence)']);
+      await app.click(button(app, 'Remove topology filter'));
+      await finishSearch(app, 0);
+      expect(notApplicable(app)).toEqual(['Beta tree: Length does not apply: tree (no sequence)']);
+      expect(summary(app)).toBe(`5 hits in 5 documents · ${HVA_DOCS.length - 1} documents searched · 0 filtered out · 1 not applicable`);
+      await app.click(button(app, 'Remove length filter'));
+      // Annotation type applies to the tree: it is filtered out, not listed as not applicable.
+      await app.change(field(app, 'Annotation type'), 'CDS');
+      await finishSearch(app, 0);
+      expect(notApplicable(app)).toEqual([]);
+      expect(groupNames(app)).toEqual(['Both conditions']);
+      expect(summary(app)).toBe(`1 hit in 1 document · 1 document searched · ${HVA_DOCS.length - 1} filtered out · 0 not applicable`);
+      await app.click(button(app, 'Remove annotation type filter'));
+      // In a motif mode the tree is not applicable before it is ever not searched.
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await app.change(field(app, 'Topology'), 'linear');
+      await typeQuery(app, motifField(app), 'GAATTC');
+      expect(notApplicable(app)).toEqual(['Beta tree: Topology does not apply: tree (no sequence)']);
+      expect(skips(app), 'only the protein is not searched').toEqual({ 'Beta protein': 'protein sequence (use Protein motif)' });
+    });
+  });
+});
+
+describe('US-01M7DVHA AC5: the run key holds every condition, the choice and the filters', () => {
+  it('US-01M7DVHA AC5 reads one document a step with every condition, waits after typing only, and never lists another set\'s groups', async () => {
+    await withSession(HVA_SPEC, async (app) => {
+      const real = await vi.importActual<typeof import('../lib/rustBioEngine')>('../lib/rustBioEngine');
+      const calls: { seq: string; query: string }[] = [];
+      engineOverride.current = (...args: unknown[]) => {
+        const [seq, query, options] = args as Parameters<typeof real.searchIupacMotifRust>;
+        calls.push({ seq, query });
+        return real.searchIupacMotifRust(seq, query, options);
+      };
+      try {
+        await searchFolder(app, HVA_LAB);
+        await app.change(modeSelect(app), 'Nucleotide motif');
+        await typeQuery(app, motifField(app), 'GAATTC');
+        await app.click(button(app, 'Add condition'));
+        await finishSearch(app, 0);
+        await app.change(field(app, 'Search mode, condition 2'), 'Nucleotide motif');
+        await finishSearch(app, 0);
+        calls.length = 0;
+        // Typing in condition 2 waits for the pause.
+        await app.input(field(app, 'Search motif, condition 2'), 'GGATCC');
+        expect(groups(app), 'no group of the earlier set while typing').toHaveLength(0);
+        await advance(app, SEARCH_PAUSE_MS - 1);
+        expect(cancelButtons(app), 'no run before the pause').toHaveLength(0);
+        await advance(app, 1);
+        expect(calls.map((c) => [c.seq, c.query]), 'the first step reads the first document with both conditions')
+          .toEqual([[HVA_DOCS[0].sequence, 'GAATTC'], [HVA_DOCS[0].sequence, 'GGATCC']]);
+        let steps = 0;
+        while (cancelButtons(app).length > 0) { await stepSearch(app); steps += 1; }
+        expect(steps, 'one step per document').toBe(HVA_DOCS.length - 1);
+        expect(calls.length, 'two calls per document each condition reads').toBe(2 * HVA_DOCS.filter((d) => motifNotSearchedReason(d, 'Nucleotide motif') === null).length);
+      } finally {
+        engineOverride.current = null;
+      }
+
+      // Each change starts its run at once and lists nothing of the set before it.
+      await app.change(field(app, 'Combine conditions'), 'ANY');
+      await finishSearch(app, 0);
+      const anyGroups = groupNames(app);
+      expect(anyGroups).toEqual(['Both conditions', 'Motif only', 'Possible site']);
+      const changes: [string, () => Promise<void>][] = [
+        ['ALL', () => app.change(field(app, 'Combine conditions'), 'ALL')],
+        ['ANY', () => app.change(field(app, 'Combine conditions'), 'ANY')],
+        ['a condition\'s mode', () => app.change(field(app, 'Search mode, condition 2'), 'Text')],
+        ['the mode back', () => app.change(field(app, 'Search mode, condition 2'), 'Nucleotide motif')],
+        ['Add condition', () => app.click(button(app, 'Add condition'))],
+        ['Remove condition 3', () => app.click(button(app, 'Remove condition 3'))],
+        ['a filter', () => app.change(field(app, 'Topology'), 'circular')],
+        ['the filter removed', () => app.click(button(app, 'Remove topology filter'))],
+      ];
+      for (const [what, change] of changes) {
+        await change();
+        expect(cancelButtons(app), `${what}: the run starts at once`).toHaveLength(1);
+        expect(groups(app), `${what}: no group of the earlier set`).toHaveLength(0);
+        await finishSearch(app, 0);
+      }
+      expect(groupNames(app)).toEqual(anyGroups);
+
+      // A change of the documents that moves one into the filter, then out of it, marks the results out of date and reruns.
+      await app.change(field(app, 'Topology'), 'circular');
+      await finishSearch(app, 0);
+      expect(groupNames(app)).toEqual(['Motif only']);
+      const OUT_OF_DATE = 'Out of date: the documents changed. Searching again…';
+      await app.menu('sequence:toggle-topology');
+      expect(summary(app), 'Both conditions turned circular: out of date').toBe(OUT_OF_DATE);
+      await finishSearch(app);
+      expect(groupNames(app), 'moved into the filter').toEqual(['Both conditions', 'Motif only']);
+      await app.menu('sequence:toggle-topology');
+      expect(summary(app)).toBe(OUT_OF_DATE);
+      await finishSearch(app);
+      expect(groupNames(app), 'moved out again').toEqual(['Motif only']);
     });
   });
 });
