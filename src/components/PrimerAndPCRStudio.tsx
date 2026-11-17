@@ -601,6 +601,11 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   const crisprName = crisprNameDraft !== null && crisprNameDraft.trim() !== '' ? crisprNameDraft.trim() : crisprNameDefault;
 
   /**
+   * The saved guide sets (US-01M7DVFD): a user-local store keyed to a document id and revision,
+   * never written into the document. The lists are read again after each change to it.
+   */
+  const guideSetDb = useMemo(() => openGuideSetDatabase(), []);
+  /**
    * Run the search as named (US-01M7DVJK, D0171): one engine call over the whole scope asked for,
    * off the UI thread. Its reply is read only while its serial is the store's: Stop and a later Run
    * each move the serial on, so a reply that comes after either is dropped unread.
@@ -610,11 +615,6 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
    * topology, and, once its reply completes, the set rewritten in the store by its id. Without a
    * spec the run is exactly the tab's own.
    */
-  /**
-   * The saved guide sets (US-01M7DVFD): a user-local store keyed to a document id and revision,
-   * never written into the document. The lists are read again after each change to it.
-   */
-  const guideSetDb = useMemo(() => openGuideSetDatabase(), []);
   const runCrisprSearch = (rerun?: CrisprRerunSpec) => {
     const serial = (crisprSearches.serial += 1);
     const interval = rerun ? rerun.interval : crisprIntervalAsked;
