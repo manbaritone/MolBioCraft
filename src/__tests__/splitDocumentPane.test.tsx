@@ -483,6 +483,25 @@ describe('US-01M7DVR0 AC3: the document split is saved with the session and rest
     }
   });
 
+  it('US-01M7DVR0 AC3 changing only the pane\'s document autosaves the split with that document', async () => {
+    const storage = memoryStorage();
+    const app = await mountApp({ storage });
+    try {
+      await restore(app, [MAIN, DOC_A, DOC_B], MAIN.id, null);
+      await app.change(chooser(app), 'side-by-side');
+      await autosaveRunsOut(app);
+      const first = autosavedSplit(storage);
+      expect(first?.orientation).toBe('side-by-side');
+      expect(first?.docId, 'the split opened on another document than Doc_B').not.toBe(DOC_B.id);
+      // Only the picker changes; the orientation stays Side by Side.
+      await app.change(picker(app), DOC_B.id);
+      await autosaveRunsOut(app);
+      expect(autosavedSplit(storage), 'the pane\'s document alone is autosaved').toEqual({ orientation: 'side-by-side', docId: DOC_B.id, docName: 'Doc_B' });
+    } finally {
+      app.unmount();
+    }
+  });
+
   const restoreSplit = (app: AppHarness, documentSplit: unknown, sessionName: string) => app.restoreSession({
     documents: [MAIN, DOC_A, DOC_B], activeDocId: MAIN.id, viewerTab: 'sequence-view', sessionName,
     workspace: { mapLayoutMode: 'linear', ...(documentSplit === undefined ? {} : { documentSplit: documentSplit as never }) },
@@ -503,6 +522,38 @@ describe('US-01M7DVR0 AC3: the document split is saved with the session and rest
       // The absent session holds no pane document: the toggle opens on another open document, not Doc_B.
       await app.click(toggle(app));
       expect(paneDocId(app)).not.toBe(DOC_B.id);
+    });
+  });
+
+  it('US-01M7DVR0 AC3 a Single Pane session saved with a pane document brings that document back on the next split', async () => {
+    await withApp(async (app) => {
+      await restoreSplit(app, { orientation: 'single', docId: DOC_B.id, docName: 'Doc_B' }, 'Split_Single_Kept');
+      expect(layout(app), 'single: no pane').toEqual({ host: SINGLE, pane: null });
+      noSplitNotice(app);
+      await app.change(chooser(app), 'side-by-side');
+      expect(layout(app), 'the saved pane document comes back').toEqual({ host: SIDE, pane: DOC_B.id });
+    });
+  });
+
+  it('US-01M7DVR0 AC3 after restoring Top and Bottom, the toggle closes and reopens it Top and Bottom', async () => {
+    await withApp(async (app) => {
+      await restoreSplit(app, { orientation: 'top-bottom', docId: DOC_B.id, docName: 'Doc_B' }, 'Split_Toggle');
+      expect(layout(app)).toEqual({ host: STACK, pane: DOC_B.id });
+      await app.click(toggle(app));
+      expect(layout(app), 'the toggle closes the split').toEqual({ host: SINGLE, pane: null });
+      await app.click(toggle(app));
+      expect(layout(app), 'the toggle returns to the restored split').toEqual({ host: STACK, pane: DOC_B.id });
+    });
+  });
+
+  it('US-01M7DVR0 AC3 a pane document from the sample library restores with no missing-document message', async () => {
+    const sample = SAMPLE_LIBRARY[0];
+    expect(sample, 'the sample library has a document').toBeTruthy();
+    expect([MAIN, DOC_A, DOC_B].some((d) => d.id === sample.id), 'the sample is not among the restored documents').toBe(false);
+    await withApp(async (app) => {
+      await restoreSplit(app, { orientation: 'side-by-side', docId: sample.id, docName: sample.name }, 'Split_Sample');
+      expect(layout(app), 'the sample document is in the pane').toEqual({ host: SIDE, pane: sample.id });
+      noSplitNotice(app);
     });
   });
 
