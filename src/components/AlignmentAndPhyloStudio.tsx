@@ -68,6 +68,7 @@ import {
   runMolecularClockAndTimetree,
   runSelectionAndNeutralityTests,
   SubstitutionModelName,
+  type DistanceAnalysisReport,
   type PhyloTreeInferenceReport,
 } from '../core/phyloEvoEngine';
 import {
@@ -6198,7 +6199,12 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
     useState<ModelsSubViewId>(initialModelsSubView);
 
   // Distance & Phylogeny state
-  const [distanceModel, setDistanceModel] = useState<SubstitutionModelName>('Tamura-Nei (TN93)');
+  // The distance chosen for each molecule class. The studio is not remounted per document, so a
+  // protein alignment's choice must not reach the next nucleotide alignment, nor a nucleotide model
+  // a protein one: the engine computes only the p-distance or the Poisson correction on proteins.
+  const [nucleotideDistanceModel, setNucleotideDistanceModel] = useState<SubstitutionModelName>('Tamura-Nei (TN93)');
+  const [proteinDistanceModel, setProteinDistanceModel] =
+    useState<Extract<DistanceAnalysisReport['model'], 'p-distance' | 'Poisson correction'>>('Poisson correction');
   const [treeAlgorithm, setTreeAlgorithm] =
     useState<PhyloTreeAlgorithm>(initialTreeAlgorithm);
   const [treeModel, setTreeModel] = useState<SubstitutionModelName>('Tamura-Nei (TN93)');
@@ -6348,6 +6354,9 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
   // alignments — they previously reported fabricated numbers (e.g. Ala/Gly
   // counted as A/G). They are skipped and the tab says why.
   const isNucleotidePhyloAlignment = useMemo(() => isNucleotideAlignmentRows(alignedSeqs), [alignedSeqs]);
+  // The distance the Distance and Diversity modules compute: on a protein alignment one of the two
+  // names the engine reports for proteins, which it computes under that same name.
+  const distanceModel: DistanceAnalysisReport['model'] = isNucleotidePhyloAlignment ? nucleotideDistanceModel : proteinDistanceModel;
   const substMatrixRep = useMemo(
     () =>
       isNucleotidePhyloAlignment &&
@@ -6383,7 +6392,7 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
   const distanceRep = useMemo(
     () =>
       tabIs('distance')
-        ? computeEvolutionaryDistances(taxaNames, alignedSeqs, distanceModel, taxonGroups)
+        ? computeEvolutionaryDistances(taxaNames, alignedSeqs, distanceModel as SubstitutionModelName, taxonGroups)
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [taxaNames, alignedSeqs, distanceModel, taxonGroups, evoTab]
@@ -6391,7 +6400,7 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
   const diversityRep = useMemo(
     () =>
       tabIs('diversity')
-        ? computePopulationDiversity(taxaNames, alignedSeqs, distanceModel, taxonGroups)
+        ? computePopulationDiversity(taxaNames, alignedSeqs, distanceModel as SubstitutionModelName, taxonGroups)
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [taxaNames, alignedSeqs, distanceModel, taxonGroups, evoTab]
@@ -7303,14 +7312,25 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
                 <select
                   value={distanceModel}
                   onChange={(e) =>
-                    setDistanceModel(e.target.value as SubstitutionModelName)
+                    isNucleotidePhyloAlignment
+                      ? setNucleotideDistanceModel(e.target.value as SubstitutionModelName)
+                      : setProteinDistanceModel(e.target.value as typeof proteinDistanceModel)
                   }
                 >
-                  <option value="p-distance">p-distance (Uncorrected Proportion)</option>
-                  <option value="Jukes-Cantor (JC69)">Jukes-Cantor (JC69)</option>
-                  <option value="Kimura 2-parameter (K2P)">Kimura 2-parameter (K2P)</option>
-                  <option value="Tamura 3-parameter (T92)">Tamura 3-parameter (T92)</option>
-                  <option value="Tamura-Nei (TN93)">Tamura-Nei (TN93)</option>
+                  {isNucleotidePhyloAlignment ? (
+                    <>
+                      <option value="p-distance">p-distance (Uncorrected Proportion)</option>
+                      <option value="Jukes-Cantor (JC69)">Jukes-Cantor (JC69)</option>
+                      <option value="Kimura 2-parameter (K2P)">Kimura 2-parameter (K2P)</option>
+                      <option value="Tamura 3-parameter (T92)">Tamura 3-parameter (T92)</option>
+                      <option value="Tamura-Nei (TN93)">Tamura-Nei (TN93)</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="p-distance">p-distance (Uncorrected Proportion)</option>
+                      <option value="Poisson correction">Poisson correction</option>
+                    </>
+                  )}
                 </select>
               ))}
             </div>
@@ -7370,7 +7390,7 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
           <div className="studio-card">
             <div className="studio-card-header">
               <h3>Overall, Within-Group, Between-Group &amp; Net Distances</h3>
-              <span className="badge-accent">{distanceModel}</span>
+              <span className="badge-accent">{distanceRep.model}</span>
             </div>
             <div className="thermo-kpi-grid">
               <div className="kpi-box">

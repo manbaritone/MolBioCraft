@@ -781,3 +781,104 @@ describe('the studio drawn on its own (AC7)', () => {
     });
   });
 });
+
+// ─── BG-01M7MTRS ───
+
+const AMINO_ACIDS = 'ACDEFGHIKLMNPQRSTVWY';
+/** Deterministic amino-acid residues (LCG), so every run reads the same protein. */
+function residuesFrom(seed: number, n: number): string {
+  let s = seed >>> 0;
+  let out = '';
+  for (let i = 0; i < n; i++) {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    out += AMINO_ACIDS[Math.floor((s / 2 ** 32) * AMINO_ACIDS.length)];
+  }
+  return out;
+}
+/** `seq` with the residue at each 1-based column in `cols` moved one step along the amino acids. */
+function replaced(seq: string, cols: number[]): string {
+  const out = seq.split('');
+  for (const c of cols) out[c - 1] = AMINO_ACIDS[(AMINO_ACIDS.indexOf(out[c - 1]) + 1) % AMINO_ACIDS.length];
+  return out.join('');
+}
+const PROT_ROOT = residuesFrom(0x51c3, 90);
+/** Four proteins far enough apart that the Poisson correction reads above the p-distance. */
+const PROT_MEMBERS: [string, string][] = [
+  ['MTRS_P1', replaced(PROT_ROOT, [3, 11, 19, 27, 35, 43, 51, 59, 67, 75])],
+  ['MTRS_P2', replaced(PROT_ROOT, [6, 14, 22, 30, 38, 46, 54, 62, 70, 78, 86])],
+  ['MTRS_P3', replaced(PROT_ROOT, [2, 9, 17, 24, 33, 41, 49, 57, 65, 73, 81, 89])],
+  ['MTRS_P4', replaced(PROT_ROOT, [5, 13, 21, 29, 37, 45, 53, 61, 69, 77, 85])],
+];
+const PROT: SequenceDocument = {
+  id: 'mtrs-prot', name: 'MTRS Protein Alignment', accession: 'MTRS_0001', description: 'A protein alignment built in the test',
+  sequence: PROT_ROOT, moleculeType: 'Protein', topology: 'linear', folder: 'Alignments', documentKind: 'alignment',
+  createdAt: '2026-11-17T00:00:00Z', updatedAt: '2026-11-17T00:00:00Z', features: [], primers: [], history: [],
+  alignmentMeta: { isAligned: true, sequences: PROT_MEMBERS.map(([name, sequence], i) => ({ id: `mtrs-p${i + 1}`, name, sequence })) },
+} as SequenceDocument;
+const PROTEIN_DISTANCES = ['p-distance', 'Poisson correction'];
+/** Opens `doc` on its Tree tab in the App already mounted, both alignments in the project. */
+const opened = (app: AppHarness, doc: SequenceDocument) => app.restoreSession({ documents: [PROT, ALN], activeDocId: doc.id, viewerTab: 'phylogenetics' });
+/** The Diversity module's sentence naming the distance its diversities average. */
+function diversityDistance(app: AppHarness): string {
+  const said = app.canvas().querySelectorAll('.info-callout').map((c) => words(c.textContent)).filter((t) => t.startsWith('Diversities are mean'));
+  expect(said, 'one sentence naming the diversity distance').toHaveLength(1);
+  return said[0].match(/^Diversities are mean .*? distances\./)?.[0] ?? said[0];
+}
+
+describe('the distance a protein alignment computes, named (BG-01M7MTRS)', () => {
+  it('offers the protein distances on a protein alignment, names the one computed, and keeps them off the next nucleotide alignment (BG-01M7MTRS)', async () => {
+    const { isNucleotideAlignmentRows } = await import('../core/alignmentViewModel');
+    expect(isNucleotideAlignmentRows(PROT_MEMBERS.map(([, s]) => s)), 'the fixture is a protein alignment').toBe(false);
+    expect(isNucleotideAlignmentRows(SEQS), 'and ALN a nucleotide one').toBe(true);
+    const { computeEvolutionaryDistances } = await import('../core/phyloEvoEngine');
+    const tn93Asked = computeEvolutionaryDistances(PROT_MEMBERS.map(([n]) => n), PROT_MEMBERS.map(([, s]) => s), 'Tamura-Nei (TN93)');
+    expect(tn93Asked.model, 'the engine computes the Poisson correction for the TN93 default').toBe('Poisson correction');
+
+    await withApp(async (app) => {
+      await opened(app, PROT);
+      expect(picker(app).value, 'the phylogeny module').toBe('phylogeny');
+
+      // Diversity, straight from the picker, Distances never visited.
+      await chooseModule(app, 'diversity');
+      expect(diversityDistance(app)).toBe('Diversities are mean Poisson correction distances.');
+
+      // Distances: the two protein distances, the Poisson correction chosen, the badge from the report.
+      await chooseModule(app, 'distance');
+      const model = () => onlyIn(app, sectionBody(app, 'Distance Estimation'), 'the protein distance', (r) => selectsOffering(r, PROTEIN_DISTANCES));
+      expect([named(model()), model().value]).toEqual(['Distance Model:', 'Poisson correction']);
+      const poisson = distanceSummary(app);
+      expect(poisson.badge).toBe('Poisson correction');
+      expect(poisson.mean, 'the numbers the TN93 default computed').toBeCloseTo(tn93Asked.overallMeanDistance as number, 4);
+      await app.change(model(), 'p-distance');
+      const p = distanceSummary(app);
+      expect(p.badge).toBe('p-distance');
+      expect(p.mean).toBeGreaterThan(0);
+      expect(p.mean, 'the p-distance reads below the Poisson correction').toBeLessThan(poisson.mean);
+      await chooseModule(app, 'diversity');
+      expect(diversityDistance(app), 'the diversity averages the distance chosen').toBe('Diversities are mean p-distance distances.');
+      await chooseModule(app, 'distance');
+      await app.change(model(), 'Poisson correction');
+      expect(distanceSummary(app)).toEqual(poisson);
+
+      // The nucleotide alignment next, in the same studio: its five models, TN93 chosen, not the protein choice.
+      const nucleotideShown = async (what: string) => {
+        await opened(app, ALN);
+        await chooseModule(app, 'distance');
+        const nucleotide = onlyIn(app, sectionBody(app, 'Distance Estimation'), 'the distance model', (r) => selectsOffering(r, DISTANCE_MODELS));
+        expect([named(nucleotide), nucleotide.value], what).toEqual(['Distance Model:', 'Tamura-Nei (TN93)']);
+        expect(distanceSummary(app).badge, what).toBe('Tamura-Nei (TN93)');
+        await chooseModule(app, 'diversity');
+        expect(diversityDistance(app), what).toBe('Diversities are mean Tamura-Nei (TN93) distances.');
+      };
+      await nucleotideShown('after the Poisson correction on the protein');
+
+      // Back to the protein, the p-distance chosen, then the nucleotide alignment again.
+      await opened(app, PROT);
+      await chooseModule(app, 'distance');
+      expect(model().value, 'the protein keeps a protein distance').toBe('Poisson correction');
+      await app.change(model(), 'p-distance');
+      expect(distanceSummary(app).badge).toBe('p-distance');
+      await nucleotideShown('after the p-distance on the protein');
+    });
+  });
+});
