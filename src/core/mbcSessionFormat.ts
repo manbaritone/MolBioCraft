@@ -57,7 +57,20 @@ export interface MbcDisplaySettings {
   showGcGraph: boolean;
   showHydropathyGraph: boolean;
   showUniqueCuttersOnly: boolean;
+  /**
+   * View › Tracks' Features and Restriction Sites (US-01M7DV8W). Absent in a session saved before
+   * them, which opens with both shown; the parser reads one that is not a boolean as shown and names
+   * it with one of UNREADABLE_TRACK_SETTING_WARNINGS.
+   */
+  showFeatures?: boolean;
+  showRestrictionSites?: boolean;
 }
+
+/** The parse warnings that name an unreadable View › Tracks setting (US-01M7DV8W), as the engine words them. */
+export const UNREADABLE_TRACK_SETTING_WARNINGS: readonly string[] = [
+  'The saved Features track setting could not be read; features are shown.',
+  'The saved Restriction Sites track setting could not be read; restriction sites are shown.',
+];
 
 export interface MbcWorkspaceUiState {
   projectExplorer?: ProjectExplorerState;

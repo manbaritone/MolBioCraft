@@ -90,7 +90,16 @@ export type WorkbenchCommandId = 'align-structures';
  * read the session, the main view's map and `focusedSplitPane`. View › Map Layout's Split Map &
  * Sequence and Circular Map (`map-layout-circle`, US-01M7DVEN) read the main view's document.
  */
-export type ViewCommandId = 'zoom-map' | 'fit-view' | 'map-layout-circle';
+export type ViewCommandId = 'zoom-map' | 'fit-view' | 'map-layout-circle' | TrackCommandId;
+
+/**
+ * The tracks View › Tracks shows or hides (US-01M7DV8W). Each one's availability is
+ * {@link trackAvailability}, the one rule its in-app item, its native id (`view:track-<id>`, under the
+ * command `track-<id>`) and its inspector control read.
+ */
+export type TrackId = 'features' | 'primers' | 'restriction-sites' | 'orfs' | 'translation' | 'gc-graph' | 'hydropathy-graph';
+export type TrackCommandId = `track-${TrackId}`;
+export const TRACK_IDS: readonly TrackId[] = ['features', 'primers', 'restriction-sites', 'orfs', 'translation', 'gc-graph', 'hydropathy-graph'];
 
 export interface CommandAvailability {
   enabled: boolean;
@@ -226,6 +235,13 @@ const RULES: Record<CommandId | WorkbenchCommandId | ViewCommandId, (ctx: Comman
     const cannotDraw = circularMapUnavailableReason(doc);
     return cannotDraw ? off(cannotDraw) : ENABLED;
   },
+  'track-features': (ctx) => trackAvailability('features', ctx),
+  'track-primers': (ctx) => trackAvailability('primers', ctx),
+  'track-restriction-sites': (ctx) => trackAvailability('restriction-sites', ctx),
+  'track-orfs': (ctx) => trackAvailability('orfs', ctx),
+  'track-translation': (ctx) => trackAvailability('translation', ctx),
+  'track-gc-graph': (ctx) => trackAvailability('gc-graph', ctx),
+  'track-hydropathy-graph': (ctx) => trackAvailability('hydropathy-graph', ctx),
   // Align Structures… aligns chains of structure documents, two of them or two chains of one.
   'align-structures': (ctx) => {
     if (!ctx.sessionActive) return off(NO_SESSION);
@@ -250,6 +266,36 @@ export function circularMapUnavailableReason(
   if (doc.moleculeType === 'RNA') return 'Circular maps are drawn for DNA only; this document is RNA.';
   if (doc.topology !== 'circular') return 'Circular maps are drawn for circular DNA; this document is linear.';
   return null;
+}
+
+/** What each track a protein has no use for says, naming the molecule type (US-01M7DV8W). */
+const TRACK_ON_NUCLEOTIDES: Partial<Record<TrackId, string>> = {
+  'restriction-sites': 'Restriction sites are drawn on DNA and RNA only',
+  orfs: 'ORFs are drawn on DNA and RNA only',
+  translation: 'Translation is drawn on DNA and RNA only',
+  'gc-graph': 'The GC graph is drawn on DNA and RNA only',
+};
+
+/**
+ * Whether View › Tracks' `track` can be shown or hidden on the main view's document (US-01M7DV8W),
+ * the one rule its in-app item, its native id and its inspector control read; the split pane's
+ * focus does not change it. Features and Hydropathy Graph apply to every document; Translation, GC
+ * Graph, Restriction Sites and ORFs not to a protein, and Primers to DNA only, each saying the
+ * molecule type. Primers and ORFs are drawn only on the circle, so they are off with
+ * CIRCULAR_ONLY_HINT where the main view draws none: Map Layout Linear, or a document that cannot
+ * draw a circle (circularMapUnavailableReason).
+ */
+export function trackAvailability(track: TrackId, ctx: CommandContext): CommandAvailability {
+  const doc = requireDocument(ctx);
+  if (isAvailability(doc)) return doc;
+  const molecule = doc.moleculeType === 'Protein' ? 'a protein' : doc.moleculeType === 'RNA' ? 'RNA' : 'DNA';
+  if (track === 'primers' && doc.moleculeType !== 'DNA') return off(`Primers are drawn on DNA only; this document is ${molecule}.`);
+  const nucleotidesOnly = TRACK_ON_NUCLEOTIDES[track];
+  if (nucleotidesOnly && doc.moleculeType === 'Protein') return off(`${nucleotidesOnly}; this document is ${molecule}.`);
+  if ((track === 'primers' || track === 'orfs') && (ctx.mapLayout === 'linear' || circularMapUnavailableReason(doc))) {
+    return off(CIRCULAR_ONLY_HINT);
+  }
+  return ENABLED;
 }
 
 export function commandAvailability(id: CommandId | WorkbenchCommandId | ViewCommandId, ctx: CommandContext): CommandAvailability {
@@ -363,6 +409,14 @@ export const NATIVE_MENU_COMMAND_RULES: Record<string, CommandId | WorkbenchComm
   'view:reset-view': 'fit-view',
   'view:layout-split': 'map-layout-circle',
   'view:layout-circular': 'map-layout-circle',
+  // US-01M7DV8W: View > Tracks, each under its track's rule.
+  'view:track-features': 'track-features',
+  'view:track-primers': 'track-primers',
+  'view:track-restriction-sites': 'track-restriction-sites',
+  'view:track-orfs': 'track-orfs',
+  'view:track-translation': 'track-translation',
+  'view:track-gc-graph': 'track-gc-graph',
+  'view:track-hydropathy-graph': 'track-hydropathy-graph',
   'file:save-gb': 'export-active-document',
   'file:save-fasta': 'export-sequence',
   'file:export-embl': 'export-active-document',

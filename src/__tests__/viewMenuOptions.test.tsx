@@ -810,3 +810,470 @@ describe('US-01M7DVJ4 AC2: Restore Default Layout changes no view or document st
     }, { storage });
   });
 });
+
+// ─── US-01M7DV8W: View › Tracks ───
+
+const TRACK_LABELS = ['Features', 'Primers', 'Restriction Sites', 'ORFs', 'Translation', 'GC Graph', 'Hydropathy Graph'] as const;
+type TrackLabel = (typeof TRACK_LABELS)[number];
+const TRACK_NATIVE: Record<TrackLabel, string> = {
+  Features: 'view:track-features', Primers: 'view:track-primers', 'Restriction Sites': 'view:track-restriction-sites', ORFs: 'view:track-orfs',
+  Translation: 'view:track-translation', 'GC Graph': 'view:track-gc-graph', 'Hydropathy Graph': 'view:track-hydropathy-graph',
+};
+// The circular DNA the tracks are drawn on: a primer and a feature, and cut sites from its random bases.
+const PRIMER = {
+  id: 'dv8w-prm', name: 'Fwd_1', sequence: 'ACGTACGTACGTACGTACGT', annealSequence: 'ACGTACGTACGTACGTACGT', tail5Prime: '', bindStart: 2_000, bindEnd: 2_019,
+  strand: 1, length: 20, gcPercent: 50, tmAnnealC: 55, tmFullC: 55, deltaG37: -20, hairpinDeltaG: 0, selfDimerDeltaG: 0, gcClamp3Prime: true,
+} as never;
+const TRK = doc('dv8w-trk', 'Track_Doc', dna(6_000, 21), { primers: [PRIMER] });
+const parts = (scope: LiveElement, kind: string) => scope.querySelectorAll(`[data-map-part="${kind}"]`).length;
+const partsIn = (svg: string, kind: string) => (svg.match(new RegExp(`data-map-part="${kind}"`, 'g')) ?? []).length;
+const linearView = (scope: LiveElement) => { const l = scope.querySelectorAll('.linear-seq-container'); expect(l, 'one linear map').toHaveLength(1); return l[0]; };
+/** What a map scope draws of the feature and site tracks. */
+const drawn = (scope: LiveElement) => ({ arcs: parts(scope, 'feature-arc'), boxes: parts(scope, 'feature-box'), sites: parts(scope, 'cut-site') });
+const siteLabels = (scope: LiveElement) => scope.querySelectorAll('[data-map-part="cut-site"]').map((s) => words(s.textContent)).sort();
+/** View › Tracks' seven items as [label, disabled, checked]. */
+async function trackItems(app: AppHarness): Promise<[string, boolean, boolean][]> {
+  await viewRow(app, ['Tracks', 'Features']);
+  const out = TRACK_LABELS.map((label): [string, boolean, boolean] => {
+    const rows = menuButtons(app).filter((b) => rowLabel(b) === label);
+    expect(rows, `one "${label}" item`).toHaveLength(1);
+    return [label, rows[0].hasAttribute('disabled'), rows[0].getAttribute('aria-checked') === 'true'];
+  });
+  await closeMenus(app);
+  return out;
+}
+const shownOf = async (app: AppHarness, label: TrackLabel) => (await trackItems(app)).find((t) => t[0] === label)![2];
+async function openAccordion(app: AppHarness, title: string) {
+  const aside = app.inspectorAside();
+  expect(aside, 'the inspector is shown').not.toBeNull();
+  const header = aside!.querySelectorAll('button.mbc-accordion-header').find((b) => words(b.textContent) === title || words(b.textContent).startsWith(`${title} (`));
+  if (!header) throw new Error(`no "${title}" inspector section`);
+  if (header.getAttribute('aria-expanded') !== 'true') await app.click(header);
+}
+/** The inspector's checkbox whose label starts `prefix`, or null when the inspector draws none. */
+function inspectorCheck(app: AppHarness, prefix: string): LiveElement | null {
+  const rows = (app.inspectorAside()?.querySelectorAll('label.mbc-check-row') ?? []).filter((l) => words(l.textContent).startsWith(prefix));
+  expect(rows.length, `at most one "${prefix}" control`).toBeLessThanOrEqual(1);
+  return rows[0]?.querySelectorAll('input[type="checkbox"]')[0] ?? null;
+}
+const INSPECTOR: Partial<Record<TrackLabel, [string, string]>> = {
+  Primers: ['Annotations and Tracks', 'Primers ('], ORFs: ['Annotations and Tracks', 'Predicted ORFs'],
+  Translation: ['Display & Color Scheme', 'Show 3-Frame Translation'], 'GC Graph': ['Nucleotide Composition', 'GC% & AT% Content Plot'],
+  'Hydropathy Graph': ['Nucleotide Composition', 'Translated Protein Hydropathy'],
+};
+/** The linear graphs a scope draws. */
+const graphs = (scope: LiveElement) => ({
+  translation: scope.querySelectorAll('.aa-frame-line').length > 0,
+  gc: words(scope.textContent).includes('Cum. GC-Skew'),
+  hydropathy: words(scope.textContent).includes('Kyte-Doolittle Hydrophobicity (Window'),
+});
+const restoreTracks = (app: AppHarness, docs: SequenceDocument[], active: string, mapLayoutMode: 'split' | 'circular' | 'linear' = 'split', more: Record<string, unknown> = {}) =>
+  app.restoreSession({
+    documents: docs, activeDocId: active, viewerTab: 'sequence-view',
+    workspace: { mapLayoutMode, displaySettings: { showOrfs: true, minOrfAa: 50, allowAltStartCodons: false, showPrimers: true, showTranslation: true, showGcGraph: true, showHydropathyGraph: false, showUniqueCuttersOnly: false }, ...more } as never,
+  });
+const toggleTrack = (app: AppHarness, label: TrackLabel) => viewCommand(app, ['Tracks', label]);
+
+describe('US-01M7DV8W AC1: View › Tracks lists the seven tracks, checked as shown, in the menu and natively', () => {
+  it('US-01M7DV8W AC1 sits right after Map Layout and lists the seven checkboxes, each checked as the current state', async () => {
+    await withApp(async (app) => {
+      await restoreTracks(app, [TRK], TRK.id);
+      await viewRow(app, ['Map Layout']);
+      const top = app.all('.desktop-menu-popup')[0].querySelectorAll('button').map(rowLabel);
+      await closeMenus(app);
+      expect(top.slice(top.indexOf('Map Layout'), top.indexOf('Map Layout') + 2)).toEqual(['Map Layout', 'Tracks']);
+      expect(await trackItems(app)).toEqual([
+        ['Features', false, true], ['Primers', false, true], ['Restriction Sites', false, true], ['ORFs', false, true],
+        ['Translation', false, true], ['GC Graph', false, true], ['Hydropathy Graph', false, false],
+      ]);
+    });
+  });
+
+  it("US-01M7DV8W AC1 each item and its native id toggle the inspector control's state, and the control shows it at once", async () => {
+    await withApp(async (app) => {
+      await restoreTracks(app, [TRK], TRK.id);
+      for (const label of TRACK_LABELS) {
+        const spot = INSPECTOR[label];
+        if (spot) await openAccordion(app, spot[0]);
+        const control = () => (spot ? inspectorCheck(app, spot[1]) : null);
+        const before = await shownOf(app, label);
+        if (spot) expect(control()!.checked, `${label}: the control as the item`).toBe(before);
+        await toggleTrack(app, label);
+        expect(await shownOf(app, label), `${label}: the View item toggles it`).toBe(!before);
+        if (spot) expect(control()!.checked, `${label}: the inspector control shows it at once`).toBe(!before);
+        await app.menu(TRACK_NATIVE[label]);
+        expect(await shownOf(app, label), `${label}: the native id toggles it back`).toBe(before);
+        if (spot) {
+          expect(control()!.checked).toBe(before);
+          // And the other way: the inspector control sets the state the item shows.
+          await app.change(control()!, !before);
+          expect(await shownOf(app, label), `${label}: the item follows the inspector`).toBe(!before);
+          await app.change(control()!, before);
+        }
+      }
+    });
+  });
+
+  it('US-01M7DV8W AC1 the native menu state follows the availability rule for each id', async () => {
+    await withApp(async (app) => {
+      const native = () => { const s = app.nativeMenuStates(); return Object.values(TRACK_NATIVE).map((id) => resolveNativeMenuItemEnabled(id, s[s.length - 1])); };
+      await restoreTracks(app, [TRK, LIN, PROT], TRK.id);
+      expect(native(), 'circular DNA in Split').toEqual([true, true, true, true, true, true, true]);
+      await restoreTracks(app, [TRK, LIN, PROT], PROT.id);
+      expect(native(), 'a protein').toEqual([true, false, false, false, false, false, true]);
+    }, macHost());
+  });
+});
+
+const NOTHING = { arcs: 0, boxes: 0, sites: 0 };
+const autosavedRaw = (storage: LiveStorage) => JSON.parse(autosaved(storage).raw) as { documents: unknown; workspace: Record<string, unknown> };
+/** The Edit menu's Undo row is disabled: nothing on the undo stack. */
+async function undoDisabled(app: AppHarness): Promise<boolean> {
+  const trigger = app.all('.mbc-menubar [role="menuitem"]').find((b) => words(b.getAttribute('aria-label') ?? b.textContent) === 'Edit')!;
+  await app.click(trigger);
+  const row = menuButtons(app).find((b) => rowLabel(b) === 'Undo');
+  expect(row, 'an Edit › Undo row').toBeTruthy();
+  const off = row!.hasAttribute('disabled');
+  await closeMenus(app);
+  return off;
+}
+const dsitesText = (app: AppHarness) => words(app.all('section.mbc-dsites').map((s) => s.textContent).join(' '));
+
+describe('US-01M7DV8W AC2: hiding Features or Restriction Sites removes them from every map and changes nothing else', () => {
+  it("US-01M7DV8W AC2 the main view's circular and linear maps: each track hidden alone, with a positive control, and shown again exactly as before", async () => {
+    const storage = memoryStorage();
+    await withApp(async (app) => {
+      // A per-enzyme choice: the first enzyme the circle labels is hidden, so 'shown again' must keep it hidden.
+      await restoreTracks(app, [TRK], TRK.id);
+      const firstEnzyme = siteLabels(mainMap(app))[0]?.replace(/ \(.*$/, '');
+      expect(firstEnzyme, 'the circle labels a cut site').toBeTruthy();
+      const visibility = { [TRK.id]: { revision: 'dv8w', hiddenEnzymes: [firstEnzyme], occurrences: {} } };
+      await restoreTracks(app, [TRK], TRK.id, 'split', { siteVisibility: visibility });
+      await openAccordion(app, 'Restriction Analysis');
+      const circle = () => drawn(mainMap(app));
+      const linear = () => drawn(linearView(app.canvas()));
+      const asShown = { circle: circle(), linear: linear(), circleLabels: siteLabels(mainMap(app)), linearLabels: siteLabels(linearView(app.canvas())), panel: dsitesText(app) };
+      expect(asShown.circle.arcs, 'positive control: the circle draws a feature arc').toBeGreaterThan(0);
+      expect(asShown.circle.sites, 'and a cut site').toBeGreaterThan(0);
+      expect(asShown.linear.boxes, 'the linear map draws a feature box').toBeGreaterThan(0);
+      expect(asShown.linear.sites, 'and a cut site').toBeGreaterThan(0);
+      expect(asShown.circleLabels.some((l) => l.startsWith(`${firstEnzyme} (`)), 'the hidden enzyme stays hidden').toBe(false);
+      expect(asShown.panel, 'the displayed-sites panel shows the choices').not.toBe('');
+      await autosaveRunsOut(app);
+      const before = autosavedRaw(storage);
+      expect(await undoDisabled(app), 'nothing to undo').toBe(true);
+
+      await toggleTrack(app, 'Features');
+      // The callouts the features leave free can label more sites, so the circle's sites are only still there.
+      expect(circle().arcs, 'Features hidden: no arc on the circle').toBe(0);
+      expect(circle().sites, 'the sites stay').toBeGreaterThan(0);
+      expect(linear(), 'no box on the linear map, the sites stay').toEqual({ ...asShown.linear, arcs: 0, boxes: 0 });
+      await toggleTrack(app, 'Features');
+      await toggleTrack(app, 'Restriction Sites');
+      expect(circle(), 'Sites hidden: no cut site or label on the circle, the features stay').toEqual({ ...asShown.circle, sites: 0 });
+      expect(linear(), 'none on the linear map').toEqual({ ...asShown.linear, sites: 0 });
+      expect(dsitesText(app), 'the displayed-sites panel shows the same choices').toBe(asShown.panel);
+      await toggleTrack(app, 'Features');
+      expect([circle(), linear()], 'both hidden').toEqual([NOTHING, NOTHING]);
+
+      await autosaveRunsOut(app);
+      const hidden = autosavedRaw(storage);
+      expect(hidden.documents, 'the document is unchanged').toEqual(before.documents);
+      expect(hidden.workspace.siteVisibility, 'the per-enzyme choices as saved are unchanged').toEqual(before.workspace.siteVisibility);
+      expect(await undoDisabled(app), 'the undo stack is unchanged').toBe(true);
+
+      await toggleTrack(app, 'Features');
+      await toggleTrack(app, 'Restriction Sites');
+      expect({ circle: circle(), linear: linear(), circleLabels: siteLabels(mainMap(app)), linearLabels: siteLabels(linearView(app.canvas())), panel: dsitesText(app) }, 'shown again: exactly the previous display').toEqual(asShown);
+    }, { storage });
+  });
+
+  it("US-01M7DV8W AC2 the split pane's Circular Map and Linear Map hide them too, with a positive control", async () => {
+    await withApp(async (app) => {
+      await restoreTracks(app, [CA, CB, LIN], CA.id);
+      await app.click(app.one('button.mbc-split-toggle'));
+      if (picker(app).value !== CB.id) await app.change(picker(app), CB.id);
+      for (const view of ['circular', 'linear'] as const) {
+        await app.change(viewSelect(app), view);
+        const scope = () => (view === 'circular' ? paneMap(app) : linearView(pane(app)));
+        const shown = drawn(scope());
+        expect(view === 'circular' ? shown.arcs : shown.boxes, `${view}: positive control, a feature drawn`).toBeGreaterThan(0);
+        expect(shown.sites, `${view}: positive control, a cut site drawn`).toBeGreaterThan(0);
+        await toggleTrack(app, 'Features');
+        expect(drawn(scope()), `${view}: Features hidden`).toMatchObject({ arcs: 0, boxes: 0 });
+        expect(drawn(scope()).sites, `${view}: Features hidden, the sites stay`).toBeGreaterThan(0);
+        await toggleTrack(app, 'Restriction Sites');
+        expect(drawn(scope()), `${view}: both hidden`).toEqual(NOTHING);
+        await toggleTrack(app, 'Features');
+        expect(drawn(scope()), `${view}: Sites hidden alone`).toEqual({ ...shown, sites: 0 });
+        await toggleTrack(app, 'Restriction Sites');
+        expect(drawn(scope()), `${view}: shown again`).toEqual(shown);
+      }
+    });
+  });
+
+  it("US-01M7DV8W AC2 the split pane's Linear Map draws Translation, GC Graph and Hydropathy Graph as the main view's settings say, and never ORFs or primers", async () => {
+    await withApp(async (app) => {
+      await restoreTracks(app, [TRK, CB], TRK.id);
+      await app.click(app.one('button.mbc-split-toggle'));
+      if (picker(app).value !== CB.id) await app.change(picker(app), CB.id);
+      await app.change(viewSelect(app), 'linear');
+      const set = async (label: TrackLabel, on: boolean) => { if ((await shownOf(app, label)) !== on) await toggleTrack(app, label); };
+      // All on, then all off: the pane's own defaults (Translation and GC on, Hydropathy off) match neither.
+      for (const on of [true, false]) {
+        for (const label of ['Translation', 'GC Graph', 'Hydropathy Graph'] as const) await set(label, on);
+        const want = { translation: on, gc: on, hydropathy: on };
+        expect(graphs(linearView(app.canvas())), `the main view, all ${on ? 'on' : 'off'}`).toEqual(want);
+        expect(graphs(linearView(pane(app))), `the pane's Linear Map, all ${on ? 'on' : 'off'}`).toEqual(want);
+      }
+      // One on, two off: each follows its own setting.
+      await set('GC Graph', true);
+      expect(graphs(linearView(pane(app))), 'GC alone').toEqual({ translation: false, gc: true, hydropathy: false });
+      // ORFs and primers shown in the main view are drawn there, never in the pane, on the same document.
+      await set('ORFs', true);
+      await set('Primers', true);
+      expect([parts(mainMap(app), 'orf-arc') > 0, parts(mainMap(app), 'primer-marker') > 0], 'positive control: the main circle draws ORFs and primers').toEqual([true, true]);
+      await app.click(labelled(pane(app), 'button', "Show the main view's document in the split pane"));
+      await app.change(viewSelect(app), 'circular');
+      expect(words(picker(app).value), 'the pane shows the main view\'s document').toBe(TRK.id);
+      expect([parts(paneMap(app), 'orf-arc'), parts(paneMap(app), 'primer-marker')], 'the pane draws neither').toEqual([0, 0]);
+    });
+  });
+});
+
+const PROTEIN_SAYS: Partial<Record<TrackLabel, string>> = {
+  Primers: 'Primers are drawn on DNA only; this document is a protein.',
+  'Restriction Sites': 'Restriction sites are drawn on DNA and RNA only; this document is a protein.',
+  ORFs: 'ORFs are drawn on DNA and RNA only; this document is a protein.',
+  Translation: 'Translation is drawn on DNA and RNA only; this document is a protein.',
+  'GC Graph': 'The GC graph is drawn on DNA and RNA only; this document is a protein.',
+};
+const RNA_PRIMERS = 'Primers are drawn on DNA only; this document is RNA.';
+/** What each track's availability should be for a fixture: null for enabled, else the sentence. */
+const EXPECTED_TRACKS: [string, SequenceDocument, Record<TrackLabel, string | null>][] = [
+  ['circular DNA in Split', TRK, { Features: null, Primers: null, 'Restriction Sites': null, ORFs: null, Translation: null, 'GC Graph': null, 'Hydropathy Graph': null }],
+  ['linear DNA', LIN, { Features: null, Primers: CIRCULAR_ONLY_HINT, 'Restriction Sites': null, ORFs: CIRCULAR_ONLY_HINT, Translation: null, 'GC Graph': null, 'Hydropathy Graph': null }],
+  ['RNA', RNA, { Features: null, Primers: RNA_PRIMERS, 'Restriction Sites': null, ORFs: CIRCULAR_ONLY_HINT, Translation: null, 'GC Graph': null, 'Hydropathy Graph': null }],
+  ['a protein', PROT, { Features: null, Primers: PROTEIN_SAYS.Primers!, 'Restriction Sites': PROTEIN_SAYS['Restriction Sites']!, ORFs: PROTEIN_SAYS.ORFs!, Translation: PROTEIN_SAYS.Translation!, 'GC Graph': PROTEIN_SAYS['GC Graph']!, 'Hydropathy Graph': null }],
+];
+
+describe("US-01M7DV8W AC3: each track's availability is one rule, read by the item, the native state and the inspector", () => {
+  it('US-01M7DV8W AC3 the View items are off with the sentence in their Function Info for linear DNA, RNA and a protein, all on for circular DNA in Split', async () => {
+    await withApp(async (app) => {
+      for (const [what, d, want] of EXPECTED_TRACKS) {
+        await restoreTracks(app, [TRK, d].filter((x, i, a) => a.indexOf(x) === i), d.id, 'split');
+        expect((await trackItems(app)).map(([label, off]) => [label, off]), what).toEqual(TRACK_LABELS.map((l) => [l, want[l] !== null]));
+        const off = TRACK_LABELS.filter((l) => want[l] !== null);
+        expect(await viewRows(app, off.map((l) => ['Tracks', l])), `${what}: their Function Info`).toEqual(off.map((l) => [true, want[l]]));
+        for (const l of off) {
+          if (want[l] !== CIRCULAR_ONLY_HINT) expect(want[l], `${what}: ${l} names the molecule type`).toMatch(d.moleculeType === 'Protein' ? /a protein\.$/ : /RNA\.$/);
+        }
+      }
+    });
+  });
+
+  it('US-01M7DV8W AC3 the native menu state is the same rule on every fixture', async () => {
+    await withApp(async (app) => {
+      for (const [what, d, want] of EXPECTED_TRACKS) {
+        await restoreTracks(app, [TRK, d].filter((x, i, a) => a.indexOf(x) === i), d.id, 'split');
+        const s = app.nativeMenuStates();
+        expect(TRACK_LABELS.map((l) => resolveNativeMenuItemEnabled(TRACK_NATIVE[l], s[s.length - 1])), what).toEqual(TRACK_LABELS.map((l) => want[l] === null));
+      }
+    }, macHost());
+  });
+
+  it('US-01M7DV8W AC3 a disabled track from its native id says why in the status bar and changes nothing, the autosave included', async () => {
+    const storage = memoryStorage();
+    await withApp(async (app) => {
+      for (const [what, d, want] of EXPECTED_TRACKS.slice(1)) {
+        await restoreTracks(app, [TRK, d].filter((x, i, a) => a.indexOf(x) === i), d.id, 'split');
+        await autosaveRunsOut(app);
+        const before = autosaved(storage).raw;
+        const items = await trackItems(app);
+        for (const l of TRACK_LABELS.filter((x) => want[x] !== null)) {
+          await app.menu(TRACK_NATIVE[l]);
+          expect(statusSegments(app), `${what}: ${l}`).toContain(`${l}: ${want[l]}`);
+        }
+        expect(await trackItems(app), `${what}: no state changed`).toEqual(items);
+        await autosaveRunsOut(app);
+        expect(autosaved(storage).raw, `${what}: the autosave is unchanged`).toBe(before);
+      }
+    }, { storage });
+  });
+
+  it("US-01M7DV8W AC3 the inspector's track controls are off with the same sentence, and Primers and ORFs are no longer gated inline", async () => {
+    await withApp(async (app) => {
+      for (const [what, d, want] of EXPECTED_TRACKS) {
+        await restoreTracks(app, [TRK, d].filter((x, i, a) => a.indexOf(x) === i), d.id, 'split');
+        for (const l of ['Primers', 'ORFs', 'Translation', 'GC Graph', 'Hydropathy Graph'] as const) {
+          const [section, prefix] = INSPECTOR[l]!;
+          const aside = app.inspectorAside()!;
+          if (!aside.querySelectorAll('button.mbc-accordion-header').some((b) => words(b.textContent) === section)) continue;
+          await openAccordion(app, section);
+          const c = inspectorCheck(app, prefix);
+          if (!c) continue;
+          expect([c.hasAttribute('disabled'), c.getAttribute('title')], `${what}: the ${l} control`).toEqual([want[l] !== null, want[l]]);
+        }
+      }
+      // A linear DNA document's Primers and ORFs controls exist and are off: the rule reached the inspector.
+      await restoreTracks(app, [TRK, LIN], LIN.id, 'split');
+      await openAccordion(app, 'Annotations and Tracks');
+      expect([inspectorCheck(app, 'Primers (')?.hasAttribute('disabled'), inspectorCheck(app, 'Predicted ORFs')?.hasAttribute('disabled')]).toEqual([true, true]);
+    });
+    const nodeFs = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ nodeFs)) as { readFileSync: (p: URL, e: 'utf8') => string };
+    const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+    const section = app.slice(app.indexOf('{/* 3. Annotations and Tracks Panel */}'), app.indexOf('{/* 4. Graphs Panel'));
+    expect(section, 'the inline gating is retired').not.toContain('disabled={!circularMapShown}');
+    expect(section).toContain("trackAvailability('primers'");
+    expect(section).toContain("trackAvailability('orfs'");
+    // The other three inspector controls read the same rule.
+    const display = app.slice(app.indexOf('{/* 2. Display & Color Scheme Panel */}'), app.indexOf('{/* 3. Annotations and Tracks Panel */}'));
+    const graphsPanel = app.slice(app.indexOf('{/* 4. Graphs Panel'), app.indexOf('{/* 5. Restriction Analysis Panel */}'));
+    expect(display).toContain("disabled={!trackAvailability('translation', buildCommandContext()).enabled}");
+    expect(graphsPanel).toContain("disabled={!trackAvailability('gc-graph', buildCommandContext()).enabled}");
+    expect(graphsPanel).toContain("disabled={!trackAvailability('hydropathy-graph', buildCommandContext()).enabled}");
+  });
+});
+
+// ─── AC4: saved with the session ───
+
+const SAVED_AT_KEY = 'molbiocraft.workbench.autosave.v1.savedAt';
+const FEATURES_UNREADABLE = 'The saved Features track setting could not be read; features are shown.';
+const SITES_UNREADABLE = 'The saved Restriction Sites track setting could not be read; restriction sites are shown.';
+/** Restores the autosave the storage holds, written as `raw`. */
+async function restoreRaw(app: AppHarness, storage: LiveStorage, raw: string) {
+  storage.setItem(AUTOSAVE_KEY, raw);
+  storage.removeItem(SAVED_AT_KEY);
+  await app.menu('file:restore-autosave');
+  expect(words(app.doc.body.textContent), 'the App restored it').toContain('Restored workbench');
+}
+const noticeText = (app: AppHarness) => words(app.all('.statusbar-toast-text').map((t) => t.textContent).join(' '));
+
+describe('US-01M7DV8W AC4: Features and Restriction Sites are saved with the session', () => {
+  it('US-01M7DV8W AC4 changing only a track autosaves its new value, and restoring that autosave brings it back, unchecked and undrawn', async () => {
+    const storage = memoryStorage();
+    await withApp(async (app) => {
+      for (const [label, key] of [['Features', 'showFeatures'], ['Restriction Sites', 'showRestrictionSites']] as const) {
+        await restoreTracks(app, [TRK], TRK.id);
+        await autosaveRunsOut(app);
+        const before = autosaved(storage);
+        expect((before.workspace.displaySettings as unknown as Record<string, unknown>)[key], `${key} is saved shown`).toBe(true);
+        await toggleTrack(app, label);
+        await autosaveRunsOut(app);
+        const after = autosaved(storage);
+        expect(after.raw, `hiding ${label} alone autosaves`).not.toBe(before.raw);
+        expect((after.workspace.displaySettings as unknown as Record<string, unknown>)[key], `the autosave holds ${key}: false`).toBe(false);
+        // Shown again without letting the autosave run, so the restore must bring 'hidden' back.
+        await toggleTrack(app, label);
+        expect(await shownOf(app, label)).toBe(true);
+        await restoreRaw(app, storage, after.raw);
+        expect(await shownOf(app, label), `${label}: restored unchecked`).toBe(false);
+        const d = drawn(mainMap(app));
+        expect(label === 'Features' ? d.arcs : d.sites, `${label}: nothing drawn`).toBe(0);
+        expect(label === 'Features' ? d.sites : d.arcs, 'the other track is drawn').toBeGreaterThan(0);
+      }
+    }, { storage });
+  });
+
+  it('US-01M7DV8W AC4 a session saved before these settings opens with both shown and no notice; an unreadable one opens shown and names it', async () => {
+    const storage = memoryStorage();
+    await withApp(async (app) => {
+      await restoreTracks(app, [TRK], TRK.id);
+      await autosaveRunsOut(app);
+      const base = autosavedRaw(storage);
+      const withSettings = (edit: (ds: Record<string, unknown>) => void) => {
+        const copy = JSON.parse(JSON.stringify(base)) as typeof base;
+        edit(copy.workspace.displaySettings as Record<string, unknown>);
+        return JSON.stringify(copy);
+      };
+      const hideBoth = async () => {
+        for (const l of ['Features', 'Restriction Sites'] as const) if (await shownOf(app, l)) await toggleTrack(app, l);
+      };
+      await hideBoth();
+      await restoreRaw(app, storage, withSettings((ds) => { delete ds.showFeatures; delete ds.showRestrictionSites; }));
+      expect([await shownOf(app, 'Features'), await shownOf(app, 'Restriction Sites')], 'an older session: both shown').toEqual([true, true]);
+      expect(drawn(mainMap(app)).arcs * drawn(mainMap(app)).sites, 'and drawn').toBeGreaterThan(0);
+      expect(noticeText(app), 'with no notice').not.toMatch(/track setting could not be read/);
+
+      for (const [label, key, sentence] of [['Features', 'showFeatures', FEATURES_UNREADABLE], ['Restriction Sites', 'showRestrictionSites', SITES_UNREADABLE]] as const) {
+        await hideBoth();
+        await restoreRaw(app, storage, withSettings((ds) => { ds[key] = 'no'; if (key === 'showFeatures') ds.showRestrictionSites = false; else ds.showFeatures = false; }));
+        expect(await shownOf(app, label), `${label} unreadable: shown`).toBe(true);
+        expect(await shownOf(app, label === 'Features' ? 'Restriction Sites' : 'Features'), 'the other one as saved').toBe(false);
+        expect(noticeText(app), `${label}: the restore notice names it`).toContain(sentence);
+        expect(noticeText(app)).not.toContain(sentence === FEATURES_UNREADABLE ? SITES_UNREADABLE : FEATURES_UNREADABLE);
+      }
+    }, { storage });
+  });
+
+  it("US-01M7DV8W AC4 both settings are in the autosave effect's dependency list and the snapshot", async () => {
+    const nodeFs = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ nodeFs)) as { readFileSync: (p: URL, e: 'utf8') => string };
+    const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+    const snapshot = app.slice(app.indexOf('const buildCurrentMbcSnapshot'), app.indexOf('const latestSnapshotRef'));
+    expect(snapshot).toMatch(/displaySettings: \{[^}]*showFeatures,[^}]*showRestrictionSites,/);
+    const effectEnd = app.indexOf('const applyParsedMbcSession');
+    const deps = app.slice(app.lastIndexOf('useEffect(', effectEnd), effectEnd);
+    expect(deps, 'the autosave effect').toContain('autosave');
+    const list = deps.slice(deps.lastIndexOf('}, ['));
+    expect(list, 'the dependency list').toMatch(/\n\s+showFeatures,\n/);
+    expect(list).toMatch(/\n\s+showRestrictionSites,\n/);
+  });
+});
+
+// ─── AC5: exports match what is drawn ───
+
+/** Clicks each figure export in `scope` until one saves an SVG whose name contains `name`; returns its text. */
+async function exportSvg(app: AppHarness, scope: LiveElement, name: string): Promise<string> {
+  for (const trigger of scope.querySelectorAll('.mbc-figure-export-trigger')) {
+    await app.click(trigger);
+    const items = app.all('.mbc-figure-export-item').filter((b) => words(b.textContent).startsWith('SVG'));
+    if (items.length !== 1) { await closeMenus(app); continue; }
+    const before = app.downloads().length;
+    await app.click(items[0]);
+    await app.settle();
+    const files = app.downloads().slice(before).filter((f) => f.filename.endsWith('.svg') && f.filename.includes(name));
+    if (files.length === 1) return files[0].text();
+  }
+  throw new Error(`no figure export in the scope saved an SVG named "${name}": ${scope.querySelectorAll('.mbc-figure-export-trigger').length} triggers; saved ${app.downloads().map((f) => f.filename).join(', ')}`);
+}
+async function saveViewerSvg(app: AppHarness): Promise<string> {
+  const before = app.downloads().length;
+  await app.menu('file:save-svg-image');
+  await app.settle();
+  const files = app.downloads().slice(before).filter((f) => f.filename.endsWith('.svg'));
+  expect(files, 'File › Save Viewer as SVG saves one .svg').toHaveLength(1);
+  return files[0].text();
+}
+const exported = (svg: string) => ({ features: partsIn(svg, 'feature-arc') + partsIn(svg, 'feature-box'), sites: partsIn(svg, 'cut-site') });
+
+describe('US-01M7DV8W AC5: every export route draws the tracks as shown', () => {
+  it('US-01M7DV8W AC5 the circular and linear figure exports, Save Viewer as SVG and the focused pane export: none with a track hidden, some with it shown', async () => {
+    await withApp(async (app) => {
+      await restoreTracks(app, [CA, CB], CA.id, 'split');
+      await app.click(app.one('button.mbc-split-toggle'));
+      if (picker(app).value !== CB.id) await app.change(picker(app), CB.id);
+      await app.change(viewSelect(app), 'circular');
+      const routes: [string, () => Promise<string>][] = [
+        ['circular figure export', () => exportSvg(app, mainMap(app).closest('.plasmid-map-wrapper')!, 'Circ_A_—_Circular_Map')],
+        ['linear figure export', () => exportSvg(app, linearView(app.canvas()), 'Linear_Map')],
+        ['Save Viewer as SVG', () => saveViewerSvg(app)],
+        ['focused split pane export', async () => { await focusPane(app); const t = await exportSvg(app, pane(app), 'Circ_B'); await focusMain(app); return t; }],
+      ];
+      for (const [route, run] of routes) {
+        const shown = exported(await run());
+        expect(shown.features, `${route}: positive control, a feature`).toBeGreaterThan(0);
+        expect(shown.sites, `${route}: positive control, a cut site`).toBeGreaterThan(0);
+        await toggleTrack(app, 'Features');
+        const noFeatures = exported(await run());
+        expect(noFeatures.features, `${route}: Features hidden`).toBe(0);
+        expect(noFeatures.sites, `${route}: Features hidden, the sites stay`).toBeGreaterThan(0);
+        await toggleTrack(app, 'Restriction Sites');
+        await toggleTrack(app, 'Features');
+        expect(exported(await run()), `${route}: Restriction Sites hidden`).toEqual({ features: shown.features, sites: 0 });
+        await toggleTrack(app, 'Restriction Sites');
+      }
+    });
+  });
+});

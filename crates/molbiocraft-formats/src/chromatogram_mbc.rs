@@ -128,6 +128,35 @@ pub struct MbcDisplaySettingsRust {
     pub show_hydropathy_graph: bool,
     #[serde(default)]
     pub show_unique_cutters_only: bool,
+    /// View › Tracks' Features (US-01M7DV8W); absent in an older session, which shows them.
+    #[serde(default = "default_true")]
+    pub show_features: bool,
+    /// View › Tracks' Restriction Sites (US-01M7DV8W); absent in an older session, which shows them.
+    #[serde(default = "default_true")]
+    pub show_restriction_sites: bool,
+}
+
+/// The parse warnings naming an unreadable View › Tracks setting (US-01M7DV8W).
+pub const UNREADABLE_FEATURES_TRACK: &str = "The saved Features track setting could not be read; features are shown.";
+pub const UNREADABLE_RESTRICTION_SITES_TRACK: &str =
+    "The saved Restriction Sites track setting could not be read; restriction sites are shown.";
+
+/// A View › Tracks setting as saved (US-01M7DV8W): absent is shown with no warning; present but not
+/// a boolean is shown, and `unreadable` is pushed onto `warnings` (LC-006: absent and unreadable are
+/// told apart).
+fn resolve_track_setting(
+    ds_obj: Option<&serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+    unreadable: &str,
+    warnings: &mut Vec<String>,
+) -> bool {
+    match ds_obj.and_then(|d| d.get(key)) {
+        None => true,
+        Some(v) => v.as_bool().unwrap_or_else(|| {
+            warnings.push(unreadable.to_string());
+            true
+        }),
+    }
 }
 
 fn default_true() -> bool {
@@ -148,6 +177,8 @@ impl Default for MbcDisplaySettingsRust {
             show_gc_graph: true,
             show_hydropathy_graph: false,
             show_unique_cutters_only: false,
+            show_features: true,
+            show_restriction_sites: true,
         }
     }
 }
@@ -690,6 +721,13 @@ pub fn parse_mbc_workbench_rust(
             .and_then(|d| d.get("showUniqueCuttersOnly"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        show_features: resolve_track_setting(ds_obj, "showFeatures", UNREADABLE_FEATURES_TRACK, &mut warnings),
+        show_restriction_sites: resolve_track_setting(
+            ds_obj,
+            "showRestrictionSites",
+            UNREADABLE_RESTRICTION_SITES_TRACK,
+            &mut warnings,
+        ),
     };
 
     let selected_range: Option<MbcSelectedRangeRust> = ws_obj
@@ -1722,5 +1760,82 @@ mod tests {
         null_created["documents"][0]["createdAt"] = serde_json::Value::Null;
         let err = parse_mbc_workbench_rust(&null_created.to_string(), "Fallback", now).unwrap_err();
         assert!(err.starts_with("Invalid .mbc file: document at index 0 is malformed"), "{err}");
+    }
+
+    /// US-01M7DV8W AC4: View › Tracks' `showFeatures` and `showRestrictionSites` round-trip as false
+    /// through serialize then parse (so a resolver line that is missing or always true fails); a
+    /// session without them parses both as true with no warning; one present but not a boolean
+    /// parses as true with exactly one warning naming it.
+    #[test]
+    fn us_01m7dv8w_ac4_track_settings_round_trip_and_name_an_unreadable_value() {
+        let at = "2026-11-18T08:00:00.000Z";
+        let doc = build_ncbi_reference_preset_document("spike", at);
+        let defaults = MbcDisplaySettingsRust::default();
+        assert!(defaults.show_features && defaults.show_restriction_sites, "both are shown by default");
+        let snap = MbcWorkbenchSnapshotInput {
+            session_name: "Tracks.mbc".to_string(),
+            documents: vec![doc.clone()],
+            workspace: MbcWorkspaceUiStateRust {
+                project_explorer: None,
+                active_doc_id: doc.id.clone(),
+                selected_folder: "Sample Documents".to_string(),
+                nav_history: vec![doc.id.clone()],
+                nav_index: 0,
+                viewer_tab: "sequence-view".to_string(),
+                map_layout_mode: "split".to_string(),
+                zoom_level: 100.0,
+                text_format: "genbank".to_string(),
+                color_scheme: "standard".to_string(),
+                dark_mode: false,
+                sidebar_open: true,
+                doc_table_collapsed: false,
+                selected_range: None,
+                display_settings: MbcDisplaySettingsRust { show_features: false, show_restriction_sites: false, ..MbcDisplaySettingsRust::default() },
+                pane_split: None,
+                site_visibility: None,
+                map_rotation: None,
+                document_split: None,
+            },
+        };
+        let text = serialize_mbc_workbench_rust(&snap, "1.0.0", at);
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(saved["workspace"]["displaySettings"]["showFeatures"], serde_json::json!(false));
+        assert_eq!(saved["workspace"]["displaySettings"]["showRestrictionSites"], serde_json::json!(false));
+        let parse = |v: &serde_json::Value| parse_mbc_workbench_rust(&v.to_string(), "Fallback", at).unwrap();
+        let parsed = parse(&saved);
+        let ds = &parsed.envelope.workspace.display_settings;
+        assert_eq!((ds.show_features, ds.show_restriction_sites), (false, false), "both round-trip as false");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        // One false and one true, so a resolver reading one key for both fails.
+        let mut mixed = saved.clone();
+        mixed["workspace"]["displaySettings"]["showFeatures"] = serde_json::json!(true);
+        let ds = parse(&mixed).envelope.workspace.display_settings;
+        assert_eq!((ds.show_features, ds.show_restriction_sites), (true, false));
+
+        // A session saved before the settings: both shown, no warning.
+        let mut old = saved.clone();
+        let old_ds = old["workspace"]["displaySettings"].as_object_mut().unwrap();
+        old_ds.remove("showFeatures");
+        old_ds.remove("showRestrictionSites");
+        let parsed = parse(&old);
+        let ds = &parsed.envelope.workspace.display_settings;
+        assert_eq!((ds.show_features, ds.show_restriction_sites), (true, true), "absent is shown");
+        assert!(parsed.warnings.is_empty(), "absent is no warning: {:?}", parsed.warnings);
+
+        // Present but not a boolean: shown, with exactly one warning naming it.
+        let features = "The saved Features track setting could not be read; features are shown.";
+        let sites = "The saved Restriction Sites track setting could not be read; restriction sites are shown.";
+        for bad in [serde_json::json!("no"), serde_json::json!(0), serde_json::Value::Null, serde_json::json!({})] {
+            for (key, sentence) in [("showFeatures", features), ("showRestrictionSites", sites)] {
+                let mut odd = saved.clone();
+                odd["workspace"]["displaySettings"][key] = bad.clone();
+                let parsed = parse(&odd);
+                let ds = &parsed.envelope.workspace.display_settings;
+                let (value, other) = if key == "showFeatures" { (ds.show_features, ds.show_restriction_sites) } else { (ds.show_restriction_sites, ds.show_features) };
+                assert!(value, "{key} = {bad} is shown");
+                assert!(!other, "{key} = {bad}: the other keeps its saved false");
+                assert_eq!(parsed.warnings, vec![sentence.to_string()], "{key} = {bad}: exactly one warning naming it");
+            }
+        }
     }
 }

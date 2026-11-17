@@ -407,6 +407,7 @@ import {
   unmatchedHiddenEnzymes,
   unmatchedHiddenEnzymesNotice,
   unreadableMapRotationNotice,
+  UNREADABLE_TRACK_SETTING_WARNINGS,
   workbenchAutosaveNeedsRecovery,
   writeWorkbenchAutosaveDirtyFlag,
   type WorkbenchAutosaveReadResult,
@@ -422,6 +423,8 @@ import {
   CommandContext,
   CommandId,
   CIRCULAR_ONLY_HINT,
+  trackAvailability,
+  type TrackId,
   type ViewCommandId,
   type WorkbenchCommandId,
 } from './core/commandAvailability';
@@ -1859,6 +1862,9 @@ export const App: React.FC = () => {
   const [showTranslation, setShowTranslation] = useState<boolean>(startupPrefs.view.showTranslation);
   const [showGcGraph, setShowGcGraph] = useState<boolean>(startupPrefs.view.showGcGraph);
   const [showHydropathyGraph, setShowHydropathyGraph] = useState<boolean>(false);
+  // View › Tracks' Features and Restriction Sites (US-01M7DV8W): saved with the session, shown at startup.
+  const [showFeatures, setShowFeatures] = useState<boolean>(true);
+  const [showRestrictionSites, setShowRestrictionSites] = useState<boolean>(true);
   const [showUniqueCuttersOnly, setShowUniqueCuttersOnly] = useState<boolean>(startupPrefs.view.uniqueCuttersOnly);
   const [exportLineEndingPref, setExportLineEndingPref] = useState(startupPrefs.exportLineEnding);
   // Changing a view default in Preferences applies it to the open view immediately.
@@ -3647,6 +3653,25 @@ export const App: React.FC = () => {
     return true;
   };
   /**
+   * View › Tracks (US-01M7DV8W): each track's label, whether it is shown, and the one toggle its in-app
+   * item and its native id call. A track its rule (trackAvailability) turns off changes nothing and
+   * says why in the status bar.
+   */
+  const TRACK_MENU: Record<TrackId, { label: string; shown: boolean; set: (shown: boolean) => void }> = {
+    features: { label: 'Features', shown: showFeatures, set: setShowFeatures },
+    primers: { label: 'Primers', shown: showPrimers, set: setShowPrimers },
+    'restriction-sites': { label: 'Restriction Sites', shown: showRestrictionSites, set: setShowRestrictionSites },
+    orfs: { label: 'ORFs', shown: showOrfs, set: setShowOrfs },
+    translation: { label: 'Translation', shown: showTranslation, set: setShowTranslation },
+    'gc-graph': { label: 'GC Graph', shown: showGcGraph, set: setShowGcGraph },
+    'hydropathy-graph': { label: 'Hydropathy Graph', shown: showHydropathyGraph, set: setShowHydropathyGraph },
+  };
+  const toggleTrack = (track: TrackId) => {
+    const t = TRACK_MENU[track];
+    if (!ensureCommandAvailable(`track-${track}`, t.label)) return;
+    t.set(!t.shown);
+  };
+  /**
    * View › Rotate Circular Map… and View › Reset Rotation (US-01M7DVG4): on another viewer tab they
    * first switch to the Sequence view, as View › Map Layout's items do.
    */
@@ -5058,6 +5083,8 @@ export const App: React.FC = () => {
         showGcGraph,
         showHydropathyGraph,
         showUniqueCuttersOnly,
+        showFeatures,
+        showRestrictionSites,
       },
     },
   });
@@ -5226,13 +5253,15 @@ export const App: React.FC = () => {
     showGcGraph,
     showHydropathyGraph,
     showUniqueCuttersOnly,
+    showFeatures,
+    showRestrictionSites,
   ]);
 
   const applyParsedMbcSession = (
     rawText: string,
     sourceLabel: string,
     mode: 'replace' | 'merge' = 'replace',
-    options: { isAutosaveRestore?: boolean } = {}
+    options: { isAutosaveRestore?: boolean; earlierWarnings?: readonly string[] } = {}
   ) => {
     if (mode === 'replace' || !sessionActiveRef.current) {
       // Validate before asking: a corrupt file must not cost the user a prompt
@@ -5252,7 +5281,7 @@ export const App: React.FC = () => {
     rawText: string,
     sourceLabel: string,
     mode: 'replace' | 'merge',
-    options: { isAutosaveRestore?: boolean }
+    options: { isAutosaveRestore?: boolean; earlierWarnings?: readonly string[] }
   ) => {
     const fallbackName = sourceLabel.replace(/\.mbc$/i, '') || 'MolBioCraft_Workbench';
     const parsed = parseMbcWorkbench(rawText, fallbackName);
@@ -5376,6 +5405,9 @@ export const App: React.FC = () => {
     setShowGcGraph(env.workspace.displaySettings.showGcGraph);
     setShowHydropathyGraph(env.workspace.displaySettings.showHydropathyGraph);
     setShowUniqueCuttersOnly(env.workspace.displaySettings.showUniqueCuttersOnly);
+    // Absent (a session saved before View › Tracks) is shown; the parser names an unreadable one.
+    setShowFeatures(env.workspace.displaySettings.showFeatures ?? true);
+    setShowRestrictionSites(env.workspace.displaySettings.showRestrictionSites ?? true);
     setHomeViewActive(false);
     setSessionActive(true);
 
@@ -5397,6 +5429,14 @@ export const App: React.FC = () => {
     if (unmatchedNotice) setStatusBanner(unmatchedNotice, { append: true, keep: true });
     for (const doc of restoredRotation.unreadable) {
       setStatusBanner(unreadableMapRotationNotice(doc), { append: true, keep: true });
+    }
+    // An unreadable track setting (US-01M7DV8W) is named, past the one warning the restore sentence
+    // carries. The autosave restore hands in its first parse's warnings, since the envelope it passes
+    // here holds the setting already read as shown.
+    for (const warning of new Set([...(options.earlierWarnings ?? []), ...parsed.warnings])) {
+      if (warning !== parsed.warnings[0] && UNREADABLE_TRACK_SETTING_WARNINGS.includes(warning)) {
+        setStatusBanner(warning, { append: true, keep: true });
+      }
     }
     if (restoredSplit.notice) setStatusBanner(restoredSplit.notice, { append: true, keep: true });
     if (restoredSplit.sizeNotice) setStatusBanner(restoredSplit.sizeNotice, { append: true, keep: true });
@@ -5630,7 +5670,7 @@ export const App: React.FC = () => {
         JSON.stringify(cached.envelope),
         cached.envelope.sessionName,
         'replace',
-        { isAutosaveRestore: true }
+        { isAutosaveRestore: true, earlierWarnings: cached.warnings }
       );
     } catch (err) {
       setStatusBanner(`Could not restore the autosave: ${err instanceof Error ? err.message : String(err)}`);
@@ -7600,6 +7640,27 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           break;
         case 'view:layout-linear':
           requireActiveSession(() => chooseMapLayout('linear'));
+          break;
+        case 'view:track-features':
+          requireActiveSession(() => toggleTrack('features'));
+          break;
+        case 'view:track-primers':
+          requireActiveSession(() => toggleTrack('primers'));
+          break;
+        case 'view:track-restriction-sites':
+          requireActiveSession(() => toggleTrack('restriction-sites'));
+          break;
+        case 'view:track-orfs':
+          requireActiveSession(() => toggleTrack('orfs'));
+          break;
+        case 'view:track-translation':
+          requireActiveSession(() => toggleTrack('translation'));
+          break;
+        case 'view:track-gc-graph':
+          requireActiveSession(() => toggleTrack('gc-graph'));
+          break;
+        case 'view:track-hydropathy-graph':
+          requireActiveSession(() => toggleTrack('hydropathy-graph'));
           break;
         case 'view:enzymes':
         case 'enzymes:choose':
@@ -10319,6 +10380,79 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             disabled: !isCommandEnabled('set-origin'),
             description: actsOnMainViewDescription('view-set-origin', 'Set Origin', commandDisabledReason('set-origin')),
             onSelect: () => requireActiveSession(() => handleSetOriginToSelection()),
+          },
+        ],
+      },
+      {
+        // US-01M7DV8W: show or hide each track; checked as shown, off with the reason where it cannot apply.
+        kind: 'submenu',
+        id: 'view-tracks-sub',
+        label: 'Tracks',
+        disabled: !sessionActive,
+        minWidth: 220,
+        children: [
+          {
+            kind: 'checkbox',
+            id: 'view-track-features',
+            label: 'Features',
+            checked: sessionActive && TRACK_MENU['features'].shown,
+            disabled: !isCommandEnabled('track-features'),
+            description: commandDisabledReason('track-features'),
+            onToggle: () => requireActiveSession(() => toggleTrack('features')),
+          },
+          {
+            kind: 'checkbox',
+            id: 'view-track-primers',
+            label: 'Primers',
+            checked: sessionActive && TRACK_MENU['primers'].shown,
+            disabled: !isCommandEnabled('track-primers'),
+            description: commandDisabledReason('track-primers'),
+            onToggle: () => requireActiveSession(() => toggleTrack('primers')),
+          },
+          {
+            kind: 'checkbox',
+            id: 'view-track-restriction-sites',
+            label: 'Restriction Sites',
+            checked: sessionActive && TRACK_MENU['restriction-sites'].shown,
+            disabled: !isCommandEnabled('track-restriction-sites'),
+            description: commandDisabledReason('track-restriction-sites'),
+            onToggle: () => requireActiveSession(() => toggleTrack('restriction-sites')),
+          },
+          {
+            kind: 'checkbox',
+            id: 'view-track-orfs',
+            label: 'ORFs',
+            checked: sessionActive && TRACK_MENU['orfs'].shown,
+            disabled: !isCommandEnabled('track-orfs'),
+            description: commandDisabledReason('track-orfs'),
+            onToggle: () => requireActiveSession(() => toggleTrack('orfs')),
+          },
+          {
+            kind: 'checkbox',
+            id: 'view-track-translation',
+            label: 'Translation',
+            checked: sessionActive && TRACK_MENU['translation'].shown,
+            disabled: !isCommandEnabled('track-translation'),
+            description: commandDisabledReason('track-translation'),
+            onToggle: () => requireActiveSession(() => toggleTrack('translation')),
+          },
+          {
+            kind: 'checkbox',
+            id: 'view-track-gc-graph',
+            label: 'GC Graph',
+            checked: sessionActive && TRACK_MENU['gc-graph'].shown,
+            disabled: !isCommandEnabled('track-gc-graph'),
+            description: commandDisabledReason('track-gc-graph'),
+            onToggle: () => requireActiveSession(() => toggleTrack('gc-graph')),
+          },
+          {
+            kind: 'checkbox',
+            id: 'view-track-hydropathy-graph',
+            label: 'Hydropathy Graph',
+            checked: sessionActive && TRACK_MENU['hydropathy-graph'].shown,
+            disabled: !isCommandEnabled('track-hydropathy-graph'),
+            description: commandDisabledReason('track-hydropathy-graph'),
+            onToggle: () => requireActiveSession(() => toggleTrack('hydropathy-graph')),
           },
         ],
       },
@@ -15872,6 +16006,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             showOrfs={showOrfs}
                             orfScope={orfScope}
                             showPrimers={showPrimers}
+                            showFeatures={showFeatures}
+                            showRestrictionSites={showRestrictionSites}
                             showUniqueCuttersOnly={showUniqueCuttersOnly}
                             restrictionScope={restrictionScope}
                             zoomLevel={zoomLevel}
@@ -15894,6 +16030,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             showTranslation={showTranslation}
                             showGcGraph={showGcGraph}
                             showHydropathyGraph={showHydropathyGraph}
+                            showFeatures={showFeatures}
+                            showRestrictionSites={showRestrictionSites}
                             colorScheme={colorScheme}
                             onLoadBenchmarkDocument={handleLoadBenchmarkDocument}
                             onClearSelection={() => setSelectedRange(null)}
@@ -16552,6 +16690,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   onRotateOpenChange={setSplitRotateOpen}
                   viewRestoreKey={splitViewRestores}
                   overviewFitKey={splitOverviewFits}
+                  tracks={{ showFeatures, showRestrictionSites, showTranslation, showGcGraph, showHydropathyGraph }}
                   focused={secondPaneFocused}
                   onFocusPane={() => setFocusedPane('second')}
                   onSwap={(paneRange) => {
@@ -16717,6 +16856,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             <input
                               type="checkbox"
                               checked={showTranslation}
+                              disabled={!trackAvailability('translation', buildCommandContext()).enabled}
+                              title={trackAvailability('translation', buildCommandContext()).reason}
                               onChange={(e) => setShowTranslation(e.target.checked)}
                             />
                             <span>Show 3-Frame Translation</span>
@@ -16749,8 +16890,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           <input
                             type="checkbox"
                             checked={showPrimers}
-                            disabled={!circularMapShown}
-                            title={circularMapShown ? undefined : CIRCULAR_ONLY_HINT}
+                            disabled={!trackAvailability('primers', buildCommandContext()).enabled}
+                            title={trackAvailability('primers', buildCommandContext()).reason}
                             onChange={(e) => setShowPrimers(e.target.checked)}
                           />
                           <span>Primers ({activeDoc.primers.length})</span>
@@ -16759,8 +16900,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           <input
                             type="checkbox"
                             checked={showOrfs}
-                            disabled={!circularMapShown}
-                            title={circularMapShown ? undefined : CIRCULAR_ONLY_HINT}
+                            disabled={!trackAvailability('orfs', buildCommandContext()).enabled}
+                            title={trackAvailability('orfs', buildCommandContext()).reason}
                             onChange={(e) => setShowOrfs(e.target.checked)}
                           />
                           <span>Predicted ORFs ({orfs.length}{orfScopeWords ? ` ${orfScopeWords}` : ''})</span>
@@ -16816,6 +16957,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           <input
                             type="checkbox"
                             checked={showGcGraph}
+                            disabled={!trackAvailability('gc-graph', buildCommandContext()).enabled}
+                            title={trackAvailability('gc-graph', buildCommandContext()).reason}
                             onChange={(e) => setShowGcGraph(e.target.checked)}
                           />
                           <span>GC% &amp; AT% Content Plot</span>
@@ -16824,6 +16967,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           <input
                             type="checkbox"
                             checked={showHydropathyGraph}
+                            disabled={!trackAvailability('hydropathy-graph', buildCommandContext()).enabled}
+                            title={trackAvailability('hydropathy-graph', buildCommandContext()).reason}
                             onChange={(e) => setShowHydropathyGraph(e.target.checked)}
                           />
                           <span>{isProteinSequence ? 'Kyte-Doolittle Hydrophobicity' : 'Translated Protein Hydropathy'}</span>

@@ -78,6 +78,13 @@ interface LinearSequenceViewProps {
   showTranslation?: boolean;
   showGcGraph?: boolean;
   showHydropathyGraph?: boolean;
+  /**
+   * View › Tracks' Features and Restriction Sites (US-01M7DV8W); shown unless false. Hidden, the
+   * schematic and the base rows draw no feature box, or no cut-site mark or label, and
+   * `siteVisibility` is left as it is.
+   */
+  showFeatures?: boolean;
+  showRestrictionSites?: boolean;
   colorScheme?: NucleotideColorScheme;
   onLoadBenchmarkDocument?: (kind: 'genome-500k' | 'protein-10k') => void;
   onClearSelection?: () => void;
@@ -1747,6 +1754,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   showTranslation = true,
   showGcGraph = true,
   showHydropathyGraph = false,
+  showFeatures = true,
+  showRestrictionSites = true,
   colorScheme = 'standard',
   onLoadBenchmarkDocument,
   onClearSelection,
@@ -2027,13 +2036,15 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     };
   }, [doc.id, safePageIndex]);
 
+  // The features the maps draw: none while View › Tracks hides them (US-01M7DV8W).
+  const trackFeatures = useMemo(() => (showFeatures ? doc.features : []), [doc.features, showFeatures]);
   const schematicLayout = useMemo(
-    () => layoutLinearSchematicFeatures(doc.features, declaredLen, 3),
-    [doc.features, declaredLen]
+    () => layoutLinearSchematicFeatures(trackFeatures, declaredLen, 3),
+    [trackFeatures, declaredLen]
   );
   const schematicHeight = Math.max(76, 36 + schematicLayout.laneCount * 22);
   // The schematic draws the longest features when there are more than it holds, and says so (BG-01M6S1AA).
-  const schematicCoverage = subsetNote('The map draws', schematicLayout.placed.length, doc.features.length, 'features', 'longest');
+  const schematicCoverage = subsetNote('The map draws', schematicLayout.placed.length, trackFeatures.length, 'features', 'longest');
 
   // ─── The overview's one active interval and its brush (US-01M7CCFQ) ───
   // The overview draws on the declared length, as its ruler and pills do; so does the brush.
@@ -2068,8 +2079,8 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     () =>
       overviewView.scale === 1 && overviewView.offset === 0
         ? schematicLayout
-        : layoutLinearSchematicFeatures(doc.features, declaredLen, 3, overviewView),
-    [schematicLayout, doc.features, declaredLen, overviewView.scale, overviewView.offset]
+        : layoutLinearSchematicFeatures(trackFeatures, declaredLen, 3, overviewView),
+    [schematicLayout, trackFeatures, declaredLen, overviewView.scale, overviewView.offset]
   );
   const overviewClipId = `mbc-overview-clip-${doc.id.replace(/[^A-Za-z0-9_-]/g, '_')}`;
   /** Zoom the overview by `deltaPx` (wheel pixels; negative zooms in) about the selection's centre when the track shows it, else the track's centre. */
@@ -2448,9 +2459,15 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     setPreviewCutId(null);
     previewMarkerRef.current?.focus();
   };
+  // None while View › Tracks hides restriction sites (US-01M7DV8W): an open preview then closes.
   const displayedCutSites = useMemo(
-    () => (siteVisibility ? applySiteVisibility(cutSites, siteVisibility.revision, siteVisibility.state, { uniqueCuttersOnly: false }).displayed : cutSites),
-    [cutSites, siteVisibility]
+    () =>
+      !showRestrictionSites
+        ? []
+        : siteVisibility
+        ? applySiteVisibility(cutSites, siteVisibility.revision, siteVisibility.state, { uniqueCuttersOnly: false }).displayed
+        : cutSites,
+    [cutSites, siteVisibility, showRestrictionSites]
   );
   const previewCut = previewCutId === null ? undefined : displayedCutSites.find((c) => c.id === previewCutId);
   // A preview whose site is hidden (or gone in a rescan) closes, and stays closed if it is shown again.
@@ -2494,13 +2511,14 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
   };
 
   const pageOverlappingFeatures = useMemo(() => {
+    if (!showFeatures) return [];
     if (pageSlice.overlappingFeatureIndices.length > 0) {
       return pageSlice.overlappingFeatureIndices
         .map((idx) => doc.features[idx])
         .filter((f): f is SequenceFeature => Boolean(f));
     }
     return doc.features.filter((f) => f.end >= pageStartPos && f.start <= pageEndPos);
-  }, [doc.features, pageSlice.overlappingFeatureIndices, pageStartPos, pageEndPos]);
+  }, [doc.features, pageSlice.overlappingFeatureIndices, pageStartPos, pageEndPos, showFeatures]);
 
   const pageCuts = useMemo(
     () =>
@@ -2926,6 +2944,25 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               );
             })}
 
+          {/* Each displayed cut site (US-01M7DV8W): a mark under the axis where it cuts. The overview names
+              no enzyme (the base rows' cut pills do), so a hidden enzyme's name is never in its figure. */}
+          {!isProtein &&
+            displayedCutSites.map((c) => {
+              const cutAt = cutSiteDisplayPosition(c.cutTop, doc.sequence.length, doc.topology === 'circular');
+              const x = overviewX(cutAt, view, overviewLen);
+              if (x < SCHEMATIC_X0 - 0.5 || x > SCHEMATIC_X1 + 0.5) return null;
+              return (
+                <path
+                  key={`cut-${c.id}`}
+                  data-map-part="cut-site"
+                  d={`M ${x.toFixed(2)} 24 l -2.6 5 h 5.2 z`}
+                  fill={c.enzyme.isTypeIIS ? 'var(--mbc-amber)' : 'var(--mbc-blue)'}
+                >
+                  <title>{`Cut site after ${cutAt.toLocaleString()}`}</title>
+                </path>
+              );
+            })}
+
           {/* Multi-Lane Non-Overlapping Schematic Feature Pills */}
           {(live ? overviewLayout : schematicLayout).placed.map((item) => {
             const f = item.feature;
@@ -2937,6 +2974,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             return (
               <g
                 key={f.id}
+                data-map-part="feature-box"
                 className="clickable-arc"
                 onClick={() => {
                   const targetRow = Math.floor((f.start - 1) / basesPerRow);
@@ -3319,7 +3357,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               const rStart = rowIdx * rowSpan + 1;
               const rEnd = Math.min(declaredLen, (rowIdx + 1) * rowSpan);
               const yBase = 18 + rowIdx * 24;
-              const rowFeats = doc.features.filter((f) => f.end >= rStart && f.start <= rEnd);
+              const rowFeats = trackFeatures.filter((f) => f.end >= rStart && f.start <= rEnd);
               return (
                 <g key={rowIdx}>
                   <text x="6" y={yBase + 3} fontSize="9.5" fill="var(--mbc-text-secondary)" fontWeight="600">
@@ -3348,6 +3386,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                         return (
                           <rect
                             key={`${rowIdx}-${f.id}-${k}`}
+                            data-map-part="feature-box"
                             x={x1}
                             y={yBase - 6}
                             width={x2 - x1}
@@ -3871,6 +3910,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                   return (
                     <span
                       key={c.id}
+                      data-map-part="cut-site"
                       className={`cut-pill ${c.enzyme.isTypeIIS ? 'type2s' : ''}`}
                       role="button"
                       tabIndex={0}
@@ -4046,6 +4086,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                   return (
                     <div
                       key={f.id}
+                      data-map-part="feature-box"
                       className="feature-inline-bar"
                       style={{
                         borderColor: f.color,

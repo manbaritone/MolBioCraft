@@ -70,6 +70,12 @@ interface CircularPlasmidMapProps {
   onSelectRange: (range: { start: number; end: number; label?: string }) => void;
   showOrfs: boolean;
   showPrimers: boolean;
+  /**
+   * View › Tracks' Features and Restriction Sites (US-01M7DV8W); shown unless false. Hidden, the map
+   * draws no feature arc or callout, or no cut-site callout, and leaves `siteVisibility` as it is.
+   */
+  showFeatures?: boolean;
+  showRestrictionSites?: boolean;
   showUniqueCuttersOnly: boolean;
   /**
    * Which of `cutSites` the user chose to display (US-01M7CCGA), with the revision of the scanned
@@ -1158,6 +1164,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   guideHighlight = null,
   onSelectRange,
   showOrfs,
+  showFeatures = true,
+  showRestrictionSites = true,
   showPrimers,
   showUniqueCuttersOnly,
   restrictionScope = null,
@@ -1359,7 +1367,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   }, [cutSites, siteVisibility, showUniqueCuttersOnly, enzymeCounts, isProtein]);
 
   const displayedCuts = useMemo(() => {
-    if (isProtein) return [];
+    if (isProtein || !showRestrictionSites) return [];
     const filtered = showUniqueCuttersOnly
       ? userShownCuts.filter((c) => enzymeCounts[enzymeKey(c.enzyme)] === 1)
       : userShownCuts;
@@ -1370,7 +1378,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
         return ua - ub || a.position - b.position;
       })
       .slice(0, 32);
-  }, [userShownCuts, enzymeCounts, showUniqueCuttersOnly, isProtein]);
+  }, [userShownCuts, enzymeCounts, showUniqueCuttersOnly, isProtein, showRestrictionSites]);
 
   // The identity plate counts every cut site the map is set to show (all, or the single cutters
   // only), the count the Restriction Analysis list gives, not the 32 at most it offers the callouts.
@@ -1395,6 +1403,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     [doc.features]
   );
   const visibleFeatures = useMemo(() => {
+    if (!showFeatures) return [];
     // Multi-interval (joined) features are drawn as one arc per interval, so an origin-spanning
     // D-loop or a spliced gene is not painted over the bases between its parts.
     const expanded = doc.features.flatMap((f) =>
@@ -1413,18 +1422,18 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     return [...expanded]
       .sort((a, b) => b.end - b.start - (a.end - a.start))
       .slice(0, FEATURE_ARCS_DRAWN);
-  }, [doc.features]);
+  }, [doc.features, showFeatures]);
   // What the ring and the arcs leave out, said beside the map. The ORF ring draws only when ORFs are shown.
   const orfRingShown = showOrfs && !isProtein;
   const mapCoverage = [
     ...(orfRingShown ? subsetNote('The ORF ring draws', Math.min(orfs.length, ORF_RING_ARCS), orfs.length, 'ORFs', 'longest') : []),
-    ...subsetNote(
+    ...(!showFeatures ? [] : subsetNote(
       'The map draws',
       visibleFeatures.length,
       featureArcs,
       featureArcs > doc.features.length ? 'feature intervals (one arc each)' : 'features',
       'longest'
-    ),
+    )),
   ];
 
   // Resident Rust Sequence Store overview (cached 180-bin GC%, cumulative GC-skew, oriC/terC)
@@ -1591,8 +1600,9 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     // and features and primers, counted against what the layout placed.
     const leftOut = (placed: CircularCalloutPlaced[]) => {
       const ids = new Set(placed.map((c) => c.id));
-      const sites = plateSiteCount - placed.filter((c) => c.kind === 'enzyme-unique' || c.kind === 'enzyme-multi').length;
-      const features = doc.features.filter(
+      // A hidden track (US-01M7DV8W) leaves nothing out: it is not drawn at all.
+      const sites = !showRestrictionSites ? 0 : plateSiteCount - placed.filter((c) => c.kind === 'enzyme-unique' || c.kind === 'enzyme-multi').length;
+      const features = !showFeatures ? 0 : doc.features.filter(
         (f) => !ids.has(`feat-${f.id}`) && !placed.some((c) => c.id.startsWith(`feat-${f.id}-part-`))
       ).length;
       const primers = showPrimers && !isProtein ? doc.primers.filter((p) => !ids.has(`prm-${p.id}`)).length : 0;
@@ -1603,7 +1613,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     const missing = leftOut(placed);
     // A partial or reduced scan always has a note, since it names the scope (the plate, which
     // does not fit a small map, cannot carry it).
-    if (missing.sites + missing.annotations > 0 || scopeWords || hiddenByUser > 0) {
+    const userHidden = showRestrictionSites ? hiddenByUser : 0;
+    if (missing.sites + missing.annotations > 0 || scopeWords || userHidden > 0) {
       // The note sits in the bottom-left corner of the frame, below both columns, at the caption
       // size on screen; the columns end above it, which can leave out one more callout each.
       const fontSize = Number(units(Math.max(CALLOUT_NOTE_PX, CALLOUT_NOTE_PX / renderScale)));
@@ -1619,7 +1630,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
         final.annotations,
         Math.floor((viewWidth - 36) / (size * CALLOUT_CHAR_EM)),
         scopeWords?.short,
-        hiddenByUser
+        userHidden
       );
       if (text) note = { text, x: 18, y: viewHeight - 6 - size / 2, fontSize: size, pinned: Boolean(scopeWords) };
     }
@@ -1643,6 +1654,8 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
     doc.primers,
     doc.topology,
     showPrimers,
+    showFeatures,
+    showRestrictionSites,
     showUniqueCuttersOnly,
     isProtein,
     cutSites,
@@ -2253,6 +2266,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
             <g
               key={c.id}
               data-callout={c.id}
+              data-map-part={c.kind === 'enzyme-unique' || c.kind === 'enzyme-multi' ? 'cut-site' : undefined}
               className="clickable-arc"
               tabIndex={0}
               role="button"

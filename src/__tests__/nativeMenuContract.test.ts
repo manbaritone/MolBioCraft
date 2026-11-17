@@ -375,3 +375,62 @@ describe('native menu ↔ dispatcher contract', () => {
     expect(resolveNativeMenuItemEnabled(id, buildNativeMenuState({ ...base, sessionActive: true })), 'a session').toBe(true);
   });
 });
+
+describe('US-01M7DV8W AC1: View › Tracks natively', () => {
+  const TRACKS: [string, string, string, string][] = [
+    ['view:track-features', 'Features', 'view-track-features', 'features'],
+    ['view:track-primers', 'Primers', 'view-track-primers', 'primers'],
+    ['view:track-restriction-sites', 'Restriction Sites', 'view-track-restriction-sites', 'restriction-sites'],
+    ['view:track-orfs', 'ORFs', 'view-track-orfs', 'orfs'],
+    ['view:track-translation', 'Translation', 'view-track-translation', 'translation'],
+    ['view:track-gc-graph', 'GC Graph', 'view-track-gc-graph', 'gc-graph'],
+    ['view:track-hydropathy-graph', 'Hydropathy Graph', 'view-track-hydropathy-graph', 'hydropathy-graph'],
+  ];
+  const dispatcher = parseDispatcher();
+  const caseBody = (id: string) => {
+    const at = appTsx.indexOf(`case '${id}':`, appTsx.indexOf('    onMenuAction: (actionId: string) => {'));
+    expect(at, `the dispatcher case ${id}`).toBeGreaterThan(0);
+    return appTsx.slice(at, appTsx.indexOf('break;', at));
+  };
+  const itemToggle = (id: string) => {
+    const at = appTsx.indexOf(`id: '${id}',`);
+    expect(at, `the in-app item ${id}`).toBeGreaterThan(0);
+    return /onToggle: \(\) => (.+),\n/.exec(appTsx.slice(at, appTsx.indexOf('},', at)))?.[1] ?? '';
+  };
+
+  it('US-01M7DV8W AC1 lists the seven plain items in a Tracks submenu defined before view_zoom_sub, placed after Map Layout', () => {
+    const tracksAt = mainRs.indexOf('let view_tracks_sub');
+    expect(tracksAt, 'let view_tracks_sub').toBeGreaterThan(0);
+    expect(tracksAt, 'defined before let view_zoom_sub').toBeLessThan(mainRs.indexOf('let view_zoom_sub'));
+    const sub = mainRs.slice(tracksAt, mainRs.indexOf(')?;', tracksAt));
+    expect(sub).toContain('"Tracks"');
+    expect([...sub.matchAll(/item\(\s*"([^"]+)",\s*"([^"]+)",\s*None\s*\)/g)].map((m) => [m[1], m[2]])).toEqual(TRACKS.map(([id, label]) => [id, label]));
+    // No check mark: plain items only (the US-01M7DVR0 AC1 pin), so only the in-app items show the state.
+    expect(sub).not.toMatch(/check|Check/);
+    expect(mainRs).not.toMatch(/CheckMenuItem/);
+    const view = mainRs.slice(mainRs.indexOf('let view_menu'), mainRs.indexOf('let enz_select_sub'));
+    expect(view).toMatch(/&view_layout_sub,\s*&view_tracks_sub,\s*&view_spec_sub,/);
+    for (const [id] of TRACKS) expect([...mainRs.matchAll(new RegExp(`item\\(\\s*"${id}"`, 'g'))], `${id} listed once`).toHaveLength(1);
+  });
+
+  it("US-01M7DV8W AC1 each dispatcher case calls the in-app item's toggle under requireActiveSession, and its native state is the track's rule", () => {
+    for (const [native, , inApp, track] of TRACKS) {
+      const call = `requireActiveSession(() => toggleTrack('${track}'))`;
+      expect(itemToggle(inApp), inApp).toBe(call);
+      expect(caseBody(native).trim(), native).toBe(`case '${native}':\n          ${call};`);
+      expect(dispatcher.get(native), `${native} is gated on a session`).toBe(true);
+      expect(NATIVE_MENU_COMMAND_RULES[native], `${native} follows the track's rule`).toBe(`track-${track}`);
+    }
+    // The state the backend applies: off without a session; on a protein, as the one rule says.
+    const base = { selection: null, undoDepth: 0, redoDepth: 0 };
+    const protein = buildCommandDocumentContext({ id: 'p', moleculeType: 'Protein', topology: 'linear', sequence: 'MKT', features: [] });
+    const circ = buildCommandDocumentContext({ id: 'c', moleculeType: 'DNA', topology: 'circular', sequence: 'ACGT', features: [] });
+    const on = (ctx: Parameters<typeof buildNativeMenuState>[0]) => TRACKS.map(([id]) => resolveNativeMenuItemEnabled(id, buildNativeMenuState(ctx)));
+    expect(on({ ...base, sessionActive: false, activeDoc: null })).toEqual([false, false, false, false, false, false, false]);
+    expect(on({ ...base, sessionActive: true, activeDoc: circ, mapLayout: 'split' })).toEqual([true, true, true, true, true, true, true]);
+    expect(on({ ...base, sessionActive: true, activeDoc: protein, mapLayout: 'linear' })).toEqual([true, false, false, false, false, false, true]);
+    for (const [native, , , track] of TRACKS) {
+      expect(commandAvailability(`track-${track}` as never, { ...base, sessionActive: true, activeDoc: protein, mapLayout: 'linear' }).enabled).toBe(resolveNativeMenuItemEnabled(native, buildNativeMenuState({ ...base, sessionActive: true, activeDoc: protein, mapLayout: 'linear' })));
+    }
+  });
+});

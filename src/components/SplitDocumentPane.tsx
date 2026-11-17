@@ -121,6 +121,13 @@ export interface SplitDocumentPaneProps {
   viewRestoreKey?: number;
   /** Counted up by Fit and Reset View on the focused pane (US-01M7DVEN): each new value fits the whole molecule in its linear overview. */
   overviewFitKey?: number;
+  /**
+   * The main view's View › Tracks settings (US-01M7DV8W): Features and Restriction Sites hidden are
+   * hidden in both of the pane's maps, and its Linear Map draws Translation, GC Graph and Hydropathy
+   * Graph as the main view does. Left out, the pane draws as before (each shown, the graphs at the
+   * linear view's defaults). The pane draws no ORFs or primers whatever they say.
+   */
+  tracks?: { showFeatures: boolean; showRestrictionSites: boolean; showTranslation: boolean; showGcGraph: boolean; showHydropathyGraph: boolean };
 }
 
 /**
@@ -188,7 +195,7 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
   doc, choices, onChooseDoc, mainDocId = null, mainRange = null, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary,
   enzymes = REBASE_ENZYMES, scanCollection = null, onSelectMainRange, onShowMainDoc,
   view = DEFAULT_SPLIT_PANE_VIEW, onViewChange, zoomLevel = SEQUENCE_ZOOM_DEFAULT, onZoomChange, rotationDeg = 0, onRotate,
-  rotateOpen: rotateOpenProp, onRotateOpenChange, focused = false, onFocusPane, viewRestoreKey = 0, overviewFitKey = 0,
+  rotateOpen: rotateOpenProp, onRotateOpenChange, focused = false, onFocusPane, viewRestoreKey = 0, overviewFitKey = 0, tracks,
 }) => {
   // The pane's selection belongs to the document it was made on (US-01M7DV3V): it is held with that
   // document's id and read only while that document is shown, so its coordinates are never drawn
@@ -269,6 +276,8 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
             onSelectRange={setRange}
             showOrfs={false}
             showPrimers={false}
+            showFeatures={tracks?.showFeatures ?? true}
+            showRestrictionSites={tracks?.showRestrictionSites ?? true}
             showUniqueCuttersOnly={false}
             restrictionScope={restrictionScope}
             zoomLevel={zoomLevel}
@@ -283,7 +292,7 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
       return (
         <>
           <ResultWarnings warnings={scan.warnings} label="Restriction scan warnings" />
-          <LinearSequenceView key={doc.id} doc={doc} cutSites={scan.sites} restrictionScope={restrictionScope} selectedRange={range} onSelectRange={setRange} onUpdateDocument={onUpdateDocument} onClearSelection={() => setRange(null)} overviewFitKey={overviewFitKey} />
+          <LinearSequenceView key={doc.id} doc={doc} cutSites={scan.sites} restrictionScope={restrictionScope} selectedRange={range} onSelectRange={setRange} onUpdateDocument={onUpdateDocument} onClearSelection={() => setRange(null)} overviewFitKey={overviewFitKey} {...(tracks ?? {})} />
         </>
       );
     }

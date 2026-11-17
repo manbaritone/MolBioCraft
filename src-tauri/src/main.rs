@@ -567,6 +567,22 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
+    // US-01M7DV8W: show or hide each track. Plain items, no check mark: the in-app items show the state.
+    let view_tracks_sub = submenu_escaped(
+        app,
+        "Tracks",
+        true,
+        &[
+            &item("view:track-features", "Features", None)?,
+            &item("view:track-primers", "Primers", None)?,
+            &item("view:track-restriction-sites", "Restriction Sites", None)?,
+            &item("view:track-orfs", "ORFs", None)?,
+            &item("view:track-translation", "Translation", None)?,
+            &item("view:track-gc-graph", "GC Graph", None)?,
+            &item("view:track-hydropathy-graph", "Hydropathy Graph", None)?,
+        ],
+    )?;
+
     let view_zoom_sub = submenu_escaped(
         app,
         "Zoom",
@@ -602,6 +618,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &item("view:restore-default-layout", "Restore Default Layout", None)?,
             &sep()?,
             &view_layout_sub,
+            &view_tracks_sub,
             &view_spec_sub,
             &sep()?,
             &view_zoom_sub,
