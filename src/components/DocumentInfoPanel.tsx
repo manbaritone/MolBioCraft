@@ -118,6 +118,34 @@ function SearchMatchLine({ hit }: { hit: TextHit }) {
   </p>;
 }
 
+/** A date as Document info shows it: "No recorded date" when blank or whitespace-only (a date never
+ *  recorded, which a restore keeps blank, BG-01M7N2HE), a readable date when it parses, and the text as
+ *  written when it is not a date. */
+function readableDate(value: string): string {
+  if (value.trim() === '') return 'No recorded date';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString(undefined, {
+    day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}
+
+/**
+ * A document's Created and Modified, as the Info tab and the history studio both show them (BG-01M7N68F).
+ * A record imported from a reference database carries the dates the database holds for it;
+ * `createdAt`/`updatedAt` are only this workspace's own bookkeeping. Prefer the record's own dates
+ * (docMetadata Created / Modified) so the Info tab and the history studio cannot give two answers to one question,
+ * and render the bookkeeping fallback through readableDate rather than as a raw ISO timestamp.
+ */
+export function documentDates(doc: SequenceDocument): { created: string; modified: string } {
+  const recordedCreated = doc.docMetadata?.Created;
+  const recordedModified = doc.docMetadata?.Modified;
+  return {
+    created: recordedCreated != null && recordedCreated !== '' ? String(recordedCreated) : readableDate(doc.createdAt),
+    modified: recordedModified != null && recordedModified !== '' ? String(recordedModified) : readableDate(doc.updatedAt),
+  };
+}
+
 export function DocumentInfoPanel({ doc, onUpdateDocument, searchMatch = null }: {
   doc: SequenceDocument; onUpdateDocument: (doc: SequenceDocument) => void;
   /** A Search Project hit in one of this document's fields, named above the fields. */
@@ -125,25 +153,7 @@ export function DocumentInfoPanel({ doc, onUpdateDocument, searchMatch = null }:
 }) {
   const hasSequence = hasBiologicalSequence(doc);
   const unit = doc.moleculeType === 'Protein' ? 'aa' : doc.moleculeType === 'RNA' ? 'nt' : 'bp';
-  // A record imported from a reference database carries the dates the database holds for it;
-  // `createdAt`/`updatedAt` are only this workspace's own bookkeeping. Prefer the record's own
-  // dates so the panel cannot show two different answers to the same question, and render the
-  // bookkeeping fallback as a readable date rather than a raw ISO timestamp. A blank one (empty or
-  // whitespace-only) is a date never recorded, which a restore keeps blank (BG-01M7N2HE), and says so.
-  const readableDate = (value: string) => {
-    if (value.trim() === '') return 'No recorded date';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return value;
-    return parsed.toLocaleString(undefined, {
-      day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit',
-    });
-  };
-  const recordedCreated = doc.docMetadata?.Created;
-  const recordedModified = doc.docMetadata?.Modified;
-  const created = recordedCreated != null && recordedCreated !== ''
-    ? String(recordedCreated) : readableDate(doc.createdAt);
-  const modified = recordedModified != null && recordedModified !== ''
-    ? String(recordedModified) : readableDate(doc.updatedAt);
+  const { created, modified } = documentDates(doc);
   const customNames = new Set(loadCustomFields().map((f) => f.name));
   const fields: [string, string | number][] = [
     ['Name', doc.name], ['Description', doc.description], ['Folder', doc.folder],

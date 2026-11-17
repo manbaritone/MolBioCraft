@@ -35,6 +35,7 @@ import {
   simulateProteolyticDigestMsRust,
 } from '../lib/rustBioEngine';
 import { WorkbenchSmartTable } from './WorkbenchSmartTable';
+import { documentDates } from './DocumentInfoPanel';
 import { ScrollableMenuStrip } from './ScrollableMenuStrip';
 import {
   ProteinStructure3DViewer,
@@ -490,6 +491,8 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     [subTab, doc, allCutSites, selectedStrain, restrictionScan.stoppedEarly]
   );
 
+  // The lineage table's Created / Modified are the Info tab's own, from the one derivation (BG-01M7N68F).
+  const lineageDates = documentDates(doc);
   const autoDetectedFeatures = useMemo(() => subTab === 'lineage' && doc.moleculeType === 'DNA' ? detectCommonFeatures(doc) : [], [subTab, doc]);
 
   const digestMsReport = useMemo(() => {
@@ -2464,7 +2467,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                 <tr>
                   <th>Created / Modified</th>
                   <td>
-                    {doc.createdAt} / {doc.updatedAt}
+                    {lineageDates.created} / {lineageDates.modified}
                   </td>
                 </tr>
                 <tr>
