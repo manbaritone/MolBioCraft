@@ -157,14 +157,15 @@ pub fn resolve_platform_app_support_dir() -> Result<PathBuf, BioEngineError> {
     Ok(PathBuf::from(home).join(".config").join("molbiocraft"))
 }
 
-/// Trims surrounding whitespace and trailing slashes from an environment value,
-/// reading an unset, empty or whitespace-only value as absent.
+/// Reads an unset, empty or whitespace-only environment value as absent, and
+/// strips only the trailing slashes from any other value, keeping its
+/// whitespace, as `resolveAppDirectories('linux')` does.
 fn xdg_base(value: Option<&str>) -> Option<&str> {
-    let trimmed = value?.trim();
-    if trimmed.is_empty() {
+    let value = value?;
+    if value.trim().is_empty() {
         None
     } else {
-        Some(trimmed.trim_end_matches('/'))
+        Some(value.trim_end_matches('/'))
     }
 }
 
@@ -173,10 +174,10 @@ fn xdg_base(value: Option<&str>) -> Option<&str> {
 /// HOME: `$XDG_STATE_HOME/molbiocraft/logs` and `$XDG_CACHE_HOME/molbiocraft`,
 /// falling back to `$HOME/.local/state/molbiocraft/logs` and
 /// `$HOME/.cache/molbiocraft`, the paths `resolveAppDirectories('linux')` gives
-/// for set, unset and empty values. Unlike it, a whitespace-only value falls
-/// back too, and when a fallback is needed and HOME is missing, the error names
-/// HOME and the XDG variable instead of guessing a home. Compiled on every
-/// target so its test runs everywhere.
+/// for set, unset and empty values. Unlike it, a whitespace-only XDG value falls
+/// back too, and when a fallback is needed and HOME is unset, empty or
+/// whitespace-only, the error names HOME and the XDG variable instead of
+/// guessing a home. Compiled on every target so its test runs everywhere.
 pub fn resolve_xdg_logs_and_cache_dirs(
     xdg_state_home: Option<&str>,
     xdg_cache_home: Option<&str>,
@@ -510,19 +511,37 @@ mod tests {
     #[test]
     fn linux_diagnostics_use_xdg_state_and_cache_dirs() {
         let home = Some("/home/ada");
-        // Set XDG variables are used, with trailing slashes and surrounding
-        // whitespace dropped (resolveAppDirectories('linux') strips the slashes too).
-        for (state, cache) in [
-            ("/x/state", "/x/cache"),
-            ("/x/state/", "/x/cache//"),
-            ("/x/state  ", "\t/x/cache\n"),
+        // Set XDG variables are used as resolveAppDirectories('linux') uses them:
+        // trailing slashes are dropped, any other whitespace is kept.
+        for (state, cache, logs, cache_dir) in [
+            (
+                "/x/state",
+                "/x/cache",
+                "/x/state/molbiocraft/logs",
+                "/x/cache/molbiocraft",
+            ),
+            (
+                "/x/state/",
+                "/x/cache//",
+                "/x/state/molbiocraft/logs",
+                "/x/cache/molbiocraft",
+            ),
+            (
+                "/x/state  ",
+                "\t/x/cache\n",
+                "/x/state  /molbiocraft/logs",
+                "\t/x/cache\n/molbiocraft",
+            ),
+            (
+                "/x/state/ ",
+                " /x/cache//",
+                "/x/state/ /molbiocraft/logs",
+                " /x/cache/molbiocraft",
+            ),
         ] {
             assert_eq!(
                 resolve_xdg_logs_and_cache_dirs(Some(state), Some(cache), home).unwrap(),
-                (
-                    "/x/state/molbiocraft/logs".to_string(),
-                    "/x/cache/molbiocraft".to_string()
-                ),
+                (logs.to_string(), cache_dir.to_string()),
                 "XDG_STATE_HOME={state:?} XDG_CACHE_HOME={cache:?}"
             );
         }
@@ -538,9 +557,18 @@ mod tests {
                 "XDG value {unset:?}"
             );
             assert_eq!(
-                resolve_xdg_logs_and_cache_dirs(unset, unset, Some(" /home/ada/ ")).unwrap(),
+                resolve_xdg_logs_and_cache_dirs(unset, unset, Some("/home/ada//")).unwrap(),
                 fallback,
-                "HOME with slash and whitespace, XDG value {unset:?}"
+                "HOME with trailing slashes, XDG value {unset:?}"
+            );
+            // A non-blank HOME keeps its whitespace, as resolveAppDirectories('linux') does.
+            assert_eq!(
+                resolve_xdg_logs_and_cache_dirs(unset, unset, Some(" /home/ada ")).unwrap(),
+                (
+                    " /home/ada /.local/state/molbiocraft/logs".to_string(),
+                    " /home/ada /.cache/molbiocraft".to_string()
+                ),
+                "HOME with whitespace, XDG value {unset:?}"
             );
         }
         // Each variable falls back on its own.
@@ -575,7 +603,11 @@ mod tests {
                 let err = resolve_xdg_logs_and_cache_dirs(state, cache, missing_home)
                     .expect_err("HOME and the XDG variable are both missing")
                     .to_string();
-                assert!(err.contains("HOME"), "{err}");
+                // The XDG variable's own name contains HOME, so look past it.
+                assert!(
+                    err.replace(var, "").contains("HOME"),
+                    "HOME not named in {err}"
+                );
                 assert!(err.contains(var), "{var} not named in {err}");
                 assert!(
                     !err.contains("/.cache") && !err.contains("/.local"),
