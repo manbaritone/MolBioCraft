@@ -35,7 +35,7 @@ const DOCS: SequenceDocument[] = [
   doc('dA', 'A'), doc('dB', 'B'), doc('dC', 'C'),
   doc('dClone', 'Cloning Inserts & PCR'),
   doc('dGen', 'Genomes'), doc('dNgs', 'Genomes & NGS'), doc('dBac', 'Genomes/Bacteria'),
-  doc('dRoot', PROJECT_ROOT),
+  doc('dRoot', PROJECT_ROOT), doc('dLocal', 'Local'), doc('dAllDocs', 'All Documents'),
   doc('dOrphan', 'A folder no explorer lists'),
   doc('dHidden', 'H2', { description: 'kept out of sight' }),
   doc('dFav', 'B'),
@@ -88,7 +88,7 @@ describe('project text search scopes', () => {
   it('US-01M7DVC0 AC1: on the root, "Folder and subfolders" is the entire project and "This folder only" is what is filed at the root', () => {
     expect(scopesOffered(PROJECT_ROOT)).toEqual(['This folder only', 'Folder and subfolders', 'Entire project']);
     expect(resolved(PROJECT_ROOT, 'Folder and subfolders')).toEqual({ label: 'Entire project', ids: ALL_NON_DELETED });
-    expect(resolved(PROJECT_ROOT, 'This folder only')).toEqual({ label: 'All Project Files only', ids: new Set(['dRoot']) });
+    expect(resolved(PROJECT_ROOT, 'This folder only')).toEqual({ label: 'All Project Files only', ids: new Set(['dRoot', 'dLocal', 'dAllDocs']) });
     for (const alias of ['All Documents', 'Local']) {
       expect(resolved(alias, 'Folder and subfolders')).toEqual({ label: 'Entire project', ids: ALL_NON_DELETED });
     }
@@ -190,6 +190,25 @@ describe('text fields searched', () => {
     expect(hits[0].value).toBe('İstanbul strain lacZ');
   });
 
+  it('US-01M7DVC0 AC3: residue-valued qualifiers (/translation and keys ending in "sequence") are not searched; a plain qualifier is', () => {
+    const cds = doc('cds', 'A', {
+      features: [feature('orf1', 'CDS', { qualifiers: {
+        translation: 'MKTAYIAK', primer_sequence: 'GGGAATTCAA', sequence: 'GAATTCMKT', gene: 'MKT-GAATTC tag',
+      } })],
+    });
+    expect(hitsOf('GAATTC', [cds]).map((h) => [h.field, h.start])).toEqual([['qualifier /gene of feature orf1', 4]]);
+    expect(hitsOf('MKT', [cds]).map((h) => [h.field, h.start])).toEqual([['qualifier /gene of feature orf1', 0]]);
+  });
+
+  it('US-01M7DVC0 AC3: a feature with no name is named "(unnamed feature)" in its hits', () => {
+    const unnamed = doc('un', 'A', { features: [feature('', 'rep_origin', { qualifiers: { note: 'ori site' }, notes: 'high copy ori' })] });
+    expect(hitsOf('ori', [unnamed]).map((h) => h.field)).toEqual([
+      'type of feature (unnamed feature)', 'qualifier /note of feature (unnamed feature)', 'notes of feature (unnamed feature)',
+    ]);
+    const blank = doc('bl', 'A', { features: [feature('  ', 'CDS')] });
+    expect(hitsOf('CDS', [blank]).map((h) => h.field)).toEqual(['type of feature (unnamed feature)']);
+  });
+
   it('US-01M7DVC0 AC3: history operation and history description are separate fields', () => {
     const gibson = doc('gib', 'A', {
       history: [{ id: 'h', timestamp: '', operation: 'Gibson Assembly', description: 'Assembly of two inserts', parentIds: [], lengthBp: 1, topology: 'linear' }],
@@ -210,6 +229,25 @@ describe('text matching rules', () => {
     const cafe = doc('c1', 'A', { description: 'Café au lait' });
     expect(hitsOf('cafe', [cafe])).toEqual([]);
     expect(hitsOf('CAFÉ', [cafe]).map((h) => [h.start, h.end])).toEqual([[0, 4]]);
+  });
+
+  it('US-01M7DVC0 AC4: Unicode forms are not folded: a match never starts on, or ends right before, a combining mark', () => {
+    const decomposed = doc('c2', 'A', { description: 'Cafe\u0301 au lait' });
+    const precomposed = doc('c3', 'A', { description: 'Caf\u00e9 au lait' });
+    expect(hitsOf('cafe', [decomposed])).toEqual([]);
+    expect(hitsOf('caf\u00e9', [decomposed])).toEqual([]);
+    expect(hitsOf('cafe\u0301', [precomposed])).toEqual([]);
+    expect(hitsOf('CAFE\u0301', [decomposed]).map((h) => [h.start, h.end, h.value.slice(h.start, h.end)])).toEqual([[0, 5, 'Cafe\u0301']]);
+    expect(hitsOf('CAF\u00c9', [precomposed]).map((h) => [h.start, h.end])).toEqual([[0, 4]]);
+    expect(hitsOf('\u0301 au', [decomposed])).toEqual([]);
+    const both = doc('c4', 'A', { description: 'cafe\u0301 or cafe' });
+    expect(hitsOf('cafe', [both]).map((h) => [h.start, h.end])).toEqual([[9, 13]]);
+    const overlapping = doc('c5', 'A', { description: 'a\u0301a\u0301a' });
+    expect(hitsOf('a\u0301a', [overlapping]).map((h) => [h.start, h.end])).toEqual([[2, 5]]);
+    const otherMarks = doc('c6', 'A', { description: 'vec\u20d7 and tremolo\u{1d167} but xyz\u{1f600}' });
+    expect(hitsOf('vec', [otherMarks])).toEqual([]);
+    expect(hitsOf('tremolo', [otherMarks])).toEqual([]);
+    expect(hitsOf('xyz', [otherMarks]).map((h) => [h.start, h.end])).toEqual([[23, 26]]);
   });
 
   it('US-01M7DVC0 AC4: every non-overlapping occurrence in a value is its own hit', () => {
@@ -260,5 +298,16 @@ describe('text mode and residues', () => {
     expect(notSearched).toBeDefined();
     for (const field of TEXT_SEARCH_FIELDS) expect(searched).toContain(field.label);
     for (const field of TEXT_NOT_SEARCHED) expect(notSearched).toContain(field);
+    expect(notSearched).toContain("residue-valued feature qualifiers (/translation and every key ending in 'sequence')");
+    expect(notSearched).toContain('Accents and Unicode forms are not folded');
+  });
+
+  it('US-01M7DVC0 AC5: residue text held in a feature qualifier is not matched in text mode', () => {
+    const bind = doc('pb', 'A', {
+      features: [feature('M13 fwd', 'primer_bind', { qualifiers: { primer_sequence: 'GAATTC' } }),
+        feature('lacI', 'CDS', { qualifiers: { translation: 'MKPVTLYDVAE' } })],
+    });
+    expect(hitsOf('GAATTC', [bind])).toEqual([]);
+    expect(hitsOf('MKP', [bind])).toEqual([]);
   });
 });

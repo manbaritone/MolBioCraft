@@ -7,7 +7,7 @@
  * folders; nothing here reads tabs, storage or residues.
  */
 
-import type { SequenceDocument } from '../types/bio';
+import type { SequenceDocument, SequenceFeature } from '../types/bio';
 import { documentsInFolder, PROJECT_ROOT, type ExplorerFolder } from './projectExplorer';
 
 export type SearchScope = 'This folder only' | 'Folder and subfolders' | 'Entire project';
@@ -93,6 +93,14 @@ export type TextSearchFieldId =
 /** Metadata keys that are not searched as metadata values: Notes is its own field, Newick is tree text. */
 const NOT_METADATA_VALUES = new Set(['Notes', 'Newick']);
 
+/**
+ * Residue-valued qualifiers, not searched as text (D0180): /translation and every key ending in
+ * 'sequence', the set the GenBank writer breaks as residues (flatfiles.rs qualifier_break).
+ */
+const isResidueQualifier = (key: string) => key === 'translation' || key.endsWith('sequence');
+
+const featureLabel = (f: SequenceFeature) => (f.name.trim() === '' ? '(unnamed feature)' : f.name);
+
 /** The fields text search reads, in the order a document's hits are reported. */
 export const TEXT_SEARCH_FIELDS: readonly { id: TextSearchFieldId; label: string; values: (d: SequenceDocument) => FieldValue[] }[] = [
   { id: 'name', label: 'document name', values: (d) => [{ field: 'Name', value: d.name }] },
@@ -110,16 +118,16 @@ export const TEXT_SEARCH_FIELDS: readonly { id: TextSearchFieldId; label: string
     values: (d) => Object.entries(d.docMetadata ?? {}).filter(([key]) => !NOT_METADATA_VALUES.has(key))
       .map(([key, value]) => ({ field: `metadata ${key}`, value: String(value) })),
   },
-  { id: 'featureName', label: 'feature name', values: (d) => d.features.map((f) => ({ field: `name of feature ${f.name}`, value: f.name })) },
-  { id: 'featureType', label: 'feature type', values: (d) => d.features.map((f) => ({ field: `type of feature ${f.name}`, value: f.type })) },
+  { id: 'featureName', label: 'feature name', values: (d) => d.features.map((f) => ({ field: `name of feature ${featureLabel(f)}`, value: f.name })) },
+  { id: 'featureType', label: 'feature type', values: (d) => d.features.map((f) => ({ field: `type of feature ${featureLabel(f)}`, value: f.type })) },
   {
-    id: 'featureQualifier', label: 'each feature qualifier value',
-    values: (d) => d.features.flatMap((f) => Object.entries(f.qualifiers ?? {})
-      .map(([key, value]) => ({ field: `qualifier /${key} of feature ${f.name}`, value }))),
+    id: 'featureQualifier', label: "each feature qualifier value other than /translation and keys ending in 'sequence'",
+    values: (d) => d.features.flatMap((f) => Object.entries(f.qualifiers ?? {}).filter(([key]) => !isResidueQualifier(key))
+      .map(([key, value]) => ({ field: `qualifier /${key} of feature ${featureLabel(f)}`, value }))),
   },
   {
     id: 'featureNotes', label: 'feature notes',
-    values: (d) => d.features.flatMap((f) => f.notes === undefined ? [] : [{ field: `notes of feature ${f.name}`, value: f.notes }]),
+    values: (d) => d.features.flatMap((f) => f.notes === undefined ? [] : [{ field: `notes of feature ${featureLabel(f)}`, value: f.notes }]),
   },
   { id: 'primerName', label: 'document primer names', values: (d) => d.primers.map((p) => ({ field: `name of primer ${p.name}`, value: p.name })) },
   {
@@ -137,7 +145,9 @@ export const TEXT_NOT_SEARCHED = ['residues', 'Newick text', 'chromatogram trace
 
 export const TEXT_SEARCH_STATEMENT =
   `Text search looks in: ${TEXT_SEARCH_FIELDS.map((f) => f.label).join(', ')}. `
-  + `Not searched in this mode: ${TEXT_NOT_SEARCHED.join(', ')}.`;
+  + `Not searched in this mode: ${TEXT_NOT_SEARCHED.join(', ')}, `
+  + "including residue-valued feature qualifiers (/translation and every key ending in 'sequence'). "
+  + "Accents and Unicode forms are not folded: 'e' does not match 'é', and 'é' finds only the same form, precomposed or decomposed.";
 
 export interface TextHit {
   fieldId: TextSearchFieldId;
@@ -170,11 +180,27 @@ function foldSameLength(text: string): string {
   return out;
 }
 
+const COMBINING_MARK = /^\p{M}/u;
+
+/** Whether the code point at `index` of `text` is a combining mark (false past the end). */
+const markAt = (text: string, index: number) => index < text.length && COMBINING_MARK.test(text.slice(index, index + 2));
+
+/**
+ * Non-overlapping matches of `foldedQuery` in `value`. A match never starts on a combining mark
+ * and never ends right before one, so a base letter is never matched apart from its accent (D0180).
+ */
 function matchesIn(value: string, foldedQuery: string): [number, number][] {
   const folded = foldSameLength(value);
   const found: [number, number][] = [];
-  for (let at = folded.indexOf(foldedQuery); at !== -1; at = folded.indexOf(foldedQuery, at + foldedQuery.length)) {
-    found.push([at, at + foldedQuery.length]);
+  let at = folded.indexOf(foldedQuery);
+  while (at !== -1) {
+    const end = at + foldedQuery.length;
+    if (markAt(value, at) || markAt(value, end)) {
+      at = folded.indexOf(foldedQuery, at + 1);
+    } else {
+      found.push([at, end]);
+      at = folded.indexOf(foldedQuery, end);
+    }
   }
   return found;
 }
