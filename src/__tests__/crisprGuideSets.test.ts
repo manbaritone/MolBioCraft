@@ -640,3 +640,49 @@ describe('a stored envelope with a top-level key this version does not know is m
     expect(mem.raw()).toBe(JSON.stringify({ schema: 1, sets: [set, fresh] }));
   });
 });
+
+describe('an imported set is read field for field, and the engine\'s own sets pass (US-01M7M67J round 2)', () => {
+  /**
+   * Wrong implementations these kill (LC-002): a strict import reader that refuses what the engine
+   * writes (an optional field present: the staggered second cut, its note, the PAM-ambiguity note,
+   * the interval and its context note), or one that reads the store strictly, so a store this build
+   * wrote with a crafted row turns unreadable; a comparison that reads key order as a difference.
+   */
+  it('US-01M7M67J AC3 every fixture scan exports and imports whole into an empty store, byte for byte', () => {
+    const from = memory();
+    const db = openGuideSetDatabase({ storage: from.storage, now: clock, newId: ids });
+    for (const f of FIXTURES) {
+      const saved = db.save(runOf(f, scan(f)), docRef(f.doc));
+      if (!saved.ok) throw new Error(saved.error.message);
+    }
+    const optional = ['cutPositionTargetStrand', 'cutPositionTargetStrandNote', 'pamAmbiguityNote', 'searchedInterval', 'intervalContextNote'];
+    const rows = JSON.parse(from.raw()!).sets.flatMap((s: { guides: Record<string, unknown>[] }) => s.guides);
+    for (const k of optional) expect(rows.some((g: Record<string, unknown>) => k in g), `a fixture row carries ${k}`).toBe(true);
+    const backup = db.exportBackup();
+    if (!backup.ok) throw new Error(backup.error.message);
+    const to = memory();
+    const imported = openGuideSetDatabase({ storage: to.storage }).importBackup('all.json', backup.value);
+    expect(imported.ok && imported.value.added).toHaveLength(FIXTURES.length);
+    expect(to.raw()).toBe(from.raw());
+  });
+
+  it('US-01M7M67J AC3 a store this build wrote with a row the import would refuse still reads, and an identical set in another key order is unchanged', () => {
+    const f = FIXTURES[0];
+    const seed = memory();
+    const saved = openGuideSetDatabase({ storage: seed.storage, now: clock, newId: ids }).save(runOf(f, scan(f), 'Shallow'), docRef(f.doc));
+    if (!saved.ok) throw new Error(saved.error.message);
+    const shallow = { ...saved.value, guides: [{ id: 'g1' }] };
+    const raw = JSON.stringify({ schema: 1, sets: [shallow] });
+    const mem = memory({ [GUIDE_SET_DATABASE_KEY]: raw });
+    const db = openGuideSetDatabase({ storage: mem.storage });
+    expect(db.read().ok, 'the store keeps its own reader').toBe(true);
+    const refused = db.importBackup('x.json', JSON.stringify({ format: GUIDE_SET_BACKUP_FORMAT, schema: 1, exportedAt: clock(), sets: [shallow] }));
+    expect(!refused.ok && refused.error.message).toBe(`x.json was not imported: set 1 (${shallow.id}) cannot be read: guide row 1 (g1) has no readable name. Nothing was changed.`);
+    const reversed = Object.fromEntries(Object.entries(saved.value).reverse());
+    const store2 = memory({ [GUIDE_SET_DATABASE_KEY]: JSON.stringify({ schema: 1, sets: [saved.value] }) });
+    const same = openGuideSetDatabase({ storage: store2.storage }).importBackup('y.json', JSON.stringify({ format: GUIDE_SET_BACKUP_FORMAT, schema: 1, exportedAt: clock(), sets: [reversed] }));
+    expect(same.ok && same.value).toEqual({ added: [], unchanged: [saved.value.id], kept: [] });
+    expect(mem.writes).toEqual([]);
+    expect(store2.writes).toEqual([]);
+  });
+});

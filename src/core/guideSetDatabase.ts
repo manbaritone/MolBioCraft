@@ -19,8 +19,10 @@
  * version does not know is malformed, naming the key, so no writer drops it (US-01M7M67J).
  *
  * The backup (US-01M7M67J) is `{ format, schema, exportedAt, sets }` holding every stored set as
- * stored. An import adds each new id as the file holds it, leaves an identical id as it is and keeps
- * a differing id as stored; a file, or a store, it cannot read changes nothing.
+ * stored. An import adds each new id as the file holds it, leaves an identical id (compared with
+ * every object's keys sorted) as it is and keeps a differing id as stored; a file, or a store, it
+ * cannot read changes nothing. An imported set is read field for field against the types the tab
+ * renders; a stored one keeps the store's own reader.
  *
  * The rows and the report are typed as the engine's own `CrisprScanGuide` and `CrisprScanReport`
  * and stored as the engine sent them, never a copy of their field lists.
@@ -157,9 +159,9 @@ export interface GuideSetRerun {
 /** What an import did, by id (US-01M7M67J): only `added` were written. */
 export interface GuideSetImport {
   added: string[];
-  /** Ids whose stored set serialises to the same JSON as the file's set. */
+  /** Ids whose stored set is the file's set: the same JSON once every object's keys are sorted. */
   unchanged: string[];
-  /** Ids whose stored set serialises to other JSON than the file's set: kept as stored. */
+  /** Ids whose stored set differs from the file's set, keys sorted: kept as stored. */
   kept: string[];
 }
 
@@ -173,7 +175,10 @@ export interface GuideSetDatabase {
   /**
    * Import a backup file's text. A refusal's message is the whole sentence,
    * `<file> was not imported: <why>. Nothing was changed.`; a file or a store that cannot be read
-   * is refused before any write.
+   * is refused before any write. A file needs an `exportedAt` date, and each of its sets a one-line
+   * name and rows, report, criteria and score names readable field for field as the tab renders
+   * them. A set whose id is stored is compared with its keys sorted, so key order alone does not
+   * make it differ.
    */
   importBackup(file: string, text: string): GuideSetResult<GuideSetImport>;
   /** The sets saved for this document id, oldest first. */
@@ -239,6 +244,87 @@ const unknownKeys = (keys: string[]) =>
   keys.length === 1
     ? `it has a top-level key this version does not know: ${keys[0]}`
     : `it has top-level keys this version does not know: ${keys.join(', ')}`;
+
+// ─── An imported set, read field for field as the tab renders it (US-01M7M67J) ───
+
+type FieldCheck = (v: unknown) => boolean;
+const str: FieldCheck = (v) => typeof v === 'string';
+const num: FieldCheck = (v) => typeof v === 'number' && Number.isFinite(v);
+const bool: FieldCheck = (v) => typeof v === 'boolean';
+const interval: FieldCheck = (v) =>
+  isObject(v) && num(v.start) && num(v.end) && num(v.lengthBp) && bool(v.crossesOrigin);
+/** A field the type marks optional: absent, or of its type. */
+const optional = (check: FieldCheck): FieldCheck => (v) => v === undefined || check(v);
+
+/** Every field of `CrisprScanGuide`; `tsc --noEmit` refuses this when the type gains one it lacks. */
+const GUIDE_ROW_FIELDS = {
+  id: str, name: str, spacerSeq: str, pamSeq: str, nuclease: str, start: num, end: num, cutPosition: num,
+  strand: (v) => v === 1 || v === -1, gcPercent: num, onTargetScore: num, specificityScore: num, offTargetCount: num,
+  pamSide: str, pamPattern: str, cutConvention: str,
+  cutPositionTargetStrand: optional(num), cutPositionTargetStrandNote: optional(str), pamAmbiguityNote: optional(str),
+  searchedInterval: optional(interval), intervalContextNote: optional(str),
+} satisfies Record<keyof CrisprScanGuide, FieldCheck>;
+
+/** Every field of `CrisprScanReport`, pinned the same way. */
+const SCAN_REPORT_FIELDS = {
+  candidateCount: num, scannedLengthBp: num, sequenceLengthBp: num, scannedCircular: bool, originSpanBp: num,
+  searchedInterval: optional(interval), intervalRefusal: optional(str), contextOutsideIntervalBp: num,
+  warnings: (v) => Array.isArray(v) && v.every(str), seedLengthBp: optional(num),
+} satisfies Record<keyof CrisprScanReport, FieldCheck>;
+
+const PRESET_FIELDS = {
+  id: str, pamSide: str, pamPattern: str, spacerLengthBp: num, siteSpanBp: num, cutConvention: str,
+} satisfies Record<keyof CrisprNucleasePreset, FieldCheck>;
+
+const CRITERIA_FIELDS = {
+  nuclease: (v) => isObject(v) && unreadableField(v, PRESET_FIELDS) === null,
+  topology: (v) => v === 'circular' || v === 'linear',
+  interval: (v) => v === null || interval(v),
+  resultCap: num,
+} satisfies Record<keyof GuideSetCriteria, FieldCheck>;
+
+const SCORE_NAME_FIELDS = { onTargetScore: str, specificityScore: str, offTargetCount: str } satisfies Record<keyof GuideSetScoreNames, FieldCheck>;
+
+/** The first field of `v` its check refuses, or null. */
+function unreadableField(v: Record<string, unknown>, fields: Record<string, FieldCheck>): string | null {
+  for (const [f, check] of Object.entries(fields)) if (!check(v[f])) return f;
+  return null;
+}
+
+/**
+ * Why a set in a backup file cannot be imported, or null: on top of the store's own reader, every
+ * row, the report, the criteria and the score names are read field for field against the types the
+ * tab renders, and the name must be one line, as Save and Rename require. Only import reads this
+ * strictly; a store this build wrote keeps the store's reader.
+ */
+function unimportableSet(set: GuideSet): string | null {
+  const name = set.name.trim();
+  if (name === '' || /[\r\n]/.test(set.name)) return 'it has no one-line name';
+  for (const [i, g] of set.guides.entries()) {
+    const f = unreadableField(g as unknown as Record<string, unknown>, GUIDE_ROW_FIELDS);
+    if (f) return `guide row ${i + 1} (${g.id}) has no readable ${f}`;
+  }
+  const r = unreadableField(set.report as unknown as Record<string, unknown>, SCAN_REPORT_FIELDS);
+  if (r) return `its scan report has no readable ${r}`;
+  const c = unreadableField(set.criteria as unknown as Record<string, unknown>, CRITERIA_FIELDS);
+  if (c) return `its criteria have no readable ${c}`;
+  const n = unreadableField(set.scoreNames as unknown as Record<string, unknown>, SCORE_NAME_FIELDS);
+  if (n) return `its score names have no readable ${n}`;
+  return null;
+}
+
+/** JSON with every object's keys sorted: the same set with its keys in another order reads the same. */
+function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (isObject(v)) {
+    return `{${Object.keys(v)
+      .filter((k) => v[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(v);
+}
 
 /**
  * The sets an envelope holds, if it is one of the current schema. A higher schema is
@@ -367,17 +453,22 @@ export function openGuideSetDatabase(env: GuideSetDatabaseEnv = {}): GuideSetDat
       if (!isObject(parsed) || parsed.format !== GUIDE_SET_BACKUP_FORMAT) {
         return refuse('it is not a MolBioCraft CRISPR guide set backup');
       }
-      const { format: _format, exportedAt: _exportedAt, ...envelope } = parsed;
+      const { format: _format, exportedAt, ...envelope } = parsed;
       // The schema is read before the keys: a newer schema may add keys, and is named as newer.
       const fromFile = readEnvelope(envelope);
       if (!fromFile.ok) return refuse(fromFile.why);
+      if (typeof exportedAt !== 'string' || Number.isNaN(Date.parse(exportedAt))) return refuse('it carries no export time');
+      for (const [i, set] of fromFile.sets.entries()) {
+        const why = unimportableSet(set);
+        if (why) return refuse(`set ${i + 1} (${set.id}) cannot be read: ${why}`);
+      }
       const current = readStore();
       if (!current.ok) {
         return fail(current.kind, `${file} was not imported: the saved guide sets (${GUIDE_SET_DATABASE_KEY}) cannot be read: ${current.why}. Nothing was changed.`, {
           ...(current.storedValue !== undefined ? { storedValue: current.storedValue } : {}),
         });
       }
-      const byId = new Map(current.sets.map((s) => [s.id, JSON.stringify(s)]));
+      const byId = new Map(current.sets.map((s) => [s.id, canonicalJson(s)]));
       const summary: GuideSetImport = { added: [], unchanged: [], kept: [] };
       const added: GuideSet[] = [];
       for (const set of fromFile.sets) {
@@ -385,7 +476,7 @@ export function openGuideSetDatabase(env: GuideSetDatabaseEnv = {}): GuideSetDat
         if (storedText === undefined) {
           added.push(set);
           summary.added.push(set.id);
-        } else if (storedText === JSON.stringify(set)) {
+        } else if (storedText === canonicalJson(set)) {
           summary.unchanged.push(set.id);
         } else {
           summary.kept.push(set.id);

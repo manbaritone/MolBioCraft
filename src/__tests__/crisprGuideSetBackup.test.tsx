@@ -374,3 +374,87 @@ describe('US-01M7M67J AC3: Import refuses what this version cannot read, and not
     }
   });
 });
+
+// ─── AC3, round 2: a set the tab could not render is refused on import ───
+
+describe('US-01M7M67J AC3: an imported set is read field for field, as the tab renders it', () => {
+  /**
+   * Wrong implementations these kill (LC-002): an import checked with the store's shallow reader, so
+   * a row with only an id, a row missing cutPosition, a non-finite or string number, a strand that
+   * is not 1 or -1, an optional field of the wrong type, a report missing a field, criteria or score
+   * names that cannot be shown, an empty or multi-line name, or a file with no export time is
+   * written, and Show rows then crashes the studio; and a refusal that names neither the set nor the
+   * field.
+   */
+  const rowsShown = (app: AppHarness, id: string) => app.all(`[data-guide-set-rows="${id}"] [data-guide-set-row]`).map((r) => r.getAttribute('data-guide-set-row'));
+  const crafted = (patch: (set: Record<string, unknown>) => void) => {
+    const set = JSON.parse(JSON.stringify({ ...SET_C, id: 'set-x' })) as Record<string, unknown>;
+    patch(set);
+    return backupOf([SET_A, set]);
+  };
+  const row = (set: Record<string, unknown>) => (set.guides as Record<string, unknown>[])[0];
+  const report = (set: Record<string, unknown>) => set.report as Record<string, unknown>;
+  const criteria = (set: Record<string, unknown>) => set.criteria as Record<string, unknown>;
+
+  it('US-01M7M67J AC3 a set whose rows, report, criteria, score names or name cannot be read is refused naming the set and the field, and Show rows still works', async () => {
+    const raw = envelopeOf([SET_A]);
+    const storage = storeOf(raw);
+    const firstRow = SET_C.guides[0].id;
+    expect(SET_C.guides.length, 'the fixture set has rows').toBeGreaterThan(0);
+    const files: [string, string, string][] = [
+      ['crafted.json', crafted((s) => { s.guides = [{ id: 'g1' }]; }), 'set 2 (set-x) cannot be read: guide row 1 (g1) has no readable name'],
+      ['nocut.json', crafted((s) => { delete row(s).cutPosition; }), `set 2 (set-x) cannot be read: guide row 1 (${firstRow}) has no readable cutPosition`],
+      ['textcut.json', crafted((s) => { row(s).cutPosition = '12'; }), `set 2 (set-x) cannot be read: guide row 1 (${firstRow}) has no readable cutPosition`],
+      ['strand.json', crafted((s) => { row(s).strand = 2; }), `set 2 (set-x) cannot be read: guide row 1 (${firstRow}) has no readable strand`],
+      ['optional.json', crafted((s) => { row(s).cutPositionTargetStrandNote = 7; }), `set 2 (set-x) cannot be read: guide row 1 (${firstRow}) has no readable cutPositionTargetStrandNote`],
+      ['interval.json', crafted((s) => { row(s).searchedInterval = { start: 1 }; }), `set 2 (set-x) cannot be read: guide row 1 (${firstRow}) has no readable searchedInterval`],
+      ['report.json', crafted((s) => { delete report(s).scannedLengthBp; }), 'set 2 (set-x) cannot be read: its scan report has no readable scannedLengthBp'],
+      ['warnings.json', crafted((s) => { report(s).warnings = [1]; }), 'set 2 (set-x) cannot be read: its scan report has no readable warnings'],
+      ['circular.json', crafted((s) => { report(s).scannedCircular = 'no'; }), 'set 2 (set-x) cannot be read: its scan report has no readable scannedCircular'],
+      ['preset.json', crafted((s) => { delete (criteria(s).nuclease as Record<string, unknown>).spacerLengthBp; }), 'set 2 (set-x) cannot be read: its criteria have no readable nuclease'],
+      ['range.json', crafted((s) => { criteria(s).interval = { start: 1, end: 'x' }; }), 'set 2 (set-x) cannot be read: its criteria have no readable interval'],
+      ['topology.json', crafted((s) => { criteria(s).topology = 'round'; }), 'set 2 (set-x) cannot be read: its criteria have no readable topology'],
+      ['scores.json', crafted((s) => { (s.scoreNames as Record<string, unknown>).onTargetScore = 3; }), 'set 2 (set-x) cannot be read: its score names have no readable onTargetScore'],
+      ['noname.json', crafted((s) => { s.name = '   '; }), 'set 2 (set-x) cannot be read: it has no one-line name'],
+      ['twolines.json', crafted((s) => { s.name = 'two\nlines'; }), 'set 2 (set-x) cannot be read: it has no one-line name'],
+      ['noexport.json', JSON.stringify({ format: FORMAT, schema: 1, sets: [SET_C] }), 'it carries no export time'],
+      ['numexport.json', JSON.stringify({ format: FORMAT, schema: 1, exportedAt: 1731800000, sets: [SET_C] }), 'it carries no export time'],
+      ['badexport.json', JSON.stringify({ format: FORMAT, schema: 1, exportedAt: 'last Tuesday', sets: [SET_C] }), 'it carries no export time'],
+    ];
+    // A row of set-x with a number JSON reads as Infinity.
+    const whole = crafted(() => undefined);
+    const at = whole.indexOf('"id":"set-x"');
+    const infinite = whole.slice(0, at) + whole.slice(at).replace(/"cutPosition":\d+/, '"cutPosition":1e999');
+    files.push(['infinite.json', infinite, `set 2 (set-x) cannot be read: guide row 1 (${firstRow}) has no readable cutPosition`]);
+    await withLab(storage, async (app) => {
+      for (const [file, text, why] of files) {
+        await chooseFile(app, file, text);
+        expect(notice(app), file).toBe(`${file} was not imported: ${why}. Nothing was changed.`);
+        expect(storage.getItem(KEY), `${file}: the stored bytes`).toBe(raw);
+        expect(listedIds(app), file).toEqual(['set-a']);
+      }
+      // The studio still renders a stored set's rows.
+      await app.click(app.one('[data-guide-set-show-rows="set-a"]', 'Show rows of set-a'));
+      await app.settle();
+      expect(rowsShown(app, 'set-a')).toEqual(SET_A.guides.map((g) => g.id));
+    });
+  });
+
+  it('US-01M7M67J AC3 the sets the engine writes import whole, their rows shown, and an identical set with its keys in another order or pretty-printed reads unchanged', async () => {
+    const reorder = (v: unknown): unknown =>
+      Array.isArray(v) ? v.map(reorder) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).reverse().map(([k, x]) => [k, reorder(x)])) : v;
+    const storage = storeOf(envelopeOf([SET_A]));
+    await withLab(storage, async (app) => {
+      await chooseFile(app, 'reordered.json', backupOf([reorder(SET_A)]));
+      expect(notice(app)).toBe('Imported reordered.json: 0 added, 1 unchanged, 0 kept as stored.');
+      await chooseFile(app, 'pretty.json', JSON.stringify(JSON.parse(backupOf([SET_A])), null, 2));
+      expect(notice(app)).toBe('Imported pretty.json: 0 added, 1 unchanged, 0 kept as stored.');
+      expect(storage.getItem(KEY)).toBe(envelopeOf([SET_A]));
+      await chooseFile(app, 'more.json', backupOf([SET_A, SET_C]));
+      expect(notice(app)).toBe('Imported more.json: 1 added, 1 unchanged, 0 kept as stored.');
+      await app.click(app.one('[data-guide-set-show-rows="set-c"]', 'Show rows of set-c'));
+      await app.settle();
+      expect(rowsShown(app, 'set-c')).toEqual(SET_C.guides.map((g) => g.id));
+    });
+  });
+});
