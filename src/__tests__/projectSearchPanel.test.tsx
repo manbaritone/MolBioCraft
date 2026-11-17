@@ -2314,3 +2314,284 @@ describe('US-01M7DVZP AC4: a record motif hit on the top strand, in the tail, th
     }, { storage });
   });
 });
+
+// ─── US-01M7DV4Y: saved project searches, rerun on the current documents ───
+//
+// Each fixture gives a wrong implementation another answer. The saved search is ANY over a Text and
+// a Nucleotide motif condition, Both strands off, Topology linear: a rerun that drops ANY loses the
+// motif-only document, one that drops the filter lists the circular one, and one that drops Both
+// strands lists the document holding only the motif's reverse complement. The folder is renamed
+// before the rerun (a lookup by label finds none) and a document is added (results kept with the
+// search would lack it). The App is remounted over the same storage between the save and the rerun.
+
+const BENCH = 'Assay Bench';
+const MOTIF_4Y = 'GATTACA';
+const benchDocs = [
+  docOf({ id: 'dv4y-alpha', name: 'Bench alpha', folder: BENCH, description: 'a zqsaved sample' }),
+  docOf({ id: 'dv4y-gamma', name: 'Bench gamma', folder: BENCH, topology: 'circular', description: 'a zqsaved ring' }),
+  // GATTACA's reverse complement only: found on both strands, never on the forward one.
+  docOf({ id: 'dv4y-delta', name: 'Bench delta', folder: BENCH, sequence: `${'ATGC'.repeat(10)}TGTAATC${'ATGC'.repeat(10)}` }),
+];
+const BETA = docOf({ id: 'dv4y-beta', name: 'Bench beta', folder: BENCH, sequence: `${'ATGC'.repeat(10)}${MOTIF_4Y}${'ATGC'.repeat(10)}` });
+const benchSpec = (docs: SequenceDocument[], folderNames: Record<string, string> = {}, customFolders = [BENCH]): SessionSpec => ({
+  documents: docs, activeDocId: docs[0].id, viewerTab: 'sequence-view',
+  workspace: { projectExplorer: { ...EXPLORER, customFolders, folderNames, folderParents: {}, hiddenFolders: [], favoriteDocIds: [], deletedDocIds: [] } } as SessionSpec['workspace'],
+});
+const PROJECT_KEY = 'mbc.projectSearches.v1';
+const TABLE_KEY = 'mbc.savedSearches.v1';
+const NO_FIELDS = { documentType: '', topology: '', lengthMin: '', lengthMax: '', modifiedFrom: '', modifiedTo: '', annotationType: '' };
+/** Memory storage whose writes to the two saved-search keys can be refused; every other key writes. */
+function savedSearchStorage(seed: Record<string, string> = {}) {
+  const base = memoryStorage(seed);
+  let refuse = false;
+  const st = Object.assign(Object.create(null) as object, base, {
+    setItem: (k: string, v: string) => {
+      if (refuse && (k === PROJECT_KEY || k === TABLE_KEY)) throw new Error('QuotaExceededError');
+      base.setItem(k, v);
+    },
+    get length() { return base.length; },
+  }) as LiveStorage;
+  return { storage: st, refuse: (on: boolean) => { refuse = on; } };
+}
+const buttonIn = (els: LiveElement[], label: string) => {
+  const found = els.filter((b) => words(b.textContent) === label);
+  if (found.length !== 1) throw new Error(`expected one "${label}" button, found ${found.length}: ${els.map((b) => words(b.textContent)).join(' | ')}`);
+  return found[0];
+};
+const panelButton = (app: AppHarness, label: string) => buttonIn(inPanel(app, 'button'), label);
+const savedSelect = (app: AppHarness) => app.one('[role="dialog"][aria-label="Search Project"] select[aria-label="Saved searches"]', 'the Saved searches list');
+const savedNotice = (app: AppHarness) => words(panel(app).querySelector('[data-saved-search-notice]')?.textContent);
+const alerts4Y = (app: AppHarness) => inPanel(app, '[data-saved-search-unreadable]').map((p) => words(p.textContent));
+/** The Saved searches options, by group label: `name => value`. */
+const savedOptions = (sel: LiveElement) => Object.fromEntries(sel.querySelectorAll('optgroup').map((g) => [
+  g.getAttribute('label'), g.querySelectorAll('option').map((o) => words(o.textContent)),
+]));
+const optionValue = (sel: LiveElement, name: string) => {
+  const found = sel.querySelectorAll('option').filter((o) => words(o.textContent) === name);
+  if (found.length !== 1) throw new Error(`expected one saved search "${name}", found ${found.length}`);
+  return found[0].getAttribute('value') ?? '';
+};
+async function chooseSaved(app: AppHarness, name: string) {
+  const sel = savedSelect(app);
+  await app.change(sel, optionValue(sel, name));
+}
+async function savePanelSearch(app: AppHarness, name: string) {
+  await app.click(panelButton(app, 'Save search…'));
+  await app.input(app.one('[role="dialog"][aria-label="Search Project"] input[aria-label="Saved search name"]', 'the name field'), name);
+  await app.click(panelButton(app, 'Save'));
+}
+const statusText4Y = (app: AppHarness) => words(app.all('.statusbar-toast-text').map((t) => t.textContent).join(' '));
+/** The document table's filter panel: outside Search Project. */
+const tableOnly = (app: AppHarness, sel: string) => app.all(sel).filter((el) => {
+  for (let p: LiveElement | null = el; p; p = p.parentElement as LiveElement | null) if (p.getAttribute?.('aria-label') === 'Search Project') return false;
+  return true;
+});
+async function openTableFilter(app: AppHarness) {
+  await app.click(await openMenu(app, ['View', 'Search & Filter', 'Filter Folder']));
+  await app.settle();
+}
+async function saveTableSearch(app: AppHarness, name: string) {
+  await app.click(buttonIn(tableOnly(app, 'button'), 'Save Search…'));
+  const field = tableOnly(app, 'input[aria-label="Saved search name"]');
+  expect(field).toHaveLength(1);
+  await app.input(field[0], name);
+  await app.click(buttonIn(tableOnly(app, 'button'), 'Save'));
+}
+
+describe('US-01M7DV4Y AC1: a saved search keeps its settings, not its results, and reruns after a restart', () => {
+  it('US-01M7DV4Y AC1 saves every setting under its own key, replaces by name, and after a remount reruns at once on the renamed folder, its new document listed', async () => {
+    const { storage } = savedSearchStorage();
+    await withSession(benchSpec(benchDocs), async (app) => {
+      await searchFolder(app, BENCH);
+      expect(checkedScope(app)).toEqual(['Folder and subfolders']);
+      await app.input(queryField(app), 'zqsaved');
+      await app.click(panelButton(app, 'Add condition'));
+      await app.change(app.one('[role="dialog"][aria-label="Search Project"] select[aria-label="Search mode, condition 2"]', 'mode 2'), 'Nucleotide motif');
+      await app.input(app.one('[role="dialog"][aria-label="Search Project"] input[aria-label="Search motif, condition 2"]', 'motif 2'), MOTIF_4Y);
+      await app.change(app.one('[role="dialog"][aria-label="Search Project"] select[aria-label="Combine conditions"]', 'combine'), 'ANY');
+      await app.change(checkbox(app, 'Both strands'), false);
+      await app.change(app.one('[role="dialog"][aria-label="Search Project"] select[aria-label="Topology"]', 'topology'), 'linear');
+      await app.change(checkbox(app, 'Include Primer Database'), true);
+      await finishSearch(app);
+      expect(groupNames(app), 'before the save: alpha only').toEqual(['Bench alpha']);
+      await savePanelSearch(app, 'Bench run');
+      expect(savedNotice(app)).toBe('Saved search "Bench run".');
+      const saved = {
+        id: expect.any(String), name: 'Bench run',
+        conditions: [{ mode: 'Text', query: 'zqsaved' }, { mode: 'Nucleotide motif', query: MOTIF_4Y }], combine: 'ANY', bothStrands: false,
+        filters: { ...NO_FIELDS, topology: 'linear' }, includePrimers: true, scope: 'Folder and subfolders', folderId: BENCH,
+      };
+      // Exactly these keys: no results, no hit, no document name is kept with the search.
+      expect(JSON.parse(storage.getItem(PROJECT_KEY)!)).toEqual({ schema: 1, searches: [saved] });
+      expect(storage.getItem(TABLE_KEY), 'an older build\'s table menu reads only this key: nothing is written there').toBeNull();
+      const firstId = JSON.parse(storage.getItem(PROJECT_KEY)!).searches[0].id;
+      // A save under the same name, in another case, replaces it.
+      await savePanelSearch(app, 'bench RUN');
+      expect(JSON.parse(storage.getItem(PROJECT_KEY)!)).toEqual({ schema: 1, searches: [{ ...saved, id: firstId, name: 'bench RUN' }] });
+      expect(savedOptions(savedSelect(app))).toEqual({ 'Project searches': ['bench RUN'] });
+      // The table menu never lists a project search.
+      await openTableFilter(app);
+      expect(tableOnly(app, 'select[aria-label="Saved searches"]'), 'the table menu lists no saved search').toHaveLength(0);
+    }, { storage });
+
+    // A restart: the same storage, the folder renamed (its id kept) and a document added since the save.
+    await withSession(benchSpec([...benchDocs, BETA], { [BENCH]: 'Bench Renamed' }), async (app) => {
+      await app.click(await openMenu(app, ['View', 'Search & Filter', 'Search Project…']));
+      expect(checkedScope(app)).toEqual(['Entire project']);
+      expect(groups(app)).toHaveLength(0);
+      await chooseSaved(app, 'bench RUN');
+      // It starts at once: no pause before its run.
+      await finishSearch(app, 0);
+      expect(groupNames(app), 'the current documents: beta added since the save; gamma circular, delta reverse strand only').toEqual(['Bench alpha', 'Bench beta']);
+      expect(checkedScope(app)).toEqual(['Folder and subfolders']);
+      expect(scopeLabel(app)).toContain('Bench Renamed');
+      expect(scopeLabel(app)).not.toContain(BENCH);
+      expect(valueOf(queryField(app))).toBe('zqsaved');
+      expect(valueOf(app.one('[role="dialog"][aria-label="Search Project"] input[aria-label="Search motif, condition 2"]', 'motif 2'))).toBe(MOTIF_4Y);
+      expect(valueOf(app.one('[role="dialog"][aria-label="Search Project"] select[aria-label="Combine conditions"]', 'combine'))).toBe('ANY');
+      expect(valueOf(app.one('[role="dialog"][aria-label="Search Project"] select[aria-label="Topology"]', 'topology'))).toBe('linear');
+      expect(isChecked(checkbox(app, 'Both strands'))).toBe(false);
+      expect(isChecked(checkbox(app, 'Include Primer Database'))).toBe(true);
+
+      // An Entire project search needs no folder: chosen from another folder's panel, it runs there.
+      await chooseScope(app, 'Entire project');
+      await savePanelSearch(app, 'Everywhere');
+      await app.click(inPanel(app, 'button[aria-label="Close Search Project"]')[0]);
+      await searchFolder(app, 'Plasmids & Vectors');
+      const before = panel(app);
+      await chooseSaved(app, 'Everywhere');
+      await finishSearch(app, 0);
+      expect(panel(app), 'the panel was not reopened').toBe(before);
+      expect(checkedScope(app)).toEqual(['Entire project']);
+      expect(groupNames(app)).toEqual(expect.arrayContaining(['Bench alpha', 'Bench beta']));
+      expect(groupNames(app)).not.toContain('Bench gamma');
+    }, { storage });
+  });
+});
+
+describe('US-01M7DV4Y AC2: table filter searches are listed apart and applied to the document table', () => {
+  it('US-01M7DV4Y AC2 lists v1 entries apart, never runs one in Search Project, and applies each to the table filter as its own menu does', async () => {
+    const v1 = [
+      { id: 'ss-whole', name: 'Kan table', quickFilter: 'zqvector', rules: [], matchMode: 'all', wholeProject: true },
+      { id: 'ss-folder', name: 'Folder table', quickFilter: 'zqsaved', rules: [], matchMode: 'any', wholeProject: false },
+    ];
+    const { storage } = savedSearchStorage({ [TABLE_KEY]: JSON.stringify(v1) });
+    await withSession(benchSpec(benchDocs, { [BENCH]: 'Bench Renamed' }), async (app) => {
+      await app.click(folderRow(app, 'Bench Renamed'));
+      await app.click(await openMenu(app, ['View', 'Search & Filter', 'Search Project…']));
+      expect(savedOptions(savedSelect(app))).toEqual({ 'Table filter searches (open in the document table)': ['Kan table', 'Folder table'] });
+      await chooseSaved(app, 'Folder table');
+      await finishSearch(app, 0);
+      expect(statusText4Y(app)).toContain('Running saved search "Folder table" in Bench Renamed: it did not record a folder, so it runs on the selected one.');
+      expect(valueOf(app.one('#mbc-folder-filter-input', 'the table filter'))).toBe('zqsaved');
+      // Never run in Search Project: its query stays empty and no run starts.
+      expect(valueOf(queryField(app))).toBe('');
+      expect(groups(app)).toHaveLength(0);
+      expect(cancelButtons(app)).toHaveLength(0);
+      await chooseSaved(app, 'Kan table');
+      expect(statusText4Y(app)).toContain('Running saved search "Kan table" across the whole project.');
+      expect(valueOf(app.one('#mbc-folder-filter-input', 'the table filter'))).toBe('zqvector');
+      expect(valueOf(queryField(app))).toBe('');
+      expect(groups(app)).toHaveLength(0);
+      // The table's own menu still lists and applies them, in the same words.
+      const tableSelect = tableOnly(app, 'select[aria-label="Saved searches"]');
+      expect(tableSelect).toHaveLength(1);
+      expect(tableSelect[0].querySelectorAll('option').map((o) => words(o.textContent))).toEqual(['Saved searches…', 'Kan table', 'Folder table']);
+      await app.change(tableSelect[0], 'ss-folder');
+      expect(statusText4Y(app)).toContain('Running saved search "Folder table" in Bench Renamed: it did not record a folder, so it runs on the selected one.');
+      expect(valueOf(app.one('#mbc-folder-filter-input', 'the table filter'))).toBe('zqsaved');
+      expect(JSON.parse(storage.getItem(TABLE_KEY)!), 'applying writes nothing').toEqual(v1);
+    }, { storage });
+  });
+});
+
+describe('US-01M7DV4Y AC3: a saved search whose folder is gone runs nothing', () => {
+  it('US-01M7DV4Y AC3 says the folder no longer exists, leaves the scope, query and results as they were, and starts no run', async () => {
+    const { storage } = savedSearchStorage();
+    await withSession(benchSpec(benchDocs), async (app) => {
+      await searchFolder(app, BENCH);
+      await typeQuery(app, queryField(app), 'zqsaved');
+      await savePanelSearch(app, 'Bench only');
+    }, { storage });
+    // The folder is gone after the restart: no custom folder and no document in it.
+    await withSession(SPEC, async (app) => {
+      await app.click(await openMenu(app, ['View', 'Search & Filter', 'Search Project…']));
+      await typeQuery(app, queryField(app), 'zqvector');
+      const listed = groupNames(app);
+      const said = summary(app);
+      expect(listed.length).toBeGreaterThan(0);
+      const before = panel(app);
+      await chooseSaved(app, 'Bench only');
+      expect(savedNotice(app)).toBe('The folder this search was saved for no longer exists, so "Bench only" was not run.');
+      expect(cancelButtons(app), 'no run starts').toHaveLength(0);
+      await finishSearch(app);
+      expect(panel(app)).toBe(before);
+      expect(checkedScope(app)).toEqual(['Entire project']);
+      expect(valueOf(queryField(app))).toBe('zqvector');
+      expect(groupNames(app)).toEqual(listed);
+      expect(summary(app)).toBe(said);
+    }, { storage });
+  });
+});
+
+describe('US-01M7DV4Y AC4: an unreadable store is reported, never overwritten but by Discard, and a refused write is said', () => {
+  it('US-01M7DV4Y AC4 reports each store by key and reason, refuses saves in the panel and the table menu, keeps the values, and only Discard them replaces them', async () => {
+    const { storage } = savedSearchStorage({ [PROJECT_KEY]: '{oops', [TABLE_KEY]: JSON.stringify({ schema: 2, searches: [] }) });
+    await withSession(benchSpec(benchDocs), async (app) => {
+      await app.click(await openMenu(app, ['View', 'Search & Filter', 'Search Project…']));
+      await typeQuery(app, queryField(app), 'zqsaved');
+      expect(alerts4Y(app)).toEqual([
+        'Saved project searches cannot be read (mbc.projectSearches.v1): it is not valid JSON.',
+        'Table filter searches cannot be read (mbc.savedSearches.v1): it was written in schema 2, newer than this build reads (schema 1).',
+      ]);
+      await savePanelSearch(app, 'Kept');
+      expect(savedNotice(app)).toBe('"Kept" was not saved: the saved searches cannot be read.');
+      expect(storage.getItem(PROJECT_KEY)).toBe('{oops');
+      await openTableFilter(app);
+      await app.input(app.one('#mbc-folder-filter-input', 'the table filter'), 'zqsaved');
+      await saveTableSearch(app, 'T1');
+      expect(statusText4Y(app)).toContain('"T1" was not saved: the saved searches cannot be read.');
+      expect(storage.getItem(TABLE_KEY)).toBe(JSON.stringify({ schema: 2, searches: [] }));
+      // Discard, then Discard them: the only path that replaces them.
+      await app.click(panelButton(app, 'Discard unreadable saved searches'));
+      expect(storage.getItem(PROJECT_KEY), 'asking is not discarding').toBe('{oops');
+      await app.click(panelButton(app, 'Discard them'));
+      expect(alerts4Y(app)).toEqual([]);
+      expect(JSON.parse(storage.getItem(PROJECT_KEY)!)).toEqual({ schema: 1, searches: [] });
+      expect(JSON.parse(storage.getItem(TABLE_KEY)!)).toEqual([]);
+      await savePanelSearch(app, 'Kept');
+      expect(savedNotice(app)).toBe('Saved search "Kept".');
+      await saveTableSearch(app, 'T1');
+      expect(statusText4Y(app)).toContain('Saved search "T1".');
+      expect(JSON.parse(storage.getItem(TABLE_KEY)!).map((s: { name: string }) => s.name)).toEqual(['T1']);
+    }, { storage });
+  });
+
+  it('US-01M7DV4Y AC4 a save or delete the browser refuses says so in the panel and the table menu, the v1 delete included, and keeps every entry', async () => {
+    const { storage, refuse } = savedSearchStorage();
+    await withSession(benchSpec(benchDocs), async (app) => {
+      await app.click(await openMenu(app, ['View', 'Search & Filter', 'Search Project…']));
+      await typeQuery(app, queryField(app), 'zqsaved');
+      await savePanelSearch(app, 'Kept');
+      await openTableFilter(app);
+      await app.input(app.one('#mbc-folder-filter-input', 'the table filter'), 'zqsaved');
+      await saveTableSearch(app, 'T1');
+      refuse(true);
+      await savePanelSearch(app, 'Second');
+      expect(savedNotice(app)).toBe('"Second" was not saved: browser storage refused the write.');
+      await chooseSaved(app, 'Kept');
+      await app.click(panelButton(app, 'Delete saved search'));
+      expect(savedNotice(app)).toBe('"Kept" was not deleted: browser storage refused the write.');
+      expect(savedOptions(savedSelect(app))['Project searches']).toEqual(['Kept']);
+      const tableSelect = tableOnly(app, 'select[aria-label="Saved searches"]');
+      await app.change(tableSelect[0], optionValue(tableSelect[0], 'T1'));
+      await app.click(buttonIn(tableOnly(app, 'button'), 'Delete'));
+      expect(statusText4Y(app)).toContain('"T1" was not deleted: browser storage refused the write.');
+      expect(tableOnly(app, 'select[aria-label="Saved searches"]')[0].querySelectorAll('option').map((o) => words(o.textContent))).toContain('T1');
+      await saveTableSearch(app, 'T2');
+      expect(statusText4Y(app)).toContain('"T2" was not saved: browser storage refused the write.');
+      expect(JSON.parse(storage.getItem(TABLE_KEY)!).map((s: { name: string }) => s.name)).toEqual(['T1']);
+      expect(JSON.parse(storage.getItem(PROJECT_KEY)!).searches.map((s: { name: string }) => s.name)).toEqual(['Kept']);
+    }, { storage });
+  });
+});

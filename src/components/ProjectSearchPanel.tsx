@@ -40,6 +40,13 @@
  * edited, trashed or removed since the run read it opens nothing and says so. A read of the store
  * that differs from the one searched marks an included search out of date and reruns it after the
  * pause, as a document change does.
+ *
+ * Save search… (US-01M7DV4Y) keeps the conditions, ALL / ANY, Both strands, the filters as typed,
+ * Include Primer Database, the scope and the folder's id under mbc.projectSearches.v1, never the
+ * results. Choosing one sets the panel to it and runs it at once on the documents as they are now,
+ * reopening the panel through `onReopenSaved` when its folder is not the panel's; a folder gone runs
+ * nothing. Table filter searches (mbc.savedSearches.v1) are listed apart and handed to the App's
+ * table filter through `onApplyTableSearch`, never run here.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -92,6 +99,10 @@ import type { DatabasePrimer, SequenceDocument } from '../types/bio';
 import type { PrimerDbRead } from '../core/primerDatabase';
 import { inferDocumentTypeLabel } from '../core/workbenchBatchOperations';
 import { searchIupacMotifRust } from '../lib/rustBioEngine';
+import {
+  deleteProjectSearch, discardUnreadableSearches, folderGoneSentence, readProjectSearches, readTableSearches, saveProjectSearch,
+  savedSearchFolder, unreadableStoreSentence, type ProjectSavedSearch, type SavedSearch,
+} from '../core/savedSearches';
 
 /** Groups shown on one page. */
 export const GROUPS_PER_PAGE = 50;
@@ -188,21 +199,39 @@ interface Props {
   onOpenHit?: (opening: HitOpening) => string | null;
   /** Opens the Primer Database window on a record the core found still current (US-01M7DVZP). */
   onOpenPrimerRecord?: (recordId: string) => void;
+  /** The saved search this panel was reopened on (US-01M7DV4Y): its settings are the panel's and it runs at once. */
+  initialSaved?: ProjectSavedSearch;
+  /** Reopens the panel on another folder, found by id, to run a saved search there. */
+  onReopenSaved?: (folderId: string, saved: ProjectSavedSearch) => void;
+  /** Applies a table filter search (mbc.savedSearches.v1) to the document table filter; it never runs here. */
+  onApplyTableSearch?: (search: SavedSearch) => void;
+  /** Says the panel discarded an unreadable store, so the table menu re-reads its own. */
+  onSavedSearchesChanged?: () => void;
 }
+
+/** The panel's settings a saved search holds, compared to tell whether choosing one changes the run. */
+const settingsOf = (x: Pick<ProjectSavedSearch, 'combine' | 'bothStrands' | 'includePrimers' | 'scope'> & { conditions: { mode: SearchMode; query: string }[]; filters: FilterFields }) =>
+  JSON.stringify([x.conditions.map((c) => [c.mode, c.query]), x.combine, x.bothStrands, x.filters, x.includePrimers, x.scope]);
 
 /** The read a run is given when the App passed none: never read as a store without records. */
 const NOT_READ: PrimerDbRead = { ok: false, error: { kind: 'unavailable', message: PRIMERS_NOT_READ, fields: [] } };
 
-export function ProjectSearchPanel({ folderId, initialScope, context, onClose, onOpenHit, onOpenPrimerRecord }: Props) {
+export function ProjectSearchPanel({
+  folderId, initialScope, context, onClose, onOpenHit, onOpenPrimerRecord, initialSaved, onReopenSaved, onApplyTableSearch, onSavedSearchesChanged,
+}: Props) {
   const [scope, setScope] = useState<SearchScope>(initialScope);
-  const nextRowId = useRef(1);
-  const [rows, setRows] = useState<Row[]>([{ id: 0, mode: 'Text', query: '' }]);
-  const [combine, setCombine] = useState<CombineChoice>('ALL');
-  const [fields, setFields] = useState<FilterFields>(NO_FILTERS);
+  const nextRowId = useRef(initialSaved ? initialSaved.conditions.length : 1);
+  const [rows, setRows] = useState<Row[]>(() => initialSaved
+    ? initialSaved.conditions.map((c, i) => ({ id: i, mode: c.mode, query: c.query }))
+    : [{ id: 0, mode: 'Text', query: '' }]);
+  const [combine, setCombine] = useState<CombineChoice>(initialSaved?.combine ?? 'ALL');
+  const [fields, setFields] = useState<FilterFields>(initialSaved ? { ...initialSaved.filters } : NO_FILTERS);
   const [page, setPage] = useState(0);
-  const [bothStrands, setBothStrands] = useState(true);
+  const [bothStrands, setBothStrands] = useState(initialSaved?.bothStrands ?? true);
   const [definiteOnly, setDefiniteOnly] = useState(false);
-  const [includePrimers, setIncludePrimers] = useState(false);
+  const [includePrimers, setIncludePrimers] = useState(initialSaved?.includePrimers ?? false);
+  /** A saved search chosen: its run starts at once, typed queries and all, with no pause. */
+  const runAtOnce = useRef(Boolean(initialSaved));
   // One row is today's panel: its mode and query are the panel's own.
   const { mode, query } = rows[0];
   const multi = rows.length > 1;
@@ -251,6 +280,8 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
   useEffect(() => {
     const prev = last.current;
     last.current = { key, inputs };
+    const atOnce = runAtOnce.current;
+    runAtOnce.current = false;
     const stopRun = () => {
       runner.stop();
       if (timer.current !== null) clearTimeout(timer.current);
@@ -267,7 +298,7 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
     if (!keyChanged && sameInputs(prev.inputs, inputs)) return;
     // A change of scope, a condition (added, removed or its mode), ALL / ANY, Both strands or a
     // filter runs at once. Typing in a query and a change of the documents wait for the pause.
-    const now = prev !== null && keyChanged && !queryTyped(prev.key, key);
+    const now = atOnce || (prev !== null && keyChanged && !queryTyped(prev.key, key));
     stopRun();
     const runKey = key;
     const runInputs = inputs;
@@ -470,6 +501,79 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
     setPage(0);
   };
   const setField = (change: Partial<FilterFields>) => { setFields((f) => ({ ...f, ...change })); setPage(0); };
+
+  // ─── Saved searches (US-01M7DV4Y) ───
+  // Both stores are read when the panel opens and after each write it makes; an unreadable one is
+  // shown by key and reason, and a save to it is refused by saveProjectSearch, keeping its value.
+  const [stores, setStores] = useState(() => ({ project: readProjectSearches(), table: readTableSearches() }));
+  const rereadStores = () => setStores({ project: readProjectSearches(), table: readTableSearches() });
+  const [saveName, setSaveName] = useState<string | null>(null);
+  const [chosenSaved, setChosenSaved] = useState('');
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const projectList = stores.project.state === 'unreadable' ? [] : stores.project.searches;
+  const tableList = stores.table.state === 'unreadable' ? [] : stores.table.searches;
+  const unreadableStores = [stores.project, stores.table].flatMap((r) => (r.state === 'unreadable' ? [r] : []));
+  const saveSearch = (name: string) => {
+    // What to search for and where; never the results, so a rerun reads the documents as they are then.
+    const out = saveProjectSearch({
+      name, conditions: rows.map((r) => ({ mode: r.mode, query: r.query })), combine, bothStrands, filters: { ...fields },
+      includePrimers, scope, folderId,
+    });
+    setSaveName(null);
+    setSavedNotice(out.ok ? `Saved search "${name}".` : out.sentence);
+    rereadStores();
+  };
+  const applySaved = (x: ProjectSavedSearch) => {
+    const now = { conditions: rows, combine, bothStrands, filters: fields, includePrimers, scope };
+    if (settingsOf(now) !== settingsOf(x)) runAtOnce.current = true;
+    setRows(x.conditions.map((c, i) => ({ id: nextRowId.current + i, mode: c.mode, query: c.query })));
+    nextRowId.current += x.conditions.length;
+    setCombine(x.combine);
+    setFields({ ...x.filters });
+    setBothStrands(x.bothStrands);
+    setIncludePrimers(x.includePrimers);
+    setScope(x.scope);
+    setPage(0);
+  };
+  const chooseSaved = (value: string) => {
+    setSavedNotice(null);
+    if (value.startsWith('t:')) {
+      const x = tableList.find((q) => q.id === value.slice(2));
+      setChosenSaved('');
+      if (x) onApplyTableSearch?.(x);
+      return;
+    }
+    const x = projectList.find((q) => q.id === value.slice(2));
+    if (!x) { setChosenSaved(''); return; }
+    // The folder is found by id; one gone runs nothing and leaves the scope as it is.
+    const where = savedSearchFolder(x, folderId, context.folders);
+    if ('missing' in where) {
+      setChosenSaved('');
+      setSavedNotice(folderGoneSentence(x.name));
+      return;
+    }
+    if (where.folderId !== folderId && onReopenSaved) { onReopenSaved(where.folderId, x); return; }
+    setChosenSaved(value);
+    applySaved(x);
+  };
+  const deleteChosen = () => {
+    const x = projectList.find((q) => `p:${q.id}` === chosenSaved);
+    setChosenSaved('');
+    if (!x) return;
+    const out = deleteProjectSearch(x.id, x.name);
+    setSavedNotice(out.ok ? `Deleted saved search "${x.name}".` : out.sentence);
+    rereadStores();
+  };
+  const discardUnreadable = () => {
+    const failed = discardUnreadableSearches();
+    setConfirmDiscard(false);
+    setSavedNotice(failed.length > 0
+      ? `The unreadable saved searches were not discarded (${failed.join(', ')}): browser storage refused the write.`
+      : 'Discarded the unreadable saved searches.');
+    rereadStores();
+    onSavedSearchesChanged?.();
+  };
   const queryLabel = (row: Row, n: number) => `${row.mode === 'Text' ? 'Search text' : 'Search motif'}${n > 1 ? `, condition ${n}` : ''}`;
   /** A condition row's own marks: why an empty one takes no part, and its Remove button. */
   const rowMarks = (row: Row, n: number) => (multi ? (
@@ -681,6 +785,57 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
           ))}
         </ul>
       )}
+      <div className="mbc-project-search-saved" data-saved-searches>
+        {saveName === null ? (
+          <button type="button" className="mbc-filter-small-btn" disabled={active.length === 0} onClick={() => setSaveName('')}>Save search…</button>
+        ) : (
+          <span className="mbc-filter-save-row">
+            <input
+              autoFocus
+              type="text"
+              aria-label="Saved search name"
+              placeholder="Search name"
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && saveName.trim()) { e.preventDefault(); saveSearch(saveName.trim()); }
+                if (e.key === 'Escape') { e.stopPropagation(); setSaveName(null); }
+              }}
+            />
+            <button type="button" className="mbc-filter-small-btn" disabled={!saveName.trim()} onClick={() => saveSearch(saveName.trim())}>Save</button>
+            <button type="button" className="mbc-filter-small-btn" onClick={() => setSaveName(null)}>Cancel</button>
+          </span>
+        )}
+        {(projectList.length > 0 || tableList.length > 0) && (
+          <select aria-label="Saved searches" value={chosenSaved} onChange={(e) => chooseSaved(e.target.value)}>
+            <option value="">Saved searches…</option>
+            {projectList.length > 0 && (
+              <optgroup label="Project searches">
+                {projectList.map((x) => <option key={x.id} value={`p:${x.id}`}>{x.name}</option>)}
+              </optgroup>
+            )}
+            {tableList.length > 0 && (
+              <optgroup label="Table filter searches (open in the document table)">
+                {tableList.map((x) => <option key={x.id} value={`t:${x.id}`}>{x.name}</option>)}
+              </optgroup>
+            )}
+          </select>
+        )}
+        {chosenSaved.startsWith('p:') && (
+          <button type="button" className="mbc-filter-small-btn" onClick={deleteChosen}>Delete saved search</button>
+        )}
+        {unreadableStores.map((r) => <p key={r.key} role="alert" data-saved-search-unreadable={r.key}>{unreadableStoreSentence(r)}</p>)}
+        {unreadableStores.length > 0 && (confirmDiscard ? (
+          <span className="mbc-filter-save-row">
+            The stored values that cannot be read are replaced with empty lists.{' '}
+            <button type="button" className="mbc-filter-small-btn" onClick={discardUnreadable}>Discard them</button>
+            <button type="button" className="mbc-filter-small-btn" onClick={() => setConfirmDiscard(false)}>Keep them</button>
+          </span>
+        ) : (
+          <button type="button" className="mbc-filter-small-btn" onClick={() => setConfirmDiscard(true)}>Discard unreadable saved searches</button>
+        ))}
+        {savedNotice && <p role="status" data-saved-search-notice>{savedNotice}</p>}
+      </div>
       {'refused' in resolved ? null : (
         <p className="mbc-project-search-scope">
           Searching: <strong data-search-scope-label>{resolved.label}</strong>

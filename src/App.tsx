@@ -110,7 +110,7 @@ import { MetadataImportDialog } from './components/MetadataImportDialog';
 import { ComputeDistancesDialog, CondenseTreeDialog, EvolutionAnalysisDialog, TimetreeDialog, ExamplesDialog, GeneDuplicationDialog, HighlightSitesDialog } from './components/EvolutionAnalysisDialogs';
 import type { EvoAnalysis } from './core/evolutionAnalyses';
 import { loadStoredBlastDbs, localBlastDbDocuments, storeBlastDbs } from './core/localBlastDb';
-import { isSearchField, loadSavedSearches, SEARCH_FIELDS, searchFieldText, storeSavedSearches, upsertSavedSearch, type SavedSearch } from './core/savedSearches';
+import { deleteTableSearch, isSearchField, loadSavedSearches, saveTableSearch, SEARCH_FIELDS, searchFieldText, type ProjectSavedSearch, type SavedSearch } from './core/savedSearches';
 import { ExpressionDialog, ExpressionResultsView } from './components/ExpressionViews';
 import { HelpPanel } from './components/HelpPanel';
 import { FragmentTraceView, MicrosatelliteDialog } from './components/FragmentViews';
@@ -1183,8 +1183,11 @@ export const App: React.FC = () => {
   const [folderColors, setFolderColors] = useState<Record<string, string>>({});
   const [favoriteDocIds, setFavoriteDocIds] = useState<string[]>(['doc-pet28-egfp']);
   const [deletedDocIds, setDeletedDocIds] = useState<string[]>([]);
-  /** The open Search Project panel (US-01M7DV88): its folder and the scope it opened on; `key` remounts it on each open. */
-  const [projectSearch, setProjectSearch] = useState<{ folderId: string; scope: SearchScope; key: number } | null>(null);
+  /**
+   * The open Search Project panel (US-01M7DV88): its folder and the scope it opened on; `key` remounts it on each open.
+   * `saved` is the saved search it was reopened to run (US-01M7DV4Y).
+   */
+  const [projectSearch, setProjectSearch] = useState<{ folderId: string; scope: SearchScope; key: number; saved?: ProjectSavedSearch } | null>(null);
   /** The Search Project hit Document info names (US-01M7DV78), shown only while its document is active; selectDocumentWithHistory drops it. */
   const [searchMatchShown, setSearchMatchShown] = useState<{ docId: string; hit: TextHit } | null>(null);
   const [checkedDocIds, setCheckedDocIds] = useState<string[]>([SAMPLE_LIBRARY[0].id]);
@@ -2049,8 +2052,25 @@ export const App: React.FC = () => {
     () => ({ documents: catalogAllDocs, folders: explorerFolders, deletedIds: deletedDocIds, favoriteIds: favoriteDocIds, primers: primerSearchRead }),
     [catalogAllDocs, explorerFolders, deletedDocIds, favoriteDocIds, primerSearchRead]
   );
-  const openProjectSearch = (folderId: string, scope: SearchScope) =>
-    setProjectSearch((prev) => ({ folderId, scope, key: (prev?.key ?? 0) + 1 }));
+  const openProjectSearch = (folderId: string, scope: SearchScope, saved?: ProjectSavedSearch) =>
+    setProjectSearch((prev) => ({ folderId, scope, key: (prev?.key ?? 0) + 1, saved }));
+  /**
+   * Applies a table filter search (mbc.savedSearches.v1) to the document table filter, from the
+   * table's own menu or from Search Project (US-01M7DV4Y). A v1 entry recorded no folder, so one not
+   * for the whole project runs on the folder selected now, and says so.
+   */
+  const applyTableSearch = (x: SavedSearch) => {
+    setTableFilter(x.quickFilter);
+    setDocFilterRules(x.rules);
+    setDocFilterMatchMode(x.matchMode);
+    setWholeProjectSearch(x.wholeProject);
+    setDocTableCollapsed(false);
+    setDocFilterOpen(true);
+    const folderLabel = explorerFolders.find((f) => f.id === selectedFolder)?.label ?? selectedFolder;
+    setStatusBanner(x.wholeProject
+      ? `Running saved search "${x.name}" across the whole project.`
+      : `Running saved search "${x.name}" in ${folderLabel}: it did not record a folder, so it runs on the selected one.`);
+  };
   // The panel searches a session; closing the session closes it, so the next session does not reopen it.
   useEffect(() => {
     if (!sessionActive) setProjectSearch(null);
@@ -14722,23 +14742,20 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     onWholeProjectChange={setWholeProjectSearch}
                     savedSearches={savedSearches}
                     onSaveSearch={(name) => {
-                      const next = upsertSavedSearch(savedSearches, { name, quickFilter: tableFilter, rules: docFilterRules, matchMode: docFilterMatchMode, wholeProject: wholeProjectSearch });
-                      setSavedSearches(next);
-                      setStatusBanner(storeSavedSearches(next) ? `Saved search "${name}".` : `Saved search "${name}" for this session (browser storage is unavailable).`);
+                      // Re-reads the store first: one that cannot be read refuses the save and keeps its value (US-01M7DV4Y).
+                      const out = saveTableSearch({ name, quickFilter: tableFilter, rules: docFilterRules, matchMode: docFilterMatchMode, wholeProject: wholeProjectSearch });
+                      if (out.ok) setSavedSearches(out.searches);
+                      setStatusBanner(out.ok ? `Saved search "${name}".` : out.sentence);
                     }}
                     onLoadSearch={(id) => {
                       const x = savedSearches.find((q) => q.id === id);
-                      if (!x) return;
-                      setTableFilter(x.quickFilter);
-                      setDocFilterRules(x.rules);
-                      setDocFilterMatchMode(x.matchMode);
-                      setWholeProjectSearch(x.wholeProject);
-                      setStatusBanner(`Running saved search "${x.name}"${x.wholeProject ? ' across the whole project' : ` in ${selectedFolder}`}.`);
+                      if (x) applyTableSearch(x);
                     }}
                     onDeleteSearch={(id) => {
-                      const next = savedSearches.filter((q) => q.id !== id);
-                      setSavedSearches(next);
-                      storeSavedSearches(next);
+                      // A delete the browser refuses says so and keeps the entry listed (US-01M7DV4Y).
+                      const out = deleteTableSearch(id, savedSearches.find((q) => q.id === id)?.name ?? id);
+                      if (out.ok) setSavedSearches(out.searches);
+                      else setStatusBanner(out.sentence);
                     }}
                   />
                 )}
@@ -17601,6 +17618,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           onClose={() => setProjectSearch(null)}
           onOpenHit={handleOpenSearchHit}
           onOpenPrimerRecord={openPrimerDatabaseOnRecord}
+          initialSaved={projectSearch.saved}
+          onReopenSaved={(folderId, saved) => openProjectSearch(folderId, saved.scope, saved)}
+          onApplyTableSearch={applyTableSearch}
+          onSavedSearchesChanged={() => setSavedSearches(loadSavedSearches())}
         />
       )}
       {primerDbWindow && (

@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import { INTERNAL_MODIFICATIONS, normalizePrimerSequence, parsePrimerSpreadsheet, readPrimerSpreadsheet, type PrimerColumnMapping } from '../core/primerImport';
 import { ImportPrimersDialog } from '../components/SequenceAnalysisToolDialogs';
-import { searchFieldText, upsertSavedSearch } from '../core/savedSearches';
+import {
+  deleteProjectSearch, deleteTableSearch, discardUnreadableSearches, loadSavedSearches, PROJECT_SEARCHES_KEY, readProjectSearches,
+  readTableSearches, saveProjectSearch, saveTableSearch, searchFieldText, TABLE_SEARCHES_KEY, upsertSavedSearch, type ProjectSavedSearch, type SavedSearch,
+} from '../core/savedSearches';
 import { evaluateTableRowFilters } from '../components/WorkbenchSmartTable';
 import { runAnnotateByBlast, runImportPrimers, type OperationResult } from '../core/operationRunners';
 import type { SequenceDocument } from '../types/bio';
@@ -587,5 +590,115 @@ describe('BG-01M7DTWB internal IDT codes, vertical tabs and the table itself', (
     expect(readPrimerSpreadsheet(named).rows.map((x) => x.name)).toEqual(['M13 F', 'M13 R', 'two lines']);
     const made = await renderImportDialog(named).run();
     expect(made.flatMap((m) => m.created.map((d) => d.name))).toEqual(['M13 F', 'M13 R', 'two lines']);
+  });
+});
+
+// ─── US-01M7DV4Y: the two saved-search stores, read and written apart ───
+//
+// The store under each key is read as never written, written (perhaps empty) or unreadable, and the
+// three are told apart; a store a write would overwrite is re-read first. A storage whose setItem
+// throws stands for a browser refusing the write.
+
+describe('US-01M7DV4Y saved-search stores', () => {
+  /** Memory storage whose writes can be refused; reads still answer. */
+  const storageOf = (seed: Record<string, string> = {}) => {
+    const m = new Map(Object.entries(seed));
+    let refuse = false;
+    const st = {
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => { if (refuse) throw new Error('QuotaExceededError'); m.set(k, String(v)); },
+      removeItem: (k: string) => void m.delete(k),
+      clear: () => m.clear(),
+      get length() { return m.size; },
+      key: (i: number) => [...m.keys()][i] ?? null,
+      refuse: (on: boolean) => { refuse = on; },
+    };
+    vi.stubGlobal('localStorage', st);
+    return st;
+  };
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const V1_A: SavedSearch = { id: 'ss-a', name: 'Kan plasmids', quickFilter: 'kan', rules: [], matchMode: 'all', wholeProject: true };
+  const V1_B: SavedSearch = { id: 'ss-b', name: 'Bench folder', quickFilter: '', rules: [{ id: 'r1', colId: 'name', operator: 'contains', value: 'x' }], matchMode: 'any', wholeProject: false };
+  const PROJECT: Omit<ProjectSavedSearch, 'id'> = {
+    name: 'Bench run', conditions: [{ mode: 'Text', query: 'zq' }, { mode: 'Nucleotide motif', query: 'GAATTC' }], combine: 'ANY',
+    bothStrands: false, includePrimers: true, scope: 'Folder and subfolders', folderId: 'Assay Bench',
+    filters: { documentType: '', topology: 'linear', lengthMin: '10', lengthMax: '', modifiedFrom: '', modifiedTo: '', annotationType: '' },
+  };
+
+  it('US-01M7DV4Y AC2 v1 entries still load as before, a nameless one dropped, and a project search never lands in the v1 store', () => {
+    const st = storageOf({ [TABLE_SEARCHES_KEY]: JSON.stringify([V1_A, { id: 'ss-x' }, V1_B]) });
+    expect(readTableSearches()).toEqual({ state: 'read', searches: [V1_A, V1_B] });
+    expect(loadSavedSearches()).toEqual([V1_A, V1_B]);
+    const saved = saveProjectSearch(PROJECT);
+    expect(saved.ok).toBe(true);
+    expect(JSON.parse(st.getItem(TABLE_SEARCHES_KEY)!), 'the v1 store is untouched by a project save').toEqual([V1_A, { id: 'ss-x' }, V1_B]);
+    expect(readTableSearches()).toEqual({ state: 'read', searches: [V1_A, V1_B] });
+    // An older build's table menu reads the v1 key only, keeping any entry with a name: none of these is one.
+    const stored = JSON.parse(st.getItem(PROJECT_SEARCHES_KEY)!);
+    expect(stored).toEqual({ schema: 1, searches: [{ ...PROJECT, id: expect.any(String) }] });
+    expect(Array.isArray(stored), 'the project store is no list an older table menu would read').toBe(false);
+    // A v1 save still writes the v1 list, replacing a same-named entry case-insensitively.
+    const t = saveTableSearch({ name: 'KAN plasmids', quickFilter: 'kanR', rules: [], matchMode: 'all', wholeProject: true });
+    expect(t).toEqual({ ok: true, searches: [{ ...V1_A, name: 'KAN plasmids', quickFilter: 'kanR' }, V1_B] });
+  });
+
+  it('US-01M7DV4Y AC4 never written, written empty and unreadable are three answers, each store by its key and reason', () => {
+    storageOf();
+    expect(readProjectSearches()).toEqual({ state: 'missing', searches: [] });
+    expect(readTableSearches()).toEqual({ state: 'missing', searches: [] });
+    storageOf({ [PROJECT_SEARCHES_KEY]: JSON.stringify({ schema: 1, searches: [] }), [TABLE_SEARCHES_KEY]: '[]' });
+    expect(readProjectSearches()).toEqual({ state: 'read', searches: [] });
+    expect(readTableSearches()).toEqual({ state: 'read', searches: [] });
+    const cases: [Record<string, string>, unknown, unknown][] = [
+      [{ [PROJECT_SEARCHES_KEY]: '{oops' }, { state: 'unreadable', key: PROJECT_SEARCHES_KEY, reason: 'it is not valid JSON' }, null],
+      [{ [PROJECT_SEARCHES_KEY]: JSON.stringify({ schema: 2, searches: [] }) },
+        { state: 'unreadable', key: PROJECT_SEARCHES_KEY, reason: 'it was written in schema 2, newer than this build reads (schema 1)' }, null],
+      [{ [PROJECT_SEARCHES_KEY]: JSON.stringify({ schema: 1, searches: [{ name: 'half' }] }) },
+        { state: 'unreadable', key: PROJECT_SEARCHES_KEY, reason: 'entry 1 is not a saved project search' }, null],
+      [{ [TABLE_SEARCHES_KEY]: '[{"name": ' }, null, { state: 'unreadable', key: TABLE_SEARCHES_KEY, reason: 'it is not valid JSON' }],
+      [{ [TABLE_SEARCHES_KEY]: JSON.stringify({ schema: 2, searches: [] }) }, null,
+        { state: 'unreadable', key: TABLE_SEARCHES_KEY, reason: 'it was written in schema 2, newer than this build reads (schema 1)' }],
+    ];
+    for (const [seed, project, table] of cases) {
+      storageOf(seed);
+      if (project) expect(readProjectSearches()).toEqual(project);
+      if (table) {
+        expect(readTableSearches()).toEqual(table);
+        expect(loadSavedSearches(), 'the table menu lists none of an unreadable store').toEqual([]);
+      }
+    }
+  });
+
+  it('US-01M7DV4Y AC4 a save to an unreadable store is refused and keeps the stored value; only the discard replaces it', () => {
+    const st = storageOf({ [PROJECT_SEARCHES_KEY]: '{oops', [TABLE_SEARCHES_KEY]: '[{"name": ' });
+    expect(saveProjectSearch(PROJECT)).toEqual({ ok: false, sentence: '"Bench run" was not saved: the saved searches cannot be read.' });
+    expect(saveTableSearch({ ...V1_A, name: 'Kan' })).toEqual({ ok: false, sentence: '"Kan" was not saved: the saved searches cannot be read.' });
+    expect(st.getItem(PROJECT_SEARCHES_KEY)).toBe('{oops');
+    expect(st.getItem(TABLE_SEARCHES_KEY)).toBe('[{"name": ');
+    expect(discardUnreadableSearches()).toEqual([]);
+    expect(readProjectSearches()).toEqual({ state: 'read', searches: [] });
+    expect(readTableSearches()).toEqual({ state: 'read', searches: [] });
+    expect(saveProjectSearch(PROJECT).ok).toBe(true);
+    // A readable store is never discarded.
+    expect(discardUnreadableSearches()).toEqual([]);
+    expect(readProjectSearches().state === 'read' && readProjectSearches()).toMatchObject({ searches: [{ name: 'Bench run' }] });
+  });
+
+  it('US-01M7DV4Y AC4 a save or delete the browser refuses says so and changes no store, the v1 delete included', () => {
+    const st = storageOf({ [TABLE_SEARCHES_KEY]: JSON.stringify([V1_A, V1_B]) });
+    const saved = saveProjectSearch(PROJECT);
+    expect(saved.ok).toBe(true);
+    const id = saved.ok ? saved.searches[0].id : '';
+    st.refuse(true);
+    expect(saveProjectSearch({ ...PROJECT, name: 'Other' })).toEqual({ ok: false, sentence: '"Other" was not saved: browser storage refused the write.' });
+    expect(deleteProjectSearch(id, 'Bench run')).toEqual({ ok: false, sentence: '"Bench run" was not deleted: browser storage refused the write.' });
+    expect(saveTableSearch({ ...V1_A, name: 'New' })).toEqual({ ok: false, sentence: '"New" was not saved: browser storage refused the write.' });
+    expect(deleteTableSearch('ss-a', 'Kan plasmids')).toEqual({ ok: false, sentence: '"Kan plasmids" was not deleted: browser storage refused the write.' });
+    expect(loadSavedSearches()).toEqual([V1_A, V1_B]);
+    expect(readProjectSearches()).toMatchObject({ state: 'read', searches: [{ name: 'Bench run' }] });
+    st.refuse(false);
+    expect(deleteTableSearch('ss-a', 'Kan plasmids')).toEqual({ ok: true, searches: [V1_B] });
+    expect(deleteProjectSearch(id, 'Bench run')).toEqual({ ok: true, searches: [] });
   });
 });
