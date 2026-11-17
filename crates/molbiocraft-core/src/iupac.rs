@@ -1,9 +1,9 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-use crate::types::SequenceStats;
+use crate::types::{MoleculeType, SequenceStats};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Deterministic SplitMix64 PRNG for reproducible shuffling, bootstrap resampling, and simulation
 /// across both native targets and WebAssembly (`wasm32-unknown-unknown`).
@@ -63,6 +63,228 @@ pub fn clean_alpha_sequence(raw: &str) -> String {
         }
     }
     out
+}
+
+/// The letters that are only nucleotide codes in the alphabet rule: A, C, G, T, U and N.
+pub const NUCLEOTIDE_CORE_LETTERS: &[u8] = b"ACGTUN";
+/// The nucleotide codes that are also amino-acid letters: the IUPAC ambiguity codes and inosine
+/// (INSDC 7.4.2). They count towards a nucleotide call only while the core letters dominate.
+pub const NUCLEOTIDE_SHARED_LETTERS: &[u8] = b"RYSWKMBDHVI";
+/// Gap and missing-data characters, which the rule skips and the readers leave out.
+pub const GAP_CHARACTERS: &[u8] = b"-.?~";
+
+/// The alphabet rule's call on a set of rows (US-01M6VFRY): the one answer every importer and
+/// analysis uses for DNA, RNA or protein.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlphabetCall {
+    /// DNA, RNA or Protein; None when the rows hold no residue letter.
+    pub molecule: Option<MoleculeType>,
+    /// A nucleotide call with core letters under 90%, or a protein call with core letters at least 60%.
+    pub uncertain: bool,
+    /// Residue letters read (gaps, missing data, stops and other symbols are not letters).
+    pub letters: usize,
+    /// Letters among A, C, G, T, U and N.
+    pub core: usize,
+    /// Every letter other than A, C, G, T, U and N, with its count, in alphabetical order.
+    pub non_core: BTreeMap<char, usize>,
+    /// The letters that are neither core nor shared nucleotide codes, with their counts.
+    pub foreign: BTreeMap<char, usize>,
+}
+
+impl AlphabetCall {
+    /// Whether the call is DNA or RNA.
+    pub fn is_nucleotide(&self) -> bool {
+        matches!(self.molecule, Some(MoleculeType::DNA | MoleculeType::RNA))
+    }
+
+    /// The sentence the call owes the reader: why an uncertain call could be the other molecule,
+    /// that there was nothing to classify, or None for a certain call.
+    pub fn note(&self) -> Option<String> {
+        let Some(molecule) = self.molecule else {
+            return Some("No residue letters to classify.".to_string());
+        };
+        if !self.uncertain {
+            return None;
+        }
+        Some(match molecule {
+            MoleculeType::Protein => format!(
+                "Read as protein, though {} of {} letters are A, C, G, T, U or N: set the molecule type to DNA or RNA if this is a nucleotide sequence.",
+                self.core, self.letters
+            ),
+            nucleotide => {
+                let listed: Vec<String> = self.non_core.keys().map(|c| c.to_string()).collect();
+                format!(
+                    "Read as {}, though {} of {} letters ({}) are also amino-acid letters: set the molecule type to Protein if this is a protein.",
+                    if nucleotide == MoleculeType::RNA { "RNA" } else { "DNA" },
+                    self.letters - self.core,
+                    self.letters,
+                    listed.join(", ")
+                )
+            }
+        })
+    }
+}
+
+/// The alphabet rule. Over the residue letters of every row (case-blind; gaps, missing data,
+/// stops and other symbols skipped), `core` counts A C G T U N and `shared` counts R Y S W K M B D
+/// H V and I. The call is nucleotide when `core` is at least 60% of the letters and `core +
+/// shared` at least 90%; RNA when there is a U and no T, otherwise DNA; any other call is Protein.
+pub fn classify_molecule<S: AsRef<str>>(rows: &[S]) -> AlphabetCall {
+    classify_molecule_with_shared(rows, NUCLEOTIDE_SHARED_LETTERS)
+}
+
+/// The alphabet rule with `shared` as the shared group; `classify_molecule` passes
+/// [`NUCLEOTIDE_SHARED_LETTERS`].
+pub fn classify_molecule_with_shared<S: AsRef<str>>(rows: &[S], shared: &[u8]) -> AlphabetCall {
+    let (mut letters, mut core, mut shared_n) = (0usize, 0usize, 0usize);
+    let (mut has_t, mut has_u) = (false, false);
+    let mut non_core: BTreeMap<char, usize> = BTreeMap::new();
+    let mut foreign: BTreeMap<char, usize> = BTreeMap::new();
+    for row in rows {
+        for b in row.as_ref().bytes() {
+            if !b.is_ascii_alphabetic() {
+                continue;
+            }
+            let b = b.to_ascii_uppercase();
+            letters += 1;
+            has_t |= b == b'T';
+            has_u |= b == b'U';
+            if NUCLEOTIDE_CORE_LETTERS.contains(&b) {
+                core += 1;
+                continue;
+            }
+            *non_core.entry(b as char).or_default() += 1;
+            if shared.contains(&b) {
+                shared_n += 1;
+            } else {
+                *foreign.entry(b as char).or_default() += 1;
+            }
+        }
+    }
+    let (molecule, uncertain) = if letters == 0 {
+        (None, false)
+    } else if core * 10 >= letters * 6 && (core + shared_n) * 10 >= letters * 9 {
+        let molecule = if has_u && !has_t { MoleculeType::RNA } else { MoleculeType::DNA };
+        (Some(molecule), core * 10 < letters * 9)
+    } else {
+        (Some(MoleculeType::Protein), core * 10 >= letters * 6)
+    };
+    AlphabetCall { molecule, uncertain, letters, core, non_core, foreign }
+}
+
+/// "21", "21 and 22", "1, 2 and 3"; when `more` items were cut off, the items joined by commas,
+/// then ", and k more".
+fn listed_positions(items: &[String], more: usize) -> String {
+    match (items.len(), more) {
+        (_, k) if k > 0 => format!("{}, and {} more", items.join(", "), k),
+        (0, _) => String::new(),
+        (1, _) => items[0].clone(),
+        (n, _) => format!("{} and {}", items[..n - 1].join(", "), items[n - 1]),
+    }
+}
+
+/// The most positions a warning lists before ", and k more".
+const LISTED_POSITIONS: usize = 10;
+
+/// The import warnings for one record's raw sequence text read as `molecule` (D0005 sentences,
+/// in this order): letters that are not nucleotide codes and were kept, internal stops left out
+/// (a protein's single final stop is the end of its chain, not a warning), gap characters left
+/// out, and lower-case letters read as upper case when the record mixes cases. Positions count
+/// the letters kept, from 1. Whitespace, digits and other symbols are not counted.
+pub fn alphabet_warnings(raw: &str, molecule: MoleculeType) -> Vec<String> {
+    let nucleotide = molecule != MoleculeType::Protein;
+    let mut kept = 0usize;
+    let (mut lower, mut upper) = (0usize, 0usize);
+    let mut foreign: Vec<(u8, usize)> = Vec::new();
+    let mut stops: Vec<usize> = Vec::new();
+    let mut gaps = 0usize;
+    let mut gap_kinds: Vec<u8> = Vec::new();
+    let mut last_stop_is_final = false;
+    for b in raw.bytes() {
+        if b.is_ascii_alphabetic() {
+            kept += 1;
+            last_stop_is_final = false;
+            if b.is_ascii_lowercase() {
+                lower += 1;
+            } else {
+                upper += 1;
+            }
+            let u = b.to_ascii_uppercase();
+            if nucleotide && !NUCLEOTIDE_CORE_LETTERS.contains(&u) && !NUCLEOTIDE_SHARED_LETTERS.contains(&u) {
+                foreign.push((u, kept));
+            }
+        } else if b == b'*' {
+            stops.push(kept);
+            last_stop_is_final = true;
+        } else if GAP_CHARACTERS.contains(&b) {
+            gaps += 1;
+            if !gap_kinds.contains(&b) {
+                gap_kinds.push(b);
+            }
+        }
+    }
+    if !nucleotide && last_stop_is_final {
+        stops.pop();
+    }
+
+    let mut warnings = Vec::new();
+    if !foreign.is_empty() {
+        let shown = &foreign[..foreign.len().min(LISTED_POSITIONS)];
+        let mut order: Vec<u8> = Vec::new();
+        for (letter, _) in shown {
+            if !order.contains(letter) {
+                order.push(*letter);
+            }
+        }
+        let more = foreign.len() - shown.len();
+        let groups: Vec<String> = order
+            .iter()
+            .map(|letter| {
+                let at: Vec<String> = shown.iter().filter(|(l, _)| l == letter).map(|(_, p)| p.to_string()).collect();
+                // A cut-off list keeps its commas, so ", and k more" is the one "and".
+                let at = if more > 0 { at.join(", ") } else { listed_positions(&at, 0) };
+                format!("{} at {}", *letter as char, at)
+            })
+            .collect();
+        let tail = if more > 0 { format!(", and {more} more") } else { String::new() };
+        warnings.push(if foreign.len() == 1 {
+            format!("1 letter is not a nucleotide code and was kept: {}{}.", groups.join("; "), tail)
+        } else {
+            format!("{} letters are not nucleotide codes and were kept: {}{}.", foreign.len(), groups.join("; "), tail)
+        });
+    }
+    if !stops.is_empty() {
+        let shown: Vec<String> = stops.iter().take(LISTED_POSITIONS).map(|p| p.to_string()).collect();
+        let more = stops.len() - shown.len();
+        let one = stops.len() == 1;
+        warnings.push(format!(
+            "{} internal stop{} (*) after residue{} {} {} left out, so the residues on either side read as one chain.",
+            stops.len(),
+            if one { "" } else { "s" },
+            if one { "" } else { "s" },
+            listed_positions(&shown, more),
+            if one { "was" } else { "were" }
+        ));
+    }
+    if gaps > 0 {
+        let kinds: Vec<String> = gap_kinds.iter().map(|&b| (b as char).to_string()).collect();
+        warnings.push(format!(
+            "{} gap character{} ({}) {} left out; positions count the letters kept.",
+            gaps,
+            if gaps == 1 { "" } else { "s" },
+            kinds.join(", "),
+            if gaps == 1 { "was" } else { "were" }
+        ));
+    }
+    if lower > 0 && upper > 0 {
+        warnings.push(format!(
+            "{} lower-case (soft-masked) letter{} {} read as upper case; the soft-mask is not kept.",
+            lower,
+            if lower == 1 { "" } else { "s" },
+            if lower == 1 { "was" } else { "were" }
+        ));
+    }
+    warnings
 }
 
 #[inline]

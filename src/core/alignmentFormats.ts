@@ -9,6 +9,7 @@
  */
 
 import type { MoleculeType, SequenceDocument } from '../types/bio';
+import { classifySequenceAlphabet } from './bioEngine';
 
 export interface TextAlignment {
   names: string[];
@@ -119,18 +120,19 @@ export function parseAlignedFasta(text: string): TextAlignment | null {
   return { names, sequences: seqs.map((x) => x.toUpperCase().replace(/\./g, '-')), format: 'FASTA' };
 }
 
-/** Guesses nucleotide vs protein from the residues. */
-export function alignmentMolecule(seqs: string[]): MoleculeType {
-  let acgt = 0, total = 0;
-  for (const s of seqs) for (const c of s) { if (c === '-' || c === '?' || c === '.') continue; total++; if ('ACGTUN'.includes(c)) acgt++; }
-  if (!total || acgt / total >= 0.9) return seqs.some((s) => s.includes('U') && !s.includes('T')) ? 'RNA' : 'DNA';
-  return 'Protein';
+/**
+ * DNA, RNA or protein for the rows, by the one alphabet rule the engine applies
+ * (`classify_sequence_alphabet`); null when the rows hold no residue letter.
+ */
+export function alignmentMolecule(seqs: readonly string[]): MoleculeType | null {
+  return classifySequenceAlphabet(seqs).molecule;
 }
 
 /** An alignment document for an imported text alignment. */
 export function textAlignmentToDocument(a: TextAlignment, fileName: string, nowIso = new Date().toISOString()): SequenceDocument {
   const stem = fileName.replace(/\.[^.]+$/, '') || `Imported_${a.format}`;
   const moleculeType = alignmentMolecule(a.sequences);
+  if (!moleculeType) throw new Error(`The ${a.format} alignment has no residue letters to read as DNA, RNA or protein.`);
   const id = `${a.format.toLowerCase()}-${stem.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
   const width = Math.max(...a.sequences.map((s) => s.length));
   return {

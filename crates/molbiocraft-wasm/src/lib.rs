@@ -362,6 +362,17 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
                 clean_sequence(raw)
             }))
         }
+        // The alphabet rule (US-01M6VFRY): DNA, RNA or Protein for a set of rows read together,
+        // whether the call is uncertain, and the sentence an uncertain or empty call owes.
+        "classify_sequence_alphabet" => {
+            let rows: Vec<String> = parse_field(&payload, "rows")?;
+            let call = molbiocraft_core::iupac::classify_molecule(&rows);
+            Ok(json!({
+                "molecule": call.molecule,
+                "uncertain": call.uncertain,
+                "note": call.note(),
+            }))
+        }
         "complement_sequence" => {
             let seq = str_arg(&payload, "seq", "");
             let is_rna = bool_arg(&payload, "isRna", false);

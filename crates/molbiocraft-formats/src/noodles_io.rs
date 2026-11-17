@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 
+use molbiocraft_core::iupac::{alphabet_warnings, classify_molecule};
 use molbiocraft_core::{
     clean_alpha_sequence, FeatureSegment, HistoryTreeNode, MoleculeType, SequenceDocument, SequenceFeature,
     Topology,
@@ -22,28 +23,6 @@ use noodles_sam as sam;
 use noodles_vcf as vcf;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, Cursor};
-
-fn detect_molecule_type(seq: &str) -> MoleculeType {
-    let mut non_nuc = 0usize;
-    let mut has_u = false;
-    let mut has_t = false;
-    for b in seq.bytes().take(4096) {
-        match b.to_ascii_uppercase() {
-            b'A' | b'C' | b'G' | b'N' | b'R' | b'Y' | b'S' | b'W' | b'K' | b'M' => {}
-            b'U' => has_u = true,
-            b'T' => has_t = true,
-            b if b.is_ascii_alphabetic() => non_nuc += 1,
-            _ => {}
-        }
-    }
-    if non_nuc > 2 {
-        MoleculeType::Protein
-    } else if has_u && !has_t {
-        MoleculeType::RNA
-    } else {
-        MoleculeType::DNA
-    }
-}
 
 pub fn color_for_feature_type(ft: &str) -> &'static str {
     match ft {
@@ -108,7 +87,20 @@ pub fn parse_fasta_noodles(text: &str, default_name: &str) -> Vec<SequenceDocume
             continue;
         }
 
-        let mol_type = detect_molecule_type(&clean_seq);
+        // The one alphabet rule (molbiocraft_core::iupac::classify_molecule) reads the whole record,
+        // and the record's Notes say what it doubts and what reading the letters left out or
+        // changed (D0005: the "Warnings:" block flatfiles.rs and withWarningNotes write).
+        let call = classify_molecule(&[clean_seq.as_str()]);
+        // A record with a letter always gets a call; one without was skipped above.
+        let Some(mol_type) = call.molecule else {
+            continue;
+        };
+        let mut warnings: Vec<String> = call.note().into_iter().collect();
+        warnings.extend(alphabet_warnings(&raw_seq_str, mol_type));
+        let doc_metadata = (!warnings.is_empty()).then(|| {
+            let lines: Vec<String> = warnings.iter().map(|w| format!("- {w}")).collect();
+            HashMap::from([("Notes".to_string(), serde_json::json!(format!("Warnings:\n{}\n", lines.join("\n"))))])
+        });
         let lower_desc = desc.to_ascii_lowercase();
         let topology = if mol_type != MoleculeType::Protein
             && (lower_desc.contains("circular") || lower_desc.contains("plasmid"))
@@ -149,7 +141,7 @@ pub fn parse_fasta_noodles(text: &str, default_name: &str) -> Vec<SequenceDocume
             chromatogram: None,
             alignment_meta: None,
             document_kind: None,
-            doc_metadata: None,
+            doc_metadata,
             created_at: now.clone(),
             updated_at: now.clone(),
             folder: folder.into(),

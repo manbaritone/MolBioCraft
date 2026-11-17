@@ -176,6 +176,9 @@
   "vecA",
   "vecB"
  ],
+ "classify_sequence_alphabet": [
+  "rows"
+ ],
  "classify_taxonomy": [
   "seq"
  ],

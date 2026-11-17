@@ -11,6 +11,8 @@
 //! misread as an option or break a PHYLIP/NEXUS parser.
 
 use molbiocraft_align::sanitize_newick_label;
+use molbiocraft_core::iupac::classify_molecule;
+use molbiocraft_core::MoleculeType;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -523,20 +525,9 @@ fn tail(text: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join(" | ")
 }
 
+/// Whether the alphabet rule (molbiocraft_core::iupac::classify_molecule) calls the rows protein.
 fn is_protein_alignment(rows: &[String]) -> bool {
-    let (mut nuc, mut total) = (0usize, 0usize);
-    for r in rows {
-        for b in r.bytes() {
-            if b == b'-' || b == b'?' {
-                continue;
-            }
-            total += 1;
-            if matches!(b, b'A' | b'C' | b'G' | b'T' | b'U' | b'N') {
-                nuc += 1;
-            }
-        }
-    }
-    total > 0 && (nuc as f64) / (total as f64) < 0.9
+    classify_molecule(rows).molecule == Some(MoleculeType::Protein)
 }
 
 pub fn run_external_tree_program(
@@ -553,7 +544,7 @@ pub fn run_external_tree_program(
     if n < 4 {
         return Err(format!("{} needs at least 4 aligned sequences.", program.display_name()));
     }
-    let protein = is_protein_alignment(&clean_rows(aligned_seqs, true));
+    let protein = is_protein_alignment(aligned_seqs);
     let rows = clean_rows(aligned_seqs, protein);
     let width = rows[0].len();
     if width == 0 || rows.iter().any(|r| r.len() != width) {
@@ -695,6 +686,36 @@ pub fn run_external_tree_program(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// US-01M6VFRY AC2: the tree builders and the external-program runner make the alphabet rule's
+    /// call (molbiocraft_core::iupac::classify_molecule) on every audit input, both one row at a
+    /// time and as an alignment; ACGTACGTACGTRYRYRY, which the old 90%-ACGTUN test here called
+    /// protein, is nucleotide in both.
+    #[test]
+    fn phylo_classifiers_follow_the_alphabet_rule() {
+        use molbiocraft_core::iupac::classify_molecule;
+        use molbiocraft_core::MoleculeType;
+        let inputs = [
+            "ACGTBDHVACGTACGT", "GCIGCIACIGGNAAYGG", "MKV*", "GAGAGTCCAN", "ACGTXXXACGT", "ACGTACGTACGTRYRYRY",
+            "MKVAGCATNG", "ACGTACGTACGTACGTACXX", "ACGUACGUAC", "", "---", "*",
+        ];
+        let nucleotide = [true, true, false, true, false, true, true, true, true, false, false, false];
+        for (input, expected) in inputs.iter().zip(nucleotide) {
+            let rows = vec![input.to_string()];
+            let rule = classify_molecule(&rows);
+            assert_eq!(rule.is_nucleotide(), expected, "the rule on {input:?}");
+            assert_eq!(crate::trees::is_nucleotide_alignment(&rows), expected, "is_nucleotide_alignment {input:?}");
+            assert_eq!(is_protein_alignment(&rows), rule.molecule == Some(MoleculeType::Protein), "is_protein_alignment {input:?}");
+        }
+        let ry = vec!["ACGTACGTACGTRYRYRY".to_string(); 4];
+        assert!(crate::trees::is_nucleotide_alignment(&ry));
+        assert!(!is_protein_alignment(&ry));
+        // Rows are read together: five foreign letters in one row take 30 core letters of 35 under 90%.
+        let mixed: Vec<String> = ["ACGTACGTAC", "ACGTACGTAC", "ACGTACGTAC", "LEQFP"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(is_protein_alignment(&mixed), classify_molecule(&mixed).molecule == Some(MoleculeType::Protein));
+        assert!(is_protein_alignment(&mixed));
+        assert!(!crate::trees::is_nucleotide_alignment(&mixed));
+    }
 
     fn tmap<'a>(names: &'a [&'a str]) -> impl Fn(&str) -> Option<String> + 'a {
         move |t: &str| {

@@ -20,6 +20,7 @@ import {
   SamAlignmentSummary,
 } from '../lib/rustBioEngine';
 import type { MoleculeType, SequenceDocument, SequenceFeature } from '../types/bio';
+import { classifySequenceAlphabet, isNucleotideByAlphabet } from './bioEngine';
 
 export function parseFasta(text: string, defaultName = 'Imported_FASTA'): SequenceDocument[] {
   return invokeRustBioSync<SequenceDocument[]>('parse_fasta', { text, defaultName });
@@ -118,15 +119,10 @@ export function assessRawSequenceText(text: string): { ok: true } | { ok: false;
     return { ok: false, reason: `it contains "${bad.slice(0, 24)}", which is not a sequence symbol` };
   }
   // Nucleotide text is a sequence however it is grouped (codon-spaced, blocks
-  // of 5, short lines): IUPAC symbols only, with unambiguous bases making up
-  // >= 60% (the engine's nucleotide rule), so degenerate primers pass while
-  // short English spelled from IUPAC letters ("a cat had a bad day") does not.
-  const letters = tokens.join('').replace(/[^A-Za-z]/g, '');
-  const coreBases = (letters.match(/[ACGTUNacgtun]/g) ?? []).length;
-  const allNucleotide =
-    tokens.every((t) => /^[ACGTUNRYSWKMBDHVacgtunryswkmbdhv\-.~*]+$/.test(t)) &&
-    letters.length > 0 &&
-    coreBases >= letters.length * 0.6;
+  // of 5, short lines): the engine's alphabet rule decides, so degenerate
+  // primers pass while short English spelled from IUPAC letters ("a cat had a
+  // bad day") does not.
+  const allNucleotide = isNucleotideByAlphabet([tokens.join('')]);
   if (tokens.length > 1 && !allNucleotide) {
     const lengths = tokens.map((t) => t.length).sort((a, b) => a - b);
     const median = lengths[Math.floor(lengths.length / 2)];
@@ -448,10 +444,10 @@ export function parseNexusAlignment(text: string): NexusAlignment {
   else if (dataTypeLower === 'rna') moleculeType = 'RNA';
   else if (dataTypeLower === 'dna' || dataTypeLower === 'nucleotide') moleculeType = 'DNA';
   else {
-    const letters = rows.flat().filter((s) => s.length === 1 && /[A-Za-z]/.test(s)).join('');
-    moleculeType = /^[ACGTUNRYSWKMBDHVacgtunryswkmbdhv]*$/.test(letters)
-      ? (/[Uu]/.test(letters) && !/[Tt]/.test(letters) ? 'RNA' : 'DNA')
-      : 'Protein';
+    // No DATATYPE: the engine's alphabet rule reads the single-state cells of every taxon.
+    const inferred = classifySequenceAlphabet(rows.map((row) => row.filter((s) => s.length === 1).join(''))).molecule;
+    if (!inferred) throw new Error('NEXUS MATRIX has no residue letters, and no DATATYPE names the molecule');
+    moleculeType = inferred;
   }
   const nucleotide = moleculeType !== 'Protein';
   const missingOut = nucleotide ? 'N' : 'X';

@@ -689,31 +689,10 @@ fn jc_ml_log_likelihood(g: &TreeGraph, root: NodeIndex, seqs: &[String]) -> Opti
     Some((ln_l, eng.tree_length()))
 }
 
-/// Fraction of non-gap characters that are nucleotides; Felsenstein pruning here is a 4-state model.
+/// Whether the alphabet rule (molbiocraft_core::iupac::classify_molecule) calls the rows DNA or
+/// RNA; Felsenstein pruning here is a 4-state model.
 pub(crate) fn is_nucleotide_alignment(aligned_seqs: &[String]) -> bool {
-    // Unambiguous bases, plus IUPAC ambiguity codes (mixed-base calls in
-    // population / Sanger consensus data). Ambiguity letters are also amino
-    // acids, so they only count when unambiguous bases still dominate: a
-    // protein has only ~25% A/C/G/T/N residues.
-    let (mut core, mut ambiguous, mut total) = (0usize, 0usize, 0usize);
-    for s in aligned_seqs {
-        for b in s.bytes() {
-            let b = b.to_ascii_uppercase();
-            if b == b'-' || b == b'?' || b == b'.' {
-                continue;
-            }
-            total += 1;
-            if matches!(b, b'A' | b'C' | b'G' | b'T' | b'U' | b'N') {
-                core += 1;
-            } else if matches!(
-                b,
-                b'R' | b'Y' | b'S' | b'W' | b'K' | b'M' | b'B' | b'D' | b'H' | b'V'
-            ) {
-                ambiguous += 1;
-            }
-        }
-    }
-    total > 0 && core * 10 >= total * 6 && (core + ambiguous) * 10 >= total * 9
+    molbiocraft_core::iupac::classify_molecule(aligned_seqs).is_nucleotide()
 }
 
 fn short_clade_label(names: &[String], split: &[u64], n: usize) -> String {

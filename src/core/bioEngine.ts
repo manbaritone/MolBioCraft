@@ -23,6 +23,7 @@ import type {
   DotplotHit,
   EnzymeDigest,
   EnzymeDigestSelection,
+  MoleculeType,
   MSAAlignmentResult,
   MutagenesisSimulationResult,
   ORFRecord,
@@ -65,6 +66,31 @@ export function cleanSequence(raw: string): string {
     seq: raw,
     alphaOnly: true,
   }).replace(/U/g, 'T');
+}
+
+/** The alphabet rule's call on a set of rows read together (`classify_sequence_alphabet`). */
+export interface SequenceAlphabetCall {
+  /** DNA, RNA or Protein; null when the rows hold no residue letter. */
+  molecule: MoleculeType | null;
+  /** A nucleotide call with A, C, G, T, U and N under 90% of the letters, or a protein call with them at 60% or more. */
+  uncertain: boolean;
+  /** Why an uncertain call could be the other molecule, or that there was nothing to classify; null for a certain call. */
+  note: string | null;
+}
+
+/**
+ * DNA, RNA or protein by the one alphabet rule (molbiocraft-core `classify_molecule`, US-01M6VFRY),
+ * which the FASTA reader and the tree builders apply in the engine, and which the alignment, NEXUS
+ * and raw-text checks here ask rather than counting letters themselves.
+ */
+export function classifySequenceAlphabet(rows: readonly string[]): SequenceAlphabetCall {
+  return invokeRustBioSync<SequenceAlphabetCall>('classify_sequence_alphabet', { rows });
+}
+
+/** Whether the alphabet rule calls the rows DNA or RNA. */
+export function isNucleotideByAlphabet(rows: readonly string[]): boolean {
+  const { molecule } = classifySequenceAlphabet(rows);
+  return molecule === 'DNA' || molecule === 'RNA';
 }
 
 export function complement(seq: string): string {

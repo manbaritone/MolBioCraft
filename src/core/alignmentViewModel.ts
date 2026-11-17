@@ -7,6 +7,8 @@
  * independent of React so it can be unit tested.
  */
 
+import { isNucleotideByAlphabet } from './bioEngine';
+
 export type AlignmentColorScheme =
   | 'ACGT - Default'
   | 'ACGT - Base Call Quality'
@@ -1454,22 +1456,10 @@ export function effectiveTextViewFormat<F extends string>(format: F, isUnaligned
 }
 
 /**
- * Nucleotide vs protein classification of aligned rows — the same rule as the
- * engine's `is_nucleotide_alignment` (molbiocraft-phylo trees.rs), so the UI
- * and the engine agree on which analyses apply: unambiguous bases (ACGTUN)
- * ≥ 60 % of residues, and with IUPAC ambiguity codes ≥ 90 %.
+ * Whether aligned rows are nucleotide (DNA or RNA): the engine's own alphabet rule
+ * (`classify_sequence_alphabet`, which the tree builders' `is_nucleotide_alignment` also applies),
+ * so the UI and the engine agree on which analyses apply.
  */
 export function isNucleotideAlignmentRows(rows: readonly string[]): boolean {
-  let core = 0;
-  let ambiguous = 0;
-  let total = 0;
-  for (const row of rows) {
-    for (const ch of row.toUpperCase()) {
-      if (ch === '-' || ch === '?' || ch === '.') continue;
-      total += 1;
-      if ('ACGTUN'.includes(ch)) core += 1;
-      else if ('RYSWKMBDHV'.includes(ch)) ambiguous += 1;
-    }
-  }
-  return total > 0 && core * 10 >= total * 6 && (core + ambiguous) * 10 >= total * 9;
+  return isNucleotideByAlphabet(rows);
 }
