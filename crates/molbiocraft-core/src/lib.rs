@@ -143,18 +143,15 @@ pub fn resolve_platform_app_support_dir() -> Result<PathBuf, BioEngineError> {
     Ok(PathBuf::from(appdata).join("MolBioCraft"))
 }
 
-/// Linux and every other non-macOS, non-Windows target read XDG_CONFIG_HOME,
-/// then HOME, and fail when neither is set.
+/// Linux and every other non-macOS, non-Windows target: `$XDG_CONFIG_HOME/molbiocraft`,
+/// falling back to `$HOME/.config/molbiocraft`, by the rule of
+/// `resolve_xdg_app_support_dir`. Where it differs from `resolveAppDirectories('linux')`:
+/// when the fallback is needed, a blank HOME is refused with an error instead of
+/// guessed as /home/user (unset or empty) or used as it is (whitespace-only), and a
+/// whitespace-only XDG_CONFIG_HOME falls back to HOME instead of being used.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn resolve_platform_app_support_dir() -> Result<PathBuf, BioEngineError> {
-    if let Ok(xdg_cfg) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg_cfg.trim().is_empty() {
-            return Ok(PathBuf::from(xdg_cfg).join("molbiocraft"));
-        }
-    }
-    let home = std::env::var("HOME")
-        .map_err(|_| BioEngineError::IoFailure("Unable to read HOME or XDG_CONFIG_HOME".into()))?;
-    Ok(PathBuf::from(home).join(".config").join("molbiocraft"))
+    xdg_app_support_dir_from(|name| std::env::var(name).ok()).map(PathBuf::from)
 }
 
 /// Reads an unset, empty or whitespace-only environment value as absent, and
@@ -209,6 +206,37 @@ pub fn xdg_logs_and_cache_dirs_from(
     let cache = lookup("XDG_CACHE_HOME");
     let home = lookup("HOME");
     resolve_xdg_logs_and_cache_dirs(state.as_deref(), cache.as_deref(), home.as_deref())
+}
+
+/// The app-support directory for Linux and every other non-macOS, non-Windows
+/// target, from the values of XDG_CONFIG_HOME and HOME, read by `xdg_base` as
+/// `resolve_xdg_logs_and_cache_dirs` reads its values: `$XDG_CONFIG_HOME/molbiocraft`,
+/// falling back to `$HOME/.config/molbiocraft`. When XDG_CONFIG_HOME and HOME are
+/// each unset, empty or whitespace-only, an error naming both, never a relative
+/// path. Compiled on every target so its test runs everywhere.
+pub fn resolve_xdg_app_support_dir(
+    xdg_config_home: Option<&str>,
+    home: Option<&str>,
+) -> Result<String, BioEngineError> {
+    match (xdg_base(xdg_config_home), xdg_base(home)) {
+        (Some(config), _) => Ok(format!("{config}/molbiocraft")),
+        (None, Some(home)) => Ok(format!("{home}/.config/molbiocraft")),
+        (None, None) => Err(BioEngineError::IoFailure(
+            "Unable to resolve the app-support directory: \
+             XDG_CONFIG_HOME and HOME are both unset or empty"
+                .into(),
+        )),
+    }
+}
+
+/// Reads XDG_CONFIG_HOME and HOME through `lookup` and resolves the app-support
+/// directory from them.
+pub fn xdg_app_support_dir_from(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<String, BioEngineError> {
+    let config = lookup("XDG_CONFIG_HOME");
+    let home = lookup("HOME");
+    resolve_xdg_app_support_dir(config.as_deref(), home.as_deref())
 }
 
 pub fn query_platform_diagnostics() -> Result<PlatformDiagnostics, BioEngineError> {
@@ -636,6 +664,69 @@ mod tests {
                 "/h/.local/state/molbiocraft/logs".to_string(),
                 "/h/.cache/molbiocraft".to_string()
             )
+        );
+    }
+
+    #[test]
+    fn app_support_dir_refuses_blank_home() {
+        let refused = "[ERR_IO_FAILURE] Unable to resolve the app-support directory: \
+                       XDG_CONFIG_HOME and HOME are both unset or empty";
+        let blank = [None, Some(""), Some("  ")];
+        // With XDG_CONFIG_HOME and HOME both missing, the exact error, never a path.
+        for xdg in blank {
+            for home in [None, Some(""), Some("   ")] {
+                assert_eq!(
+                    resolve_xdg_app_support_dir(xdg, home)
+                        .expect_err("XDG_CONFIG_HOME and HOME are both missing")
+                        .to_string(),
+                    refused,
+                    "XDG_CONFIG_HOME={xdg:?} HOME={home:?}"
+                );
+            }
+        }
+        // A set XDG_CONFIG_HOME loses its trailing slashes and needs no HOME.
+        for home in [None, Some(""), Some("   "), Some("/home/a/")] {
+            assert_eq!(
+                resolve_xdg_app_support_dir(Some("/x/"), home).unwrap(),
+                "/x/molbiocraft",
+                "HOME={home:?}"
+            );
+        }
+        assert_eq!(
+            resolve_xdg_app_support_dir(Some("/x//"), None).unwrap(),
+            "/x/molbiocraft"
+        );
+        // A non-blank value keeps its whitespace, as xdg_base does.
+        assert_eq!(
+            resolve_xdg_app_support_dir(Some(" /x "), None).unwrap(),
+            " /x /molbiocraft"
+        );
+        // A blank XDG_CONFIG_HOME falls back to HOME, without its trailing slashes.
+        for xdg in blank {
+            assert_eq!(
+                resolve_xdg_app_support_dir(xdg, Some("/home/a/")).unwrap(),
+                "/home/a/.config/molbiocraft",
+                "XDG_CONFIG_HOME={xdg:?}"
+            );
+        }
+        // The environment reader maps each value to its own variable.
+        let env = |name: &str| match name {
+            "XDG_CONFIG_HOME" => Some("/c".to_string()),
+            "HOME" => Some("/h".to_string()),
+            _ => None,
+        };
+        assert_eq!(xdg_app_support_dir_from(env).unwrap(), "/c/molbiocraft");
+        let home_only = |name: &str| (name == "HOME").then(|| "/h".to_string());
+        assert_eq!(
+            xdg_app_support_dir_from(home_only).unwrap(),
+            "/h/.config/molbiocraft"
+        );
+        let blank_home = |name: &str| (name == "HOME").then(String::new);
+        assert_eq!(
+            xdg_app_support_dir_from(blank_home)
+                .expect_err("HOME is empty")
+                .to_string(),
+            refused
         );
     }
 
