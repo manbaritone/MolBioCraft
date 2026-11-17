@@ -24,7 +24,9 @@ import { inferDocumentTypeLabel } from '../core/workbenchBatchOperations';
 import { resolveNativeMenuItemEnabled } from '../core/commandAvailability';
 import type { SequenceDocument } from '../types/bio';
 import { macHost, mountApp, type AppHarness, type MountOptions, type SessionSpec } from './appHarness';
-import { dispatchLiveEvent, type LiveElement } from './liveDom';
+import { dispatchLiveEvent, memoryStorage, type LiveElement, type LiveStorage } from './liveDom';
+import { openPrimerDatabase, PRIMER_DATABASE_KEY, type DatabasePrimerInput } from '../core/primerDatabase';
+import type { DatabasePrimer, PrimerRecord } from '../types/bio';
 
 // The macOS host's Tauri runtime for AC1's native path; off a macOS host the mock reports none.
 vi.mock('../lib/tauriIpc', async (importOriginal) => (await import('./appHarness')).tauriIpcMock(await importOriginal<object>()));
@@ -1860,5 +1862,455 @@ describe('US-01M7DVHA AC5: the run key holds every condition, the choice and the
       await finishSearch(app);
       expect(groupNames(app), 'moved out again').toEqual(['Motif only']);
     });
+  });
+});
+
+// ─── US-01M7DVZP: Primer Database records in a search, outside the project folders ───
+//
+// Each case names the wrong panel it fails: records counted among the scope's documents (the
+// summary or the scope label moves when the box is ticked), a record hit routed through the
+// document opener (a folder or document is selected, or Back moves), an unreadable store shown as
+// no matches, a trashed record searched (under Deleted Items too), a write that does not mark the
+// search out of date (the studio's Save to Primer Database above all), the tail/annealing boundary
+// off by one either way, and a reverse-strand hit given reverse-strand coordinates.
+
+const ZP_LAB = 'Primer Lab';
+const zp = (over: Partial<SequenceDocument> & { id: string; name: string }) => docOf({ folder: ZP_LAB, ...over });
+const ZP_DOCS: SequenceDocument[] = [
+  zp({ id: 'zp-doc1', name: 'Lab plasmid zqprimer' }),
+  zp({ id: 'zp-doc2', name: 'Other lab doc' }),
+];
+const ZP_SPEC: SessionSpec = {
+  documents: ZP_DOCS, activeDocId: 'zp-doc1', viewerTab: 'sequence-view',
+  workspace: { projectExplorer: { ...EXPLORER, customFolders: [ZP_LAB], folderParents: {}, hiddenFolders: [], favoriteDocIds: [], deletedDocIds: [] } } as SessionSpec['workspace'],
+};
+// Sequences checked by hand on both strands (U read as T): CGTA (rc TACG) only in guide-rna;
+// TCAC, TGAGG, ATCACT, CTGAG, GTGATG (rc CATCAC) only in tail-probe and no-tail; AACCTC (rc
+// GAGGTT, 9-14) only in tail-probe. tail-probe's tail is bases 1-6 (CATCAC).
+const ZP_RECORDS: DatabasePrimerInput[] = [
+  { name: 'zqprimer-fwd', sequence: 'GCTAGAATTCCGGAC', tail5Prime: 'GCTA', description: 'adds an EcoRI site', labels: ['cloning'] },
+  { name: 'Label holder', sequence: 'TTTTTTTTTTTT', labels: ['stock', 'zqprimer-set'] },
+  { name: 'Desc holder', sequence: 'AAAAAAAAAAAA', description: 'for zqprimer work' },
+  { name: 'tail-probe', sequence: 'CATCACTGAGGTTCAA', tail5Prime: 'CATCAC' },
+  { name: 'no-tail', sequence: 'CATCACTGAGG' },
+  { name: 'guide-rna', sequence: 'ACGUACGUAC', molecule: 'RNA' },
+  { name: 'zqprimer-trashed', sequence: 'GGGGGGGGGG', description: 'CGTA zqprimer' },
+];
+/** A storage holding `inputs` as the store module writes them, `trash` moved to the trash. */
+function zpStorage(inputs: DatabasePrimerInput[] = ZP_RECORDS, trash: string[] = ['zqprimer-trashed'], storage: LiveStorage = memoryStorage()) {
+  let tick = 0;
+  let n = 0;
+  const db = openPrimerDatabase({ storage, now: () => new Date(Date.UTC(2026, 10, 16, 9, tick++, 0)).toISOString(), newId: () => `zp-${++n}` });
+  for (const input of inputs) { const r = db.add(input); if (!r.ok) throw new Error(r.error.message); }
+  for (const name of trash) {
+    const read = db.read();
+    const rec = read.ok ? read.records.find((r) => r.name === name) : undefined;
+    if (!rec || !db.trash(rec.id).ok) throw new Error(`could not trash ${name}`);
+  }
+  return storage;
+}
+const zpRecords = (storage: LiveStorage): DatabasePrimer[] => {
+  const read = openPrimerDatabase({ storage }).read();
+  if (!read.ok) throw new Error(read.error.message);
+  return read.records;
+};
+const idOf = (storage: LiveStorage, name: string) => zpRecords(storage).find((r) => r.name === name)!.id;
+
+const INCLUDE = 'Include Primer Database';
+const OUT_OF_DATE_ZP = 'Out of date: the documents changed. Searching again…';
+const primerGroups = (app: AppHarness) => inPanel(app, '[data-search-primer-group]');
+const primerGroup = (app: AppHarness) => {
+  const found = primerGroups(app);
+  if (found.length !== 1) throw new Error(`expected one Primer Database group, found ${found.length}`);
+  return found[0];
+};
+const primerStatus = (app: AppHarness) => part(primerGroup(app), 'primer-status');
+const primerTrashed = (app: AppHarness) => part(primerGroup(app), 'primer-trashed');
+const recordNames = (app: AppHarness) => primerGroup(app).querySelectorAll('[data-search-primer-record]').map((r) => part(r, 'name')).sort();
+const recordFor = (app: AppHarness, name: string) => {
+  const found = primerGroup(app).querySelectorAll('[data-search-primer-record]').filter((r) => part(r, 'name') === name);
+  if (found.length !== 1) throw new Error(`expected one record "${name}", found ${found.length}: ${recordNames(app).join(', ')}`);
+  return found[0];
+};
+const recordFields = (app: AppHarness, name: string) => recordFor(app, name).querySelectorAll('[data-search-hit]').map((h) => part(h, 'field'));
+const recordHits = (app: AppHarness, name: string) => recordFor(app, name).querySelectorAll('[data-search-hit]')
+  .map((h) => [part(h, 'coords'), part(h, 'strand'), part(h, 'letters'), part(h, 'portion')]);
+const recordHitButton = (app: AppHarness, name: string) => recordFor(app, name).querySelectorAll('[data-search-hit] button')[0];
+const primerWindows = (app: AppHarness) => app.all('[role="dialog"][aria-labelledby="primer-db-title"]');
+const primerWindow = (app: AppHarness) => app.one('[role="dialog"][aria-labelledby="primer-db-title"]', 'the Primer Database window');
+const inWindow = (app: AppHarness, name: string) => {
+  const found = primerWindow(app).querySelectorAll('button').filter((b) => nameOf(b) === name);
+  if (found.length !== 1) throw new Error(`expected one window button "${name}", found ${found.length}`);
+  return found[0];
+};
+const currentRows = (app: AppHarness) => primerWindow(app).querySelectorAll('tr[aria-current="true"]').map((r) => r.getAttribute('data-primer-id'));
+async function includePrimers(app: AppHarness, on = true) {
+  await app.change(checkbox(app, INCLUDE), on);
+  await finishSearch(app, 0);
+}
+/** What a hit's click must leave as it was: the active document, the selected folder rows and Back. */
+const documentState = (app: AppHarness) => ({ active: activeName(app), folders: selectedFolderRows(app), back: backButton(app).hasAttribute('disabled') });
+
+describe('US-01M7DVZP AC1: Include Primer Database searches active records beside the scope, never counted among its documents', () => {
+  it('US-01M7DVZP AC1 is off by default under every scope; on, the summary and scope label are unchanged and records are searched by name, description and labels', async () => {
+    const storage = zpStorage();
+    await withSession(ZP_SPEC, async (app) => {
+      await searchFolder(app, ZP_LAB);
+      for (const scope of scopeNames(app)) {
+        await chooseScope(app, scope);
+        expect(isChecked(checkbox(app, INCLUDE)), `${scope}: off by default`).toBe(false);
+      }
+      await chooseScope(app, 'Folder and subfolders');
+      await typeQuery(app, queryField(app), 'zqprimer');
+      const off = { summary: summary(app), label: scopeLabel(app), groups: groupNames(app) };
+      expect(off.summary).toBe(`1 hit in 1 document · ${plural(2, 'document')} searched`);
+      expect(primerGroups(app), 'off: no record is searched').toHaveLength(0);
+
+      await includePrimers(app);
+      // Wrong implementation: records counted among the documents ("8 documents searched").
+      expect({ summary: summary(app), label: scopeLabel(app), groups: groupNames(app) }).toEqual(off);
+      expect(recordNames(app), 'the trashed zqprimer record is never searched').toEqual(['Desc holder', 'Label holder', 'zqprimer-fwd']);
+      expect(recordFields(app, 'zqprimer-fwd')).toEqual(['Name']);
+      expect(recordFields(app, 'Label holder')).toEqual(['Label']);
+      expect(recordFields(app, 'Desc holder')).toEqual(['Description']);
+      expect(primerStatus(app)).toBe('3 hits in 3 records · 6 records searched');
+      // The sequence is not text: GAATTC is in zqprimer-fwd's bases only.
+      await typeQuery(app, queryField(app), 'GAATTC');
+      expect(primerStatus(app)).toBe('No matches in 6 records searched');
+
+      // Ticked under Favorites and Deleted Items too, their one scope.
+      await app.click(button(app, 'Close Search Project'));
+      for (const folder of ['Favorites', 'Deleted Items']) {
+        await searchFolder(app, folder);
+        expect(scopeNames(app)).toEqual(['This folder only']);
+        expect(isChecked(checkbox(app, INCLUDE)), `${folder}: offered, off`).toBe(false);
+        await app.click(button(app, 'Close Search Project'));
+      }
+    }, { storage });
+  });
+
+  it('US-01M7DVZP AC1 Nucleotide motif reads the stored sequence on the strands Both strands chooses, U as T; Protein motif lists the Primer Database as not searched', async () => {
+    const storage = zpStorage();
+    await withSession(ZP_SPEC, async (app) => {
+      await searchFolder(app, ZP_LAB);
+      await includePrimers(app);
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await typeQuery(app, motifField(app), 'CGTA');
+      // The trashed record holds CGTA in its description, never searched; only guide-rna's bases hold it.
+      expect(recordNames(app)).toEqual(['guide-rna']);
+      expect(recordHits(app, 'guide-rna')).toEqual([
+        ['2-5', '+', 'CGUA', 'in the annealing portion'],
+        ['4-7', '−', 'UACG', 'in the annealing portion'],
+        ['6-9', '+', 'CGUA', 'in the annealing portion'],
+      ]);
+      const docSummary = summary(app);
+      await app.change(checkbox(app, 'Both strands'), false);
+      await finishSearch(app, 0);
+      expect(recordHits(app, 'guide-rna').map((h) => h.slice(0, 2)), 'one strand: the reverse site goes').toEqual([['2-5', '+'], ['6-9', '+']]);
+      expect(summary(app)).toBe(docSummary);
+
+      await app.change(modeSelect(app), 'Protein motif');
+      await typeQuery(app, motifField(app), 'MK');
+      expect(skips(app)['Primer Database']).toBe('primer records are nucleotide sequences (use Nucleotide motif)');
+      expect(primerStatus(app)).toBe('Not searched: primer records are nucleotide sequences (use Nucleotide motif)');
+      expect(summary(app), 'the Primer Database is not counted among the documents not searched').toBe('No matches in 0 documents searched · 2 not searched');
+    }, { storage });
+  });
+
+  it('US-01M7DVZP AC1 conditions combine over a record as over a document, and any document filter leaves the records unsearched', async () => {
+    const storage = zpStorage();
+    await withSession(ZP_SPEC, async (app) => {
+      await searchFolder(app, ZP_LAB);
+      await includePrimers(app);
+      await typeQuery(app, queryField(app), 'zqprimer');
+      await app.click(button(app, 'Add condition'));
+      await finishSearch(app, 0);
+      await app.change(field(app, 'Search mode, condition 2'), 'Nucleotide motif');
+      await finishSearch(app, 0);
+      await typeQuery(app, field(app, 'Search motif, condition 2'), 'GAATTC');
+      // ALL: zqprimer in the name and GAATTC in the bases - zqprimer-fwd only.
+      expect(recordNames(app)).toEqual(['zqprimer-fwd']);
+      expect(sections(recordFor(app, 'zqprimer-fwd'))).toEqual(['Condition 1: Text zqprimer', 'Condition 2: Nucleotide motif GAATTC']);
+      await app.change(field(app, 'Combine conditions'), 'ANY');
+      await finishSearch(app, 0);
+      expect(recordNames(app)).toEqual(['Desc holder', 'Label holder', 'zqprimer-fwd']);
+
+      await app.change(field(app, 'Topology'), 'linear');
+      await finishSearch(app, 0);
+      expect(primerStatus(app)).toBe('Not searched: document filters do not apply to primer records');
+      expect(primerGroup(app).querySelectorAll('[data-search-primer-record]')).toHaveLength(0);
+      await app.click(button(app, 'Remove topology filter'));
+      await finishSearch(app, 0);
+      expect(recordNames(app)).toEqual(['Desc holder', 'Label holder', 'zqprimer-fwd']);
+    }, { storage });
+  });
+});
+
+describe('US-01M7DVZP AC2: one group after the documents, and a hit opens the Primer Database window on its record', () => {
+  it('US-01M7DVZP AC2 lists the records in one group headed as outside the project folders, after the document groups, under every scope', async () => {
+    const storage = zpStorage();
+    const recordIds = zpRecords(storage).map((r) => r.id);
+    await withSession(ZP_SPEC, async (app) => {
+      await searchFolder(app, ZP_LAB);
+      await includePrimers(app);
+      await typeQuery(app, queryField(app), 'zqprimer');
+      for (const scope of scopeNames(app)) {
+        await chooseScope(app, scope);
+        expect(part(primerGroup(app), 'heading')).toBe('Primer Database (outside the project folders)');
+        const listed = inPanel(app, '[data-search-group], [data-search-primer-group]');
+        expect(listed.length, `${scope}: document groups and the record group`).toBeGreaterThan(1);
+        expect(listed[listed.length - 1].hasAttribute('data-search-primer-group'), `${scope}: the record group comes last`).toBe(true);
+        // No folder scope includes a record: no document group is one.
+        expect(groups(app).map((g) => g.getAttribute('data-search-group')).filter((id) => recordIds.includes(id ?? ''))).toEqual([]);
+        expect(recordNames(app)).toEqual(['Desc holder', 'Label holder', 'zqprimer-fwd']);
+      }
+    }, { storage });
+  });
+
+  it('US-01M7DVZP AC2 a hit opens the window on its record, or brings the open one to it, and selects no folder or document', async () => {
+    const storage = zpStorage();
+    await withSession(ZP_SPEC, async (app) => {
+      await searchFolder(app, ZP_LAB);
+      await includePrimers(app);
+      await typeQuery(app, queryField(app), 'zqprimer');
+      const before = documentState(app);
+      expect(primerWindows(app)).toHaveLength(0);
+      await app.click(recordHitButton(app, 'Desc holder'));
+      expect(hitNotice(app)).toBe('');
+      expect(primerWindows(app)).toHaveLength(1);
+      expect(primerWindow(app).querySelectorAll('table[aria-label="Primers"]'), 'the Active view').toHaveLength(1);
+      expect(currentRows(app)).toEqual([idOf(storage, 'Desc holder')]);
+      // Wrong implementation: the hit routed through the document opener selects a folder or moves Back.
+      expect(documentState(app)).toEqual(before);
+
+      // The open window, on Trash with a search typed, is brought to the next record.
+      await app.input(app.one('input[aria-label="Search primers"]'), 'nothing like it');
+      await app.click(inWindow(app, 'Trash (1)'));
+      expect(primerWindow(app).querySelectorAll('table[aria-label="Trashed primers"]')).toHaveLength(1);
+      await app.click(recordHitButton(app, 'zqprimer-fwd'));
+      expect(primerWindows(app)).toHaveLength(1);
+      expect(primerWindow(app).querySelectorAll('table[aria-label="Primers"]')).toHaveLength(1);
+      expect((app.one('input[aria-label="Search primers"]') as unknown as { value: string }).value).toBe('');
+      expect(currentRows(app)).toEqual([idOf(storage, 'zqprimer-fwd')]);
+      expect(documentState(app)).toEqual(before);
+    }, { storage });
+  });
+
+  it('US-01M7DVZP AC2 a record edited, trashed or removed since the search ran opens nothing and says so', async () => {
+    const storage = zpStorage();
+    await withSession(ZP_SPEC, async (app) => {
+      await searchFolder(app, ZP_LAB);
+      await includePrimers(app);
+      await typeQuery(app, queryField(app), 'zqprimer');
+      const before = documentState(app);
+      await app.menu('tools:primer-database');
+      await app.click(inWindow(app, 'Edit Desc holder'));
+      const form = app.one('form[aria-label="Edit Desc holder"]');
+      await app.input(form.querySelectorAll('input, textarea').find((f) => f.getAttribute('aria-label') === 'Description')!, 'for zqprimer work, edited');
+      await app.click(form.querySelectorAll('button').find((b) => nameOf(b) === 'Save Changes')!);
+      await app.click(inWindow(app, 'Trash Label holder'));
+      await app.click(inWindow(app, 'Close Primer Database'));
+      expect(primerWindows(app)).toHaveLength(0);
+      // Before the pause the old groups stand under the out-of-date sentence.
+      expect(summary(app)).toBe(OUT_OF_DATE_ZP);
+      await app.click(recordHitButton(app, 'Desc holder'));
+      expect(hitNotice(app)).toBe('"Desc holder" changed after this search ran: this result is out of date.');
+      expect(primerWindows(app), 'an edited record opens nothing').toHaveLength(0);
+      await app.click(recordHitButton(app, 'Label holder'));
+      expect(hitNotice(app)).toBe('"Label holder" was deleted after this search ran.');
+      expect(primerWindows(app), 'a trashed record opens nothing').toHaveLength(0);
+      expect(documentState(app)).toEqual(before);
+
+      // Removed for good: Empty Trash, then a hit of the old run.
+      await finishSearch(app);
+      expect(recordNames(app)).toEqual(['Desc holder', 'zqprimer-fwd']);
+      await app.menu('tools:primer-database');
+      await app.click(inWindow(app, 'Trash zqprimer-fwd'));
+      await app.click(inWindow(app, 'Trash (3)'));
+      await app.click(inWindow(app, 'Empty Trash'));
+      await app.click(inWindow(app, 'Delete for Good'));
+      await app.click(inWindow(app, 'Close Primer Database'));
+      expect(zpRecords(storage).map((r) => r.name)).not.toContain('zqprimer-fwd');
+      await app.click(recordHitButton(app, 'zqprimer-fwd'));
+      expect(hitNotice(app)).toBe('"zqprimer-fwd" was deleted after this search ran.');
+      expect(primerWindows(app)).toHaveLength(0);
+    }, { storage });
+  });
+});
+
+/** A storage whose Primer Database key cannot be read, the rest of it working. */
+function primerKeyBlocked(): LiveStorage {
+  const base = memoryStorage();
+  return new Proxy(base, {
+    get(target, key) {
+      if (key === 'getItem') {
+        return (k: string) => { if (k === PRIMER_DATABASE_KEY) throw new Error('SecurityError: storage is blocked'); return target.getItem(k); };
+      }
+      const value = Reflect.get(target, key) as unknown;
+      return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+}
+function rawStorage(value: string): LiveStorage {
+  const storage = memoryStorage();
+  storage.setItem(PRIMER_DATABASE_KEY, value);
+  return storage;
+}
+/** The store's own message for `storage`, through the store module the App reads it with. */
+const storeMessage = (storage: LiveStorage) => {
+  const read = openPrimerDatabase({ storage }).read();
+  if (read.ok) throw new Error('the store reads');
+  return read.error.message;
+};
+
+const ZP_TEMPLATE_PRIMER: PrimerRecord = {
+  id: 'zp-doc-primer', name: 'zqsaved-primer', sequence: 'GAATTCACGTTGACCATGCA', annealSequence: 'ACGTTGACCATGCA', tail5Prime: 'GAATTC',
+  bindStart: 1, bindEnd: 14, strand: 1, length: 20, gcPercent: 50, tmAnnealC: 60, tmFullC: 66, deltaG37: -30,
+  hairpinDeltaG: 0, selfDimerDeltaG: 0, gcClamp3Prime: true, notes: '',
+};
+
+describe('US-01M7DVZP AC3: unreadable, empty and no-match stores told apart; trashed records never searched; writes rerun the search', () => {
+  it('US-01M7DVZP AC3 a malformed, newer-schema or unavailable store is "Not searched: <its message>", never no matches', async () => {
+    const cases: [string, LiveStorage][] = [
+      ['malformed', rawStorage('{not json')],
+      ['newer schema', rawStorage(JSON.stringify({ schema: 99, records: [] }))],
+      ['storage unavailable', primerKeyBlocked()],
+    ];
+    for (const [what, storage] of cases) {
+      const message = storeMessage(storage);
+      await withSession(ZP_SPEC, async (app) => {
+        await searchFolder(app, ZP_LAB);
+        await includePrimers(app);
+        await typeQuery(app, queryField(app), 'zqprimer');
+        expect(primerStatus(app), what).toBe(`Not searched: ${message}`);
+        expect(primerStatus(app), what).not.toMatch(/No matches|holds no active records/);
+      }, { storage });
+    }
+  });
+
+  it('US-01M7DVZP AC3 a store never written or with no active record holds none; a searched store says how many records it searched; trashed ones are counted apart, under Deleted Items too', async () => {
+    const cases: [string, LiveStorage, string, string][] = [
+      ['never written', memoryStorage(), 'The Primer Database holds no active records.', ''],
+      ['only trashed', zpStorage([ZP_RECORDS[6]], ['zqprimer-trashed']), 'The Primer Database holds no active records.', '1 trashed record(s) not searched'],
+      ['no hit', zpStorage(), 'No matches in 6 records searched', '1 trashed record(s) not searched'],
+    ];
+    for (const [what, storage, status, trashed] of cases) {
+      await withSession(ZP_SPEC, async (app) => {
+        await searchFolder(app, ZP_LAB);
+        await includePrimers(app);
+        await typeQuery(app, queryField(app), 'zqnowhere');
+        expect(primerStatus(app), what).toBe(status);
+        expect(primerTrashed(app), what).toBe(trashed);
+      }, { storage });
+    }
+    // Under Deleted Items the trashed zqprimer record is still not searched.
+    const storage = zpStorage(ZP_RECORDS, ['zqprimer-trashed', 'Label holder']);
+    await withSession({ ...ZP_SPEC, workspace: { projectExplorer: { ...EXPLORER, customFolders: [ZP_LAB], folderParents: {}, hiddenFolders: [], favoriteDocIds: [], deletedDocIds: ['zp-doc2'] } } as SessionSpec['workspace'] }, async (app) => {
+      await searchFolder(app, 'Deleted Items');
+      await includePrimers(app);
+      await typeQuery(app, queryField(app), 'zqprimer');
+      expect(recordNames(app)).toEqual(['Desc holder', 'zqprimer-fwd']);
+      expect(primerStatus(app)).toBe('2 hits in 2 records · 5 records searched');
+      expect(primerTrashed(app)).toBe('2 trashed record(s) not searched');
+    }, { storage });
+  });
+
+  it('US-01M7DVZP AC3 an add, an edit and a trash in the window and a studio Save to Primer Database each mark the search out of date at once and rerun it after the pause', async () => {
+    const storage = zpStorage([ZP_RECORDS[0]], []);
+    const spec: SessionSpec = { ...ZP_SPEC, documents: [ZP_DOCS[0], { ...ZP_DOCS[1], primers: [ZP_TEMPLATE_PRIMER] }], activeDocId: 'zp-doc2', viewerTab: 'primers-pcr' };
+    await withSession(spec, async (app) => {
+      // From the View menu, so no folder row is selected and the studio stays on the primer's document.
+      await app.click(await openMenu(app, ['View', 'Search & Filter', 'Search Project…']));
+      await includePrimers(app);
+      await typeQuery(app, queryField(app), 'zq');
+      const docSummary = summary(app);
+      expect(recordNames(app)).toEqual(['zqprimer-fwd']);
+      const rerun = async (what: string, names: string[]) => {
+        expect(summary(app), `${what}: out of date at once`).toBe(OUT_OF_DATE_ZP);
+        await advance(app, SEARCH_PAUSE_MS - 1);
+        expect(summary(app), `${what}: no rerun before the pause`).toBe(OUT_OF_DATE_ZP);
+        await finishSearch(app, 1);
+        expect(summary(app), what).toBe(docSummary);
+        expect(recordNames(app), what).toEqual(names);
+      };
+
+      // The studio's Save to Primer Database.
+      const save = app.all('button').find((b) => nameOf(b) === 'Save zqsaved-primer to Primer Database');
+      if (!save) throw new Error('no Save to Primer Database on the document primer');
+      await app.click(save);
+      expect(zpRecords(storage).map((r) => r.name)).toContain('zqsaved-primer');
+      await rerun('studio save', ['zqprimer-fwd', 'zqsaved-primer']);
+
+      await app.menu('tools:primer-database');
+      await app.click(inWindow(app, 'Add'));
+      const add = app.one('form[aria-label="Add primer"]');
+      const inForm = (form: LiveElement, label: string) => form.querySelectorAll('input, textarea, select').find((f) => f.getAttribute('aria-label') === label)!;
+      await app.input(inForm(add, 'Name'), 'zqadded');
+      await app.input(inForm(add, "Sequence (5' → 3')"), 'ACGTACGTACGT');
+      await app.click(add.querySelectorAll('button').find((b) => nameOf(b) === 'Save Primer')!);
+      await rerun('window add', ['zqadded', 'zqprimer-fwd', 'zqsaved-primer']);
+
+      await app.click(inWindow(app, 'Edit zqadded'));
+      const edit = app.one('form[aria-label="Edit zqadded"]');
+      await app.input(inForm(edit, 'Name'), 'renamed-added');
+      await app.click(edit.querySelectorAll('button').find((b) => nameOf(b) === 'Save Changes')!);
+      await rerun('window edit', ['zqprimer-fwd', 'zqsaved-primer']);
+
+      await app.click(inWindow(app, 'Trash zqprimer-fwd'));
+      await rerun('window trash', ['zqsaved-primer']);
+      expect(primerTrashed(app)).toBe('1 trashed record(s) not searched');
+
+      // The window's Import: its run waits a short pause of its own, so the search's pause is read from the save on.
+      await app.click(inWindow(app, 'Import…'));
+      const text = app.one('#opdlg-ip-text', 'the import dialog');
+      await app.change(text, 'name,sequence\nzqimported,TTGACCGGTACCAAGT');
+      const importDialog = text.closest('dialog, [role="dialog"]')!;
+      await app.click(importDialog.querySelectorAll('button').filter((b) => words(b.textContent) === 'Import')[0]);
+      await React.act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      await app.settle();
+      expect(zpRecords(storage).map((r) => r.name)).toContain('zqimported');
+      expect(summary(app), 'import: out of date at once').toBe(OUT_OF_DATE_ZP);
+      await finishSearch(app);
+      expect(summary(app)).toBe(docSummary);
+      expect(recordNames(app), 'import').toEqual(['zqimported', 'zqsaved-primer']);
+    }, { storage });
+  });
+});
+
+describe('US-01M7DVZP AC4: a record motif hit on the top strand, in the tail, the annealing portion or both', () => {
+  it('US-01M7DVZP AC4 gives top-strand coordinates for either strand and places each hit by the tail boundary; a record with no tail is all annealing portion', async () => {
+    const storage = zpStorage();
+    await withSession(ZP_SPEC, async (app) => {
+      await searchFolder(app, ZP_LAB);
+      await includePrimers(app);
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await finishSearch(app, 0);
+      const TAIL = "in the 5' tail";
+      const ANNEAL = 'in the annealing portion';
+      const SPANS = "spans the 5' tail and the annealing portion";
+      // tail-probe: CATCAC|TGAGGTTCAA (tail 1-6).
+      const cases: [string, string[][], string[][]][] = [
+        // Ends on the tail's last base.
+        ['TCAC', [['3-6', '+', 'TCAC', TAIL]], [['3-6', '+', 'TCAC', ANNEAL]]],
+        // Starts on the annealing portion's first base.
+        ['TGAGG', [['7-11', '+', 'TGAGG', ANNEAL]], [['7-11', '+', 'TGAGG', ANNEAL]]],
+        // Ends on the annealing portion's first base.
+        ['ATCACT', [['2-7', '+', 'ATCACT', SPANS]], [['2-7', '+', 'ATCACT', ANNEAL]]],
+        // Starts on the tail's last base.
+        ['CTGAG', [['6-10', '+', 'CTGAG', SPANS]], [['6-10', '+', 'CTGAG', ANNEAL]]],
+        // Reverse strand: the whole tail, at its top-strand place.
+        ['GTGATG', [['1-6', '−', 'CATCAC', TAIL]], [['1-6', '−', 'CATCAC', ANNEAL]]],
+      ];
+      for (const [motif, probe, noTail] of cases) {
+        await typeQuery(app, motifField(app), motif);
+        expect(recordNames(app), motif).toEqual(['no-tail', 'tail-probe']);
+        expect(recordHits(app, 'tail-probe'), motif).toEqual(probe);
+        expect(recordHits(app, 'no-tail'), `${motif}: no tail`).toEqual(noTail);
+      }
+      // Reverse strand in the annealing portion: GAGGTT at 8-13 on the top strand, never 4-9 counted from the 3' end.
+      await typeQuery(app, motifField(app), 'AACCTC');
+      expect(recordNames(app)).toEqual(['tail-probe']);
+      expect(recordHits(app, 'tail-probe')).toEqual([['8-13', '−', 'GAGGTT', ANNEAL]]);
+    }, { storage });
   });
 });

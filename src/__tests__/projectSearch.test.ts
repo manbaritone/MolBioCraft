@@ -4,13 +4,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeConditions, combineConditions, filterDocument, noSingleSequenceReason, type CombineChoice, type ConditionsOutcome, type SearchCondition, type SearchFilters, type SearchRequest,
-  changedAfterSearch, createSearchRunner, deletedAfterSearch, hitFolderId, motifNotSearchedReason, openSearchHit, nextTask, resolveSearchScope, scopesOffered, searchText, TEXT_NOT_SEARCHED, TEXT_SEARCH_FIELDS,
+  changedAfterSearch, createSearchRunner, deletedAfterSearch, openPrimerHit, primerHitPortion, hitFolderId, motifNotSearchedReason, openSearchHit, nextTask, resolveSearchScope, scopesOffered, searchText, TEXT_NOT_SEARCHED, TEXT_SEARCH_FIELDS,
   TEXT_SEARCH_STATEMENT, type MotifEngine, type SearchContext, type SearchRunEvent, type SearchScope,
 } from '../core/projectSearch';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import { generateLargeGenomeBenchmarkRust, searchIupacMotifRust } from '../lib/rustBioEngine';
 import { PROJECT_ROOT, type ExplorerFolder } from '../core/projectExplorer';
-import type { SequenceDocument, SequenceFeature } from '../types/bio';
+import type { DatabasePrimer, SequenceDocument, SequenceFeature } from '../types/bio';
 
 const doc = (id: string, folder: string, extra: Partial<SequenceDocument> = {}): SequenceDocument => ({
   id, name: `Doc ${id}`, accession: '', description: '', sequence: '', moleculeType: 'DNA', topology: 'linear',
@@ -723,5 +723,49 @@ describe('US-01M7DVHA conditions and filters in the core', () => {
     runner.stop();
     pending[pending.length - 1](); await flush();
     expect(stopped).toEqual([{ kind: 'progress', reached: 1, total: 4 }]);
+  });
+});
+
+describe('US-01M7DVZP: Primer Database records in a run, read from the request alone', () => {
+  const record = (id: string, name: string, extra: Partial<DatabasePrimer> = {}): DatabasePrimer => ({
+    id, name, sequence: 'CATCACTGAGG', originalInput: 'CATCACTGAGG', molecule: 'DNA', modifications: '', tail5Prime: 'CATCAC',
+    description: '', labels: [], createdAt: '2026-11-16T09:00:00.000Z', modifiedAt: '2026-11-16T09:00:00.000Z', provenance: 'test', ...extra,
+  });
+  const runOnce = (request: SearchRequest) => new Promise<SearchRunEvent & { kind: 'done' }>((resolve) => {
+    createSearchRunner(() => Promise.resolve()).start(request, (e) => { if (e.kind === 'done') resolve(e); });
+  });
+
+  it('US-01M7DVZP core searches the read the request carries, never storage, and never a trashed record', async () => {
+    // No storage exists here: a run that read the store itself would answer "unavailable".
+    expect((globalThis as { localStorage?: unknown }).localStorage).toBeUndefined();
+    const primers = { ok: true as const, stored: true, records: [record('p1', 'zq one'), record('p2', 'zq gone', { trashedAt: '2026-11-16T10:00:00.000Z' })] };
+    const done = await runOnce({ mode: 'Text', query: 'zq', documents: [doc('d1', 'A', { name: 'zq doc' })], folders: FOLDERS, primers });
+    expect(done.result.primers).toEqual({
+      searched: 1, trashed: 1,
+      records: [{ record: primers.records[0], answers: [{ condition: 1, textHits: [{ fieldId: 'name', field: 'Name', value: 'zq one', start: 0, end: 2 }] }] }],
+    });
+    // The documents' answer is the one a run without records gives.
+    const without = await runOnce({ mode: 'Text', query: 'zq', documents: [doc('d1', 'A', { name: 'zq doc' })], folders: FOLDERS });
+    expect(done.result.outcome).toEqual(without.result.outcome);
+    expect(without.result.primers).toBeUndefined();
+  });
+
+  it('US-01M7DVZP core places a hit by the tail boundary, 1-based and inclusive', () => {
+    const tailed = { tail5Prime: 'CATCAC' };
+    expect([[1, 6], [3, 6], [6, 7], [6, 10], [7, 7], [7, 11]].map(([s, e]) => primerHitPortion(tailed, s, e))).toEqual([
+      "in the 5' tail", "in the 5' tail", "spans the 5' tail and the annealing portion",
+      "spans the 5' tail and the annealing portion", 'in the annealing portion', 'in the annealing portion',
+    ]);
+    expect(primerHitPortion({ tail5Prime: '' }, 1, 1)).toBe('in the annealing portion');
+  });
+
+  it('US-01M7DVZP core an unreadable read is never searched, and a stale hit says why', () => {
+    const searched = record('p1', 'zq one');
+    const error = { kind: 'malformed' as const, message: 'cannot be read: not JSON', fields: [] };
+    expect(openPrimerHit(searched, { ok: false, error })).toEqual({ refused: 'cannot be read: not JSON' });
+    expect(openPrimerHit(searched, { ok: true, stored: true, records: [searched] })).toEqual({ opens: 'p1' });
+    expect(openPrimerHit(searched, { ok: true, stored: true, records: [{ ...searched, modifiedAt: 'later' }] })).toEqual({ refused: changedAfterSearch('zq one') });
+    expect(openPrimerHit(searched, { ok: true, stored: true, records: [{ ...searched, trashedAt: 'now' }] })).toEqual({ refused: deletedAfterSearch('zq one') });
+    expect(openPrimerHit(searched, { ok: true, stored: true, records: [] })).toEqual({ refused: deletedAfterSearch('zq one') });
   });
 });

@@ -13,6 +13,11 @@
  * Conditions and filters (US-01M7DVHA): a run may hold several conditions, each a mode and a
  * query, combined with ALL or ANY as evaluateTableRowFilters combines its rows, and filters that
  * narrow the documents searched whatever that choice (D0126).
+ *
+ * Primer Database records (US-01M7DVZP): a run may also search the records of the Primer Database
+ * read the App passes (never read here), each record a step of its own after the documents and
+ * never counted among them: by name, description and labels in Text mode, and by their stored
+ * sequence, linear, in Nucleotide motif mode. Trashed records are never searched.
  */
 
 import type { SequenceDocument, SequenceFeature } from '../types/bio';
@@ -21,6 +26,8 @@ import { isContigSummaryRecord } from './contigSummary';
 import { isTreeDocument } from './documentViews';
 import { documentsInFolder, PROJECT_ROOT, type ExplorerFolder } from './projectExplorer';
 import { inferDocumentTypeLabel } from './workbenchBatchOperations';
+import { activePrimers, trashedPrimers, type PrimerDbRead } from './primerDatabase';
+import type { DatabasePrimer } from '../types/bio';
 
 export type SearchScope = 'This folder only' | 'Folder and subfolders' | 'Entire project';
 
@@ -31,6 +38,11 @@ export interface SearchContext {
   folders: ExplorerFolder[];
   deletedIds: string[];
   favoriteIds: string[];
+  /**
+   * The Primer Database as the App read it, once per store revision (US-01M7DVZP): its records, or
+   * the error saying why it cannot be read. Absent where no store was read.
+   */
+  primers?: PrimerDbRead;
 }
 
 export type Refusal<R extends string> = { refused: R };
@@ -101,7 +113,9 @@ interface FieldValue { field: string; value: string; featureId?: string; primerI
 
 export type TextSearchFieldId =
   | 'name' | 'accession' | 'description' | 'notes' | 'metadata' | 'featureName' | 'featureType'
-  | 'featureQualifier' | 'featureNotes' | 'primerName' | 'historyOperation' | 'historyDescription';
+  | 'featureQualifier' | 'featureNotes' | 'primerName' | 'historyOperation' | 'historyDescription'
+  /** A Primer Database record's label (US-01M7DVZP). */
+  | 'recordLabel';
 
 /** Metadata keys that are not searched as metadata values: Notes is its own field, Newick is tree text. */
 const NOT_METADATA_VALUES = new Set(['Notes', 'Newick']);
@@ -632,6 +646,111 @@ export function combineConditions(
   return { results, notSearched };
 }
 
+// ─── Primer Database records (US-01M7DVZP) ───
+
+/** The heading of the one group a run's record hits form, listed after the document groups. */
+export const PRIMER_GROUP_HEADING = 'Primer Database (outside the project folders)';
+/** The name Not searched lists the Primer Database under. */
+export const PRIMER_DATABASE_NAME = 'Primer Database';
+export const PRIMERS_NOT_PROTEIN = 'primer records are nucleotide sequences (use Nucleotide motif)';
+export const PRIMERS_NOT_FILTERED = 'document filters do not apply to primer records';
+/** Why records are not searched when the App passed no read of the store. */
+export const PRIMERS_NOT_READ = 'the Primer Database was not read';
+export const NO_ACTIVE_PRIMERS = 'The Primer Database holds no active records.';
+export const trashedNotSearched = (t: number) => `${t} trashed record(s) not searched`;
+export const PRIMER_TAIL = "in the 5' tail";
+export const PRIMER_ANNEALING = 'in the annealing portion';
+export const PRIMER_SPANS = "spans the 5' tail and the annealing portion";
+
+/** The fields Text mode reads in a record: its name, its description and each label. */
+export function searchPrimerText(query: string, record: DatabasePrimer): TextHit[] {
+  const trimmed = query.trim();
+  if (trimmed === '') return [];
+  const foldedQuery = foldSameLength(trimmed);
+  const values: { fieldId: TextSearchFieldId; field: string; value: string }[] = [
+    { fieldId: 'name', field: 'Name', value: record.name },
+    { fieldId: 'description', field: 'Description', value: record.description },
+    ...record.labels.map((label) => ({ fieldId: 'recordLabel' as const, field: 'Label', value: label })),
+  ];
+  return values.flatMap(({ fieldId, field, value }) => matchesIn(value, foldedQuery).map(([start, end]) => ({ fieldId, field, value, start, end })));
+}
+
+/** A record as the motif search reads it: its stored sequence, linear, of its molecule. */
+function primerAsDocument(record: DatabasePrimer): SequenceDocument {
+  return {
+    id: record.id, name: record.name, accession: '', description: record.description, sequence: record.sequence,
+    moleculeType: record.molecule, topology: 'linear', folder: '', createdAt: record.createdAt, updatedAt: record.modifiedAt,
+    features: [], primers: [], history: [],
+  };
+}
+
+/**
+ * Where a motif hit lies in a record, by its top-strand coordinates (1-based, inclusive): the 5'
+ * tail is bases 1..tail length and the annealing portion the rest. A record with no tail is all
+ * annealing portion.
+ */
+export function primerHitPortion(record: Pick<DatabasePrimer, 'tail5Prime'>, start: number, end: number): string {
+  const tail = record.tail5Prime.length;
+  if (end <= tail) return PRIMER_TAIL;
+  if (start > tail) return PRIMER_ANNEALING;
+  return PRIMER_SPANS;
+}
+
+/**
+ * Every condition on one record, as searchConditionsIn reads a document: Text through its name,
+ * description and labels, Nucleotide motif through searchMotif over its stored sequence, and
+ * Protein motif not at all. A refusal of a query or an engine that cannot run ends the run.
+ */
+export function searchPrimerConditions(
+  record: DatabasePrimer, conditions: ActiveCondition[], bothStrands: boolean, engine: MotifEngine,
+): ConditionAnswer[] | { condition: number; queryRefused: string } | { engineUnavailable: string } {
+  const answers: ConditionAnswer[] = [];
+  for (const { condition, mode, query } of conditions) {
+    if (mode === 'Text') {
+      const textHits = searchPrimerText(query, record);
+      if (textHits.length > 0) answers.push({ condition, textHits });
+      continue;
+    }
+    if (mode === 'Protein motif') { answers.push({ condition, notSearched: PRIMERS_NOT_PROTEIN }); continue; }
+    const one = searchMotif(query, [primerAsDocument(record)], [], mode, bothStrands, engine);
+    if ('queryRefused' in one) return { condition, queryRefused: one.queryRefused };
+    if ('engineUnavailable' in one) return one;
+    if (!('results' in one)) continue;
+    if (one.notSearched.length > 0) answers.push({ condition, notSearched: one.notSearched[0].reason });
+    else if (one.results.length > 0) {
+      const { documentId: _id, documentName: _name, folderPath: _path, ...motif } = one.results[0];
+      answers.push({ condition, motif });
+    }
+  }
+  return answers;
+}
+
+/** A record some condition found hits in or did not read, as the run read it. */
+export interface PrimerRecordAnswers { record: DatabasePrimer; answers: ConditionAnswer[] }
+
+/**
+ * What a run did with the Primer Database: why it searched none of it (the store's own error, a
+ * document filter, Protein motif), or the active records it searched, the trashed ones it did not,
+ * and the records with answers.
+ */
+export type PrimerRunResult =
+  | { notSearched: string }
+  | { searched: number; trashed: number; records: PrimerRecordAnswers[] };
+
+/**
+ * Whether a record hit still opens, read against the store as the App holds it now: the record's
+ * id when it does, or why not - the record was trashed or removed since the search read it, or
+ * edited (its modifiedAt is not the one searched), or the store cannot be read now.
+ */
+export function openPrimerHit(searched: DatabasePrimer, current: PrimerDbRead | undefined): { opens: string } | { refused: string } {
+  if (!current) return { refused: PRIMERS_NOT_READ };
+  if (!current.ok) return { refused: current.error.message };
+  const now = current.records.find((r) => r.id === searched.id);
+  if (!now || now.trashedAt !== undefined) return { refused: deletedAfterSearch(searched.name) };
+  if (now.modifiedAt !== searched.modifiedAt) return { refused: changedAfterSearch(searched.name) };
+  return { opens: now.id };
+}
+
 // ─── Search runs (US-01M7DVVS) ───
 
 /**
@@ -639,14 +758,14 @@ export function combineConditions(
  * conditions (US-01M7DVHA). `filters`, when set, narrow the documents every kind searches.
  */
 export type SearchRequest =
-  | { mode: 'Text'; query: string; documents: SequenceDocument[]; folders: ExplorerFolder[]; filters?: SearchFilters }
+  | { mode: 'Text'; query: string; documents: SequenceDocument[]; folders: ExplorerFolder[]; filters?: SearchFilters; primers?: PrimerDbRead }
   | {
     mode: MotifMode; query: string; documents: SequenceDocument[]; folders: ExplorerFolder[];
-    bothStrands: boolean; engine: MotifEngine; filters?: SearchFilters;
+    bothStrands: boolean; engine: MotifEngine; filters?: SearchFilters; primers?: PrimerDbRead;
   }
   | {
     mode: 'Conditions'; conditions: SearchCondition[]; documents: SequenceDocument[]; folders: ExplorerFolder[];
-    bothStrands: boolean; engine: MotifEngine; filters?: SearchFilters;
+    bothStrands: boolean; engine: MotifEngine; filters?: SearchFilters; primers?: PrimerDbRead;
   };
 
 /**
@@ -654,9 +773,9 @@ export type SearchRequest =
  * documents that passed the filters; `filtering` says what the filters did, when any is set.
  */
 export type SearchRunResult =
-  | { mode: 'Text'; outcome: ReturnType<typeof searchText>; filtering?: FilterTally }
-  | { mode: MotifMode; outcome: MotifSearchOutcome; filtering?: FilterTally }
-  | { mode: 'Conditions'; outcome: ConditionsOutcome; filtering?: FilterTally };
+  | { mode: 'Text'; outcome: ReturnType<typeof searchText>; filtering?: FilterTally; primers?: PrimerRunResult }
+  | { mode: MotifMode; outcome: MotifSearchOutcome; filtering?: FilterTally; primers?: PrimerRunResult }
+  | { mode: 'Conditions'; outcome: ConditionsOutcome; filtering?: FilterTally; primers?: PrimerRunResult };
 
 export type SearchRunEvent =
   /** `reached` of the run's `total` documents have been read. */
@@ -728,12 +847,41 @@ export function createSearchRunner(yieldStep: () => Promise<void> = nextTask): S
       listener({ kind: 'progress', reached: i + 1, total });
     }
     if (id !== generation) return;
+    // The Primer Database's records, each a step of its own, never counted among the documents.
+    let primers: PrimerRunResult | undefined;
+    const store = request.primers;
+    if (store) {
+      if (!store.ok) primers = { notSearched: store.error.message };
+      else if (filters) primers = { notSearched: PRIMERS_NOT_FILTERED };
+      else if (request.mode === 'Protein motif') primers = { notSearched: PRIMERS_NOT_PROTEIN };
+      else {
+        const records = activePrimers(store.records);
+        const recordConditions = request.mode === 'Conditions' ? conditions : [{ condition: 1, mode: request.mode, query }];
+        const bothStrands = request.mode === 'Text' ? false : request.bothStrands;
+        const engine: MotifEngine = request.mode === 'Text' ? () => { throw new Error('Text mode reads no residues'); } : request.engine;
+        const answered: PrimerRecordAnswers[] = [];
+        for (let i = 0; i < records.length; i++) {
+          if (total > 0 || i > 0) await yieldStep();
+          if (id !== generation) return;
+          const one = searchPrimerConditions(records[i], recordConditions, bothStrands, engine);
+          if (!Array.isArray(one)) {
+            const outcome = request.mode === 'Conditions' ? one
+              : 'engineUnavailable' in one ? one : { queryRefused: one.queryRefused };
+            listener({ kind: 'done', result: withTally({ mode: request.mode, outcome } as SearchRunResult) });
+            return;
+          }
+          if (one.length > 0) answered.push({ record: records[i], answers: one });
+        }
+        primers = { searched: records.length, trashed: trashedPrimers(store.records).length, records: answered };
+      }
+    }
+    if (id !== generation) return;
     const result: SearchRunResult = request.mode === 'Text'
       ? { mode: 'Text', outcome: { query, results: textResults } }
       : request.mode === 'Conditions'
         ? { mode: 'Conditions', outcome: { conditions, searched: tally.passed, documents: conditionAnswers } }
         : { mode: request.mode, outcome: { query, ...motif } };
-    listener({ kind: 'done', result: withTally(result) });
+    listener({ kind: 'done', result: withTally(primers ? { ...result, primers } : result) });
   };
   return {
     start(request, listener) {

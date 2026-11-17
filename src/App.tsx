@@ -1223,8 +1223,9 @@ export const App: React.FC = () => {
   const [expandedDocView, setExpandedDocView] = useState<boolean>(false);
   const [dbExplorerCategory, setDbExplorerCategory] =
     useState<ReferenceDatabaseCategoryId | null>(null);
-  // Databases > Primers (US-01M7DQFS): open with the element focus returns to when it closes.
-  const [primerDbWindow, setPrimerDbWindow] = useState<{ opener: HTMLElement | null } | null>(null);
+  // Databases > Primers (US-01M7DQFS): open with the element focus returns to when it closes. A
+  // Search Project record hit (US-01M7DVZP) opens it, or brings the open one, to `showRecord`.
+  const [primerDbWindow, setPrimerDbWindow] = useState<{ opener: HTMLElement | null; showRecord?: { id: string; nonce: number } } | null>(null);
   // The window's Import: the primer import dialog with Primer Database chosen (US-01M7DQ0X).
   const [primerDbImportOpen, setPrimerDbImportOpen] = useState(false);
   const [primerDbRefresh, setPrimerDbRefresh] = useState(0);
@@ -1245,6 +1246,12 @@ export const App: React.FC = () => {
   const openPrimerDatabaseWindow = () => {
     setPrimerDbWindow({ opener: databaseWindowOpener() });
   };
+  /** Opens the Primer Database window on a record, or brings the open one to it; selects no folder or document. */
+  const openPrimerDatabaseOnRecord = (recordId: string) =>
+    setPrimerDbWindow((prev) => ({
+      opener: prev ? prev.opener : databaseWindowOpener(),
+      showRecord: { id: recordId, nonce: (prev?.showRecord?.nonce ?? 0) + 1 },
+    }));
   // Databases > Restriction Enzymes (US-01M7DVDV): open with the element focus returns to when it closes.
   // A site action (US-01M7JPSK) opens it with an intent, read once at mount: the Tools menu's never carries one.
   const [enzymeDbWindow, setEnzymeDbWindow] = useState<{ opener: HTMLElement | null; intent?: EnzymeWindowIntent } | null>(null);
@@ -2031,9 +2038,16 @@ export const App: React.FC = () => {
   const visibleExplorerFolders = useMemo(() => explorerFolders.filter((folder) => !hiddenFolders.includes(folder.id)), [explorerFolders, hiddenFolders]);
   // Search Project reads the whole catalog (deleted documents included, for Deleted Items) and every
   // folder, hidden ones included, as projectSearch.ts's SearchContext asks - not the visible tree.
+  // and the Primer Database (US-01M7DVZP), read once per store revision while the panel is open:
+  // its records, or the error saying why it cannot be read.
+  const projectSearchOpen = projectSearch !== null;
+  const primerSearchRead = useMemo(
+    () => (projectSearchOpen ? openPrimerDatabase().read() : undefined),
+    [projectSearchOpen, primerDbRefresh]
+  );
   const projectSearchContext = useMemo<SearchContext>(
-    () => ({ documents: catalogAllDocs, folders: explorerFolders, deletedIds: deletedDocIds, favoriteIds: favoriteDocIds }),
-    [catalogAllDocs, explorerFolders, deletedDocIds, favoriteDocIds]
+    () => ({ documents: catalogAllDocs, folders: explorerFolders, deletedIds: deletedDocIds, favoriteIds: favoriteDocIds, primers: primerSearchRead }),
+    [catalogAllDocs, explorerFolders, deletedDocIds, favoriteDocIds, primerSearchRead]
   );
   const openProjectSearch = (folderId: string, scope: SearchScope) =>
     setProjectSearch((prev) => ({ folderId, scope, key: (prev?.key ?? 0) + 1 }));
@@ -15898,6 +15912,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                          (US-01M7DVAS). */
                       selectedRange={selectedRange}
                       primerDatabaseRevision={primerDbRefresh}
+                      onPrimerDatabaseChanged={() => setPrimerDbRefresh((n) => n + 1)}
                       allDocuments={documents}
                       onUpdateDocument={handleUpdateDocument}
                       onAddConstruct={handleAddConstruct}
@@ -17585,12 +17600,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           context={projectSearchContext}
           onClose={() => setProjectSearch(null)}
           onOpenHit={handleOpenSearchHit}
+          onOpenPrimerRecord={openPrimerDatabaseOnRecord}
         />
       )}
       {primerDbWindow && (
         <PrimerDatabaseWindow
           returnFocusTo={primerDbWindow.opener}
           refreshKey={primerDbRefresh}
+          showRecord={primerDbWindow.showRecord}
           onStoreChanged={() => setPrimerDbRefresh((n) => n + 1)}
           onOpenImport={() => setPrimerDbImportOpen(true)}
           onFindBindings={(primerIds) =>

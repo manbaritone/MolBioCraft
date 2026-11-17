@@ -317,6 +317,11 @@ interface PrimerAndPCRStudioProps {
   commandNonce?: number;
   /** Bumped when the Primers window or the import writes the Primer Database, so the screened list is read again. */
   primerDatabaseRevision?: number;
+  /**
+   * Told after every Save to Primer Database that finishes (US-01M7DVZP), so other views of the
+   * store, an included Search Project among them, read it again.
+   */
+  onPrimerDatabaseChanged?: () => void;
   /** The Primer Database that Save to Primer Database writes to; the user's own store unless given. */
   primerDatabase?: PrimerDatabase;
   /**
@@ -340,6 +345,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   commandNonce,
   primerDatabase,
   primerDatabaseRevision = 0,
+  onPrimerDatabaseChanged,
   selectedRange = null,
 }) => {
   // In the workbench the conditions of each sub-tab sit in App's inspector; drawn on its own, the
@@ -435,6 +441,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   const dbSave = usePrimerDatabaseSave(primerDb, (message) => {
     setDbSaveMessage(message);
     onStatusNotice?.(message);
+    onPrimerDatabaseChanged?.();
   });
   // The documents' primers, one per name as before, so each is screened as it was; the Primer
   // Database's active records join them keyed by source and id (US-01M7DQMY AC2), so a record and a

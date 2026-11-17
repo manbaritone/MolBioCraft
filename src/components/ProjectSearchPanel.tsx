@@ -32,6 +32,14 @@
  * modified date and annotation type narrow the documents searched whatever that choice, show as
  * chips while set, and a bound that cannot be read stops the search with its reason. Every row, the
  * choice and the filters are in the run's key, so a change of any lists no other set's groups.
+ *
+ * Include Primer Database (US-01M7DVZP), off by default, searches the active records of the store
+ * read the App passes beside the scope's documents, never counted among them, and lists their hits
+ * in one group after the document groups, headed as outside the project folders. A record hit opens
+ * the Primer Database window on that record through `onOpenPrimerRecord`, never a document; one
+ * edited, trashed or removed since the run read it opens nothing and says so. A read of the store
+ * that differs from the one searched marks an included search out of date and reruns it after the
+ * pause, as a document change does.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -44,8 +52,15 @@ import {
   createSearchRunner,
   FILTER_REFUSED,
   motifNotSearchedReason,
+  NO_ACTIVE_PRIMERS,
   NUCLEOTIDE_MOTIF_STATEMENT,
+  openPrimerHit,
   openSearchHit,
+  PRIMER_DATABASE_NAME,
+  PRIMER_GROUP_HEADING,
+  primerHitPortion,
+  PRIMERS_NOT_PROTEIN,
+  PRIMERS_NOT_READ,
   PROTEIN_MOTIF_STATEMENT,
   readDateBounds,
   readLengthBounds,
@@ -54,6 +69,7 @@ import {
   SEARCH_MODES,
   snippetOf,
   TEXT_SEARCH_STATEMENT,
+  trashedNotSearched,
   type CombineChoice,
   type CombinedResult,
   type DocumentMotifResult,
@@ -72,7 +88,8 @@ import {
   type TextHit,
 } from '../core/projectSearch';
 import type { ExplorerFolder } from '../core/projectExplorer';
-import type { SequenceDocument } from '../types/bio';
+import type { DatabasePrimer, SequenceDocument } from '../types/bio';
+import type { PrimerDbRead } from '../core/primerDatabase';
 import { inferDocumentTypeLabel } from '../core/workbenchBatchOperations';
 import { searchIupacMotifRust } from '../lib/rustBioEngine';
 
@@ -90,6 +107,7 @@ interface Row { id: number; mode: SearchMode; query: string }
  */
 interface RunKey {
   conditions: { mode: SearchMode; query: string }[]; combine: CombineChoice; scope: SearchScope; bothStrands: boolean; filters: string;
+  primers: boolean;
 }
 const sameKey = (a: RunKey, b: RunKey) => JSON.stringify(a) === JSON.stringify(b);
 /** Whether only a query differs between two keys of the same rows: typing, which waits for the pause. */
@@ -111,12 +129,15 @@ const FILTER_FIELDS: Record<FilterName, (keyof FilterFields)[]> = {
 const FILTER_ORDER: FilterName[] = ['Document type', 'Topology', 'Length', 'Modified date', 'Annotation type'];
 const rangeText = (min: string, max: string) => (min.trim() === '' ? `up to ${max.trim()}` : max.trim() === '' ? `from ${min.trim()}` : `${min.trim()} to ${max.trim()}`);
 
-/** What a run read: the scope's documents and the folders their paths come from. */
-interface RunInputs { documents: SequenceDocument[]; foldersKey: string }
+/**
+ * What a run read: the scope's documents, the folders their paths come from and, when the Primer
+ * Database is included, the store's read as text (a re-read of an unchanged store reads the same).
+ */
+interface RunInputs { documents: SequenceDocument[]; foldersKey: string; primersKey: string }
 const foldersKeyOf = (folders: ExplorerFolder[]) =>
   JSON.stringify(folders.map((f) => [f.id, f.label, f.parent, f.matchFolders]));
 /** Whether two runs read the same: the same document objects in the same order, under the same folders. */
-const sameInputs = (a: RunInputs, b: RunInputs) => a.foldersKey === b.foldersKey
+const sameInputs = (a: RunInputs, b: RunInputs) => a.foldersKey === b.foldersKey && a.primersKey === b.primersKey
   && a.documents.length === b.documents.length && a.documents.every((d, i) => d === b.documents[i]);
 
 /** A completed run, and the documents in Deleted Items when it read them. */
@@ -165,9 +186,14 @@ interface Props {
    * (no folder the explorer shows lists its document); never called for a deleted or changed one.
    */
   onOpenHit?: (opening: HitOpening) => string | null;
+  /** Opens the Primer Database window on a record the core found still current (US-01M7DVZP). */
+  onOpenPrimerRecord?: (recordId: string) => void;
 }
 
-export function ProjectSearchPanel({ folderId, initialScope, context, onClose, onOpenHit }: Props) {
+/** The read a run is given when the App passed none: never read as a store without records. */
+const NOT_READ: PrimerDbRead = { ok: false, error: { kind: 'unavailable', message: PRIMERS_NOT_READ, fields: [] } };
+
+export function ProjectSearchPanel({ folderId, initialScope, context, onClose, onOpenHit, onOpenPrimerRecord }: Props) {
   const [scope, setScope] = useState<SearchScope>(initialScope);
   const nextRowId = useRef(1);
   const [rows, setRows] = useState<Row[]>([{ id: 0, mode: 'Text', query: '' }]);
@@ -176,6 +202,7 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
   const [page, setPage] = useState(0);
   const [bothStrands, setBothStrands] = useState(true);
   const [definiteOnly, setDefiniteOnly] = useState(false);
+  const [includePrimers, setIncludePrimers] = useState(false);
   // One row is today's panel: its mode and query are the panel's own.
   const { mode, query } = rows[0];
   const multi = rows.length > 1;
@@ -202,11 +229,13 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
   const key: RunKey = {
     conditions: rows.map((r) => ({ mode: r.mode, query: r.query.trim() })), combine, scope, bothStrands,
     filters: filterRefused ? `refused ${JSON.stringify(fields)}` : JSON.stringify(filters),
+    primers: includePrimers,
   };
   const keyText = JSON.stringify(key);
+  const primerRead = includePrimers ? context.primers ?? NOT_READ : null;
   const inputs = useMemo<RunInputs>(
-    () => ({ documents: searched ?? [], foldersKey: foldersKeyOf(context.folders) }),
-    [searched, context.folders],
+    () => ({ documents: searched ?? [], foldersKey: foldersKeyOf(context.folders), primersKey: primerRead ? JSON.stringify(primerRead) : '' }),
+    [searched, context.folders, primerRead],
   );
 
   const [runner] = useState(() => createSearchRunner());
@@ -231,7 +260,8 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
     };
     // No query, an empty scope, a refused one and a filter that cannot be read each have their
     // sentence and run nothing.
-    if (active.length === 0 || !searched || searched.length === 0 || filterRefused) { stopRun(); return; }
+    // An empty scope still searches the Primer Database when it is included.
+    if (active.length === 0 || !searched || (searched.length === 0 && !primerRead) || filterRefused) { stopRun(); return; }
     const keyChanged = prev === null || !sameKey(prev.key, key);
     // The App passed a new context that reads the same: the run in progress or shown stands.
     if (!keyChanged && sameInputs(prev.inputs, inputs)) return;
@@ -245,11 +275,14 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
     const request: SearchRequest = multi
       ? {
         mode: 'Conditions', conditions: rows.map((r) => ({ mode: r.mode, query: r.query })), documents: searched,
-        folders: context.folders, bothStrands, engine: searchIupacMotifRust, filters,
+        folders: context.folders, bothStrands, engine: searchIupacMotifRust, filters, primers: primerRead ?? undefined,
       }
       : mode === 'Text'
-        ? { mode, query: trimmed, documents: searched, folders: context.folders, filters }
-        : { mode, query: trimmed, documents: searched, folders: context.folders, bothStrands, engine: searchIupacMotifRust, filters };
+        ? { mode, query: trimmed, documents: searched, folders: context.folders, filters, primers: primerRead ?? undefined }
+        : {
+          mode, query: trimmed, documents: searched, folders: context.folders, bothStrands, engine: searchIupacMotifRust, filters,
+          primers: primerRead ?? undefined,
+        };
     const begin = () => {
       timer.current = null;
       setProgress({ reached: 0, total: searched.length });
@@ -309,6 +342,28 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
     setHitNotice(onOpenHit?.(answer.opens) ?? null);
   };
 
+  // The Primer Database's part of the run (US-01M7DVZP): its conditions combine over a record as
+  // over a document, and Definite only drops a record's possible hits as a document's.
+  const primerResult = current?.result.primers ?? null;
+  const primerAnswer = primerResult && 'records' in primerResult ? primerResult : null;
+  const searchedRecords = useMemo(
+    () => new Map((primerAnswer?.records ?? []).map((r) => [r.record.id, r.record])),
+    [primerAnswer],
+  );
+  const primerCombined = primerAnswer
+    ? combineConditions(
+      primerAnswer.records.map((r) => ({ documentId: r.record.id, documentName: r.record.name, folderPath: PRIMER_GROUP_HEADING, answers: r.answers })),
+      active, multi ? combine : 'ALL', definiteOnly,
+    )
+    : null;
+  /** Opens a record hit from the store as the App holds it now, or says why it opens nothing. */
+  const openPrimer = (record: DatabasePrimer) => {
+    const answer = openPrimerHit(record, context.primers);
+    if ('refused' in answer) { setHitNotice(answer.refused); return; }
+    setHitNotice(null);
+    onOpenPrimerRecord?.(answer.opens);
+  };
+
   const results = outcome && !('refused' in outcome) ? outcome.results : [];
   const motifAnswer = motif && 'results' in motif ? motif : null;
   // Definite only drops the possible hits, and with them a document whose hits are all possible.
@@ -327,7 +382,14 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
   const shownCombined = combined.results.slice(first, first + GROUPS_PER_PAGE);
   const shownCount = multi ? shownCombined.length : mode === 'Text' ? shown.length : shownMotif.length;
   const hitTotal = results.reduce((n, r) => n + r.hits.length, 0);
-  const notSearched = multi ? combined.notSearched : motifAnswer?.notSearched ?? [];
+  const notSearched = [
+    ...(multi ? combined.notSearched : motifAnswer?.notSearched ?? []),
+    // Listed, never counted among the documents not searched.
+    ...(primerResult && 'notSearched' in primerResult && primerResult.notSearched === PRIMERS_NOT_PROTEIN
+      ? [{ documentId: PRIMER_DATABASE_NAME, documentName: PRIMER_DATABASE_NAME, folderPath: PRIMER_GROUP_HEADING, reason: PRIMERS_NOT_PROTEIN }]
+      : []),
+    ...(primerCombined?.notSearched ?? []),
+  ];
 
   /** The hits a section lists and counts: under Definite only, a motif condition's definite ones. */
   const sectionHits = (section: CombinedResult['sections'][number]) => ('textHits' in section
@@ -384,6 +446,17 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
       : `${count(hitTotal, 'hit')} in ${count(results.length, 'document')} · ${count(searchedCount, 'document')} searched${filterTail}`;
   }
 
+  /** The Primer Database group's own sentence: never searched, holding no active records, or its counts. */
+  let primerStatus: string | null = null;
+  if (primerResult && 'notSearched' in primerResult) primerStatus = `Not searched: ${primerResult.notSearched}`;
+  else if (primerAnswer && primerCombined) {
+    const listedHits = primerCombined.results.reduce((n, r) => n + r.sections.reduce((m, sec) => m + sectionHits(sec), 0), 0);
+    const tail = `${count(primerAnswer.searched, 'record')} searched`;
+    primerStatus = primerAnswer.searched === 0 ? NO_ACTIVE_PRIMERS
+      : primerCombined.results.length === 0 ? `No matches in ${tail}`
+        : `${motifCount(listedHits, 'hit')} in ${count(primerCombined.results.length, 'record')} · ${tail}`;
+  }
+
   const setRow = (index: number, change: Partial<Row>) => {
     setRows((all) => all.map((r, i) => (i === index ? { ...r, ...change } : r)));
     setPage(0);
@@ -429,25 +502,27 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
     return { name, text: `${name}: ${value}` };
   });
 
-  const motifHitRows = (hits: MotifHit[], documentId: string, hitMode: MotifMode) => (
+  /** A record's hits open the record; `record` absent, a document's hits open the document. */
+  const motifHitRows = (hits: MotifHit[], documentId: string, hitMode: MotifMode, record?: DatabasePrimer) => (
     <ul>
       {hits.map((hit, i) => (
         <li key={`${hit.start}-${hit.strand}-${i}`} data-search-hit>
-          <button type="button" className="mbc-project-search-hit" onClick={() => openHit(documentId, { mode: hitMode, hit })}>
+          <button type="button" className="mbc-project-search-hit" onClick={() => (record ? openPrimer(record) : openHit(documentId, { mode: hitMode, hit }))}>
             <span data-part="coords">{hit.start}-{hit.end}</span>{' '}
             <span data-part="strand">{strandText(hit)}</span>{' '}
             <code data-part="letters">{hit.letters}</code>{' '}
             <span data-part="certainty">{hit.certainty}</span>
+            {record && <>{' '}<span data-part="portion">{primerHitPortion(record, hit.start, hit.end)}</span></>}
           </button>
         </li>
       ))}
     </ul>
   );
-  const textHitRows = (hits: TextHit[], documentId: string) => (
+  const textHitRows = (hits: TextHit[], documentId: string, record?: DatabasePrimer) => (
     <ul>
       {hits.map((hit, i) => (
         <li key={`${hit.field}-${hit.start}-${i}`} data-search-hit>
-          <button type="button" className="mbc-project-search-hit" onClick={() => openHit(documentId, { mode: 'Text', hit })}>
+          <button type="button" className="mbc-project-search-hit" onClick={() => (record ? openPrimer(record) : openHit(documentId, { mode: 'Text', hit }))}>
             <span className="mbc-project-search-field" data-part="field">{hit.field}</span>
             <Snippet hit={hit} />
           </button>
@@ -516,6 +591,10 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
             Definite only
           </label>
         )}
+        <label>
+          <input type="checkbox" checked={includePrimers} onChange={(e) => { setIncludePrimers(e.target.checked); setPage(0); }} />
+          Include Primer Database
+        </label>
       </div>
       {multi && (
         <div className="mbc-project-search-conditions">
@@ -699,6 +778,40 @@ export function ProjectSearchPanel({ folderId, initialScope, context, onClose, o
             );
           })}
         </ol>
+      )}
+      {current && primerResult && (
+        <section className="mbc-project-search-primer-group" data-search-primer-group aria-label={PRIMER_GROUP_HEADING}>
+          <h3 data-part="heading">{PRIMER_GROUP_HEADING}</h3>
+          <p data-part="primer-status">{primerStatus}</p>
+          {primerAnswer && primerAnswer.trashed > 0 && <p data-part="primer-trashed">{trashedNotSearched(primerAnswer.trashed)}</p>}
+          {primerCombined && primerCombined.results.length > 0 && (
+            <ol>
+              {primerCombined.results.map((group) => {
+                const record = searchedRecords.get(group.documentId)!;
+                return (
+                  <li key={group.documentId} data-search-primer-record={group.documentId}>
+                    <div className="mbc-project-search-group-head">
+                      <strong data-part="name">{group.documentName}</strong>
+                      <span data-part="hits">{motifCount(group.sections.reduce((n, sec) => n + sectionHits(sec), 0), 'hit')}</span>
+                    </div>
+                    {group.sections.map((section) => {
+                      const { condition, mode: conditionMode, query: conditionQuery } = section.condition;
+                      return (
+                        <div key={condition} className="mbc-project-search-condition-hits" data-search-condition={condition}>
+                          {multi && <h4 data-part="condition">Condition {condition}: {conditionMode} {conditionQuery}</h4>}
+                          {'textHits' in section ? textHitRows(section.textHits, group.documentId, record) : motifHitRows(
+                            definiteOnly ? section.motif.hits.filter((h) => h.certainty === 'definite') : section.motif.hits,
+                            group.documentId, conditionMode as MotifMode, record,
+                          )}
+                        </div>
+                      );
+                    })}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </section>
       )}
       {notSearched.length > 0 && (
         <section className="mbc-project-search-not-searched" data-search-not-searched>

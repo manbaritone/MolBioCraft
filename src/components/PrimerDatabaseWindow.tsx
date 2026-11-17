@@ -461,6 +461,11 @@ export interface PrimerDatabaseWindowProps {
   refreshKey?: number;
   /** Told after every write this window makes, so other views of the store re-read it. */
   onStoreChanged?: () => void;
+  /**
+   * The record to show (US-01M7DVZP): each new `nonce` turns the window to the Active view with its
+   * search cleared and marks that record's row aria-current.
+   */
+  showRecord?: { id: string; nonce: number };
   /** The element focus returns to when the window closes (its in-app opener). */
   returnFocusTo?: HTMLElement | null;
   database?: PrimerDatabase;
@@ -479,6 +484,7 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
   onOpenImport,
   refreshKey = 0,
   onStoreChanged,
+  showRecord,
   returnFocusTo = null,
   database,
   duplicatePolicy = primerDuplicatePolicy,
@@ -495,6 +501,14 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
   const read = useMemo(() => db.read(), [db, version, refreshKey]);
   const [view, setView] = useState<'active' | 'trash'>('active');
   const [search, setSearch] = useState('');
+  const [shownRecordId, setShownRecordId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!showRecord) return;
+    setView('active');
+    setSearch('');
+    setShownRecordId(showRecord.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showRecord?.nonce]);
   const [form, setForm] = useState<FormState | null>(null);
   const [formErrors, setFormErrors] = useState<PrimerFieldError[]>([]);
   const [pendingMatch, setPendingMatch] = useState<PrimerDuplicateMatch | null>(null);
@@ -1002,7 +1016,7 @@ export const PrimerDatabaseWindow: React.FC<PrimerDatabaseWindowProps> = ({
               </thead>
               <tbody>
                 {listed.map((r) => (
-                  <tr key={r.id} data-primer-id={r.id}>
+                  <tr key={r.id} data-primer-id={r.id} aria-current={view === 'active' && r.id === shownRecordId ? 'true' : undefined}>
                     <td>{r.name}</td>
                     <td className="mono-cell">
                       {r.tail5Prime && <span className="tail-highlight">{r.tail5Prime}</span>}
