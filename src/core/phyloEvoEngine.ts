@@ -127,6 +127,10 @@ export interface DistanceAnalysisReport {
 }
 
 export interface DiversityAnalysisReport {
+  /** The distance the diversities average: the distance report's own `model` (BG-01M7MW9R). */
+  model: DistanceAnalysisReport['model'];
+  /** The distance report's own `modelNote`: set only on a protein alignment asked for a nucleotide model. */
+  modelNote?: string;
   withinSubpopulationPiS: Maybe;
   withinSubpopulationSE: Maybe;
   entirePopulationPiT: Maybe;

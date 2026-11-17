@@ -920,6 +920,11 @@ pub fn compute_evolutionary_distances(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiversityAnalysisReport {
+    /// The distance the diversities average: the distance report's own `model` (BG-01M7MW9R).
+    pub model: String,
+    /// The distance report's own `modelNote`, set only when a protein alignment was asked for a nucleotide model.
+    #[serde(rename = "modelNote", default, skip_serializing_if = "Option::is_none")]
+    pub model_note: Option<String>,
     #[serde(rename = "withinSubpopulationPiS")]
     pub within_subpopulation_pi_s: f64,
     #[serde(rename = "withinSubpopulationSE")]
@@ -983,6 +988,8 @@ pub fn compute_population_diversity(
     };
 
     DiversityAnalysisReport {
+        model: dist_rep.model,
+        model_note: dist_rep.model_note,
         within_subpopulation_pi_s: pi_s,
         within_subpopulation_se: f64::NAN,
         entire_population_pi_t: pi_t,

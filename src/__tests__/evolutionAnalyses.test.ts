@@ -358,6 +358,67 @@ describe('evolution analysis windows', () => {
   });
 });
 
+// BG-01M7MW9R: the diversity report printed the requested nucleotide model (MCL by default) over the
+// protein distance it averaged. Three pre-aligned rows of real amino-acid residues - DNA rows relabelled
+// Protein would not do: the engine classes an alignment by its residues, so those get the MCL distance.
+const aaRows = ['MKTAYIAKQRDEFGHLNPSW-X', 'MKTAWIAKERDEFGHVNPTA-M', 'MKTAWIAKERDEFGHVNPTW-M'];
+const aaDocs = aaRows.map((sequence, i) => ({ ...members[0], id: `aa${i}`, name: `aa${i}`, sequence, moleculeType: 'Protein' as const } as SequenceDocument));
+const diversityLines = (docs: SequenceDocument[], v: Record<string, string>) =>
+  String(runEvolutionAnalysis(docs, 'diversity', v, ctx).created[0].docMetadata?.Notes).split('\n');
+const MCL = 'Maximum Composite Likelihood (MCL)';
+const MCL_NOTE = 'Note: Maximum Composite Likelihood (MCL) does not apply to proteins: the Poisson correction was computed instead.';
+
+describe('the diversity report names the distance it averaged (BG-01M7MW9R)', () => {
+  for (const [label, v] of [[MCL, { model: MCL }], ['no model given', {}]] as const) {
+    it(`BG-01M7MW9R a protein alignment under ${label} writes Model: Poisson correction and the note`, () => {
+      expect(aaRows.every((r) => /[EFIKLMPQRSWY]/.test(r)), 'the fixture is amino-acid residues').toBe(true);
+      const lines = diversityLines(aaDocs, v);
+      const at = lines.indexOf('Model: Poisson correction');
+      expect(at, lines.join('\n')).toBeGreaterThan(0);
+      expect(lines[at + 1]).toBe(MCL_NOTE);
+      expect(lines.filter((l) => l.startsWith('Model:') || l.startsWith('Note:'))).toHaveLength(2);
+      expect(lines.join('\n')).not.toContain(`Model: ${MCL}`);
+    });
+  }
+  it('BG-01M7MW9R p-distance on a protein alignment writes Model: p-distance and no note', () => {
+    const lines = diversityLines(aaDocs, { model: 'p-distance' });
+    expect(lines.filter((l) => l.startsWith('Model:') || l.startsWith('Note:'))).toEqual(['Model: p-distance']);
+  });
+  it('BG-01M7MW9R the COXII nucleotide report under MCL is unchanged', () => {
+    const lines = diversityLines(members, { model: MCL });
+    expect(lines.filter((l) => l.startsWith('Model:') || l.startsWith('Note:'))).toEqual([`Model: ${MCL}`]);
+    // DNA rows relabelled Protein are still nucleotide to the engine: they keep the MCL label.
+    const relabelled = members.map((m) => ({ ...m, moleculeType: 'Protein' as const }));
+    expect(diversityLines(relabelled, { model: MCL }).filter((l) => l.startsWith('Model:') || l.startsWith('Note:'))).toEqual([`Model: ${MCL}`]);
+  });
+  it("BG-01M7MW9R the Model and Note lines are the engine report's, and a report with no model fails", async () => {
+    // The engine's own words are written back verbatim, so a runner-side relabel cannot pass this.
+    const engine = { model: 'ENGINE-MODEL' as string | undefined, modelNote: 'ENGINE-NOTE' as string | undefined };
+    vi.resetModules();
+    vi.doMock('../core/phyloEvoEngine', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../core/phyloEvoEngine')>();
+      return {
+        ...real,
+        computePopulationDiversity: (...a: Parameters<typeof real.computePopulationDiversity>) => ({ ...real.computePopulationDiversity(...a), ...engine }),
+      };
+    });
+    try {
+      const { runEvolutionAnalysis: run } = await import('../core/evolutionAnalyses');
+      const lines = (v: Record<string, string>) => String(run(aaDocs, 'diversity', v, ctx).created[0].docMetadata?.Notes).split('\n');
+      const got = lines({ model: MCL });
+      expect(got[got.indexOf('Model: ENGINE-MODEL') + 1]).toBe('Note: ENGINE-NOTE');
+      engine.modelNote = undefined;
+      expect(lines({}).filter((l) => l.startsWith('Model:') || l.startsWith('Note:'))).toEqual(['Model: ENGINE-MODEL']);
+      // A report naming no model (a stale engine) fails rather than falling back to the requested name.
+      engine.model = undefined;
+      expect(() => run(aaDocs, 'diversity', { model: MCL }, ctx)).toThrow(/named no distance model/);
+    } finally {
+      vi.doUnmock('../core/phyloEvoEngine');
+      vi.resetModules();
+    }
+  });
+});
+
 /**
  * What the Align dialog tells the user a preset will run, and what the result document records as
  * its `Alignment method`, read off the engine's own dispatch rather than trusted (BG-01M6XRZ8).

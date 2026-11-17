@@ -189,10 +189,14 @@ export function runEvolutionAnalysis(inputs: SequenceDocument[], kind: EvoAnalys
       summary = `Codon usage of ${rows.reduce((s, r) => s + r.count, 0).toLocaleString()} codons`;
     }
   } else if (kind === 'diversity') {
-    const model = String(v.model ?? 'Maximum Composite Likelihood (MCL)') as SubstitutionModelName;
+    const requested = String(v.model ?? 'Maximum Composite Likelihood (MCL)') as SubstitutionModelName;
     const g = groups.some(Boolean) ? groups : [];
-    const r = computePopulationDiversity(names, seqs, model, g);
-    out.push(`Model: ${model}`, `Groups: ${g.length ? new Set(g.filter(Boolean)).size : 'none (between-population statistics need groups)'}`, '', '## Nei (1987) diversity', '');
+    const r = computePopulationDiversity(names, seqs, requested, g);
+    // The label is the distance the engine averaged (a protein gets 'Poisson correction' for a nucleotide
+    // model name), never the requested name: a report naming none fails rather than being relabelled.
+    const model = r.model;
+    if (typeof model !== 'string' || !model) throw new Error('The diversity engine named no distance model for this report; rebuild the engine (npm run wasm:build).');
+    out.push(`Model: ${model}`, ...(r.modelNote ? [`Note: ${r.modelNote}`] : []), `Groups: ${g.length ? new Set(g.filter(Boolean)).size : 'none (between-population statistics need groups)'}`, '', '## Nei (1987) diversity', '');
     const header = ['Statistic', 'Value', 'SE'];
     const body: (string | number)[][] = [
       ['Mean diversity within subpopulations (πS)', f(r.withinSubpopulationPiS), f(r.withinSubpopulationSE)],

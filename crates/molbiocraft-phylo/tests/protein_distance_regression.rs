@@ -230,3 +230,55 @@ fn protein_report_label_names_the_distance_computed() {
     assert!(!trees.contains("\"p-distance\""), "trees.rs must not restate the rule");
     assert!(trees.contains("protein_distance_name("), "trees.rs must ask the shared rule");
 }
+
+/// BG-01M7MW9R: the diversity report carried no model, so the runner printed the requested nucleotide
+/// model ('Maximum Composite Likelihood (MCL)' by default) over the protein distance it averaged. The
+/// report now carries the `model` and `modelNote` of the distance report it already computes.
+#[test]
+fn diversity_report_label_names_the_distance_computed() {
+    use molbiocraft_phylo::distances::compute_population_diversity;
+    let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+    let prot: Vec<String> = [POISSON_A, POISSON_B, "MKTAWIAKERDEFGHVNPTW-M"].iter().map(|s| s.to_string()).collect();
+    let note = |m: &str| format!("{m} does not apply to proteins: the Poisson correction was computed instead.");
+    let mcl = "Maximum Composite Likelihood (MCL)";
+    let cases: [(&str, &str, Option<String>); 4] = [
+        (mcl, DIALOG_POISSON, Some(note(mcl))),
+        ("Jukes-Cantor (JC69)", DIALOG_POISSON, Some(note("Jukes-Cantor (JC69)"))),
+        ("p-distance", "p-distance", None),
+        (DIALOG_POISSON, DIALOG_POISSON, None),
+    ];
+    let dna: Vec<String> =
+        ["ACGTACGTACGTACGTACGT", "ACGTACGAACGTACGTTCGT", "ACGAACGTACGTACCTTCGT"].iter().map(|s| s.to_string()).collect();
+    let mut all: Vec<(&[String], &str, &str, Option<String>)> =
+        cases.iter().map(|(r, c, n)| (prot.as_slice(), *r, *c, n.clone())).collect();
+    // A nucleotide alignment keeps the requested model's name and no note.
+    all.push((dna.as_slice(), mcl, mcl, None));
+    for (seqs, requested, computed, expected_note) in all {
+        let dist = compute_evolutionary_distances(&names, seqs, requested, &[]);
+        let div = compute_population_diversity(&names, seqs, requested, &[]);
+        assert_eq!(div.model, computed, "{requested}: the diversity report names the distance computed");
+        assert_eq!(div.model_note, expected_note, "{requested}: note");
+        assert_eq!((div.model.as_str(), &div.model_note), (dist.model.as_str(), &dist.model_note), "{requested}: copied from the distance report");
+        // The statistics are unchanged: pi_T is the distance report's overall mean.
+        assert!(dist.overall_mean_distance.is_finite() && dist.overall_mean_distance > 0.0, "{requested}: a real distance");
+        assert_eq!(div.entire_population_pi_t, dist.overall_mean_distance, "{requested}: pi_T unchanged");
+        let json = serde_json::to_value(&div).unwrap();
+        assert_eq!(json["model"], computed, "{requested}: JSON model");
+        match &expected_note {
+            Some(n) => assert_eq!(json["modelNote"], n.as_str(), "{requested}: JSON modelNote"),
+            None => assert!(json.get("modelNote").is_none(), "{requested}: modelNote must be absent: {json}"),
+        }
+    }
+    // Three distinct sequences: Hd = 3/2 * (1 - 3/9) = 1.
+    assert_eq!(compute_population_diversity(&names, &prot, mcl, &[]).haplotype_diversity_hd, 1.0);
+
+    // Copied, not re-derived: the diversity function makes one distance pass and states no protein rule.
+    let src = include_str!("../src/distances.rs");
+    let body = src.split("pub fn compute_population_diversity(").nth(1).expect("the diversity function");
+    let body = &body[..body.find("\n}\n").expect("its end")];
+    assert_eq!(body.matches("compute_evolutionary_distances(").count(), 1, "one distance pass");
+    for rule in ["protein_distance_name", "does not apply", "is_nucleotide_alignment", "PROTEIN_"] {
+        assert!(!body.contains(rule), "diversity must not restate the protein rule ({rule})");
+    }
+    assert_eq!(src.matches("does not apply to proteins").count(), 1, "one note in distances.rs");
+}
