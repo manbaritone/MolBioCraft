@@ -507,15 +507,30 @@ pub fn compute_substitution_rate_matrix(names: &[String], aligned_seqs: &[String
     report
 }
 
+/// The protein distance a model name computes: "p-distance" when the name holds "p-distance" in any
+/// case, the "Poisson correction" otherwise - so the dialog's 'Poisson correction' and any nucleotide
+/// model name get the Poisson distance. The one rule the protein pair distance, the distance report's
+/// `model` and the tree report's distance label all follow (BG-01M7MM62, BG-01M7MQP8).
+pub fn protein_distance_name(model: &str) -> &'static str {
+    if model.to_ascii_lowercase().contains("p-distance") {
+        PROTEIN_P_DISTANCE
+    } else {
+        PROTEIN_POISSON_CORRECTION
+    }
+}
+
+/// The two names [`protein_distance_name`] gives.
+pub const PROTEIN_P_DISTANCE: &str = "p-distance";
+pub const PROTEIN_POISSON_CORRECTION: &str = "Poisson correction";
+
 /// Amino-acid pairwise distance and standard error.
 ///
 /// Nucleotide substitution models (JC69, K2P, TN93, ...) do not apply to
 /// proteins, and counting only A/C/G/T letters made protein alignments produce
 /// "no tree" or zero-length star trees. Proteins use the p-distance when that
 /// model is requested and the Poisson correction d = -ln(1 - p) otherwise
-/// (Nei & Kumar 2000), so the dialog's 'Poisson correction', a nucleotide model name and any other
-/// name check_distance_model accepts get the Poisson distance - the same rule the tree report's distance label follows
-/// (trees.rs, "amino-acid p-distance" / "Poisson-corrected amino-acid"). A saturated Poisson pair
+/// (Nei & Kumar 2000), as [`protein_distance_name`] names them for every name check_distance_model
+/// accepts. A saturated Poisson pair
 /// (p = 1) is not computable (NaN), as a saturated nucleotide pair is. Gaps and ambiguity symbols
 /// (X, B, Z, J, *, ?) are skipped.
 pub fn calc_protein_pair_distance_and_se(s1: &str, s2: &str, model: &str) -> (f64, f64) {
@@ -539,9 +554,9 @@ pub fn calc_protein_pair_distance_and_se(s1: &str, s2: &str, model: &str) -> (f6
     }
     let l = valid as f64;
     let p = diff as f64 / l;
-    // Only a name holding "p-distance" is the p-distance; distance_model_kind would send every
-    // name it does not know, 'Poisson correction' among them, to the p-distance (BG-01M7MM62).
-    let (d, var) = if model.to_ascii_lowercase().contains("p-distance") {
+    // Not distance_model_kind: it would send every name it does not know, 'Poisson correction'
+    // among them, to the p-distance (BG-01M7MM62).
+    let (d, var) = if protein_distance_name(model) == PROTEIN_P_DISTANCE {
         (p, p * (1.0 - p) / l)
     } else {
         if p >= 1.0 {
@@ -778,7 +793,12 @@ pub struct BetweenGroupMeanRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistanceAnalysisReport {
+    /// The distance computed: the requested model on nucleotides, [`protein_distance_name`] on proteins.
     pub model: String,
+    /// Set only on a protein alignment whose requested model is neither the p-distance nor the
+    /// Poisson correction: says the requested model does not apply and the Poisson correction was computed.
+    #[serde(rename = "modelNote", default, skip_serializing_if = "Option::is_none")]
+    pub model_note: Option<String>,
     #[serde(rename = "taxaNames")]
     pub taxa_names: Vec<String>,
     #[serde(rename = "pairwiseMatrix")]
@@ -878,8 +898,17 @@ pub fn compute_evolutionary_distances(
     }
 
     let pc = pair_count.max(1) as f64;
+    let (computed, model_note) = if protein {
+        let computed = protein_distance_name(model);
+        let asked_for_it = model.eq_ignore_ascii_case(PROTEIN_P_DISTANCE) || model.eq_ignore_ascii_case(PROTEIN_POISSON_CORRECTION);
+        let note = (!asked_for_it).then(|| format!("{model} does not apply to proteins: the Poisson correction was computed instead."));
+        (computed.to_string(), note)
+    } else {
+        (model.to_string(), None)
+    };
     DistanceAnalysisReport {
-        model: model.to_string(),
+        model: computed,
+        model_note,
         taxa_names: names[..n].to_vec(),
         pairwise_matrix: mat,
         overall_mean_distance: if pair_count > 0 { round4(sum_d / pc) } else { f64::NAN },

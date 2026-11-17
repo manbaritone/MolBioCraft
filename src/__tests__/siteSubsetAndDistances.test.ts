@@ -1,11 +1,12 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { applySiteSubset } from '../core/siteSubset';
 import { groupOf, runBuildTree, runComputeDistances } from '../core/operationRunners';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import { phylogenySourceDocuments } from '../core/documentViews';
+import type { SequenceDocument } from '../types/bio';
 
 // Three 13-column rows written for this test (US-01M6TDSV). '-' is a gap and '?' a missing base.
 //   column  1 2 3 4 5 6 7 8 9 10 11 12 13
@@ -60,5 +61,92 @@ describe('Compute Distances', () => {
     const pos12 = Array.from({ length: width }, (_, c) => c % 3 !== 2).filter(Boolean).length;
     const r = await runBuildTree(rows, { method: 'Neighbor-Joining (NJ)', pos3: false }, { sourceLabel: 'x' });
     expect(r.created[0].history[0].description).toMatch(new RegExp(`codon positions 1\\+2: ${pos12} of ${width} sites used`));
+  });
+});
+
+// BG-01M7MQP8: on a protein alignment the report named the requested nucleotide model over the Poisson
+// distance it computed. Three pre-aligned rows written for this test: 5 differences over 20 comparable
+// residues between p1 and p2 (the gap and X columns are skipped), so the Poisson d = -ln(0.75) = 0.2877.
+const protein = (id: string, sequence: string): SequenceDocument =>
+  ({ id, name: id, accession: '', description: '', moleculeType: 'Protein', topology: 'linear', sequence, features: [], primers: [], history: [], createdAt: 0, updatedAt: 0 }) as unknown as SequenceDocument;
+const proteins = [protein('p1', 'MKTAYIAKQRDEFGHLNPSW-X'), protein('p2', 'MKTAWIAKERDEFGHVNPTA-M')];
+const noteFor = (m: string) => `Note: ${m} does not apply to proteins: the Poisson correction was computed instead.`;
+
+describe('Compute Distances names the protein distance it computed (BG-01M7MQP8)', () => {
+  for (const [label, opts, requested] of [
+    ['Jukes-Cantor (JC69)', { model: 'Jukes-Cantor (JC69)' }, 'Jukes-Cantor (JC69)'],
+    ['no model (the MCL default)', {}, 'Maximum Composite Likelihood (MCL)'],
+  ] as const) {
+    it(`BG-01M7MQP8 ${label} on a protein alignment is labelled Poisson correction with a note`, () => {
+      const r = runComputeDistances(proteins, { analysis: 'pairwise', ...opts }, { sourceLabel: 'prot' });
+      const doc = r.created[0];
+      const lines = String(doc.docMetadata?.Notes).split('\n');
+      const at = lines.indexOf('Model: Poisson correction');
+      expect(at, lines.join('\n')).toBeGreaterThan(0);
+      expect(lines[at + 1]).toBe(noteFor(requested));
+      expect(lines.filter((l) => l.startsWith('Model:') || l.startsWith('Note:'))).toHaveLength(2);
+      expect(doc.description).toBe('Poisson correction pairwise distances for 2 sequences');
+      expect(doc.docMetadata?.['Distance model']).toBe('Poisson correction');
+      expect(doc.history[0].description).toMatch(/^Poisson correction; /);
+      expect(r.summary).toMatch(/^Poisson correction: overall mean 0\.2877 /);
+      // The requested name appears only in the note.
+      expect(JSON.stringify({ ...doc, docMetadata: { ...doc.docMetadata, Notes: '' } }) + r.summary).not.toContain(requested);
+    });
+  }
+  it('BG-01M7MQP8 p-distance on a protein alignment keeps its label and writes no note', () => {
+    const r = runComputeDistances(proteins, { analysis: 'pairwise', model: 'p-distance' }, { sourceLabel: 'prot' });
+    const notes = String(r.created[0].docMetadata?.Notes);
+    expect(notes).toMatch(/^Model: p-distance$/m);
+    expect(notes).not.toMatch(/^Note:/m);
+    expect(r.created[0].docMetadata?.['Distance model']).toBe('p-distance');
+    expect(r.summary).toMatch(/^p-distance: overall mean 0\.2500 /);
+  });
+  it('BG-01M7MQP8 Poisson correction on a protein alignment writes no note', () => {
+    const notes = String(runComputeDistances(proteins, { analysis: 'pairwise', model: 'Poisson correction' }, { sourceLabel: 'prot' }).created[0].docMetadata?.Notes);
+    expect(notes).toMatch(/^Model: Poisson correction$/m);
+    expect(notes).not.toMatch(/^Note:/m);
+  });
+  it('BG-01M7MQP8 the nucleotide K2P report is unchanged', () => {
+    const coxii = SAMPLE_LIBRARY.find((d) => d.id === 'doc-aln-coxii-cds')!;
+    const rows = phylogenySourceDocuments(coxii, [], SAMPLE_LIBRARY).slice(0, 6);
+    const r = runComputeDistances(rows, { analysis: 'pairwise', model: 'Kimura 2-parameter (K2P)' }, { sourceLabel: 'COXII' });
+    const doc = r.created[0];
+    expect(String(doc.docMetadata?.Notes)).toMatch(/^Model: Kimura 2-parameter \(K2P\)$/m);
+    expect(String(doc.docMetadata?.Notes)).not.toMatch(/^Note:/m);
+    expect(doc.description).toBe('Kimura 2-parameter (K2P) pairwise distances for 6 sequences');
+    expect(doc.docMetadata?.['Distance model']).toBe('Kimura 2-parameter (K2P)');
+    expect(doc.history[0].description).toMatch(/^Kimura 2-parameter \(K2P\); /);
+    expect(r.summary).toMatch(/^Kimura 2-parameter \(K2P\): overall mean /);
+  });
+  it("BG-01M7MQP8 every label is the engine report's model and note, and a report with no model fails", async () => {
+    // The engine's own words are written back verbatim, so a runner-side relabel cannot pass this.
+    const engine = { model: 'ENGINE-MODEL' as string | undefined, modelNote: 'ENGINE-NOTE' as string | undefined };
+    vi.resetModules();
+    vi.doMock('../core/phyloEvoEngine', async (importOriginal) => {
+      const real = await importOriginal<typeof import('../core/phyloEvoEngine')>();
+      return {
+        ...real,
+        computeEvolutionaryDistances: (...a: Parameters<typeof real.computeEvolutionaryDistances>) => ({ ...real.computeEvolutionaryDistances(...a), ...engine }),
+      };
+    });
+    try {
+      const { runComputeDistances: run } = await import('../core/operationRunners');
+      const r = run(proteins, { analysis: 'pairwise', model: 'Jukes-Cantor (JC69)' }, { sourceLabel: 'prot' });
+      const lines = String(r.created[0].docMetadata?.Notes).split('\n');
+      expect(lines[lines.indexOf('Model: ENGINE-MODEL') + 1]).toBe('Note: ENGINE-NOTE');
+      expect(r.created[0].description).toMatch(/^ENGINE-MODEL /);
+      expect(r.created[0].docMetadata?.['Distance model']).toBe('ENGINE-MODEL');
+      expect(r.created[0].history[0].description).toMatch(/^ENGINE-MODEL; /);
+      expect(r.summary).toMatch(/^ENGINE-MODEL: /);
+      // No note from the engine: no Note line.
+      engine.modelNote = undefined;
+      expect(String(run(proteins, { analysis: 'pairwise' }, { sourceLabel: 'prot' }).created[0].docMetadata?.Notes)).not.toMatch(/^Note:/m);
+      // A report naming no model (a stale engine) fails rather than falling back to the requested name.
+      engine.model = undefined;
+      expect(() => run(proteins, { analysis: 'pairwise', model: 'Jukes-Cantor (JC69)' }, { sourceLabel: 'prot' })).toThrow(/named no distance model/);
+    } finally {
+      vi.doUnmock('../core/phyloEvoEngine');
+      vi.resetModules();
+    }
   });
 });

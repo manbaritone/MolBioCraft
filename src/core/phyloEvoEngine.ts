@@ -107,7 +107,10 @@ export interface SubstitutionRateMatrixReport {
 }
 
 export interface DistanceAnalysisReport {
-  model: SubstitutionModelName;
+  /** The distance computed: the requested model on nucleotides; 'p-distance' or 'Poisson correction' on proteins. */
+  model: SubstitutionModelName | 'Poisson correction';
+  /** Protein alignment under any other requested name: "<requested> does not apply to proteins: the Poisson correction was computed instead." */
+  modelNote?: string;
   taxaNames: string[];
   /** Lower triangle: distance; upper triangle: SE. `null` = not computable (saturated). */
   pairwiseMatrix: Maybe[][];

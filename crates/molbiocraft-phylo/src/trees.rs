@@ -875,10 +875,10 @@ pub fn construct_phylogenetic_tree_with_resampling(
     graph[root].branch_len = 0.0;
 
     let nucleotide = is_nucleotide_alignment(seqs);
-    // Proteins use amino-acid distances (see distances::calc_protein_pair_distance_and_se).
+    // Proteins use amino-acid distances, named by the one rule distances::calc_protein_pair_distance_and_se follows.
     let model_label = if nucleotide {
         model.to_string()
-    } else if model.to_ascii_lowercase().contains("p-distance") {
+    } else if crate::distances::protein_distance_name(model) == crate::distances::PROTEIN_P_DISTANCE {
         "amino-acid p-distance".to_string()
     } else {
         "Poisson-corrected amino-acid".to_string()

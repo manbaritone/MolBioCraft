@@ -1172,13 +1172,17 @@ const fmtD = (x: number | null | undefined, digits = 4) => (x === null || x === 
 export function runComputeDistances(inputs: SequenceDocument[], v: OptionValues, ctx: RunContext): OperationResult {
   if (inputs.length < 2) throw new Error('Select at least two sequences.');
   const { names, seqs, groups, note } = analysisRows(inputs, v);
-  const model = String(v.model ?? 'Maximum Composite Likelihood (MCL)') as SubstitutionModelName;
-  const rep = computeEvolutionaryDistances(names, seqs, model, groups.some(Boolean) ? groups : []);
+  const requested = String(v.model ?? 'Maximum Composite Likelihood (MCL)') as SubstitutionModelName;
+  const rep = computeEvolutionaryDistances(names, seqs, requested, groups.some(Boolean) ? groups : []);
+  // Every label is the distance the engine computed (a protein gets 'Poisson correction' for a nucleotide
+  // model name), never the requested name: a report naming none fails rather than being relabelled.
+  const model = rep.model;
+  if (typeof model !== 'string' || !model) throw new Error('The distance engine named no distance model for this report; rebuild the engine (npm run wasm:build).');
   const what = String(v.analysis ?? 'pairwise');
   const withSe = Boolean(v.withSE);
   const lines: string[] = [];
   const title = String(v.resultName ?? '').trim() || `${ctx.sourceLabel} distances`;
-  lines.push(`# ${title}`, '', `Model: ${model}`, `Data: ${note}`, `Sequences: ${names.length}`, '');
+  lines.push(`# ${title}`, '', `Model: ${model}`, ...(rep.modelNote ? [`Note: ${rep.modelNote}`] : []), `Data: ${note}`, `Sequences: ${names.length}`, '');
   if (what === 'pairwise') {
     lines.push('## Pairwise distances (lower triangle)' + (withSe ? ', standard errors (upper triangle)' : ''), '');
     const w = Math.min(28, Math.max(...names.map((n) => n.length)));

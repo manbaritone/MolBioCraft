@@ -167,3 +167,66 @@ fn poisson_correction_leaves_the_nucleotide_p_distance_and_the_hky_gtr_refusal_a
         assert!(d.is_nan() && se.is_nan(), "{model} stays refused for proteins: {d}");
     }
 }
+
+/// BG-01M7MQP8: a protein report echoed the requested nucleotide model ('Jukes-Cantor (JC69)')
+/// over the Poisson distance it computed. The report names the protein distance computed, says why
+/// when a nucleotide name was asked for, and the tree label follows the same single rule.
+#[test]
+fn protein_report_label_names_the_distance_computed() {
+    use molbiocraft_phylo::distances::protein_distance_name;
+    use molbiocraft_phylo::trees::construct_phylogenetic_tree;
+    let names: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+    let seqs: Vec<String> = [POISSON_A, POISSON_B].iter().map(|s| s.to_string()).collect();
+    let note = |m: &str| format!("{m} does not apply to proteins: the Poisson correction was computed instead.");
+    let cases: [(&str, &str, Option<String>, f64, f64); 7] = [
+        ("Jukes-Cantor (JC69)", DIALOG_POISSON, Some(note("Jukes-Cantor (JC69)")), 0.2877, 0.1291),
+        ("Maximum Composite Likelihood (MCL)", DIALOG_POISSON, Some(note("Maximum Composite Likelihood (MCL)")), 0.2877, 0.1291),
+        ("Tamura-Nei (TN93)", DIALOG_POISSON, Some(note("Tamura-Nei (TN93)")), 0.2877, 0.1291),
+        (DIALOG_POISSON, DIALOG_POISSON, None, 0.2877, 0.1291),
+        ("poisson CORRECTION", DIALOG_POISSON, None, 0.2877, 0.1291),
+        ("p-distance", "p-distance", None, 0.25, 0.0968),
+        ("P-Distance", "p-distance", None, 0.25, 0.0968),
+    ];
+    for (requested, computed, expected_note, d, se) in cases {
+        assert_eq!(protein_distance_name(requested), computed, "{requested}: the shared rule");
+        let report = compute_evolutionary_distances(&names, &seqs, requested, &[]);
+        assert_eq!(report.model, computed, "{requested}: the report names the distance computed");
+        assert_eq!(report.model_note, expected_note, "{requested}: note");
+        assert_eq!(report.pairwise_matrix[1][0], d, "{requested}: distance unchanged");
+        assert_eq!(report.pairwise_matrix[0][1], se, "{requested}: SE unchanged");
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["model"], computed, "{requested}: JSON model");
+        match &expected_note {
+            Some(n) => assert_eq!(json["modelNote"], n.as_str(), "{requested}: JSON modelNote"),
+            None => assert!(json.get("modelNote").is_none(), "{requested}: modelNote must be absent: {json}"),
+        }
+    }
+
+    // A nucleotide alignment keeps the requested model's name, its own distance and no note.
+    let dna: Vec<String> = ["ACGTACGTACGTACGTACGT", "ACGTACGAACGTACGTTCGT"].iter().map(|s| s.to_string()).collect();
+    let report = compute_evolutionary_distances(&names, &dna, "Jukes-Cantor (JC69)", &[]);
+    assert_eq!(report.model, "Jukes-Cantor (JC69)");
+    assert_eq!(report.model_note, None);
+    assert!(serde_json::to_value(&report).unwrap().get("modelNote").is_none());
+    // JC69 of p = 2/20: d = -3/4 ln(1 - 4p/3) = 0.1073.
+    assert_eq!(report.pairwise_matrix[1][0], 0.1073, "nucleotide JC69 distance unchanged");
+
+    // The tree label follows the same rule, for any case of the name.
+    let three: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+    let prot: Vec<String> = [POISSON_A, POISSON_B, "MKTAWIAKERDEFGHVNPTW-M"].iter().map(|s| s.to_string()).collect();
+    for (requested, label) in [
+        ("P-Distance", "on amino-acid p-distance distances"),
+        ("Jukes-Cantor (JC69)", "on Poisson-corrected amino-acid distances"),
+        (DIALOG_POISSON, "on Poisson-corrected amino-acid distances"),
+    ] {
+        let tree = construct_phylogenetic_tree(&three, &prot, "Neighbor-Joining (NJ)", requested, 0);
+        assert!(tree.method_note.contains(label), "{requested}: {}", tree.method_note);
+    }
+
+    // The rule exists once: distances.rs holds the only "p-distance" name test and trees.rs asks it.
+    let rule = "to_ascii_lowercase().contains(\"p-distance\")";
+    assert_eq!(include_str!("../src/distances.rs").matches(rule).count(), 1, "one rule in distances.rs");
+    let trees = include_str!("../src/trees.rs");
+    assert!(!trees.contains("\"p-distance\""), "trees.rs must not restate the rule");
+    assert!(trees.contains("protein_distance_name("), "trees.rs must ask the shared rule");
+}
