@@ -15397,9 +15397,10 @@ table,
   background: var(--mbc-bg-canvas);
 }
 
-/* US-01M7DVB1: the divider between the main view and the split pane. Each pane takes its share of the
-   room beside the 6px divider (DOCUMENT_SPLIT_DIVIDER_PX), as the App draws it on the host; a folded
-   pane is hidden, not unmounted, so its document and selection stay. */
+/* US-01M7DVB1: the divider between the main view and the split pane. Each pane takes about its share
+   of the room beside the 6px divider (DOCUMENT_SPLIT_DIVIDER_PX; the pane's 2px border is not counted),
+   as the App draws it on the host; a folded pane is hidden, not unmounted, so its document and
+   selection stay. */
 .mbc-split-host.is-split {
   position: relative;
 }

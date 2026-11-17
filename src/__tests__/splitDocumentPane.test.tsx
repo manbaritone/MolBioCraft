@@ -27,7 +27,8 @@
  *
  * - AC1: a drag sets the ratio along the active axis, clamped to each pane's minimum; a narrower host
  *   clamps only the drawn ratio; the chosen ratio is autosaved and restored, and each restore case of
- *   a saved size is told apart.
+ *   a saved size is told apart. What is drawn is read from the flex App.css gives each pane and the
+ *   shares the App writes on the host (expectDrawn), and the host is measured only while split.
  * - AC2: the separator's attributes, and the keys of each axis (a key of the other axis does nothing).
  * - AC3: a folded pane leaves its restore button, restore returns the last expanded ratio, and neither
  *   folding nor restoring changes a document or a selection.
@@ -45,7 +46,7 @@ import { parseMbcWorkbench } from '../core/mbcSessionFormat';
 import { paneSplitValueNow, renderedPaneSplitRatio } from '../core/paneSplit';
 import { resolveMenuNodeFunctionDescription } from '../data/menuFunctionDescriptions';
 import { appTsxSource, mountApp, type AppHarness } from './appHarness';
-import { appCssRules, cascaded } from './cssCascade';
+import { appCssRules, cascaded, gridTracks } from './cssCascade';
 import { dispatchLiveEvent, memoryStorage, type LiveElement, type LiveStorage } from './liveDom';
 
 // Each check launches the App afresh.
@@ -750,6 +751,45 @@ const restoreWithSplit = (app: AppHarness, documentSplit: unknown, sessionName: 
 });
 const sizeNotices = (app: AppHarness) => statusSegments(app).filter((s) => /split size|half each/i.test(s));
 
+/** Activates a restore button from the keyboard's place on it; the button goes, and focus moves to the divider. */
+async function clickRestore(app: AppHarness, label: string) {
+  const button = app.one(`.mbc-split-host > button[aria-label="${label}"]`, label);
+  button.focus();
+  expect(app.doc.activeElement === button, `${label} has focus`).toBe(true);
+  await app.click(button);
+  expect(app.all(`.mbc-split-host > button[aria-label="${label}"]`), `${label} is gone`).toHaveLength(0);
+  expect(app.doc.activeElement === divider(app), `${label}: focus moves to the divider, not the page`).toBe(true);
+}
+/** The window the sized host sits in, for the App.css cascade: the viewer canvas at most the host's width. */
+const SIZED_VIEW = { window: 1440, height: 900, canvas: HOST_W };
+/**
+ * What the split draws, read the way a browser lays it out: the flex App.css gives the main view and
+ * the pane (cascaded as declared; the reader leaves a var() in a shorthand to the caller), with each
+ * var() taken from the shares the App wrote on the host, the one element between it and the panes.
+ * The pane's share is the main pane's complement, and the separator announces the main pane's share.
+ */
+function expectDrawn(app: AppHarness, ratio: number, label: string, view = SIZED_VIEW) {
+  const h = host(app);
+  const share = (name: string) => Number(h.style.getPropertyValue(name) || NaN);
+  // The flex-grow a declared flex resolves to on a child of the host.
+  const grow = (flex: string | undefined) =>
+    Number(gridTracks((flex ?? '').replace(/var\((--[\w-]+)\s*,\s*([^)]*)\)/g, (_, n: string, fb: string) => h.style.getPropertyValue(n) || fb))[0]);
+  const mainFlex = cascaded(app.canvas(), 'flex', view);
+  const paneFlex = cascaded(pane(app), 'flex', view);
+  expect({
+    mainFlex, paneFlex, main: share('--mbc-doc-split-main'), second: share('--mbc-doc-split-second'),
+    mainGrow: grow(mainFlex), paneGrow: grow(paneFlex),
+  }, label).toEqual({
+    mainFlex: 'var(--mbc-doc-split-main, 1) 1 0',
+    paneFlex: 'var(--mbc-doc-split-second, 1) 1 0',
+    main: expect.closeTo(ratio, 3),
+    second: expect.closeTo(1 - ratio, 3),
+    mainGrow: expect.closeTo(ratio, 3),
+    paneGrow: expect.closeTo(1 - ratio, 3),
+  });
+  expect(Math.round(share('--mbc-doc-split-main') * 100), `${label}: the separator announces the share drawn`).toBe(valueNow(app));
+}
+
 describe('US-01M7DVB1 AC1: the divider is dragged along the active axis, and its ratio is saved and restored', () => {
   it('US-01M7DVB1 AC1 a drag sets the width side by side and the height top and bottom, each pane kept to its minimum', async () => {
     await withSizedApp(async (app) => {
@@ -759,20 +799,25 @@ describe('US-01M7DVB1 AC1: the divider is dragged along the active axis, and its
       // x leaves the main pane 360 of 1,200 px; y would read 647 of 700 (or of 1,200).
       await dragDivider(app, { x: mainAt(360), y: 650 });
       expect(valueNow(app), 'side by side: the width').toBe(30);
+      expectDrawn(app, 0.3, 'the drag draws the main view at 360 of 1,200');
       // 250 px is under side by side's 320 (and over half of it, so nothing folds).
       await dragDivider(app, { x: mainAt(250), y: 650 });
       expect(valueNow(app), 'clamped to 320 of 1,200').toBe(Math.round((320 / 1200) * 100));
+      expectDrawn(app, 320 / 1200, 'the main view is drawn at its 320 px minimum');
 
       await app.change(chooser(app), 'top-bottom');
       // The chosen 320/1,200 is 187 of 700 px tall, under 200: drawn at 200 of 700.
       expect(valueNow(app), 'the chosen ratio is drawn clamped to the height').toBe(Math.round((200 / 700) * 100));
+      expectDrawn(app, 200 / 700, 'top and bottom draws the main view at its 200 px minimum');
       // y leaves the main pane 490 of 700 px; x would fold the main view away.
       await dragDivider(app, { x: 50, y: mainAt(490) });
       expect(valueNow(app), 'top and bottom: the height').toBe(70);
+      expectDrawn(app, 0.7, 'the drag draws the main view 490 of 700 tall');
       expect(restoreButtons(app)).toEqual([]);
       // 150 px is under top and bottom's 200 and over half of it.
       await dragDivider(app, { x: 1150, y: mainAt(150) });
       expect(valueNow(app), 'clamped to 200 of 700').toBe(Math.round((200 / 700) * 100));
+      expectDrawn(app, 200 / 700, 'the main view is drawn at its 200 px minimum, not 150');
       expect(restoreButtons(app)).toEqual([]);
     });
   });
@@ -785,13 +830,16 @@ describe('US-01M7DVB1 AC1: the divider is dragged along the active axis, and its
       await app.change(picker(app), DOC_B.id);
       await dragDivider(app, { x: mainAt(360), y: 10 });
       expect(valueNow(app)).toBe(30);
+      expectDrawn(app, 0.3, 'after the drag');
       await resize(806, HOST_H);
       expect(valueNow(app), '0.3 of 800 is under 320: drawn at 320 of 800').toBe(40);
+      expectDrawn(app, 320 / 800, 'the narrower host draws the main view at 320 of 800, not 240', { ...SIZED_VIEW, canvas: 806 });
       await autosaveRunsOut(app);
       expect(autosavedSplit(storage), 'the chosen ratio is saved, not the drawn one')
         .toEqual({ orientation: 'side-by-side', docId: DOC_B.id, docName: 'Doc_B', ratio: 0.3 });
       await resize(HOST_W, HOST_H);
       expect(valueNow(app), 'wide again: the chosen ratio').toBe(30);
+      expectDrawn(app, 0.3, 'wide again');
     }, storage);
     await withSizedApp(async (app) => {
       await app.menu('file:restore-autosave');
@@ -799,8 +847,44 @@ describe('US-01M7DVB1 AC1: the divider is dragged along the active axis, and its
       expect(statusSegments(app).join(' · ')).toContain('Restored workbench');
       expect(layout(app)).toEqual({ host: SIDE, pane: DOC_B.id });
       expect(valueNow(app), 'the saved ratio comes back').toBe(30);
+      expectDrawn(app, 0.3, 'the restored ratio is drawn');
       expect(sizeNotices(app)).toEqual([]);
     }, storage);
+  });
+
+  it('US-01M7DVB1 AC1 the host is measured only while a split is shown, and a split opened after a Single Pane resize draws at the new size', async () => {
+    await withSizedApp(async (app, resize) => {
+      await restore(app, [MAIN, DOC_A, DOC_B], MAIN.id, null);
+      // Which elements each resize observer watches, from here on.
+      type Observer = { observe(el: unknown): void; unobserve(el: unknown): void; disconnect(): void };
+      const proto = (globalThis as unknown as { ResizeObserver: { prototype: Observer } }).ResizeObserver.prototype;
+      const watching = new Map<unknown, Set<unknown>>();
+      const watched = (o: unknown) => watching.get(o) ?? watching.set(o, new Set()).get(o)!;
+      const { observe, unobserve, disconnect } = proto;
+      const spies = [
+        vi.spyOn(proto, 'observe').mockImplementation(function (this: Observer, el: unknown) { watched(this).add(el); observe.call(this, el); }),
+        vi.spyOn(proto, 'unobserve').mockImplementation(function (this: Observer, el: unknown) { watched(this).delete(el); unobserve.call(this, el); }),
+        vi.spyOn(proto, 'disconnect').mockImplementation(function (this: Observer) { watching.delete(this); disconnect.call(this); }),
+      ];
+      const hostWatched = () => [...watching.values()].some((els) => [...els].some((el) => el === host(app)));
+      try {
+        await app.change(chooser(app), 'side-by-side');
+        expect(hostWatched(), 'side by side: the host is measured').toBe(true);
+        await dragDivider(app, { x: mainAt(360), y: 10 });
+        expectDrawn(app, 0.3, 'side by side at 1,206');
+        await app.change(chooser(app), 'single');
+        expect(hostWatched(), 'Single Pane: nothing measures the host').toBe(false);
+        await resize(806, HOST_H);
+        await app.change(chooser(app), 'side-by-side');
+        expect(hostWatched(), 'split again: the host is measured again').toBe(true);
+        expect(valueNow(app), 'measured on opening: 0.3 of 800 is drawn at 320 of 800').toBe(40);
+        expectDrawn(app, 320 / 800, 'opened after the Single Pane resize', { ...SIZED_VIEW, canvas: 806 });
+        await app.change(chooser(app), 'top-bottom');
+        expect(hostWatched(), 'top and bottom: the host is measured').toBe(true);
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    });
   });
 
   it('US-01M7DVB1 AC1 an absent ratio opens at half each with no message; an unreadable one at half each, not folded, saying so exactly', async () => {
@@ -846,12 +930,13 @@ describe('US-01M7DVB1 AC2: the divider is a separator the keys of its own axis m
         orientation: 'vertical', min: '0', max: '100', now: '50',
       });
       // 1,200 px wide: 16 px is 1.33%, 80 px 6.67%.
-      const steps: [string, boolean, number][] = [
-        ['ArrowRight', false, 51], ['ArrowRight', true, 58], ['ArrowLeft', false, 57], ['ArrowLeft', true, 50], ['ArrowLeft', false, 49],
+      const steps: [string, boolean, number, number][] = [
+        ['ArrowRight', false, 51, 616], ['ArrowRight', true, 58, 696], ['ArrowLeft', false, 57, 680], ['ArrowLeft', true, 50, 600], ['ArrowLeft', false, 49, 584],
       ];
-      for (const [key, shift, want] of steps) {
+      for (const [key, shift, want, px] of steps) {
         await pressOnDivider(app, key, shift);
         expect(valueNow(app), `${shift ? 'Shift+' : ''}${key}`).toBe(want);
+        expectDrawn(app, px / 1200, `${shift ? 'Shift+' : ''}${key} draws the main view ${px} of 1,200`);
       }
       for (const key of ['ArrowUp', 'ArrowDown']) {
         await pressOnDivider(app, key);
@@ -876,12 +961,13 @@ describe('US-01M7DVB1 AC2: the divider is a separator the keys of its own axis m
       expect(divider(app).getAttribute('aria-label')).toBe('Resize the main view and the split pane');
       expect(valueNow(app)).toBe(50);
       // 700 px tall: 16 px is 2.29%, 80 px 11.43%.
-      const steps: [string, boolean, number][] = [
-        ['ArrowDown', false, 52], ['ArrowDown', true, 64], ['ArrowUp', false, 61], ['ArrowUp', true, 50],
+      const steps: [string, boolean, number, number][] = [
+        ['ArrowDown', false, 52, 366], ['ArrowDown', true, 64, 446], ['ArrowUp', false, 61, 430], ['ArrowUp', true, 50, 350],
       ];
-      for (const [key, shift, want] of steps) {
+      for (const [key, shift, want, px] of steps) {
         await pressOnDivider(app, key, shift);
         expect(valueNow(app), `${shift ? 'Shift+' : ''}${key}`).toBe(want);
+        expectDrawn(app, px / 700, `${shift ? 'Shift+' : ''}${key} draws the main view ${px} of 700 tall`);
       }
       for (const key of ['ArrowLeft', 'ArrowRight']) {
         await pressOnDivider(app, key);
@@ -918,7 +1004,7 @@ describe('US-01M7DVB1 AC3: a folded pane leaves its restore button, and folding 
       expect(hostClasses(app)).toBe('is-collapsed-main is-side-by-side is-split mbc-split-host');
       expect(cascaded(app.canvas(), 'display', view), 'the main view is folded away').toBe('none');
       expect(seen(), 'folding the main view changes nothing in either pane').toEqual(before);
-      await app.click(app.one('.mbc-split-host > button[aria-label="Restore the main view"]'));
+      await clickRestore(app, 'Restore the main view');
       expect(valueNow(app), 'the last expanded ratio').toBe(30);
       expect(restoreButtons(app)).toEqual([]);
       expect(cascaded(app.canvas(), 'display', view) ?? 'block').not.toBe('none');
@@ -929,7 +1015,7 @@ describe('US-01M7DVB1 AC3: a folded pane leaves its restore button, and folding 
       expect(restoreButtons(app)).toEqual(['Restore the split pane']);
       expect(cascaded(pane(app), 'display', view), 'the split pane is folded away').toBe('none');
       expect(seen(), 'folding the split pane changes nothing in either pane').toEqual(before);
-      await app.click(app.one('.mbc-split-host > button[aria-label="Restore the split pane"]'));
+      await clickRestore(app, 'Restore the split pane');
       expect(valueNow(app)).toBe(30);
       expect(cascaded(pane(app), 'display', view)).not.toBe('none');
       expect(seen()).toEqual(before);
@@ -967,6 +1053,7 @@ describe('US-01M7DVB1 AC4: Swap leaves the divider where it was', () => {
       expect(mainDocName(app), 'the documents moved').toBe('Doc_B');
       expect(paneDocId(app)).toBe(DOC_A.id);
       expect(valueNow(app), 'the divider did not').toBe(30);
+      expectDrawn(app, 0.3, 'Swap leaves the main view drawn at 30%');
       expect(hostClasses(app)).toBe(SIDE);
 
       await pressOnDivider(app, 'Home');
@@ -978,6 +1065,7 @@ describe('US-01M7DVB1 AC4: Swap leaves the divider where it was', () => {
       expect(hostClasses(app)).toBe('is-collapsed-main is-side-by-side is-split mbc-split-host');
       await app.click(app.one('.mbc-split-host > button[aria-label="Restore the main view"]'));
       expect(valueNow(app), 'and restores to where it was').toBe(30);
+      expectDrawn(app, 0.3, 'restored after Swap, the main view is drawn at 30% again');
     });
   });
 });

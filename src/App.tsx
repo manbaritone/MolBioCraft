@@ -2348,13 +2348,16 @@ export const App: React.FC = () => {
     }
     setDocumentSplit(next);
   };
-  // The split host's size, measured as it changes, for the ratio drawn (US-01M7DVB1).
+  // The split host's size, measured as it changes, for the ratio drawn (US-01M7DVB1); only while a
+  // split is shown, as Single Pane draws no divider. Opening a split measures the host afresh.
+  const documentSplitShown = documentSplit !== 'single';
   useEffect(() => {
     const host = documentSplitHost;
     if (!host || typeof host.getBoundingClientRect !== 'function') {
       setDocumentSplitHostBox(null);
       return;
     }
+    if (!documentSplitShown) return;
     const measure = () => {
       const r = host.getBoundingClientRect();
       setDocumentSplitHostBox((prev) => (prev && prev.width === r.width && prev.height === r.height ? prev : { width: r.width, height: r.height }));
@@ -2364,7 +2367,7 @@ export const App: React.FC = () => {
     const observer = new ResizeObserver(measure);
     observer.observe(host);
     return () => observer.disconnect();
-  }, [documentSplitHost]);
+  }, [documentSplitHost, documentSplitShown]);
   const documentSplitDrawnRatio =
     documentSplit === 'single'
       ? documentSplitSize.ratio

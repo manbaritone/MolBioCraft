@@ -193,7 +193,7 @@ export interface DocumentSplitDividerProps {
  * The divider between the main view and the split pane (US-01M7DVB1), a child of the split host, and
  * the restore button a folded pane leaves. A drag writes the host's custom properties as the pointer
  * moves and hands the state over on release (a cancel puts the old one back). It stays while a pane
- * is folded, so focus stays on it and Enter restores.
+ * is folded, so focus stays on it and Enter restores; the restore button hands focus to it as it goes.
  */
 export function DocumentSplitDivider({ orientation, size, drawnRatio, onChange }: DocumentSplitDividerProps) {
   const dragRef = useRef<{
@@ -204,6 +204,7 @@ export function DocumentSplitDivider({ orientation, size, drawnRatio, onChange }
     handle: HTMLElement;
     host: HTMLElement;
   } | null>(null);
+  const dividerRef = useRef<HTMLDivElement | null>(null);
   const side = orientation === 'side-by-side';
   const showOnHost = (host: HTMLElement, ratio: number) => {
     for (const [k, v] of Object.entries(documentSplitStyle(ratio))) host.style.setProperty(k, v);
@@ -231,6 +232,7 @@ export function DocumentSplitDivider({ orientation, size, drawnRatio, onChange }
   return (
     <>
       <div
+        ref={dividerRef}
         className="mbc-split-divider"
         role="separator"
         tabIndex={0}
@@ -299,7 +301,11 @@ export function DocumentSplitDivider({ orientation, size, drawnRatio, onChange }
           className={`mbc-split-restore restore-${size.collapsed}`}
           aria-label={restoreLabel}
           title={`${restoreLabel} at the size it had`}
-          onClick={() => onChange({ ratio: size.ratio, collapsed: null })}
+          onClick={() => {
+            // The button goes with the fold, so focus moves to the divider rather than the page.
+            dividerRef.current?.focus();
+            onChange({ ratio: size.ratio, collapsed: null });
+          }}
         >
           <RestoreIcon size={14} aria-hidden="true" />
         </button>
