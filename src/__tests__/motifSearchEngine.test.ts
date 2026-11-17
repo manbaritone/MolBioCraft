@@ -98,4 +98,18 @@ describe('US-01M7DVBH AC6: search_iupac_motif through the rebuilt engine', () =>
     expect([cut.totalHits, cut.definiteHits, cut.possibleHits]).toEqual([5, 4, 1]);
     expect(cut.warnings).toEqual(['Showing the first 2 of 5 hits.']);
   });
+
+  it('US-01M7DVBH AC6 the wrapper defaults to linear, both strands and 250 hits', () => {
+    // No circular given: the GGTCTC site across the origin is not found, as on a linear molecule.
+    const bsa = `CTC${'A'.repeat(2994)}GGT`;
+    expect(searchIupacMotifRust(bsa, 'GAGACC', { mode: 'nucleotide' }).totalHits).toBe(0);
+    // No searchBothStrands given: the reverse strand is searched (GGTCTC at 4-9 is a -1 hit).
+    expect(rows(searchIupacMotifRust('AAAGGTCTCAA', 'GAGACC', { mode: 'nucleotide' }))).toEqual([
+      [4, 9, -1, 'definite', false],
+    ]);
+    // No maxHits given: the first 250 of 300 hits are listed.
+    const many = searchIupacMotifRust('C'.repeat(300), 'C', { mode: 'nucleotide', searchBothStrands: false });
+    expect([many.hits.length, many.totalHits]).toEqual([250, 300]);
+    expect(many.warnings).toEqual(['Showing the first 250 of 300 hits.']);
+  });
 });

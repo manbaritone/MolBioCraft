@@ -12,8 +12,14 @@
 //! - an origin-crossing site missed, or a linear molecule wrapped: AC3;
 //! - a window wrapped onto itself when the query is longer than the molecule, or that case
 //!   answered with an empty list: AC3's refusal;
+//! - a nucleotide code read as the wrong base set (S, W, K, M, B, D, H, V as well as R, Y and N),
+//!   or complemented to the wrong set on the reverse strand: the code-table sweep;
 //! - X not covering U, O or the ambiguity codes, X covering `*`, U read as T in protein mode, a
-//!   protein query reverse-complemented, a protein window wrapped: AC4;
+//!   protein window wrapped: AC4;
+//! - a protein query reverse-complemented, or flagged palindromic, by the nucleotide rules: AC4's
+//!   fixtures made only of A, C, D and E. A query holding any other residue cannot reach this
+//!   defect in this engine, since its complement carries an empty set that matches nothing, so
+//!   the GAC and ACGT protein fixtures alone would pass with it;
 //! - the forward strand filling the cap before the reverse strand is read, the counts taken from
 //!   the listed hits only, the reverse hit first at a shared start, a warning missing or without
 //!   thousands separators, whitespace inside a query accepted, an empty reply instead of a
@@ -215,6 +221,105 @@ fn us_01m7dvbh_ac4_protein_is_one_strand_and_never_wraps() {
     // Circular asked for: a protein window still never wraps (GAC would read 5, 6, 1).
     assert_eq!(hits("CDEFGA", "GAC", prot(true, true)), vec![]);
     assert_eq!(hits("CTTTGA", "GAC", nuc(true, false)), vec![(5, 1, 1, D, false)]);
+}
+
+#[test]
+fn us_01m7dvbh_ac4_a_protein_query_of_a_c_d_e_is_never_reverse_complemented() {
+    // The protein residues A, C, D and E are the letters most likely to be read through the
+    // nucleotide complement by mistake: AAA would complement to TTT (or, as residue sets, to EEE),
+    // and AE would read as its own reverse complement. In protein mode none of that applies.
+    let both = prot(false, true);
+    // AAA on EEEDE: no window holds AAA, and no strand -1 hit is reported.
+    assert_eq!(hits("EEEDE", "AAA", both), vec![]);
+    assert_eq!(hits("EEEDE", "EEE", both), vec![(1, 3, 1, D, false)]);
+    // AE on AEAE: two forward hits, neither flagged palindromic, and no strand -1 hit.
+    assert_eq!(hits("AEAE", "AE", both), vec![(1, 2, 1, D, false), (3, 4, 1, D, false)]);
+    // CD on DCDC: only the forward CD at 2-3; DC at 1-2 and 3-4 is not a reverse hit.
+    assert_eq!(hits("DCDC", "CD", both), vec![(2, 3, 1, D, false)]);
+    // The same letters as nucleotides do reverse-complement: AAA finds TTT on strand -1.
+    assert_eq!(hits("TTTGT", "AAA", nuc(false, true)), vec![(1, 3, -1, D, false)]);
+}
+
+/// Each nucleotide code with its bases, written from the IUPAC table by hand.
+const CODE_TABLE: &[(char, &str)] = &[
+    ('A', "A"), ('C', "C"), ('G', "G"), ('T', "T"), ('U', "T"),
+    ('R', "AG"), ('Y', "CT"), ('S', "CG"), ('W', "AT"), ('K', "GT"), ('M', "AC"),
+    ('B', "CGT"), ('D', "AGT"), ('H', "ACT"), ('V', "ACG"), ('N', "ACGT"),
+];
+
+fn complement_bases(bases: &str) -> String {
+    let mut out: Vec<char> = bases
+        .chars()
+        .map(|b| match b { 'A' => 'T', 'T' => 'A', 'C' => 'G', 'G' => 'C', _ => unreachable!() })
+        .collect();
+    out.sort_unstable();
+    out.into_iter().collect()
+}
+
+#[test]
+fn us_01m7dvbh_ac1_every_nucleotide_code_is_its_base_set() {
+    for &(code, bases) in CODE_TABLE {
+        // As a query on A, C, G, T: a definite hit at each base in the set, and nowhere else.
+        let want: Vec<_> = "ACGT"
+            .char_indices()
+            .filter(|(_, b)| bases.contains(*b))
+            .map(|(i, _)| (i + 1, i + 1, 1, D))
+            .collect();
+        let got: Vec<_> = search("ACGT", &code.to_string(), nuc(false, false))
+            .hits
+            .iter()
+            .map(|h| (h.start, h.end, h.strand, h.certainty))
+            .collect();
+        assert_eq!(got, want, "query {code}");
+        for q in ['A', 'C', 'G', 'T'] {
+            // As a target under one base: definite when it is that base alone, possible when the
+            // set holds it and more, nothing when the set does not hold it.
+            let want = if !bases.contains(q) {
+                vec![]
+            } else if bases.len() == 1 {
+                vec![(1, 1, 1, D)]
+            } else {
+                vec![(1, 1, 1, P)]
+            };
+            let got: Vec<_> = search(&code.to_string(), &q.to_string(), nuc(false, false))
+                .hits
+                .iter()
+                .map(|h| (h.start, h.end, h.strand, h.certainty))
+                .collect();
+            assert_eq!(got, want, "target {code} under query {q}");
+        }
+        // Under itself and under N a code is definite.
+        assert_eq!(search(&code.to_string(), &code.to_string(), nuc(false, false)).definite_hits, 1, "{code} under {code}");
+        assert_eq!(search(&code.to_string(), "N", nuc(false, false)).definite_hits, 1, "{code} under N");
+    }
+}
+
+#[test]
+fn us_01m7dvbh_ac2_every_nucleotide_code_complements_to_its_base_set() {
+    for &(code, bases) in CODE_TABLE {
+        let comp = complement_bases(bases);
+        let mut sorted: Vec<char> = bases.chars().collect();
+        sorted.sort_unstable();
+        let self_rc = sorted.into_iter().collect::<String>() == comp;
+        // With both strands on, the base at each position is a +1 hit when the set holds it and a
+        // -1 hit when the complement set does, unless the code is its own complement (S, W, N),
+        // which reports once on +1 flagged palindromic.
+        let mut want = Vec::new();
+        for (i, b) in "ACGT".char_indices() {
+            if bases.contains(b) {
+                want.push((i + 1, 1, self_rc));
+            }
+            if !self_rc && comp.contains(b) {
+                want.push((i + 1, -1, false));
+            }
+        }
+        let got: Vec<_> = search("ACGT", &code.to_string(), nuc(false, true))
+            .hits
+            .iter()
+            .map(|h| (h.start, h.strand, h.palindromic))
+            .collect();
+        assert_eq!(got, want, "query {code}, both strands");
+    }
 }
 
 #[test]
