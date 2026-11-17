@@ -378,3 +378,21 @@ fn us_01m7dvbh_ac5_order_cap_floor_and_thousands() {
     assert_eq!((r.hits.len(), r.total_hits), (4, 4));
     assert!(r.warnings.is_empty());
 }
+
+/// BG-01M7MH9R: a target of only whitespace is refused, never answered with an empty list. Each
+/// query is no longer than its target, so a search that let the target through would scan it and
+/// reply with no hits rather than refuse it as too short. The target itself is not trimmed: a
+/// target trimmed before the scan would put ' ACG''s hit at 1-3 and find AG across the origin of
+/// 'GA ', where untrimmed the space breaks every window.
+#[test]
+fn bg_01m7mh9r_whitespace_only_target_is_refused() {
+    assert_eq!(refusal(" ", "A", nuc(false, true)), "sequence is empty");
+    assert_eq!(refusal("\t\n ", "ACG", nuc(false, true)), "sequence is empty");
+    assert_eq!(refusal("\t\n ", "AC", nuc(true, true)), "sequence is empty");
+    assert_eq!(refusal(" ", "M", prot(false, false)), "sequence is empty");
+    assert_eq!(refusal("\t\n ", "MKV", prot(false, false)), "sequence is empty");
+    // Leading whitespace counts as a position.
+    assert_eq!(hits(" ACG", "ACG", nuc(false, false)), vec![(2, 4, 1, D, false)]);
+    // Trailing whitespace counts as a position: GA then a space, read as a circle.
+    assert_eq!(hits("GA ", "AG", nuc(true, false)), vec![]);
+}

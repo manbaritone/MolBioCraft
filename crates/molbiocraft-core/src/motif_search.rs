@@ -166,7 +166,8 @@ fn classify(pattern: &[u32], base: impl Fn(usize) -> u32) -> Option<MotifCertain
 /// Refuses, with the reason as the error: an empty or whitespace-only query ("query is empty"); a
 /// query letter outside the alphabet, named as typed ("query letter 'X' is not a nucleotide code",
 /// "... is not a protein code"), whitespace inside the query included, since only its leading and
-/// trailing whitespace is trimmed; an empty target ("sequence is empty"); and a query longer than
+/// trailing whitespace is trimmed; an empty or whitespace-only target ("sequence is empty"), the
+/// target itself never trimmed, so its whitespace keeps its positions; and a query longer than
 /// the target ("query longer than the sequence (Q > L)"), since a window never covers a base twice.
 pub fn search_iupac_motif(
     target: &str,
@@ -188,7 +189,7 @@ pub fn search_iupac_motif(
         }
         pattern.push(set);
     }
-    if target.is_empty() {
+    if target.trim().is_empty() {
         return Err("sequence is empty".to_string());
     }
     // One set per target character; a non-ASCII character is one position outside the alphabet.
