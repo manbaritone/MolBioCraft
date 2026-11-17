@@ -7,8 +7,9 @@
  * mounted App:
  *
  * - AC1: each action acts on the focused pane only, through one handler for its in-app item and its
- *   native id. Each pane starts zoomed away from 100%, panned, with its linear overview zoomed in and
- *   its circle turned away from 0, so an action that does nothing, or acts on the other pane, fails.
+ *   native id. Each pane's circle starts zoomed away from 100%, panned and turned away from 0, and each
+ *   pane's linear overview (the pane's on Linear Map) starts zoomed in whichever pane acts, so an action
+ *   that does nothing, or acts on the other pane, fails. Reset View also runs where Reset Rotation is off.
  * - AC2: with no circle on the main view, Zoom In, Zoom Out and Actual Size are off with
  *   CIRCULAR_ONLY_HINT in the menu, the native state, the header and the shortcuts' status; Fit and
  *   Reset View are off only where the focused pane draws no sequence map, with their two sentences.
@@ -338,6 +339,77 @@ describe('US-01M7DVEN AC1: Fit, Actual Size, Reset View and Reset Rotation act o
         expect(app.activeTab()).toBe('text-view');
         await run();
         expect(app.activeTab(), `${what} switches to the Sequence view`).toBe('sequence-view');
+      }
+    });
+  });
+
+  it("US-01M7DVEN AC1 Fit, Reset View and Actual Size on the main view leave the split pane's linear overview zoomed in", async () => {
+    await withApp(async (app) => {
+      await openSplit(app);
+      await focusPane(app);
+      await app.change(viewSelect(app), 'linear');
+      const runs: [Action, string, () => Promise<void>][] = [
+        ['Fit', 'View › Zoom › Fit', () => viewCommand(app, ['Zoom', 'Fit'])],
+        ['Fit', 'native view:fit', () => app.menu('view:fit')],
+        ['Reset View', 'View › Zoom › Reset View', () => viewCommand(app, ['Zoom', 'Reset View'])],
+        ['Reset View', 'native view:reset-view', () => app.menu('view:reset-view')],
+        ['Actual Size (100%)', 'View › Zoom › Actual Size (100%)', () => viewCommand(app, ['Zoom', 'Actual Size (100%)'])],
+        ['Actual Size (100%)', 'native view:zoom-reset', () => app.menu('view:zoom-reset')],
+      ];
+      for (const [action, what, run] of runs) {
+        await zoomOverviewIn(app, pane(app));
+        await zoomOverviewIn(app, pane(app));
+        const paneOverview = overviewOf(pane(app));
+        expect(paneOverview, `${what}: the pane's overview starts zoomed in`).toBeGreaterThan(100);
+        const mainBefore = await primeMain(app);
+        await run();
+        expect(mainView(app), `${what}: the main view acted`).toEqual(expected(action, mainBefore));
+        expect(overviewOf(pane(app)), `${what}: the pane's overview is untouched`).toBe(paneOverview);
+      }
+    });
+  });
+
+  it("US-01M7DVEN AC1 Reset View on the main view in Map Layout Linear, where Reset Rotation is off, fits but leaves the rotation", async () => {
+    await withApp(async (app) => {
+      await restore(app, [CA], CA.id);
+      for (const [what, run] of [
+        ['View › Zoom › Reset View', () => viewCommand(app, ['Zoom', 'Reset View'])],
+        ['native view:reset-view', () => app.menu('view:reset-view')],
+      ] as const) {
+        await rotateTo(app, app.canvas(), '90');
+        expect(wedge(mainMap(app)), `${what}: the main circle is turned`).toBe('90');
+        await viewCommand(app, ['Map Layout', 'Linear Sequence']);
+        expect(await viewRows(app, [['Reset Rotation']]), `${what}: Reset Rotation is off`).toEqual([[true, LAYOUT_LINEAR]]);
+        await zoomOverviewIn(app, app.canvas());
+        expect(overviewOf(app.canvas()), `${what}: the overview starts zoomed in`).toBeGreaterThan(100);
+        await run();
+        expect(overviewOf(app.canvas()), `${what}: Reset View still fits the overview`).toBe(100);
+        await viewCommand(app, ['Map Layout', 'Split Map & Sequence']);
+        expect(wedge(mainMap(app)), `${what}: the rotation is left at 90`).toBe('90');
+      }
+    });
+  });
+
+  it("US-01M7DVEN AC1 Reset View on the focused split pane on Linear Map, where Reset Rotation is off, fits but leaves the pane's rotation", async () => {
+    await withApp(async (app) => {
+      await openSplit(app);
+      const mainBefore = await primeMain(app);
+      for (const [what, run] of [
+        ['View › Zoom › Reset View', () => viewCommand(app, ['Zoom', 'Reset View'])],
+        ['native view:reset-view', () => app.menu('view:reset-view')],
+      ] as const) {
+        await primePane(app);
+        await app.change(viewSelect(app), 'linear');
+        await focusPane(app);
+        expect(await viewRows(app, [['Reset Rotation']]), `${what}: Reset Rotation is off`).toEqual([[true, PANE_NO_CIRCLE]]);
+        await zoomOverviewIn(app, pane(app));
+        await focusPane(app);
+        expect(overviewOf(pane(app)), `${what}: the pane's overview starts zoomed in`).toBeGreaterThan(100);
+        await run();
+        expect(overviewOf(pane(app)), `${what}: Reset View still fits the pane's overview`).toBe(100);
+        await app.change(viewSelect(app), 'circular');
+        expect(wedge(paneMap(app)), `${what}: the pane's rotation is left at 45`).toBe('45');
+        expect(mainView(app), `${what}: the main view is untouched`).toEqual(mainBefore);
       }
     });
   });
