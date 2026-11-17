@@ -14,6 +14,9 @@
  */
 
 import { PANE_COLLAPSE_FRACTION, PANE_SPLIT_KEY_STEP_LARGE_PX, PANE_SPLIT_KEY_STEP_PX } from './paneSplit';
+import { circularMapUnavailableReason } from './commandAvailability';
+import { normalize } from './mapRotation';
+import type { MoleculeType, Topology } from '../types/bio';
 
 export type DocumentSplitOrientation = 'single' | 'side-by-side' | 'top-bottom';
 
@@ -149,10 +152,36 @@ export function documentSplitStyle(ratio: number): Record<string, string> {
   return { '--mbc-doc-split-main': String(r), '--mbc-doc-split-second': String(Math.round((1 - r) * 1e4) / 1e4) };
 }
 
+// ─── US-01M7DVQG: the second pane's view and rotation ───
+
+/** The views the second pane shows a document with bases in. */
+export type SplitPaneView = 'circular' | 'linear' | 'info';
+
+/** The views in the order the pane's "View in split pane" selector lists them, with their labels. */
+export const SPLIT_PANE_VIEW_CHOICES: readonly { view: SplitPaneView; label: string }[] = [
+  { view: 'circular', label: 'Circular Map' },
+  { view: 'linear', label: 'Linear Map' },
+  { view: 'info', label: 'Info' },
+];
+
+/** The view the pane opens in, and the one a session does not save. */
+export const DEFAULT_SPLIT_PANE_VIEW: SplitPaneView = 'linear';
+
+const isSplitPaneView = (v: unknown): v is SplitPaneView => SPLIT_PANE_VIEW_CHOICES.some((c) => c.view === v);
+
+/** The second pane's view and the rotation of its circular map, in degrees clockwise in [0, 360). */
+export interface SplitPaneViewState {
+  view: SplitPaneView;
+  rotation: number;
+}
+
+export const DEFAULT_SPLIT_PANE_VIEW_STATE: SplitPaneViewState = { view: DEFAULT_SPLIT_PANE_VIEW, rotation: 0 };
+
 /**
  * What a session saves: the orientation, and the second pane's document by id and by name (to name it
  * if it is gone); the divider's chosen ratio and folded pane only while they are not the default
- * (US-01M7DVB1), so a split never resized saves what it saved before.
+ * (US-01M7DVB1), so a split never resized saves what it saved before; and, with the pane's document,
+ * its view while it is not Linear Map and its rotation while it is not 0 degrees (US-01M7DVQG).
  */
 export interface SavedDocumentSplit {
   orientation: DocumentSplitOrientation;
@@ -160,6 +189,8 @@ export interface SavedDocumentSplit {
   docName: string | null;
   ratio?: number;
   collapsed?: DocumentSplitPane;
+  view?: SplitPaneView;
+  rotation?: number;
 }
 
 /**
@@ -171,13 +202,20 @@ export function documentSplitForSession(
   orientation: DocumentSplitOrientation,
   docId: string | null,
   docs: readonly { id: string; name: string }[],
-  size: DocumentSplitSize = DEFAULT_DOCUMENT_SPLIT_SIZE
+  size: DocumentSplitSize = DEFAULT_DOCUMENT_SPLIT_SIZE,
+  paneView: SplitPaneViewState = DEFAULT_SPLIT_PANE_VIEW_STATE
 ): SavedDocumentSplit | undefined {
   if (orientation === 'single' && docId === null) return undefined;
   const id = docId ? docId : null;
   const saved: SavedDocumentSplit = { orientation, docId: id, docName: id === null ? null : docs.find((d) => d.id === id)?.name ?? null };
   if (size.ratio !== DEFAULT_DOCUMENT_SPLIT_RATIO) saved.ratio = size.ratio;
   if (size.collapsed) saved.collapsed = size.collapsed;
+  // The view and the rotation belong to the pane's document, so they are saved only with one.
+  if (id !== null) {
+    if (paneView.view !== DEFAULT_SPLIT_PANE_VIEW) saved.view = paneView.view;
+    const rotation = normalize(paneView.rotation);
+    if (rotation !== 0) saved.rotation = rotation;
+  }
   return saved;
 }
 
@@ -205,6 +243,55 @@ function parseDocumentSplitSize(v: Record<string, unknown>): { size: DocumentSpl
   };
 }
 
+export const UNREADABLE_SPLIT_PANE_VIEW_NOTICE = "The split pane's saved view could not be read; it opens in Linear Map.";
+
+export function unreadableSplitPaneRotationNotice(docName: string): string {
+  return `The saved rotation for ${docName} in the split pane could not be read; it opens at 0 degrees.`;
+}
+
+/** A document the restored session can show, as `parseDocumentSplit` reads it. */
+export interface DocumentSplitCandidate {
+  id: string;
+  name?: string;
+  topology?: Topology;
+  moleculeType?: MoleculeType;
+}
+
+/**
+ * The pane's view and rotation a readable saved split holds for `doc`, read only when the split saves
+ * one of them: an absent view is Linear Map and an absent rotation 0 degrees, with no notice; a view
+ * that is not one of the three (null included), or Circular Map for a document that cannot draw a
+ * circle (circularMapUnavailableReason, read when the candidate carries its molecule type and
+ * topology, as the App's documents do), is Linear Map with UNREADABLE_SPLIT_PANE_VIEW_NOTICE; a
+ * rotation that is not a finite number (null included) is 0 with the notice naming the document. A
+ * readable angle is normalised as `workspace.mapRotation`'s are.
+ */
+function parseSplitPaneView(
+  v: Record<string, unknown>,
+  doc: DocumentSplitCandidate,
+  savedName: string
+): (SplitPaneViewState & { viewNotice: string | null; rotationNotice: string | null }) | null {
+  if (!('view' in v) && !('rotation' in v)) return null;
+  let view: SplitPaneView = DEFAULT_SPLIT_PANE_VIEW;
+  let viewNotice: string | null = null;
+  if (v.view !== undefined) {
+    const circleRefused =
+      v.view === 'circular' &&
+      doc.moleculeType !== undefined &&
+      doc.topology !== undefined &&
+      circularMapUnavailableReason({ moleculeType: doc.moleculeType, topology: doc.topology }) !== null;
+    if (isSplitPaneView(v.view) && !circleRefused) view = v.view;
+    else viewNotice = UNREADABLE_SPLIT_PANE_VIEW_NOTICE;
+  }
+  let rotation = 0;
+  let rotationNotice: string | null = null;
+  if (v.rotation !== undefined) {
+    if (typeof v.rotation === 'number' && Number.isFinite(v.rotation)) rotation = normalize(v.rotation);
+    else rotationNotice = unreadableSplitPaneRotationNotice(doc.name?.trim() ? doc.name : savedName);
+  }
+  return { view, rotation, viewNotice, rotationNotice };
+}
+
 export function missingSplitDocumentNotice(docName: string): string {
   return `The split pane's document "${docName}" is no longer in this session; the viewer opens in Single Pane.`;
 }
@@ -224,11 +311,26 @@ export function missingSplitDocumentNotice(docName: string): string {
  * The divider (US-01M7DVB1) is read apart, once the orientation and docId are readable, into `size`
  * and `sizeNotice` (see parseDocumentSplitSize); a split that is absent or cannot be read at all opens
  * at half each, its one notice (if any) being `notice`.
+ *
+ * The pane's view and rotation (US-01M7DVQG) are read only when the saved docId names an available
+ * document, and only when the split saves one of them: the result then carries `view`, `rotation`,
+ * `viewNotice` and `rotationNotice` (see parseSplitPaneView), and otherwise none of the four, so the
+ * pane opens in Linear Map at 0 degrees with no message.
  */
 export function parseDocumentSplit(
   raw: unknown,
-  available: readonly { id: string }[]
-): { orientation: DocumentSplitOrientation; docId: string | null; notice: string | null; size: DocumentSplitSize; sizeNotice: string | null } {
+  available: readonly DocumentSplitCandidate[]
+): {
+  orientation: DocumentSplitOrientation;
+  docId: string | null;
+  notice: string | null;
+  size: DocumentSplitSize;
+  sizeNotice: string | null;
+  view?: SplitPaneView;
+  rotation?: number;
+  viewNotice?: string | null;
+  rotationNotice?: string | null;
+} {
   const half = { size: { ...DEFAULT_DOCUMENT_SPLIT_SIZE }, sizeNotice: null };
   const single = (notice: string | null, sized: { size: DocumentSplitSize; sizeNotice: string | null } = half) =>
     ({ orientation: 'single' as const, docId: null, notice, ...sized });
@@ -241,9 +343,9 @@ export function parseDocumentSplit(
   const sized = parseDocumentSplitSize(v);
   if (!v.docId) return { orientation, docId: orientation === 'single' ? null : '', notice: null, ...sized };
   const docId = v.docId;
-  if (!available.some((d) => d.id === docId)) {
-    const name = typeof v.docName === 'string' && v.docName.trim() ? v.docName : docId;
-    return single(missingSplitDocumentNotice(name), sized);
-  }
-  return { orientation, docId, notice: null, ...sized };
+  const savedName = typeof v.docName === 'string' && v.docName.trim() ? v.docName : docId;
+  const doc = available.find((d) => d.id === docId);
+  if (!doc) return single(missingSplitDocumentNotice(savedName), sized);
+  const paneView = parseSplitPaneView(v, doc, savedName);
+  return { orientation, docId, notice: null, ...sized, ...(paneView ?? {}) };
 }

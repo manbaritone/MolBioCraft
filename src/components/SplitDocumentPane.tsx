@@ -8,19 +8,36 @@
  * and result documents, or the document's Info. The App unmounts the pane in Single Pane, so its
  * selection starts empty each time it opens; the document it shows is the App's and is kept.
  *
+ * The pane can show the main view's document too (US-01M7DVQG). A document with bases is shown in the
+ * view its "View in split pane" selector names: Circular Map, Linear Map or Info. The view, the zoom
+ * and the rotation of its circular map are the App's, so they outlive Single Pane, and they are the
+ * pane's own: nothing here moves the main view's. While the pane shows the main view's document, the
+ * two share one selection, the main view's.
+ *
  * `DocumentSplitDivider` (US-01M7DVB1) is the separator the App places between the main view and the
  * pane, with the button a folded pane leaves; its arithmetic is src/core/documentSplit.ts's.
  */
 
 import React, { useMemo, useRef, useState } from 'react';
-import { ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, X } from 'lucide-react';
-import { EMPTY_RESTRICTION_SCAN, scanRestrictionSites, type RestrictionSiteScan } from '../core/bioEngine';
+import { ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Columns2, RotateCw, X } from 'lucide-react';
+import { EMPTY_RESTRICTION_SCAN, restrictionSiteCountsByName, scanRestrictionSites, type RestrictionSiteScan } from '../core/bioEngine';
 import { LinearSequenceView } from './LinearSequenceView';
 import { ImportedTreeViewer } from './ImportedTreeViewer';
 import { ExpressionResultsView } from './ExpressionViews';
 import { DocumentInfoPanel } from './DocumentInfoPanel';
 import { ResultWarnings } from './ResultWarnings';
-import { chosenRestrictionScope, restrictionScanEnzymes, restrictionScannedBp, subsetNote, type ChosenScanCollection, type RestrictionScanScope } from './CircularPlasmidMap';
+import {
+  chosenRestrictionScope,
+  CircularMapRotationControl,
+  CircularPlasmidMap,
+  restrictionScanEnzymes,
+  restrictionScannedBp,
+  SEQUENCE_ZOOM_DEFAULT,
+  subsetNote,
+  type ChosenScanCollection,
+  type RestrictionScanScope,
+} from './CircularPlasmidMap';
+import { buildCommandDocumentContext, circularMapUnavailableReason } from '../core/commandAvailability';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
 import {
@@ -30,8 +47,11 @@ import {
   documentSplitValueNow,
   dragDocumentSplit,
   renderedDocumentSplitRatio,
+  DEFAULT_SPLIT_PANE_VIEW,
+  SPLIT_PANE_VIEW_CHOICES,
   type DocumentSplitAxisOrientation,
   type DocumentSplitSize,
+  type SplitPaneView,
 } from '../core/documentSplit';
 import { PANE_SPLIT_KEY_STEP_LARGE_PX, PANE_SPLIT_KEY_STEP_PX } from '../core/paneSplit';
 
@@ -65,7 +85,27 @@ export interface SplitDocumentPaneProps {
    * over the other document's own scanned length, and names it as the main view does.
    */
   scanCollection?: ChosenScanCollection | null;
+  /**
+   * Writes the main view's selection (US-01M7DVQG). While the pane shows the main view's document
+   * (`doc.id === mainDocId`), the pane draws `mainRange` and every selection made in it is written
+   * here, so the two share one selection; otherwise the pane keeps its own.
+   */
+  onSelectMainRange?: (range: SplitRange | null) => void;
+  /** Shows the main view's document in the pane (the head's button); the button is left out without it. */
+  onShowMainDoc?: () => void;
+  /** The view a document with bases is shown in; Linear Map unless given. */
+  view?: SplitPaneView;
+  onViewChange?: (view: SplitPaneView) => void;
+  /** The pane's own zoom of its circular map, in percent; 100% unless given. */
+  zoomLevel?: number;
+  onZoomChange?: (update: (current: number) => number) => void;
+  /** The pane's own rotation of its circular map, in degrees clockwise; 0 unless given. */
+  rotationDeg?: number;
+  onRotate?: (rotationDeg: number) => void;
 }
+
+/** The pane head's button that shows the main view's document in the pane (US-01M7DVQG). */
+export const SHOW_MAIN_DOC_LABEL = "Show the main view's document in the split pane";
 
 /**
  * The most candidates the picker lists, the first in `choices` order that pass the filter; the shown
@@ -99,13 +139,24 @@ const AlignmentRows: React.FC<{ doc: SequenceDocument }> = ({ doc }) => {
   );
 };
 
-export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choices, onChooseDoc, mainDocId = null, mainRange = null, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary, enzymes = REBASE_ENZYMES, scanCollection = null }) => {
+export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({
+  doc, choices, onChooseDoc, mainDocId = null, mainRange = null, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary,
+  enzymes = REBASE_ENZYMES, scanCollection = null, onSelectMainRange, onShowMainDoc,
+  view = DEFAULT_SPLIT_PANE_VIEW, onViewChange, zoomLevel = SEQUENCE_ZOOM_DEFAULT, onZoomChange, rotationDeg = 0, onRotate,
+}) => {
   // The pane's selection belongs to the document it was made on (US-01M7DV3V): it is held with that
   // document's id and read only while that document is shown, so its coordinates are never drawn
   // on another document. Choosing a document clears it; a swap exchanges it with the main view's.
   const [held, setHeld] = useState<{ docId: string; range: SplitRange } | null>(null);
-  const range = doc && held?.docId === doc.id ? held.range : null;
-  const setRange = (r: SplitRange | null) => setHeld(r && doc ? { docId: doc.id, range: r } : null);
+  // The one sharing condition (US-01M7DVQG): the pane shows the main view's document. Then its
+  // selection is the main view's; otherwise it is the one held above.
+  const shared = doc !== null && mainDocId !== null && doc.id === mainDocId;
+  const range = shared ? mainRange : doc && held?.docId === doc.id ? held.range : null;
+  const setRange = (r: SplitRange | null) => {
+    if (shared) onSelectMainRange?.(r);
+    else setHeld(r && doc ? { docId: doc.id, range: r } : null);
+  };
+  const [rotateOpen, setRotateOpen] = useState(false);
   const [filter, setFilter] = useState('');
   // The filter narrows every candidate, ignoring case, before the cap, so a document past the 400th
   // can be reached by its name; the note counts the candidates the filter passed (subsetNote).
@@ -135,6 +186,15 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choic
       restrictionScope: scope,
     };
   }, [doc, enzymes, scanCollection]);
+  // A document with bases (not a tree, an alignment or a text document) is shown in a view of its
+  // choice; a document that cannot draw a circle is shown in Linear Map whatever the view, by the rule
+  // View › Rotate Circular Map… reads (circularMapUnavailableReason), whose sentence says why.
+  const hasBases = Boolean(
+    doc && typeof doc.docMetadata?.Newick !== 'string' && (doc.alignmentMeta?.sequences?.length ?? 0) <= 1 &&
+      doc.docMetadata?.['Document Type'] !== 'Text Document' && doc.sequence.length > 0
+  );
+  const circleRefused = doc && hasBases ? circularMapUnavailableReason(buildCommandDocumentContext(doc) ?? doc) : null;
+  const shownView: SplitPaneView = view === 'circular' && circleRefused ? 'linear' : view;
   const body = (() => {
     if (!doc) return <p className="mbc-help-where">Choose a document to show next to the main view.</p>;
     if (typeof doc.docMetadata?.Newick === 'string') return <ImportedTreeViewer key={doc.id} doc={doc} onUpdateDocument={onUpdateDocument} onDownload={onDownload} onDownloadBinary={onDownloadBinary} />;
@@ -144,6 +204,32 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choic
         <>
           <ExpressionResultsView doc={doc} onDownload={onDownload} />
           <pre className="mbc-flatfile-pre">{String(doc.docMetadata?.Notes ?? '')}</pre>
+        </>
+      );
+    }
+    if (doc.sequence.length > 0 && shownView === 'info') return <DocumentInfoPanel doc={doc} onUpdateDocument={onUpdateDocument} />;
+    if (doc.sequence.length > 0 && shownView === 'circular') {
+      return (
+        <>
+          <ResultWarnings warnings={scan.warnings} label="Restriction scan warnings" />
+          {rotateOpen && onRotate && (
+            <CircularMapRotationControl rotationDeg={rotationDeg} onRotate={onRotate} onClose={() => setRotateOpen(false)} />
+          )}
+          <CircularPlasmidMap
+            doc={doc}
+            cutSites={scan.sites}
+            siteCounts={restrictionSiteCountsByName(scan)}
+            orfs={[]}
+            selectedRange={range}
+            onSelectRange={setRange}
+            showOrfs={false}
+            showPrimers={false}
+            showUniqueCuttersOnly={false}
+            restrictionScope={restrictionScope}
+            zoomLevel={zoomLevel}
+            onZoomChange={onZoomChange}
+            rotationDeg={rotationDeg}
+          />
         </>
       );
     }
@@ -164,15 +250,35 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choic
         <select aria-label="Document in split view" value={doc?.id ?? ''} onChange={(e) => { setHeld(null); onChooseDoc(e.target.value); }}>
           <option value="">Choose a document…</option>
           {/* the shown document stays its own option when the filter leaves it out, so the picker never names another */}
-          {doc && !listed.some((d) => d.id === doc.id) && <option value={doc.id}>{doc.name}</option>}
+          {doc && !listed.some((d) => d.id === doc.id) && <option value={doc.id}>{doc.id === mainDocId ? `${doc.name} (main view)` : doc.name}</option>}
           {listed.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
+        {onShowMainDoc && (
+          <button type="button" className="mbc-zoom-btn" title={SHOW_MAIN_DOC_LABEL} aria-label={SHOW_MAIN_DOC_LABEL} disabled={!mainDocId || shared} onClick={() => { setHeld(null); onShowMainDoc(); }}>
+            <Columns2 size={13} />
+          </button>
+        )}
         <button type="button" className="mbc-zoom-btn" title="Swap with the main view" aria-label="Swap with the main view" disabled={!doc} onClick={() => {
           onSwap(range);
           setHeld(mainRange && mainDocId ? { docId: mainDocId, range: mainRange } : null);
         }}><ArrowLeftRight size={13} /></button>
         <button type="button" className="mbc-zoom-btn" title="Close split view" aria-label="Close split view" onClick={onClose}><X size={13} /></button>
       </div>
+      {hasBases && (
+        <div className="mbc-split-pane-view">
+          <select aria-label="View in split pane" value={shownView} onChange={(e) => onViewChange?.(e.target.value as SplitPaneView)}>
+            {SPLIT_PANE_VIEW_CHOICES.map((c) => (
+              <option key={c.view} value={c.view} disabled={c.view === 'circular' && circleRefused !== null}>{c.label}</option>
+            ))}
+          </select>
+          {circleRefused && <span className="mbc-split-pane-view-note">{circleRefused}</span>}
+          {shownView === 'circular' && onRotate && (
+            <button type="button" className="mbc-zoom-btn" title="Rotate the circular map in the split pane" aria-label="Rotate the circular map in the split pane" aria-pressed={rotateOpen} onClick={() => setRotateOpen((o) => !o)}>
+              <RotateCw size={13} />
+            </button>
+          )}
+        </div>
+      )}
       {filter.trim() && matched === 0 && <p className="mbc-help-where" role="status">No document matches "{filter.trim()}".</p>}
       <ResultWarnings warnings={subsetNote('The picker lists', listed.length, matched, 'documents', 'first')} label="Split view picker" />
       <div className="mbc-split-pane-body">{body}</div>

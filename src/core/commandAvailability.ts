@@ -160,10 +160,8 @@ const RULES: Record<CommandId | WorkbenchCommandId, (ctx: CommandContext) => Com
   'rotate-map': (ctx) => {
     const doc = requireDocument(ctx);
     if (isAvailability(doc)) return doc;
-    if (doc.contigSummary) return off('This record has no sequence map.');
-    if (doc.moleculeType === 'Protein') return off('Circular maps are drawn for DNA only; this document is a protein.');
-    if (doc.moleculeType === 'RNA') return off('Circular maps are drawn for DNA only; this document is RNA.');
-    if (doc.topology !== 'circular') return off('Circular maps are drawn for circular DNA; this document is linear.');
+    const cannotDraw = circularMapUnavailableReason(doc);
+    if (cannotDraw) return off(cannotDraw);
     if (ctx.mapLayout === 'linear') return off('Map Layout is Linear; choose Split or Circular Map to rotate the map.');
     if (ctx.circleCollapsed) return off('The circular map is collapsed; restore it to rotate the map.');
     return ENABLED;
@@ -176,6 +174,22 @@ const RULES: Record<CommandId | WorkbenchCommandId, (ctx: CommandContext) => Com
       : ENABLED;
   },
 };
+
+/**
+ * Why a document cannot draw a circular map, or null when it can (US-01M7DVQG): the one rule that
+ * View › Rotate Circular Map… (`rotate-map`) and the split pane's 'Circular Map' view both read, in
+ * this order: a contig summary, a protein, RNA, a linear molecule. A caller that does not know
+ * whether the document is a contig summary leaves `contigSummary` out.
+ */
+export function circularMapUnavailableReason(
+  doc: Pick<CommandDocumentContext, 'moleculeType' | 'topology'> & { contigSummary?: boolean }
+): string | null {
+  if (doc.contigSummary) return 'This record has no sequence map.';
+  if (doc.moleculeType === 'Protein') return 'Circular maps are drawn for DNA only; this document is a protein.';
+  if (doc.moleculeType === 'RNA') return 'Circular maps are drawn for DNA only; this document is RNA.';
+  if (doc.topology !== 'circular') return 'Circular maps are drawn for circular DNA; this document is linear.';
+  return null;
+}
 
 export function commandAvailability(id: CommandId | WorkbenchCommandId, ctx: CommandContext): CommandAvailability {
   return RULES[id](ctx);

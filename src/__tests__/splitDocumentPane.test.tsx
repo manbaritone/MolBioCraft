@@ -1069,3 +1069,658 @@ describe('US-01M7DVB1 AC4: Swap leaves the divider where it was', () => {
     });
   });
 });
+
+// ─── US-01M7DVQG: the same document in both panes, and the pane's own view, zoom and rotation ───
+//
+// Wrong implementations each check below fails on: the main view's document as a picker option
+// rather than a button (AC1: the button is missing, the 401-candidate note counts 402); the pane's
+// Circular Map drawing the main view's cut sites (AC1: Circ_B's lone EcoRI site is missing); a
+// circle offered for a protein, RNA or linear document, or a sentence of the pane's own (AC1); no
+// sharing, or a sync loop (AC2: the readout's change count); the selection shared whenever the split
+// is shown (AC4); the pane's zoom moving the header's %, its rotation written to workspace.mapRotation
+// (AC3); a swap that does not exchange zoom and rotation, or that pushes history for the same
+// document (AC3); Circular Map kept for a document turned linear (AC5); a view saved while it is the
+// default, the pane's zoom saved, or an unreadable saved view silently used (AC6).
+
+const ECO = 'GAATTC';
+/** `seq` with no EcoRI site, around the origin either: each one turned to GAATTG until none is left. */
+function withoutEco(seq: string): string {
+  let s = `TTTTTT${seq.slice(6, -6)}TTTTTT`;
+  while (s.includes(ECO)) s = s.replace(/GAATTC/g, 'GAATTG');
+  return s;
+}
+/** A circular plasmid built in the test: "Mark" at 5,000..6,000 and "Other" at 1,000..1,500. */
+const plasmid = (id: string, name: string, length: number, seed: number, sequence?: string): SequenceDocument => {
+  const d = seqDoc(id, name, length, seed);
+  return {
+    ...d, topology: 'circular', sequence: sequence ?? withoutEco(d.sequence),
+    features: [...d.features, { id: `${id}-other`, name: 'Other', type: 'misc_feature', start: 1000, end: 1500, strand: 1, color: '#10b981', qualifiers: {} }],
+  } as SequenceDocument;
+};
+/** Circ_A has no EcoRI site; Circ_B has one, the only one, cutting after 3,001. */
+const CA = plasmid('qg-a', 'Circ_A', 7_200, 21);
+const CB_SEQ = withoutEco(seqDoc('x', 'x', 7_500, 23).sequence);
+const CB = plasmid('qg-b', 'Circ_B', 7_500, 23, `${CB_SEQ.slice(0, 3000)}${ECO}${CB_SEQ.slice(3006)}`);
+const LIN = { ...seqDoc('qg-lin', 'Lin_Doc', 7_100, 29), features: [] } as SequenceDocument;
+const PROT = { ...seqDoc('qg-prot', 'Prot_Doc', 10, 1), moleculeType: 'Protein', sequence: 'MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKRQTLGQHDFSAGEGLYTHMKALRPDEDRLSPLHSVYVDQWDWERVMGDGERQFSTLKSTVEAIWAGIKATEAAVSEEFGLAPFLPDQIHFVHSQELLSRYPDLDAKGRERAIAKDLGAVFLVGIGGKLSDGHRHDVRAPDYDDWUAEHA'.replace('U', 'S'), features: [] } as SequenceDocument;
+const RNA = { ...seqDoc('qg-rna', 'Rna_Doc', 900, 31), moleculeType: 'RNA', features: [] } as SequenceDocument;
+RNA.sequence = RNA.sequence.replace(/T/g, 'U');
+/** A tree and an alignment from the sample library, which the App's catalog (and so the picker) holds. */
+const TREE = SAMPLE_LIBRARY.find((d) => d.id === 'doc-tree-three-kingdoms')!;
+const ALN = SAMPLE_LIBRARY.find((d) => d.id === 'doc-aln-hiv-env')!;
+const TEXT = { ...seqDoc('qg-text', 'Text_Doc', 10, 4), sequence: '', features: [], docMetadata: { 'Document Type': 'Text Document', Notes: 'A note.' } } as unknown as SequenceDocument;
+
+const SHOW_MAIN = "Show the main view's document in the split pane";
+const VIEW_NOTICE = "The split pane's saved view could not be read; it opens in Linear Map.";
+const rotationNotice = (name: string) => `The saved rotation for ${name} in the split pane could not be read; it opens at 0 degrees.`;
+const LINEAR_SENTENCE = 'Circular maps are drawn for circular DNA; this document is linear.';
+
+const showMain = (app: AppHarness) => labelled(pane(app), 'button', SHOW_MAIN);
+const viewSelect = (app: AppHarness) => labelled(pane(app), 'select', 'View in split pane');
+const viewSelects = (app: AppHarness) => pane(app).querySelectorAll('select').filter((s) => s.getAttribute('aria-label') === 'View in split pane');
+const viewOptions = (app: AppHarness) =>
+  viewSelect(app).querySelectorAll('option').map((o) => [o.getAttribute('value'), words(o.textContent), o.hasAttribute('disabled')]);
+const viewNote = (app: AppHarness) => pane(app).querySelectorAll('.mbc-split-pane-view-note').map((n) => words(n.textContent));
+const paneMaps = (app: AppHarness) => pane(app).querySelectorAll('svg.plasmid-svg');
+const paneMap = (app: AppHarness) => { const m = paneMaps(app); expect(m, "the pane's one circular map").toHaveLength(1); return m[0]; };
+const mainMap = (app: AppHarness) => { const m = app.canvas().querySelectorAll('svg.plasmid-svg'); expect(m, "the main view's one circular map").toHaveLength(1); return m[0]; };
+const wedge = (svg: LiveElement) => svg.querySelectorAll('[data-map-part="origin-wedge"]')[0]?.getAttribute('data-draw-angle') ?? null;
+const viewport = (svg: LiveElement) => svg.querySelectorAll('g.plasmid-viewport-group')[0]?.getAttribute('transform') ?? null;
+/** The scale the map's view group is drawn at: 1 with no transform. */
+const scaleOf = (svg: LiveElement) => { const m = /scale\(([\d.]+)\)/.exec(viewport(svg) ?? ''); return m ? Number(m[1]) : 1; };
+const cutTitles = (svg: LiveElement) => svg.querySelectorAll('title').map((t) => words(t.textContent)).filter((t) => / cuts after /.test(t));
+const interval = (svg: LiveElement) => svg.querySelectorAll('[data-active-interval]').map((p) => `${p.getAttribute('data-start-angle')}-${p.getAttribute('data-end-angle')}`);
+const headerZoom = (app: AppHarness) => words(app.header().querySelectorAll('button.zoom-pct-btn')[0]?.textContent ?? '');
+const readout = (app: AppHarness) => { const r = app.header().querySelectorAll('.mbc-selection-readout'); return r.length ? words(r[0].textContent) : null; };
+const arcIn = (svg: LiveElement, name: string) => {
+  const arcs = svg.querySelectorAll('[aria-label]').filter((e) => (e.getAttribute('aria-label') ?? '').startsWith(`Select ${name} (`));
+  expect(arcs, `one "${name}" feature on the map`).toHaveLength(1);
+  return arcs[0];
+};
+
+async function wheelOn(app: AppHarness, svg: LiveElement, init: Record<string, unknown> = {}) {
+  const scroller = svg.parentElement!;
+  expect(scroller.classList.contains('plasmid-canvas-scroll'), "the map's wheel target").toBe(true);
+  await React.act(async () => {
+    dispatchLiveEvent(scroller, 'wheel', { deltaX: 0, deltaY: -100, deltaMode: 0, ctrlKey: false, metaKey: false, altKey: false, clientX: 0, clientY: 0, ...init });
+  });
+  await app.settle();
+}
+async function panOn(app: AppHarness, svg: LiveElement, dx: number) {
+  const scroller = svg.parentElement!;
+  const p = { pointerId: 4, pointerType: 'mouse', isPrimary: true };
+  await React.act(async () => { dispatchLiveEvent(scroller, 'pointerdown', { ...p, button: 0, buttons: 1, clientX: 100, clientY: 100 }); });
+  await React.act(async () => { dispatchLiveEvent(scroller, 'pointermove', { ...p, buttons: 1, clientX: 100 + dx, clientY: 100 }); });
+  await React.act(async () => { dispatchLiveEvent(scroller, 'pointerup', { ...p, clientX: 100 + dx, clientY: 100 }); });
+  await app.settle();
+}
+/** Rotates the pane's circular map from its own rotate button and degree field. */
+async function rotatePane(app: AppHarness, deg: string) {
+  if (!pane(app).querySelectorAll('[role="dialog"][aria-label="Rotate Circular Map"]').length) {
+    await app.click(labelled(pane(app), 'button', 'Rotate the circular map in the split pane'));
+  }
+  const field = pane(app).querySelectorAll('[role="dialog"][aria-label="Rotate Circular Map"] input[aria-label="Rotation in degrees"]');
+  expect(field, "the pane's degree field").toHaveLength(1);
+  await app.change(field[0], deg);
+}
+/** Rotates the main view's circular map from View › Rotate Circular Map…'s degree field. */
+async function rotateMain(app: AppHarness, deg: string) {
+  await app.menu('view:rotate-map');
+  const field = app.canvas().querySelectorAll('[role="dialog"][aria-label="Rotate Circular Map"] input[aria-label="Rotation in degrees"]');
+  expect(field, "the main view's degree field").toHaveLength(1);
+  await app.change(field[0], deg);
+}
+/** Opens the split and shows the main view's document in the pane from the head's button. */
+async function showMainInPane(app: AppHarness) {
+  if (!app.all('section.mbc-split-pane').length) await app.click(toggle(app));
+  const main = mainDocName(app);
+  await app.click(showMain(app));
+  expect(picker(app).querySelectorAll('option').find((o) => o.getAttribute('value') === paneDocId(app))?.textContent, "the pane shows the main view's document").toBe(`${main} (main view)`);
+}
+const onCircles = (app: AppHarness, docs: SequenceDocument[], active: string, more: Record<string, unknown> = {}) =>
+  app.restoreSession({ documents: docs, activeDocId: active, viewerTab: 'sequence-view', workspace: { mapLayoutMode: 'split', ...more } as never });
+const autosavedWorkspace = (storage: LiveStorage) => {
+  const raw = storage.getItem(AUTOSAVE_KEY);
+  expect(raw, 'the App autosaved the session').toBeTruthy();
+  return parseMbcWorkbench(raw!, 'Reopened').envelope.workspace;
+};
+
+/**
+ * A MutationObserver stand-in over the live DOM (which has none): after each change to the page, at
+ * the next microtask, as a MutationObserver's callback runs, it reads the header readout's text (or
+ * none) and records it when it differs from the last it read.
+ */
+function observeReadout(app: AppHarness) {
+  const changes: (string | null)[] = [];
+  let last = readout(app);
+  let queued = false;
+  const doc = app.doc as unknown as { mutated: () => void };
+  const original = doc.mutated.bind(doc);
+  doc.mutated = () => {
+    original();
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      const now = readout(app);
+      if (now !== last) { changes.push(now); last = now; }
+    });
+  };
+  return { changes, stop: () => { doc.mutated = original; } };
+}
+
+describe("US-01M7DVQG AC1: the main view's document by a button, and the pane's view selector", () => {
+  it("US-01M7DVQG AC1 the button shows the main view's document, is disabled while it does, and the picker names it (main view)", async () => {
+    await withApp(async (app) => {
+      await onCircles(app, [CA, CB], CA.id);
+      await showInPane(app, CB.id);
+      const before = pickerOptions(app);
+      expect(before.some(([id]) => id === CA.id), 'the picker lists no option for the main view’s document').toBe(false);
+      expect(showMain(app).hasAttribute('disabled'), 'the button is enabled while the pane shows Circ_B').toBe(false);
+      expect(words(showMain(app).getAttribute('title') ?? '')).toBe(SHOW_MAIN);
+
+      await app.click(showMain(app));
+
+      expect(paneDocId(app), 'the pane shows Circ_A').toBe(CA.id);
+      expect(mainDocName(app), 'the main view still shows Circ_A').toBe('Circ_A');
+      expect(showMain(app).hasAttribute('disabled'), 'the button is disabled while the pane shows it').toBe(true);
+      const after = pickerOptions(app);
+      expect(after.filter(([id]) => id === CA.id), 'the kept option names it as the main view’s').toEqual([[CA.id, 'Circ_A (main view)']]);
+      expect(after.filter(([id]) => id !== CA.id), 'the candidates are as they were').toEqual(before);
+
+      await app.change(picker(app), CB.id);
+      expect(showMain(app).hasAttribute('disabled'), 'enabled again once the pane shows another').toBe(false);
+      expect(pickerOptions(app).some(([id]) => id === CA.id), 'and the main view’s option is gone').toBe(false);
+    });
+  });
+
+  it('US-01M7DVQG AC1 with 401 other candidates the note still reads 400 of 401 while the pane shows the main view’s document', async () => {
+    await withApp(async (app) => {
+      await restore(app, sessionWithCandidates(401), MAIN.id, null);
+      await app.click(toggle(app));
+      await app.click(showMain(app));
+      expect(paneDocId(app)).toBe(MAIN.id);
+      expect(pickerNote(app)).toBe('The picker lists the first 400 of 401 documents.');
+      const options = pickerOptions(app);
+      expect(options, 'the 400 listed and the kept main-view option').toHaveLength(401);
+      expect(options[0], 'the kept option comes first').toEqual([MAIN.id, 'Main_Doc (main view)']);
+    });
+  });
+
+  it("US-01M7DVQG AC1 a document with bases offers Circular Map, Linear Map and Info, on Linear Map; its Circular Map draws its own cut sites", async () => {
+    await withApp(async (app) => {
+      await onCircles(app, [CA, CB], CA.id);
+      await showInPane(app, CB.id);
+      expect(viewOptions(app)).toEqual([['circular', 'Circular Map', false], ['linear', 'Linear Map', false], ['info', 'Info', false]]);
+      expect(viewSelect(app).value, 'Linear Map by default').toBe('linear');
+      expect(paneMaps(app), 'no circular map in Linear Map').toHaveLength(0);
+      expect(pane(app).querySelectorAll('[data-row-start]').length, 'the linear view draws rows').toBeGreaterThan(0);
+      expect(viewNote(app), 'no reason for a circular document').toEqual([]);
+
+      await app.change(viewSelect(app), 'circular');
+      const map = paneMap(app);
+      expect(map.getAttribute('aria-label')).toBe('Circular Sequence View of Circ_B');
+      expect(pane(app).querySelectorAll('[data-row-start]'), 'no linear rows in Circular Map').toHaveLength(0);
+      expect(cutTitles(map).filter((t) => t.startsWith('EcoRI (GAATTC)')), "Circ_B's lone EcoRI site, from the pane's own scan").toEqual([expect.stringMatching(/^EcoRI \(GAATTC\) cuts after 3,?001 /)]);
+      expect(cutTitles(mainMap(app)).filter((t) => t.startsWith('EcoRI')), 'Circ_A, in the main view, has none').toEqual([]);
+      expect(cutTitles(map), "the pane draws Circ_B's sites, not Circ_A's").not.toEqual(cutTitles(mainMap(app)));
+
+      await app.change(viewSelect(app), 'info');
+      expect(paneMaps(app)).toHaveLength(0);
+      expect(pane(app).querySelectorAll('[data-row-start]')).toHaveLength(0);
+      expect(words(pane(app).querySelectorAll('.mbc-split-pane-body')[0].textContent), 'the Info view names the document').toContain('Circ_B');
+    });
+  });
+
+  it('US-01M7DVQG AC1 Circular Map is disabled for a protein, RNA or linear document, beside the sentence View › Rotate Circular Map… gives', async () => {
+    for (const doc of [PROT, RNA, LIN]) {
+      await withApp(async (app) => {
+        await onCircles(app, [doc, CA], doc.id);
+        await app.menu('view:rotate-map');
+        const refused = statusSegments(app).find((s) => s.startsWith('Rotate Circular Map: '));
+        expect(refused, `${doc.name}: View › Rotate Circular Map… refuses`).toBeTruthy();
+        const sentence = refused!.slice('Rotate Circular Map: '.length);
+        await showMainInPane(app);
+        expect(paneDocId(app)).toBe(doc.id);
+        expect(viewOptions(app), `${doc.name}: Circular Map is disabled`).toEqual([['circular', 'Circular Map', true], ['linear', 'Linear Map', false], ['info', 'Info', false]]);
+        expect(viewNote(app), `${doc.name}: the same sentence beside the selector`).toEqual([sentence]);
+        expect(sentence).toBe(doc === PROT ? 'Circular maps are drawn for DNA only; this document is a protein.' : doc === RNA ? 'Circular maps are drawn for DNA only; this document is RNA.' : LINEAR_SENTENCE);
+      });
+    }
+  });
+
+  it('US-01M7DVQG AC1 trees, alignments and text documents keep their single body and get no selector', async () => {
+    await withApp(async (app) => {
+      expect([typeof TREE?.docMetadata?.Newick, (ALN?.alignmentMeta?.sequences?.length ?? 0) > 1]).toEqual(['string', true]);
+      await onCircles(app, [CA, TEXT], CA.id);
+      await app.click(toggle(app));
+      for (const doc of [TREE, ALN, TEXT]) {
+        await app.change(picker(app), doc.id);
+        expect(paneDocId(app)).toBe(doc.id);
+        expect(viewSelects(app), `${doc.name}: no view selector`).toHaveLength(0);
+        expect(paneMaps(app), `${doc.name}: no circular map`).toHaveLength(0);
+      }
+      await app.change(picker(app), ALN.id);
+      expect(pane(app).querySelectorAll('pre.mbc-split-aln-pre'), 'the alignment rows').toHaveLength(1);
+      await app.change(picker(app), TEXT.id);
+      expect(words(pane(app).querySelectorAll('pre.mbc-flatfile-pre')[0]?.textContent ?? '')).toBe('A note.');
+    });
+  });
+});
+
+describe('US-01M7DVQG AC2: the same document in both panes shares one selection', () => {
+  it('US-01M7DVQG AC2 a selection in either pane is the one selection, drawn by both and read once by the header readout', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await withApp(async (app) => {
+        await onCircles(app, [CA, CB], CA.id);
+        await showMainInPane(app);
+        await app.change(viewSelect(app), 'circular');
+        expect(readout(app), 'nothing selected yet').toBeNull();
+        const seen = observeReadout(app);
+        try {
+          await app.click(arcIn(paneMap(app), 'Mark'));
+          expect(readout(app), 'the header reads the selection made in the pane').toMatch(/^5,000\.\.6,000/);
+          expect(seen.changes, 'one readout change for the selection').toHaveLength(1);
+          expect(interval(mainMap(app)), 'the main map draws it').toEqual(interval(paneMap(app)));
+          expect(interval(paneMap(app)), 'the pane draws it').toHaveLength(1);
+          expect(mainSelection(app), "the main view's linear map draws it").toBe('5,000..6,000');
+
+          await app.click(arcIn(mainMap(app), 'Other'));
+          expect(readout(app), 'the header reads the selection made in the main view').toMatch(/^1,000\.\.1,500/);
+          expect(seen.changes, 'one more readout change').toHaveLength(2);
+          expect(interval(paneMap(app)), 'the pane draws the main view’s selection').toEqual(interval(mainMap(app)));
+          expect(interval(paneMap(app))).toHaveLength(1);
+
+          await wheelOn(app, paneMap(app));
+          await rotatePane(app, '90');
+          await wheelOn(app, mainMap(app));
+          await rotateMain(app, '45');
+          expect(wedge(paneMap(app)), 'the pane turned').toBe('90');
+          expect(wedge(mainMap(app)), 'the main map turned').toBe('45');
+          expect(seen.changes, 'rotating or zooming either pane changes the readout zero times').toHaveLength(2);
+
+          await app.change(viewSelect(app), 'linear');
+          expect(paneSelection(app), "the pane's Linear Map draws the shared selection").toBe('1,000..1,500');
+          expect(seen.changes, 'and changing the view does not change it either').toHaveLength(2);
+        } finally {
+          seen.stop();
+        }
+      });
+      const logged = errors.mock.calls.map((c) => String(c[0]));
+      expect(logged.filter((m) => /Maximum update depth exceeded/.test(m)), 'no update loop').toEqual([]);
+      expect(logged, 'no console error').toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
+describe("US-01M7DVQG AC3: the pane's zoom, pan and rotation are its own", () => {
+  it("US-01M7DVQG AC3 wheel and pinch zoom, pan and rotation in the pane change only the pane, and the reverse", async () => {
+    const storage = memoryStorage();
+    const app = await mountApp({ storage });
+    try {
+      await onCircles(app, [CA, CB], CA.id);
+      await showMainInPane(app);
+      await app.change(viewSelect(app), 'circular');
+      const main = () => ({ zoom: headerZoom(app), viewport: viewport(mainMap(app)), wedge: wedge(mainMap(app)) });
+      const mainBefore = main();
+      expect(mainBefore).toEqual({ zoom: '100%', viewport: null, wedge: '0' });
+
+      await wheelOn(app, paneMap(app));
+      const wheeled = scaleOf(paneMap(app));
+      expect(wheeled, 'the wheel zoomed the pane').toBeGreaterThan(1);
+      await wheelOn(app, paneMap(app), { ctrlKey: true, deltaY: -20 });
+      expect(scaleOf(paneMap(app)), 'the pinch zoomed the pane further').toBeGreaterThan(wheeled);
+      const zoomed = viewport(paneMap(app));
+      await panOn(app, paneMap(app), 60);
+      expect(viewport(paneMap(app)), 'the drag panned the pane').not.toBe(zoomed);
+      await rotatePane(app, '90');
+      expect(wedge(paneMap(app))).toBe('90');
+      expect(main(), "the main view's zoom, pan and rotation are unchanged").toEqual(mainBefore);
+      await autosaveRunsOut(app);
+      const ws = autosavedWorkspace(storage);
+      expect(ws.zoomLevel, 'workspace.zoomLevel is the main view’s').toBe(100);
+      expect(ws.mapRotation ?? {}, 'workspace.mapRotation is the main view’s').toEqual({});
+      expect(ws.documentSplit, 'the pane’s rotation is saved with the split, its zoom is not').toEqual({ orientation: 'side-by-side', docId: CA.id, docName: 'Circ_A', view: 'circular', rotation: 90 });
+
+      const paneBefore = { viewport: viewport(paneMap(app)), wedge: wedge(paneMap(app)) };
+      await wheelOn(app, mainMap(app));
+      expect(headerZoom(app), 'the main wheel moves the header %').not.toBe('100%');
+      await panOn(app, mainMap(app), -40);
+      await rotateMain(app, '45');
+      expect(wedge(mainMap(app))).toBe('45');
+      expect({ viewport: viewport(paneMap(app)), wedge: wedge(paneMap(app)) }, 'the pane is unchanged').toEqual(paneBefore);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it("US-01M7DVQG AC3 a document opened in the pane starts at the main view's rotation for it and keeps the pane's zoom", async () => {
+    await withApp(async (app) => {
+      // Lin_Doc is the split's first document, so Circ_B comes by the picker.
+      await onCircles(app, [CA, LIN, CB], CA.id, { mapRotation: { [CA.id]: 30, [CB.id]: 120 } });
+      expect(wedge(mainMap(app))).toBe('30');
+      await app.click(toggle(app));
+      expect(paneDocId(app)).toBe(LIN.id);
+      await app.change(picker(app), CB.id);
+      await app.change(viewSelect(app), 'circular');
+      expect(wedge(paneMap(app)), 'by the picker: Circ_B at its 120').toBe('120');
+      await wheelOn(app, paneMap(app));
+      const zoom = scaleOf(paneMap(app));
+      expect(zoom).toBeGreaterThan(1);
+      await rotatePane(app, '200');
+      await app.click(showMain(app));
+      expect(wedge(paneMap(app)), "by the button: Circ_A at the main view's 30").toBe('30');
+      expect(scaleOf(paneMap(app)), "the pane's zoom is kept").toBe(zoom);
+      await app.change(picker(app), CB.id);
+      expect(wedge(paneMap(app)), 'Circ_B again at its 120, not the 200 the pane last had').toBe('120');
+      expect(wedge(mainMap(app)), 'the main view is unchanged').toBe('30');
+      expect(headerZoom(app)).toBe('100%');
+    });
+  });
+
+  it('US-01M7DVQG AC3 swap exchanges the zoom and rotation, so each moves with its document; the divider stays', async () => {
+    await withApp(async (app) => {
+      await onCircles(app, [CA, CB], CA.id, { mapRotation: { [CA.id]: 30 } });
+      await app.menu('view:zoom-in');
+      const mainZoom = headerZoom(app);
+      expect(mainZoom).toBe('110%');
+      await showInPane(app, CB.id);
+      await app.change(viewSelect(app), 'circular');
+      await rotatePane(app, '90');
+      await wheelOn(app, paneMap(app));
+      const paneScale = scaleOf(paneMap(app));
+      expect(paneScale).toBeGreaterThan(1);
+      const divider = valueNow(app);
+
+      await app.click(labelled(pane(app), 'button', 'Swap with the main view'));
+
+      expect(mainDocName(app)).toBe('Circ_B');
+      expect(wedge(mainMap(app)), "Circ_B's 90 came with it").toBe('90');
+      expect(headerZoom(app), "the main view takes the pane's zoom").toBe(`${Math.round(paneScale * 100)}%`);
+      expect(paneDocId(app)).toBe(CA.id);
+      expect(wedge(paneMap(app)), "Circ_A's 30 came with it").toBe('30');
+      expect(scaleOf(paneMap(app)), "the pane takes the main view's zoom").toBeCloseTo(1.1, 4);
+      expect(valueNow(app), 'the divider stays').toBe(divider);
+    });
+  });
+
+  it('US-01M7DVQG AC3 with the same document in both panes, swap exchanges only the zoom and rotation', async () => {
+    const storage = memoryStorage();
+    const app = await mountApp({ storage });
+    try {
+      await onCircles(app, [CA, CB], CA.id, { mapRotation: { [CA.id]: 30 }, navHistory: [CA.id, CB.id], selectedRange: { start: 100, end: 200, label: 'Selection' } });
+      await app.menu('view:zoom-in');
+      await showMainInPane(app);
+      await app.change(viewSelect(app), 'circular');
+      await rotatePane(app, '90');
+      await wheelOn(app, paneMap(app));
+      const paneScale = scaleOf(paneMap(app));
+      await autosaveRunsOut(app);
+      const before = autosavedWorkspace(storage);
+      expect(before.navHistory, 'a history with a step forward').toEqual([CA.id, CB.id]);
+      expect(before.navIndex).toBe(0);
+      const tab = app.activeTab();
+
+      await app.click(labelled(pane(app), 'button', 'Swap with the main view'));
+      await autosaveRunsOut(app);
+
+      expect(wedge(mainMap(app)), "the main view takes the pane's 90").toBe('90');
+      expect(wedge(paneMap(app)), "the pane takes the main view's 30").toBe('30');
+      expect(headerZoom(app)).toBe(`${Math.round(paneScale * 100)}%`);
+      expect(scaleOf(paneMap(app))).toBeCloseTo(1.1, 4);
+      const after = autosavedWorkspace(storage);
+      expect({ doc: mainDocName(app), pane: paneDocId(app), tab: app.activeTab(), active: after.activeDocId, selection: after.selectedRange, history: after.navHistory, index: after.navIndex },
+        "the main view's document, tab, selection and history are as they were")
+        .toEqual({ doc: 'Circ_A', pane: CA.id, tab, active: before.activeDocId, selection: before.selectedRange, history: before.navHistory, index: before.navIndex });
+      expect(after.mapRotation).toEqual({ [CA.id]: 90 });
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it("US-01M7DVQG AC3 Single Pane keeps the pane's view, zoom and rotation; a restored pane opens at 100%", async () => {
+    const storage = memoryStorage();
+    const first = await mountApp({ storage });
+    try {
+      await onCircles(first, [CA, CB], CA.id);
+      await showInPane(first, CB.id);
+      await first.change(viewSelect(first), 'circular');
+      await rotatePane(first, '90');
+      await wheelOn(first, paneMap(first));
+      const scale = scaleOf(paneMap(first));
+      await first.click(toggle(first));
+      expect(paneCount(first)).toBe(0);
+      await first.click(toggle(first));
+      expect({ view: viewSelect(first).value, wedge: wedge(paneMap(first)), scale: scaleOf(paneMap(first)) }, 'kept through Single Pane')
+        .toEqual({ view: 'circular', wedge: '90', scale });
+      await autosaveRunsOut(first);
+    } finally {
+      first.unmount();
+    }
+    const second = await mountApp({ storage });
+    try {
+      await second.menu('file:restore-autosave');
+      await second.settle();
+      expect(paneDocId(second)).toBe(CB.id);
+      expect({ view: viewSelect(second).value, wedge: wedge(paneMap(second)), scale: scaleOf(paneMap(second)) }, 'the view and rotation come back, the zoom at 100%')
+        .toEqual({ view: 'circular', wedge: '90', scale: 1 });
+      // In the same window too: a pane zoomed before a restore opens at 100%.
+      await wheelOn(second, paneMap(second));
+      expect(scaleOf(paneMap(second))).toBeGreaterThan(1);
+      await second.menu('file:restore-autosave');
+      await second.settle();
+      expect(scaleOf(paneMap(second)), 'the restored pane opens at 100%').toBe(1);
+      expect(headerZoom(second), "and the main view's zoom is the session's").toBe('100%');
+    } finally {
+      second.unmount();
+    }
+  });
+});
+
+describe('US-01M7DVQG AC4: different documents keep their own selections', () => {
+  it("US-01M7DVQG AC4 a selection on B leaves A's as it was, a selection on A leaves B's, and no link control is offered", async () => {
+    for (const mainRange of [{ start: 100, end: 200 }, null]) {
+      await withApp(async (app) => {
+        await restore(app, [DOC_A, DOC_B], DOC_A.id, mainRange);
+        await showInPane(app, DOC_B.id);
+        await selectMarkInPane(app);
+        expect(mainSelection(app), "A's main selection is as it was").toBe(mainRange ? '100..200' : null);
+        expect(readout(app) === null, 'the header readout is as it was').toBe(mainRange === null);
+      });
+    }
+    await withApp(async (app) => {
+      await restore(app, [DOC_A, DOC_B], DOC_A.id, null);
+      await showInPane(app, DOC_B.id);
+      const mainArcs = app.canvas().querySelectorAll('g.clickable-arc');
+      expect(mainArcs, "the main view's Mark arc").toHaveLength(1);
+      await app.click(mainArcs[0]);
+      expect(mainSelection(app)).toBe('5,000..6,000');
+      expect(paneSelection(app), "B's pane selection is as it was: none").toBeNull();
+      const named = pane(app).querySelectorAll('button, select, input, [role="button"], [role="checkbox"], [role="switch"]')
+        .map((c) => `${c.getAttribute('aria-label') ?? ''} ${c.getAttribute('title') ?? ''} ${words(c.textContent)}`);
+      expect(named.length).toBeGreaterThan(0);
+      expect(named.filter((n) => /link/i.test(n)), 'no link control in the pane').toEqual([]);
+    });
+  });
+});
+
+describe('US-01M7DVQG AC5: edits in either pane reach the other at once', () => {
+  const COMP: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
+  const rc = (s: string) => Array.from(s).reverse().map((b) => COMP[b]).join('');
+  const firstRow = (app: AppHarness) => (pane(app).querySelectorAll('[data-row-start="1"]')[0]?.textContent ?? '').replace(/[^ACGT]/g, '');
+
+  it('US-01M7DVQG AC5 Reverse Complement in the main view shows the new sequence in both of the pane’s maps', async () => {
+    await withApp(async (app) => {
+      await onCircles(app, [CA, CB], CA.id);
+      await showMainInPane(app);
+      expect(firstRow(app), "the pane's linear map reads Circ_A's bases").toContain(CA.sequence.slice(6, 60));
+      await app.change(viewSelect(app), 'circular');
+      expect(arcIn(paneMap(app), 'Mark').getAttribute('aria-label')).toContain('5000 to 6000');
+
+      await app.menu('sequence:reverse-complement');
+
+      expect(arcIn(paneMap(app), 'Mark').getAttribute('aria-label'), "the pane's circular map draws the reverse complement's Mark").toContain('1201 to 2201');
+      expect(arcIn(mainMap(app), 'Mark').getAttribute('aria-label')).toContain('1201 to 2201');
+      await app.change(viewSelect(app), 'linear');
+      const reversed = rc(CA.sequence);
+      expect(firstRow(app), "the pane's linear map reads the new bases").toContain(reversed.slice(6, 60));
+      expect(firstRow(app)).not.toContain(CA.sequence.slice(6, 60));
+    });
+  });
+
+  it("US-01M7DVQG AC5 a feature added from the pane's Linear Map appears in the main view at once", async () => {
+    await withApp(async (app) => {
+      await onCircles(app, [CA, CB], CA.id);
+      await showMainInPane(app);
+      const arcs = pane(app).querySelectorAll('g.clickable-arc').filter((g) => words(g.textContent).includes('Other') || (g.getAttribute('aria-label') ?? '').includes('Other'));
+      expect(arcs.length, "the pane's Other arc").toBeGreaterThan(0);
+      await app.click(arcs[0]);
+      expect(paneSelection(app)).toBe('1,000..1,500');
+      // With no layout the quickbar fits no action inline: + Annotate is in its More menu.
+      const annotateIn = () => app.all('button').filter((b) => words(b.textContent) === '+ Annotate');
+      if (!annotateIn().length) {
+        const more = pane(app).querySelectorAll('button').filter((b) => (b.getAttribute('aria-label') ?? '').startsWith('More selection actions'));
+        expect(more, "the pane's quickbar More menu").toHaveLength(1);
+        await app.click(more[0]);
+      }
+      const annotate = annotateIn();
+      expect(annotate, "the pane's + Annotate").toHaveLength(1);
+      await app.click(annotate[0]);
+      const form = pane(app).querySelectorAll('form.add-feature-drawer');
+      expect(form).toHaveLength(1);
+      await app.change(form[0].querySelectorAll('input[placeholder="Name"]')[0], 'Pane_Added');
+      await app.click(form[0].querySelectorAll('button[type="submit"]')[0]);
+      expect(arcIn(mainMap(app), 'Pane_Added').getAttribute('aria-label'), "the main view's annotations hold it").toContain('1000 to 1500');
+    });
+  });
+
+  it('US-01M7DVQG AC5 a document turned linear, chosen or swapped in while the pane is in Circular Map opens in Linear Map, and that is saved', async () => {
+    const storage = memoryStorage();
+    const app = await mountApp({ storage });
+    try {
+      const refusedLinear = (what: string) => {
+        expect(viewSelect(app).value, `${what}: Linear Map`).toBe('linear');
+        expect(paneMaps(app), `${what}: no circle`).toHaveLength(0);
+        expect(viewOptions(app)[0], `${what}: Circular Map disabled`).toEqual(['circular', 'Circular Map', true]);
+      };
+      await onCircles(app, [CA, CB, LIN, PROT], CA.id);
+      await showMainInPane(app);
+      await app.change(viewSelect(app), 'circular');
+      await app.menu('sequence:toggle-topology');
+      refusedLinear('turned linear');
+      expect(viewNote(app)).toEqual([LINEAR_SENTENCE]);
+      await autosaveRunsOut(app);
+      expect(autosavedWorkspace(storage).documentSplit, 'Linear Map is what is saved').toEqual({ orientation: 'side-by-side', docId: CA.id, docName: 'Circ_A' });
+
+      await app.change(picker(app), CB.id);
+      await app.change(viewSelect(app), 'circular');
+      await app.change(picker(app), PROT.id);
+      refusedLinear('a protein chosen');
+      expect(viewNote(app)).toEqual(['Circular maps are drawn for DNA only; this document is a protein.']);
+
+      await app.change(picker(app), CB.id);
+      await app.change(viewSelect(app), 'circular');
+      await app.click(app.all('button.mbc-doc-tab-trigger').find((b) => words(b.querySelectorAll('.mbc-doc-tab-title')[0]?.textContent ?? '') === 'Circ_A')!);
+      expect(mainDocName(app)).toBe('Circ_A');
+      // Circ_A is linear now: swapped into the pane, it opens in Linear Map.
+      await app.click(labelled(pane(app), 'button', 'Swap with the main view'));
+      expect(paneDocId(app)).toBe(CA.id);
+      refusedLinear('a linear document swapped in');
+      await autosaveRunsOut(app);
+      expect(autosavedWorkspace(storage).documentSplit?.view, 'nothing but Linear Map is saved').toBeUndefined();
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
+describe('US-01M7DVQG AC6: the pane\'s view and rotation are saved with its document', () => {
+  it('US-01M7DVQG AC6 each is saved only while it is not the default, and changing only one autosaves it', async () => {
+    const storage = memoryStorage();
+    const app = await mountApp({ storage });
+    try {
+      await onCircles(app, [CA, CB], CA.id);
+      await showInPane(app, CB.id);
+      await autosaveRunsOut(app);
+      const plain = { orientation: 'side-by-side', docId: CB.id, docName: 'Circ_B' };
+      expect(autosavedSplit(storage), 'a split that never used them saves what it saved before').toEqual(plain);
+      let last = storage.getItem(AUTOSAVE_KEY);
+      const step = async (what: string, run: () => Promise<void>, saved: Record<string, unknown>) => {
+        await run();
+        await autosaveRunsOut(app);
+        expect(storage.getItem(AUTOSAVE_KEY), `${what} alone is autosaved`).not.toBe(last);
+        last = storage.getItem(AUTOSAVE_KEY);
+        expect(autosavedSplit(storage), what).toEqual({ ...plain, ...saved });
+      };
+      await step('the view', () => app.change(viewSelect(app), 'info'), { view: 'info' });
+      await step('the view again', () => app.change(viewSelect(app), 'circular'), { view: 'circular' });
+      await step('the rotation', () => rotatePane(app, '90'), { view: 'circular', rotation: 90 });
+      await step('the rotation back to 0', () => rotatePane(app, '360'), { view: 'circular' });
+      await step('the view back to Linear Map', () => app.change(viewSelect(app), 'linear'), {});
+    } finally {
+      app.unmount();
+    }
+  });
+
+  const restoreView = (app: AppHarness, documentSplit: unknown, sessionName: string) => app.restoreSession({
+    documents: [CA, CB, LIN], activeDocId: CA.id, viewerTab: 'sequence-view', sessionName,
+    workspace: { mapLayoutMode: 'split', documentSplit: documentSplit as never },
+  });
+  const splitNotices = (app: AppHarness) => statusSegments(app).filter((s) => /split pane|Linear Map|0 degrees|Single Pane|document split/i.test(s));
+
+  it('US-01M7DVQG AC6 restores them through the App and the codec, normalised; absent ones open Linear Map at 0 with no message', async () => {
+    const storage = memoryStorage();
+    const app = await mountApp({ storage });
+    try {
+      await restoreView(app, { orientation: 'side-by-side', docId: CB.id, docName: 'Circ_B', view: 'circular', rotation: 450 }, 'View_Saved');
+      expect(layout(app)).toEqual({ host: SIDE, pane: CB.id });
+      expect({ view: viewSelect(app).value, wedge: wedge(paneMap(app)) }, '450 opens at 90').toEqual({ view: 'circular', wedge: '90' });
+      expect(splitNotices(app)).toEqual([]);
+      await app.click(labelled(pane(app), 'button', 'Rotate the circular map in the split pane'));
+      const field = pane(app).querySelectorAll('[role="dialog"][aria-label="Rotate Circular Map"] input[aria-label="Rotation in degrees"]');
+      expect(field.map((f) => f.value), "the pane's degree field reads 90, not 450").toEqual(['90']);
+      await app.change(viewSelect(app), 'info');
+      await app.change(viewSelect(app), 'circular');
+      await autosaveRunsOut(app);
+      expect(autosavedSplit(storage), 'held as 90, not 450').toEqual({ orientation: 'side-by-side', docId: CB.id, docName: 'Circ_B', view: 'circular', rotation: 90 });
+      await restoreView(app, { orientation: 'side-by-side', docId: CB.id, docName: 'Circ_B', view: 'info' }, 'View_Info');
+      expect(viewSelect(app).value).toBe('info');
+      await restoreView(app, { orientation: 'top-bottom', docId: CB.id, docName: 'Circ_B' }, 'View_Absent');
+      expect(layout(app)).toEqual({ host: STACK, pane: CB.id });
+      expect(viewSelect(app).value, 'absent: Linear Map').toBe('linear');
+      await app.change(viewSelect(app), 'circular');
+      expect(wedge(paneMap(app)), 'absent: 0 degrees').toBe('0');
+      expect(splitNotices(app)).toEqual([]);
+      // A saved document that is gone: the view and rotation are not read, and only its notice is shown.
+      await restoreView(app, { orientation: 'side-by-side', docId: 'gone', docName: 'Gone_Doc', view: 'nonsense', rotation: 'x' }, 'View_Gone');
+      expect(layout(app)).toEqual({ host: SINGLE, pane: null });
+      expect(splitNotices(app)).toEqual([missing('Gone_Doc')]);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('US-01M7DVQG AC6 an unreadable view or rotation opens Linear Map or 0 degrees, saying so exactly, and changes nothing else', async () => {
+    const cases: [string, Record<string, unknown>, string, string, string][] = [
+      ['a view not one of the three', { docId: CB.id, docName: 'Circ_B', view: 'diagonal' }, CB.id, 'linear', VIEW_NOTICE],
+      ['a null view', { docId: CB.id, docName: 'Circ_B', view: null }, CB.id, 'linear', VIEW_NOTICE],
+      ['Circular Map for a linear document', { docId: LIN.id, docName: 'Lin_Doc', view: 'circular' }, LIN.id, 'linear', VIEW_NOTICE],
+      ['a rotation that is not a number', { docId: CB.id, docName: 'Circ_B', view: 'circular', rotation: 'x' }, CB.id, 'circular', rotationNotice('Circ_B')],
+      ['a null rotation', { docId: CB.id, docName: 'Circ_B', view: 'circular', rotation: null }, CB.id, 'circular', rotationNotice('Circ_B')],
+    ];
+    await withApp(async (app) => {
+      let n = 0;
+      for (const [what, saved, docId, view, notice] of cases) {
+        await restoreView(app, { orientation: 'top-bottom', ratio: 0.3, ...saved }, `View_Bad_${++n}`);
+        expect(layout(app), `${what}: the orientation and document as saved`).toEqual({ host: STACK, pane: docId });
+        expect(valueNow(app), `${what}: the divider as saved`).toBe(30);
+        expect(viewSelect(app).value, `${what}: the view`).toBe(view);
+        if (view === 'circular') expect(wedge(paneMap(app)), `${what}: 0 degrees`).toBe('0');
+        expect(splitNotices(app), `${what}: the one notice`).toEqual([notice]);
+      }
+    });
+  });
+});

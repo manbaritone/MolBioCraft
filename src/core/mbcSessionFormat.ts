@@ -80,8 +80,10 @@ export interface MbcWorkspaceUiState {
   /**
    * The document split (US-01M7DVR0): the orientation and the second pane's document, by id and by
    * name; absent in sessions saved before it, and while the split was never opened. It carries the
-   * divider's `ratio` and `collapsed` pane while they are not the default (US-01M7DVB1). The parser keeps
-   * any object here whole, so the App reads it only through `parseDocumentSplit`.
+   * divider's `ratio` and `collapsed` pane while they are not the default (US-01M7DVB1), and the second
+   * pane's `view` and `rotation` while they are not Linear Map and 0 degrees (US-01M7DVQG); the pane's
+   * zoom is not saved. The parser keeps any object here whole, so the App reads it only through
+   * `parseDocumentSplit`.
    */
   documentSplit?: SavedDocumentSplit;
   /**

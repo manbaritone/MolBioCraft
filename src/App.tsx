@@ -144,8 +144,10 @@ import {
   documentSplitStyle,
   parseDocumentSplit,
   renderedDocumentSplitRatio,
+  DEFAULT_SPLIT_PANE_VIEW,
   type DocumentSplitOrientation,
   type DocumentSplitSize,
+  type SplitPaneView,
 } from './core/documentSplit';
 import { StructureAlignmentDialog } from './components/StructureAlignmentDialog';
 import { hasStructure } from './core/structureModels';
@@ -413,6 +415,7 @@ import {
   buildNativeMenuState,
   buildCommandDocumentContext,
   checkMultiDocumentSelection,
+  circularMapUnavailableReason,
   isTagOrProteaseFeature,
   commandAvailability,
   CommandContext,
@@ -1223,6 +1226,14 @@ export const App: React.FC = () => {
    * Kept through Single Pane, so the next split shows the same document (US-01M7DVR0).
    */
   const [splitDocId, setSplitDocId] = useState<string | null>(null);
+  /**
+   * The second pane's own view, zoom and circular-map rotation (US-01M7DVQG), kept through Single Pane
+   * as its document is. The main view's zoom (`zoomLevel`) and rotation (`mapRotationByDoc`) are apart.
+   * The pane's zoom is not saved with the session.
+   */
+  const [splitView, setSplitView] = useState<SplitPaneView>(DEFAULT_SPLIT_PANE_VIEW);
+  const [splitZoom, setSplitZoom] = useState<number>(SEQUENCE_ZOOM_DEFAULT);
+  const [splitRotation, setSplitRotation] = useState<number>(0);
   /** The document split (US-01M7DVR0): Single Pane, or the second pane Side by Side or Top and Bottom. */
   const [documentSplit, setDocumentSplit] = useState<DocumentSplitOrientation>('single');
   /** The split the toggle returns to from Single Pane: the last one chosen, Side by Side the first time. */
@@ -2453,14 +2464,28 @@ export const App: React.FC = () => {
   const paneSplitCollapsed = paneSplitShown ? paneSplit.collapsed : null;
   const activeMapRotation = mapRotationByDoc[activeDoc.id] ?? 0;
   /** Turns the active document's circular map; it never edits the document, its history or the undo stack. */
-  const setActiveMapRotation = (rotationDeg: number) => {
-    const docId = activeDoc.id;
+  const setActiveMapRotation = (rotationDeg: number) => setMainMapRotationOf(activeDoc.id, rotationDeg);
+  /** Turns the main view's circular map of `docId` (a swap hands the split pane's rotation to it, US-01M7DVQG). */
+  const setMainMapRotationOf = (docId: string, rotationDeg: number) => {
     setMapRotationByDoc((prev) => {
       if (rotationDeg !== 0) return { ...prev, [docId]: rotationDeg };
       if (!(docId in prev)) return prev;
       const { [docId]: _reset, ...rest } = prev;
       return rest;
     });
+  };
+  // The split pane's document, and its fall back to Linear Map (US-01M7DVQG): a pane in Circular Map
+  // whose document cannot draw a circle - chosen, swapped in, or turned linear - is put in Linear Map,
+  // by the rule View › Rotate Circular Map… reads, so that is also the view saved.
+  const splitDoc = splitDocId ? catalogNonDeletedDocs.find((d) => d.id === splitDocId) ?? null : null;
+  const splitCircleRefused = splitDoc ? circularMapUnavailableReason(buildCommandDocumentContext(splitDoc) ?? splitDoc) !== null : false;
+  useEffect(() => {
+    if (splitView === 'circular' && splitCircleRefused) setSplitView('linear');
+  }, [splitView, splitCircleRefused]);
+  /** Shows `docId` in the split pane at the main view's rotation for it; the pane keeps its zoom and view. */
+  const showInSplitPane = (docId: string) => {
+    setSplitDocId(docId);
+    setSplitRotation(mapRotationByDoc[docId] ?? 0);
   };
   // The ratio drawn: the chosen one, clamped to the frame while the maps are side by side.
   const paneSplitDrawn: PaneSplitState = { ...paneSplit, ratio: renderedPaneSplitRatio(paneSplit.ratio, paneSplitWidth) };
@@ -4887,7 +4912,7 @@ export const App: React.FC = () => {
       mapLayoutMode,
       zoomLevel,
       paneSplit,
-      documentSplit: documentSplitForSession(documentSplit, splitDocId, catalogAllDocs, documentSplitSize),
+      documentSplit: documentSplitForSession(documentSplit, splitDocId, catalogAllDocs, documentSplitSize, { view: splitView, rotation: splitRotation }),
       siteVisibility: siteVisibilityForSession(siteVisibilityByDoc, documents),
       mapRotation: mapRotationForSession(mapRotationByDoc, documents),
       textFormat,
@@ -5055,6 +5080,8 @@ export const App: React.FC = () => {
     documentSplit,
     splitDocId,
     documentSplitSize,
+    splitView,
+    splitRotation,
     siteVisibilityByDoc,
     mapRotationByDoc,
     textFormat,
@@ -5182,6 +5209,11 @@ export const App: React.FC = () => {
     setDocumentSplit(restoredSplit.orientation);
     setSplitDocId(restoredSplit.docId);
     setDocumentSplitSize(restoredSplit.size);
+    // The pane's view and rotation as saved with its document (US-01M7DVQG); its zoom is not saved, so
+    // a restored pane opens at 100%.
+    setSplitView(restoredSplit.view ?? DEFAULT_SPLIT_PANE_VIEW);
+    setSplitRotation(restoredSplit.rotation ?? 0);
+    setSplitZoom(SEQUENCE_ZOOM_DEFAULT);
     lastDocumentSplitRef.current = restoredSplit.orientation === 'single' ? 'side-by-side' : restoredSplit.orientation;
     // Each document's displayed sites as saved (BG-01M7DHM0), malformed entries dropped and a choice
     // made on a sequence other than the restored one dropped; the App reconciles the rest with the
@@ -5237,6 +5269,8 @@ export const App: React.FC = () => {
     }
     if (restoredSplit.notice) setStatusBanner(restoredSplit.notice, { append: true, keep: true });
     if (restoredSplit.sizeNotice) setStatusBanner(restoredSplit.sizeNotice, { append: true, keep: true });
+    if (restoredSplit.viewNotice) setStatusBanner(restoredSplit.viewNotice, { append: true, keep: true });
+    if (restoredSplit.rotationNotice) setStatusBanner(restoredSplit.rotationNotice, { append: true, keep: true });
   };
 
   /**
@@ -16343,14 +16377,32 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
               )}
               {documentSplit !== 'single' && (
                 <SplitDocumentPane
-                  doc={splitDocId ? catalogNonDeletedDocs.find((d) => d.id === splitDocId) ?? null : null}
+                  doc={splitDoc}
                   choices={[...openDocs.filter((d) => d.id !== activeDoc.id), ...catalogNonDeletedDocs.filter((d) => d.id !== activeDoc.id && !openDocs.some((o) => o.id === d.id))]}
-                  onChooseDoc={(id) => setSplitDocId(id)}
+                  onChooseDoc={(id) => showInSplitPane(id)}
+                  onShowMainDoc={() => showInSplitPane(activeDoc.id)}
                   mainDocId={activeDoc.id}
                   mainRange={selectedRange}
+                  onSelectMainRange={setSelectedRange}
+                  view={splitView}
+                  onViewChange={setSplitView}
+                  zoomLevel={splitZoom}
+                  onZoomChange={setSplitZoom}
+                  rotationDeg={splitRotation}
+                  onRotate={setSplitRotation}
                   onSwap={(paneRange) => {
                     const other = splitDocId;
                     if (!other) return;
+                    // Each document's zoom and rotation move with it (US-01M7DVQG): the main view takes
+                    // the pane's and the pane the main view's, the same documents or not.
+                    const mainZoom = zoomLevel;
+                    setZoomLevel(splitZoom);
+                    setSplitZoom(mainZoom);
+                    setSplitRotation(activeMapRotation);
+                    setMainMapRotationOf(other, splitRotation);
+                    // The same document in both panes: only the zoom and rotation change places; the main
+                    // view's document, tab, selection and navigation history stay as they are.
+                    if (other === activeDoc.id) return;
                     setSplitDocId(activeDoc.id);
                     selectDocumentWithHistory(other);
                     // The pane's selection comes with its document (US-01M7DV3V); none stays none.

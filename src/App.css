@@ -15527,6 +15527,21 @@ table,
   min-width: 0;
 }
 
+/* The second pane's view selector, the reason a circle is not offered, and its rotate button (US-01M7DVQG). */
+.mbc-split-pane-view {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--mbc-border);
+}
+
+.mbc-split-pane-view-note {
+  color: var(--mbc-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
 .mbc-split-pane-body {
   flex: 1;
   overflow: auto;
