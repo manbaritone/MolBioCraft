@@ -15,7 +15,7 @@ import { ImportedTreeViewer } from './ImportedTreeViewer';
 import { ExpressionResultsView } from './ExpressionViews';
 import { DocumentInfoPanel } from './DocumentInfoPanel';
 import { ResultWarnings } from './ResultWarnings';
-import { customEnzymeCount, restrictionScanEnzymes, restrictionScanScope, restrictionScannedBp, subsetNote, type RestrictionScanScope } from './CircularPlasmidMap';
+import { chosenRestrictionScope, restrictionScanEnzymes, restrictionScannedBp, subsetNote, type ChosenScanCollection, type RestrictionScanScope } from './CircularPlasmidMap';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
 
@@ -32,6 +32,11 @@ export interface SplitDocumentPaneProps {
   onDownloadBinary?: (bytes: Uint8Array, name: string, mime: string) => void;
   /** The active enzyme list (US-01M7DV52): the catalogue and the stored custom definitions; the catalogue alone unless given. */
   enzymes?: RestrictionEnzyme[];
+  /**
+   * The collection chosen for site scans (US-01M7JX1J), when one is: the pane scans its members
+   * over the other document's own scanned length, and names it as the main view does.
+   */
+  scanCollection?: ChosenScanCollection | null;
 }
 
 /** The most alignment rows the split pane draws, the first in the alignment's order. */
@@ -60,7 +65,7 @@ const AlignmentRows: React.FC<{ doc: SequenceDocument }> = ({ doc }) => {
   );
 };
 
-export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choices, onChooseDoc, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary, enzymes = REBASE_ENZYMES }) => {
+export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choices, onChooseDoc, onSwap, onClose, onUpdateDocument, onDownload, onDownloadBinary, enzymes = REBASE_ENZYMES, scanCollection = null }) => {
   const [range, setRange] = useState<{ start: number; end: number; label?: string } | null>(null);
   // The pane scans as the main view does (App.tsx `restrictionScope`), by the one shared rule:
   // `restrictionScannedBp` (over 150,000 bp only the first 60,000 bp, as a linear sequence) and
@@ -68,18 +73,21 @@ export const SplitDocumentPane: React.FC<SplitDocumentPaneProps> = ({ doc, choic
   // catalog enzymes only). Its linear view is handed that scope, so it says where its cut sites
   // stop, as the main linear view does (BG-01M6RTHN).
   // The scan keeps each enzyme's first sites by position and warns when it left some out (BG-01M6S1K2).
+  // A chosen collection is scanned and named by the same helper as the main view's (US-01M7JX1J,
+  // D0169); one with nothing that can be scanned sends the engine nothing, as the main view's does.
   const { scan, restrictionScope } = useMemo((): { scan: RestrictionSiteScan; restrictionScope: RestrictionScanScope | null } => {
     if (!doc || doc.moleculeType !== 'DNA' || !doc.sequence || doc.alignmentMeta?.sequences?.length) return { scan: EMPTY_RESTRICTION_SCAN, restrictionScope: null };
     const length = doc.sequence.length;
     const scannedBp = restrictionScannedBp(length);
-    const scope = restrictionScanScope(length, scannedBp, customEnzymeCount(enzymes));
+    const scope = chosenRestrictionScope(length, scannedBp, enzymes, scanCollection);
     // The core cut follows the bases the scan reads, not the document's length (US-01M7DV52).
-    const list = restrictionScanEnzymes(enzymes, scannedBp);
+    const list = restrictionScanEnzymes(scanCollection ? scanCollection.members : enzymes, scannedBp);
+    if (list.length === 0) return { scan: EMPTY_RESTRICTION_SCAN, restrictionScope: scope };
     return {
       scan: scope?.firstBp ? scanRestrictionSites(doc.sequence.slice(0, scope.firstBp), 'linear', list) : scanRestrictionSites(doc.sequence, doc.topology, list),
       restrictionScope: scope,
     };
-  }, [doc, enzymes]);
+  }, [doc, enzymes, scanCollection]);
   const body = (() => {
     if (!doc) return <p className="mbc-help-where">Choose a document to show next to the main view.</p>;
     if (typeof doc.docMetadata?.Newick === 'string') return <ImportedTreeViewer key={doc.id} doc={doc} onUpdateDocument={onUpdateDocument} onDownload={onDownload} onDownloadBinary={onDownloadBinary} />;

@@ -47,7 +47,7 @@ import type { FigureTable } from '../core/figureExport';
 import { defaultHybridSubTab, hybridTabsForDocument, type HybridSubTabId } from '../core/analysisContext';
 import { cutSiteDisplayPosition, enzymeKey } from '../core/restrictionDisplay';
 import { openEnzymeCollections } from '../core/enzymeDatabase';
-import { customEnzymeCount, restrictionScanEnzymes, restrictionScanScope, restrictionScopeWords } from './CircularPlasmidMap';
+import { chosenRestrictionScope, CORE_CATALOG_LEN, restrictionScanEnzymes, restrictionScopeWords, type ChosenScanCollection } from './CircularPlasmidMap';
 import { hasStructure, structureAtomsOf } from '../core/structureModels';
 import {
   arcDiagram,
@@ -183,6 +183,11 @@ interface HybridToolsAndHistoryStudioProps {
    * the Enzymes view scans and tabulates; the catalogue alone unless given.
    */
   enzymes?: RestrictionEnzyme[];
+  /**
+   * The collection chosen for site scans (US-01M7JX1J), when one is: the Enzymes view's rows, scan
+   * and words read only its members, over the whole sequence; the Lineage tab keeps `enzymes`.
+   */
+  scanCollection?: ChosenScanCollection | null;
 }
 
 const COMMERCIAL_SUPPLIERS = [
@@ -219,6 +224,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   commandNonce,
   onSelectDocument,
   enzymes = REBASE_ENZYMES,
+  scanCollection = null,
 }) => {
   // In the workbench the Protein, Secondary structure and Lineage settings sit in App's inspector;
   // drawn on its own, the studio keeps each where it sits in its result (US-01M6TANN).
@@ -446,19 +452,26 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
 
   // Every scanned enzyme's complete site count, with each enzyme's first sites kept by position
   // and a warning naming the enzymes whose positions were cut (BG-01M6S1K2).
-  const restrictionScan = useMemo(
-    () =>
-      doc.moleculeType === 'DNA' && (subTab === 'enzymes-view' || subTab === 'lineage')
-        ? scanRestrictionSites(doc.sequence, doc.topology, restrictionScanEnzymes(enzymes, doc.sequence.length))
-        : EMPTY_RESTRICTION_SCAN,
-    [subTab, doc.moleculeType, doc.sequence, doc.topology, enzymes]
-  );
+  // The Enzymes view reads a chosen collection's members (US-01M7JX1J, D0169), and the Lineage tab
+  // every active enzyme (D0168): the one scan follows the tab it is drawn for. A collection with
+  // nothing that can be scanned sends the engine nothing.
+  const enzymesViewCollection = subTab === 'enzymes-view' ? scanCollection : null;
+  const enzymesViewList = enzymesViewCollection ? enzymesViewCollection.members : enzymes;
+  const restrictionScan = useMemo(() => {
+    if (doc.moleculeType !== 'DNA' || (subTab !== 'enzymes-view' && subTab !== 'lineage')) return EMPTY_RESTRICTION_SCAN;
+    const list = restrictionScanEnzymes(subTab === 'lineage' ? enzymes : enzymesViewList, doc.sequence.length);
+    return list.length === 0 ? EMPTY_RESTRICTION_SCAN : scanRestrictionSites(doc.sequence, doc.topology, list);
+  }, [subTab, doc.moleculeType, doc.sequence, doc.topology, enzymes, enzymesViewList]);
   const allCutSites = restrictionScan.sites;
   // The scan above covers the whole molecule, but over 100,000 bp with the engine's core catalog
   // only (BG-01M6RPWR): an enzyme cutting once is then named for that catalog, not as unique.
+  // A chosen collection is named in its place, by the same helper as the main view's.
   const restrictionWords =
     doc.moleculeType === 'DNA'
-      ? restrictionScopeWords(restrictionScanScope(doc.sequence.length, doc.sequence.length, customEnzymeCount(enzymes)), doc.sequence.length)
+      ? restrictionScopeWords(
+          chosenRestrictionScope(doc.sequence.length, doc.sequence.length, enzymes, scanCollection),
+          doc.sequence.length
+        )
       : null;
 
   const sequenceAlerts = useMemo(
@@ -534,7 +547,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     // (over 100,000 bp only the core enzymes are scanned), which is no noncutter; `cuts` are the
     // positions the scan kept, each enzyme's first ones.
     const counts = restrictionSiteCountsByName(restrictionScan);
-    return enzymes.map((enz) => {
+    return enzymesViewList.map((enz) => {
       const key = enzymeKey(enz);
       const cuts = byEnz[key] || [];
       const count: number | null = key in counts ? counts[key] : null;
@@ -547,7 +560,23 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
       if (enzymeSetFilter === 'type2s') return Boolean(row.enzyme.isTypeIIS);
       return true;
     });
-  }, [subTab, allCutSites, restrictionScan, enzymeSetFilter, customEnzymeSetNames, enzymes]);
+  }, [subTab, allCutSites, restrictionScan, enzymeSetFilter, customEnzymeSetNames, enzymesViewList]);
+
+  // The Enzyme Set's built-ins the active list holds (the Custom Enzyme Set tab's rows with every
+  // enzyme scanned), in Enzyme Set order: what that tab's Save counts, and, with a collection
+  // chosen, the ones it leaves out are named under the tabs (US-01M7JX1J).
+  const enzymeSetBuiltIns = useMemo(() => {
+    const builtIns = new Set(enzymes.filter((e) => !isCustomEnzyme(e)).map((e) => e.name));
+    return [...new Set(customEnzymeSetNames)].filter((n) => builtIns.has(n));
+  }, [enzymes, customEnzymeSetNames]);
+  const enzymeSetOutsideCollection = useMemo(() => {
+    if (!scanCollection) return null;
+    const members = new Set(scanCollection.members.filter((e) => !isCustomEnzyme(e)).map((e) => e.name));
+    const outside = enzymeSetBuiltIns.filter((n) => !members.has(n));
+    if (outside.length === 0) return null;
+    const one = outside.length === 1;
+    return `${outside.length.toLocaleString()} of this Enzyme Set's enzymes ${one ? 'is' : 'are'} not in "${scanCollection.name}" and ${one ? 'was' : 'were'} not scanned: ${outside.join(', ')}.`;
+  }, [scanCollection, enzymeSetBuiltIns]);
 
   function enzLength(seq: string): number {
     return seq.replace(/N/gi, '').length || seq.length;
@@ -637,13 +666,13 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   /** The Save button's set: the listed built-ins (custom rows are left out, and counted). */
   const handleSaveEnzymeSet = () => {
     if (enzymeSetFilter === 'custom_set') {
-      persistEnzymeSetToDocument(customEnzymeSetNames, `Saved Enzyme Set "${doc.name}" (${filteredEnzymeSummary.length} enzymes)`);
+      persistEnzymeSetToDocument(customEnzymeSetNames, `Saved Enzyme Set "${doc.name}" (${enzymeSetBuiltIns.length} enzymes)`);
       return;
     }
     const names = filteredEnzymeSummary.filter((r) => !isCustomEnzyme(r.enzyme)).map((r) => r.enzyme.name);
     persistEnzymeSetToDocument(
       names,
-      `Saved Enzyme Set "${doc.name}" (${names.length} enzymes)${customRowsLeftOut(filteredEnzymeSummary.length - names.length)}`
+      `Saved Enzyme Set "${doc.name}" (${names.length} enzymes${scanCollection ? `, from "${scanCollection.name}"` : ''})${customRowsLeftOut(filteredEnzymeSummary.length - names.length)}`
     );
   };
 
@@ -1911,7 +1940,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                   ['unique_dual', 'Unique & Dual (1–2)'],
                   ['six_plus', '6+ Cutters'],
                   ['type2s', 'Type IIS Enzymes'],
-                  ['all', 'All REBASE Commercial'],
+                  ['all', scanCollection ? `All in "${scanCollection.name}"` : 'All REBASE Commercial'],
                 ] as const
               ).map(([id, label]) => (
                 <button
@@ -1925,6 +1954,9 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
               ))}
             </div>
             {restrictionWords && <p className="mbc-summary-note">{restrictionWords.detail}</p>}
+            {enzymeSetFilter === 'custom_set' && enzymeSetOutsideCollection && (
+              <p className="mbc-summary-note">{enzymeSetOutsideCollection}</p>
+            )}
             <ResultWarnings warnings={restrictionScan.warnings} label="Restriction scan warnings" />
 
             {enzymeSetSubView === 'Info' ? (
@@ -2091,6 +2123,8 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                             {count === null
                               ? isCustomEnzyme(enzyme)
                                 ? 'Not scanned: its recognition sequence holds a letter the scan cannot read'
+                                : scanCollection
+                                ? `Not scanned: only the first ${CORE_CATALOG_LEN} built-in enzymes of "${scanCollection.name}" are scanned on this sequence`
                                 : 'Not scanned: only the core enzymes are scanned on this sequence'
                               : cuts.length > 0
                               ? cuts

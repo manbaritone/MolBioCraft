@@ -303,8 +303,7 @@ import {
   CircularPlasmidMap,
   clampSequenceZoom,
   primerTmText,
-  customEnzymeCount,
-  type RestrictionScanCollection,
+  chosenRestrictionScope,
   type RestrictionScanScope,
   restrictionScanEnzymes,
   restrictionScanScope,
@@ -1252,8 +1251,10 @@ export const App: React.FC = () => {
   const enzymeDbNotice = !enzymeDbRead.ok && enzymeDbRead.error.kind !== 'unavailable' ? enzymeDbRead.error.message : null;
   // The collection the main display scan reads (US-01M7JPK6, D0163, D0168): the stored choice, or one
   // made in this run that the storage did not keep. The collections are read again on every write the
-  // Restriction Enzymes window makes to them. Only the main display scan reads `displayScanEnzymes`;
-  // digests, cloning, workflows, the Enzymes view and the split pane keep `activeEnzymes`. A choice or
+  // Restriction Enzymes window makes to them. The main display scan reads `displayScanEnzymes`, and
+  // the split pane and the Enzymes view are handed the collection itself, each scanning it over its
+  // own scanned length (US-01M7JX1J); digests, cloning, workflows and the studio's Lineage tab keep
+  // `activeEnzymes`. A choice or
   // a collections store that cannot be read, or a chosen collection that is gone, scans every enzyme
   // and says why once (below); storage that is unavailable says nothing, as for `enzymeDbNotice`.
   const [enzymeCollectionsRevision, setEnzymeCollectionsRevision] = useState(0);
@@ -2413,16 +2414,10 @@ export const App: React.FC = () => {
   // and list.
   // A chosen collection (US-01M7JPK6) is named in place of the core rule: the members the bounded
   // member rule sends for the bases scanned, the built-ins it leaves out, and each member not scanned.
+  // The split pane and the Enzymes view derive theirs by the same helper (US-01M7JX1J, D0169).
   const restrictionScope = useMemo<RestrictionScanScope | null>(() => {
     const length = activeDoc.sequence.length;
-    const scannedBp = restrictionScannedBp(length);
-    const chosen = scanCollectionChoice.collection;
-    let collection: RestrictionScanCollection | undefined;
-    if (chosen) {
-      const sent = restrictionScanEnzymes(chosen.members, scannedBp).length;
-      collection = { name: chosen.name, scanned: sent, builtInsLeftOut: chosen.members.length - sent, notScanned: chosen.notScanned };
-    }
-    return restrictionScanScope(length, scannedBp, customEnzymeCount(activeEnzymes), collection);
+    return chosenRestrictionScope(length, restrictionScannedBp(length), activeEnzymes, scanCollectionChoice.collection);
   }, [activeDoc.sequence.length, activeEnzymes, scanCollectionChoice]);
   const restrictionWords = restrictionScopeWords(restrictionScope, activeDoc.sequence.length);
 
@@ -15997,6 +15992,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     <HybridToolsAndHistoryStudio
                       doc={activeDoc}
                       enzymes={activeEnzymes}
+                      scanCollection={scanCollectionChoice.collection}
                       allDocuments={documents}
                       onUpdateDocument={handleUpdateDocument}
                       initialSubTab={hybridInitialSubTab}
@@ -16038,6 +16034,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   onDownload={(content, name, mime) => void handleDownloadFile(content, name, mime)}
                   onDownloadBinary={(bytes, name, mime) => void handleDownloadBinaryFile(bytes, name, mime)}
                   enzymes={activeEnzymes}
+                  scanCollection={scanCollectionChoice.collection}
                 />
               )}
               </div>

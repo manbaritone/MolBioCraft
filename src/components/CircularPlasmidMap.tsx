@@ -693,6 +693,37 @@ export function restrictionScanEnzymes(enzymes: RestrictionEnzyme[], scannedBp: 
 export const customEnzymeCount = (enzymes: readonly RestrictionEnzyme[]): number => enzymes.filter(isCustomEnzyme).length;
 
 /**
+ * The collection chosen for site scans (US-01M7JPK6), as the App resolves it: its name, the members
+ * the active list holds in collection order, and each member it does not hold, by its label.
+ */
+export interface ChosenScanCollection {
+  name: string;
+  members: RestrictionEnzyme[];
+  notScanned: string[];
+}
+
+/**
+ * What a display scan of the first `scannedBp` bases of a `lengthBp` molecule covers, from the
+ * active list `enzymes` or, when one is chosen, the collection (US-01M7JX1J, D0169): the one rule
+ * the main view, the split pane and the Enzymes view each apply with their own scanned length. A
+ * collection names the members the bounded member rule sends for those bases (D0162), the built-ins
+ * it leaves out, and each member not scanned.
+ */
+export function chosenRestrictionScope(
+  lengthBp: number,
+  scannedBp: number,
+  enzymes: readonly RestrictionEnzyme[],
+  chosen?: ChosenScanCollection | null
+): RestrictionScanScope | null {
+  let collection: RestrictionScanCollection | undefined;
+  if (chosen) {
+    const sent = restrictionScanEnzymes(chosen.members, scannedBp).length;
+    collection = { name: chosen.name, scanned: sent, builtInsLeftOut: chosen.members.length - sent, notScanned: chosen.notScanned };
+  }
+  return restrictionScanScope(lengthBp, scannedBp, customEnzymeCount(enzymes), collection);
+}
+
+/**
  * The plain words a partial scan's counts carry, so none reads as the whole molecule's:
  * `sites` follows a count of sites, `once` follows "Cutting once", `short` goes in parentheses or
  * after a comma, and `detail` is the sentence that says what was left out. Null when the scope
