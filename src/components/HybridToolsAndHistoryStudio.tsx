@@ -188,6 +188,14 @@ interface HybridToolsAndHistoryStudioProps {
    * and words read only its members, over the whole sequence; the Lineage tab keeps `enzymes`.
    */
   scanCollection?: ChosenScanCollection | null;
+  /**
+   * The App's count of writes to the collections store (BG-01M7JSCN): those the Restriction Enzymes
+   * window makes and this view's own import. A change re-reads whether this document's Enzyme Set was
+   * imported, so the import is offered again once its collection is deleted in the window.
+   */
+  collectionsRevision?: number;
+  /** Called after the Enzymes view's import of the Enzyme Set succeeds (BG-01M7JSCN), so the App re-reads the collections. */
+  onCollectionsChange?: () => void;
 }
 
 const COMMERCIAL_SUPPLIERS = [
@@ -225,6 +233,8 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   onSelectDocument,
   enzymes = REBASE_ENZYMES,
   scanCollection = null,
+  collectionsRevision = 0,
+  onCollectionsChange,
 }) => {
   // In the workbench the Protein, Secondary structure and Lineage settings sit in App's inspector;
   // drawn on its own, the studio keeps each where it sits in its result (US-01M6TANN).
@@ -254,12 +264,13 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   const enzymeSetImported = useMemo(() => {
     const r = enzymeCollections.read();
     return r.ok && r.collections.some((c) => c.importedFrom?.documentId === doc.id);
-  }, [enzymeCollections, collectionsVersion, doc.id]);
+  }, [enzymeCollections, collectionsVersion, collectionsRevision, doc.id]);
   /** Imports the Enzyme Set into a new collection; the document is not written. */
   const handleImportEnzymeSetAsCollection = () => {
     const r = enzymeCollections.importEnzymeSet({ id: doc.id, name: doc.name, enzymeNames: customEnzymeSetNames });
     setEnzymeSetStatusMsg(r.ok ? r.value.message : r.error.message);
     setCollectionsVersion((n) => n + 1);
+    if (r.ok) onCollectionsChange?.();
   };
 
   useEffect(() => {

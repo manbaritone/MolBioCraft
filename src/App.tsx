@@ -15993,6 +15993,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       doc={activeDoc}
                       enzymes={activeEnzymes}
                       scanCollection={scanCollectionChoice.collection}
+                      collectionsRevision={enzymeCollectionsRevision}
+                      onCollectionsChange={() => setEnzymeCollectionsRevision((n) => n + 1)}
                       allDocuments={documents}
                       onUpdateDocument={handleUpdateDocument}
                       initialSubTab={hybridInitialSubTab}

@@ -565,3 +565,74 @@ describe("US-01M7DV72 AC3: a document's Enzyme Set imported as a collection", ()
     });
   });
 });
+
+// ─── BG-01M7JSCN: the offer follows the collections store, and the App hears the import ───
+
+/** The documents as a saved session holds them: bases, features, primers and docMetadata. */
+async function savedDocuments(app: AppHarness) {
+  const before = app.downloads().length;
+  await app.menu('file:export-mbc-json');
+  await app.settle();
+  const files = app.downloads().slice(before).filter((f) => f.filename.endsWith('.mbc'));
+  expect(files).toHaveLength(1);
+  const { parseMbcWorkbench } = await import('../core/mbcSessionFormat');
+  return parseMbcWorkbench(await files[0].text()).envelope.documents.map((d) => ({
+    sequence: d.sequence, features: d.features, primers: d.primers, docMetadata: (d as { docMetadata?: unknown }).docMetadata ?? null,
+  }));
+}
+const scanChooserOptions = (app: AppHarness) =>
+  app.one('select[aria-label="Enzymes the site scans read"]', 'the scan collection chooser').options.map((o) => words(o.textContent));
+const IMPORTED = 'Imported 2 of 2 enzymes from pDemo\'s Enzyme Set into the collection "pDemo".';
+
+describe('BG-01M7JSCN: the Enzyme Set offer and the scan chooser follow the collections store without a remount', () => {
+  it('BG-01M7JSCN AC1 the offer returns once the imported collection is deleted in the Restriction Enzymes window, in the same Enzymes view, and the document is unchanged', async () => {
+    const storage = seeded([MY_CUT]);
+    await withApp(storage, docOf('pDemo', 'EcoRI, MyCut'), async (app) => {
+      const before = await savedDocuments(app);
+      expect(before.map((d) => (d.docMetadata as Record<string, unknown> | null)?.['Enzyme Names'])).toEqual(['EcoRI, MyCut']);
+      await enzymesView(app);
+      await importSet(app);
+      expect(statusLine(app)).toBe(IMPORTED);
+      expect(collectionsIn(storage).map((c) => [c.name, c.enzymeIds])).toEqual([['pDemo', ['EcoRI', 'custom:seed-1']]]);
+      expect(buttonsNamed(app.canvas(), IMPORT)).toHaveLength(0);
+
+      // The window opens over the Enzymes view; the History tab stays the active one.
+      await app.menu('tools:enzyme-database');
+      await app.settle();
+      expect(app.activeTab()).toBe('history-hybrid');
+      await app.click(button(win(app), 'Delete pDemo'));
+      await app.settle();
+      expect(collectionsIn(storage)).toEqual([]);
+      await app.click(button(win(app), 'Close Restriction Enzymes'));
+      await app.settle();
+      expect(app.all('[role="dialog"][aria-labelledby="enzyme-db-title"]')).toHaveLength(0);
+
+      expect(app.activeTab()).toBe('history-hybrid');
+      expect(buttonsNamed(app.canvas(), IMPORT)).toHaveLength(1);
+      // Not remounted: the view still shows the status line its own import set.
+      expect(statusLine(app)).toBe(IMPORTED);
+      expect(seen.updates).toBe(0);
+      expect(await savedDocuments(app)).toEqual(before);
+    });
+  });
+
+  it('BG-01M7JSCN AC2 an import in the Enzymes view is listed as "pDemo (2 enzymes)" in the Sequence view\'s scan chooser, and the document is unchanged', async () => {
+    const storage = seeded([MY_CUT]);
+    await withApp(storage, docOf('pDemo', 'EcoRI, MyCut'), async (app) => {
+      const before = await savedDocuments(app);
+      expect(before.map((d) => (d.docMetadata as Record<string, unknown> | null)?.['Enzyme Names'])).toEqual(['EcoRI, MyCut']);
+      expect(scanChooserOptions(app)).toEqual(['All enzymes']);
+      await enzymesView(app);
+      await importSet(app);
+      expect(statusLine(app)).toBe(IMPORTED);
+      expect(collectionsIn(storage).map((c) => [c.name, c.enzymeIds])).toEqual([['pDemo', ['EcoRI', 'custom:seed-1']]]);
+
+      await app.clickTab('sequence-view');
+      await app.settle();
+      expect(app.activeTab()).toBe('sequence-view');
+      expect(scanChooserOptions(app)).toEqual(['All enzymes', 'pDemo (2 enzymes)']);
+      expect(seen.updates).toBe(0);
+      expect(await savedDocuments(app)).toEqual(before);
+    });
+  });
+});
