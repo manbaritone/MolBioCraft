@@ -11,6 +11,7 @@
  * - `wheelZoomScale` moves a scale multiplicatively by a pixel delta, inside its bounds.
  * - `anchoredOffset` returns the pan offset that keeps the point under the pointer still, and
  *   `zoomAnchorPoint` picks the anchor for a zoom that has no pointer (a button or a key).
+ * - `WHEEL_ZOOM_COVERAGE` records, for every graphical view, whether its wheel and pinch zoom.
  */
 
 /** `WheelEvent.DOM_DELTA_PIXEL`, `DOM_DELTA_LINE`, `DOM_DELTA_PAGE`. */
@@ -166,3 +167,47 @@ export function zoomAnchorPoint({
   if (finite(selectionCentre)) return { x: selectionCentre.x, y: selectionCentre.y };
   return { x: (viewport.x ?? 0) + viewport.width / 2, y: (viewport.y ?? 0) + viewport.height / 2 };
 }
+
+export type WheelZoomCoverageStatus = 'covered' | 'excluded' | 'pending';
+
+export interface WheelZoomCoverageRow {
+  view: string;
+  status: WheelZoomCoverageStatus;
+  /** Why the view is excluded or still pending. */
+  reason?: string;
+  /** A covered view's module under src/components, without its extension. */
+  module?: string;
+  /** The wheel-step function that module exports: (event, view, context?) => { handled, ... }. */
+  wheelStep?: string;
+}
+
+const PENDING = 'no wheel or pinch zoom yet (CR-01M7CCSD)';
+
+/**
+ * Every graphical view's wheel-zoom coverage (US-01M7CMFH, CR-01M7CCSD). A covered view names its
+ * module and its exported wheel-step function as strings rather than importing them, because the
+ * components import this file; wheelZoom.test.ts resolves each name and drives the step.
+ */
+export const WHEEL_ZOOM_COVERAGE: readonly WheelZoomCoverageRow[] = [
+  { view: 'circular map', status: 'covered', module: 'CircularPlasmidMap', wheelStep: 'circularMapWheelStep' },
+  { view: 'linear overview', status: 'covered', module: 'LinearSequenceView', wheelStep: 'overviewWheelStep' },
+  { view: 'alignment matrix', status: 'covered', module: 'AlignmentCanvas', wheelStep: 'alignmentWheelStep' },
+  { view: 'chromatogram trace', status: 'covered', module: 'ChromatogramAndContigStudio', wheelStep: 'chromatogramWheelStep' },
+  { view: '3D Calpha canvas', status: 'covered', module: 'ProteinStructure3DViewer', wheelStep: 'structureWheelStep' },
+  { view: 'contig annotation map', status: 'covered', module: 'ContigSummaryView', wheelStep: 'contigMapWheelStep' },
+  { view: 'dotplot', status: 'covered', module: 'AlignmentDotplot', wheelStep: 'dotplotWheelStep' },
+  { view: 'imported tree', status: 'covered', module: 'ImportedTreeViewer', wheelStep: 'treeWheelStep' },
+  { view: 'Mol* viewport', status: 'excluded', reason: 'Mol* trackball owns wheel and pinch' },
+  { view: 'inferred tree (PhylogeneticsStudio)', status: 'pending', reason: PENDING },
+  { view: 'user-tree topology (PhylogeneticsStudio)', status: 'pending', reason: PENDING },
+  { view: 'cloning diagram', status: 'pending', reason: PENDING },
+  { view: 'gel', status: 'pending', reason: PENDING },
+  { view: 'read alignment views', status: 'pending', reason: PENDING },
+  { view: 'pairwise alignment', status: 'pending', reason: PENDING },
+  { view: 'Ramachandran plot', status: 'pending', reason: PENDING },
+  {
+    view: 'View > Zoom with Cmd+=/Cmd+-/Cmd+0 for every view but the maps',
+    status: 'pending',
+    reason: 'View > Zoom and Cmd+=/Cmd+-/Cmd+0 are routed to the sequence maps only',
+  },
+];

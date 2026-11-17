@@ -14,7 +14,9 @@
  * point computed with the new scale instead of the old one (AC4).
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { WHEEL_ZOOM_COVERAGE } from '../core/wheelZoom';
 import {
   WHEEL_LINE_PX,
   WHEEL_MAX_DELTA_PX,
@@ -28,6 +30,14 @@ import {
   zoomAnchorPoint,
 } from '../core/wheelZoom';
 import { SEQUENCE_ZOOM_MAX, SEQUENCE_ZOOM_MIN, clampSequenceZoom, wheelSequenceZoom } from '../components/CircularPlasmidMap';
+import { circularMapWheelStep } from '../components/CircularPlasmidMap';
+import { overviewWheelStep } from '../components/LinearSequenceView';
+import { alignmentWheelStep } from '../components/AlignmentCanvas';
+import { chromatogramWheelStep } from '../components/ChromatogramAndContigStudio';
+import { structureWheelStep } from '../components/ProteinStructure3DViewer';
+import { contigMapWheelStep } from '../components/ContigSummaryView';
+import { dotplotWheelStep } from '../components/AlignmentDotplot';
+import { treeWheelStep } from '../components/ImportedTreeViewer';
 
 const PIXEL = 0;
 const LINE = 1;
@@ -301,4 +311,146 @@ describe('US-01M7CCDR AC4 the zoom stays anchored at the pointer', () => {
     expect(zoomAnchorPoint({ viewport })).toEqual({ x: 310, y: 220 });
     expect(zoomAnchorPoint({ selectionCentre: { x: Number.POSITIVE_INFINITY, y: 0 }, viewport: { width: 100, height: 50 } })).toEqual({ x: 50, y: 25 });
   });
+});
+
+/**
+ * US-01M7CMFH: the coverage record says, for every graphical view, whether a wheel or a pinch zooms
+ * it. The wrong implementations these tests fail on: a record no test reads (each covered row's
+ * module and function are resolved from the record's own strings and driven); a row whose zoom
+ * branch is removed or made a no-op (a Ctrl+wheel must be handled and change the view); a row that
+ * also zooms on a horizontal wheel; a record that drifts from the views the criterion names (the
+ * rows are compared exactly); and an import cycle (wheelZoom.ts imports nothing).
+ */
+type StepResult = { handled: boolean; view?: unknown; zoom?: number; pan?: unknown };
+type StepFixture = {
+  /** The function as imported here, to prove the record's strings resolve to the same one. */
+  fn: unknown;
+  /** The view handed to the step. */
+  view: Record<string, unknown>;
+  /** The context the step takes after the view, if any. */
+  context?: unknown;
+  /** The pointer, inside the rect the context names. */
+  pointer: { clientX: number; clientY: number; x?: number };
+  /** The part of the view the step returns (the circular map returns zoom and pan, not its rect). */
+  given?: (view: Record<string, unknown>) => unknown;
+};
+
+/** One valid view and context per step, built to its types; the circular map, alignment, chromatogram and 3D ones as their own tests build them. */
+const STEP_FIXTURES: Record<string, StepFixture> = {
+  circularMapWheelStep: {
+    fn: circularMapWheelStep,
+    view: { zoom: 100, pan: { x: 0, y: 0 }, rect: { left: 100, top: 50, width: 1200, height: 810 } },
+    pointer: { clientX: 400, clientY: 300 },
+    given: (v) => ({ zoom: v.zoom, pan: v.pan }),
+  },
+  overviewWheelStep: { fn: overviewWheelStep, view: { scale: 1, offset: 0 }, context: 5000, pointer: { clientX: 300, clientY: 20, x: 300 } },
+  alignmentWheelStep: {
+    fn: alignmentWheelStep,
+    view: { zoomPct: 100, scrollLeft: 0, scrollTop: 0 },
+    context: {
+      origin: { x: 0, y: 0 },
+      viewportWidth: 800,
+      nameW: 248,
+      columnCount: 600,
+      settings: { letterFontSize: 13, showLetters: true, spacesEvery: 10, zoomedOutRowHeight: 14, wrap: false },
+      block: { fixedPx: 0, rowLines: 1, logo: false },
+    },
+    pointer: { clientX: 248 + 300, clientY: 50 },
+  },
+  chromatogramWheelStep: {
+    fn: chromatogramWheelStep,
+    view: { offset: 100, span: 45 },
+    context: { readLength: 300, rect: { left: 0, top: 0, width: 830, height: 150 }, viewHeight: 150 },
+    pointer: { clientX: 415, clientY: 10 },
+  },
+  structureWheelStep: { fn: structureWheelStep, view: { zoom: 1, pan: { x: 12, y: -7 }, rotX: 0.3, rotY: -1.1 }, pointer: { clientX: 5, clientY: 9 } },
+  contigMapWheelStep: {
+    fn: contigMapWheelStep,
+    view: { start: 1, end: 1000 },
+    context: { total: 1000, rect: { left: 0, top: 0, width: 800, height: 100 } },
+    pointer: { clientX: 200, clientY: 50 },
+  },
+  dotplotWheelStep: {
+    fn: dotplotWheelStep,
+    view: { zoom: 1, offset: { x: 0, y: 0 } },
+    context: { rect: { left: 0, top: 0, width: 400, height: 400 }, x: 0, y: 0, width: 400, height: 400 },
+    pointer: { clientX: 100, clientY: 300 },
+  },
+  treeWheelStep: {
+    fn: treeWheelStep,
+    view: { zoom: 1, offset: { x: 0, y: 0 } },
+    context: { left: 0, top: 0, width: 600, height: 400 },
+    pointer: { clientX: 150, clientY: 100 },
+  },
+};
+
+const NO_MODS = { ctrlKey: false, metaKey: false, altKey: false };
+const returnedView = (step: StepResult) => ('view' in step ? step.view : { zoom: step.zoom, pan: step.pan });
+
+describe('US-01M7CMFH AC1 every graphical view\'s zoom coverage is recorded', () => {
+  it('US-01M7CMFH AC1 lists exactly the covered, excluded and pending views the criterion names, each once', () => {
+    const rows = WHEEL_ZOOM_COVERAGE.map((r) => [r.status, r.view, r.module ?? null, r.wheelStep ?? null]);
+    expect(rows).toEqual([
+      ['covered', 'circular map', 'CircularPlasmidMap', 'circularMapWheelStep'],
+      ['covered', 'linear overview', 'LinearSequenceView', 'overviewWheelStep'],
+      ['covered', 'alignment matrix', 'AlignmentCanvas', 'alignmentWheelStep'],
+      ['covered', 'chromatogram trace', 'ChromatogramAndContigStudio', 'chromatogramWheelStep'],
+      ['covered', '3D Calpha canvas', 'ProteinStructure3DViewer', 'structureWheelStep'],
+      ['covered', 'contig annotation map', 'ContigSummaryView', 'contigMapWheelStep'],
+      ['covered', 'dotplot', 'AlignmentDotplot', 'dotplotWheelStep'],
+      ['covered', 'imported tree', 'ImportedTreeViewer', 'treeWheelStep'],
+      ['excluded', 'Mol* viewport', null, null],
+      ['pending', 'inferred tree (PhylogeneticsStudio)', null, null],
+      ['pending', 'user-tree topology (PhylogeneticsStudio)', null, null],
+      ['pending', 'cloning diagram', null, null],
+      ['pending', 'gel', null, null],
+      ['pending', 'read alignment views', null, null],
+      ['pending', 'pairwise alignment', null, null],
+      ['pending', 'Ramachandran plot', null, null],
+      ['pending', 'View > Zoom with Cmd+=/Cmd+-/Cmd+0 for every view but the maps', null, null],
+    ]);
+    expect(new Set(WHEEL_ZOOM_COVERAGE.map((r) => r.view)).size, 'view names are unique').toBe(WHEEL_ZOOM_COVERAGE.length);
+    expect(WHEEL_ZOOM_COVERAGE.find((r) => r.status === 'excluded')?.reason).toBe('Mol* trackball owns wheel and pinch');
+    for (const row of WHEEL_ZOOM_COVERAGE.filter((r) => r.status !== 'covered')) {
+      expect(row.reason?.trim(), `${row.view} says why it is not covered`).toBeTruthy();
+    }
+  });
+
+  it('US-01M7CMFH AC1 imports no component, so the components can import it', () => {
+    const source = readFileSync(new URL('../core/wheelZoom.ts', import.meta.url), 'utf8');
+    expect(source).not.toMatch(/^\s*import\b/m);
+    expect(source).not.toMatch(/\bimport\s*\(|\brequire\s*\(/);
+  });
+
+  const covered = WHEEL_ZOOM_COVERAGE.filter((r) => r.status === 'covered');
+  it('US-01M7CMFH AC1 has a covered row for every step this test drives', () => {
+    expect(covered.map((r) => r.wheelStep).sort()).toEqual(Object.keys(STEP_FIXTURES).sort());
+  });
+
+  for (const row of covered) {
+    it(`US-01M7CMFH AC1 the ${row.view}'s ${row.module}.${row.wheelStep} zooms on a Ctrl+wheel and leaves a horizontal wheel`, async () => {
+      const mod = (await import(`../components/${row.module}.tsx`)) as Record<string, unknown>;
+      const fn = mod[row.wheelStep as string];
+      const fixture = STEP_FIXTURES[row.wheelStep as string];
+      expect(typeof fn, `${row.module} exports ${row.wheelStep}`).toBe('function');
+      expect(fn, 'the record names the function this test imports').toBe(fixture.fn);
+      const step = fn as (event: unknown, view: unknown, context?: unknown) => StepResult;
+      const given = (fixture.given ?? ((v) => v))(fixture.view);
+      const run = (deltas: { deltaX: number; deltaY: number }, mods: Partial<typeof NO_MODS>) =>
+        step({ ...deltas, deltaMode: 0, ...NO_MODS, ...mods, ...fixture.pointer }, structuredClone(fixture.view), structuredClone(fixture.context));
+
+      const zoom = run({ deltaX: 0, deltaY: -100 }, { ctrlKey: true });
+      expect(zoom.handled, 'a Ctrl+wheel is the view\'s').toBe(true);
+      expect(returnedView(zoom), 'a Ctrl+wheel changes the view').not.toEqual(given);
+      if (row.wheelStep === 'circularMapWheelStep') {
+        const before = given as { zoom: number; pan: unknown };
+        expect(zoom.zoom, 'the circular map zooms').not.toBe(before.zoom);
+        expect(zoom.pan, 'and pans to keep the pointer anchored').not.toEqual(before.pan);
+      }
+
+      const sideways = run({ deltaX: 100, deltaY: 0 }, {});
+      expect(sideways.handled, 'a horizontal wheel is not the view\'s').toBe(false);
+      expect(returnedView(sideways), 'a horizontal wheel leaves the view as it was').toEqual(given);
+    });
+  }
 });
