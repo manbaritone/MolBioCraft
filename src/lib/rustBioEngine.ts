@@ -391,6 +391,58 @@ export function searchGenomeMotifFmIndexRust(
   });
 }
 
+/** A motif search's alphabet: IUPAC nucleotide codes, or protein residues with B, Z, J and X. */
+export type MotifSearchMode = 'nucleotide' | 'protein';
+
+/**
+ * One window matching a motif by IUPAC rules: 1-based inclusive top-strand coordinates (`start >
+ * end` crosses the origin of a circular molecule), strand -1 for the query's reverse complement,
+ * `possible` when an ambiguous target letter only may match, and `palindromic` when the query is
+ * its own reverse complement, so the one +1 hit stands for both strands.
+ */
+export interface IupacMotifHit {
+  start: number;
+  end: number;
+  strand: 1 | -1;
+  certainty: 'definite' | 'possible';
+  palindromic: boolean;
+}
+
+/** The first `maxHits` hits by start, the counts over the whole molecule, and the cut's warning. */
+export interface IupacMotifSearch {
+  hits: IupacMotifHit[];
+  totalHits: number;
+  definiteHits: number;
+  possibleHits: number;
+  warnings: string[];
+}
+
+/**
+ * Finds `query` in `seq` by IUPAC rules (`search_iupac_motif`). Throws with the engine's reason
+ * for an empty query, a letter outside the mode's alphabet, an empty sequence or a query longer
+ * than the sequence, never answering those with an empty list. `circular` and
+ * `searchBothStrands` apply in nucleotide mode only.
+ */
+export function searchIupacMotifRust(
+  seq: string,
+  query: string,
+  options: {
+    mode: MotifSearchMode;
+    circular?: boolean;
+    searchBothStrands?: boolean;
+    maxHits?: number;
+  }
+): IupacMotifSearch {
+  return invokeRustBioSync<IupacMotifSearch>('search_iupac_motif', {
+    seq,
+    query,
+    mode: options.mode,
+    circular: options.circular ?? false,
+    searchBothStrands: options.searchBothStrands ?? true,
+    maxHits: options.maxHits ?? 250,
+  });
+}
+
 export function computeAgaroseGelPhysicsRust(
   fragmentSizesBp: number[],
   agarosePct = 1.0,

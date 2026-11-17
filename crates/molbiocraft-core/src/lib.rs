@@ -6,6 +6,7 @@ pub mod genetic_codes;
 pub mod genome_index;
 pub mod hmm_pssm_motifs;
 pub mod iupac;
+pub mod motif_search;
 pub mod types;
 
 pub use hmm_pssm_motifs::{
@@ -33,6 +34,10 @@ pub use iupac::{
     compute_sequence_stats_fast, convert_dna_rna, iupac_base_matches, iupac_complement_byte,
     mutate_or_shuffle_sequence, reverse_complement_iupac, reverse_only_sequence,
     MutateShuffleResult, SequenceBaseCounts, SequenceComposition, SplitMix64,
+};
+pub use motif_search::{
+    search_iupac_motif, IupacMotifHit, IupacMotifSearch, MotifAlphabet, MotifCertainty,
+    MotifSearchOptions,
 };
 pub use types::{
     AlignmentMemberSequence, AlignmentOutput, BatchSequenceItem, BatchSequenceStatsEntry,

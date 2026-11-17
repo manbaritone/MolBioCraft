@@ -647,6 +647,14 @@
   "searchRevcomp",
   "seq"
  ],
+ "search_iupac_motif": [
+  "circular",
+  "maxHits",
+  "mode",
+  "query",
+  "searchBothStrands",
+  "seq"
+ ],
  "search_proteome_blosum62_hsps": [
   "evalueCutoff",
   "queryProtein",

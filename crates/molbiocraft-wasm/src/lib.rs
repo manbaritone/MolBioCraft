@@ -74,8 +74,10 @@ use molbiocraft_core::{
     query_features_in_viewport, reverse_complement, reverse_complement_iupac,
     reverse_only_sequence, scan_fuzzy_subsequence_simd, scan_jaspar_pssm_motifs,
     scan_microsatellite_strs, scan_non_b_dna_structures, scan_rho_independent_terminators,
-    scan_sigma70_promoters, search_genome_motif_fmindex, segment_genome_hmm_viterbi,
-    slice_genome_viewport, BatchSequenceItem, ChromatogramData, PrimerRecord, RestrictionCutSite,
+    scan_sigma70_promoters, search_genome_motif_fmindex, search_iupac_motif,
+    segment_genome_hmm_viterbi,
+    slice_genome_viewport, BatchSequenceItem, ChromatogramData, MotifAlphabet, MotifSearchOptions,
+    PrimerRecord, RestrictionCutSite,
     RestrictionEnzyme, SequenceDocument, SequenceFeature, Topology,
 };
 use molbiocraft_formats::{
@@ -432,6 +434,34 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let both = bool_arg(&payload, "searchBothStrands", true);
             let max_hits = usize_arg(&payload, "maxHits", 250);
             to_val(search_genome_motif_fmindex(seq, pattern, both, max_hits))
+        }
+        "search_iupac_motif" => {
+            // Every key is read before the mode is checked. A missing or unknown mode is refused,
+            // never read as nucleotide; circular, searchBothStrands and maxHits default to false,
+            // true and 250 when absent.
+            let seq = str_arg(&payload, "seq", "");
+            let query = str_arg(&payload, "query", "");
+            let mode = str_arg(&payload, "mode", "");
+            let circular = bool_arg(&payload, "circular", false);
+            let both = bool_arg(&payload, "searchBothStrands", true);
+            let max_hits = usize_arg(&payload, "maxHits", 250);
+            let alphabet = match mode {
+                "nucleotide" => MotifAlphabet::Nucleotide,
+                "protein" => MotifAlphabet::Protein,
+                other => {
+                    return Err(format!(
+                        "motif mode '{}' is neither 'nucleotide' nor 'protein'",
+                        other
+                    ))
+                }
+            };
+            let opts = MotifSearchOptions {
+                alphabet,
+                circular,
+                both_strands: both,
+                max_hits,
+            };
+            to_val(search_iupac_motif(seq, query, &opts)?)
         }
         "find_cpg_islands" => {
             let seq = str_arg(&payload, "seq", "");
