@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  activeConditions, combineConditions, filterDocument, noSingleSequenceReason, type CombineChoice, type ConditionsOutcome, type SearchCondition, type SearchFilters, type SearchRequest,
+  activeConditions, combineConditions, filterDocument, noSingleSequenceReason, NO_READABLE_MODIFIED_DATE, type CombineChoice, type ConditionsOutcome, type SearchCondition, type SearchFilters, type SearchRequest,
   changedAfterSearch, createSearchRunner, deletedAfterSearch, openPrimerHit, primerHitPortion, hitFolderId, motifNotSearchedReason, openSearchHit, nextTask, resolveSearchScope, scopesOffered, searchText, TEXT_NOT_SEARCHED, TEXT_SEARCH_FIELDS,
   TEXT_SEARCH_STATEMENT, type MotifEngine, type SearchContext, type SearchRunEvent, type SearchScope,
 } from '../core/projectSearch';
@@ -660,7 +660,7 @@ describe('US-01M7DVHA conditions and filters in the core', () => {
       // Never a match: not "passes" even where the document's own topology or length would pass.
       expect(filterDocument(d, { topology: d.topology }), `${d.id}: its own topology`).not.toBe('passes');
       expect(filterDocument(d, { annotationType: 'CDS' }), `${d.id}: annotation type applies`).toBe('filtered out');
-      expect(filterDocument(d, { modified: { from: '2000-01-01', to: null } }), `${d.id}: date applies`).toBe('filtered out');
+      expect(filterDocument({ ...d, updatedAt: '1999-06-01T12:00:00Z' }, { modified: { from: '2000-01-01', to: null } }), `${d.id}: date applies`).toBe('filtered out');
     }
     // An empty sequence, a protein and a DNA record hold a single sequence: topology and length apply.
     const single = [doc('empty', 'A', { sequence: '' }), doc('prot', 'A', { moleculeType: 'Protein', sequence: 'MKW' }), doc('dna', 'A', { sequence: 'ACGT' })];
@@ -723,6 +723,56 @@ describe('US-01M7DVHA conditions and filters in the core', () => {
     runner.stop();
     pending[pending.length - 1](); await flush();
     expect(stopped).toEqual([{ kind: 'progress', reached: 1, total: 4 }]);
+  });
+});
+
+describe('BG-01M7MW9M an undated document is not applicable under a Modified date filter (D0183)', () => {
+  const UNDATED_WORDS = 'Modified date does not apply: no readable modified date';
+  const FROM_2000: SearchFilters = { modified: { from: '2000-01-01', to: null } };
+
+  it('BG-01M7MW9M AC2 an empty or unparseable updatedAt is not applicable under a date filter, whatever the other filters say, in one exported sentence', () => {
+    expect(NO_READABLE_MODIFIED_DATE, 'the words come from the exported constant').toBe(UNDATED_WORDS);
+    const undated = [doc('blank', 'A', { sequence: 'ACGT' }), doc('garbled', 'A', { sequence: 'ACGT', updatedAt: 'last Tuesday' })];
+    for (const d of undated) {
+      expect(filterDocument(d, FROM_2000), d.id).toEqual({ notApplicable: UNDATED_WORDS });
+      expect(filterDocument(d, { modified: { from: null, to: '2100-01-01' } }), `${d.id}: an upper bound alone`).toEqual({ notApplicable: UNDATED_WORDS });
+      // Filters that would leave it out do not make it filtered out: the date cannot be read.
+      for (const other of [{ documentType: 'Protein Sequence' }, { topology: 'circular' as const }, { length: { min: 50, max: null } }, { annotationType: 'CDS' }]) {
+        expect(filterDocument(d, { ...other, ...FROM_2000 }), `${d.id}: ${JSON.stringify(other)}`).toEqual({ notApplicable: UNDATED_WORDS });
+      }
+      // With no date filter it passes, or is filtered out, as before.
+      expect(filterDocument(d, {}), `${d.id}: no filter`).toBe('passes');
+      expect(filterDocument(d, { topology: 'linear' }), `${d.id}: no date filter`).toBe('passes');
+      expect(filterDocument(d, { topology: 'circular' }), `${d.id}: no date filter`).toBe('filtered out');
+    }
+    // Joined after the Topology and Length reasons, with '; '.
+    const tree = doc('tree', 'A', { sequence: 'GAATTC', docMetadata: { Newick: '(a,b);' } });
+    expect(filterDocument(tree, { topology: 'linear', ...FROM_2000 })).toEqual({ notApplicable: `Topology does not apply: tree (no sequence); ${UNDATED_WORDS}` });
+    expect(filterDocument(tree, { topology: 'linear', length: { min: 1, max: null }, ...FROM_2000 }))
+      .toEqual({ notApplicable: `Topology does not apply: tree (no sequence); Length does not apply: tree (no sequence); ${UNDATED_WORDS}` });
+    // A dated tree under the same filters: its date is read, and only topology does not apply.
+    expect(filterDocument({ ...tree, updatedAt: '2026-11-17T12:00:00Z' }, { topology: 'linear', ...FROM_2000 })).toEqual({ notApplicable: 'Topology does not apply: tree (no sequence)' });
+    // A readable date is still compared: out of range is filtered out, in range passes.
+    expect(filterDocument(doc('old', 'A', { updatedAt: '1999-06-01T12:00:00Z' }), FROM_2000)).toBe('filtered out');
+    expect(filterDocument(doc('new', 'A', { updatedAt: '2026-11-17T12:00:00Z' }), FROM_2000)).toBe('passes');
+  });
+
+  it('BG-01M7MW9M AC2 in a run an undated document is listed apart, read by no condition and never counted as filtered out', async () => {
+    const documents = [
+      doc('blank', 'A', { sequence: 'GAATTC' }), doc('garbled', 'A', { sequence: 'GAATTC', updatedAt: 'not a date' }),
+      doc('old', 'A', { sequence: 'GAATTC', updatedAt: '1999-06-01T12:00:00Z' }), doc('new', 'A', { sequence: 'GAATTC', updatedAt: '2026-11-17T12:00:00Z' }),
+    ];
+    let calls = 0;
+    const engine: MotifEngine = (...args) => { calls += 1; return searchIupacMotifRust(...args); };
+    const result = await runToEnd({ mode: 'Conditions', conditions: [{ mode: 'Text', query: 'Doc' }, MOTIF_ECO], documents, folders: FOLDERS, bothStrands: true, engine, filters: FROM_2000 });
+    expect(result.filtering?.notApplicable.map((n) => [n.documentId, n.reason])).toEqual([['blank', UNDATED_WORDS], ['garbled', UNDATED_WORDS]]);
+    expect(result.filtering?.filteredOut, 'only the readable date out of range').toBe(1);
+    expect(result.filtering?.passed).toBe(1);
+    expect(result.mode === 'Conditions' ? ids(conditionsAnswer(result.outcome).documents) : null, 'no undated document is read').toEqual(['new']);
+    expect(calls, 'the motif engine read only the dated document in range').toBe(1);
+    // With no date filter both undated documents are searched as before.
+    const unfiltered = await runToEnd({ mode: 'Text', query: 'Doc', documents, folders: FOLDERS });
+    expect(unfiltered.mode === 'Text' && 'results' in unfiltered.outcome ? ids(unfiltered.outcome.results) : null).toEqual(['blank', 'garbled', 'new', 'old']);
   });
 });
 

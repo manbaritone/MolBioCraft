@@ -132,6 +132,12 @@ interface FilterFields {
 }
 const NO_FILTERS: FilterFields = { documentType: '', topology: '', lengthMin: '', lengthMax: '', modifiedFrom: '', modifiedTo: '', annotationType: '' };
 export const LENGTH_LABEL = 'Length (bp or nt; aa for proteins)';
+/** The ids of the elements showing a refused Length or Modified date range's reason. */
+const LENGTH_REASON_ID = 'mbc-project-search-length-reason';
+const DATE_REASON_ID = 'mbc-project-search-date-reason';
+/** A range input's ARIA while its range is refused: invalid, and described by the reason; none otherwise. */
+const refusedBy = (reason: string | null, reasonId: string) =>
+  (reason ? { 'aria-invalid': true, 'aria-describedby': reasonId } as const : {});
 /** The fields each filter's chip clears. */
 const FILTER_FIELDS: Record<FilterName, (keyof FilterFields)[]> = {
   'Document type': ['documentType'], Topology: ['topology'], Length: ['lengthMin', 'lengthMax'],
@@ -759,17 +765,17 @@ export function ProjectSearchPanel({
         </label>
         <span role="group" aria-label={LENGTH_LABEL} className="mbc-project-search-range">
           {LENGTH_LABEL}{' '}
-          <input inputMode="numeric" aria-label={`${LENGTH_LABEL}, minimum`} placeholder="min" value={fields.lengthMin} onChange={(e) => setField({ lengthMin: e.target.value })} />
+          <input inputMode="numeric" aria-label={`${LENGTH_LABEL}, minimum`} placeholder="min" value={fields.lengthMin} onChange={(e) => setField({ lengthMin: e.target.value })} {...refusedBy(lengthReason, LENGTH_REASON_ID)} />
           {' – '}
-          <input inputMode="numeric" aria-label={`${LENGTH_LABEL}, maximum`} placeholder="max" value={fields.lengthMax} onChange={(e) => setField({ lengthMax: e.target.value })} />
-          {lengthReason && <span className="mbc-project-search-filter-reason" data-filter-reason="Length">{lengthReason}</span>}
+          <input inputMode="numeric" aria-label={`${LENGTH_LABEL}, maximum`} placeholder="max" value={fields.lengthMax} onChange={(e) => setField({ lengthMax: e.target.value })} {...refusedBy(lengthReason, LENGTH_REASON_ID)} />
+          {lengthReason && <span id={LENGTH_REASON_ID} className="mbc-project-search-filter-reason" data-filter-reason="Length">{lengthReason}</span>}
         </span>
         <span role="group" aria-label="Modified date" className="mbc-project-search-range">
           Modified date{' '}
-          <input aria-label="Modified date, from" placeholder="YYYY-MM-DD" value={fields.modifiedFrom} onChange={(e) => setField({ modifiedFrom: e.target.value })} />
+          <input aria-label="Modified date, from" placeholder="YYYY-MM-DD" value={fields.modifiedFrom} onChange={(e) => setField({ modifiedFrom: e.target.value })} {...refusedBy(dateReason, DATE_REASON_ID)} />
           {' – '}
-          <input aria-label="Modified date, to" placeholder="YYYY-MM-DD" value={fields.modifiedTo} onChange={(e) => setField({ modifiedTo: e.target.value })} />
-          {dateReason && <span className="mbc-project-search-filter-reason" data-filter-reason="Modified date">{dateReason}</span>}
+          <input aria-label="Modified date, to" placeholder="YYYY-MM-DD" value={fields.modifiedTo} onChange={(e) => setField({ modifiedTo: e.target.value })} {...refusedBy(dateReason, DATE_REASON_ID)} />
+          {dateReason && <span id={DATE_REASON_ID} className="mbc-project-search-filter-reason" data-filter-reason="Modified date">{dateReason}</span>}
         </span>
         <label>
           Annotation type{' '}

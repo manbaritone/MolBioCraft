@@ -534,17 +534,25 @@ const SEQUENCE_FILTERS: readonly FilterName[] = ['Topology', 'Length'];
 
 export type FilterVerdict = 'passes' | 'filtered out' | { notApplicable: string };
 
+/** Why a Modified date filter does not apply to a document whose updatedAt names no instant (D0183). */
+export const NO_READABLE_MODIFIED_DATE = 'Modified date does not apply: no readable modified date';
+
 /**
  * Whether `doc` passes `filters`. A document an active filter does not apply to is neither: it is
- * not applicable, named "<Filter> does not apply: <reason>" for each such filter. A document whose
- * updatedAt names no instant is not shown to be in a date range, so it does not pass one.
+ * not applicable, named "<Filter> does not apply: <reason>" for each such filter, joined with "; ".
+ * A document whose updatedAt names no instant (empty or unparseable) is neither inside nor outside a
+ * modified-date range, so under a Modified date filter it is not applicable
+ * (NO_READABLE_MODIFIED_DATE, after any Topology or Length reason), never filtered out (D0183).
  */
 export function filterDocument(doc: SequenceDocument, filters: SearchFilters): FilterVerdict {
+  const reasons: string[] = [];
   const noSequence = noSingleSequenceReason(doc);
   if (noSequence !== null) {
     const inapplicable = activeFilterNames(filters).filter((name) => SEQUENCE_FILTERS.includes(name));
-    if (inapplicable.length > 0) return { notApplicable: inapplicable.map((name) => `${name} does not apply: ${noSequence}`).join('; ') };
+    reasons.push(...inapplicable.map((name) => `${name} does not apply: ${noSequence}`));
   }
+  if (filters.modified !== undefined && localDay(doc.updatedAt) === null) reasons.push(NO_READABLE_MODIFIED_DATE);
+  if (reasons.length > 0) return { notApplicable: reasons.join('; ') };
   if (filters.documentType !== undefined && inferDocumentTypeLabel(doc) !== filters.documentType) return 'filtered out';
   if (filters.topology !== undefined && doc.topology !== filters.topology) return 'filtered out';
   if (filters.length) {
@@ -554,8 +562,9 @@ export function filterDocument(doc: SequenceDocument, filters: SearchFilters): F
   }
   if (filters.modified) {
     const { from, to } = filters.modified;
-    const day = localDay(doc.updatedAt);
-    if (day === null || (from !== null && day < from) || (to !== null && day > to)) return 'filtered out';
+    // Never null here: an unreadable date returned not applicable above.
+    const day = localDay(doc.updatedAt) as string;
+    if ((from !== null && day < from) || (to !== null && day > to)) return 'filtered out';
   }
   if (filters.annotationType !== undefined && !doc.features.some((f) => f.type === filters.annotationType)) return 'filtered out';
   return 'passes';

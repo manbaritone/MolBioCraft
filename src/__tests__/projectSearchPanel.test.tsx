@@ -1874,6 +1874,221 @@ describe('US-01M7DVHA AC5: the run key holds every condition, the choice and the
 // search out of date (the studio's Save to Primer Database above all), the tail/annealing boundary
 // off by one either way, and a reverse-strand hit given reverse-strand coordinates.
 
+// ─── BG-01M7MW9M: the filter refusals, per-condition Definite only and undated documents, pinned ───
+//
+// Each pin names the wrong panel it fails: one that reads a reversed date range as a range, one that
+// lists or counts a condition's possible hits under Definite only, one that counts a protein the
+// motif mode cannot read as searched, one that drops the condition from a refusal, one that counts an
+// undated document as filtered out, and one that leaves a refused range's inputs unlinked to its reason.
+
+const BG_DOCS: SequenceDocument[] = [
+  ...HVA_DOCS,
+  // One definite GAATTC (1-6) and one possible (GAATNC).
+  hva({ id: 'h-mixed', name: 'Mixed sites', description: 'zqbeta mixed', sequence: 'GAATTCAAAGAATNCAAA', updatedAt: '2026-11-03T12:00:00Z' }),
+  // An updatedAt that names no instant. (An empty one restored with the session reaches the panel
+  // with a readable date, counted filtered out here; the core suite pins the empty case.)
+  hva({ id: 'h-baddate', name: 'Unreadable date', description: 'zqbeta unreadable date', updatedAt: 'last Tuesday' }),
+];
+const BG_SPEC: SessionSpec = { ...HVA_SPEC, documents: BG_DOCS };
+const UNDATED_REASON = 'Modified date does not apply: no readable modified date';
+const conditionHits = (group: LiveElement, n: number) => {
+  const found = group.querySelectorAll(`[data-search-condition="${n}"]`);
+  if (found.length !== 1) throw new Error(`expected one condition ${n} section, found ${found.length}`);
+  return hitRows(found[0]);
+};
+
+describe('BG-01M7MW9M AC1: the refusals, Definite only per condition and the filtered motif count, pinned', () => {
+  it('BG-01M7MW9M AC1 (a) a reversed Modified date range is refused by its field: nothing listed, no run', async () => {
+    await withSession(BG_SPEC, async (app) => {
+      await searchFolder(app, HVA_LAB);
+      await typeQuery(app, queryField(app), 'zqbeta');
+      expect(groups(app).length).toBeGreaterThan(0);
+      await app.input(field(app, 'Modified date, from'), '2026-11-05');
+      await finishSearch(app, 0);
+      expect(filterReason(app, 'Modified date'), 'one bound reads').toBe('');
+      await app.input(field(app, 'Modified date, to'), '2026-11-01');
+      expect(filterReason(app, 'Modified date')).toBe('Minimum is above maximum.');
+      expect(summary(app)).toBe('A filter cannot be read, so nothing was searched.');
+      expect(groups(app), 'no group').toHaveLength(0);
+      expect(cancelButtons(app), 'no run').toHaveLength(0);
+      await advance(app, SEARCH_PAUSE_MS * 4);
+      expect(cancelButtons(app), 'no run after the pause').toHaveLength(0);
+      expect(groups(app), 'still no group').toHaveLength(0);
+      expect(summary(app)).toBe('A filter cannot be read, so nothing was searched.');
+    });
+  });
+
+  it('BG-01M7MW9M AC1 (b) under ALL, Definite only lists and counts only the motif condition\'s definite hit', async () => {
+    await withSession(BG_SPEC, async (app) => {
+      await twoConditions(app, 'zqbeta', 'Nucleotide motif', 'GAATTC');
+      await finishSearch(app, 0);
+      const mixed = () => groupFor(app, 'Mixed sites');
+      expect(conditionHits(mixed(), 2).map((h) => [h[0], h[3]]), 'Definite only off: both listed').toEqual([['1-6', 'definite'], ['10-15', 'possible']]);
+      expect(part(mixed(), 'hits'), 'off: text + definite + possible').toBe('3 hits');
+      expect(groupNames(app)).toEqual(['Both conditions', 'Mixed sites', 'Possible site']);
+      expect(summary(app), 'off: every hit counted').toBe(`7 hits in 3 documents · ${BG_DOCS.length} documents searched`);
+
+      await app.change(checkbox(app, 'Definite only'), true);
+      expect(conditionHits(mixed(), 2), 'on: the definite hit alone').toEqual([['1-6', '+ palindrome', 'GAATTC', 'definite']]);
+      expect(part(mixed(), 'hits'), 'on: the group counts it alone').toBe('2 hits');
+      expect(groupNames(app)).toEqual(['Both conditions', 'Mixed sites']);
+      expect(summary(app), 'on: the summary counts it alone').toBe(`4 hits in 2 documents · ${BG_DOCS.length} documents searched`);
+
+      await app.change(checkbox(app, 'Definite only'), false);
+      expect(conditionHits(mixed(), 2)).toHaveLength(2);
+      expect(summary(app)).toBe(`7 hits in 3 documents · ${BG_DOCS.length} documents searched`);
+    });
+  });
+
+  it('BG-01M7MW9M AC1 (c) a filtered motif run counts as searched only the passing documents the mode reads (D0182)', async () => {
+    await withSession(BG_SPEC, async (app) => {
+      await searchFolder(app, HVA_LAB);
+      await app.change(modeSelect(app), 'Nucleotide motif');
+      await app.change(field(app, 'Topology'), 'linear');
+      await typeQuery(app, motifField(app), 'GAATTC');
+      // 11 documents: Motif only (circular) filtered out, Beta tree not applicable, 9 pass; of those
+      // the protein is not read by Nucleotide motif, so 8 are searched.
+      expect(groupNames(app)).toEqual(['Both conditions', 'Mixed sites', 'Possible site']);
+      expect(summary(app)).toBe('4 hits in 3 documents · 8 documents searched · 1 not searched · 1 filtered out · 1 not applicable');
+      expect(skips(app), 'the protein passes the filter and is not searched').toEqual({ 'Beta protein': 'protein sequence (use Protein motif)' });
+      expect(notApplicable(app)).toEqual(['Beta tree: Topology does not apply: tree (no sequence)']);
+    });
+  });
+
+  it('BG-01M7MW9M AC1 (d) a refused motif names its condition, and an unavailable engine says so, with no group', async () => {
+    await withSession(BG_SPEC, async (app) => {
+      await twoConditions(app, 'zqbeta', 'Nucleotide motif', 'GAAXTC');
+      await finishSearch(app, 0);
+      expect(summary(app)).toBe("This motif cannot be searched: condition 2: query letter 'X' is not a nucleotide code");
+      expect(groups(app), 'ALL: no group').toHaveLength(0);
+      await app.change(field(app, 'Combine conditions'), 'ANY');
+      await finishSearch(app, 0);
+      expect(summary(app), 'ANY: the same sentence').toBe("This motif cannot be searched: condition 2: query letter 'X' is not a nucleotide code");
+      expect(groups(app), 'ANY: never the text condition\'s groups').toHaveLength(0);
+    });
+    const failure = 'WebAssembly.Module(): expected magic word';
+    await withSession(BG_SPEC, async (app) => {
+      engineOverride.current = () => { throw new WebAssembly.CompileError(failure); };
+      try {
+        await twoConditions(app, 'zqbeta', 'Nucleotide motif', 'GAATTC');
+        await finishSearch(app, 0);
+        expect(summary(app)).toBe(`The motif engine is not available: ${failure}`);
+        expect(groups(app), 'ALL: no group').toHaveLength(0);
+        await app.change(field(app, 'Combine conditions'), 'ANY');
+        await finishSearch(app, 0);
+        expect(summary(app), 'ANY: the same sentence').toBe(`The motif engine is not available: ${failure}`);
+        expect(groups(app), 'ANY: no group').toHaveLength(0);
+      } finally {
+        engineOverride.current = null;
+      }
+    });
+  });
+});
+
+describe('BG-01M7MW9M AC2: an undated document under a Modified date filter is listed as not applicable', () => {
+  it('BG-01M7MW9M AC2 lists a document whose updatedAt cannot be read under Not applicable, counted there and never as filtered out', async () => {
+    await withSession(BG_SPEC, async (app) => {
+      await searchFolder(app, HVA_LAB);
+      await typeQuery(app, queryField(app), 'zqbeta');
+      expect(groupNames(app), 'no date filter: the undated document is searched').toContain('Unreadable date');
+      expect(notApplicable(app)).toEqual([]);
+      // Dated 2026-11-03 or -04 UTC (a local day from the 2nd to the 5th in any time zone) pass; the rest, dated the 17th UTC, are filtered out.
+      await app.input(field(app, 'Modified date, from'), '2000-01-01');
+      await app.input(field(app, 'Modified date, to'), '2026-11-10');
+      await finishSearch(app, 0);
+      expect(notApplicable(app)).toEqual([`Unreadable date: ${UNDATED_REASON}`]);
+      expect(groupNames(app), 'the undated document is not read').toEqual(['Both conditions', 'Mixed sites', 'Text only']);
+      // 11 documents: Both conditions, Text only, Motif only and Mixed sites pass; 6 filtered out; 1 not applicable.
+      expect(summary(app)).toBe('3 hits in 3 documents · 4 documents searched · 6 filtered out · 1 not applicable');
+      // With Topology too: Motif only is filtered out, the tree is not applicable, and the undated document still is.
+      await app.change(field(app, 'Topology'), 'linear');
+      await finishSearch(app, 0);
+      expect(notApplicable(app)).toEqual(['Beta tree: Topology does not apply: tree (no sequence)', `Unreadable date: ${UNDATED_REASON}`]);
+      expect(summary(app)).toBe('3 hits in 3 documents · 3 documents searched · 6 filtered out · 2 not applicable');
+      // The date filter removed: it is searched again.
+      await app.input(field(app, 'Modified date, from'), '');
+      await app.input(field(app, 'Modified date, to'), '');
+      await finishSearch(app, 0);
+      expect(notApplicable(app)).toEqual(['Beta tree: Topology does not apply: tree (no sequence)']);
+      expect(groupNames(app)).toContain('Unreadable date');
+    });
+  });
+});
+
+const rangeInputs = (app: AppHarness, name: 'Length' | 'Modified date') => (name === 'Length'
+  ? [field(app, `${LENGTH}, minimum`), field(app, `${LENGTH}, maximum`)] : [field(app, 'Modified date, from'), field(app, 'Modified date, to')]);
+/** The id of the element showing `name`'s reason, checked to show `reason`, with both inputs naming it. */
+function linkedReason(app: AppHarness, name: 'Length' | 'Modified date', reason: string): string {
+  const shown = inPanel(app, `[data-filter-reason="${name}"]`);
+  expect(shown, `${name}: one reason shown`).toHaveLength(1);
+  const id = shown[0].getAttribute('id') ?? '';
+  expect(id, `${name}: the reason has an id`).not.toBe('');
+  expect(inPanel(app, `[id="${id}"]`).map((e) => words(e.textContent)), `${name}: the id names the reason`).toEqual([reason]);
+  for (const input of rangeInputs(app, name)) {
+    expect(input.getAttribute('aria-invalid'), `${name} ${input.getAttribute('aria-label')}: invalid`).toBe('true');
+    expect(input.getAttribute('aria-describedby'), `${name} ${input.getAttribute('aria-label')}: described by the reason`).toBe(id);
+  }
+  return id;
+}
+function unlinked(app: AppHarness, name: 'Length' | 'Modified date', when: string) {
+  for (const input of rangeInputs(app, name)) {
+    expect(input.hasAttribute('aria-invalid'), `${name} ${input.getAttribute('aria-label')} ${when}: no aria-invalid`).toBe(false);
+    expect(input.hasAttribute('aria-describedby'), `${name} ${input.getAttribute('aria-label')} ${when}: no aria-describedby`).toBe(false);
+  }
+}
+
+describe('BG-01M7MW9M AC3: a refused range\'s inputs are marked invalid and described by its reason', () => {
+  it('BG-01M7MW9M AC3 links both inputs of a refused Length or Modified date range to its reason, and unlinks them when it reads again or is emptied', async () => {
+    await withSession(BG_SPEC, async (app) => {
+      await searchFolder(app, HVA_LAB);
+      await typeQuery(app, queryField(app), 'zqbeta');
+      unlinked(app, 'Length', 'at first');
+      unlinked(app, 'Modified date', 'at first');
+      const [lenMin, lenMax] = rangeInputs(app, 'Length');
+      const [dateFrom, dateTo] = rangeInputs(app, 'Modified date');
+
+      // Length: Not a number, then a number again.
+      await app.input(lenMin, 'ten');
+      const lengthId = linkedReason(app, 'Length', 'Not a number.');
+      unlinked(app, 'Modified date', 'while Length is refused');
+      await app.input(lenMin, '5');
+      unlinked(app, 'Length', 'reading again');
+      // Length: minimum above maximum, then emptied.
+      await app.input(lenMax, '3');
+      expect(linkedReason(app, 'Length', 'Minimum is above maximum.')).toBe(lengthId);
+      await app.input(lenMin, '');
+      unlinked(app, 'Length', 'reading again with the maximum alone');
+      await app.input(lenMin, '20');
+      linkedReason(app, 'Length', 'Minimum is above maximum.');
+      await app.input(lenMin, '');
+      await app.input(lenMax, '');
+      unlinked(app, 'Length', 'emptied');
+
+      // Modified date: Not a date, then a date again.
+      await app.input(dateTo, '2026-02-30');
+      const dateId = linkedReason(app, 'Modified date', 'Not a date.');
+      unlinked(app, 'Length', 'while Modified date is refused');
+      expect(dateId, 'the two ranges\' reasons have distinct ids').not.toBe(lengthId);
+      await app.input(dateTo, '2026-11-01');
+      unlinked(app, 'Modified date', 'reading again');
+      // Modified date: a reversed range, then emptied.
+      await app.input(dateFrom, '2026-11-05');
+      expect(linkedReason(app, 'Modified date', 'Minimum is above maximum.')).toBe(dateId);
+      // Both refused at once: each input names its own range's reason.
+      await app.input(lenMin, 'x');
+      linkedReason(app, 'Length', 'Not a number.');
+      linkedReason(app, 'Modified date', 'Minimum is above maximum.');
+      await app.input(lenMin, '');
+      await app.input(dateFrom, '');
+      await app.input(dateTo, '');
+      unlinked(app, 'Modified date', 'emptied');
+      unlinked(app, 'Length', 'emptied');
+      await finishSearch(app, 0);
+      expect(groups(app).length, 'readable again, the search runs').toBeGreaterThan(0);
+    });
+  });
+});
+
 const ZP_LAB = 'Primer Lab';
 const zp = (over: Partial<SequenceDocument> & { id: string; name: string }) => docOf({ folder: ZP_LAB, ...over });
 const ZP_DOCS: SequenceDocument[] = [
