@@ -17,18 +17,26 @@
  * GALLERY_MAPS_DRAWN_FIRST cards that have one, each mounting a full map and a scan; a card with no
  * map takes no drawn slot. Both limits are said by subsetNote, the second counted over the records
  * that have a map.
+ *
+ * Each card keeps its own selection, rotation (its own CircularMapRotationControl) and compare choice
+ * (US-01M7DV6R), held by its record's id, as the split pane holds its selection, so they move with the
+ * record when the table's sort reorders the cards and stay when other rows are checked or unchecked.
+ * A card writes none of the App's selection, zoom or rotation and is handed no zoom, and a wheel or
+ * pinch over it is kept from its map (holdCardGesture), so it zooms and moves nothing; its state lives
+ * only while the gallery is shown. Compare in split hands the two
+ * chosen records, in card order, to the App.
  */
 
-import React, { useId, useMemo } from 'react';
-import { X } from 'lucide-react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { RotateCw, X } from 'lucide-react';
 import { restrictionSiteCountsByName } from '../core/bioEngine';
 import { buildCommandDocumentContext, circularMapUnavailableReason } from '../core/commandAvailability';
 import { isContigSummaryRecord } from '../core/contigSummary';
 import { computeDocumentTableMetrics, getDocumentColumnDisplayValue } from '../core/workbenchBatchOperations';
 import type { RestrictionCutSite, RestrictionEnzyme, SequenceDocument } from '../types/bio';
-import { CircularPlasmidMap, restrictionScopeWords, subsetNote, type ChosenScanCollection } from './CircularPlasmidMap';
+import { CircularMapRotationControl, CircularPlasmidMap, restrictionScopeWords, subsetNote, type ChosenScanCollection } from './CircularPlasmidMap';
 import { ResultWarnings } from './ResultWarnings';
-import { scanDocumentForMap, SPLIT_PICKER_CAP } from './SplitDocumentPane';
+import { scanDocumentForMap, SPLIT_PICKER_CAP, type SplitRange } from './SplitDocumentPane';
 
 /** The most cards the gallery draws a map for, the first in its order that have one (until US-01M7DV75 draws them lazily). */
 export const GALLERY_MAPS_DRAWN_FIRST = 12;
@@ -60,8 +68,25 @@ export interface MapGalleryProps {
   scanCollection: ChosenScanCollection | null;
   /** A card's Open in viewer, by the record's id. */
   onOpen: (docId: string) => void;
+  /** Compare in split: the two chosen records' ids, the first in card order first. */
+  onCompare: (mainDocId: string, paneDocId: string) => void;
   onClose: () => void;
 }
+
+/**
+ * A card's own view (US-01M7DV6R): its selection, its rotation once turned (until then its record's
+ * main-view rotation), whether its rotate control is open, and its compare choice.
+ */
+interface CardView {
+  range: SplitRange | null;
+  rotation: number | null;
+  rotateOpen: boolean;
+  chosen: boolean;
+}
+const FRESH_CARD: CardView = { range: null, rotation: null, rotateOpen: false, chosen: false };
+
+/** Compare in split's reason while it is off: the number of shown cards chosen. */
+export const compareChoiceReason = (n: number) => `Choose exactly two cards to compare (now ${n}).`;
 
 const BAR_W = 300;
 const BAR_H = 44;
@@ -91,24 +116,67 @@ const FeatureBar: React.FC<{ doc: SequenceDocument; sites: RestrictionCutSite[];
   );
 };
 
+/** The gestures a card's map would zoom or pan by: a wheel and WebKit's pinch. */
+const CARD_GESTURES = ['wheel', 'gesturestart', 'gesturechange', 'gestureend'] as const;
+
+/**
+ * Keeps a wheel or pinch over a card from its map (US-01M7DV6R AC1), so the map neither zooms nor
+ * moves: a plain wheel is left to scroll the gallery, and a pinch (a ctrl- or meta-flagged wheel, or a
+ * gesture event) is kept from zooming the page. Capture-phase and non-passive, so it runs before the
+ * map's own listener and may prevent the default.
+ */
+const holdCardGesture = (event: Event) => {
+  event.stopPropagation();
+  const wheel = event as WheelEvent;
+  if (event.type !== 'wheel' || wheel.ctrlKey || wheel.metaKey) event.preventDefault();
+};
+
 /** A drawn card's map, with its scan's warnings and the scope of a partial scan. */
-const CardMap: React.FC<{ doc: SequenceDocument; props: MapGalleryProps }> = ({ doc, props }) => {
+const CardMap: React.FC<{
+  doc: SequenceDocument;
+  props: MapGalleryProps;
+  view: CardView;
+  onView: (patch: Partial<CardView>) => void;
+}> = ({ doc, props, view, onView }) => {
   const { enzymes, scanCollection, tracks, rotationOf } = props;
+  const rotationDeg = view.rotation ?? rotationOf(doc.id);
   const { scan, restrictionScope } = useMemo(() => scanDocumentForMap(doc, enzymes, scanCollection), [doc, enzymes, scanCollection]);
   const scope = doc.moleculeType === 'Protein' ? null : restrictionScopeWords(restrictionScope, doc.sequence.length);
   const circle = circularMapUnavailableReason(buildCommandDocumentContext(doc) ?? doc) === null;
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return undefined;
+    for (const type of CARD_GESTURES) box.addEventListener(type, holdCardGesture, { capture: true, passive: false });
+    return () => { for (const type of CARD_GESTURES) box.removeEventListener(type, holdCardGesture, { capture: true }); };
+  }, []);
   return (
-    <div className="mbc-map-gallery-map">
+    <div className="mbc-map-gallery-map" ref={boxRef}>
       <ResultWarnings warnings={scan.warnings} label="Restriction scan warnings" />
       {scope && <p className="mbc-map-gallery-scope">{scope.detail}</p>}
+      {circle && (
+        <button
+          type="button"
+          className="mbc-btn mbc-map-gallery-rotate"
+          aria-label={`Rotate ${doc.name}`}
+          aria-expanded={view.rotateOpen}
+          onClick={() => onView({ rotateOpen: !view.rotateOpen })}
+        >
+          <RotateCw size={12} aria-hidden="true" /> Rotate
+        </button>
+      )}
+      {circle && view.rotateOpen && (
+        <CircularMapRotationControl rotationDeg={rotationDeg} onRotate={(deg) => onView({ rotation: deg })} onClose={() => onView({ rotateOpen: false })} />
+      )}
       {circle ? (
+        // No zoomLevel or onZoomChange: a card's circle is fitted to its card, and holdCardGesture keeps a wheel or pinch from it.
         <CircularPlasmidMap
           doc={doc}
           cutSites={scan.sites}
           siteCounts={restrictionSiteCountsByName(scan)}
           orfs={[]}
-          selectedRange={null}
-          onSelectRange={() => {}}
+          selectedRange={view.range}
+          onSelectRange={(range) => onView({ range })}
           showOrfs={false}
           showPrimers={false}
           showFeatures={tracks.showFeatures}
@@ -116,7 +184,7 @@ const CardMap: React.FC<{ doc: SequenceDocument; props: MapGalleryProps }> = ({ 
           showUniqueCuttersOnly={false}
           restrictionScope={restrictionScope}
           measuredBox={GALLERY_CARD_MAP_BOX}
-          rotationDeg={rotationOf(doc.id)}
+          rotationDeg={rotationDeg}
         />
       ) : (
         <FeatureBar doc={doc} sites={scan.sites} tracks={tracks} />
@@ -126,13 +194,20 @@ const CardMap: React.FC<{ doc: SequenceDocument; props: MapGalleryProps }> = ({ 
 };
 
 export const MapGallery: React.FC<MapGalleryProps> = (props) => {
-  const { docs, folderPath, onOpen, onClose } = props;
+  const { docs, folderPath, onOpen, onCompare, onClose } = props;
   const fitNoteId = useId();
   const shown = docs.slice(0, SPLIT_PICKER_CAP);
   // A card with no map takes no drawn slot, so the note counts maps drawn against the records that have one.
   const noMapReasons = docs.map(galleryNoMapReason);
   const withMap = noMapReasons.filter((r) => r === null).length;
   const drawnIds = new Set(shown.filter((_, i) => noMapReasons[i] === null).slice(0, GALLERY_MAPS_DRAWN_FIRST).map((d) => d.id));
+  // Each card's own view, by its record's id (US-01M7DV6R); a record never shown has none.
+  const [views, setViews] = useState<Readonly<Record<string, CardView>>>({});
+  const viewOf = (id: string) => views[id] ?? FRESH_CARD;
+  const setView = (id: string, patch: Partial<CardView>) => setViews((v) => ({ ...v, [id]: { ...(v[id] ?? FRESH_CARD), ...patch } }));
+  // The choices of the cards shown, in card order: a record whose row was unchecked is not counted.
+  const chosen = shown.filter((d) => viewOf(d.id).chosen);
+  const compareReason = chosen.length === 2 ? null : compareChoiceReason(chosen.length);
   return (
     <section className="mbc-map-gallery" aria-label="Map Gallery">
       <div className="mbc-map-gallery-head">
@@ -148,9 +223,23 @@ export const MapGallery: React.FC<MapGalleryProps> = (props) => {
           <X size={13} />
         </button>
       </div>
+      <div className="mbc-map-gallery-compare">
+        <button
+          type="button"
+          className="mbc-btn"
+          aria-label="Compare in split"
+          disabled={compareReason !== null}
+          title={compareReason ?? undefined}
+          onClick={() => { if (chosen.length === 2) onCompare(chosen[0].id, chosen[1].id); }}
+        >
+          Compare in split
+        </button>
+        {compareReason && <span className="mbc-map-gallery-compare-note">{compareReason}</span>}
+        <span className="mbc-map-gallery-unsaved">Card selections and rotations are not saved.</span>
+      </div>
       <ResultWarnings warnings={subsetNote('The gallery shows', shown.length, docs.length, 'records', 'first')} label="Map Gallery cards" />
       <ResultWarnings warnings={subsetNote('The gallery draws maps for', drawnIds.size, withMap, 'records with a map', 'first')} label="Map Gallery maps" />
-      {docs.length === 0 && <p className="mbc-help-where" role="status">No record is checked in the document table: check the rows to show their maps here.</p>}
+      {docs.length === 0 && <p className="mbc-help-where" role="status">No record is checked in the document table. Check the rows to show their maps here.</p>}
       <div className="mbc-map-gallery-grid">
         {shown.map((doc, i) => {
           const noMap = noMapReasons[i];
@@ -170,10 +259,25 @@ export const MapGallery: React.FC<MapGalleryProps> = (props) => {
                 <dt>Folder</dt>
                 <dd className="mbc-map-gallery-folder">{folderPath(doc).join(' › ')}</dd>
               </dl>
-              {noMap ? <p className="mbc-map-gallery-nomap">{noMap}</p> : drawnIds.has(doc.id) ? <CardMap doc={doc} props={props} /> : null}
-              <button type="button" className="mbc-btn" aria-label={`Open ${doc.name} in viewer`} onClick={() => onOpen(doc.id)}>
-                Open in viewer
-              </button>
+              {noMap ? (
+                <p className="mbc-map-gallery-nomap">{noMap}</p>
+              ) : drawnIds.has(doc.id) ? (
+                <CardMap doc={doc} props={props} view={viewOf(doc.id)} onView={(patch) => setView(doc.id, patch)} />
+              ) : null}
+              <div className="mbc-map-gallery-actions">
+                <label className="mbc-map-gallery-choose">
+                  <input
+                    type="checkbox"
+                    aria-label={`Choose ${doc.name} to compare`}
+                    checked={viewOf(doc.id).chosen}
+                    onChange={(e) => setView(doc.id, { chosen: e.target.checked })}
+                  />
+                  Compare
+                </label>
+                <button type="button" className="mbc-btn" aria-label={`Open ${doc.name} in viewer`} onClick={() => onOpen(doc.id)}>
+                  Open in viewer
+                </button>
+              </div>
             </article>
           );
         })}

@@ -500,7 +500,7 @@ describe('US-01M7DVS2 AC4: at most SPLIT_PICKER_CAP cards and GALLERY_MAPS_DRAWN
       // The gallery follows the checked rows, the open record's among them or not.
       expect(galleries(app), 'the gallery stays').toHaveLength(1);
       expect(cards(app)).toHaveLength(0);
-      const EMPTY_SENTENCE = 'No record is checked in the document table: check the rows to show their maps here.';
+      const EMPTY_SENTENCE = 'No record is checked in the document table. Check the rows to show their maps here.';
       expect(gallery(app).querySelectorAll('[role="status"]').map((p) => words(p.textContent)), 'an empty gallery says why').toEqual([EMPTY_SENTENCE]);
       for (const d of many.slice(1, GALLERY_MAPS_DRAWN_FIRST)) await check(app, d);
       expect(cards(app)).toHaveLength(GALLERY_MAPS_DRAWN_FIRST - 1);
@@ -788,3 +788,341 @@ describe('US-01M7DVS2 AC9: the gallery is not saved', () => {
   });
 });
 
+
+// ─── US-01M7DV6R: each card's own selection, rotation and choice, and Compare in split ───
+
+const cardOf = (app: AppHarness, d: SequenceDocument) => {
+  const found = cards(app).filter((c) => cardAcc(c) === d.accession);
+  expect(found, `one card for ${d.accession}`).toHaveLength(1);
+  return found[0];
+};
+const cardCircle = (app: AppHarness, d: SequenceDocument) => oneMap(cardOf(app, d), `${d.name}'s card circle`);
+const activeInterval = (svg: LiveElement) => svg.querySelectorAll('[data-active-interval]').map((p) => `${p.getAttribute('data-start-angle')}-${p.getAttribute('data-end-angle')}`);
+const featureArc = (svg: LiveElement, name: string) => {
+  const arcs = svg.querySelectorAll('[aria-label]').filter((e) => (e.getAttribute('aria-label') ?? '').startsWith(`Select ${name} (`));
+  expect(arcs, `one "${name}" feature on the map`).toHaveLength(1);
+  return arcs[0];
+};
+const chooseBox = (app: AppHarness, d: SequenceDocument) => labelled(cardOf(app, d), 'input[type="checkbox"]', `Choose ${d.name} to compare`);
+const compareButton = (app: AppHarness) => labelled(gallery(app), 'button', 'Compare in split');
+const compareReason = (n: number) => `Choose exactly two cards to compare (now ${n}).`;
+const selectionReadout = (app: AppHarness) => { const r = app.header().querySelectorAll('.mbc-selection-readout'); return r.length ? words(r[0].textContent) : null; };
+const docSplitChooser = (app: AppHarness) => labelled(app.header(), 'select', 'Document split');
+const splitHostClasses = (app: AppHarness) => [...app.one('.mbc-split-host', 'the split host').classList].sort().join(' ');
+const SIDE_BY_SIDE = 'is-side-by-side is-split mbc-split-host';
+const TOP_BOTTOM = 'is-split is-top-bottom mbc-split-host';
+const mainRecord = (app: AppHarness, docs: SequenceDocument[]) => app.all('tr.selected-row').map((r) => rowAccession(r, docs));
+/** A card's own view: its circle's origin wedge and active interval (none without a circle), and its compare choice. */
+const cardOwn = (app: AppHarness, d: SequenceDocument) => {
+  const svg = cardOf(app, d).querySelectorAll('svg.plasmid-svg')[0];
+  return { wedge: svg ? wedge(svg) : null, interval: svg ? activeInterval(svg) : [], scale: svg ? scaleOf(svg) : null, chosen: chooseBox(app, d).checked };
+};
+/** Turns a card's map with its own rotate control, then closes the control. */
+async function rotateCard(app: AppHarness, d: SequenceDocument, deg: string) {
+  await app.click(labelled(cardOf(app, d), 'button', `Rotate ${d.name}`));
+  const dialogs = rotateDialogs(cardOf(app, d));
+  expect(dialogs, `${d.name}'s card opens its own rotate control`).toHaveLength(1);
+  const input = dialogs[0].querySelectorAll('input[aria-label="Rotation in degrees"]');
+  expect(input, "the card's degree field").toHaveLength(1);
+  await app.change(input[0], deg);
+  const close = rotateDialogs(cardOf(app, d))[0].querySelectorAll('button').filter((b) => words(b.getAttribute('aria-label') ?? b.textContent) === 'Close');
+  await app.click(close[0]);
+  expect(rotateDialogs(cardOf(app, d))).toHaveLength(0);
+}
+const savedRotation = async (app: AppHarness) =>
+  ((await autosaved(app)).envelope.workspace as { mapRotation?: Record<string, number | null> }).mapRotation ?? {};
+/** A plain wheel off the map's centre, as a pointer over a card sends it; returns whether its default (scrolling the gallery) was prevented. */
+async function wheelOver(app: AppHarness, svg: LiveElement, mods: { ctrlKey?: boolean } = {}) {
+  const scroller = svg.parentElement!;
+  expect(scroller.classList.contains('plasmid-canvas-scroll'), "the map's wheel target").toBe(true);
+  let prevented = true;
+  await React.act(async () => {
+    prevented = dispatchLiveEvent(scroller, 'wheel', { deltaX: 0, deltaY: -100, deltaMode: 0, ctrlKey: false, metaKey: false, altKey: false, clientX: 40, clientY: 30, ...mods }).defaultPrevented;
+  });
+  await app.settle();
+  return prevented;
+}
+/** A WebKit pinch (gesturestart, a gesturechange to twice the size, gestureend) off the map's centre; returns whether each was prevented. */
+async function pinchOver(app: AppHarness, svg: LiveElement) {
+  const scroller = svg.parentElement!;
+  const prevented: boolean[] = [];
+  for (const [type, scale] of [['gesturestart', 1], ['gesturechange', 2], ['gestureend', 2]] as const) {
+    await React.act(async () => { prevented.push(dispatchLiveEvent(scroller, type, { scale, clientX: 40, clientY: 30 }).defaultPrevented); });
+  }
+  await app.settle();
+  return prevented;
+}
+async function exportCardSvg(app: AppHarness, d: SequenceDocument): Promise<{ filename: string; wedge: string | null; intervals: string[] }> {
+  const triggers = cardOf(app, d).querySelectorAll('.circular-hud-actions .mbc-figure-export-trigger');
+  expect(triggers, `${d.name}'s card has one figure export`).toHaveLength(1);
+  await app.click(triggers[0]);
+  const items = cardOf(app, d).querySelectorAll('.circular-hud-actions .mbc-figure-export-item').filter((b) => words(b.textContent).startsWith('SVG'));
+  expect(items, 'the figure menu offers SVG').toHaveLength(1);
+  const before = app.downloads().length;
+  await app.click(items[0]);
+  await app.settle();
+  const files = app.downloads().slice(before).filter((f) => f.filename.endsWith('.svg'));
+  expect(files, 'one .svg saved').toHaveLength(1);
+  const text = await files[0].text();
+  const tags = text.match(/<[^>]*data-map-part="origin-wedge"[^>]*>/g) ?? [];
+  expect(tags, 'the file draws one origin wedge').toHaveLength(1);
+  const intervals = (text.match(/<[^>]*data-active-interval[^>]*>/g) ?? []).map((t) => `${/data-start-angle="([^"]*)"/.exec(t)?.[1]}-${/data-end-angle="([^"]*)"/.exec(t)?.[1]}`);
+  return { filename: files[0].filename, wedge: /data-draw-angle="([^"]*)"/.exec(tags[0] ?? '')?.[1] ?? null, intervals };
+}
+
+describe("US-01M7DV6R AC1: a card's selection and rotation are its own", () => {
+  it("US-01M7DV6R AC1 a card's selection, its own rotate control and a wheel over it change nothing outside that card, and the gallery says they are not saved", async () => {
+    await withApp(async (app) => {
+      await restore(app, [CA, CB, LIN], CA.id);
+      await primedPane(app);
+      await focusMain(app);
+      await rotateTo(app, app.canvas(), '90');
+      await app.menu('view:zoom-in');
+      await checkAll(app);
+      await openByToolbar(app);
+      expect(words(gallery(app).textContent)).toContain('Card selections and rotations are not saved.');
+      const paneBefore = { ...paneState(app), focused: null };
+      const main = () => ({ readout: selectionReadout(app), zoom: headerZoom(app) });
+      const mainBefore = main();
+      expect(mainBefore, 'the fixture: nothing selected, the main view zoomed').toEqual({ readout: null, zoom: '110%' });
+      const linParts = cardOf(app, LIN).querySelectorAll('[data-map-part]').length;
+      expect(cardOwn(app, CA)).toEqual({ wedge: '90', interval: [], scale: 1, chosen: false });
+      expect(cardOwn(app, CB)).toEqual({ wedge: '0', interval: [], scale: 1, chosen: false });
+      const outside = async (what: string) => {
+        expect(main(), `${what}: the main view's selection and zoom`).toEqual(mainBefore);
+        expect({ ...paneState(app), focused: null }, `${what}: the split pane's document, view, zoom and rotation`).toEqual(paneBefore);
+        expect(activeInterval(oneMap(pane(app), "the pane's circle")), `${what}: the split pane's selection`).toEqual([]);
+        expect(cardOf(app, LIN).querySelectorAll('[data-map-part]').length, `${what}: the linear card`).toBe(linParts);
+      };
+
+      // A selection on Circ_A's card is drawn by that card alone.
+      await app.click(featureArc(cardCircle(app, CA), 'Mark_1'));
+      const caInterval = activeInterval(cardCircle(app, CA));
+      expect(caInterval, "Circ_A's card draws its selection").toHaveLength(1);
+      expect(cardOwn(app, CB).interval, "Circ_B's card draws none").toEqual([]);
+      await outside('a selection on a card');
+
+      // Circ_B's card (the split pane's document) turned by its own control.
+      await rotateCard(app, CB, '200');
+      expect(cardOwn(app, CB)).toEqual({ wedge: '200', interval: [], scale: 1, chosen: false });
+      expect(cardOwn(app, CA), "Circ_A's card as it was").toEqual({ wedge: '90', interval: caInterval, scale: 1, chosen: false });
+      await outside("turning Circ_B's card");
+      // Circ_A's card (the main view's document) turned too, and a selection on Circ_B's card.
+      await rotateCard(app, CA, '270');
+      await app.click(featureArc(cardCircle(app, CB), 'Mark_1'));
+      const cbInterval = activeInterval(cardCircle(app, CB));
+      expect(cbInterval).toHaveLength(1);
+      expect(cardOwn(app, CA)).toEqual({ wedge: '270', interval: caInterval, scale: 1, chosen: false });
+      await outside("turning Circ_A's card and selecting on Circ_B's");
+
+      // A wheel over a card zooms nothing: not the card, the main view or the pane. The card does not
+      // take it either, so its map stays where it is and the wheel scrolls the gallery.
+      // A pinch (a ctrl-flagged wheel, or WebKit's gesture events) moves no card either, and is kept from
+      // zooming the page.
+      // Each circle is laid out at its card's size, so a gesture about a pointer off its centre would move it.
+      const { GALLERY_CARD_MAP_BOX } = await components();
+      const liveDoc = cardCircle(app, CA).ownerDocument!;
+      const layoutBefore = liveDoc.layout;
+      liveDoc.layout = (el) => (el.classList.contains('plasmid-svg') ? { ...GALLERY_CARD_MAP_BOX } : layoutBefore(el));
+      const views = [viewport(cardCircle(app, CA)), viewport(cardCircle(app, CB))];
+      const plain = [await wheelOver(app, cardCircle(app, CA)), await wheelOver(app, cardCircle(app, CB))];
+      const pinches = [await wheelOver(app, cardCircle(app, CA), { ctrlKey: true }), ...(await pinchOver(app, cardCircle(app, CB)))];
+      liveDoc.layout = layoutBefore;
+      expect([cardOwn(app, CA).scale, cardOwn(app, CB).scale], 'the cards keep their size').toEqual([1, 1]);
+      expect([viewport(cardCircle(app, CA)), viewport(cardCircle(app, CB))], 'and their place').toEqual(views);
+      expect(plain, 'a plain wheel over a card is left to scroll the gallery').toEqual([false, false]);
+      expect(pinches, "a pinch's default (zooming the page) is prevented").toEqual([true, true, true, true]);
+      await outside('a wheel over the cards');
+      // A double-click recentres a map at 100%: on a card it reaches no zoom but the card's own.
+      for (const d of [CA, CB]) {
+        await React.act(async () => { dispatchLiveEvent(cardCircle(app, d).parentElement!, 'dblclick', { detail: 2 }); });
+        await app.settle();
+      }
+      expect([cardOwn(app, CA).scale, cardOwn(app, CB).scale]).toEqual([1, 1]);
+      await outside('a double-click on the cards');
+
+      // The main view's rotation of each record is as it was, saved and drawn.
+      const saved = await savedRotation(app);
+      expect([saved[CA.id] ?? 0, saved[CB.id] ?? 0], "the session's main-view rotations").toEqual([90, 0]);
+      await closeGallery(app);
+      expect(wedge(oneMap(app.canvas(), 'the main circle')), "the main view's rotation").toBe('90');
+      expect(activeInterval(oneMap(app.canvas(), 'the main circle')), "the main view's selection").toEqual([]);
+      expect(selectionReadout(app)).toBeNull();
+      // Nothing of a card is kept: reopened, each card starts at its record's main-view rotation, unselected.
+      await openByToolbar(app);
+      expect([cardOwn(app, CA), cardOwn(app, CB)]).toEqual([
+        { wedge: '90', interval: [], scale: 1, chosen: false }, { wedge: '0', interval: [], scale: 1, chosen: false },
+      ]);
+    });
+  });
+});
+
+describe('US-01M7DV6R AC2: Compare in split with exactly two cards chosen', () => {
+  it('US-01M7DV6R AC2 off with the count until two are chosen; opens the first chosen in card order in the main view and the second in the pane at its main-view rotation, in the last orientation, the main pane focused', async () => {
+    const docs = [CA, CB, LIN, TWIN_A];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id, { mapRotation: { [CA.id]: 30, [CB.id]: 60, [TWIN_A.id]: 120 } });
+      await checkAll(app);
+      await openByToolbar(app);
+      expect([CA, CB, TWIN_A].map((d) => cardOwn(app, d).wedge), "the fixture: each card at its record's main-view rotation").toEqual(['30', '60', '120']);
+      expect(app.all('section.mbc-split-pane'), 'no split yet').toHaveLength(0);
+      const off = (n: number) => {
+        expect([compareButton(app).hasAttribute('disabled'), compareButton(app).getAttribute('title')], `${n} chosen`).toEqual([true, compareReason(n)]);
+        expect(words(gallery(app).textContent), `${n} chosen: the reason is shown`).toContain(compareReason(n));
+      };
+      off(0);
+      const order = () => cards(app).map(cardAcc);
+      // Chosen against the card order, the later card first. Twin, not Circ_B: Circ_B is the document a
+      // split opened the first time would show, so only Twin tells showInSplitPane's rotation from that.
+      const [first, second] = [CA, TWIN_A].sort((a, b) => order().indexOf(a.accession) - order().indexOf(b.accession));
+      await app.change(chooseBox(app, second), true);
+      off(1);
+      await app.change(chooseBox(app, first), true);
+      await app.change(chooseBox(app, LIN), true);
+      off(3);
+      await app.change(chooseBox(app, LIN), false);
+      expect(compareButton(app).hasAttribute('disabled'), 'two chosen').toBe(false);
+      expect(words(gallery(app).textContent)).not.toContain('Choose exactly two cards to compare');
+      // The second card's own rotation is not what the pane opens at.
+      await rotateCard(app, second, '200');
+      const checkedBefore = tableRows(app).filter((r) => r.querySelectorAll('input[type="checkbox"]')[0].checked).map((r) => rowAccession(r, docs)).sort();
+      await app.click(compareButton(app));
+      const opened = async (a: SequenceDocument, b: SequenceDocument, host: string, what: string) => {
+        expect(galleries(app), `${what}: the gallery closes`).toHaveLength(0);
+        expect(mainRecord(app, docs), `${what}: the first chosen is the main view's record`).toEqual([a.accession]);
+        expect(app.activeTab()).toBe('sequence-view');
+        expect(tableRows(app).filter((r) => r.querySelectorAll('input[type="checkbox"]')[0].checked).map((r) => rowAccession(r, docs)).sort(), `${what}: the rows stay checked`).toEqual(checkedBefore);
+        expect(splitHostClasses(app), `${what}: the split's orientation`).toBe(host);
+        expect(picker(app).value, `${what}: the second chosen in the pane`).toBe(b.id);
+        expect(wedge(oneMap(pane(app), "the pane's circle")), `${what}: at the main view's rotation for it`).toBe(String({ [CA.id]: 30, [CB.id]: 60, [TWIN_A.id]: 120 }[b.id]));
+        expect([app.canvas().getAttribute('aria-current'), pane(app).getAttribute('aria-current')], `${what}: the main pane focused`).toEqual(['true', null]);
+      };
+      await app.change(viewSelect(app), 'circular');
+      await opened(first, second, SIDE_BY_SIDE, 'the first time');
+
+      // Top and Bottom chosen, then Single Pane: the next compare opens Top and Bottom.
+      await app.change(docSplitChooser(app), 'top-bottom');
+      await app.change(docSplitChooser(app), 'single');
+      expect(app.all('section.mbc-split-pane')).toHaveLength(0);
+      await openByToolbar(app);
+      const [third, fourth] = [CB, CA].sort((a, b) => order().indexOf(a.accession) - order().indexOf(b.accession));
+      await app.change(chooseBox(app, fourth), true);
+      await app.change(chooseBox(app, third), true);
+      await app.click(compareButton(app));
+      await opened(third, fourth, TOP_BOTTOM, 'after Top and Bottom then Single Pane');
+
+      // With the pane focused and turned, Compare activated without a pointer (Enter or Space) still
+      // focuses the main pane and opens the second at the main view's rotation for it.
+      await focusPane(app);
+      await rotateTo(app, pane(app), '45');
+      await openByToolbar(app);
+      expect(pane(app).getAttribute('aria-current'), 'the pane stays focused behind the gallery').toBe('true');
+      const [fifth, sixth] = [CB, TWIN_A].sort((a, b) => order().indexOf(a.accession) - order().indexOf(b.accession));
+      await app.change(chooseBox(app, fifth), true);
+      await app.change(chooseBox(app, sixth), true);
+      await React.act(async () => { dispatchLiveEvent(compareButton(app), 'click', { detail: 0 }); });
+      await app.settle();
+      await opened(fifth, sixth, TOP_BOTTOM, 'activated by key with the pane focused');
+    });
+  });
+});
+
+describe("US-01M7DV6R AC3: the table's sort orders the cards, and each card's state moves with its record", () => {
+  it("US-01M7DV6R AC3 sorting by Sequence Length and by Name reorders the cards to the table, each keeping its selection, rotation and choice", async () => {
+    const docs = [CA, CB, TWIN_A, LIN];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id);
+      await checkAll(app);
+      await openByToolbar(app);
+      await app.click(featureArc(cardCircle(app, CA), 'Mark_1'));
+      await rotateCard(app, CA, '100');
+      await app.change(chooseBox(app, CA), true);
+      await rotateCard(app, TWIN_A, '250');
+      await app.change(chooseBox(app, LIN), true);
+      const states = () => Object.fromEntries(docs.map((d) => [d.accession, cardOwn(app, d)]));
+      const before = states();
+      expect(before[CA.accession].interval, "the fixture: Circ_A's card selected").toHaveLength(1);
+      expect([before[CA.accession].wedge, before[TWIN_A.accession].wedge, before[CB.accession].wedge]).toEqual(['100', '250', '0']);
+      const tableOrder = () => tableRows(app).map((r) => rowAccession(r, docs));
+      const ths = app.all('table.mbc-document-table thead th');
+      const sortBy = (label: string) => {
+        const th = ths.filter((h) => (h.getAttribute('title') ?? '').startsWith(`Sort by ${label}`));
+        expect(th, `the ${label} column`).toHaveLength(1);
+        return th[0];
+      };
+      const orders = new Set([cards(app).map(cardAcc).join()]);
+      for (const label of ['Sequence Length', 'Name']) {
+        for (let pass = 0; pass < 2; pass++) {
+          await app.click(sortBy(label));
+          expect(cards(app).map(cardAcc), `${label}: the cards in the table's order`).toEqual(tableOrder());
+          expect(states(), `${label}: each card's selection, rotation and choice moved with its record`).toEqual(before);
+          orders.add(cards(app).map(cardAcc).join());
+        }
+      }
+      expect(orders.size, 'the sorts moved the cards').toBeGreaterThan(2);
+    });
+  });
+});
+
+describe('US-01M7DV6R AC4: checking rows adds and removes cards; the others keep their state', () => {
+  it('US-01M7DV6R AC4 a row checked or unchecked under the gallery adds or removes its card, the others keeping selection, rotation and choice; none checked says so and shows no card', async () => {
+    const docs = [CA, CB, TWIN_A];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id);
+      await check(app, CB);
+      await check(app, TWIN_A);
+      await check(app, CA, false);
+      await openByToolbar(app);
+      expect(cards(app).map(cardAcc), 'the fixture: Circ_B and Twin, in table order').toEqual([CB.accession, TWIN_A.accession]);
+      await app.click(featureArc(cardCircle(app, TWIN_A), 'Mark_1'));
+      await rotateCard(app, TWIN_A, '135');
+      await app.change(chooseBox(app, TWIN_A), true);
+      await rotateCard(app, CB, '15');
+      await app.change(chooseBox(app, CB), true);
+      const twin = cardOwn(app, TWIN_A);
+      const cb = cardOwn(app, CB);
+      expect([twin.interval.length, twin.wedge, twin.chosen, cb.wedge, cb.chosen]).toEqual([1, '135', true, '15', true]);
+      expect(compareButton(app).hasAttribute('disabled')).toBe(false);
+
+      // Circ_A checked: its card is added before the others, which keep theirs.
+      await check(app, CA);
+      expect(cards(app).map(cardAcc)).toEqual([CA.accession, CB.accession, TWIN_A.accession]);
+      expect(cardOwn(app, CA), 'the added card starts fresh').toEqual({ wedge: '0', interval: [], scale: 1, chosen: false });
+      expect([cardOwn(app, CB), cardOwn(app, TWIN_A)], 'the others as they were').toEqual([cb, twin]);
+      // Circ_B unchecked: its card goes, and its choice is no longer counted.
+      await check(app, CB, false);
+      expect(cards(app).map(cardAcc)).toEqual([CA.accession, TWIN_A.accession]);
+      expect(cardOwn(app, TWIN_A)).toEqual(twin);
+      expect(cardOwn(app, CA)).toEqual({ wedge: '0', interval: [], scale: 1, chosen: false });
+      expect([compareButton(app).hasAttribute('disabled'), compareButton(app).getAttribute('title')]).toEqual([true, compareReason(1)]);
+
+      for (const d of [CA, TWIN_A]) await check(app, d, false);
+      expect(galleries(app), 'the gallery stays').toHaveLength(1);
+      expect(cards(app)).toHaveLength(0);
+      expect(words(gallery(app).textContent)).toContain('No record is checked in the document table.');
+    });
+  });
+});
+
+describe("US-01M7DV6R AC5: a card's figure export draws the card's rotation and selection", () => {
+  it("US-01M7DV6R AC5 each card's FigureExportButton saves an SVG named for its record with the card's origin wedge and selection", async () => {
+    await withApp(async (app) => {
+      await restore(app, [CA, CB], CA.id);
+      await checkAll(app);
+      await openByToolbar(app);
+      await rotateCard(app, CA, '120');
+      await app.click(featureArc(cardCircle(app, CA), 'Mark_1'));
+      await rotateCard(app, CB, '300');
+      const caInterval = activeInterval(cardCircle(app, CA));
+      expect(caInterval).toHaveLength(1);
+      const caFile = await exportCardSvg(app, CA);
+      expect(caFile.filename, "Circ_A's card names its record").toContain('Circ_A');
+      expect(caFile.filename).not.toContain('Circ_B');
+      expect([caFile.wedge, caFile.intervals], "Circ_A's card's rotation and selection").toEqual(['120', caInterval]);
+      const cbFile = await exportCardSvg(app, CB);
+      expect(cbFile.filename, "Circ_B's card names its record").toContain('Circ_B');
+      expect(cbFile.filename).not.toContain('Circ_A');
+      expect([cbFile.wedge, cbFile.intervals], "Circ_B's card's rotation, and no selection").toEqual(['300', []]);
+    });
+  });
+});

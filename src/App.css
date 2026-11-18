@@ -15909,6 +15909,46 @@ table,
   height: 44px;
 }
 
-.mbc-map-gallery-card > .mbc-btn {
+/* US-01M7DV6R: a card's compare choice beside its Open in viewer, and its own Rotate. */
+.mbc-map-gallery-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mbc-map-gallery-choose {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-caption);
+}
+
+.mbc-map-gallery-rotate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   align-self: flex-start;
+}
+
+/* A card's rotate control floats over its own map, under its Rotate button. */
+.mbc-map-gallery-map {
+  position: relative;
+}
+
+.mbc-map-gallery-map > .circular-rotation-control {
+  top: 30px;
+  left: 0;
+}
+
+.mbc-map-gallery-compare {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.mbc-map-gallery-compare-note,
+.mbc-map-gallery-unsaved {
+  color: var(--mbc-text-secondary);
+  font-size: var(--font-size-caption);
 }

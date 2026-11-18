@@ -3773,6 +3773,18 @@ export const App: React.FC = () => {
     selectDocumentWithHistory(docId, true);
   };
   /**
+   * Compare in split (US-01M7DV6R): the first chosen card opens in the main view as Open in viewer
+   * does, and the second in the split pane at the main view's rotation for it, in the orientation last
+   * chosen (Side by Side the first time), with the main pane focused.
+   */
+  const compareFromMapGallery = (mainDocId: string, paneDocId: string) => {
+    openFromMapGallery(mainDocId);
+    chooseDocumentSplit(lastDocumentSplitRef.current);
+    // After chooseDocumentSplit, so the pane's document and rotation are these, not the split's first candidate.
+    showInSplitPane(paneDocId);
+    setFocusedPane('main');
+  };
+  /**
    * View › Restore Default Layout (US-01M7DVJ4), the in-app item's handler and the native id's: the
    * sidebar, the inspector and the document table shown, below the viewer, at the default sizes; Expand
    * Viewer off; the map divider at its default; Single Pane through its one setter, the divider half
@@ -16013,6 +16025,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       enzymes={activeEnzymes}
                       scanCollection={scanCollectionChoice.collection}
                       onOpen={openFromMapGallery}
+                      onCompare={compareFromMapGallery}
                       onClose={() => setMapGalleryOpen(false)}
                     />
                   </ErrorBoundary>
