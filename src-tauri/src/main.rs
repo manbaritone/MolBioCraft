@@ -11,7 +11,7 @@ use commands::bio_commands::{
 };
 use commands::fs_commands::{
     cmd_native_open_files_dialog, cmd_native_save_file_dialog, cmd_read_dropped_file_bytes,
-    cmd_read_workspace_file, cmd_take_pending_open_files, cmd_write_workspace_file,
+    cmd_take_pending_open_files,
 };
 use commands::window_commands::{
     cmd_ack_quit_request, cmd_app_exit, cmd_print_webview, cmd_set_confirm_before_quit, cmd_sync_native_menu_state,
@@ -1470,6 +1470,16 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     )
 }
 
+/// Records the files of a native drop onto the window as the files the WebView may read
+/// ([`AppBackendState::grant_dropped_files`], D0186). Called from `on_window_event`, on the main
+/// thread, for the same event Tauri has just emitted to the frontend as `tauri://drag-drop`. Only a
+/// drop grants: a drag that enters the window and leaves grants nothing.
+fn grant_native_drop(state: &AppBackendState, event: &tauri::WindowEvent) {
+    if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+        state.grant_dropped_files(paths);
+    }
+}
+
 fn main() {
     let backend_state = AppBackendState::default();
     // Windows / Linux file associations launch the app with the document path.
@@ -1489,6 +1499,7 @@ fn main() {
             let _ = app.emit("mbc://native-menu", event.id().0.as_str());
         })
         .on_window_event(|window, event| {
+            grant_native_drop(&window.state::<AppBackendState>(), event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<AppBackendState>();
                 if state.should_veto_close(std::time::Instant::now()) {
@@ -1511,8 +1522,6 @@ fn main() {
             cmd_cancel_external_tree,
             cmd_genome_viewport,
             cmd_genome_tracks,
-            cmd_read_workspace_file,
-            cmd_write_workspace_file,
             cmd_read_dropped_file_bytes,
             cmd_native_open_files_dialog,
             cmd_native_save_file_dialog,

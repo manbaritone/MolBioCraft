@@ -13,6 +13,9 @@
 - **Hardened Tauri v2 WebView & Least-Privilege Capabilities**:
   - Enforces a strict `Content-Security-Policy` in [`src-tauri/tauri.conf.json`](./src-tauri/tauri.conf.json) (`object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'self'`, `form-action 'self'`, `freezePrototype: true`) restricting `connect-src` to Tauri IPC and explicit user-triggered public database fetches (NCBI E-utilities, UniProtKB, and RCSB PDB); the WebView may not connect to any loopback address.
   - Scopes window permissions via [`src-tauri/capabilities/default.json`](./src-tauri/capabilities/default.json).
+- **File IPC Reads Only Dropped Files**:
+  - The WebView can name a file path to one desktop command only, the drag-and-drop reader. It reads only files dropped onto the window in this launch, compared after resolving symlinks, and refuses any other path with `ERR_SANDBOX_VIOLATION` before checking its type or reading it. A dropped file that is gone reports `ERR_IO_FAILURE` (not found), and one the OS will not let the app read reports `ERR_PERMISSION_DENIED`.
+  - Open and save dialogs, OS open requests and Import Folder read and write in Rust and never hand a path to the WebView; Import Folder does not follow a symlink whose target lies outside the chosen folder.
 - **Dual-Layer IPC Path & Payload Validation**:
   - Frontend (`validateCrossPlatformFilename` and `normalizeCrossPlatformPath` in [`src/platform/osPlatform.ts`](./src/platform/osPlatform.ts)) and Rust (`sanitize_workspace_path` in [`crates/molbiocraft-core/src/lib.rs`](./crates/molbiocraft-core/src/lib.rs)) reject NUL bytes, `..` parent-directory traversal, Windows reserved DOS device names, oversized payloads, and writes to protected OS directories (`/System`, `/usr`, `/etc`, `/proc`, `/sys`, `C:\Windows`, `C:\Program Files`).
 - **OS Sandboxing & Integrity Verification**:

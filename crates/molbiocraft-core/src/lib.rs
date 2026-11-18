@@ -86,6 +86,9 @@ pub enum BioEngineError {
     ReadOnlyFilesystem(String),
     ParseFailure(String),
     IoFailure(String),
+    /// A path the desktop shell was never granted: file IPC reads only the files dropped onto the
+    /// window in this launch (D0186).
+    SandboxViolation(String),
 }
 
 impl fmt::Display for BioEngineError {
@@ -108,6 +111,7 @@ impl fmt::Display for BioEngineError {
             }
             BioEngineError::ParseFailure(msg) => write!(f, "[ERR_CORRUPT_PACKET] {}", msg),
             BioEngineError::IoFailure(msg) => write!(f, "[ERR_IO_FAILURE] {}", msg),
+            BioEngineError::SandboxViolation(msg) => write!(f, "[ERR_SANDBOX_VIOLATION] {}", msg),
         }
     }
 }

@@ -11,13 +11,11 @@ import {
   openNativeFilesDialogTauri,
   queryPlatformDiagnosticsHybrid,
   readDroppedFileBytesTauri,
-  readWorkspaceFileTauri,
   saveNativeFileDialogTauri,
   startDesktopWindowDraggingTauri,
   TauriBatchProgressEvent,
   TauriIpcCache,
   toggleDesktopWindowMaximizeTauri,
-  writeWorkspaceFileTauri,
 } from '../lib/tauriIpc';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -159,39 +157,70 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
   });
 
   it('enforces frontend path-traversal guards and translates Rust error codes into MolBioCraftError', async () => {
+    const invoked: string[] = [];
     g.__TAURI_INTERNALS__ = {
       invoke: async (cmd) => {
-        if (cmd === 'cmd_write_workspace_file') {
+        invoked.push(cmd);
+        if (cmd === 'cmd_native_save_file_dialog') {
           throw new Error(
             "[ERR_FILE_LOCKED] File '/tmp/locked.mbc' remained locked after 4 retries"
           );
         }
-        return 'LOCUS pUC19';
+        return { file_name: 'plasmid.gb', base64: 'TE9DVVM=', byte_len: 5 };
       },
     };
 
     // Failure 1: path traversal blocked before IPC
-    await expect(readWorkspaceFileTauri('../../etc/passwd')).rejects.toThrowError(
+    await expect(readDroppedFileBytesTauri('../../etc/passwd')).rejects.toThrowError(
       /ERR_PERMISSION_DENIED/
     );
 
     // Failure 2: NUL byte injection blocked before IPC
-    await expect(readWorkspaceFileTauri('/tmp/plasmid\0.gb')).rejects.toThrowError(
+    await expect(readDroppedFileBytesTauri('/tmp/plasmid\0.gb')).rejects.toThrowError(
       /ERR_INVALID_FILENAME/
     );
 
     // Failure 3: empty batch/sequence rejected cleanly
     await expect(invokeBatchSequenceStatsHybrid([])).rejects.toThrowError(/ERR_EMPTY_SEQUENCE/);
 
-    // Failure 4: Rust [ERR_FILE_LOCKED] mapped to typed MolBioCraftError
-    await expect(writeWorkspaceFileTauri('/tmp/locked.mbc', '{"magic":"MBC1"}')).rejects.toThrowError(
-      /ERR_FILE_LOCKED/
-    );
-
     // Failure 5: Dropped-file byte reader also blocks relative path traversal before IPC
     await expect(readDroppedFileBytesTauri('../secret/trace.ab1')).rejects.toThrowError(
       /ERR_PERMISSION_DENIED/
     );
+    // none of the guarded paths reached the shell
+    expect(invoked).toEqual([]);
+
+    // Failure 4: Rust [ERR_FILE_LOCKED] mapped to typed MolBioCraftError
+    await expect(saveNativeFileDialogTauri('locked.mbc', '{"magic":"MBC1"}')).rejects.toThrowError(
+      /ERR_FILE_LOCKED/
+    );
+    expect(invoked).toEqual(['cmd_native_save_file_dialog']);
+  });
+
+  it('lets the WebView name a file path to one shell command only, the drop reader (US-01M6P2X0)', () => {
+    // The shell reads only files dropped onto the window in this launch (D0186), so no other
+    // command may take a path from the WebView: not in the UI's command map, not in the shell.
+    const ipc = readFileSync(resolve(process.cwd(), 'src/lib/tauriIpc.ts'), 'utf8');
+    const map = ipc.slice(ipc.indexOf('interface TauriCommandMap'));
+    const mapCommands = [...map.slice(0, map.indexOf('\n}\n')).matchAll(/\n {2}(cmd_\w+): \{\s*args: ([^;]*);/g)];
+    expect(mapCommands.length).toBeGreaterThan(10);
+    expect(mapCommands.filter((m) => /\bpath\??:/.test(m[2])).map((m) => m[1])).toEqual([
+      'cmd_read_dropped_file_bytes',
+    ]);
+
+    const shellCommands = ['bio_commands', 'fs_commands', 'tree_tool_commands', 'window_commands'].flatMap((mod) => {
+      const src = readFileSync(resolve(process.cwd(), `src-tauri/src/commands/${mod}.rs`), 'utf8');
+      return [...src.matchAll(/#\[tauri::command\]\s*pub (?:async )?fn (cmd_\w+)(?:<[^>]*>)?\(([^)]*)\)/g)];
+    });
+    expect(shellCommands.length).toBeGreaterThan(10);
+    expect(
+      shellCommands.filter((m) => /\bpath\s*:|PathBuf/.test(m[2])).map((m) => m[1])
+    ).toEqual(['cmd_read_dropped_file_bytes']);
+
+    // and the shell's window-event handler is what records a drop (main.rs grant_native_drop)
+    const main = readFileSync(resolve(process.cwd(), 'src-tauri/src/main.rs'), 'utf8');
+    const handler = main.slice(main.indexOf('.on_window_event(|window, event| {'), main.indexOf('.invoke_handler('));
+    expect(handler).toMatch(/^\.on_window_event\(\|window, event\| \{\s*grant_native_drop\(&window\.state::<AppBackendState>\(\), event\);/);
   });
 
   it('invokes native window drag/maximize commands and reads binary dropped file bytes via Tauri v2 IPC', async () => {
@@ -304,12 +333,20 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
     expect(await codeOf('[ERR_PERMISSION_DENIED] Operation not permitted (os error 1)')).toBe(
       'ERR_PERMISSION_DENIED'
     );
+    // a path never dropped onto the window (US-01M6P2X0)
+    expect(
+      await codeOf(
+        "[ERR_SANDBOX_VIOLATION] '/Users/researcher/notes.txt' was not dropped onto the window in this launch, so MolBioCraft does not read it"
+      )
+    ).toBe('ERR_SANDBOX_VIOLATION');
 
     // every tag the Rust engine's errors print reaches the UI with its own code
     const engine = readFileSync(resolve(process.cwd(), 'crates/molbiocraft-core/src/lib.rs'), 'utf8');
     const display = engine.slice(engine.indexOf('impl fmt::Display for BioEngineError'));
     const rustTags = [...display.slice(0, display.indexOf('\nimpl ')).matchAll(/"\[(ERR_[A-Z_]+)\]/g)].map((m) => m[1]);
-    expect(rustTags).toEqual(expect.arrayContaining(['ERR_PAYLOAD_TOO_LARGE', 'ERR_IO_FAILURE']));
+    expect(rustTags).toEqual(
+      expect.arrayContaining(['ERR_PAYLOAD_TOO_LARGE', 'ERR_IO_FAILURE', 'ERR_SANDBOX_VIOLATION'])
+    );
     expect(rustTags).not.toContain('ERR_PATH_TOO_LONG');
     for (const tag of rustTags) {
       expect(await codeOf(`[${tag}] detail`), tag).toBe(tag);

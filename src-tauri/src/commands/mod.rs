@@ -7,7 +7,7 @@ pub mod tree_tool_commands;
 pub mod window_commands;
 
 use molbiocraft_core::SequenceStats;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -19,10 +19,21 @@ struct AppBackendInner {
     /// Files the OS asked the app to open (file associations, `Open With…`,
     /// launch arguments) that the frontend has not collected yet.
     pending_open_files: Mutex<Vec<std::path::PathBuf>>,
+    /// Files dropped onto the window in this launch: the only paths the WebView may have read
+    /// ([`fs_commands::cmd_read_dropped_file_bytes`], D0186).
+    dropped_files: Mutex<DropGrants>,
     /// When the last unacknowledged quit confirmation was sent to the frontend.
     quit_request_sent_at: Mutex<Option<std::time::Instant>>,
     /// Close requests received since that unacknowledged confirmation was sent.
     unacked_close_attempts: std::sync::atomic::AtomicU32,
+}
+
+/// The files of every native drop onto the window in this launch, each as the window event gave it
+/// and, when it resolved at the drop, by its real path (symlinks followed).
+#[derive(Default)]
+struct DropGrants {
+    as_dropped: HashSet<std::path::PathBuf>,
+    resolved: HashSet<std::path::PathBuf>,
 }
 
 impl Default for AppBackendInner {
@@ -33,6 +44,7 @@ impl Default for AppBackendInner {
             quit_approved: AtomicBool::new(false),
             stats_cache: Mutex::new(HashMap::new()),
             pending_open_files: Mutex::new(Vec::new()),
+            dropped_files: Mutex::new(DropGrants::default()),
             quit_request_sent_at: Mutex::new(None),
             unacked_close_attempts: std::sync::atomic::AtomicU32::new(0),
         }
@@ -172,6 +184,37 @@ impl AppBackendState {
             }
         }
         q.len()
+    }
+
+    /// Records the files of a native drop onto the window as readable by
+    /// [`fs_commands::cmd_read_dropped_file_bytes`] for the rest of this launch.
+    pub fn grant_dropped_files(&self, paths: &[std::path::PathBuf]) {
+        let resolved: Vec<std::path::PathBuf> =
+            paths.iter().filter_map(|p| std::fs::canonicalize(p).ok()).collect();
+        let mut grants = self
+            .inner
+            .dropped_files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        grants.as_dropped.extend(paths.iter().cloned());
+        grants.resolved.extend(resolved);
+    }
+
+    /// Whether `path` is a file dropped onto the window in this launch. A path that resolves is
+    /// compared by its real path, so a symlink to a dropped file is one and a symlink from a dropped
+    /// name to another file is not; a path that no longer resolves (a dropped file since deleted) is
+    /// compared as dropped.
+    pub fn is_dropped_file(&self, path: &std::path::Path) -> bool {
+        let resolved = std::fs::canonicalize(path);
+        let grants = self
+            .inner
+            .dropped_files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match resolved {
+            Ok(real) => grants.resolved.contains(&real),
+            Err(_) => grants.as_dropped.contains(path),
+        }
     }
 
     /// Take (and clear) the queued open-file requests.

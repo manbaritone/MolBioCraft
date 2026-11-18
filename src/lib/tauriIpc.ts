@@ -145,14 +145,6 @@ export interface TauriCommandMap {
     args: { jobId: number };
     result: null | undefined;
   };
-  cmd_read_workspace_file: {
-    args: { path: string };
-    result: string;
-  };
-  cmd_write_workspace_file: {
-    args: { path: string; content: string };
-    result: null | undefined;
-  };
   cmd_read_dropped_file_bytes: {
     args: { path: string };
     result: TauriDroppedFileBytesPayload;
@@ -421,16 +413,10 @@ export function validateFrontendWorkspacePath(rawPath: string): string {
   return adapter.validatePathAccess(trimmed).normalizedPath;
 }
 
-export async function readWorkspaceFileTauri(path: string): Promise<string> {
-  const safePath = validateFrontendWorkspacePath(path);
-  return invokeTauriCommand('cmd_read_workspace_file', { path: safePath });
-}
-
-export async function writeWorkspaceFileTauri(path: string, content: string): Promise<void> {
-  const safePath = validateFrontendWorkspacePath(path);
-  await invokeTauriCommand('cmd_write_workspace_file', { path: safePath, content });
-}
-
+/**
+ * Read a file dropped onto the desktop window. The shell reads only files dropped onto the window
+ * in this launch and refuses any other path with ERR_SANDBOX_VIOLATION (D0186).
+ */
 export async function readDroppedFileBytesTauri(
   path: string
 ): Promise<TauriDroppedFileBytesPayload> {

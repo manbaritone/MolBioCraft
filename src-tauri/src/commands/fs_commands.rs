@@ -132,13 +132,17 @@ struct FolderImportListing {
 }
 
 /// Lists a picked folder for Import Folder: its regular, non-hidden files of a supported type, the
-/// first [`MAX_FOLDER_IMPORT_FILES`] by path, counting the supported files past that limit.
+/// first [`MAX_FOLDER_IMPORT_FILES`] by path, counting the supported files past that limit. A symlink
+/// is listed only when its target lies inside the folder ([`stays_inside`]), so a link in the
+/// chosen folder cannot hand the import a file from elsewhere.
 fn list_folder_import(dir: &std::path::Path) -> Result<FolderImportListing, String> {
+    let real_dir = fs::canonicalize(dir).map_err(|e| BioEngineError::IoFailure(e.to_string()).to_string())?;
     let mut files: Vec<std::path::PathBuf> = fs::read_dir(dir)
         .map_err(|e| BioEngineError::IoFailure(e.to_string()).to_string())?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|p| {
-            p.is_file()
+            stays_inside(p, &real_dir)
+                && p.is_file()
                 && has_importable_extension(p)
                 && !p
                     .file_name()
@@ -153,6 +157,18 @@ fn list_folder_import(dir: &std::path::Path) -> Result<FolderImportListing, Stri
     Ok(FolderImportListing { files, left_out })
 }
 
+/// Whether the folder entry `entry` is not a symlink, or is one whose target, resolved, lies inside
+/// `real_dir` (the folder's own resolved path), compared by path components.
+fn stays_inside(entry: &std::path::Path, real_dir: &std::path::Path) -> bool {
+    match fs::symlink_metadata(entry) {
+        Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(entry)
+            .map(|target| target.starts_with(real_dir))
+            .unwrap_or(false),
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
 /// Import Folder's reply for a picked folder: the files of [`list_folder_import`], read, and how many
 /// supported files it left out.
 async fn read_folder_import(dir: std::path::PathBuf) -> Result<OpenedFilesReply, String> {
@@ -163,9 +179,9 @@ async fn read_folder_import(dir: std::path::PathBuf) -> Result<OpenedFilesReply,
     Ok(OpenedFilesReply { files, files_left_out: listing.left_out })
 }
 
-/// Defence in depth for the path-taking IPC commands: only workbench file
-/// types may be read or written, so a script running in the webview cannot use
-/// them to read credentials (`~/.ssh/id_rsa`, `.env`) or overwrite dotfiles.
+/// The file-type refusal of the drop reader, after its drop grant ([`dropped_file_needs_sniff`]): a
+/// type MolBioCraft does not handle is refused, so a dropped credential file such as `.env` is not
+/// handed to the WebView.
 fn require_workbench_file_type(path: &std::path::Path) -> Result<(), String> {
     if has_importable_extension(path) {
         Ok(())
@@ -234,88 +250,63 @@ fn importable_open_requests(paths: Vec<std::path::PathBuf>) -> Vec<std::path::Pa
     paths.into_iter().filter(|p| has_importable_extension(p)).collect()
 }
 
-/// Read a GenBank, FASTA, EMBL, GFF3, or `.mbc` workbench file asynchronously
-/// after sanitizing path traversal, reserved DOS stems, and protected OS directories.
-#[tauri::command]
-pub async fn cmd_read_workspace_file(
-    path: String,
-    state: State<'_, AppBackendState>,
-) -> Result<String, String> {
-    state.record_call();
-    let safe_path = sanitize_workspace_path(&path).map_err(|e| e.to_string())?;
-    require_workbench_file_type(&safe_path)?;
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let meta = fs::metadata(&safe_path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                BioEngineError::PermissionDenied(e.to_string()).to_string()
-            } else {
-                BioEngineError::IoFailure(e.to_string()).to_string()
-            }
-        })?;
-        if meta.len() > MAX_WORKSPACE_FILE_BYTES {
-            return Err(BioEngineError::PayloadTooLarge(format!(
-                "Workspace file '{}' ({} bytes) exceeds 64 MiB limit",
-                safe_path.display(),
-                meta.len()
-            ))
-            .to_string());
-        }
-        fs::read_to_string(&safe_path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                BioEngineError::PermissionDenied(e.to_string()).to_string()
-            } else {
-                BioEngineError::IoFailure(e.to_string()).to_string()
-            }
-        })
-    })
-    .await
-    .map_err(|e| format!("[ERR_ASYNC_JOIN] {}", e))?
-}
-
-/// Write a sequence or `.mbc` workbench file atomically (`sync_all` + `rename` + lock retry)
-/// across macOS (APFS), Windows (NTFS sharing-lock safe), and Linux (EXT4/XFS).
-#[tauri::command]
-pub async fn cmd_write_workspace_file(
-    path: String,
-    content: String,
-    state: State<'_, AppBackendState>,
-) -> Result<(), String> {
-    state.record_call();
-    if content.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
-        return Err(BioEngineError::PayloadTooLarge(
-            "Content payload exceeds 64 MiB safety limit".into(),
-        )
-        .to_string());
-    }
-    let safe_path = sanitize_workspace_path(&path).map_err(|e| e.to_string())?;
-    require_workbench_file_type(&safe_path)?;
-
-    tauri::async_runtime::spawn_blocking(move || {
-        atomic_write_with_lock_retry(&safe_path, content.as_bytes()).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("[ERR_ASYNC_JOIN] {}", e))?
-}
-
 /// Binary-safe file reader for native OS drag-and-drop (`tauri://drag-drop`), preserving
-/// exact byte payloads for `.ab1` and `.scf` traces as well as UTF-8 flatfiles. A dropped file of a
-/// refused proprietary type is read too, so the frontend's importer can refuse it with its export
-/// hint ([`REFUSED_DROP_EXTENSIONS`]).
+/// exact byte payloads for `.ab1` and `.scf` traces as well as UTF-8 flatfiles. It reads only a file
+/// dropped onto the window in this launch ([`read_granted_drop`]). A dropped file of a refused
+/// proprietary type is read too, so the frontend's importer can refuse it with its export hint
+/// ([`REFUSED_DROP_EXTENSIONS`]).
 #[tauri::command]
 pub async fn cmd_read_dropped_file_bytes(
     path: String,
     state: State<'_, AppBackendState>,
 ) -> Result<DroppedFileBytesPayload, String> {
     state.record_call();
-    let safe_path = sanitize_workspace_path(&path).map_err(|e| e.to_string())?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || read_granted_drop(&state, &path))
+        .await
+        .map_err(|e| format!("[ERR_ASYNC_JOIN] {}", e))?
+}
+
+/// The WebView's request for the dropped file at `path`. A path that is not a file dropped onto the
+/// window in this launch ([`AppBackendState::is_dropped_file`], compared after resolving symlinks)
+/// is refused with ERR_SANDBOX_VIOLATION before the path guard, the type check or any read of the
+/// file's metadata or bytes; resolving its symlinks is the only file-system call made first. A
+/// dropped one then passes the path guard and [`dropped_file_needs_sniff`] and is read by
+/// [`read_dropped_file`].
+fn read_granted_drop(
+    state: &AppBackendState,
+    path: &str,
+) -> Result<DroppedFileBytesPayload, String> {
+    if !state.is_dropped_file(std::path::Path::new(path)) {
+        return Err(BioEngineError::SandboxViolation(format!(
+            "'{}' was not dropped onto the window in this launch, so MolBioCraft does not read it",
+            path
+        ))
+        .to_string());
+    }
+    let safe_path = sanitize_workspace_path(path).map_err(|e| e.to_string())?;
     // Extensionless drops are allowed when their content is a workbench record
     // (checked after reading); the browser build imports them the same way.
     let sniff_content = dropped_file_needs_sniff(&safe_path)?;
+    read_dropped_file(safe_path, sniff_content)
+}
 
-    tauri::async_runtime::spawn_blocking(move || read_dropped_file(safe_path, sniff_content))
-        .await
-        .map_err(|e| format!("[ERR_ASYNC_JOIN] {}", e))?
+/// A failed read of the dropped file at `path`, naming it: a missing file is ERR_IO_FAILURE saying it
+/// was not found, one the OS will not let the app read is ERR_PERMISSION_DENIED, and any other
+/// failure is ERR_IO_FAILURE with the OS's reason.
+fn dropped_read_error(path: &std::path::Path, e: std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            BioEngineError::IoFailure(format!("Dropped file '{}' was not found", path.display()))
+        }
+        std::io::ErrorKind::PermissionDenied => BioEngineError::PermissionDenied(format!(
+            "The system does not let MolBioCraft read '{}' ({})",
+            path.display(),
+            e
+        )),
+        _ => BioEngineError::IoFailure(format!("Could not read '{}' ({})", path.display(), e)),
+    }
+    .to_string()
 }
 
 /// Reads a dropped file that passed [`dropped_file_needs_sniff`]: a regular file of at most 64 MiB,
@@ -324,13 +315,7 @@ fn read_dropped_file(
     safe_path: std::path::PathBuf,
     sniff_content: bool,
 ) -> Result<DroppedFileBytesPayload, String> {
-    let meta = fs::metadata(&safe_path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
-            BioEngineError::PermissionDenied(e.to_string()).to_string()
-        } else {
-            BioEngineError::IoFailure(e.to_string()).to_string()
-        }
-    })?;
+    let meta = fs::metadata(&safe_path).map_err(|e| dropped_read_error(&safe_path, e))?;
     if !meta.is_file() {
         return Err(BioEngineError::InvalidFilename(format!(
             "Dropped item '{}' is not a regular file",
@@ -346,13 +331,7 @@ fn read_dropped_file(
         ))
         .to_string());
     }
-    let bytes = fs::read(&safe_path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
-            BioEngineError::PermissionDenied(e.to_string()).to_string()
-        } else {
-            BioEngineError::IoFailure(e.to_string()).to_string()
-        }
-    })?;
+    let bytes = fs::read(&safe_path).map_err(|e| dropped_read_error(&safe_path, e))?;
     if sniff_content && !looks_like_workbench_content(&bytes) {
         return Err(BioEngineError::PermissionDenied(format!(
             "'{}' has no file extension and does not look like a sequence, trace or session file",
@@ -749,6 +728,226 @@ mod tests {
         let missing = read_dropped_file(dir.join("gone.fasta"), false).unwrap_err();
         assert!(missing.starts_with("[ERR_IO_FAILURE] "), "{missing}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A scratch folder of its own for one drop test.
+    fn drop_scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mbc-drop-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The window event a native drop of `paths` delivers, handed to main.rs's own handler for it.
+    fn drop_onto_window(state: &crate::commands::AppBackendState, paths: &[&std::path::Path]) {
+        crate::grant_native_drop(
+            state,
+            &tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
+                paths: paths.iter().map(|p| p.to_path_buf()).collect(),
+                position: tauri::PhysicalPosition::new(0.0, 0.0),
+            }),
+        );
+    }
+
+    /// What cmd_read_dropped_file_bytes answers when the WebView asks for `path`.
+    fn webview_reads(
+        state: &crate::commands::AppBackendState,
+        path: &std::path::Path,
+    ) -> Result<super::DroppedFileBytesPayload, String> {
+        super::read_granted_drop(state, &path.to_string_lossy())
+    }
+
+    const GENBANK: &str = "LOCUS       pUC19 8 bp\nORIGIN\n        1 acgtacgt\n//\n";
+
+    /// US-01M6P2X0 AC2: the drop reader reads only files dropped onto the window in this launch, and
+    /// refuses any other path as ungranted before it looks at the path's type or the file. Wrong
+    /// implementations, and the case that catches each: no grant check (the ungranted .gb reads); a
+    /// check after the type gate (the ungranted extensionless key and .docx get the type refusal); a
+    /// check after the metadata read (the missing path reports ERR_IO_FAILURE); a check after the
+    /// protected-directory guard (/etc/hosts reports ERR_PERMISSION_DENIED); a drag that only
+    /// entered the window granting (the .gb that entered and left reads); a grant covering the dropped
+    /// file's folder (its sibling, and the folder itself, read); a path compared as dropped although
+    /// it resolves (a dropped name later made a symlink to an undropped file reads that file).
+    #[test]
+    fn ungranted_path_is_refused() {
+        let state = crate::commands::AppBackendState::default();
+        let dir = drop_scratch("ungranted");
+        let dropped = dir.join("dropped.gb");
+        let sibling = dir.join("pUC19.gb");
+        let notes = dir.join("notes.txt");
+        let key = dir.join("id_rsa");
+        let doc = dir.join("notes.docx");
+        for f in [&dropped, &sibling] {
+            std::fs::write(f, GENBANK).unwrap();
+        }
+        std::fs::write(&notes, "lab notes").unwrap();
+        std::fs::write(&key, ">-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
+        std::fs::write(&doc, "PK").unwrap();
+        crate::grant_native_drop(
+            &state,
+            &tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Enter {
+                paths: vec![sibling.clone()],
+                position: tauri::PhysicalPosition::new(0.0, 0.0),
+            }),
+        );
+        drop_onto_window(&state, &[&dropped]);
+        assert!(webview_reads(&state, &dropped).is_ok(), "the dropped file reads");
+
+        let missing = dir.join("never-there.gb");
+        let hosts = std::path::PathBuf::from("/etc/hosts");
+        for path in [&sibling, &notes, &missing, &key, &doc, &dir, &hosts] {
+            let err = webview_reads(&state, path).unwrap_err();
+            let named = format!("'{}'", path.display());
+            assert!(
+                err.starts_with("[ERR_SANDBOX_VIOLATION] ") && err.contains(&named),
+                "{}: {err}",
+                path.display()
+            );
+        }
+        #[cfg(unix)]
+        {
+            // a dropped name later made a symlink to a file that was never dropped
+            let swapped = dir.join("swapped.gb");
+            std::fs::write(&swapped, GENBANK).unwrap();
+            drop_onto_window(&state, &[&swapped]);
+            std::fs::remove_file(&swapped).unwrap();
+            std::os::unix::fs::symlink(&notes, &swapped).unwrap();
+            let err = webview_reads(&state, &swapped).unwrap_err();
+            assert!(err.starts_with("[ERR_SANDBOX_VIOLATION] "), "{err}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// US-01M6P2X0 AC3: a dropped file reads as it did before the drop grant: a .gb, an extensionless
+    /// GenBank and FASTA record and a .dna (handed on for the importer's export hint) return their
+    /// bytes under their own names. A dropped file asked for through a symlink to it, and one dropped
+    /// through a symlinked folder and asked for by its real path, read too, so the grant is compared
+    /// after resolving symlinks. Wrong implementations, and the case that catches each: a raw string
+    /// comparison (both symlink cases); grants stored only as dropped (the symlinked-folder case); a
+    /// reader that refuses every path (each file); a reader that answers with the symlink target's
+    /// name (link.gb's name).
+    #[test]
+    fn granted_drop_reads_as_before() {
+        let state = crate::commands::AppBackendState::default();
+        let dir = drop_scratch("granted");
+        let gb = dir.join("pUC19.gb");
+        let genbank = dir.join("NC_000913");
+        let fasta = dir.join("MN908947");
+        let dna = dir.join("construct.dna");
+        std::fs::write(&gb, GENBANK).unwrap();
+        std::fs::write(&genbank, "LOCUS       NC_000913 8 bp\nORIGIN\n        1 acgtacgt\n//\n").unwrap();
+        std::fs::write(&fasta, ">MN908947.3\nACGTACGT\n").unwrap();
+        std::fs::write(&dna, b"\x09\x00\x00\x00\x0eSnapGene").unwrap();
+        drop_onto_window(&state, &[&gb, &genbank, &fasta, &dna]);
+        for path in [&gb, &genbank, &fasta, &dna] {
+            let payload = webview_reads(&state, path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(payload.file_name, path.file_name().unwrap().to_string_lossy());
+            assert_eq!(decode_base64_bytes(&payload.base64).unwrap(), std::fs::read(path).unwrap());
+            assert_eq!(payload.byte_len, std::fs::metadata(path).unwrap().len() as usize);
+        }
+
+        #[cfg(unix)]
+        {
+            // asked for through a symlink to a dropped file
+            let link = dir.join("link.gb");
+            std::os::unix::fs::symlink(&gb, &link).unwrap();
+            let payload = webview_reads(&state, &link).unwrap();
+            assert_eq!(payload.file_name, "link.gb");
+            assert_eq!(decode_base64_bytes(&payload.base64).unwrap(), GENBANK.as_bytes());
+
+            // dropped through a symlinked folder, asked for by its real path
+            let real_dir = dir.join("data");
+            std::fs::create_dir_all(&real_dir).unwrap();
+            let real = real_dir.join("pBR322.gb");
+            std::fs::write(&real, GENBANK).unwrap();
+            let alias_dir = dir.join("alias");
+            std::os::unix::fs::symlink(&real_dir, &alias_dir).unwrap();
+            drop_onto_window(&state, &[&alias_dir.join("pBR322.gb")]);
+            let payload = webview_reads(&state, &std::fs::canonicalize(&real).unwrap()).unwrap();
+            assert_eq!(decode_base64_bytes(&payload.base64).unwrap(), GENBANK.as_bytes());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// US-01M6P2X0 AC4: a dropped file that is gone, one the OS will not let the app read, and one
+    /// never dropped are three answers, each naming the path: ERR_IO_FAILURE saying it was not found,
+    /// ERR_PERMISSION_DENIED, and ERR_SANDBOX_VIOLATION. Wrong implementations, and the case that
+    /// catches each: a deleted grant read as ungranted (the gone file's code); an OS refusal reported
+    /// as a sandbox violation or an I/O failure (the locked file's code); the bare OS message, which
+    /// names no path (each `named` check).
+    #[cfg(unix)]
+    #[test]
+    fn drop_tells_missing_unreadable_and_ungranted_apart() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = crate::commands::AppBackendState::default();
+        let dir = drop_scratch("apart");
+        let gone = dir.join("gone.gb");
+        let locked = dir.join("locked.gb");
+        let never = dir.join("never.gb");
+        for f in [&gone, &locked, &never] {
+            std::fs::write(f, GENBANK).unwrap();
+        }
+        drop_onto_window(&state, &[&gone, &locked]);
+        std::fs::remove_file(&gone).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let os_refuses = std::fs::read(&locked).is_err(); // root reads a mode-000 file
+
+        let named = |p: &std::path::Path| format!("'{}'", p.display());
+        let err = webview_reads(&state, &gone).unwrap_err();
+        assert!(err.starts_with("[ERR_IO_FAILURE] ") && err.contains("was not found") && err.contains(&named(&gone)), "{err}");
+        if os_refuses {
+            let err = webview_reads(&state, &locked).unwrap_err();
+            assert!(err.starts_with("[ERR_PERMISSION_DENIED] ") && err.contains(&named(&locked)), "{err}");
+        }
+        let err = webview_reads(&state, &never).unwrap_err();
+        assert!(err.starts_with("[ERR_SANDBOX_VIOLATION] ") && err.contains(&named(&never)), "{err}");
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(os_refuses, "the OS let this user read a mode-000 file, so the ERR_PERMISSION_DENIED case was not reached");
+    }
+
+    /// US-01M6P2X0 AC5: Import Folder reads a symlink in the chosen folder only when its target lies
+    /// inside that folder. Wrong implementations, and the case that catches each: symlinks followed
+    /// as before (escape.gb and up.gb are listed); every symlink dropped (alias.gb and deep.gb are
+    /// not listed); the target compared with the folder as chosen, not as resolved (the folder is
+    /// also chosen through a symlink to it, `chosen`, so alias.gb is not listed); a prefix compared
+    /// as text (folder-two/ shares folder's name as a prefix, so sibling.gb is listed).
+    #[cfg(unix)]
+    #[test]
+    fn symlink_escaping_a_granted_folder_is_refused() {
+        use super::{list_folder_import, read_folder_import};
+        use std::os::unix::fs::symlink;
+        let root = drop_scratch("folder-links");
+        let folder = root.join("folder");
+        let nested = folder.join("nested");
+        let outside = root.join("outside");
+        let neighbour = root.join("folder-two");
+        for d in [&nested, &outside, &neighbour] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(folder.join("inside.gb"), GENBANK).unwrap();
+        std::fs::write(nested.join("deep.gb"), GENBANK).unwrap();
+        std::fs::write(outside.join("secret.gb"), GENBANK).unwrap();
+        std::fs::write(neighbour.join("other.gb"), GENBANK).unwrap();
+        symlink(folder.join("inside.gb"), folder.join("alias.gb")).unwrap();
+        symlink(nested.join("deep.gb"), folder.join("deep.gb")).unwrap();
+        symlink(outside.join("secret.gb"), folder.join("escape.gb")).unwrap();
+        symlink("../outside/secret.gb", folder.join("up.gb")).unwrap();
+        symlink(neighbour.join("other.gb"), folder.join("sibling.gb")).unwrap();
+
+        let chosen = root.join("chosen");
+        symlink(&folder, &chosen).unwrap();
+        for picked in [&folder, &chosen] {
+            let listing = list_folder_import(picked).unwrap();
+            let names: Vec<String> =
+                listing.files.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+            assert_eq!(names, ["alias.gb", "deep.gb", "inside.gb"], "{}", picked.display());
+            let reply = tauri::async_runtime::block_on(read_folder_import(picked.clone())).unwrap();
+            let read: Vec<&str> = reply.files.iter().map(|f| f.file_name.as_str()).collect();
+            assert_eq!(read, ["alias.gb", "deep.gb", "inside.gb"], "{}", picked.display());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
