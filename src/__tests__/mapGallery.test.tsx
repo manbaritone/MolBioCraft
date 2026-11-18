@@ -394,6 +394,8 @@ describe('US-01M7DVS2 AC3: a card says why it has no map, or draws a circle or a
       await rotateTo(app, app.canvas(), '90');
       await checkAll(app);
       await openByToolbar(app);
+      // Five maps: past GALLERY_MAPS_DRAWN_FIRST, the rest are drawn by Draw next (US-01M7DV75 AC2).
+      await drawEvery(app);
       const byAcc = new Map(cards(app).map((c) => [cardAcc(c), c]));
       expect(byAcc.size).toBe(10);
       for (const d of noMap) {
@@ -551,6 +553,8 @@ describe("US-01M7DVS2 AC5: a card shows its map's warnings as the split pane doe
       await restore(app, [CA, GATC, BIG], CA.id);
       await checkAll(app);
       await openByToolbar(app);
+      // Over GALLERY_DRAW_ON_OPEN_MAX_BP, Big_Circle is drawn only when asked (US-01M7DV75 AC3).
+      await app.click(labelled(gallery(app), 'button', `Draw map of ${BIG.name}`));
       const byAcc = new Map(cards(app).map((c) => [cardAcc(c), c]));
       expect(warningsIn(byAcc.get(GATC.accession)!, 'Restriction scan warnings')).toEqual(gatcWarnings.map(words));
       expect(warningsIn(byAcc.get(CA.accession)!, 'Restriction scan warnings')).toEqual([]);
@@ -1168,6 +1172,208 @@ describe("US-01M7DV6R AC5: a card's figure export draws the card's rotation and 
       expect(cbFile.filename, "Circ_B's card names its record").toContain('Circ_B');
       expect(cbFile.filename).not.toContain('Circ_A');
       expect([cbFile.wedge, cbFile.intervals], "Circ_B's card's rotation, and no selection").toEqual(['300', []]);
+    });
+  });
+});
+
+// ─── US-01M7DV75: a labelled common scale, and maps drawn in steps ───
+
+/** A card's drawn map (a circle or a bar), or none. */
+const drawnMap = (card: LiveElement) => card.querySelectorAll('svg.plasmid-svg, svg.mbc-map-gallery-bar')[0] ?? null;
+const drawnPx = (card: LiveElement) => Number(drawnMap(card)?.getAttribute('data-drawn-px'));
+const cardFor = (app: AppHarness, d: SequenceDocument) => {
+  const found = cards(app).filter((c) => cardAcc(c) === d.accession);
+  expect(found, `one card for ${d.accession}`).toHaveLength(1);
+  return found[0];
+};
+/** The cards that draw a map, by accession, in card order. */
+const drawnCards = (app: AppHarness) => cards(app).filter((c) => drawnMap(c) !== null).map(cardAcc);
+const sizeNote = (app: AppHarness, name: string) => {
+  const radio = labelled(gallery(app), 'input[type="radio"]', name);
+  const described = radio.getAttribute('aria-describedby');
+  expect(described, `"${name}" is described by its note`).toBeTruthy();
+  return { checked: radio.checked, note: app.all('[id]').filter((e) => e.getAttribute('id') === described).map((e) => words(e.textContent)) };
+};
+const notToScale = (card: LiveElement) => /not to scale/.test(words(card.textContent));
+/** Presses Draw next until every card in reach of it is drawn. */
+async function drawEvery(app: AppHarness) {
+  for (let i = 0; i < 1_000; i++) {
+    const next = gallery(app).querySelectorAll('button').filter((b) => /^Draw next/.test(words(b.textContent)));
+    if (next.length === 0) return;
+    await app.click(next[0]);
+  }
+  throw new Error('Draw next never went');
+}
+const backboneX2 = (card: LiveElement) => Number(drawnMap(card)!.querySelectorAll('line')[0].getAttribute('x2'));
+
+describe('US-01M7DV75 AC1: Common scale draws every map at one px-per-base scale k, named by the record that sets it', () => {
+  // Circular 2,686 bp, 20,000 bp and 48,502 bp, and linear 10,000 bp: one k across both kinds.
+  const SMALL = doc('cs-small', 'Small_Circle', dna(2_686, 71));
+  const MID = doc('cs-mid', 'Mid_Circle', dna(20_000, 73));
+  const LAMBDA = doc('cs-lambda', 'Lambda_Like', dna(48_502, 79));
+  const LIN10 = doc('cs-lin', 'Lin_10k', dna(10_000, 83), { topology: 'linear' });
+  const ALL = [SMALL, MID, LAMBDA, LIN10];
+
+  it('US-01M7DV75 AC1 every to-scale map is its length times k, the 48,502 bp circle fills its card and is named, a circle below the smallest is drawn at it and says not to scale, and Fit each map comes back', async () => {
+    await withApp(async (app) => {
+      const { GALLERY_CARD_MAP_BOX, GALLERY_MIN_CIRCLE_DIAMETER_PX, CIRCULAR_MAP_BACKBONE_R, CIRCULAR_MAP_LABEL_FLOOR_PX, fitCircularMapScale } = await components();
+      const cardDiameter = 2 * CIRCULAR_MAP_BACKBONE_R * fitCircularMapScale(GALLERY_CARD_MAP_BOX.width, GALLERY_CARD_MAP_BOX.height);
+      expect(GALLERY_MIN_CIRCLE_DIAMETER_PX, 'the smallest circle is set by the label floor').toBeGreaterThan(CIRCULAR_MAP_LABEL_FLOOR_PX);
+      expect(GALLERY_MIN_CIRCLE_DIAMETER_PX).toBeLessThan(cardDiameter);
+      await restore(app, ALL, LAMBDA.id);
+      await checkAll(app);
+      await openByToolbar(app);
+      const fitPx = () => ALL.map((d) => drawnPx(cardFor(app, d)));
+      const fitted = ALL.map((d) => (d === LIN10 ? GALLERY_CARD_MAP_BOX.width : Math.PI * cardDiameter));
+      const close = (got: number[], want: number[], what: string) =>
+        got.forEach((g, i) => expect(Math.abs(g - want[i]), `${what}: ${ALL[i].name} drew ${g} px, not ${want[i].toFixed(2)}`).toBeLessThanOrEqual(1));
+      close(fitPx(), fitted, 'Fit each map fills each card');
+      expect(sizeNote(app, 'Fit each map')).toEqual({ checked: true, note: ['Each map fitted to its card; sizes are not to scale'] });
+
+      await app.click(labelled(gallery(app), 'input[type="radio"]', 'Common scale'));
+      const k = Math.min((Math.PI * cardDiameter) / LAMBDA.sequence.length, GALLERY_CARD_MAP_BOX.width / LIN10.sequence.length);
+      const minPx = Math.PI * GALLERY_MIN_CIRCLE_DIAMETER_PX;
+      const want = ALL.map((d) => (d === LIN10 ? d.sequence.length * k : Math.max(d.sequence.length * k, minPx)));
+      expect(SMALL.sequence.length * k, 'the fixture: the small circle falls below the smallest').toBeLessThan(minPx);
+      expect(MID.sequence.length * k, 'the fixture: the mid circle stays to scale').toBeGreaterThan(minPx);
+      close(fitPx(), want, 'Common scale');
+      // The to-scale maps stand in the ratio of their lengths, circles and the bar alike.
+      const perBase = [MID, LAMBDA, LIN10].map((d) => drawnPx(cardFor(app, d)) / d.sequence.length);
+      for (const [i, d] of [MID, LAMBDA, LIN10].entries()) expect(Math.abs(perBase[i] - k) * d.sequence.length, `${d.name} at k`).toBeLessThanOrEqual(1);
+      // What is said is what is drawn: the circle's view is shrunk to it, the bar's backbone runs its length.
+      for (const d of [SMALL, MID, LAMBDA]) {
+        const svg = drawnMap(cardFor(app, d))!;
+        expect(Math.abs(scaleOf(svg) * Math.PI * cardDiameter - drawnPx(cardFor(app, d))), `${d.name}'s viewport scale`).toBeLessThanOrEqual(1);
+      }
+      expect(Math.abs(backboneX2(cardFor(app, LIN10)) - LIN10.sequence.length * k), "the bar's backbone").toBeLessThanOrEqual(1);
+      expect(sizeNote(app, 'Common scale')).toEqual({ checked: true, note: ['Common scale: Lambda_Like, 48,502 bp, fills its card'] });
+      expect(sizeNote(app, 'Fit each map').checked).toBe(false);
+      expect(ALL.map((d) => notToScale(cardFor(app, d))), 'only the circle drawn at the smallest says not to scale').toEqual([true, false, false, false]);
+
+      await app.click(labelled(gallery(app), 'input[type="radio"]', 'Fit each map'));
+      expect(sizeNote(app, 'Fit each map')).toEqual({ checked: true, note: ['Each map fitted to its card; sizes are not to scale'] });
+      expect(sizeNote(app, 'Common scale').checked).toBe(false);
+      close(fitPx(), fitted, 'Fit each map again');
+      expect(ALL.map((d) => scaleOf(drawnMap(cardFor(app, d))!)).slice(0, 3), 'each circle at its fitted size').toEqual([1, 1, 1]);
+      expect(ALL.map((d) => notToScale(cardFor(app, d)))).toEqual([false, false, false, false]);
+    });
+  });
+
+  it('US-01M7DV75 AC1 a 40,000 bp bar, shorter than the longest circle, sets k when it is the map that fills its card first, and is the one named', async () => {
+    const LIN40 = doc('cs-lin40', 'Lin_40k', dna(40_000, 89), { topology: 'linear' });
+    const C30 = doc('cs-c30', 'Circle_30k', dna(30_000, 87));
+    const SET = [LAMBDA, LIN40, C30];
+    await withApp(async (app) => {
+      const { GALLERY_CARD_MAP_BOX, CIRCULAR_MAP_BACKBONE_R, fitCircularMapScale } = await components();
+      const cardDiameter = 2 * CIRCULAR_MAP_BACKBONE_R * fitCircularMapScale(GALLERY_CARD_MAP_BOX.width, GALLERY_CARD_MAP_BOX.height);
+      const k = GALLERY_CARD_MAP_BOX.width / LIN40.sequence.length;
+      expect(k, 'the fixture: the bar, not the longest record, sets k').toBeLessThan((Math.PI * cardDiameter) / LAMBDA.sequence.length);
+      await restore(app, SET, LAMBDA.id);
+      await checkAll(app);
+      await openByToolbar(app);
+      await app.click(labelled(gallery(app), 'input[type="radio"]', 'Common scale'));
+      expect(sizeNote(app, 'Common scale').note).toEqual(['Common scale: Lin_40k, 40,000 bp, fills its card']);
+      for (const d of SET) expect(Math.abs(drawnPx(cardFor(app, d)) - d.sequence.length * k), `${d.name} at k`).toBeLessThanOrEqual(1);
+      expect(drawnPx(cardFor(app, LAMBDA)), 'the longest circle no longer fills its card').toBeLessThan(Math.PI * cardDiameter - 1);
+    });
+  });
+});
+
+describe('US-01M7DV75 AC2: the first GALLERY_MAPS_DRAWN_FIRST maps are drawn, and Draw next draws GALLERY_DRAW_STEP more in table order', () => {
+  it('US-01M7DV75 AC2 the first cards draw, each Draw next draws the next min(K, remaining) and updates the note, and the note and button go once every card is drawn', async () => {
+    await withApp(async (app) => {
+      const { GALLERY_MAPS_DRAWN_FIRST: N, GALLERY_DRAW_STEP: K, subsetNote } = await components();
+      expect([N, K].every((v) => Number.isInteger(v) && v > 0), 'GALLERY_MAPS_DRAWN_FIRST and GALLERY_DRAW_STEP are counts').toBe(true);
+      const docs = Array.from({ length: N + K + 2 }, (_, i) => doc(`st${String(i).padStart(3, '0')}`, `Step_${String(i).padStart(3, '0')}`, dna(400 + ((i * 37) % 97), 300 + i)));
+      const M = docs.length;
+      await restore(app, docs, docs[0].id);
+      await checkAll(app);
+      await openByToolbar(app);
+      const order = tableRows(app).map((r) => rowAccession(r, docs));
+      expect(cards(app).map(cardAcc)).toEqual(order);
+      const note = () => words(gallery(app).textContent).match(/The gallery draws maps for [^.]*\./g) ?? [];
+      const nextButtons = () => gallery(app).querySelectorAll('button').filter((b) => /^Draw next/.test(words(b.textContent)));
+      expect(drawnCards(app), 'the first N in table order').toEqual(order.slice(0, N));
+      expect(note()).toEqual(subsetNote('The gallery draws maps for', N, M, 'records with a map', 'first'));
+      expect(nextButtons().map((b) => words(b.textContent))).toEqual([`Draw next ${K}`]);
+      await app.click(nextButtons()[0]);
+      expect(drawnCards(app), 'the next K').toEqual(order.slice(0, N + K));
+      expect(note()).toEqual(subsetNote('The gallery draws maps for', N + K, M, 'records with a map', 'first'));
+      expect(nextButtons()).toHaveLength(1);
+      await app.click(nextButtons()[0]);
+      expect(drawnCards(app), 'the last two, fewer than K').toEqual(order);
+      expect(note(), 'every card drawn: no note').toEqual([]);
+      expect(nextButtons(), 'and no button').toHaveLength(0);
+    });
+  });
+});
+
+describe('US-01M7DV75 AC3: a record longer than GALLERY_DRAW_ON_OPEN_MAX_BP is drawn only when asked', () => {
+  it('US-01M7DV75 AC3 a long record among the first cards shows Draw map with its length, the record at the limit draws, and Draw map draws that card only', async () => {
+    await withApp(async (app) => {
+      const { GALLERY_DRAW_ON_OPEN_MAX_BP: MAX, GALLERY_MAPS_DRAWN_FIRST: N } = await components();
+      expect(Number.isInteger(MAX) && MAX > 0, 'GALLERY_DRAW_ON_OPEN_MAX_BP is a length').toBe(true);
+      const { restrictionScannedBp } = await components();
+      expect([restrictionScannedBp(MAX), restrictionScannedBp(MAX + 1) < MAX + 1], "the limit is the scan rule's: scanned whole up to it, not past it").toEqual([MAX, true]);
+      const LONG_A = doc('ln-a', 'Long_A', dna(MAX + 1, 91));
+      const LONG_B = doc('ln-b', 'Long_B', dna(MAX + 1, 93), { topology: 'linear' });
+      const AT_MAX = doc('ln-max', 'At_Limit', dna(MAX, 97));
+      const docs = [LONG_A, LONG_B, AT_MAX, CA];
+      await restore(app, docs, CA.id);
+      await checkAll(app);
+      await openByToolbar(app);
+      const order = cards(app).map(cardAcc);
+      expect(order.every((_, i) => i < N), 'every card is among the first').toBe(true);
+      expect(drawnCards(app).sort(), 'only the records within the limit').toEqual([AT_MAX.accession, CA.accession].sort());
+      const drawButton = (d: SequenceDocument) => labelled(cardFor(app, d), 'button', `Draw map of ${d.name}`);
+      for (const d of [LONG_A, LONG_B]) {
+        const card = cardFor(app, d);
+        expect(words(drawButton(d).textContent)).toBe('Draw map');
+        expect(field(card, 'undrawn'), `${d.name} gives its length as the reason`).toBe(`${(MAX + 1).toLocaleString('en-US')} bp is longer than ${MAX.toLocaleString('en-US')} bp, so its map is drawn only when asked.`);
+      }
+      expect([AT_MAX, CA].map((d) => cardFor(app, d).querySelectorAll('button').filter((b) => words(b.textContent) === 'Draw map')).flat()).toHaveLength(0);
+      await app.click(drawButton(LONG_A));
+      expect(drawnCards(app).sort(), 'Long_A is drawn, Long_B is not').toEqual([LONG_A.accession, AT_MAX.accession, CA.accession].sort());
+      expect(cardFor(app, LONG_A).querySelectorAll('svg.plasmid-svg'), 'as the circle it is').toHaveLength(1);
+      expect(field(cardFor(app, LONG_A), 'undrawn')).toBe('');
+      await app.click(drawButton(LONG_B));
+      expect(drawnCards(app).sort()).toEqual(docs.map((d) => d.accession).sort());
+      expect(cardFor(app, LONG_B).querySelectorAll('svg.mbc-map-gallery-bar'), 'as the bar it is').toHaveLength(1);
+    });
+  });
+});
+
+describe('US-01M7DV75 AC4: an undrawn card keeps its identity and opens its own record', () => {
+  it('US-01M7DV75 AC4 a card past the first and two long records of one name show name, length and topology, and each Open in viewer opens its own record by id', async () => {
+    await withApp(async (app) => {
+      const { GALLERY_DRAW_ON_OPEN_MAX_BP: MAX, GALLERY_MAPS_DRAWN_FIRST: N } = await components();
+      expect(Number.isInteger(MAX) && MAX > 0, 'GALLERY_DRAW_ON_OPEN_MAX_BP is a length').toBe(true);
+      const firsts = Array.from({ length: N + 1 }, (_, i) => doc(`un${String(i).padStart(3, '0')}`, `Un_${String(i).padStart(3, '0')}`, dna(350 + i, 500 + i)));
+      const TWIN_LONG_A = doc('tla', 'Twin_Long', dna(MAX + 1, 101), { accession: 'TL-ALPHA' });
+      const TWIN_LONG_B = doc('tlb', 'Twin_Long', dna(MAX + 2, 103), { accession: 'TL-BETA', folder: BETA, topology: 'linear' });
+      const docs = [...firsts, TWIN_LONG_A, TWIN_LONG_B];
+      await restore(app, docs, firsts[0].id);
+      await checkAll(app);
+      await openByToolbar(app);
+      const rows = tableRows(app);
+      const order = rows.map((r) => rowAccession(r, docs));
+      const past = docs.find((d) => d.accession === order.filter((a) => firsts.some((f) => f.accession === a))[N])!;
+      const undrawn = [past, TWIN_LONG_A, TWIN_LONG_B];
+      const { at } = lengthColumn(app);
+      for (const d of undrawn) {
+        const card = cardFor(app, d);
+        expect(drawnMap(card), `${d.accession} is not drawn`).toBeNull();
+        const row = rows[order.indexOf(d.accession)];
+        expect([cardName(card), field(card, 'length'), field(card, 'topology')], d.accession).toEqual([
+          d.name, words(row.children[at].textContent), d.topology === 'linear' ? 'Linear' : 'Circular',
+        ]);
+      }
+      for (const d of undrawn) {
+        await app.click(labelled(cardFor(app, d), 'button', `Open ${d.name} in viewer`));
+        expect(galleries(app), 'the gallery closes').toHaveLength(0);
+        expect(app.all('tr.selected-row').map((r) => rowAccession(r, docs)), `${d.accession} is the main view's record`).toEqual([d.accession]);
+        await openByToolbar(app);
+      }
     });
   });
 });

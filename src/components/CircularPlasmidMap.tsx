@@ -110,6 +110,12 @@ interface CircularPlasmidMapProps {
    * base 1 at twelve o'clock.
    */
   rotationDeg?: number;
+  /**
+   * The fraction of its fitted size the circle is drawn at, in (0, 1] (the Map Gallery's common
+   * scale, US-01M7DV75): the view is shrunk about its centre, as a zoom out would shrink it, and its
+   * labels are sized for the smaller drawing. Absent, the circle fills its box.
+   */
+  drawnScale?: number;
 }
 
 /**
@@ -526,6 +532,12 @@ export function circularMapLabelSize(baseSize: number, renderScale: number): num
   return Math.max(baseSize, CIRCULAR_MAP_LABEL_FLOOR_PX / scale);
 }
 
+/** The radius of the circle's backbone, in units of the 680x540 view. */
+export const CIRCULAR_MAP_BACKBONE_R = 146;
+
+/** The radius of the map's outer ring, in units of the 680x540 view. */
+export const CIRCULAR_MAP_OUTER_RING_R = 168;
+
 /** Screen pixels per map unit of the 680x540 view drawn into a `width` x `height` box (meet scaling). */
 export function fitCircularMapScale(width: number, height: number): number {
   return Math.min(width / 680, height / 540);
@@ -533,12 +545,12 @@ export function fitCircularMapScale(width: number, height: number): number {
 
 /**
  * Whether the identity plate (212x54 units at the view's top-left corner, 18,20) still clears the
- * map's outer ring (radius 168 about 340,270) once enlarged by `scale`.
+ * map's outer ring (CIRCULAR_MAP_OUTER_RING_R about 340,270) once enlarged by `scale`.
  */
 function plateFits(scale: number): boolean {
   const nearestX = Math.min(340, 18 + 212 * scale);
   const nearestY = Math.min(270, 20 + 54 * scale);
-  return Math.hypot(340 - nearestX, 270 - nearestY) >= 168;
+  return Math.hypot(340 - nearestX, 270 - nearestY) >= CIRCULAR_MAP_OUTER_RING_R;
 }
 
 /** The width of a callout character in ems: Google Sans Code's advance (1200/2000), and wider than Google Sans's average. */
@@ -548,7 +560,7 @@ const CALLOUT_CHAR_EM = 0.6;
 const units = (n: number) => String(Math.ceil(n * 100 - 1e-9) / 100);
 
 /** The inner edge of the innermost track drawn on the ring (the ORF track, r 117..126). */
-const RING_INNER_TRACK_R = 117;
+export const RING_INNER_TRACK_R = 117;
 
 /** Google Sans Code's line box (hhea ascent 1932 plus descent 572 per 2000: 1.252 em), centred on `y` by a central baseline. */
 const MONO_LINE_EM = 1.252;
@@ -659,13 +671,16 @@ export const emptyCollectionScanWords = (name: string) => `The collection "${nam
  */
 export const CORE_CATALOG_LEN = 28;
 
+/** The longest molecule the workbench scans whole for cut sites (see restrictionScannedBp). */
+export const RESTRICTION_FULL_SCAN_MAX_BP = 150_000;
+
 /**
  * How many of a `lengthBp` molecule's first bases the workbench scans for cut sites: the whole
  * molecule up to 150,000 bp, and only the first 60,000 bp (read as a linear sequence) beyond. The
  * App and the split pane both scan this many, so neither keeps its own copy of the rule.
  */
 export function restrictionScannedBp(lengthBp: number): number {
-  return lengthBp > 150_000 ? 60_000 : lengthBp;
+  return lengthBp > RESTRICTION_FULL_SCAN_MAX_BP ? 60_000 : lengthBp;
 }
 
 /**
@@ -1174,6 +1189,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   onZoomChange,
   viewRestoreKey = 0,
   rotationDeg = 0,
+  drawnScale = 1,
 }) => {
   const [hoveredItem, setHoveredItem] = useState<string | null>(null);
   const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -1279,7 +1295,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   const viewHeight = 540;
   const cx = 340;
   const cy = 270;
-  const rBackbone = 146;
+  const rBackbone = CIRCULAR_MAP_BACKBONE_R;
 
   useEffect(() => {
     const svg = svgRef.current;
@@ -1302,7 +1318,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
   // the zoom. Each label is sized for that, and the callouts are spaced so every one keeps a
   // 24px-tall hit area of its own; a callout that does not fit is left out (it stays in the
   // inspector's lists and the hover readout), never drawn smaller.
-  const effectiveScale = zoomLevel / 100;
+  const effectiveScale = (zoomLevel / 100) * (drawnScale > 0 && drawnScale <= 1 ? drawnScale : 1);
   const renderScale = measuredScale * effectiveScale;
   const calloutGapY = Math.max(17.5, CIRCULAR_MAP_TARGET_PX / renderScale);
   const calloutMarginY = 20;
@@ -1851,6 +1867,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
           textRendering="geometricPrecision"
           role="img"
           aria-label={`Circular Sequence View of ${doc.name}`}
+          data-drawn-px={(2 * Math.PI * rBackbone * measuredScale * effectiveScale).toFixed(2)}
         >
           <g
             className="plasmid-viewport-group"

@@ -15906,9 +15906,36 @@ table,
   max-height: 238px;
 }
 
+/* A bar is drawn GALLERY_CARD_MAP_BOX wide, so its data-drawn-px is its length on screen. */
 .mbc-map-gallery-bar {
-  width: 100%;
+  width: 300px;
   height: 44px;
+}
+
+/* US-01M7DV75: under Common scale each circle is laid out at exactly the card box, so its length times k is what is drawn. */
+.mbc-map-gallery--common .mbc-map-gallery-map .plasmid-svg {
+  width: 300px;
+  height: 238px;
+  max-height: none;
+}
+
+.mbc-map-gallery-next {
+  align-self: flex-start;
+}
+
+.mbc-map-gallery-ask {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.mbc-map-gallery-undrawn,
+.mbc-map-gallery-pending,
+.mbc-map-gallery-not-to-scale {
+  margin: 0;
+  color: var(--mbc-text-secondary);
+  font-size: var(--font-size-caption);
 }
 
 /* US-01M7DV6R: a card's compare choice beside its Open in viewer, and its own Rotate. */
