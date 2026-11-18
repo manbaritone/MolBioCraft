@@ -7,7 +7,7 @@
  * independent of React so it can be unit tested.
  */
 
-import { isNucleotideByAlphabet } from './bioEngine';
+import { analyzeProteinSequence, isNucleotideByAlphabet } from './bioEngine';
 
 export type AlignmentColorScheme =
   | 'ACGT - Default'
@@ -1165,61 +1165,8 @@ export function meanNucleotideMolecularWeightKda(seqs: readonly string[]): {
   return { ssKda: ss / 1000, dsKda: (ss + complement) / 1000 };
 }
 
-/** Average residue masses (Da, monoisotopic-averaged, as residues in a chain). */
-const AA_RESIDUE_MASS: Record<string, number> = {
-  A: 71.0788, R: 156.1875, N: 114.1038, D: 115.0886, C: 103.1388, E: 129.1155, Q: 128.1307,
-  G: 57.0519, H: 137.1411, I: 113.1594, L: 113.1594, K: 128.1741, M: 131.1926, F: 147.1766,
-  P: 97.1167, S: 87.0782, T: 101.1051, W: 186.2132, Y: 163.1760, V: 99.1326,
-};
-
-/** EMBOSS pKa set. */
-const PKA = { nTerm: 8.6, cTerm: 3.6, C: 8.5, D: 3.9, E: 4.1, H: 6.5, K: 10.8, R: 12.5, Y: 10.1 };
-
-export function proteinNetCharge(seq: string, pH: number): number {
-  const u = seq.toUpperCase();
-  const pos = (pka: number) => 1 / (1 + 10 ** (pH - pka));
-  const neg = (pka: number) => -1 / (1 + 10 ** (pka - pH));
-  return (
-    pos(PKA.nTerm) +
-    neg(PKA.cTerm) +
-    countIn(u, 'K') * pos(PKA.K) +
-    countIn(u, 'R') * pos(PKA.R) +
-    countIn(u, 'H') * pos(PKA.H) +
-    countIn(u, 'D') * neg(PKA.D) +
-    countIn(u, 'E') * neg(PKA.E) +
-    countIn(u, 'C') * neg(PKA.C) +
-    countIn(u, 'Y') * neg(PKA.Y)
-  );
-}
-
-function countIn(seq: string, ch: string): number {
-  let n = 0;
-  for (let i = 0; i < seq.length; i++) if (seq[i] === ch) n++;
-  return n;
-}
-
-export function proteinIsoelectricPoint(seq: string): number {
-  let lo = 0;
-  let hi = 14;
-  for (let i = 0; i < 60; i++) {
-    const mid = (lo + hi) / 2;
-    if (proteinNetCharge(seq, mid) > 0) lo = mid;
-    else hi = mid;
-  }
-  return (lo + hi) / 2;
-}
-
-export function proteinMolecularWeight(seq: string): number {
-  let m = 18.01528; // water
-  for (const ch of seq.toUpperCase()) m += AA_RESIDUE_MASS[ch] ?? 110;
-  return m;
-}
-
-/** Extinction coefficient at 280 nm (M^-1 cm^-1, all Cys as cystines; Pace et al. 1995). */
-export function proteinExtinctionCoefficient(seq: string): number {
-  const u = seq.toUpperCase();
-  return countIn(u, 'W') * 5500 + countIn(u, 'Y') * 1490 + Math.floor(countIn(u, 'C') / 2) * 125;
-}
+/** The pK scale the engine's pI and charge are computed on (D0190), named beside them where they are shown. */
+export const PK_SCALE_LABEL = "pI and charge: Bjellqvist pK scale (ExPASy ProtParam's), selenocysteine pKa 5.2";
 
 export interface ProteinSummary {
   mwKda: number;
@@ -1229,26 +1176,27 @@ export interface ProteinSummary {
   a280: number; // absorbance of 1 mg/mL
 }
 
-/** Mean protein properties across the (ungapped) sequences. */
+/**
+ * Mean protein properties across the (ungapped) sequences, each the engine's ProtParam report
+ * (`analyze_protein_sequence`): its molecular weight, its pI and charge at pH 7 on the Bjellqvist
+ * scale with selenocysteine titrated (D0190), and its ε280 with cysteines paired as cystines, and
+ * the A280 of 1 mg/ml that ε280 over that weight gives. A row with no residue is left out.
+ */
 export function summariseProteins(seqs: readonly string[]): ProteinSummary {
-  const clean = seqs.map((s) => s.replace(/[-*]/g, '')).filter((s) => s.length > 0);
-  if (!clean.length) return { mwKda: 0, pI: 0, chargePh7: 0, extinction: 0, a280: 0 };
-  let mw = 0;
-  let pI = 0;
-  let ch = 0;
-  let ext = 0;
-  let a280 = 0;
-  for (const s of clean) {
-    const m = proteinMolecularWeight(s);
-    const e = proteinExtinctionCoefficient(s);
-    mw += m;
-    pI += proteinIsoelectricPoint(s);
-    ch += proteinNetCharge(s, 7);
-    ext += e;
-    a280 += m > 0 ? e / m : 0;
-  }
-  const n = clean.length;
-  return { mwKda: mw / n / 1000, pI: pI / n, chargePh7: ch / n, extinction: ext / n, a280: a280 / n };
+  const reports = seqs
+    .map((s) => s.replace(/[-*]/g, ''))
+    .filter((s) => s.length > 0)
+    .map((s) => analyzeProteinSequence(s, false, 9))
+    .filter((r) => r.lengthAa > 0);
+  if (!reports.length) return { mwKda: 0, pI: 0, chargePh7: 0, extinction: 0, a280: 0 };
+  const mean = (of: (r: (typeof reports)[number]) => number) => reports.reduce((sum, r) => sum + of(r), 0) / reports.length;
+  return {
+    mwKda: mean((r) => r.molecularWeightDa) / 1000,
+    pI: mean((r) => r.isoelectricPointPi),
+    chargePh7: mean((r) => r.chargeAtPh7),
+    extinction: mean((r) => r.extinctionCoeff280Cystine),
+    a280: mean((r) => (r.molecularWeightDa > 0 ? r.extinctionCoeff280Cystine / r.molecularWeightDa : 0)),
+  };
 }
 
 // ---------------------------------------------------------------------------

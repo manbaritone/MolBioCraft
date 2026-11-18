@@ -48,6 +48,7 @@ import type { FigureTable } from '../core/figureExport';
 import { defaultHybridSubTab, hybridTabsForDocument, type HybridSubTabId } from '../core/analysisContext';
 import { cutSiteDisplayPosition, enzymeKey } from '../core/restrictionDisplay';
 import { openEnzymeCollections } from '../core/enzymeDatabase';
+import { PK_SCALE_LABEL } from '../core/alignmentViewModel';
 import { chosenRestrictionScope, CORE_CATALOG_LEN, restrictionScanEnzymes, restrictionScopeWords, type ChosenScanCollection } from './CircularPlasmidMap';
 import { hasStructure, structureAtomsOf } from '../core/structureModels';
 import {
@@ -114,6 +115,9 @@ const groupDigits = (v: number) => v.toLocaleString('en-US');
  * residue to describe reads this one string; a count of what was found stays a number.
  */
 export const NO_RESIDUE_TRANSLATED = 'n/a: no residue translated';
+
+/** A peptide m/z to `digits` places, or 'n/a' when the engine gives none (null: a peptide holding B, Z or X). */
+const mzText = (mz: number | null, digits: number) => (typeof mz === 'number' && Number.isFinite(mz) ? mz.toFixed(digits) : 'n/a');
 
 /**
  * What the protein tab says of the bases it analysed from a DNA or RNA document, or null when it
@@ -385,6 +389,8 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
       subTab === 'protein'
         ? (analyzeProteinSequence(targetCdsSlice.dna, !isProteinDoc, hydroWindow) as ProteinAnalysisReport & {
             translatedSpan?: TranslatedSpan | null;
+            /** What the analysis read other than the 20 standard residues (D0005). */
+            warnings?: string[];
           })
         : null,
     [subTab, targetCdsSlice.dna, isProteinDoc, hydroWindow]
@@ -985,6 +991,8 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
               <span className="badge-accent">Kyte-Doolittle + GOR + Kolaskar</span>
             </div>
 
+            <ResultWarnings warnings={proteinReport.warnings} label="Protein analysis warnings" />
+            <p className="mbc-summary-note">{PK_SCALE_LABEL}</p>
             <div className="thermo-kpi-grid">
               <div className="kpi-box">
                 <span className="kpi-label">Molecular Weight</span>
@@ -1283,7 +1291,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                 <div className="kpi-box">
                   <span className="kpi-label">Intact Mass (Mono)</span>
                   <strong className="kpi-val">
-                    {noResidue ? NO_RESIDUE_TRANSLATED : <>{(digestMsReport.intactMonoisotopicDa / 1000).toFixed(2)} kDa</>}
+                    {noResidue ? NO_RESIDUE_TRANSLATED : Number.isFinite(digestMsReport.intactMonoisotopicDa) ? <>{(digestMsReport.intactMonoisotopicDa / 1000).toFixed(2)} kDa</> : 'n/a'}
                   </strong>
                 </div>
                 <div className="kpi-box">
@@ -1323,7 +1331,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                           pk.ionSeries,
                           pk.label,
                         ]),
-                        caption: `${doc.name} — b/y fragment ions, precursor [M+2H]2+ = ${ms2SpectrumReport.precursorMz2plus.toFixed(3)} m/z`,
+                        caption: `${doc.name} — b/y fragment ions, precursor [M+2H]2+ = ${mzText(ms2SpectrumReport.precursorMz2plus, 3)} m/z`,
                       }}
                     />
                   </div>
@@ -1331,7 +1339,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                     <span>
                       b/y Fragment Ions (exact m/z; bar heights are a qualitative guide, not predicted
                       intensities) — Precursor [M+2H]²⁺ ={' '}
-                      {ms2SpectrumReport.precursorMz2plus.toFixed(3)} m/z:
+                      {mzText(ms2SpectrumReport.precursorMz2plus, 3)} m/z:
                     </span>
                     <select
                       value={Math.min(selectedMs2PeptideIdx, digestMsReport.peptides.length - 1)}
@@ -1339,7 +1347,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                     >
                       {digestMsReport.peptides.slice(0, 18).map((pep, idx) => (
                         <option key={pep.peptideIndex} value={idx}>
-                          #{pep.peptideIndex} ({pep.startAa}..{pep.endAa} aa) {pep.sequence} — {pep.mzCharge2.toFixed(2)} m/z (RT {pep.hplcRetentionMin.toFixed(1)} min)
+                          #{pep.peptideIndex} ({pep.startAa}..{pep.endAa} aa) {pep.sequence} — {mzText(pep.mzCharge2, 2)} m/z (RT {pep.hplcRetentionMin.toFixed(1)} min)
                         </option>
                       ))}
                     </select>
@@ -1464,7 +1472,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                       </td>
                       <td className="mono-cell">{pep.sequence}</td>
                       <td className="mono-cell">{pep.chemicalFormula}</td>
-                      <td>{pep.mzCharge2.toFixed(3)}</td>
+                      <td>{mzText(pep.mzCharge2, 3)}</td>
                       <td>{pep.hplcRetentionMin.toFixed(1)}</td>
                     </tr>
                   ))}

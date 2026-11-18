@@ -20,14 +20,13 @@ import {
   motifColumns,
   packLanes,
   pairwiseIdentitySampling,
-  proteinIsoelectricPoint,
-  proteinMolecularWeight,
   residueCellStyle,
   residueSolidColor,
   reverseComplementAligned,
   rowCoordinateMaps,
   rulerStep,
   smooth,
+  summariseProteins,
   transferAnnotations,
   translateAlignedRow,
   translateCodon,
@@ -145,10 +144,20 @@ describe('alignment view model', () => {
 
   it('computes real alignment and protein statistics', () => {
     expect(meanPairwiseIdentity(['ACGT', 'ACGA', 'ACGT'])).toBeCloseTo(83.3, 1);
-    // Glycine dipeptide: 2 * 57.0519 + 18.015
-    expect(proteinMolecularWeight('GG')).toBeCloseTo(132.12, 1);
-    expect(proteinIsoelectricPoint('DDDD')).toBeLessThan(4);
-    expect(proteinIsoelectricPoint('KKKK')).toBeGreaterThan(10);
+    // Glycine dipeptide, as the engine weighs it: 2 * 57.0519 + 18.01524 (ExPASy's water).
+    expect(summariseProteins(['GG']).mwKda).toBeCloseTo(0.13212, 5);
+    expect(summariseProteins(['DDDD']).pI).toBeLessThan(4);
+    expect(summariseProteins(['KKKK']).pI).toBeGreaterThan(10);
+    // The mean of the engine's reports, gaps and stops left out: MKWVTFISLLFLFSSAYS is pI 8.34 and
+    // charge 0.50 (ExPASy ProtParam), with U appended pI 6.11 and charge -0.49.
+    // A row of gaps, or of no letter at all, has no residue and is left out of the mean.
+    const mean = summariseProteins(['MKWVTFISLLFLFSSAYS', 'MKWVTF-ISLLFLFSSAYSU*', '---', '..']);
+    expect(mean.pI).toBeCloseTo((8.34 + 6.11) / 2, 10);
+    expect(mean.chargePh7).toBeCloseTo((0.5 - 0.49) / 2, 10);
+    expect(mean.mwKda).toBeCloseTo((2140.57 + 2290.61) / 2 / 1000, 5);
+    expect(mean.extinction).toBe(6990);
+    // A280 of 1 mg/ml: ε280 (one Trp, one Tyr) over each row's molecular weight, then the mean.
+    expect(mean.a280).toBeCloseTo((6990 / 2140.57 + 6990 / 2290.61) / 2, 4);
     expect(rulerStep(10, 56)).toBe(10);
   });
 

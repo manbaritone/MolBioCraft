@@ -122,6 +122,7 @@ import {
   resolveMsaMenuCommand,
   type MsaMenuCommandToken,
   isNucleotideAlignmentRows,
+  PK_SCALE_LABEL,
 } from '../core/alignmentViewModel';
 import { computeAlignmentConsensusAndIdentity, computeNonEndGapPairwiseMetric } from '../core/alignmentAnalysis';
 import { alignmentInputError, runValidatedAlignment } from '../core/alignmentExecution';
@@ -4749,6 +4750,7 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
                                   <span>Charge at pH 7:</span>
                                   <strong>{alignmentStats.chargeAtPh7}</strong>
                                 </div>
+                                <p className="mbc-summary-note">{PK_SCALE_LABEL}</p>
                                 <div className="mbc-aln-stat-kv">
                                   <span>Extinction Coefficient:</span>
                                   <strong>{alignmentStats.extinctionCoeff.toLocaleString()}</strong>

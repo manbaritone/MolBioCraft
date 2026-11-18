@@ -1396,9 +1396,9 @@ fn reader_visible_snapshot(report: &BioPipelineExecutionReport) -> String {
 /// this library moves none, but `off >= 1` or a rank threshold change moves many), and any edit to
 /// the step's numbers or wording smuggled in beside the one sentence this bug rewrites.
 const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
-    ("cloning-expression-qc", "c5c0ef5f0f706fa8"),
+    ("cloning-expression-qc", "42f64ead527cdced"),
     ("crispr-hdr-knockout", "48ee426c46530b6e"),
-    ("multihost-protein-mrna", "0ac03966a2e76c7b"),
+    ("multihost-protein-mrna", "b86e224078c60f5f"),
     ("viral-twist-onboarding", "b355cabe03450c44"),
 ];
 

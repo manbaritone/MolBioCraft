@@ -43,13 +43,11 @@ pub fn translate_sequence(dna_raw: &str, frame_offset: usize, table_id: u8) -> S
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Average mass (Da) of one residue in a polypeptide chain (free amino acid minus water).
-/// Unknown residues return the average over the 20 standard residues (≈ 110 Da).
+/// Average mass (Da) of one residue in a polypeptide chain (free amino acid minus water), from
+/// the one residue table (`aa_params::RESIDUES`): the 20, U, O, and the mean masses of B, Z, J and
+/// X. A byte that is no letter (a stop, a gap) weighs nothing.
 pub fn residue_mass_da(aa: u8) -> f64 {
-    match crate::aa_params::aa_index(aa) {
-        Some(i) => crate::aa_params::RESIDUE_MASS_DA[i],
-        None => 110.0,
-    }
+    crate::aa_params::residue(aa).map_or(0.0, |r| r.mass_da)
 }
 
 /// Average molecular weight (Da) of a polypeptide: the residue masses plus one water.
@@ -105,7 +103,7 @@ pub fn find_orfs_with_topology(raw_seq: &str, min_length_aa: usize, allow_altern
                 }
                 let mut j = i + 3;
                 let mut protein = vec![b'M'];
-                let mut mw_da = 18.015 + residue_mass_da(b'M');
+                let mut mw_da = crate::aa_params::WATER_DA + residue_mass_da(b'M');
                 let mut stop: Option<&[u8]> = None;
                 while j + 3 <= text.len() && (!circular || j - i < n) {
                     let c = &text[j..j + 3];

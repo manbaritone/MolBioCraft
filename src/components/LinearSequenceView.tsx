@@ -27,6 +27,7 @@ import {
   Topology,
 } from '../types/bio';
 import { analyzeProteinSequence, CODON_TABLE, enzymeLabel, reverseComplement, tmNoAnswerSentence } from '../core/bioEngine';
+import { PK_SCALE_LABEL } from '../core/alignmentViewModel';
 import { basicTmHasNoAnswer } from './ConstructCockpitBar';
 import {
   getResidentTrackOverviewRust,
@@ -1257,19 +1258,13 @@ export const GenomeInspectorExtras: React.FC<{
 
     const cleanAa = translatedAa.replace(/\*/g, '');
     // No residue (no complete codon, or only stops) has no protein to measure.
+    // The protein figures read the engine's ProtParam report: the charge on the Bjellqvist titration
+    // its pI is solved from (D0190), the ε280 with cysteines paired as cystines, and the A280 that
+    // ε280 over the engine's molecular weight gives.
     const protStats = cleanAa ? analyzeProteinSequence(cleanAa, false, 9) : null;
-    const nW = aaCounts.W ?? 0;
-    const nY = aaCounts.Y ?? 0;
-    const nC = aaCounts.C ?? 0;
-    const extinctionCoeff = nW * 5500 + nY * 1490 + Math.floor(nC / 2) * 125;
-    const mwDa = Math.max(110, (protStats?.molecularWeightKda ?? 0) * 1000);
-    const abs280 = extinctionCoeff / mwDa;
-    const chargePh7 =
-      (aaCounts.K ?? 0) +
-      (aaCounts.R ?? 0) +
-      0.1 * (aaCounts.H ?? 0) -
-      (aaCounts.D ?? 0) -
-      (aaCounts.E ?? 0);
+    const extinctionCoeff = protStats?.extinctionCoeff280Cystine ?? 0;
+    const abs280 = protStats && protStats.molecularWeightDa > 0 ? extinctionCoeff / protStats.molecularWeightDa : 0;
+    const chargePh7 = protStats?.chargeAtPh7 ?? 0;
 
     return {
       rangeLabel,
@@ -1435,6 +1430,7 @@ export const GenomeInspectorExtras: React.FC<{
                       <span>Charge at pH 7:</span>
                       <strong>{translationTelemetry.chargePh7.toFixed(2)}</strong>
                     </div>
+                    <p className="mbc-summary-note">{PK_SCALE_LABEL}</p>
                     <div className="stat-kv">
                       <span>Extinction Coefficient (mean):</span>
                       <strong>{translationTelemetry.extinctionCoeff.toLocaleString()} M⁻¹cm⁻¹</strong>

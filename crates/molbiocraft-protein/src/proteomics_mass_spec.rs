@@ -99,33 +99,47 @@ impl ElementalComposition {
     }
 }
 
-/// Dehydrated in-chain residue elemental composition (`-NH-CH(R)-CO-`).
+/// Dehydrated in-chain residue elemental composition (`-NH-CH(R)-CO-`), from the one residue
+/// table ProtParam weighs from (`aa_params::RESIDUES`), or `None` for B, Z and X, which have no
+/// single composition (J has that of I and L).
 #[inline]
-fn residue_elements(aa: u8) -> ElementalComposition {
-    match aa.to_ascii_uppercase() {
-        b'A' => ElementalComposition { c: 3, h: 5, n: 1, o: 1, s: 0, se: 0 },
-        b'R' => ElementalComposition { c: 6, h: 12, n: 4, o: 1, s: 0, se: 0 },
-        b'N' => ElementalComposition { c: 4, h: 6, n: 2, o: 2, s: 0, se: 0 },
-        b'D' => ElementalComposition { c: 4, h: 5, n: 1, o: 3, s: 0, se: 0 },
-        b'C' => ElementalComposition { c: 3, h: 5, n: 1, o: 1, s: 1, se: 0 },
-        b'E' => ElementalComposition { c: 5, h: 7, n: 1, o: 3, s: 0, se: 0 },
-        b'Q' => ElementalComposition { c: 5, h: 8, n: 2, o: 2, s: 0, se: 0 },
-        b'G' => ElementalComposition { c: 2, h: 3, n: 1, o: 1, s: 0, se: 0 },
-        b'H' => ElementalComposition { c: 6, h: 7, n: 3, o: 1, s: 0, se: 0 },
-        b'I' | b'L' => ElementalComposition { c: 6, h: 11, n: 1, o: 1, s: 0, se: 0 },
-        b'K' => ElementalComposition { c: 6, h: 12, n: 2, o: 1, s: 0, se: 0 },
-        b'M' => ElementalComposition { c: 5, h: 9, n: 1, o: 1, s: 1, se: 0 },
-        b'F' => ElementalComposition { c: 9, h: 9, n: 1, o: 1, s: 0, se: 0 },
-        b'P' => ElementalComposition { c: 5, h: 7, n: 1, o: 1, s: 0, se: 0 },
-        b'S' => ElementalComposition { c: 3, h: 5, n: 1, o: 2, s: 0, se: 0 },
-        b'T' => ElementalComposition { c: 4, h: 7, n: 1, o: 2, s: 0, se: 0 },
-        b'W' => ElementalComposition { c: 11, h: 10, n: 2, o: 1, s: 0, se: 0 },
-        b'Y' => ElementalComposition { c: 9, h: 9, n: 1, o: 2, s: 0, se: 0 },
-        b'V' => ElementalComposition { c: 5, h: 9, n: 1, o: 1, s: 0, se: 0 },
-        b'U' => ElementalComposition { c: 3, h: 5, n: 1, o: 1, s: 0, se: 1 }, // Selenocysteine
-        b'O' => ElementalComposition { c: 12, h: 19, n: 3, o: 2, s: 0, se: 0 }, // Pyrrolysine
-        _ => ElementalComposition { c: 5, h: 7, n: 1, o: 1, s: 0, se: 0 },
-    }
+fn residue_elements(aa: u8) -> Option<ElementalComposition> {
+    crate::aa_params::residue(aa).and_then(|r| r.composition).map(|a| ElementalComposition {
+        c: a.c,
+        h: a.h,
+        n: a.n,
+        o: a.o,
+        s: a.s,
+        se: a.se,
+    })
+}
+
+/// The letters of `seq` with no single composition, each once, in alphabet order.
+fn without_composition(seq: &[u8]) -> Vec<char> {
+    let mut letters: Vec<char> =
+        seq.iter().filter(|&&b| residue_elements(b).is_none()).map(|&b| b.to_ascii_uppercase() as char).collect();
+    letters.sort_unstable();
+    letters.dedup();
+    letters
+}
+
+/// The digest's sentence for a peptide holding letters with no single composition.
+fn no_composition_warning(peptide: &str, letters: &[char]) -> String {
+    let named: Vec<String> = letters.iter().map(|c| c.to_string()).collect();
+    let (named, has) = match named.as_slice() {
+        [one] => (one.clone(), "has"),
+        [init @ .., last] => (format!("{} and {last}", init.join(", ")), "have"),
+        [] => (String::new(), "has"),
+    };
+    format!(
+        "Peptide {peptide} holds {named}, which {has} no single elemental composition: its monoisotopic mass and m/z are not given."
+    )
+}
+
+/// Average mass (Da) of a chain from the residue table's masses plus one water, for a chain the
+/// compositions cannot weigh.
+fn table_average_da(seq: &[u8]) -> f64 {
+    crate::aa_params::WATER_DA + seq.iter().map(|&b| crate::translation_orf::residue_mass_da(b)).sum::<f64>()
 }
 
 /// Krokhin / Bull-Breese reversed-phase C18 HPLC retention coefficient (minutes-equivalent).
@@ -204,9 +218,10 @@ pub struct ProteolyticDigestMsReport {
     pub observable_peptide_count: usize,
     pub sequence_coverage_pct: f64,
     pub peptides: Vec<DigestedPeptideIon>,
-    /// What the digest substituted for its request (D0005), one plain sentence per event: an
-    /// unknown protease name digested with Trypsin. Always serialised, as an empty list when the
-    /// protease was known.
+    /// What the digest substituted for its request or could not weigh (D0005), one plain sentence
+    /// per event: an unknown protease name digested with Trypsin, and each listed peptide holding
+    /// B, Z or X, which has no monoisotopic mass or m/z (NaN, serialised null). Always serialised,
+    /// as an empty list when there was none.
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -282,7 +297,7 @@ pub fn simulate_proteolytic_digest_ms(
     let max_mc = max_missed_cleavages.min(3);
     let min_m = min_mass_da.max(250.0);
     let max_m = max_mass_da.max(min_m + 100.0);
-    let (rule, protease, warnings) = match Protease::named(protease) {
+    let (rule, protease, mut warnings) = match Protease::named(protease) {
         Some(rule) => (rule, protease.to_string(), Vec::new()),
         None => (
             Protease::Trypsin,
@@ -308,12 +323,20 @@ pub fn simulate_proteolytic_digest_ms(
     }
 
     // Intact protein mass (+ H2O termini)
+    // A protein holding B, Z or X has no monoisotopic mass; its average reads the residue table.
     let mut intact_el = ElementalComposition { c: 0, h: 2, n: 0, o: 1, s: 0, se: 0 };
+    let mut intact_whole = true;
     for &b in bytes {
-        intact_el.add_assign(residue_elements(b));
+        match residue_elements(b) {
+            Some(el) => intact_el.add_assign(el),
+            None => intact_whole = false,
+        }
     }
-    let intact_mono = intact_el.monoisotopic_mass();
-    let intact_avg = intact_el.average_mass();
+    let (intact_mono, intact_avg) = if intact_whole {
+        (intact_el.monoisotopic_mass(), intact_el.average_mass())
+    } else {
+        (f64::NAN, table_average_da(bytes))
+    };
 
     let bounds = find_protease_cut_boundaries(bytes, rule);
     let num_basal_peptides = bounds.len().saturating_sub(1);
@@ -339,9 +362,12 @@ pub fn simulate_proteolytic_digest_ms(
             let mut cys_count = 0usize;
             let mut rt_sum = 0.0;
             let mut basic_sites = 1i32; // N-terminal alpha-amine at pH 2.7
+            let unweighable = without_composition(pep_slice);
             for &b in pep_slice {
                 let u = b.to_ascii_uppercase();
-                el.add_assign(residue_elements(u));
+                if let Some(r) = residue_elements(u) {
+                    el.add_assign(r);
+                }
                 if u == b'C' && carbamidomethyl_cys {
                     cys_count += 1;
                     el.add_assign(ElementalComposition { c: 2, h: 3, n: 1, o: 1, s: 0, se: 0 });
@@ -352,9 +378,13 @@ pub fn simulate_proteolytic_digest_ms(
                 rt_sum += hplc_retention_coeff(u);
             }
 
-            let mut mono_da = el.monoisotopic_mass();
-            let mut avg_da = el.average_mass();
-            let _ = cys_count;
+            let whole = unweighable.is_empty();
+            let mut mono_da = if whole { el.monoisotopic_mass() } else { f64::NAN };
+            let mut avg_da = if whole {
+                el.average_mass()
+            } else {
+                table_average_da(pep_slice) + cys_count as f64 * (2.0 * AVG_C + 3.0 * AVG_H + AVG_N + AVG_O)
+            };
 
             // CNBr converts C-terminal Methionine to Homoserine Lactone (-CH4S => -48.00337 Da)
             if is_cnbr && pep_slice.last().copied().map(|b| b.to_ascii_uppercase()) == Some(b'M') && e0 < n {
@@ -362,7 +392,9 @@ pub fn simulate_proteolytic_digest_ms(
                 avg_da -= AVG_C + 4.0 * AVG_H + AVG_S;
             }
 
-            if mono_da < min_m || mono_da > max_m {
+            // A peptide with no monoisotopic mass is kept or dropped on its average.
+            let window_da = if whole { mono_da } else { avg_da };
+            if window_da < min_m || window_da > max_m {
                 continue;
             }
 
@@ -376,6 +408,10 @@ pub fn simulate_proteolytic_digest_ms(
                 let rt_min = (6.5 + rt_sum * (1.0 - 0.012 * len_f.min(40.0))).clamp(1.2, 65.0);
                 let n_flank = if s0 == 0 { '-' } else { bytes[s0 - 1] as char };
                 let c_flank = if e0 >= n { '-' } else { bytes[e0] as char };
+                let sequence = String::from_utf8_lossy(pep_slice).into_owned();
+                if !whole {
+                    warnings.push(no_composition_warning(&sequence, &unweighable));
+                }
 
                 peptides.push(DigestedPeptideIon {
                     peptide_index: peptides.len() + 1,
@@ -384,7 +420,7 @@ pub fn simulate_proteolytic_digest_ms(
                     length_aa: pep_slice.len(),
                     missed_cleavages: mc,
                     n_flank,
-                    sequence: String::from_utf8_lossy(pep_slice).into_owned(),
+                    sequence,
                     c_flank,
                     chemical_formula: el.formula_string(),
                     monoisotopic_neutral_da: round4(mono_da),
@@ -472,13 +508,24 @@ pub fn simulate_peptide_ms2_spectrum(
     let mut res_masses = Vec::with_capacity(n);
     for &b in bytes {
         let u = b.to_ascii_uppercase();
-        let mut m = residue_elements(u).monoisotopic_mass();
+        // B, Z and X have no single composition (NaN here, so the spectrum below has no peaks).
+        let mut m = residue_elements(u).map_or(f64::NAN, |el| el.monoisotopic_mass());
         if u == b'C' && carbamidomethyl_cys {
             m += MONO_CAM_CYS;
         }
         res_masses.push(m);
     }
 
+    // A peptide holding B, Z or X has no monoisotopic mass, so no precursor and no fragment m/z.
+    if res_masses.iter().any(|m| m.is_nan()) {
+        return PeptideMs2SpectrumReport {
+            peptide_sequence: clean,
+            precursor_monoisotopic_da: f64::NAN,
+            precursor_mz_2plus: f64::NAN,
+            carbamidomethyl_cysteine: carbamidomethyl_cys,
+            peaks: Vec::new(),
+        };
+    }
     let neutral_total: f64 = res_masses.iter().sum::<f64>() + MONO_H2O;
     let mut peaks = Vec::with_capacity(n * 4);
 

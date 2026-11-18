@@ -150,6 +150,11 @@ pub struct ProteinAnalysisReport {
     pub hydrophobicity_profile: Vec<HydrophobicityPoint>,
     pub antigenic_determinants: Vec<AntigenicDeterminant>,
     pub secondary_structure_summary: SecondaryStructureSummary,
+    /// What the analysis read other than the 20 standard residues (D0005), one plain sentence per
+    /// kind: selenocysteine, pyrrolysine, the ambiguity letters B, Z, J and X, and a protein
+    /// input's internal stops. Always serialised, as an empty list when there was none.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Comprehensive biophysical analysis of a protein sequence, or of the protein a DNA or RNA input
@@ -160,6 +165,9 @@ pub fn analyze_protein_sequence(
     is_dna: bool,
     window_size: usize,
 ) -> ProteinAnalysisReport {
+    // The residues each internal stop of a protein input follows (a stop before the first residue
+    // starts nothing, and is left out as the stops after the last are).
+    let mut stops_after: Vec<usize> = Vec::new();
     let (aa_raw, translated_span): (String, Option<TranslatedSpan>) = if is_dna {
         // find_orfs lists the longest first, the first-starting of two as long
         let best = find_orfs(raw_input, 30, false, 1).into_iter().find(|o| o.strand == 1);
@@ -187,13 +195,17 @@ pub fn analyze_protein_sequence(
             (protein.replace('*', ""), span)
         }
     } else {
-        let protein = raw_input
-            .bytes()
-            .filter_map(|b| {
-                let u = b.to_ascii_uppercase();
-                u.is_ascii_alphabetic().then_some(u as char)
-            })
-            .collect();
+        let mut protein = String::with_capacity(raw_input.len());
+        for b in raw_input.bytes() {
+            if b.is_ascii_alphabetic() {
+                protein.push(b.to_ascii_uppercase() as char);
+            } else if b == b'*' {
+                // A stop with a residue after it is internal; one after the last residue ends the chain.
+                stops_after.push(protein.len());
+            }
+        }
+        let n = protein.len();
+        stops_after.retain(|&after| after < n && after > 0);
         (protein, None)
     };
 
@@ -204,12 +216,19 @@ pub fn analyze_protein_sequence(
     let mut counts_map: BTreeMap<String, usize> = BTreeMap::new();
     let mut table = [0usize; 128];
     let mut hydro_sum = 0.0f64;
+    // GRAVY, the aliphatic and the instability index read the 20 standard residues only, in
+    // numerator and denominator: U, O, B, Z, J and X have no value on their scales.
+    let mut n_standard = 0usize;
 
     for &b in bytes {
         table[(b as usize) & 127] += 1;
         *counts_map.entry((b as char).to_string()).or_insert(0) += 1;
-        hydro_sum += kyte_doolittle(b);
+        if aa_params::aa_index(b).is_some() {
+            n_standard += 1;
+            hydro_sum += kyte_doolittle(b);
+        }
     }
+    let std_denom = n_standard as f64;
     let mw = crate::translation_orf::polypeptide_mass_da(&aa_raw);
 
     // Isoelectric point: Henderson–Hasselbalch titration over the Bjellqvist pKa scale that
@@ -236,6 +255,7 @@ pub fn analyze_protein_sequence(
             - acid(n_of(b'E'), aa_params::PK_E)
             - acid(n_of(b'C'), aa_params::PK_C)
             - acid(n_of(b'Y'), aa_params::PK_Y)
+            - acid(n_of(b'U'), aa_params::PK_U)
     };
     let (mut lo, mut hi) = (0.0f64, 14.0f64);
     for _ in 0..60 {
@@ -258,23 +278,24 @@ pub fn analyze_protein_sequence(
     // 1/MW mol/l, so the absorbance is the molar extinction over the molecular weight.
     let a280 = if mw > 0.0 { ext_cystine as f64 / mw } else { 0.0 };
 
-    let xa = (table[b'A' as usize] as f64 / denom) * 100.0;
-    let xv = (table[b'V' as usize] as f64 / denom) * 100.0;
-    let xi = (table[b'I' as usize] as f64 / denom) * 100.0;
-    let xl = (table[b'L' as usize] as f64 / denom) * 100.0;
-    let aliphatic_index = ((xa + 2.9 * xv + 3.9 * (xi + xl)) * 10.0).round() / 10.0;
+    let xa = (table[b'A' as usize] as f64 / std_denom) * 100.0;
+    let xv = (table[b'V' as usize] as f64 / std_denom) * 100.0;
+    let xi = (table[b'I' as usize] as f64 / std_denom) * 100.0;
+    let xl = (table[b'L' as usize] as f64 / std_denom) * 100.0;
+    let aliphatic_index =
+        if n_standard == 0 { f64::NAN } else { ((xa + 2.9 * xv + 3.9 * (xi + xl)) * 10.0).round() / 10.0 };
 
     // Guruprasad, Reddy & Pandit (1990) instability index: (10/L) * sum of the dipeptide
     // instability weights (DIWV) along the chain. Dipeptides containing a non-standard residue
-    // are skipped, as ExPASy does.
+    // are skipped, as ExPASy does, and L counts the standard residues.
     let mut diwv_sum = 0.0f64;
     for pair in bytes.windows(2) {
         if let (Some(i), Some(j)) = (aa_params::aa_index(pair[0]), aa_params::aa_index(pair[1])) {
             diwv_sum += aa_params::DIWV[i][j];
         }
     }
-    let instability_index = if len > 1 {
-        (((10.0 / denom) * diwv_sum) * 100.0).round() / 100.0
+    let instability_index = if n_standard > 1 {
+        (((10.0 / std_denom) * diwv_sum) * 100.0).round() / 100.0
     } else {
         f64::NAN
     };
@@ -387,7 +408,7 @@ pub fn analyze_protein_sequence(
         extinction_coeff280_reduced: ext_reduced,
         extinction_coeff280_cystine: ext_cystine,
         a280_of_1mg_per_ml: (a280 * 100.0).round() / 100.0,
-        gravy_hydropathy: ((hydro_sum / denom) * 1000.0).round() / 1000.0,
+        gravy_hydropathy: if n_standard == 0 { f64::NAN } else { ((hydro_sum / std_denom) * 1000.0).round() / 1000.0 },
         aliphatic_index,
         instability_index,
         is_stable: instability_index < 40.0,
@@ -400,7 +421,74 @@ pub fn analyze_protein_sequence(
             coil_percent: (((c_cnt as f64 / denom) * 100.0) * 10.0).round() / 10.0,
             states_per_residue: states,
         },
+        warnings: residue_warnings(&table, &stops_after),
     }
+}
+
+/// `n` and the noun, plural when `n` is not 1.
+fn counted(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn listed(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// The report's warnings: one sentence for the selenocysteines, the pyrrolysines and the
+/// ambiguity letters the chain holds (`counts` by byte), and one for its internal stops.
+fn residue_warnings(counts: &[usize; 128], stops_after: &[usize]) -> Vec<String> {
+    use aa_params::ResidueKind;
+    let mut warnings = Vec::new();
+    let of = |kind: ResidueKind| aa_params::RESIDUES.iter().filter(move |r| r.kind == kind);
+    for (kind, one, many) in
+        [(ResidueKind::Selenocysteine, "selenocysteine", "selenocysteines"), (ResidueKind::Pyrrolysine, "pyrrolysine", "pyrrolysines")]
+    {
+        for r in of(kind) {
+            let n = counts[r.letter as usize];
+            if n == 0 {
+                continue;
+            }
+            let charge = if kind == ResidueKind::Selenocysteine {
+                format!("and charged with a selenol pKa of {}", aa_params::PK_U)
+            } else {
+                "with no charge".to_string()
+            };
+            let (it_has, it) = if n == 1 { ("it has", "it") } else { ("they have", "them") };
+            warnings.push(format!(
+                "{} ({}): weighed as {:.2} Da {charge}; {it_has} no GRAVY, aliphatic or instability value, so those indices leave {it} out.",
+                counted(n, one, many),
+                r.letter as char,
+                r.mass_da,
+            ));
+        }
+    }
+    let mut ambiguous: Vec<u8> = of(ResidueKind::Ambiguous).map(|r| r.letter).filter(|&l| counts[l as usize] > 0).collect();
+    ambiguous.sort_unstable();
+    let n: usize = ambiguous.iter().map(|&l| counts[l as usize]).sum();
+    if n > 0 {
+        let letters: Vec<String> = ambiguous.iter().map(|&l| (l as char).to_string()).collect();
+        let (each, them) = if n == 1 { ("it", "it") } else { ("each", "them") };
+        warnings.push(format!(
+            "{} ({}): weighed as the mean of the residues {each} may be, with no charge, as ExPASy Compute pI/Mw does; the GRAVY, aliphatic and instability indices leave {them} out.",
+            counted(n, "ambiguous or unknown residue", "ambiguous or unknown residues"),
+            letters.join(", "),
+        ));
+    }
+    if !stops_after.is_empty() {
+        let at: Vec<String> = stops_after.iter().map(|a| a.to_string()).collect();
+        warnings.push(format!(
+            "{} (*) after {} {}: the residues on either side are measured as one chain.",
+            counted(stops_after.len(), "internal stop", "internal stops"),
+            if at.len() == 1 { "residue" } else { "residues" },
+            listed(&at),
+        ));
+    }
+    warnings
 }
 
 // ============================================================================
