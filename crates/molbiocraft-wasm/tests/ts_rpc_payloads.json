@@ -176,6 +176,10 @@
   "vecA",
   "vecB"
  ],
+ "check_sequence_alphabet": [
+  "molecule",
+  "text"
+ ],
  "classify_sequence_alphabet": [
   "rows"
  ],

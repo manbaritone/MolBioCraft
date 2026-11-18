@@ -6,6 +6,7 @@
 //! (`.fsa` + `.tbl`) Validator.
 
 use crate::noodles_io::color_for_feature_type;
+use molbiocraft_core::iupac::alphabet_warnings;
 use molbiocraft_core::{
     clean_alpha_sequence, ChromatogramData, FeatureSegment, HistoryTreeNode, MoleculeType, SequenceDocument,
     SequenceFeature, Topology,
@@ -541,7 +542,25 @@ fn segments_from_intervals(name: &str, color: &str, intervals: &[(usize, usize)]
 /// withWarningNotes writes, "Warnings:" and one "- " line per such feature (a repeated line once),
 /// naming it by its /gene, else its /locus_tag (BG-01M6SMBS). A record with no such feature gets no
 /// Notes.
+///
+/// After those warnings the block names what reading ORIGIN left out or could not read, in the
+/// sentences of [`alphabet_warnings`] (US-01M7NKEM): letters that are not nucleotide codes, gap
+/// characters, stops and a lost soft-mask. Before them it says when ORIGIN holds fewer or more
+/// bases than the LOCUS line declares. A record with no ORIGIN (a CONTIG summary) has no bases to
+/// read and gets no length sentence.
 pub fn parse_genbank_flatfile(text: &str, fallback_name: &str) -> SequenceDocument {
+    parse_insdc_record(text, fallback_name, InsdcSource::GenBank)
+}
+
+/// Which flatfile a record came from, so its length sentence names that file's own lines: EMBL
+/// is read as its GenBank rewrite (see [`parse_embl_flatfile`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InsdcSource {
+    GenBank,
+    Embl,
+}
+
+fn parse_insdc_record(text: &str, fallback_name: &str, source: InsdcSource) -> SequenceDocument {
     let lines: Vec<&str> = text.lines().collect();
     let mut name = fallback_name.to_string();
     let mut accession = "GB_IMPORT_001".to_string();
@@ -553,6 +572,8 @@ pub fn parse_genbank_flatfile(text: &str, fallback_name: &str) -> SequenceDocume
 
     let mut in_features = false;
     let mut in_origin = false;
+    // ORIGIN's text as written, digits and spaces included, for alphabet_warnings.
+    let mut origin_raw = String::new();
     let mut current_feat: Option<SequenceFeature> = None;
     let mut loc_buf = String::new();
     // How the line before ended a quoted value that is still open (Open or EvenRun), and the
@@ -621,6 +642,8 @@ pub fn parse_genbank_flatfile(text: &str, fallback_name: &str) -> SequenceDocume
                     seq_buf.push((b.to_ascii_uppercase()) as char);
                 }
             }
+            origin_raw.push_str(raw_line);
+            origin_raw.push('\n');
             continue;
         }
 
@@ -818,6 +841,29 @@ pub fn parse_genbank_flatfile(text: &str, fallback_name: &str) -> SequenceDocume
             ("Is Contig Summary".to_string(), serde_json::json!(true)),
         ]));
     }
+    // What ORIGIN held against what LOCUS declared, then what reading it left out or could not
+    // read (see this function's doc). Only a record with an ORIGIN block has bases to count.
+    if in_origin {
+        let protein = molecule_type == MoleculeType::Protein;
+        if locus_length > 0 && locus_length != seq_buf.len() {
+            let (declared_by, block) = match source {
+                InsdcSource::GenBank => ("LOCUS", "ORIGIN"),
+                InsdcSource::Embl => ("ID", "SQ"),
+            };
+            warnings.push(format!(
+                "The {declared_by} line declares {locus_length} {} but {block} holds {} {}.",
+                if protein { "aa" } else { "bp" },
+                seq_buf.len(),
+                match (protein, seq_buf.len() == 1) {
+                    (true, true) => "residue",
+                    (true, false) => "residues",
+                    (false, true) => "base",
+                    (false, false) => "bases",
+                }
+            ));
+        }
+        warnings.extend(alphabet_warnings(&origin_raw, molecule_type));
+    }
     // The block withWarningNotes (src/core/operationRunners.ts) writes: "Warnings:", then one
     // "- " line per warning, each once, in the order the features are read.
     let mut seen = std::collections::HashSet::new();
@@ -987,7 +1033,7 @@ pub fn export_genbank_flatfile(doc: &SequenceDocument) -> String {
 /// EMBL and GenBank share the INSDC feature-table syntax (keys at column 6,
 /// qualifiers at column 22), so the record is rewritten line-by-line into its
 /// GenBank equivalent (ID→LOCUS, DE→DEFINITION, AC→ACCESSION, FT→FEATURES,
-/// SQ→ORIGIN) and handed to [`parse_genbank_flatfile`]. Previously `.embl`
+/// SQ→ORIGIN) and read by the GenBank reader, whose warnings then name the ID line and SQ. Previously `.embl`
 /// files went straight to the GenBank parser, which — finding no LOCUS line —
 /// read every letter of the file, headers included, as sequence.
 ///
@@ -1094,14 +1140,17 @@ pub fn parse_embl_flatfile(text: &str, fallback_name: &str) -> SequenceDocument 
         gb.push_str(line);
         gb.push('\n');
     }
-    gb.push_str("ORIGIN\n");
+    // Only a record with an SQ block has an ORIGIN: a CON record has no bases to count.
+    if in_sq {
+        gb.push_str("ORIGIN\n");
+    }
     for line in &origin {
         // Strip the trailing base-count column; the GenBank reader keeps letters only.
         gb.push_str(line);
         gb.push('\n');
     }
     gb.push_str("//\n");
-    let mut doc = parse_genbank_flatfile(&gb, fallback_name);
+    let mut doc = parse_insdc_record(&gb, fallback_name, InsdcSource::Embl);
     if accession.is_empty() {
         doc.accession = String::new();
     }

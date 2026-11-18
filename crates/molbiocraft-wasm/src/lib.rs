@@ -373,6 +373,34 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
                 "note": call.note(),
             }))
         }
+        "check_sequence_alphabet" => {
+            // US-01M7NKEM: typed or pasted text read as the molecule the user chose, its letters
+            // kept (upper case) and what reading left out or could not read named in the one
+            // alphabet_warnings every importer uses, with the count of each letter that is not a
+            // nucleotide code. Missing text or molecule is refused.
+            let text: String = parse_field(&payload, "text")?;
+            let molecule: String = parse_field(&payload, "molecule")?;
+            let molecule = match molecule.as_str() {
+                "DNA" => molbiocraft_core::MoleculeType::DNA,
+                "RNA" => molbiocraft_core::MoleculeType::RNA,
+                "Protein" => molbiocraft_core::MoleculeType::Protein,
+                other => return Err(format!("molecule '{other}' is not DNA, RNA or Protein")),
+            };
+            let sequence = molbiocraft_core::clean_alpha_sequence(&text);
+            let warnings = if sequence.is_empty() {
+                vec!["The text holds no sequence letters.".to_string()]
+            } else {
+                molbiocraft_core::iupac::alphabet_warnings(&text, molecule)
+            };
+            // The letters that are not nucleotide codes, with their counts (none for a protein,
+            // whose alphabet holds every letter): the alphabet rule's own `foreign` tally.
+            let foreign = if molecule == molbiocraft_core::MoleculeType::Protein {
+                Default::default()
+            } else {
+                molbiocraft_core::iupac::classify_molecule(&[text.as_str()]).foreign
+            };
+            Ok(json!({ "sequence": sequence, "warnings": warnings, "foreign": foreign }))
+        }
         "complement_sequence" => {
             let seq = str_arg(&payload, "seq", "");
             let is_rna = bool_arg(&payload, "isRna", false);

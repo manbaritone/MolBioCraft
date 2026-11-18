@@ -143,10 +143,12 @@ fn alphabet_warnings_counts_what_the_reader_leaves_out_or_changes() {
         vec!["1 internal stop (*) after residue 9 was left out, so the residues on either side read as one chain.".to_string()],
         "a stop that letters follow is internal, even when it is the record's last stop: only a stop with no letter after it is final"
     );
+    // D0210 (US-01M7NKEM): a `*` in a DNA or RNA record is not a residue, so it is a stop
+    // character left out, named after the gaps; only a protein has internal stops and a final one.
     assert_eq!(
         alphabet_warnings("ACGTACGT*", DNA),
-        vec!["1 internal stop (*) after residue 8 was left out, so the residues on either side read as one chain.".to_string()],
-        "only a protein's final stop is its chain's end"
+        vec!["1 stop character (*) was left out; positions count the letters kept.".to_string()],
+        "a nucleotide record's stop is a stop character, not a chain's internal stop or its end"
     );
     assert_eq!(
         alphabet_warnings("ACGTacgtACGT", DNA),

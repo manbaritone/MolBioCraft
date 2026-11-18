@@ -4,8 +4,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { BlastHitRecord, SequenceDocument } from '../types/bio';
 import { TriangleAlert } from 'lucide-react';
-import { calculatePrimerMetrics, runLocalBlastSearch } from '../core/bioEngine';
-import { blastQueryCut, blastQueryCutNotice, blastQueryLetters, blastQueryTextWarnings } from '../core/operationRunners';
+import { calculatePrimerMetrics, checkSequenceAlphabet, runLocalBlastSearch } from '../core/bioEngine';
+import { blastQueryCut, blastQueryCutNotice, blastQueryLetters, blastQueryTextWarnings, withWarningNotes } from '../core/operationRunners';
+import { ResultWarnings } from './ResultWarnings';
 import { BRAND_EMBLEM_SRC } from './MolBioCraftLogo';
 import { MolBioPrefsToggleIcon } from './MolBioIcons';
 import { FigureExportButton } from './FigureExportButton';
@@ -2907,9 +2908,16 @@ export const NewSequenceModal: React.FC<NewSequenceModalProps> = ({
       body = raw.replace(/^>.*$/gm, '');
     }
 
-    const cleaned = body.replace(/[^A-Za-z*]/g, '').toUpperCase();
-    return { cleaned, headerName, headerDesc, headerOrg, detectedCircular };
-  }, [seqText]);
+    // The text is read as every importer reads a record (`check_sequence_alphabet`, US-01M7NKEM):
+    // its letters kept, and what that leaves out (gaps, stops) or cannot read named before Save.
+    const letters = body.replace(/[^A-Za-z]/g, '').toUpperCase();
+    const molecule: 'DNA' | 'RNA' | 'Protein' =
+      seqType === 'Protein' ? 'Protein' : letters.includes('U') && !letters.includes('T') ? 'RNA' : 'DNA';
+    const { sequence: cleaned, warnings } = body.trim()
+      ? checkSequenceAlphabet(body, molecule)
+      : { sequence: '', warnings: [] as string[] };
+    return { cleaned, molecule, warnings, headerName, headerDesc, headerOrg, detectedCircular };
+  }, [seqText, seqType]);
 
   const cleanedLength = parsedInput.cleaned.length;
   const effectiveBindingBp = isOligoType
@@ -3020,12 +3028,7 @@ export const NewSequenceModal: React.FC<NewSequenceModalProps> = ({
         : `Custom ${seqType.toLowerCase()} sequence (${cleaned.length} ${seqType === 'Protein' ? 'aa' : 'bp'})`);
     const finalOrg = organism.trim() || parsedInput.headerOrg;
 
-    const moleculeType: 'DNA' | 'RNA' | 'Protein' =
-      seqType === 'Protein'
-        ? 'Protein'
-        : cleaned.includes('U') && !cleaned.includes('T')
-        ? 'RNA'
-        : 'DNA';
+    const moleculeType = parsedInput.molecule;
 
     const topology: 'linear' | 'circular' =
       seqType === 'Nucleotide' && (isCircular || parsedInput.detectedCircular)
@@ -3144,7 +3147,8 @@ export const NewSequenceModal: React.FC<NewSequenceModalProps> = ({
         },
       ],
     };
-    onCreateDoc(newDoc);
+    // The document keeps the sentences the dialog showed, in the Notes block importers write.
+    onCreateDoc(withWarningNotes(newDoc, parsedInput.warnings));
     onClose();
   };
 
@@ -3194,6 +3198,7 @@ export const NewSequenceModal: React.FC<NewSequenceModalProps> = ({
             {validationMsg}
           </div>
         )}
+        <ResultWarnings warnings={parsedInput.warnings} label="Sequence warnings" />
 
         <div className="newseq-form-grid">
           <label htmlFor="mbc-newseq-name" className="newseq-field-label">

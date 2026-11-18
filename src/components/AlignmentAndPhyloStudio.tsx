@@ -127,7 +127,7 @@ import {
 } from '../core/alignmentViewModel';
 import { computeAlignmentConsensusAndIdentity, computeNonEndGapPairwiseMetric } from '../core/alignmentAnalysis';
 import { alignmentInputError, runValidatedAlignment } from '../core/alignmentExecution';
-import { formatAlignmentText } from '../core/alignmentExport';
+import { formatAlignmentText, nexusAlphabetWarning } from '../core/alignmentExport';
 import { PairwiseAlignmentView } from './PairwiseAlignmentView';
 import { ResultWarnings } from './ResultWarnings';
 import { exportToGenBank } from '../core/fileParsers';
@@ -898,6 +898,12 @@ export const AlignmentTextStream: React.FC<AlignmentTextStreamProps> = ({ doc })
   [shownTextViewFormat, formattedGenBankRecords, textExportRows, doc.moleculeType, dynamicConsensus,
     isUnalignedSequenceList]);
 
+  // NEXUS declares DATATYPE=DNA or RNA; cells a strict reader refuses are warned of, not rewritten.
+  const nexusTextWarning = useMemo(
+    () => (shownTextViewFormat === 'NEXUS' ? nexusAlphabetWarning(textExportRows, doc.moleculeType) : null),
+    [shownTextViewFormat, textExportRows, doc.moleculeType]
+  );
+
   const handleExportTextView = async () => {
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable; use Export instead.');
@@ -972,6 +978,7 @@ export const AlignmentTextStream: React.FC<AlignmentTextStreamProps> = ({ doc })
         </div>
       </div>
 
+      {nexusTextWarning && <ResultWarnings warnings={[nexusTextWarning]} label="NEXUS text warnings" />}
       <div className="mbc-aln-textview-scroll">
         {shownTextViewFormat !== 'Custom' ? (
           <pre

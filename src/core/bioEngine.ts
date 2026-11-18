@@ -87,6 +87,25 @@ export function classifySequenceAlphabet(rows: readonly string[]): SequenceAlpha
   return invokeRustBioSync<SequenceAlphabetCall>('classify_sequence_alphabet', { rows });
 }
 
+/** Typed or pasted text read as one molecule (`check_sequence_alphabet`, US-01M7NKEM). */
+export interface SequenceAlphabetCheck {
+  /** The text's letters, upper case; gaps, stops, digits and spaces left out. */
+  sequence: string;
+  /**
+   * The import sentences of molbiocraft-core `alphabet_warnings`, the ones every importer writes:
+   * foreign letters kept, internal stops, gaps and stop characters left out, a lost soft-mask;
+   * "The text holds no sequence letters." when there is no letter at all.
+   */
+  warnings: string[];
+  /** Each letter that is not a nucleotide code, with its count; empty for a protein. */
+  foreign: Record<string, number>;
+}
+
+/** Read `text` as `molecule` the way every importer does, naming what it leaves out or cannot read. */
+export function checkSequenceAlphabet(text: string, molecule: MoleculeType): SequenceAlphabetCheck {
+  return invokeRustBioSync<SequenceAlphabetCheck>('check_sequence_alphabet', { text, molecule });
+}
+
 /** A modified residue of a structure chain, read as its parent's code (`MSE` 1 as `M`). */
 export interface StructureModifiedResidue {
   resName: string;

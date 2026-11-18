@@ -39,6 +39,33 @@ export function formatAlignmentText(
   return `${format === 'Clustal' ? 'CLUSTAL multiple sequence alignment\n\n' : ''}${blocks.join('\n\n')}\n`;
 }
 
+/** The cells a strict DATATYPE=DNA or RNA reader accepts: IUPAC nucleotide codes, missing and gap. */
+const NEXUS_NUCLEOTIDE_CELLS = new Set('ACGTURYSWKMBDHVN?-'.split(''));
+
+/**
+ * The warning the NEXUS text of {@link formatAlignmentText} owes when it declares DATATYPE=DNA or
+ * RNA over cells a strict reader refuses (I, X, `*` or any other non-IUPAC character), or null.
+ * The text is not changed (D0005: warn, do not substitute; US-01M7NKEM).
+ */
+export function nexusAlphabetWarning(
+  rows: readonly { sequence: string }[],
+  molecule: 'DNA' | 'RNA' | 'Protein'
+): string | null {
+  if (molecule === 'Protein') return null;
+  let cells = 0;
+  const held: string[] = [];
+  for (const r of rows) {
+    for (const c of r.sequence.toUpperCase().replace(/\./g, '-')) {
+      if (NEXUS_NUCLEOTIDE_CELLS.has(c)) continue;
+      cells++;
+      if (!held.includes(c)) held.push(c);
+    }
+  }
+  if (!cells) return null;
+  const named = held.length === 1 ? held[0] : `${held.slice(0, -1).join(', ')} or ${held[held.length - 1]}`;
+  return `This NEXUS text declares DATATYPE=${molecule}, but ${cells} ${cells === 1 ? 'cell holds' : 'cells hold'} ${named}, which strict NEXUS readers such as MrBayes refuse.`;
+}
+
 /** Whitespace-free names, unique (a numeric suffix is added to repeats). */
 export function uniqueTokenNames(names: readonly string[]): string[] {
   const used = new Set<string>();

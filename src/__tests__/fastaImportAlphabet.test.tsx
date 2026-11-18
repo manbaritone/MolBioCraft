@@ -116,26 +116,29 @@ describe('FASTA import by the one alphabet rule (US-01M6VFRY)', () => {
   });
 
   it('US-01M6VFRY AC5 names the foreign letters it kept and the gaps and internal stops it left out', async () => {
+    // D0222 (US-01M7NKEM AC5): the file's records hold gaps but differ in length, so each record's
+    // Notes end with the sentence saying why they open apart, not as an alignment.
+    const NOT_ALIGNED = "- The file's records hold gaps but are not all the same length (25, 18, 26, 13), so they open as separate sequences, not as an alignment.\n";
     const app = await mountApp();
     try {
       await drop(app, 'gaps_and_stops.fasta', '>gappy\nACGTA-CGTAC.GTACG~TACGTXX\n>prot\nMKWVUTFIS*LLFX-XX*\n>gappier\nACGTA-CGTAC.GTACG~TACGTXX-\n>endless\nMKWVUTFIS*LLF\n');
       await expectRecords(app, {
         gappy: {
           molecule: 'DNA', sequence: 'ACGTACGTACGTACGTACGTXX',
-          notes: 'Warnings:\n- 2 letters are not nucleotide codes and were kept: X at 21 and 22.\n- 3 gap characters (-, ., ~) were left out; positions count the letters kept.\n',
+          notes: 'Warnings:\n- 2 letters are not nucleotide codes and were kept: X at 21 and 22.\n- 3 gap characters (-, ., ~) were left out; positions count the letters kept.\n' + NOT_ALIGNED,
         },
         prot: {
           molecule: 'Protein', sequence: 'MKWVUTFISLLFXXX',
-          notes: 'Warnings:\n- 1 internal stop (*) after residue 9 was left out, so the residues on either side read as one chain.\n- 1 gap character (-) was left out; positions count the letters kept.\n',
+          notes: 'Warnings:\n- 1 internal stop (*) after residue 9 was left out, so the residues on either side read as one chain.\n- 1 gap character (-) was left out; positions count the letters kept.\n' + NOT_ALIGNED,
         },
         gappier: {
           molecule: 'DNA', sequence: 'ACGTACGTACGTACGTACGTXX',
-          notes: 'Warnings:\n- 2 letters are not nucleotide codes and were kept: X at 21 and 22.\n- 4 gap characters (-, ., ~) were left out; positions count the letters kept.\n',
+          notes: 'Warnings:\n- 2 letters are not nucleotide codes and were kept: X at 21 and 22.\n- 4 gap characters (-, ., ~) were left out; positions count the letters kept.\n' + NOT_ALIGNED,
         },
         // Only a stop with no letter after it ends the chain: this record's one stop is internal.
         endless: {
           molecule: 'Protein', sequence: 'MKWVUTFISLLF',
-          notes: 'Warnings:\n- 1 internal stop (*) after residue 9 was left out, so the residues on either side read as one chain.\n',
+          notes: 'Warnings:\n- 1 internal stop (*) after residue 9 was left out, so the residues on either side read as one chain.\n' + NOT_ALIGNED,
         },
       });
 

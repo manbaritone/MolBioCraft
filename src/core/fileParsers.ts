@@ -20,7 +20,7 @@ import {
   SamAlignmentSummary,
 } from '../lib/rustBioEngine';
 import type { MoleculeType, SequenceDocument, SequenceFeature } from '../types/bio';
-import { classifySequenceAlphabet, isNucleotideByAlphabet } from './bioEngine';
+import { checkSequenceAlphabet, classifySequenceAlphabet, isNucleotideByAlphabet } from './bioEngine';
 
 export function parseFasta(text: string, defaultName = 'Imported_FASTA'): SequenceDocument[] {
   return invokeRustBioSync<SequenceDocument[]>('parse_fasta', { text, defaultName });
@@ -481,10 +481,28 @@ export function parseNexusAlignment(text: string): NexusAlignment {
   };
 }
 
+/**
+ * The sentence for the letters of a DATATYPE=DNA or RNA matrix that are not nucleotide codes,
+ * counted by the engine (`check_sequence_alphabet`, US-01M7NKEM); null when there are none, or
+ * when no DATATYPE was declared (the alphabet rule then made the call, US-01M6VFRY).
+ */
+function nexusForeignLetterWarning(nexus: NexusAlignment): string | null {
+  if (nexus.moleculeType === 'Protein' || nexus.dataType === 'inferred') return null;
+  const { foreign } = checkSequenceAlphabet(nexus.sequences.join('\n'), nexus.moleculeType);
+  const letters = Object.entries(foreign);
+  const total = letters.reduce((n, [, k]) => n + k, 0);
+  if (!total) return null;
+  const listed = letters.map(([letter, k]) => `${letter} (${k})`).join(', ');
+  return total === 1
+    ? `1 letter in the matrix is not a nucleotide code and was kept: ${listed}.`
+    : `${total} letters in the matrix are not nucleotide codes and were kept: ${listed}.`;
+}
+
 /** Builds an alignment document from a NEXUS character matrix. */
 export function nexusToAlignmentDocument(nexus: NexusAlignment, fileName: string, nowIso = new Date().toISOString()): SequenceDocument {
   const stem = fileName.replace(/\.[^.]+$/, '') || 'Imported_NEXUS';
   const { moleculeType } = nexus;
+  const foreignWarning = nexusForeignLetterWarning(nexus);
   const id = `nex-${stem.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
   return {
     id,
@@ -519,6 +537,7 @@ export function nexusToAlignmentDocument(nexus: NexusAlignment, fileName: string
       'Source Format': 'NEXUS',
       'NEXUS DATATYPE': nexus.dataType,
       'NEXUS Layout': nexus.interleaved ? 'Interleaved' : 'Sequential',
+      ...(foreignWarning ? { Notes: `Warnings:\n- ${foreignWarning}\n` } : {}),
     },
     createdAt: nowIso,
     updatedAt: nowIso,

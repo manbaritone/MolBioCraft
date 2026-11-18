@@ -62,6 +62,12 @@ pub fn parse_fasta_noodles(text: &str, default_name: &str) -> Vec<SequenceDocume
     let cursor = Cursor::new(normalized.as_bytes());
     let mut reader = fasta::io::Reader::new(BufReader::new(cursor));
     let mut docs = Vec::new();
+    // Each document's warnings, written into its Notes once every record is read.
+    let mut doc_warnings: Vec<Vec<String>> = Vec::new();
+    // Every record's length as written (whitespace aside) and whether it holds a gap, as
+    // parseAlignedFasta (src/core/alignmentFormats.ts) measures them.
+    let mut written_lengths: Vec<usize> = Vec::new();
+    let mut any_gapped = false;
     let now = "2026-10-31".to_string();
 
     for (idx, res) in reader.records().enumerate() {
@@ -82,6 +88,8 @@ pub fn parse_fasta_noodles(text: &str, default_name: &str) -> Vec<SequenceDocume
 
         let seq_bytes = record.sequence().as_ref();
         let raw_seq_str = String::from_utf8_lossy(seq_bytes);
+        written_lengths.push(seq_bytes.iter().filter(|b| !b.is_ascii_whitespace()).count());
+        any_gapped |= seq_bytes.iter().any(|&b| b == b'-' || b == b'.');
         let clean_seq = clean_alpha_sequence(&raw_seq_str);
         if clean_seq.is_empty() {
             continue;
@@ -97,10 +105,7 @@ pub fn parse_fasta_noodles(text: &str, default_name: &str) -> Vec<SequenceDocume
         };
         let mut warnings: Vec<String> = call.note().into_iter().collect();
         warnings.extend(alphabet_warnings(&raw_seq_str, mol_type));
-        let doc_metadata = (!warnings.is_empty()).then(|| {
-            let lines: Vec<String> = warnings.iter().map(|w| format!("- {w}")).collect();
-            HashMap::from([("Notes".to_string(), serde_json::json!(format!("Warnings:\n{}\n", lines.join("\n"))))])
-        });
+        doc_warnings.push(warnings);
         let lower_desc = desc.to_ascii_lowercase();
         let topology = if mol_type != MoleculeType::Protein
             && (lower_desc.contains("circular") || lower_desc.contains("plasmid"))
@@ -141,11 +146,33 @@ pub fn parse_fasta_noodles(text: &str, default_name: &str) -> Vec<SequenceDocume
             chromatogram: None,
             alignment_meta: None,
             document_kind: None,
-            doc_metadata,
+            doc_metadata: None,
             created_at: now.clone(),
             updated_at: now.clone(),
             folder: folder.into(),
         });
+    }
+
+    // Records that hold gaps but differ in length are not an alignment (parseAlignedFasta
+    // returns null), so they open apart; each one says why (US-01M7NKEM).
+    if written_lengths.len() >= 2 && any_gapped && written_lengths.iter().any(|&n| n != written_lengths[0]) {
+        let shown: Vec<String> = written_lengths.iter().take(10).map(|n| n.to_string()).collect();
+        let more = written_lengths.len() - shown.len();
+        let tail = if more > 0 { format!(", and {more} more") } else { String::new() };
+        let sentence = format!(
+            "The file's records hold gaps but are not all the same length ({}{tail}), so they open as separate sequences, not as an alignment.",
+            shown.join(", ")
+        );
+        for warnings in &mut doc_warnings {
+            warnings.push(sentence.clone());
+        }
+    }
+    for (doc, warnings) in docs.iter_mut().zip(&doc_warnings) {
+        if !warnings.is_empty() {
+            let lines: Vec<String> = warnings.iter().map(|w| format!("- {w}")).collect();
+            doc.doc_metadata =
+                Some(HashMap::from([("Notes".to_string(), serde_json::json!(format!("Warnings:\n{}\n", lines.join("\n"))))]));
+        }
     }
 
     docs
@@ -158,10 +185,11 @@ pub fn export_fasta_noodles(doc: &SequenceDocument) -> String {
         doc.accession,
         doc.description,
         doc.sequence.len(),
-        if doc.molecule_type == MoleculeType::Protein {
-            "aa"
-        } else {
-            "bp"
+        match doc.molecule_type {
+            MoleculeType::Protein => "aa",
+            // RNA is single-stranded: its length is in nucleotides, not base pairs.
+            MoleculeType::RNA => "nt",
+            MoleculeType::DNA => "bp",
         }
     );
     let safe_name = doc.name.replace(char::is_whitespace, "_");

@@ -187,10 +187,12 @@ fn listed_positions(items: &[String], more: usize) -> String {
 const LISTED_POSITIONS: usize = 10;
 
 /// The import warnings for one record's raw sequence text read as `molecule` (D0005 sentences,
-/// in this order): letters that are not nucleotide codes and were kept, internal stops left out
-/// (a protein's single final stop is the end of its chain, not a warning), gap characters left
-/// out, and lower-case letters read as upper case when the record mixes cases. Positions count
-/// the letters kept, from 1. Whitespace, digits and other symbols are not counted.
+/// in this order): letters that are not nucleotide codes and were kept, a protein's internal
+/// stops left out (its single final stop is the end of its chain, not a warning), gap characters
+/// left out, a nucleotide record's stop characters (`*`) left out (US-01M7NKEM, D0210: a `*` is
+/// not a residue of DNA or RNA, so it is named like a gap, after the gaps), and lower-case
+/// letters read as upper case when the record mixes cases. Positions count the letters kept,
+/// from 1. Whitespace, digits and other symbols are not counted.
 pub fn alphabet_warnings(raw: &str, molecule: MoleculeType) -> Vec<String> {
     let nucleotide = molecule != MoleculeType::Protein;
     let mut kept = 0usize;
@@ -247,13 +249,20 @@ pub fn alphabet_warnings(raw: &str, molecule: MoleculeType) -> Vec<String> {
             })
             .collect();
         let tail = if more > 0 { format!(", and {more} more") } else { String::new() };
-        warnings.push(if foreign.len() == 1 {
-            format!("1 letter is not a nucleotide code and was kept: {}{}.", groups.join("; "), tail)
+        // Letters at one position each read as one list ("X at 15 and J at 16"); once a letter
+        // has several positions, or the list is cut off, "; " keeps each letter's positions apart.
+        let joined = if more == 0 && order.len() == shown.len() {
+            listed_positions(&groups, 0)
         } else {
-            format!("{} letters are not nucleotide codes and were kept: {}{}.", foreign.len(), groups.join("; "), tail)
+            groups.join("; ")
+        };
+        warnings.push(if foreign.len() == 1 {
+            format!("1 letter is not a nucleotide code and was kept: {}{}.", joined, tail)
+        } else {
+            format!("{} letters are not nucleotide codes and were kept: {}{}.", foreign.len(), joined, tail)
         });
     }
-    if !stops.is_empty() {
+    if !nucleotide && !stops.is_empty() {
         let shown: Vec<String> = stops.iter().take(LISTED_POSITIONS).map(|p| p.to_string()).collect();
         let more = stops.len() - shown.len();
         let one = stops.len() == 1;
@@ -274,6 +283,15 @@ pub fn alphabet_warnings(raw: &str, molecule: MoleculeType) -> Vec<String> {
             if gaps == 1 { "" } else { "s" },
             kinds.join(", "),
             if gaps == 1 { "was" } else { "were" }
+        ));
+    }
+    if nucleotide && !stops.is_empty() {
+        let n = stops.len();
+        warnings.push(format!(
+            "{} stop character{} (*) {} left out; positions count the letters kept.",
+            n,
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "was" } else { "were" }
         ));
     }
     if lower > 0 && upper > 0 {
