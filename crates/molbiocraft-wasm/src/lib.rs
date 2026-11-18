@@ -89,7 +89,7 @@ use molbiocraft_formats::{
     get_curated_database_records, get_reference_database_categories,
     intersect_genomic_intervals_noodles, is_mbc_file_or_payload_rust, parse_bed_noodles,
     parse_binary_sequence_packet, parse_fasta_noodles, parse_fastq_noodles, parse_genbank_flatfile,
-    parse_gff3_noodles, parse_mbc_workbench_rust,
+    parse_gff3_noodles, parse_mbc_workbench_bytes_rust, parse_mbc_workbench_rust,
     pdb_mmcif::{parse_mmcif_structure, structure_chain_sequences, try_parse_pdb_or_mmcif_ca_coordinates},
     parse_remote_database_payload, parse_sam_noodles, parse_vcf_noodles,
     prepare_genbank_submission_package, query_curated_database_records,
@@ -1769,6 +1769,14 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let res = parse_mbc_workbench_rust(raw_text, fallback, now_iso)?;
             to_val(res)
         }
+        // A session's raw file bytes: gzip (`1f 8b`) is decompressed, anything else is read as
+        // UTF-8 (US-01M6P2S4).
+        "parse_mbc_workbench_bytes_rust" => {
+            let bytes: Vec<u8> = parse_field(&payload, "bytes")?;
+            let fallback = str_arg(&payload, "fallbackSessionName", "Imported_Session");
+            let now_iso = str_arg(&payload, "nowIso", "2026-10-31T08:00:00.000Z");
+            to_val(parse_mbc_workbench_bytes_rust(&bytes, fallback, now_iso)?)
+        }
         "trim_sanger_trace_mott_phred" => {
             let chrom: ChromatogramData = parse_field(&payload, "chromatogram")?;
             let cutoff = f64_arg(&payload, "errorCutoff", 0.05);
@@ -2635,5 +2643,92 @@ mod tests {
             "200 statements of the rule took {two_hundred_rules:?} and one scan of the same {} bases took {one_scan:?}: the rule is being read by scanning",
             seq.len()
         );
+    }
+
+    /// A gzip member holding `data` in stored (uncompressed) deflate blocks, with its CRC32 and
+    /// size trailer, so the test needs no compression crate.
+    fn gzip_stored(data: &[u8]) -> Vec<u8> {
+        let mut crc: u32 = 0xffff_ffff;
+        for &b in data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+            }
+        }
+        let crc = !crc;
+        let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+        let chunks: Vec<&[u8]> = if data.is_empty() { vec![&[][..]] } else { data.chunks(0xffff).collect() };
+        for (i, chunk) in chunks.iter().enumerate() {
+            out.push(u8::from(i + 1 == chunks.len()));
+            let len = chunk.len() as u16;
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&(!len).to_le_bytes());
+            out.extend_from_slice(chunk);
+        }
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out
+    }
+
+    /// US-01M6P2S4 AC3: the bytes op opens a gzip session (and plain UTF-8) as the text op does.
+    #[test]
+    fn parse_mbc_accepts_gzip_bytes() {
+        let doc = |id: &str, name: &str, seq: &str| {
+            json!({
+                "id": id, "name": name, "accession": "", "description": "", "moleculeType": "DNA",
+                "topology": "circular", "sequence": seq, "features": [], "primers": [],
+                "history": [], "createdAt": "", "updatedAt": "", "folder": ""
+            })
+        };
+        let text = dispatch_bio_rpc(
+            "serialize_mbc_workbench_rust",
+            json!({
+                "snapshot": {
+                    "sessionName": "Gz_Study",
+                    "documents": [doc("gz-a", "Alpha", "ATGAAACCCGGGTTTTAA"), doc("", "", "GGGCCCAAATTT")],
+                    "workspace": {}
+                },
+                "appVersion": "1.0.0",
+                "savedAtIso": "2026-11-19T00:00:00.000Z"
+            }),
+        )
+        .unwrap();
+        let text = text.as_str().unwrap().to_string();
+        let args = |extra: (&str, Value)| {
+            let mut p = json!({ "fallbackSessionName": "Fallback", "nowIso": "2026-11-19T00:00:00.000Z" });
+            p[extra.0] = extra.1;
+            p
+        };
+        let from_text = dispatch_bio_rpc("parse_mbc_workbench_rust", args(("rawText", json!(text)))).unwrap();
+        assert_eq!(from_text["checksumVerified"], true, "{}", from_text["warnings"]);
+
+        let gz = gzip_stored(text.as_bytes());
+        assert_eq!(&gz[..2], &[0x1f, 0x8b]);
+        let from_gz = dispatch_bio_rpc("parse_mbc_workbench_bytes_rust", args(("bytes", json!(gz)))).unwrap();
+        assert_eq!(from_gz["checksumVerified"], true, "{}", from_gz["warnings"]);
+        assert_eq!(from_gz["warnings"], json!([]));
+        assert_eq!(from_gz["envelope"]["documents"], from_text["envelope"]["documents"]);
+        assert_eq!(from_gz["envelope"]["documents"].as_array().unwrap().len(), 2);
+        assert_eq!(from_gz["envelope"]["documents"][0]["id"], "gz-a");
+        assert_eq!(from_gz["envelope"]["documents"][1]["id"], "mbc-doc-2");
+        assert_eq!(from_gz["envelope"]["sessionName"], "Gz_Study");
+
+        let from_plain = dispatch_bio_rpc(
+            "parse_mbc_workbench_bytes_rust",
+            args(("bytes", json!(text.as_bytes()))),
+        )
+        .unwrap();
+        assert_eq!(from_plain["checksumVerified"], true);
+        assert_eq!(from_plain["envelope"]["documents"], from_text["envelope"]["documents"]);
+
+        // Bytes that are neither gzip nor UTF-8, a broken gzip stream and a missing payload are
+        // refused by name rather than opened as an empty session.
+        let not_utf8 = dispatch_bio_rpc("parse_mbc_workbench_bytes_rust", args(("bytes", json!([0xff, 0xfe, 0x00]))))
+            .unwrap_err();
+        assert!(not_utf8.contains("UTF-8"), "{not_utf8}");
+        let broken = dispatch_bio_rpc("parse_mbc_workbench_bytes_rust", args(("bytes", json!(&gz[..gz.len() / 2]))))
+            .unwrap_err();
+        assert!(broken.contains("Gzip decompression failed"), "{broken}");
+        assert!(dispatch_bio_rpc("parse_mbc_workbench_bytes_rust", args(("nowIso", json!("x")))).is_err());
     }
 }

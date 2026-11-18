@@ -391,6 +391,7 @@ import {
   describeAutosaveFailure,
   hasWorkbenchLocalAutosave,
   isMbcFileOrPayload,
+  isMbcGzipBytes,
   isMbcZipArchiveBytes,
   loadWorkbenchFromLocalAutosave,
   MBC_MIME_TYPE,
@@ -398,6 +399,7 @@ import {
   MbcWorkbenchSnapshot,
   parseMbcFolderZip,
   parseMbcWorkbench,
+  parseMbcWorkbenchBytes,
   autosaveWorkbench,
   autosaveWorkbenchWithin,
   QUIT_AUTOSAVE_TIMEOUT_MS,
@@ -5856,14 +5858,20 @@ export const App: React.FC = () => {
       return;
     }
 
-    // 1b. MolBioCraft Folder Archive (.mcb / .mbc in PKZIP format)
-    if (lowerName.endsWith('.mcb') || lowerName.endsWith('.mbc') || lowerName.endsWith('.zip')) {
+    // 1b. MolBioCraft Folder Archive (.mcb / .mbc in PKZIP format), or a gzip-compressed session
+    // (.mbc / .mcb / .mbc.gz opening with 1f 8b), read from its bytes in Rust (US-01M6P2S4)
+    if (lowerName.endsWith('.mcb') || lowerName.endsWith('.mbc') || lowerName.endsWith('.zip') || lowerName.endsWith('.mbc.gz')) {
       const buf = await file.arrayBuffer();
       if (isMbcZipArchiveBytes(buf)) {
         const parsedZip = parseMbcFolderZip(buf, file.name);
         // The envelope holds an unreadable track setting already read as shown; hand in the
         // warnings that named it (US-01M7DV8W), as the autosave restore does.
         applyParsedMbcSession(JSON.stringify(parsedZip.envelope), file.name, mbcMode, { earlierWarnings: parsedZip.warnings });
+        return;
+      }
+      if (!lowerName.endsWith('.zip') && isMbcGzipBytes(buf)) {
+        const parsedGz = parseMbcWorkbenchBytes(buf, file.name);
+        applyParsedMbcSession(JSON.stringify(parsedGz.envelope), file.name, mbcMode, { earlierWarnings: parsedGz.warnings });
         return;
       }
     }

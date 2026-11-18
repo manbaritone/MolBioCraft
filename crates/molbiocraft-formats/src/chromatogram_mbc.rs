@@ -529,6 +529,9 @@ pub fn parse_mbc_workbench_rust(
     };
 
     let mut sanitized_docs = Vec::with_capacity(docs_arr.len());
+    // The documents as the file stores them, before blanks are filled: the writer hashed these
+    // (US-01M6P2S4), so a blank id or name it saved is not read as an edit.
+    let mut stored_docs = Vec::with_capacity(docs_arr.len());
     for (idx, d_val) in docs_arr.iter().enumerate() {
         let d_obj = d_val.as_object().ok_or_else(|| {
             format!("Invalid .mbc file: document at index {idx} is malformed.")
@@ -541,6 +544,7 @@ pub fn parse_mbc_workbench_rust(
         let mut doc: SequenceDocument = serde_json::from_value(d_val.clone()).map_err(|e| {
             format!("Invalid .mbc file: document at index {idx} is malformed ({e}).")
         })?;
+        stored_docs.push(doc.clone());
         if doc.id.trim().is_empty() {
             doc.id = format!("mbc-doc-{}", idx + 1);
         }
@@ -574,11 +578,21 @@ pub fn parse_mbc_workbench_rust(
         .unwrap_or("");
     let expected_crc32 = obj.get("checksumCrc32").and_then(|v| v.as_str());
 
-    let fnv_ok = !expected_fnv1a.is_empty() && expected_fnv1a == computed_fnv1a;
-    let crc_ok = expected_crc32.map(|c| c == computed_crc32).unwrap_or(true);
-    let checksum_verified = fnv_ok && crc_ok;
+    // Both digests must match one form of the documents: as stored (what the writer hashed), or
+    // as filled (the form an earlier reader handed back and a re-save wrote). The warning and the
+    // returned envelope keep the filled form's computation.
+    let stored_fnv1a = fnv1a_from_sequence_docs(&stored_docs);
+    let stored_crc32 = compute_mbc_crc32_checksum_docs(&stored_docs);
+    let fnv_matches = |fnv1a: &str| !expected_fnv1a.is_empty() && expected_fnv1a == fnv1a;
+    let crc_matches = |crc32: &str| expected_crc32.map(|c| c == crc32).unwrap_or(true);
+    let checksum_verified = (fnv_matches(&stored_fnv1a) && crc_matches(&stored_crc32))
+        || (fnv_matches(&computed_fnv1a) && crc_matches(&computed_crc32));
+    let fnv_ok = fnv_matches(&stored_fnv1a) || fnv_matches(&computed_fnv1a);
+    let crc_ok = crc_matches(&stored_crc32) || crc_matches(&computed_crc32);
 
-    if !expected_fnv1a.is_empty() && !fnv_ok {
+    // Each digest matching a different form still fails, and is named as an FNV-1a mismatch
+    // rather than passing unverified without a word.
+    if !expected_fnv1a.is_empty() && (!fnv_ok || (!checksum_verified && crc_ok)) {
         warnings.push(format!(
             "Checksum mismatch (expected {expected_fnv1a}, computed {computed_fnv1a}); file may have been edited externally."
         ));
@@ -1837,5 +1851,111 @@ mod tests {
                 assert_eq!(parsed.warnings, vec![sentence.to_string()], "{key} = {bad}: exactly one warning naming it");
             }
         }
+    }
+
+    /// US-01M6P2S4: a session whose documents were saved with a blank id and a blank name. The
+    /// writer hashes the documents as given; the reader fills the blanks afterwards.
+    fn blank_id_session_json() -> String {
+        let mut first = build_ncbi_reference_preset_document("spike", "2026-10-31T08:00:00.000Z");
+        first.id = String::new();
+        first.name = String::new();
+        let mut second = first.clone();
+        second.id = "   ".to_string();
+        second.name = " ".to_string();
+        second.sequence = "ATGAAACCCGGGTTTTAA".to_string();
+        let snap: MbcWorkbenchSnapshotInput = serde_json::from_value(serde_json::json!({
+            "sessionName": "Blank_Ids",
+            "documents": [first, second],
+            "workspace": {}
+        }))
+        .unwrap();
+        serialize_mbc_workbench_rust(&snap, "1.0.0", "2026-10-31T08:00:00.000Z")
+    }
+
+    /// US-01M6P2S4 AC1: blank ids and names are filled on reading, and the checksum is checked
+    /// against the documents as the file stores them, so the fill is not read as an edit.
+    #[test]
+    fn blank_ids_do_not_trigger_a_checksum_mismatch() {
+        let json = blank_id_session_json();
+        // The writer is unchanged: it stores the blanks it was given.
+        let stored: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(stored["documents"][0]["id"], "");
+        assert_eq!(stored["documents"][1]["id"], "   ");
+
+        let parsed = parse_mbc_workbench_rust(&json, "Fallback", "2026-10-31T08:00:00.000Z").unwrap();
+        assert!(parsed.checksum_verified, "{:?}", parsed.warnings);
+        assert!(
+            !parsed.warnings.iter().any(|w| w.contains("Checksum mismatch")),
+            "{:?}",
+            parsed.warnings
+        );
+        let ids: Vec<&str> = parsed.envelope.documents.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["mbc-doc-1", "mbc-doc-2"]);
+        let names: Vec<&str> = parsed.envelope.documents.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["Sequence_1", "Sequence_2"]);
+        // R4: the envelope carries the checksum computed over the filled documents.
+        assert_eq!(parsed.envelope.checksum_fnv1a, fnv1a_from_sequence_docs(&parsed.envelope.documents));
+
+        // A file sealed over the filled form (the epic's risk row: a re-save of what a reader
+        // handed back, with blanks left in its documents) verifies too.
+        let mut sealed_filled = stored.clone();
+        sealed_filled["checksumFnv1a"] = serde_json::json!(parsed.envelope.checksum_fnv1a);
+        sealed_filled["checksumCrc32"] = serde_json::json!(parsed.envelope.checksum_crc32);
+        assert_ne!(sealed_filled["checksumFnv1a"], stored["checksumFnv1a"]);
+        let filled = parse_mbc_workbench_rust(&sealed_filled.to_string(), "Fallback", "2026-10-31T08:00:00.000Z").unwrap();
+        assert!(filled.checksum_verified, "{:?}", filled.warnings);
+        assert!(filled.warnings.is_empty(), "{:?}", filled.warnings);
+
+        // The same file gzip-wrapped verifies too.
+        let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
+        enc.write_all(json.as_bytes()).unwrap();
+        let gz = parse_mbc_workbench_bytes_rust(&enc.finish().unwrap(), "Fallback", "2026-10-31T08:00:00.000Z").unwrap();
+        assert!(gz.checksum_verified, "{:?}", gz.warnings);
+        assert!(gz.warnings.is_empty(), "{:?}", gz.warnings);
+    }
+
+    /// US-01M6P2S4 AC2: accepting the stored form does not hide an edit made after saving.
+    #[test]
+    fn an_edited_sequence_still_reports_a_mismatch() {
+        let json = blank_id_session_json();
+        let original: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let stored_fnv1a = original["checksumFnv1a"].as_str().unwrap().to_string();
+        let mut edited = original.clone();
+        edited["documents"][1]["sequence"] = serde_json::json!("ATGAAACCCGGGTTTTAG");
+        let edited_text = serde_json::to_string(&edited).unwrap();
+
+        let parsed = parse_mbc_workbench_rust(&edited_text, "Fallback", "2026-10-31T08:00:00.000Z").unwrap();
+        assert!(!parsed.checksum_verified);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        assert!(parsed.warnings[0].starts_with("Checksum mismatch (expected "), "{:?}", parsed.warnings);
+        assert!(parsed.warnings[0].contains(&stored_fnv1a));
+        assert_eq!(parsed.envelope.documents[1].sequence, "ATGAAACCCGGGTTTTAG");
+
+        // The FNV-1a re-sealed over the edited stored documents, the CRC32 left stale: the stored
+        // form must pass both digests, not only the FNV-1a.
+        let stored_docs: Vec<SequenceDocument> =
+            serde_json::from_value(edited["documents"].clone()).unwrap();
+        let mut resealed = edited.clone();
+        resealed["checksumFnv1a"] = serde_json::json!(fnv1a_from_sequence_docs(&stored_docs));
+        let crc_bad = parse_mbc_workbench_rust(
+            &serde_json::to_string(&resealed).unwrap(),
+            "Fallback",
+            "2026-10-31T08:00:00.000Z",
+        )
+        .unwrap();
+        assert!(!crc_bad.checksum_verified, "a stale CRC32 must fail verification");
+        assert_eq!(crc_bad.warnings.len(), 1, "{:?}", crc_bad.warnings);
+        assert!(crc_bad.warnings[0].starts_with("Checksum mismatch in IEEE CRC32 (expected "));
+
+        // Each digest matching a different form (FNV-1a of the stored documents, CRC32 of the
+        // filled ones) is no seal: unverified, and named rather than passed in silence.
+        let unedited = parse_mbc_workbench_rust(&json, "Fallback", "2026-10-31T08:00:00.000Z").unwrap();
+        let mut mixed = original.clone();
+        mixed["checksumCrc32"] = serde_json::json!(unedited.envelope.checksum_crc32);
+        assert_ne!(mixed["checksumCrc32"], original["checksumCrc32"]);
+        let mixed = parse_mbc_workbench_rust(&mixed.to_string(), "Fallback", "2026-10-31T08:00:00.000Z").unwrap();
+        assert!(!mixed.checksum_verified, "digests from two forms must not verify");
+        assert_eq!(mixed.warnings.len(), 1, "{:?}", mixed.warnings);
+        assert!(mixed.warnings[0].starts_with("Checksum mismatch (expected "), "{:?}", mixed.warnings);
     }
 }

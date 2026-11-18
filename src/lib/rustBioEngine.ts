@@ -1514,6 +1514,23 @@ export function parseMbcWorkbenchRust<T>(
   });
 }
 
+/**
+ * Parses a session from its raw file bytes in Rust (US-01M6P2S4): gzip bytes (`1f 8b`) are
+ * decompressed first, anything else is read as UTF-8. Throws, naming the cause, on bytes that are
+ * neither, as the text reader does on a file that is not a session.
+ */
+export function parseMbcWorkbenchBytesRust<T>(
+  bytes: Uint8Array | ArrayBuffer,
+  fallbackSessionName = 'Imported_Session',
+  nowIso = new Date().toISOString()
+): T {
+  return invokeRustBioSync<T>('parse_mbc_workbench_bytes_rust', {
+    bytes: Array.from(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)),
+    fallbackSessionName,
+    nowIso,
+  });
+}
+
 export interface MottPhredTrimReport {
   rawLengthBp: number;
   trimmedLengthBp: number;

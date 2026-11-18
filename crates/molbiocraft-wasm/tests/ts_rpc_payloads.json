@@ -526,6 +526,11 @@
  "parse_gff3_sequences": [
   "text"
  ],
+ "parse_mbc_workbench_bytes_rust": [
+  "bytes",
+  "fallbackSessionName",
+  "nowIso"
+ ],
  "parse_mbc_workbench_rust": [
   "fallbackSessionName",
   "nowIso",

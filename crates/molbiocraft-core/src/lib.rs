@@ -417,6 +417,24 @@ pub fn sanitize_workspace_path(raw_path: &str) -> Result<PathBuf, BioEngineError
     Ok(candidate)
 }
 
+/// The temp file an atomic write fills before renaming it over `path` (US-01M6P2S4): a hidden
+/// sibling named after the whole file name, the process id and a process-wide counter, so x.gb and
+/// x.fasta in one folder, or two writes of one file, never share a temp file.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn atomic_temp_path(path: &std::path::Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static ATOMIC_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let pid = std::process::id();
+    let counter = ATOMIC_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(".{file_name}.{pid}-{counter}.mbc_tmp"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn atomic_write_with_lock_retry(
     path: &std::path::Path,
@@ -440,7 +458,7 @@ pub fn atomic_write_with_lock_retry(
         _ => BioEngineError::IoFailure(e.to_string()),
     })?;
 
-    let tmp_path = path.with_extension("mbc_tmp");
+    let tmp_path = atomic_temp_path(path);
     let max_attempts = 4u32;
 
     for attempt in 1..=max_attempts {
@@ -557,6 +575,67 @@ pub fn compute_batch_sequence_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// US-01M6P2S4 AC5: x.gb and x.fasta in one folder no longer share `x.mbc_tmp`, so writing
+    /// both at once leaves each file its own bytes and no temp file behind.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn atomic_writes_to_sibling_files_use_distinct_temp_names() {
+        let dir = std::env::temp_dir().join(format!(
+            "mbc-atomic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gb = dir.join("x.gb");
+        let fasta = dir.join("x.fasta");
+
+        let tmp_gb = atomic_temp_path(&gb);
+        let tmp_fasta = atomic_temp_path(&fasta);
+        assert_ne!(tmp_gb, tmp_fasta);
+        assert_eq!(tmp_gb.parent(), Some(dir.as_path()));
+        assert_eq!(tmp_fasta.parent(), Some(dir.as_path()));
+        for tmp in [&tmp_gb, &tmp_fasta] {
+            assert_ne!(tmp, &gb);
+            assert_ne!(tmp, &fasta);
+            assert!(tmp.to_string_lossy().ends_with(".mbc_tmp"), "{tmp:?}");
+        }
+        // Two writes of the same file in one process do not share a name either.
+        assert_ne!(atomic_temp_path(&gb), atomic_temp_path(&gb));
+
+        for round in 0..200 {
+            let gb_bytes = format!("LOCUS gb {round}\n").repeat(64).into_bytes();
+            let fasta_bytes = format!(">fasta {round}\nACGT\n").repeat(64).into_bytes();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let spawn = |path: std::path::PathBuf, bytes: Vec<u8>| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    atomic_write_with_lock_retry(&path, &bytes)
+                })
+            };
+            let a = spawn(gb.clone(), gb_bytes.clone());
+            let b = spawn(fasta.clone(), fasta_bytes.clone());
+            a.join().unwrap().expect("x.gb written");
+            b.join().unwrap().expect("x.fasta written");
+            assert_eq!(std::fs::read(&gb).unwrap(), gb_bytes, "round {round}");
+            assert_eq!(std::fs::read(&fasta).unwrap(), fasta_bytes, "round {round}");
+        }
+        // A write whose rename fails (the target is a folder) removes the temp file it filled.
+        let folder = dir.join("x.gb.d");
+        std::fs::create_dir_all(folder.join("inner")).unwrap();
+        assert!(atomic_write_with_lock_retry(&folder, b"ACGT").is_err());
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".mbc_tmp"))
+            .collect();
+        assert!(left.is_empty(), "temp files left behind: {left:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// Pins that the diagnostics call reads the XDG rule where it is compiled in;
     /// it only reads the environment, never sets it.

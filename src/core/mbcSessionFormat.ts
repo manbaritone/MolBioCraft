@@ -4,6 +4,7 @@
 import {
   computeMbcPayloadChecksumRust,
   isMbcFileOrPayloadRust,
+  parseMbcWorkbenchBytesRust,
   parseMbcWorkbenchRust,
   serializeMbcWorkbenchRust,
 } from '../lib/rustBioEngine';
@@ -349,6 +350,28 @@ export function parseMbcWorkbench(
   const cleanedFallback = fallbackSessionName.replace(/\.(mbc|mcb)$/i, '') || 'Imported_Session';
   return parseMbcWorkbenchRust<ParsedMbcWorkbenchResult>(
     rawText,
+    cleanedFallback,
+    new Date().toISOString()
+  );
+}
+
+/** True when the bytes open with the gzip magic `1f 8b` (a `.mbc.gz`, or a `.mbc` saved compressed). */
+export function isMbcGzipBytes(input: Uint8Array | ArrayBuffer): boolean {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
+/**
+ * Parses a session from its file bytes (US-01M6P2S4): gzip is decompressed in Rust, then the
+ * session is read and checksum-verified as `parseMbcWorkbench` reads text.
+ */
+export function parseMbcWorkbenchBytes(
+  bytes: Uint8Array | ArrayBuffer,
+  fallbackSessionName = 'Imported_Session'
+): ParsedMbcWorkbenchResult {
+  const cleanedFallback = fallbackSessionName.replace(/\.(mbc\.gz|mbc|mcb)$/i, '') || 'Imported_Session';
+  return parseMbcWorkbenchBytesRust<ParsedMbcWorkbenchResult>(
+    bytes,
     cleanedFallback,
     new Date().toISOString()
   );
