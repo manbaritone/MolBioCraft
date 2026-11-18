@@ -15890,7 +15890,9 @@ table,
   overflow-wrap: anywhere;
 }
 
+/* Positioned, so a card's rotate control (US-01M7DV6R) floats over its own map, under its Rotate button. */
 .mbc-map-gallery-map {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -15928,11 +15930,6 @@ table,
   align-items: center;
   gap: 4px;
   align-self: flex-start;
-}
-
-/* A card's rotate control floats over its own map, under its Rotate button. */
-.mbc-map-gallery-map {
-  position: relative;
 }
 
 .mbc-map-gallery-map > .circular-rotation-control {

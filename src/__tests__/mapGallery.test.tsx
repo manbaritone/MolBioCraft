@@ -832,7 +832,7 @@ async function rotateCard(app: AppHarness, d: SequenceDocument, deg: string) {
 const savedRotation = async (app: AppHarness) =>
   ((await autosaved(app)).envelope.workspace as { mapRotation?: Record<string, number | null> }).mapRotation ?? {};
 /** A plain wheel off the map's centre, as a pointer over a card sends it; returns whether its default (scrolling the gallery) was prevented. */
-async function wheelOver(app: AppHarness, svg: LiveElement, mods: { ctrlKey?: boolean } = {}) {
+async function wheelOver(app: AppHarness, svg: LiveElement, mods: { ctrlKey?: boolean; metaKey?: boolean } = {}) {
   const scroller = svg.parentElement!;
   expect(scroller.classList.contains('plasmid-canvas-scroll'), "the map's wheel target").toBe(true);
   let prevented = true;
@@ -926,12 +926,14 @@ describe("US-01M7DV6R AC1: a card's selection and rotation are its own", () => {
       liveDoc.layout = (el) => (el.classList.contains('plasmid-svg') ? { ...GALLERY_CARD_MAP_BOX } : layoutBefore(el));
       const views = [viewport(cardCircle(app, CA)), viewport(cardCircle(app, CB))];
       const plain = [await wheelOver(app, cardCircle(app, CA)), await wheelOver(app, cardCircle(app, CB))];
-      const pinches = [await wheelOver(app, cardCircle(app, CA), { ctrlKey: true }), ...(await pinchOver(app, cardCircle(app, CB)))];
+      const pinches = [
+        await wheelOver(app, cardCircle(app, CA), { ctrlKey: true }), await wheelOver(app, cardCircle(app, CB), { metaKey: true }), ...(await pinchOver(app, cardCircle(app, CB))),
+      ];
       liveDoc.layout = layoutBefore;
       expect([cardOwn(app, CA).scale, cardOwn(app, CB).scale], 'the cards keep their size').toEqual([1, 1]);
       expect([viewport(cardCircle(app, CA)), viewport(cardCircle(app, CB))], 'and their place').toEqual(views);
       expect(plain, 'a plain wheel over a card is left to scroll the gallery').toEqual([false, false]);
-      expect(pinches, "a pinch's default (zooming the page) is prevented").toEqual([true, true, true, true]);
+      expect(pinches, "a pinch's default (zooming the page) is prevented: ctrl wheel, meta wheel, gesture start, change and end").toEqual([true, true, true, true, true]);
       await outside('a wheel over the cards');
       // A double-click recentres a map at 100%: on a card it reaches no zoom but the card's own.
       for (const d of [CA, CB]) {
@@ -1025,6 +1027,38 @@ describe('US-01M7DV6R AC2: Compare in split with exactly two cards chosen', () =
       await opened(fifth, sixth, TOP_BOTTOM, 'activated by key with the pane focused');
     });
   });
+
+  it('US-01M7DV6R AC2 with either pane folded, Compare in split unfolds it at the ratio it had, so both chosen records are shown', async () => {
+    const docs = [CA, CB, LIN, TWIN_A];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id, {
+        mapRotation: { [TWIN_A.id]: 120 },
+        documentSplit: { orientation: 'side-by-side', docId: CB.id, docName: CB.name, ratio: 0.3, collapsed: 'second' },
+      });
+      const docDivider = () => app.one('.mbc-split-host > .mbc-split-divider', 'the document split divider');
+      const drawnRatio = () => docDivider().getAttribute('aria-valuenow');
+      expect([splitHostClasses(app), drawnRatio()], 'the fixture: the second pane folded at 30%').toEqual([`is-collapsed-second ${SIDE_BY_SIDE}`, '100']);
+      await checkAll(app);
+      const order = () => cards(app).map(cardAcc);
+      for (const fold of ['second', 'main'] as const) {
+        if (fold === 'main') {
+          docDivider().focus();
+          await app.press('Home');
+          expect([splitHostClasses(app), drawnRatio()], 'the fixture: the main view folded').toEqual([`is-collapsed-main ${SIDE_BY_SIDE}`, '0']);
+        }
+        await openByToolbar(app);
+        const [first, second] = [CA, TWIN_A].sort((a, b) => order().indexOf(a.accession) - order().indexOf(b.accession));
+        await app.change(chooseBox(app, first), true);
+        await app.change(chooseBox(app, second), true);
+        await app.click(compareButton(app));
+        expect(galleries(app), `${fold} folded: the gallery closes`).toHaveLength(0);
+        expect([splitHostClasses(app), drawnRatio()], `${fold} folded: both panes shown, at the ratio they had`).toEqual([SIDE_BY_SIDE, '30']);
+        expect(mainRecord(app, docs), `${fold} folded: the first chosen in the main view`).toEqual([first.accession]);
+        expect(picker(app).value, `${fold} folded: the second chosen in the pane`).toBe(second.id);
+        expect(app.canvas().getAttribute('aria-current'), `${fold} folded: the main pane focused`).toBe('true');
+      }
+    });
+  });
 });
 
 describe("US-01M7DV6R AC3: the table's sort orders the cards, and each card's state moves with its record", () => {
@@ -1095,8 +1129,19 @@ describe('US-01M7DV6R AC4: checking rows adds and removes cards; the others keep
       expect(cardOwn(app, TWIN_A)).toEqual(twin);
       expect(cardOwn(app, CA)).toEqual({ wedge: '0', interval: [], scale: 1, chosen: false });
       expect([compareButton(app).hasAttribute('disabled'), compareButton(app).getAttribute('title')]).toEqual([true, compareReason(1)]);
+      // D0195: a card's state is kept by its record's id while the gallery is open, so Circ_B checked
+      // again comes back as it was left, its choice counted again...
+      await check(app, CB);
+      expect(cardOwn(app, CB), 'Circ_B checked again: as it was left').toEqual(cb);
+      expect(compareButton(app).hasAttribute('disabled'), 'two chosen again').toBe(false);
+      // ...and closing the gallery forgets every card's.
+      await closeGallery(app);
+      await openByToolbar(app);
+      expect([CA, CB, TWIN_A].map((d) => cardOwn(app, d)), 'reopened: every card fresh').toEqual(
+        [CA, CB, TWIN_A].map(() => ({ wedge: '0', interval: [], scale: 1, chosen: false })),
+      );
 
-      for (const d of [CA, TWIN_A]) await check(app, d, false);
+      for (const d of [CA, CB, TWIN_A]) await check(app, d, false);
       expect(galleries(app), 'the gallery stays').toHaveLength(1);
       expect(cards(app)).toHaveLength(0);
       expect(words(gallery(app).textContent)).toContain('No record is checked in the document table.');

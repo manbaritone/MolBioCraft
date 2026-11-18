@@ -3775,11 +3775,13 @@ export const App: React.FC = () => {
   /**
    * Compare in split (US-01M7DV6R): the first chosen card opens in the main view as Open in viewer
    * does, and the second in the split pane at the main view's rotation for it, in the orientation last
-   * chosen (Side by Side the first time), with the main pane focused.
+   * chosen (Side by Side the first time), with the main pane focused. A folded pane, either one, is
+   * unfolded at the ratio it had, so both records are shown.
    */
   const compareFromMapGallery = (mainDocId: string, paneDocId: string) => {
     openFromMapGallery(mainDocId);
     chooseDocumentSplit(lastDocumentSplitRef.current);
+    setDocumentSplitSize((size) => (size.collapsed ? { ...size, collapsed: null } : size));
     // After chooseDocumentSplit, so the pane's document and rotation are these, not the split's first candidate.
     showInSplitPane(paneDocId);
     setFocusedPane('main');
