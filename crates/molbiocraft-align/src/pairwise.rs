@@ -11,7 +11,11 @@ use bio::alignment::pairwise::{Aligner, MatchFunc, Scoring};
 use bio::alignment::AlignmentOperation;
 use bio::scores::{blosum62, pam250};
 use molbiocraft_core::clean_alpha_sequence;
-use molbiocraft_core::iupac::{nucleotide_pair_class, NucleotidePairClass};
+use molbiocraft_core::iupac::{
+    classify_molecule, nucleotide_letter_kind, nucleotide_pair_class, AlphabetCall, NucleotideLetterKind,
+    NucleotidePairClass,
+};
+use molbiocraft_core::MoleculeType;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +53,22 @@ pub struct PairwiseAlignmentResult {
     pub cigar: String,
     pub algorithm: String,
     pub engine_used: String,
+    /// The scoring matrix the score came from ([`ScoringMatrixKind::label`]): "IUPAC nucleotide",
+    /// "BLOSUM62" or "PAM250", or, from the banded aligner, which scores protein by letter equality,
+    /// "identity (match/mismatch)"; empty when nothing was aligned.
+    #[serde(default)]
+    pub matrix: String,
+}
+
+impl ScoringMatrixKind {
+    /// The name a reply gives the matrix in its `matrix` field.
+    pub fn label(self) -> &'static str {
+        match self {
+            ScoringMatrixKind::DnaIupac => "IUPAC nucleotide",
+            ScoringMatrixKind::Blosum62 => "BLOSUM62",
+            ScoringMatrixKind::Pam250 => "PAM250",
+        }
+    }
 }
 
 /// A pairwise alignment requested by the names of its mode and scoring matrix, as an RPC payload
@@ -64,9 +84,94 @@ pub struct NamedPairwiseAlignment {
     pub warnings: Vec<String>,
 }
 
-/// Heuristic detector for protein sequences when caller does not specify matrix explicitly.
-pub fn looks_like_protein_sequence(seq: &str) -> bool {
-    seq.bytes().any(|b| !b"ACGTURYSWKMBDHVN-.".contains(&b.to_ascii_uppercase()))
+/// The matrix an aligner scores with when none is named (US-01M7NKNJ): BLOSUM62 when the shared
+/// alphabet rule (US-01M6VFRY), called once over every input together, reads protein; the IUPAC
+/// nucleotide matrix for a DNA or RNA call, and for inputs with no residue letter.
+pub fn matrix_for_call(call: &AlphabetCall) -> ScoringMatrixKind {
+    if call.molecule == Some(MoleculeType::Protein) {
+        ScoringMatrixKind::Blosum62
+    } else {
+        ScoringMatrixKind::DnaIupac
+    }
+}
+
+/// The sentence an alignment owes for an uncertain alphabet call (US-01M6VFRY's
+/// [`AlphabetCall::note`]), or None for a certain call or inputs with no residue letter.
+pub fn uncertain_call_warning(call: &AlphabetCall) -> Option<String> {
+    if call.uncertain {
+        call.note()
+    } else {
+        None
+    }
+}
+
+/// The most positions a stray-letter sentence lists before ", and k more".
+const LISTED_STRAY_POSITIONS: usize = 10;
+
+/// The sentences a nucleotide alignment owes for the letters of `residues` that are no nucleotide
+/// code (US-01M7NKNJ): kept in the aligned text as written (D0005) and scored by the pair class as
+/// N is, so each is named, inosine (I) apart from every other letter. `place` names the input
+/// ("sequence 1", "row 2"); positions count the letters of `residues` from 1, gaps not counted.
+/// For example "1 inosine (I at 11 in sequence 1) was scored as N." and "2 letters that are not
+/// nucleotide codes (X at 10 and 12 in sequence 1) were scored as N."; none for a row of IUPAC
+/// nucleotide codes alone.
+pub fn stray_letter_warnings(residues: &str, place: &str) -> Vec<String> {
+    let (mut inosine, mut other): (Vec<(u8, usize)>, Vec<(u8, usize)>) = (Vec::new(), Vec::new());
+    let mut pos = 0usize;
+    for b in residues.bytes() {
+        if !b.is_ascii_alphabetic() {
+            continue;
+        }
+        pos += 1;
+        match nucleotide_letter_kind(b) {
+            Some(NucleotideLetterKind::Inosine) => inosine.push((b'I', pos)),
+            Some(NucleotideLetterKind::Other) => other.push((b.to_ascii_uppercase(), pos)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for (found, one, many) in [
+        (&inosine, "inosine", "inosines"),
+        (&other, "letter that is not a nucleotide code", "letters that are not nucleotide codes"),
+    ] {
+        if found.is_empty() {
+            continue;
+        }
+        let shown = &found[..found.len().min(LISTED_STRAY_POSITIONS)];
+        let more = found.len() - shown.len();
+        let mut letters: Vec<u8> = Vec::new();
+        for (l, _) in shown {
+            if !letters.contains(l) {
+                letters.push(*l);
+            }
+        }
+        let groups: Vec<String> = letters
+            .iter()
+            .map(|l| {
+                let at: Vec<String> = shown.iter().filter(|(x, _)| x == l).map(|(_, p)| p.to_string()).collect();
+                // a cut-off list keeps its commas, so ", and k more" is the one "and"
+                format!("{} at {}", *l as char, if more > 0 { at.join(", ") } else { joined_with_and(&at) })
+            })
+            .collect();
+        let tail = if more > 0 { format!(", and {more} more") } else { String::new() };
+        let n = found.len();
+        out.push(format!(
+            "{n} {} ({}{tail} in {place}) {} scored as N.",
+            if n == 1 { one } else { many },
+            groups.join("; "),
+            if n == 1 { "was" } else { "were" }
+        ));
+    }
+    out
+}
+
+/// "a", "a and b", "a, b and c".
+fn joined_with_and(items: &[String]) -> String {
+    match items.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, head)) => format!("{} and {last}", head.join(", ")),
+    }
 }
 
 /// The residues [`align_pairwise_gotoh`] aligns: alphabetic characters, upper case. Translated
@@ -79,21 +184,30 @@ fn alignment_residues(raw: &str) -> String {
     }
 }
 
-/// The matrix chosen when none is named: BLOSUM62 when either sequence looks like protein, the
-/// IUPAC nucleotide matrix otherwise.
-fn default_matrix(s1: &str, s2: &str) -> ScoringMatrixKind {
-    if looks_like_protein_sequence(s1) || looks_like_protein_sequence(s2) {
-        ScoringMatrixKind::Blosum62
+/// The one alphabet call a pairwise aligner makes (US-01M7NKNJ): over both sequences together, and
+/// over the one when a sequence is aligned against itself, so its sentence counts the letters given
+/// once. Two identical sequences have the letter shares of one, so the call reads the same either way.
+pub fn pair_alphabet_call(s1: &str, s2: &str) -> AlphabetCall {
+    if s1.eq_ignore_ascii_case(s2) {
+        classify_molecule(&[s1])
     } else {
-        ScoringMatrixKind::DnaIupac
+        classify_molecule(&[s1, s2])
     }
+}
+
+/// The matrix chosen when none is named: [`matrix_for_call`] of the pair's one alphabet call.
+fn default_matrix(s1: &str, s2: &str) -> ScoringMatrixKind {
+    matrix_for_call(&pair_alphabet_call(s1, s2))
 }
 
 /// [`align_pairwise_gotoh`] with its mode and scoring matrix given by name, as an RPC payload gives
 /// them (any case, surrounding spaces ignored): mode `global`, `local` or `semiglobal`; matrix
 /// `auto` (the [`default_matrix`] for the pair), `blosum62`, `pam250`, or `nucleotide` /
 /// `dnaiupac`. An unknown mode aligns globally and an unknown matrix with the default for the pair,
-/// and `warnings` names each, with what was used in its place (D0005).
+/// and `warnings` names each, with what was used in its place (D0005). When the alphabet rule chose
+/// the matrix (`auto` or an unknown name) and its call is uncertain, `warnings` carries the call's
+/// sentence; a nucleotide alignment names each letter that is no nucleotide code in either
+/// sequence ([`stray_letter_warnings`]), then the ambiguity-identity sentence.
 #[allow(clippy::too_many_arguments)]
 pub fn align_pairwise_named(
     raw_seq1: &str,
@@ -107,6 +221,8 @@ pub fn align_pairwise_named(
     max_bases: usize,
 ) -> NamedPairwiseAlignment {
     let mut warnings = Vec::new();
+    let (r1, r2) = (alignment_residues(raw_seq1), alignment_residues(raw_seq2));
+    let call = pair_alphabet_call(&r1, &r2);
     let mode_kind = match mode.trim().to_ascii_lowercase().as_str() {
         "global" => PairwiseMode::Global,
         "local" => PairwiseMode::Local,
@@ -116,13 +232,20 @@ pub fn align_pairwise_named(
             PairwiseMode::Global
         }
     };
+    // the alphabet rule chose the matrix: 'auto', or an unknown name's fallback
+    let mut by_rule = true;
     let matrix_kind = match matrix.trim().to_ascii_lowercase().as_str() {
         "auto" => None,
-        "blosum62" => Some(ScoringMatrixKind::Blosum62),
-        "pam250" => Some(ScoringMatrixKind::Pam250),
-        "nucleotide" | "dnaiupac" => Some(ScoringMatrixKind::DnaIupac),
+        named @ ("blosum62" | "pam250" | "nucleotide" | "dnaiupac") => {
+            by_rule = false;
+            Some(match named {
+                "blosum62" => ScoringMatrixKind::Blosum62,
+                "pam250" => ScoringMatrixKind::Pam250,
+                _ => ScoringMatrixKind::DnaIupac,
+            })
+        }
         _ => {
-            let used = default_matrix(&alignment_residues(raw_seq1), &alignment_residues(raw_seq2));
+            let used = matrix_for_call(&call);
             let (label, alphabet) = match used {
                 ScoringMatrixKind::Blosum62 => ("BLOSUM62", "protein"),
                 ScoringMatrixKind::Pam250 => ("PAM250", "protein"),
@@ -145,8 +268,13 @@ pub fn align_pairwise_named(
         gap_extend,
         max_bases,
     );
-    let used = matrix_kind.unwrap_or_else(|| default_matrix(&alignment_residues(raw_seq1), &alignment_residues(raw_seq2)));
+    if by_rule {
+        warnings.extend(uncertain_call_warning(&call));
+    }
+    let used = matrix_kind.unwrap_or_else(|| matrix_for_call(&call));
     if used == ScoringMatrixKind::DnaIupac {
+        warnings.extend(stray_letter_warnings(&r1, "sequence 1"));
+        warnings.extend(stray_letter_warnings(&r2, "sequence 2"));
         warnings.extend(ambiguity_identity_warning(&alignment));
     }
     NamedPairwiseAlignment { alignment, warnings }
@@ -154,14 +282,16 @@ pub fn align_pairwise_named(
 
 /// The sentence saying how many aligned columns of a nucleotide alignment pair N or another
 /// ambiguity code, none of which counts as an identity (US-01M6VF1T), or `None` when no column
-/// does: a column of two letters, either of them not A, C, G, T or U.
+/// does: a column of two letters, either of them N or another IUPAC code (R Y S W K M B D H V).
+/// A column whose only letter outside A, C, G, T and U is inosine or no nucleotide code is named by
+/// [`stray_letter_warnings`] instead.
 fn ambiguity_identity_warning(alignment: &PairwiseAlignmentResult) -> Option<String> {
-    let definite = |b: u8| matches!(b.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T' | b'U');
+    let code = |b: u8| matches!(nucleotide_letter_kind(b), Some(NucleotideLetterKind::N | NucleotideLetterKind::Ambiguity));
     let n = alignment
         .aligned_seq1
         .bytes()
         .zip(alignment.aligned_seq2.bytes())
-        .filter(|&(a, b)| a != b'-' && b != b'-' && !(definite(a) && definite(b)))
+        .filter(|&(a, b)| a != b'-' && b != b'-' && (code(a) || code(b)))
         .count();
     match n {
         0 => None,
@@ -173,21 +303,6 @@ fn ambiguity_identity_warning(alignment: &PairwiseAlignmentResult) -> Option<Str
             "Identity counts only identical A, C, G and T/U; {n} columns pair N or another ambiguity code and are not counted as identities."
         )),
     }
-}
-
-/// Symmetric ambiguity compatibility for two aligned residues (not motif matching): whether their
-/// base sets meet. The pairwise and progressive aligners score by `nucleotide_pair_class` instead;
-/// the POA and banded paths (poa_and_banded.rs) still read this.
-pub(crate) fn compatible_nucleotides(a: u8, b: u8) -> bool {
-    fn mask(b: u8) -> u8 {
-        match b.to_ascii_uppercase() {
-            b'A' => 1, b'C' => 2, b'G' => 4, b'T' | b'U' => 8,
-            b'R' => 5, b'Y' => 10, b'S' => 6, b'W' => 9, b'K' => 12,
-            b'M' => 3, b'B' => 14, b'D' => 13, b'H' => 11, b'V' => 7,
-            b'N' => 15, _ => 0,
-        }
-    }
-    mask(a) & mask(b) != 0
 }
 
 /// Core Gotoh affine-gap pairwise alignment via `rust-bio`.
@@ -218,6 +333,8 @@ pub fn align_pairwise_gotoh(
         PairwiseMode::Semiglobal => "Semi-global (free end gaps)".to_string(),
     };
 
+    let matrix_kind = matrix.unwrap_or_else(|| default_matrix(s1, s2));
+
     if s1.is_empty() && s2.is_empty() {
         return PairwiseAlignmentResult {
             aligned_seq1: String::new(),
@@ -236,10 +353,9 @@ pub fn align_pairwise_gotoh(
             cigar: String::new(),
             algorithm: algo_label,
             engine_used: "C++ Native / Rust FFI".to_string(),
+            matrix: String::new(),
         };
     }
-
-    let matrix_kind = matrix.unwrap_or_else(|| default_matrix(s1, s2));
 
     // Note: rust-bio uses negative gap_open and gap_extend penalties.
     let go = if gap_open > 0 { -gap_open } else { gap_open };
@@ -313,6 +429,7 @@ pub(crate) fn not_aligned(reason: String) -> PairwiseAlignmentResult {
         cigar: String::new(),
         algorithm: reason,
         engine_used: "none (not aligned)".to_string(),
+        matrix: String::new(),
     }
 }
 
@@ -635,6 +752,7 @@ fn reconstruct_alignment_columns(
         cigar: encode_cigar_from_columns(&a1, &a2, matrix_kind),
         algorithm,
         engine_used: "C++ Native / Rust FFI".to_string(),
+        matrix: matrix_kind.label().to_string(),
     }
 }
 
@@ -686,12 +804,21 @@ mod tests {
         // the name asked for is quoted as given, an empty one included
         assert_eq!(named(PROTEIN, "local", "").warnings, ["Unknown scoring matrix '': aligned with BLOSUM62, the default for protein sequences."]);
 
+        // a protein pair scored with the nucleotide matrix by name names its letters that are no
+        // nucleotide code, scored as N (US-01M7NKNJ); every other known name warns of nothing
+        let as_n: Vec<String> = [PROTEIN.0, PROTEIN.1]
+            .iter()
+            .enumerate()
+            .flat_map(|(i, s)| stray_letter_warnings(s, &format!("sequence {}", i + 1)))
+            .collect();
+        assert_eq!(as_n.len(), 4, "fixture: inosine and other letters in both sequences: {as_n:?}");
         for (name, kind) in [("auto", None), ("blosum62", Some(Blosum62)), ("pam250", Some(Pam250)), ("nucleotide", Some(DnaIupac)), ("dnaiupac", Some(DnaIupac))] {
             for variant in [name.to_string(), name.to_ascii_uppercase(), format!(" {name} ")] {
                 let r = named(PROTEIN, "local", &variant);
-                assert!(r.warnings.is_empty(), "{variant:?}: {:?}", r.warnings);
+                let want: Vec<String> = if kind == Some(DnaIupac) { as_n.clone() } else { Vec::new() };
+                assert_eq!(r.warnings, want, "{variant:?}");
                 assert_eq!(serde_json::to_value(&r.alignment).unwrap(), aligned(PROTEIN, PairwiseMode::Local, kind), "{variant:?}");
-                assert_eq!(serde_json::to_value(&r).unwrap()["warnings"], serde_json::json!([]));
+                assert_eq!(serde_json::to_value(&r).unwrap()["warnings"], serde_json::json!(want));
             }
         }
     }

@@ -6,14 +6,15 @@
 //! Algorithm-Aware Multiple Sequence Alignment Refinement (`MAFFT` / `Clustal Omega` / `MUSCLE` / `POA`).
 
 use crate::msa::{
-    center_star_rows, choose_star_center, clean_msa_inputs, finalize_msa,
+    center_star_rows, choose_star_center, clean_msa_inputs, finalize_msa, is_protein_call,
     run_multiple_sequence_alignment, sum_of_pairs_score, MsaAlignmentResult, MsaInputDoc,
     MsaTreeBuilder,
 };
 use crate::pairwise::{
-    align_pairwise_gotoh, compatible_nucleotides, looks_like_protein_sequence, not_aligned, PairwiseAlignmentResult,
-    PairwiseMode, EXACT_CELLS,
+    align_pairwise_gotoh, matrix_for_call, not_aligned, pair_alphabet_call, stray_letter_warnings, uncertain_call_warning,
+    PairwiseAlignmentResult, PairwiseMode, ScoringMatrixKind, EXACT_CELLS,
 };
+use molbiocraft_core::iupac::{classify_molecule, nucleotide_pair_class, NucleotidePairClass};
 use bio::alignment::pairwise::banded::Aligner as BandedAligner;
 use bio::alignment::pairwise::{Aligner as FullAligner, MatchFunc, Scoring, MIN_SCORE};
 use bio::alignment::poa::Aligner as PoaAligner;
@@ -1627,7 +1628,7 @@ pub fn align_pairwise_banded_sparse_with_warnings(
             (whole > cap).then(|| format!("sequence {} ({} residues)", i + 1, format_thousands(whole)))
         })
         .collect();
-    let warnings = if cut.is_empty() {
+    let mut warnings = if cut.is_empty() {
         Vec::new()
     } else {
         let ceiling = if max_len > BANDED_CEILING {
@@ -1646,6 +1647,19 @@ pub fn align_pairwise_banded_sparse_with_warnings(
             cut.join(", ")
         )]
     };
+    // the alphabet call the aligner makes over the residues it aligns (US-01M7NKNJ): its uncertain
+    // sentence, then, for a nucleotide call, each sequence's letters that are no nucleotide code
+    let aligned: Vec<String> = [seq1, seq2]
+        .iter()
+        .map(|raw| clean_alpha_sequence(raw).chars().take(cap).collect())
+        .collect();
+    let call = pair_alphabet_call(&aligned[0], &aligned[1]);
+    warnings.extend(uncertain_call_warning(&call));
+    if matrix_for_call(&call) == ScoringMatrixKind::DnaIupac {
+        for (i, s) in aligned.iter().enumerate() {
+            warnings.extend(stray_letter_warnings(s, &format!("sequence {}", i + 1)));
+        }
+    }
     BandedPairwiseAlignment {
         alignment: align_pairwise_banded_sparse(
             seq1, seq2, mode, k, w, match_score, mismatch_score, gap_open, gap_extend, max_len,
@@ -1724,7 +1738,10 @@ pub fn align_pairwise_banded_sparse(
         );
     }
 
-    let is_prot = looks_like_protein_sequence(&s1) || looks_like_protein_sequence(&s2);
+    // one alphabet call over both sequences (US-01M7NKNJ): a nucleotide call scores, counts and
+    // marks each column by US-01M6VF1T's pair class, as align_pairwise_gotoh does; protein scores
+    // identical letters as a match
+    let is_prot = matrix_for_call(&pair_alphabet_call(&s1, &s2)) != ScoringMatrixKind::DnaIupac;
     let k_eff = k.clamp(3, 15).min(s1.len().min(s2.len()).max(1));
     let w_eff = w.clamp(8, 256);
     let m_sc = if match_score == 0 { 2 } else { match_score };
@@ -1737,11 +1754,17 @@ pub fn align_pairwise_banded_sparse(
     let ge = -gap_extend.abs().max(1);
 
     let match_fn = move |a: u8, b: u8| -> i32 {
-        if a == b || (!is_prot && compatible_nucleotides(a, b)) {
-            m_sc
-        } else {
-            mm_sc
+        if is_prot {
+            return if a == b { m_sc } else { mm_sc };
         }
+        match nucleotide_pair_class(a, b) {
+            NucleotidePairClass::Identity => m_sc,
+            NucleotidePairClass::Overlap => (m_sc / 2).max(1),
+            NucleotidePairClass::Mismatch => mm_sc,
+        }
+    };
+    let identity = move |a: u8, b: u8| -> bool {
+        if is_prot { a == b } else { nucleotide_pair_class(a, b) == NucleotidePairClass::Identity }
     };
 
     let x = s1.as_bytes();
@@ -1811,13 +1834,13 @@ pub fn align_pairwise_banded_sparse(
                 yi += 1;
                 aligned1.push(bx);
                 aligned2.push(by);
-                if bx == by {
+                if identity(bx, by) {
                     matches += 1;
                     similar += 1;
                     midline.push(b'|');
                 } else {
                     mismatches += 1;
-                    if !is_prot && compatible_nucleotides(bx, by) {
+                    if !is_prot && nucleotide_pair_class(bx, by) == NucleotidePairClass::Overlap {
                         similar += 1;
                         midline.push(b':');
                     } else {
@@ -1884,8 +1907,10 @@ pub fn align_pairwise_banded_sparse(
     };
 
     // Build run-length encoded CIGAR directly from `aln.operations` (since `bio-types` `aln.cigar()`
-    // panics on `AlignmentMode::Global`).
+    // panics on `AlignmentMode::Global`). rust-bio calls a column `Match` when its two letters are
+    // equal, N/N included, so an aligned column is '=' or 'X' by the same identity rule as `matches`.
     let mut cigar = String::new();
+    let (mut cx, mut cy) = (aln.xstart, aln.ystart);
     let mut run_ch: Option<char> = None;
     let mut run_len = 0usize;
     let flush_cigar = |out: &mut String, ch: Option<char>, len: usize| {
@@ -1897,11 +1922,28 @@ pub fn align_pairwise_banded_sparse(
     };
     for op in &aln.operations {
         let (ch, step) = match *op {
-            AlignmentOperation::Match => ('=', 1usize),
-            AlignmentOperation::Subst => ('X', 1usize),
-            AlignmentOperation::Ins => ('I', 1usize),
-            AlignmentOperation::Del => ('D', 1usize),
-            AlignmentOperation::Xclip(n) | AlignmentOperation::Yclip(n) => ('S', n),
+            AlignmentOperation::Match | AlignmentOperation::Subst => {
+                let same = identity(x.get(cx).copied().unwrap_or(b'N'), y.get(cy).copied().unwrap_or(b'N'));
+                cx += 1;
+                cy += 1;
+                (if same { '=' } else { 'X' }, 1usize)
+            }
+            AlignmentOperation::Ins => {
+                cx += 1;
+                ('I', 1usize)
+            }
+            AlignmentOperation::Del => {
+                cy += 1;
+                ('D', 1usize)
+            }
+            AlignmentOperation::Xclip(n) => {
+                cx += n;
+                ('S', n)
+            }
+            AlignmentOperation::Yclip(n) => {
+                cy += n;
+                ('S', n)
+            }
         };
         if run_ch == Some(ch) {
             run_len += step;
@@ -1943,6 +1985,8 @@ pub fn align_pairwise_banded_sparse(
             None | Some(BandRun::FullMatrix) => "rust-bio::alignment::pairwise::Aligner".into(),
             Some(_) => "rust-bio::alignment::pairwise::banded::Aligner".into(),
         },
+        // protein letters score match/mismatch here, not BLOSUM62, so only the nucleotide matrix is named
+        matrix: if is_prot { "identity (match/mismatch)".into() } else { ScoringMatrixKind::DnaIupac.label().into() },
     }
 }
 
@@ -2013,7 +2057,8 @@ pub fn run_multiple_sequence_alignment_with_algorithm(
         return run_multiple_sequence_alignment(docs, max_seq_len);
     }
     let cleaned = clean_msa_inputs(docs, max_seq_len);
-    let is_prot = cleaned.iter().any(|s| looks_like_protein_sequence(s));
+    let call = classify_molecule(&cleaned);
+    let is_prot = is_protein_call(&call);
     let tree = if algo_upper.contains("PROGRESSIVE-UPGMA") || algo_upper.contains("CONSISTENCY-UPGMA") {
         MsaTreeBuilder::Upgma
     } else {
@@ -2052,7 +2097,7 @@ pub fn run_multiple_sequence_alignment_with_algorithm(
             crate::progressive::progressive_msa(&upper, is_prot, opts)
         }
     };
-    finalize_msa(docs, matrix, tree)
+    finalize_msa(docs, matrix, tree, &call)
 }
 
 #[cfg(test)]
@@ -2495,7 +2540,8 @@ mod tests {
             })
             .collect();
         let cleaned = clean_msa_inputs(&docs, 2400);
-        let is_prot = cleaned.iter().any(|s| looks_like_protein_sequence(s));
+        let call = classify_molecule(&cleaned);
+        let is_prot = is_protein_call(&call);
         let upper: Vec<Vec<u8>> = cleaned.iter().map(|s| s.to_ascii_uppercase().into_bytes()).collect();
         let opts = crate::progressive::ProgressiveOptions { second_pass: true, refine_passes: 2 };
 
@@ -2503,21 +2549,25 @@ mod tests {
             &docs,
             crate::progressive::consistency_msa(&upper, is_prot, 2),
             MsaTreeBuilder::NeighborJoining,
+            &call,
         );
         let want_consistency_upgma = finalize_msa(
             &docs,
             crate::progressive::consistency_msa(&upper, is_prot, 3),
             MsaTreeBuilder::Upgma,
+            &call,
         );
         let want_progressive_upgma = finalize_msa(
             &docs,
             crate::progressive::progressive_msa(&upper, is_prot, opts),
             MsaTreeBuilder::Upgma,
+            &call,
         );
         let default_prog_nj = finalize_msa(
             &docs,
             crate::progressive::progressive_msa(&upper, is_prot, opts),
             MsaTreeBuilder::NeighborJoining,
+            &call,
         );
         let center_idx = choose_star_center(&cleaned, is_prot);
         let star = center_star_rows(&cleaned[center_idx], &cleaned, Some(center_idx), is_prot);
@@ -2528,7 +2578,7 @@ mod tests {
         } else {
             star
         };
-        let want_poa = finalize_msa(&docs, poa_matrix, MsaTreeBuilder::NeighborJoining);
+        let want_poa = finalize_msa(&docs, poa_matrix, MsaTreeBuilder::NeighborJoining, &call);
 
         let sig = |r: &MsaAlignmentResult| -> (Vec<String>, String, String) {
             (

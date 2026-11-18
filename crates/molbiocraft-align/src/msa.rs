@@ -4,8 +4,11 @@
 //! Progressive & Iterative Multiple Sequence Alignment (MSA) + Consensus + Shannon Conservation
 //! + Neighbor-Joining / UPGMA Newick Guide Trees powered by `rust-bio`.
 
-use crate::pairwise::{align_pairwise_gotoh, looks_like_protein_sequence, PairwiseMode};
-use molbiocraft_core::{clean_alpha_sequence, format_thousands};
+use crate::pairwise::{
+    align_pairwise_gotoh, matrix_for_call, stray_letter_warnings, uncertain_call_warning, PairwiseMode, ScoringMatrixKind,
+};
+use molbiocraft_core::iupac::{classify_molecule, AlphabetCall};
+use molbiocraft_core::{clean_alpha_sequence, format_thousands, MoleculeType};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -36,11 +39,21 @@ pub struct MsaAlignmentResult {
     pub newick_tree: String,
     pub mean_pairwise_identity_pct: f64,
     pub identical_sites_pct: f64,
-    /// What the alignment left out of its input (D0005), one plain sentence per event: the residue
-    /// cap cutting one or more sequences. Always serialised, as an empty list when every input was
-    /// aligned whole.
+    /// What the alignment left out of or read differently in its input (D0005), one plain sentence
+    /// per event: the residue cap cutting one or more sequences; an uncertain alphabet call; each
+    /// row's letters that are no nucleotide code, scored as N in a nucleotide alignment
+    /// (US-01M7NKNJ). Always serialised, as an empty list when there is nothing to say.
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// The scoring matrix the rows were aligned with, chosen by one call of the alphabet rule over
+    /// every row: "IUPAC nucleotide" or "BLOSUM62"; empty when nothing was aligned.
+    #[serde(default)]
+    pub matrix: String,
+}
+
+/// Whether one call of the shared alphabet rule over every row reads protein (US-01M7NKNJ).
+pub(crate) fn is_protein_call(call: &AlphabetCall) -> bool {
+    matrix_for_call(call) != ScoringMatrixKind::DnaIupac
 }
 
 /// Fast 5-mer Jaccard similarity between two sequences for center-star / guide-tree ordering.
@@ -75,6 +88,7 @@ fn empty_msa_result() -> MsaAlignmentResult {
         mean_pairwise_identity_pct: 0.0,
         identical_sites_pct: 0.0,
         warnings: Vec::new(),
+        matrix: String::new(),
     }
 }
 
@@ -188,7 +202,7 @@ pub(crate) fn center_star_rows(
                 center,
                 &seqs[idx],
                 PairwiseMode::Global,
-                None,
+                Some(if is_protein { ScoringMatrixKind::Blosum62 } else { ScoringMatrixKind::DnaIupac }),
                 2,
                 -1,
                 gap_open,
@@ -307,20 +321,30 @@ pub(crate) fn choose_star_center(cleaned: &[String], is_protein: bool) -> usize 
     center_idx
 }
 
-/// Builds the public result (consensus, conservation, entropy, identity statistics, guide tree and
-/// the truncation warning) from finished aligned rows. All statistics are always derived from the
-/// rows returned.
+/// Builds the public result (consensus, conservation, entropy, identity statistics, guide tree,
+/// matrix and warnings) from finished aligned rows and the one alphabet `call` they were aligned
+/// by. All statistics are always derived from the rows returned. The warnings are the truncation
+/// sentence, the call's uncertain sentence, and, for a nucleotide call, each row's letters that are
+/// no nucleotide code ("row 2" is the second input), in that order.
 pub(crate) fn finalize_msa(
     docs: &[MsaInputDoc],
     aligned_matrix: Vec<Vec<u8>>,
     tree: MsaTreeBuilder,
+    call: &AlphabetCall,
 ) -> MsaAlignmentResult {
     let n = docs.len().min(aligned_matrix.len());
     if n == 0 {
         return empty_msa_result();
     }
     let aligned_matrix = drop_gap_only_columns(aligned_matrix);
-    let warnings = truncation_warnings(&docs[..n], &aligned_matrix[..n]);
+    let mut warnings = truncation_warnings(&docs[..n], &aligned_matrix[..n]);
+    warnings.extend(uncertain_call_warning(call));
+    let matrix = matrix_for_call(call);
+    if matrix == ScoringMatrixKind::DnaIupac {
+        for (i, row) in aligned_matrix.iter().take(n).enumerate() {
+            warnings.extend(stray_letter_warnings(&String::from_utf8_lossy(row), &format!("row {}", i + 1)));
+        }
+    }
     let col_count = aligned_matrix.first().map(|r| r.len()).unwrap_or(0);
     let mut consensus_bytes = Vec::with_capacity(col_count);
     let mut conservation = Vec::with_capacity(col_count);
@@ -462,6 +486,7 @@ pub(crate) fn finalize_msa(
         identical_sites_pct: ((identical_cols as f64 / col_count.max(1) as f64) * 1000.0).round()
             / 10.0,
         warnings,
+        matrix: matrix.label().to_string(),
     }
 }
 
@@ -484,10 +509,11 @@ pub fn run_center_star_msa(
         return empty_msa_result();
     }
     let cleaned = clean_msa_inputs(docs, max_seq_len);
-    let is_prot = cleaned.iter().any(|s| looks_like_protein_sequence(s));
+    let call = classify_molecule(&cleaned);
+    let is_prot = is_protein_call(&call);
     let center_idx = choose_star_center(&cleaned, is_prot);
     let matrix = center_star_rows(&cleaned[center_idx], &cleaned, Some(center_idx), is_prot);
-    finalize_msa(docs, matrix, tree)
+    finalize_msa(docs, matrix, tree, &call)
 }
 
 pub fn sanitize_newick_label(raw: &str) -> String {
@@ -509,7 +535,8 @@ pub fn sanitize_newick_label(raw: &str) -> String {
 fn compute_jc69_distance_matrix(aligned_seqs: &[String]) -> Vec<Vec<f64>> {
     let n = aligned_seqs.len();
     let mut dist = vec![vec![0.0f64; n]; n];
-    let is_prot = aligned_seqs.iter().any(|s| looks_like_protein_sequence(s));
+    // one alphabet call over every row picks the distance formula (US-01M7NKNJ)
+    let is_prot = classify_molecule(aligned_seqs).molecule == Some(MoleculeType::Protein);
     for i in 0..n {
         let a = aligned_seqs[i].as_bytes();
         for j in (i + 1)..n {

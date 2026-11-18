@@ -41,7 +41,7 @@ pub use ngs_assembly::{
     ReadVariantMappingResult, SyntenyLcbBlock, VariantCall, WholeGenomeSyntenyReport,
 };
 pub use pairwise::{
-    align_pairwise_gotoh, align_pairwise_standard, looks_like_protein_sequence,
+    align_pairwise_gotoh, align_pairwise_standard,
     PairwiseAlignmentResult, PairwiseMode, ScoringMatrixKind,
 };
 pub use search_blast::{

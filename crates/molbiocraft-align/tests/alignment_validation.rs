@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 use molbiocraft_align::{
-    align_pairwise_banded_sparse, align_pairwise_standard, compute_dotplot_hits,
+    align_pairwise_banded_sparse, align_pairwise_gotoh, align_pairwise_standard, compute_dotplot_hits,
+    PairwiseMode, ScoringMatrixKind,
     run_multiple_sequence_alignment_with_algorithm, MsaInputDoc,
 };
 use molbiocraft_core::reverse_complement_iupac;
@@ -85,7 +86,9 @@ fn banded_identity_is_exact_not_iupac_compatibility() {
     assert_eq!(result.matches, 12);
     assert_eq!(result.mismatches, 1);
     assert_eq!(result.identity_pct, 92.3);
-    assert_eq!(result.similarity_pct, 100.0);
+    // D0223: the banded aligner reads US-01M6VF1T's pair class (US-01M7NKNJ), where A/N is a
+    // Mismatch and no similarity, so 12 of the 13 columns (the identities) are similar: 92.3%.
+    assert_eq!(result.similarity_pct, 92.3);
 }
 
 #[test]
@@ -334,12 +337,20 @@ fn ambiguous_nucleotide_scoring_is_symmetric_and_not_protein_scoring() {
         ("TKASACYWMATCMWTRAWKVRDYN", "GGGATTCAGGTGTGATTGAGCGAAGGTTT", -10, 8),
         ("KWDWBSSDGTMTMMSDNKYSHGYKBDHGHYC", "GCCAGCAAAAGGTGGCGTTTGATTCTGTG", -15, 6),
     ];
+    // D0223: this test pins nucleotide scoring of ambiguity codes (D0197), not the auto-matrix
+    // choice, so every call names the nucleotide matrix: under the shared alphabet rule
+    // (US-01M7NKNJ) 'auto' reads a pair this dense in ambiguity codes, such as RYSWKMBDHVN /
+    // ACGTACGTACG (12 of 22 letters core), as protein. tests/auto_matrix.rs pins that auto choice.
+    let nucleotide = |a: &str, b: &str, local: bool, ms: i32| {
+        let mode = if local { PairwiseMode::Local } else { PairwiseMode::Global };
+        align_pairwise_gotoh(a, b, mode, Some(ScoringMatrixKind::DnaIupac), ms, -1, -5, -1, 2400)
+    };
     for (a, b, global, local) in pinned {
-        let forward = align_pairwise_standard(a, b, false, 2, -1, -5, -1);
-        let backward = align_pairwise_standard(b, a, false, 2, -1, -5, -1);
+        let forward = nucleotide(a, b, false, 2);
+        let backward = nucleotide(b, a, false, 2);
         assert_eq!((forward.score, backward.score), (global, global), "global {a}/{b}");
         assert_eq!(forward.similarity_pct, backward.similarity_pct, "{a}/{b}");
-        let (lf, lb) = (align_pairwise_standard(a, b, true, 2, -1, -5, -1), align_pairwise_standard(b, a, true, 2, -1, -5, -1));
+        let (lf, lb) = (nucleotide(a, b, true, 2), nucleotide(b, a, true, 2));
         assert_eq!((lf.score, lb.score), (local, local), "local {a}/{b}");
     }
     // The overlap credit is the match score halved and rounded down, but never below 1, so at match
@@ -354,7 +365,7 @@ fn ambiguous_nucleotide_scoring_is_symmetric_and_not_protein_scoring() {
         (3, "GATTACAN", "GATYACAG", 18, 19),
     ];
     for (ms, a, b, global, local) in floored {
-        let (g, l) = (align_pairwise_standard(a, b, false, ms, -1, -5, -1), align_pairwise_standard(a, b, true, ms, -1, -5, -1));
+        let (g, l) = (nucleotide(a, b, false, ms), nucleotide(a, b, true, ms));
         assert_eq!((g.score, l.score), (global, local), "match score {ms}: {a}/{b}");
     }
     // Hand derivation of the first pair's only global optimum, column by column under NUC.4.4 signs:
@@ -364,7 +375,7 @@ fn ambiguous_nucleotide_scoring_is_symmetric_and_not_protein_scoring() {
     // scores more than 1, and a gapped global alignment of these equal lengths has at least two gaps
     // (-12 or less) beside at most 10 aligned columns (+10 at most), -2 at best. Locally the first
     // four columns score 4 (adding K/A and M/C keeps 4). No column is identical; 5 of 11 are similar.
-    let r = align_pairwise_standard("RYSWKMBDHVN", "ACGTACGTACG", false, 2, -1, -5, -1);
+    let r = nucleotide("RYSWKMBDHVN", "ACGTACGTACG", false, 2);
     assert_eq!((r.aligned_seq1.as_str(), r.aligned_seq2.as_str()), ("RYSWKMBDHVN", "ACGTACGTACG"));
     assert_eq!(r.midline, "::::.:.....");
     assert_eq!((r.matches, r.mismatches, r.gaps, r.identity_pct, r.similarity_pct), (0, 11, 0, 0.0, 45.45));
