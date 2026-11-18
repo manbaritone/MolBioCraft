@@ -96,6 +96,10 @@ describe('the one alphabet rule in the TypeScript classifiers (US-01M6VFRY AC3)'
     }
     // A declared DATATYPE still decides.
     expect(parseNexusAlignment(nexus('ACGTACGTAC').replace('FORMAT ', 'FORMAT DATATYPE=PROTEIN ')).moleculeType).toBe('Protein');
+    // Only single-state cells are read: MKW is protein, though its 16 polymorphic cells (AG), (CT)
+    // would, read as letters, make 32 of 35 letters nucleotide codes.
+    const polymorphic = `MKW${'(AG)(CT)'.repeat(8)}`;
+    expect(parseNexusAlignment(nexus(polymorphic).replace(`NCHAR=${polymorphic.length}`, 'NCHAR=19')).moleculeType).toBe('Protein');
   });
 
   it("US-01M6VFRY AC3 assessRawSequenceText's nucleotide test gives the engine call", () => {

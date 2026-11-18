@@ -15,6 +15,8 @@
  * - a protein's final stop warned, or kept as a residue: `pep` opens as 'MKV' with no Notes;
  * - gaps, stops or foreign letters dropped without a word: `gappy` and `prot` name each, with
  *   counts and positions built from the record (one more gap gives '4 gap characters');
+ * - the record's last stop taken for its final stop: `endless` has one stop and letters after it,
+ *   so that stop is internal and is warned;
  * - lower case flagged for any lower-case letter: `lower` is all lower case and has no Notes.
  */
 
@@ -116,7 +118,7 @@ describe('FASTA import by the one alphabet rule (US-01M6VFRY)', () => {
   it('US-01M6VFRY AC5 names the foreign letters it kept and the gaps and internal stops it left out', async () => {
     const app = await mountApp();
     try {
-      await drop(app, 'gaps_and_stops.fasta', '>gappy\nACGTA-CGTAC.GTACG~TACGTXX\n>prot\nMKWVUTFIS*LLFX-XX*\n>gappier\nACGTA-CGTAC.GTACG~TACGTXX-\n');
+      await drop(app, 'gaps_and_stops.fasta', '>gappy\nACGTA-CGTAC.GTACG~TACGTXX\n>prot\nMKWVUTFIS*LLFX-XX*\n>gappier\nACGTA-CGTAC.GTACG~TACGTXX-\n>endless\nMKWVUTFIS*LLF\n');
       await expectRecords(app, {
         gappy: {
           molecule: 'DNA', sequence: 'ACGTACGTACGTACGTACGTXX',
@@ -129,6 +131,11 @@ describe('FASTA import by the one alphabet rule (US-01M6VFRY)', () => {
         gappier: {
           molecule: 'DNA', sequence: 'ACGTACGTACGTACGTACGTXX',
           notes: 'Warnings:\n- 2 letters are not nucleotide codes and were kept: X at 21 and 22.\n- 4 gap characters (-, ., ~) were left out; positions count the letters kept.\n',
+        },
+        // Only a stop with no letter after it ends the chain: this record's one stop is internal.
+        endless: {
+          molecule: 'Protein', sequence: 'MKWVUTFISLLF',
+          notes: 'Warnings:\n- 1 internal stop (*) after residue 9 was left out, so the residues on either side read as one chain.\n',
         },
       });
 
