@@ -541,6 +541,10 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let text = str_arg(&payload, "text", "");
             to_val(parse_gff3_noodles(text))
         }
+        "parse_gff3_sequences" => {
+            let text = str_arg(&payload, "text", "");
+            to_val(molbiocraft_formats::noodles_io::parse_gff3_sequences_noodles(text))
+        }
         "export_gff3" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             Ok(Value::String(export_gff3_noodles(&doc)))

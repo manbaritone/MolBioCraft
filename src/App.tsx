@@ -283,6 +283,7 @@ import {
   setCircularOrigin,
   tmNoAnswerSentence,
   joinedWithAnd,
+  parseGff3Sequences,
 } from './core/bioEngine';
 import {
   exportToEMBL,
@@ -6062,6 +6063,19 @@ export const App: React.FC = () => {
       lowerName.endsWith('.bed') ||
       lowerName.endsWith('.vcf')
     ) {
+      // A GFF3 file that carries its sequences under ##FASTA opens them, each with the features
+      // its seqid names; the active document is left alone (US-01M7NMB6).
+      const carried = lowerName.endsWith('.gff') || lowerName.endsWith('.gff3') ? parseGff3Sequences(text) : null;
+      if (carried && carried.documents.length) {
+        const attached = carried.documents.reduce((n, d) => n + d.features.length, 0);
+        activateImportedDocumentsInWorkspace(carried.documents, `${stem}_GFF3`);
+        setHomeViewActive(false);
+        setViewerTab('sequence-view');
+        setStatusBanner(
+          `Opened ${carried.documents.length} ${carried.documents.length === 1 ? 'sequence' : 'sequences'} from "${file.name}" with ${attached} ${attached === 1 ? 'feature' : 'features'} attached.${carried.warnings.map((w) => ` ${w}`).join('')}`
+        );
+        return;
+      }
       const vcfTarget = lowerName.endsWith('.vcf') ? (documentsRef.current.find((d) => d.id === activeDoc.id) ?? activeDoc) : null;
       const importedFeatures = lowerName.endsWith('.bed')
         ? parseBED(text)

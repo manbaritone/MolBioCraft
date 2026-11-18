@@ -470,6 +470,78 @@ pub fn parse_gff3_noodles(text: &str) -> Vec<SequenceFeature> {
     out
 }
 
+/// The sequences a GFF3 file carries under `##FASTA`, each with the features whose seqid
+/// (column 1) names it, and a sentence for every feature that could not be placed
+/// (`parse_gff3_sequences`, US-01M7NMB6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Gff3Sequences {
+    pub documents: Vec<SequenceDocument>,
+    pub warnings: Vec<String>,
+}
+
+/// Read the `##FASTA` section of GFF3 text through `parse_fasta_noodles` (so each record carries
+/// the alphabet rule and its import warnings) and attach every feature of `parse_gff3_noodles`
+/// to the record its seqid names, when it lies within that record. Features left out are counted
+/// per seqid: first one sentence per seqid with no record, in the order the features name them,
+/// then one per record they fall outside, in record order. Text with no `##FASTA` line gives no
+/// documents and no warnings.
+pub fn parse_gff3_sequences_noodles(text: &str) -> Gff3Sequences {
+    let mut documents = Vec::new();
+    let mut warnings = Vec::new();
+    let Some(start) = text
+        .lines()
+        .scan(0usize, |at, line| {
+            let here = *at;
+            *at += line.len() + 1;
+            Some((here, line))
+        })
+        .find(|(_, line)| line.starts_with("##FASTA"))
+        .map(|(at, line)| at + line.len())
+    else {
+        return Gff3Sequences { documents, warnings };
+    };
+    documents = parse_fasta_noodles(text.get(start..).unwrap_or(""), "GFF3_FASTA");
+    let mut missing: Vec<(String, usize)> = Vec::new();
+    let mut outside = vec![0usize; documents.len()];
+    for feature in parse_gff3_noodles(text) {
+        let seqid = feature.qualifiers.as_ref().and_then(|q| q.get("seqid")).cloned().unwrap_or_default();
+        match documents.iter().position(|d| d.name == seqid) {
+            Some(i) if feature.start >= 1 && feature.end <= documents[i].sequence.len() => {
+                documents[i].features.push(feature)
+            }
+            Some(i) => outside[i] += 1,
+            None => match missing.iter_mut().find(|(s, _)| *s == seqid) {
+                Some((_, n)) => *n += 1,
+                None => missing.push((seqid, 1)),
+            },
+        }
+    }
+    for (seqid, n) in missing {
+        warnings.push(if n == 1 {
+            format!("1 feature names seqid {seqid}, which the ##FASTA section does not hold; it was not attached.")
+        } else {
+            format!("{n} features name seqid {seqid}, which the ##FASTA section does not hold; they were not attached.")
+        });
+    }
+    for (doc, n) in documents.iter().zip(outside) {
+        if n == 0 {
+            continue;
+        }
+        let unit = match doc.molecule_type {
+            MoleculeType::Protein => "aa",
+            MoleculeType::RNA => "nt",
+            _ => "bp",
+        };
+        let len = doc.sequence.len();
+        warnings.push(if n == 1 {
+            format!("1 feature on {} lies outside its {len} {unit} and was not attached.", doc.name)
+        } else {
+            format!("{n} features on {} lie outside its {len} {unit} and were not attached.", doc.name)
+        });
+    }
+    Gff3Sequences { documents, warnings }
+}
+
 /// Export `SequenceDocument` annotations to GFF3 format using `noodles_gff::io::Writer` & `RecordBuf`.
 pub fn export_gff3_noodles(doc: &SequenceDocument) -> String {
     let seq_id = doc.accession.replace(char::is_whitespace, "_");

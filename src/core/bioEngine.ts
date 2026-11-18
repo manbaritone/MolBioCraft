@@ -106,6 +106,19 @@ export function checkSequenceAlphabet(text: string, molecule: MoleculeType): Seq
   return invokeRustBioSync<SequenceAlphabetCheck>('check_sequence_alphabet', { text, molecule });
 }
 
+/** The sequences of a GFF3 file's `##FASTA` section with their features (`parse_gff3_sequences`, US-01M7NMB6). */
+export interface Gff3Sequences {
+  /** One document per `##FASTA` record that holds a letter, each holding the features whose seqid names it and that lie within it. */
+  documents: SequenceDocument[];
+  /** One sentence per seqid with no record, then one per record its features fall outside. */
+  warnings: string[];
+}
+
+/** Open the sequences a GFF3 file carries under `##FASTA`; documents [] when it carries none. */
+export function parseGff3Sequences(text: string): Gff3Sequences {
+  return invokeRustBioSync<Gff3Sequences>('parse_gff3_sequences', { text });
+}
+
 /** A modified residue of a structure chain, read as its parent's code (`MSE` 1 as `M`). */
 export interface StructureModifiedResidue {
   resName: string;

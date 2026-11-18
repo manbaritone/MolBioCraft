@@ -147,3 +147,64 @@ fn fasta_export_measures_rna_in_nt() {
     assert!(header(">d\nACGTACGTAC\n").ends_with("| 10 bp"), "{}", header(">d\nACGTACGTAC\n"));
     assert!(header(">p\nMKVLWMKVLW\n").ends_with("| 10 aa"), "{}", header(">p\nMKVLWMKVLW\n"));
 }
+
+/// US-01M7NMB6 AC1: the GFF3 file whose `##FASTA` section holds ctg1 (40 bases); its four
+/// features are two on ctg1 inside it, one on ctg2 (no record) and one on ctg1 past its end.
+pub const GFF_WITH_FASTA: &str = "##gff-version 3\n\
+ctg1\tsrc\tgene\t1\t10\t.\t+\t.\tID=g1;Name=alpha\n\
+ctg1\tsrc\tCDS\t5\t30\t.\t-\t0\tID=c1;Name=beta\n\
+ctg2\tsrc\tgene\t3\t9\t.\t+\t.\tID=g2;Name=gamma\n\
+ctg1\tsrc\tgene\t35\t60\t.\t+\t.\tID=g3;Name=delta\n\
+##FASTA\n>ctg1\nACGTACGTACGTACGTACGT\nACGTACGTACGTACGTACGT\n";
+
+/// US-01M7NMB6 AC1. Wrong implementations, and the case that catches each:
+/// - every feature attached to the first record, or by order rather than by column 1: ctg1
+///   must hold exactly alpha and beta;
+/// - a feature past the record's end clamped onto it rather than named: delta is absent and
+///   the outside sentence is compared whole;
+/// - a feature on a seqid with no record dropped without a word: the ctg2 sentence;
+/// - documents made from a file with no `##FASTA` (the features-only file): documents [] and
+///   warnings [];
+/// - one sentence per feature rather than per seqid: two ctg3 features read as "2 features name".
+#[test]
+fn gff3_fasta_section_opens_its_sequences() {
+    let reply = dispatch_bio_rpc("parse_gff3_sequences", json!({ "text": GFF_WITH_FASTA })).unwrap();
+    let docs = reply["documents"].as_array().expect("documents");
+    assert_eq!(docs.len(), 1, "{reply}");
+    assert_eq!(docs[0]["name"], "ctg1");
+    assert_eq!(docs[0]["sequence"].as_str().unwrap().len(), 40);
+    let feats: Vec<(String, u64, u64)> = docs[0]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["name"].as_str().unwrap().to_string(), f["start"].as_u64().unwrap(), f["end"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(feats, vec![("alpha".to_string(), 1, 10), ("beta".to_string(), 5, 30)]);
+    assert_eq!(
+        reply["warnings"],
+        json!([
+            "1 feature names seqid ctg2, which the ##FASTA section does not hold; it was not attached.",
+            "1 feature on ctg1 lies outside its 40 bp and was not attached."
+        ])
+    );
+
+    // The same features with no ##FASTA section: nothing to open, nothing to say.
+    let plain = GFF_WITH_FASTA.split("##FASTA").next().unwrap();
+    assert_eq!(
+        dispatch_bio_rpc("parse_gff3_sequences", json!({ "text": plain })).unwrap(),
+        json!({ "documents": [], "warnings": [] })
+    );
+    // parse_gff3 keeps its contract: every feature, sequences or not.
+    assert_eq!(dispatch_bio_rpc("parse_gff3", json!({ "text": GFF_WITH_FASTA })).unwrap().as_array().unwrap().len(), 4);
+
+    // Counted per seqid, in the plural.
+    let two_missing = format!("{}ctg3\tsrc\tgene\t1\t5\t.\t+\t.\tID=g4\nctg3\tsrc\tgene\t2\t6\t.\t+\t.\tID=g5\nctg1\tsrc\tgene\t39\t41\t.\t+\t.\tID=g6\n##FASTA\n>ctg1\n{}\n", plain, "A".repeat(40));
+    assert_eq!(
+        dispatch_bio_rpc("parse_gff3_sequences", json!({ "text": two_missing })).unwrap()["warnings"],
+        json!([
+            "1 feature names seqid ctg2, which the ##FASTA section does not hold; it was not attached.",
+            "2 features name seqid ctg3, which the ##FASTA section does not hold; they were not attached.",
+            "2 features on ctg1 lie outside its 40 bp and were not attached."
+        ])
+    );
+}

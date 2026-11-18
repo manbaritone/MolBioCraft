@@ -244,3 +244,52 @@ describe('US-01M7NKEM AC7 exports', () => {
     });
   });
 });
+
+// US-01M7NMB6 AC1: the GFF3 file of the Rust test gff3_fasta_section_opens_its_sequences
+// (crates/molbiocraft-wasm/tests/import_alphabet_rpc.rs). Wrong implementations, and the case that
+// catches each:
+// - the features attached to the active document as before (host is 60 bases, so all four
+//   would fit): host must keep exactly its one plain.gff3 feature;
+// - the sequences opened but their features left off, or every feature attached to ctg1: ctg1
+//   must hold exactly alpha 1..10 and beta 5..30;
+// - the features left out dropped without a word: the banner holds both sentences whole;
+// - a GFF3 file with no ##FASTA opened as no document, or refused: plain.gff3 still attaches its
+//   feature to the active document.
+const GFF_PLAIN = '##gff-version 3\nhost\tsrc\tgene\t2\t8\t.\t+\t.\tID=h1;Name=plainfeat\n';
+const GFF_WITH_FASTA = [
+  '##gff-version 3',
+  'ctg1\tsrc\tgene\t1\t10\t.\t+\t.\tID=g1;Name=alpha',
+  'ctg1\tsrc\tCDS\t5\t30\t.\t-\t0\tID=c1;Name=beta',
+  'ctg2\tsrc\tgene\t3\t9\t.\t+\t.\tID=g2;Name=gamma',
+  'ctg1\tsrc\tgene\t35\t60\t.\t+\t.\tID=g3;Name=delta',
+  '##FASTA',
+  '>ctg1',
+  'ACGTACGTACGTACGTACGT',
+  'ACGTACGTACGTACGTACGT',
+  '',
+].join('\n');
+const NMB6_SENTENCES = [
+  '1 feature names seqid ctg2, which the ##FASTA section does not hold; it was not attached.',
+  '1 feature on ctg1 lies outside its 40 bp and was not attached.',
+];
+const placed = (doc: SequenceDocument) => doc.features.map((f) => [f.name, f.start, f.end]);
+
+describe('US-01M7NMB6 AC1 GFF3 with a ##FASTA section', () => {
+  it('US-01M7NMB6 AC1 opens the ##FASTA sequences with their features and leaves the active document unchanged', async () => {
+    await withApp(async (app) => {
+      await drop(app, 'host.fa', `>host\n${'GATTACA'.repeat(8)}GATT\n`);
+      await drop(app, 'plain.gff3', GFF_PLAIN);
+      expect(banner(app).join(' '), 'a GFF3 file with no ##FASTA attaches to the active document').toContain('Attached 1 annotation feature from "plain.gff3" onto "host"');
+      const before = await savedNamed(app, 'host');
+      expect(placed(before)).toEqual([['plainfeat', 2, 8]]);
+
+      await drop(app, 'contigs.gff3', GFF_WITH_FASTA);
+      const shown = banner(app).join(' ');
+      for (const sentence of NMB6_SENTENCES) expect(shown, 'the banner names each feature left out').toContain(sentence);
+      const ctg1 = await savedNamed(app, 'ctg1');
+      expect([ctg1.sequence.length, placed(ctg1)]).toEqual([40, [['alpha', 1, 10], ['beta', 5, 30]]]);
+      const after = await savedNamed(app, 'host');
+      expect([after.sequence, placed(after)], 'the active document is unchanged').toEqual([before.sequence, placed(before)]);
+    });
+  });
+});
