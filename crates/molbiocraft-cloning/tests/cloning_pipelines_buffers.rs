@@ -1410,7 +1410,28 @@ fn reader_visible_snapshot(report: &BioPipelineExecutionReport) -> String {
 const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
     ("cloning-expression-qc", "4d07376a9b25b0c7"),
     ("crispr-hdr-knockout", "48ee426c46530b6e"),
-    ("multihost-protein-mrna", "b86e224078c60f5f"),
+    // US-01M6VF33 (D0198) moved multihost-protein-mrna, and only it, from b86e224078c60f5f, by
+    // delta (d) alone: codon optimisation writes an X as NNN with a warning where it dropped it.
+    // Four sample records hold an X the optimiser reads, and on each the three hosts' CDS grow by
+    // 3 bp per X, the GC % and the 72-bp CDS previews move, and on a protein record so does the
+    // 5' leader step 3 folds (the first 60 nt of the HEK293 CDS):
+    // - Receptor Kinase (protein, 1 X): 1629 -> 1632 bp; GC E. coli 56.7 -> 56.6, HEK293 63.8 ->
+    //   63.7, yeast 34.5 -> 34.4 %; leader dG -25.9 -> -19.4 kcal/mol, dot-bracket changed.
+    // - Pairwise protein (alignment consensus, 110 X): 336 -> 666 bp; GC 59.8 -> 30.2, 67.3 ->
+    //   33.9, 36.6 -> 18.5 %; leader dG -22.4 -> -4.2 kcal/mol, paired 66.7 -> 23.3 %, stem-loops
+    //   1 -> 0, step 3 WARN -> PASS with the "thermodynamically open" recommendation in place of the
+    //   AT-rich-wobble one, and the overall verdict WARN 91 -> PASS 100 (its 60-nt leader now holds
+    //   eight NNN codons: codons 1, 3, 9, 10, 14, 15, 16 and 18 of its 20).
+    // - Three Kingdoms (alignment consensus, 40 X): 2439 -> 2559 bp; GC 56.7 -> 54.0, 65.0 -> 61.9,
+    //   35.2 -> 33.5 %; leader dG -18.3 -> -15.0 kcal/mol, dot-bracket changed.
+    // - Transcript variants (RNA consensus): its longest ORF (711..1877) holds 5 codons with a gap in
+    //   part (codons 10, 29, 32, 38, 41), read as X before and after, now written as NNN: 1146 ->
+    //   1161 bp; GC 52.0 -> 51.2, 60.3 -> 59.5, 31.0 -> 30.5 %; E. coli CAI 0.99 -> 1.00 (the NNN
+    //   codons, which the CAI does not weigh, now sit between neighbours the dropped X had joined,
+    //   so the homopolymer guard picks differently).
+    // Delta (a) moved nothing here: no codon of any sample CDS the pipeline reads resolves to B, Z or
+    // J, and the four sample DNA records with ambiguity codes report as before.
+    ("multihost-protein-mrna", "1a560bade11b770f"),
     ("viral-twist-onboarding", "b355cabe03450c44"),
 ];
 

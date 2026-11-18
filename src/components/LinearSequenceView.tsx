@@ -26,7 +26,7 @@ import {
   SequenceFeature,
   Topology,
 } from '../types/bio';
-import { analyzeProteinSequence, CODON_TABLE, enzymeLabel, reverseComplement, tmNoAnswerSentence } from '../core/bioEngine';
+import { analyzeProteinSequence, CODON_TABLE, enzymeLabel, reverseComplement, tmNoAnswerSentence, translateSequence } from '../core/bioEngine';
 import { PK_SCALE_LABEL } from '../core/alignmentViewModel';
 import { basicTmHasNoAnswer } from './ConstructCockpitBar';
 import {
@@ -1165,6 +1165,8 @@ const AA_ORDER_20 = [
   'A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L',
   'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'Y', '*',
 ] as const;
+/** The letters an ambiguous codon translates to (US-01M6VF33), listed after the 20 when counted. */
+const AMBIGUOUS_AA = ['B', 'Z', 'J', 'X'] as const;
 
 const CODON_ORDER_64 = [
   'TTT', 'TTC', 'TTA', 'TTG', 'CTT', 'CTC', 'CTA', 'CTG',
@@ -1246,15 +1248,16 @@ export const GenomeInspectorExtras: React.FC<{
     for (const c of CODON_ORDER_64) codonCounts[c] = 0;
     for (const a of AA_ORDER_20) aaCounts[a] = 0;
 
-    let translatedAa = '';
     const totalCodons = Math.floor(rawSub.length / 3);
     for (let i = 0; i + 2 < rawSub.length; i += 3) {
       const codon = rawSub.slice(i, i + 3);
       if (codon in codonCounts) codonCounts[codon] += 1;
-      const aa = CODON_TABLE[codon] ?? 'X';
-      translatedAa += aa;
-      if (aa in aaCounts) aaCounts[aa] += 1;
     }
+    // The engine translates (BG-01M6SKV8, US-01M6VF33): an ambiguous codon whose readings agree is
+    // that amino acid (GCN is A, as Biopython reads it), one read as {D, N}, {E, Q} or {I, L} is B,
+    // Z or J, and any other is X, counted and named below.
+    const translatedAa = rawSub ? translateSequence(rawSub) : '';
+    for (const aa of translatedAa) aaCounts[aa] = (aaCounts[aa] ?? 0) + 1;
 
     const cleanAa = translatedAa.replace(/\*/g, '');
     // No residue (no complete codon, or only stops) has no protein to measure.
@@ -1443,8 +1446,16 @@ export const GenomeInspectorExtras: React.FC<{
                 )}
                 <div style={{ marginTop: 4, fontSize: 11 }}>
                   <strong>20 Amino Acid Frequencies:</strong>{' '}
-                  {AA_ORDER_20.map((aa) => `${aa}:${translationTelemetry.aaCounts[aa] ?? 0}`).join(' · ')}
+                  {[...AA_ORDER_20, ...AMBIGUOUS_AA.filter((aa) => (translationTelemetry.aaCounts[aa] ?? 0) > 0)]
+                    .map((aa) => `${aa}:${translationTelemetry.aaCounts[aa] ?? 0}`).join(' · ')}
                 </div>
+                {(translationTelemetry.aaCounts.X ?? 0) > 0 && (
+                  <p className="mbc-summary-note">
+                    {translationTelemetry.aaCounts.X === 1
+                      ? '1 codon could not be read as one amino acid and is counted as X.'
+                      : `${translationTelemetry.aaCounts.X.toLocaleString()} codons could not be read as one amino acid and are counted as X.`}
+                  </p>
+                )}
                 <div style={{ marginTop: 4, fontSize: 11, opacity: 0.9 }}>
                   <strong>64-Codon Table:</strong>
                   {/* One line per second base (T, C, A, G), 16 codons each: all 64. */}
@@ -2555,6 +2566,9 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     const builtRows = [];
     const topPage = pageSlice.topStrand;
     const botPage = pageSlice.bottomStrand;
+    // The page's three forward frames as the engine translates them (US-01M6VF33): frame f's
+    // codon k starts at page index f + 3k, so RAY reads B, SAR Z and MTY J, as Biopython reads them.
+    const pageFrames = isProtein ? ['', '', ''] : [0, 1, 2].map((f) => translateSequence(topPage, f));
     const protSsPage = pageSlice.proteinSecondaryStates ?? '';
     const protClsPage = pageSlice.proteinResidueClasses ?? '';
 
@@ -2594,10 +2608,9 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
             localCenterIdx >= 1 &&
             localCenterIdx + 1 < topPage.length
           ) {
-            const codon = topPage
-              .slice(localCenterIdx - 1, localCenterIdx + 2)
-              .replace(/U/g, 'T');
-            line += CODON_TABLE[codon] ?? 'X';
+            // The engine's reading of the codon starting at page index localCenterIdx - 1.
+            const codonStart = localCenterIdx - 1;
+            line += pageFrames[codonStart % 3][Math.floor(codonStart / 3)] ?? ' ';
           } else {
             line += ' ';
           }

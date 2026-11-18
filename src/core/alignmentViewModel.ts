@@ -8,6 +8,7 @@
  */
 
 import { analyzeProteinSequence, isNucleotideByAlphabet } from './bioEngine';
+import { invokeRustBioSync } from '../lib/rustBioEngine';
 
 export type AlignmentColorScheme =
   | 'ACGT - Default'
@@ -527,12 +528,12 @@ export function countDifferences(a: string, b: string): number {
 // Translation
 // ---------------------------------------------------------------------------
 
-const BASES = 'TCAG';
-const GENETIC_CODE_TABLES: Record<string, string> = {
-  'Standard (1)': 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
-  'Vertebrate Mitochondrial': 'FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIMMTTTTNNKKSS**VVVVAAAADDEEGGGG',
-  'Yeast Mitochondrial (3)': 'FFLLSSSSYY**CCWWTTTTPPPPHHQQRRRRIIMMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
-  'Bacterial / Plastid (11)': 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+/** The genetic codes the alignment translation offers, each with its NCBI table id. */
+const GENETIC_CODE_TABLES: Record<string, number> = {
+  'Standard (1)': 1,
+  'Vertebrate Mitochondrial': 2,
+  'Yeast Mitochondrial (3)': 3,
+  'Bacterial / Plastid (11)': 11,
 };
 
 export const GENETIC_CODE_NAMES = Object.keys(GENETIC_CODE_TABLES);
@@ -551,23 +552,34 @@ function normaliseCodeName(name: string): string {
   return 'Standard (1)';
 }
 
+/** The engine's reading of each codon asked for, per NCBI table id: an alignment asks for few distinct codons, many times. */
+const ENGINE_CODONS = new Map<number, Map<string, string>>();
+
+/**
+ * One codon as the engine's `translate_sequence` reads it under the named code (US-01M6VF33): an
+ * ambiguous codon whose readings agree is that amino acid (CTN is L), one read as {D, N}, {E, Q}
+ * or {I, L} is B, Z or J (RAY is B), any other is X, and a codon of three gaps is '-'. Anything
+ * but three letters or gaps is X.
+ */
 export function translateCodon(codon: string, codeName: string): string {
-  const table = GENETIC_CODE_TABLES[normaliseCodeName(codeName)];
+  const tableId = GENETIC_CODE_TABLES[normaliseCodeName(codeName)];
   const c = codon.toUpperCase().replace(/U/g, 'T');
   if (c.length !== 3) return 'X';
-  let idx = 0;
-  for (const ch of c) {
-    const b = BASES.indexOf(ch);
-    if (b < 0) return 'X';
-    idx = idx * 4 + b;
-  }
-  return table[idx];
+  let cache = ENGINE_CODONS.get(tableId);
+  if (!cache) ENGINE_CODONS.set(tableId, (cache = new Map()));
+  const known = cache.get(c);
+  if (known !== undefined) return known;
+  const read = invokeRustBioSync<{ protein: string }>('translate_sequence', { dna: c, frameOffset: 0, tableId }).protein;
+  // The engine cleans the codon as it cleans any sequence: one that is not three readable characters is no codon.
+  const aa = read.length === 1 ? read : 'X';
+  cache.set(c, aa);
+  return aa;
 }
 
 const THREE_LETTER: Record<string, string> = {
   A: 'Ala', R: 'Arg', N: 'Asn', D: 'Asp', C: 'Cys', Q: 'Gln', E: 'Glu', G: 'Gly', H: 'His',
   I: 'Ile', L: 'Leu', K: 'Lys', M: 'Met', F: 'Phe', P: 'Pro', S: 'Ser', T: 'Thr', W: 'Trp',
-  Y: 'Tyr', V: 'Val', '*': 'Ter', X: 'Xaa',
+  Y: 'Tyr', V: 'Val', U: 'Sec', O: 'Pyl', B: 'Asx', Z: 'Glx', J: 'Xle', '*': 'Ter', X: 'Xaa',
 };
 
 export function threeLetterCode(aa: string): string {

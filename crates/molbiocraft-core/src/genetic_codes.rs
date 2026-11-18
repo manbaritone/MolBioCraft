@@ -90,8 +90,11 @@ pub fn unknown_genetic_code_warning(requested: impl std::fmt::Display) -> String
     format!("Unknown genetic code {requested}: translated with the {name} code (table {used}).")
 }
 
-/// Translates one codon. Ambiguous codons (IUPAC) translate when every base they stand for gives
-/// the same amino acid (e.g. CTN → L), otherwise 'X' — as Biopython / NCBI do.
+/// Translates one codon. An ambiguous codon (IUPAC) translates when every codon it stands for gives
+/// the same amino acid (CTN → L). When its readings are exactly {D, N}, {E, Q} or {I, L} it is
+/// B, Z or J (RAY → B, SAR → Z, MTY → J), as Biopython's `CodonTable.AmbiguousForwardTable` reads
+/// it through `IUPACData.extended_protein_values`. Any other mixed set, a stop among them included
+/// (TAN reads Y and a stop), is 'X', as is a codon holding a letter that is no IUPAC nucleotide code.
 pub fn translate_codon(codon: &[u8], table_id: u8) -> u8 {
     if codon.len() < 3 {
         return b'X';
@@ -100,20 +103,26 @@ pub fn translate_codon(codon: &[u8], table_id: u8) -> u8 {
     if let (Some(a), Some(b), Some(c)) = (base_index(codon[0]), base_index(codon[1]), base_index(codon[2])) {
         return t.1[16 * a + 4 * b + c];
     }
-    let mut aa: Option<u8> = None;
+    // The readings, each once: a 64-codon code holds at most 21 (20 amino acids and the stop).
+    let mut set: Vec<u8> = Vec::with_capacity(4);
     for &x in iupac_bases(codon[0]) {
         for &y in iupac_bases(codon[1]) {
             for &z in iupac_bases(codon[2]) {
                 let v = t.1[16 * base_index(x).unwrap() + 4 * base_index(y).unwrap() + base_index(z).unwrap()];
-                match aa {
-                    None => aa = Some(v),
-                    Some(p) if p != v => return b'X',
-                    _ => {}
+                if !set.contains(&v) {
+                    set.push(v);
                 }
             }
         }
     }
-    aa.unwrap_or(b'X')
+    set.sort_unstable();
+    match set.as_slice() {
+        [aa] => *aa,
+        b"DN" => b'B',
+        b"EQ" => b'Z',
+        b"IL" => b'J',
+        _ => b'X',
+    }
 }
 
 /// Whether `codon` is a start codon of the table (unambiguous bases only).

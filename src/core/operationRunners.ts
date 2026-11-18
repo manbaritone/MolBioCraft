@@ -830,18 +830,32 @@ export function runBackTranslate(proteins: SequenceDocument[], v: OptionValues, 
   const code = String(v.geneticCode ?? 'Standard');
   const created = proteins.filter((d) => d.moleculeType === 'Protein' && d.sequence).map((d): SequenceDocument => {
     const prot = d.sequence.toUpperCase().replace(/[^A-Z*]/g, '');
+    const body = prot.replace(/\*+$/, '');
+    const host = String(v.host ?? 'ecoli');
+    // The engine writes every residue (US-01M6VF33): the host's codon for each of the 20, and for
+    // U, O, B, Z, J, X and an internal stop the codon its warning names, one codon per residue.
+    const engine = (seq: string) => invokeRustBioSync<{ optimizedDna: string; warnings: string[] }>('optimize_codons', { seq, isDna: false, host });
     let dna: string;
     let how: string;
+    let warnings: string[];
     if (v.mode === 'ambiguous') {
       const table = degenerateCodons(code);
-      dna = Array.from(prot).map((aa) => table.get(aa) ?? 'NNN').join('');
+      const written = engine(body);
+      if (written.optimizedDna.length !== 3 * body.length + 3) {
+        throw new Error(`${d.name}: the engine wrote ${written.optimizedDna.length} bases for ${body.length} residues and a stop.`);
+      }
+      // The degenerate codon of each of the 20 and of a final stop; the engine's codon, and its
+      // warning, for a residue no table codon stands for and for an internal stop.
+      const engineCodon = (aa: string, i: number) => i < body.length && (aa === '*' || !table.has(aa));
+      dna = Array.from(prot).map((aa, i) => (engineCodon(aa, i) ? written.optimizedDna.slice(3 * i, 3 * i + 3) : table.get(aa))).join('');
+      warnings = written.warnings;
       how = `ambiguous (IUPAC) codons, ${code} code`;
     } else {
-      const body = prot.replace(/\*+$/, '');
       if (body.includes('*')) throw new Error(`${d.name}: internal stop (*) in the protein; use ambiguous mode or remove it.`);
-      const host = String(v.host ?? 'ecoli');
       // The engine's codon optimiser takes a protein when isDna is false.
-      dna = invokeRustBioSync<{ optimizedDna: string }>('optimize_codons', { seq: body, isDna: false, host }).optimizedDna;
+      const written = engine(body);
+      dna = written.optimizedDna;
+      warnings = written.warnings;
       // Exactly one stop when the protein ends in one (or a stop is requested), none otherwise.
       const lastCodon = dna.slice(-3);
       const endsInStop = dna.length >= 3 && translateCodon(lastCodon, code) === '*';
@@ -850,7 +864,7 @@ export function runBackTranslate(proteins: SequenceDocument[], v: OptionValues, 
       if (!wantStop && endsInStop) dna = dna.slice(0, -3);
       how = `most frequent codons for ${(BACK_TRANSLATION_HOSTS.find((h) => h.value === host) ?? BACK_TRANSLATION_HOSTS[0]).label}`;
     }
-    return {
+    return withWarningNotes<SequenceDocument>({
       id: uid('bt'),
       name: `${d.name} (back-translated)`,
       accession: '',
@@ -865,7 +879,7 @@ export function runBackTranslate(proteins: SequenceDocument[], v: OptionValues, 
       createdAt: t,
       updatedAt: t,
       folder: folderOf(ctx.folder ?? d.folder, 'Protein Documents' as SequenceDocument['folder']),
-    };
+    }, warnings);
   });
   if (!created.length) throw new Error('Select protein sequences to back-translate.');
   return { created, updated: [], summary: `Back-translated ${created.length} protein${created.length === 1 ? '' : 's'}` };

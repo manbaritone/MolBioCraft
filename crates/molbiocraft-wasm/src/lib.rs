@@ -115,7 +115,7 @@ use molbiocraft_protein::{
     optimize_codons_for_host, predict_coiled_coils_and_transmembrane,
     predict_glimmer_microbial_genes, predict_signal_peptide_von_heijne,
     scan_post_translational_modifications, scan_protein_functional_motifs,
-    simulate_peptide_ms2_spectrum, simulate_proteolytic_digest_ms, translate_sequence,
+    simulate_peptide_ms2_spectrum, simulate_proteolytic_digest_ms,
 };
 use resident_store::{
     ensure_resident_sequence, evict_resident_sequence, get_resident_track_overview,
@@ -886,15 +886,16 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
 
         // ─── 5. Protein Biophysics, Translation, ORF & 3D Kabsch (`molbiocraft-protein`) ───
         // Both reply with the result and `warnings` (D0005): a `tableId` that selects no NCBI table
-        // reads as the Standard code (table 1), and the warning names the value sent.
+        // reads as the Standard code (table 1), and the warning names the value sent. A translation
+        // then adds a sentence per codon it could not read (a gap in part, a letter the genetic code
+        // does not read), after that one (US-01M6VF33).
         "translate_sequence" => {
             let dna = str_arg(&payload, "dna", "");
             let frame_offset = usize_arg(&payload, "frameOffset", 0);
-            let (table_id, warnings) = genetic_code_arg(&payload, "tableId", 1);
-            to_val(TranslationReport {
-                protein: translate_sequence(dna, frame_offset, table_id),
-                warnings,
-            })
+            let (table_id, mut warnings) = genetic_code_arg(&payload, "tableId", 1);
+            let report = molbiocraft_protein::translation_orf::translate_sequence_report(dna, frame_offset, table_id);
+            warnings.extend(report.warnings);
+            to_val(TranslationReport { protein: report.protein, warnings })
         }
         "find_orfs" => {
             let seq = str_arg(&payload, "seq", "");

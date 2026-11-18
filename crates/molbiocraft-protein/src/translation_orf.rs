@@ -27,20 +27,83 @@ pub fn translate_codon_standard(codon: &str) -> char {
 /// Translates `dna_raw` from `frame_offset` under an NCBI genetic code (`table_id` 1–33; 0 is the
 /// unset id and reads as table 1, as does an id that names no table; the RPC reads a request with
 /// [`crate::genetic_codes::resolve_genetic_code`], which warns of the second and not the first).
+/// The protein of [`translate_sequence_report`], without its warnings.
 pub fn translate_sequence(dna_raw: &str, frame_offset: usize, table_id: u8) -> String {
-    let s = clean_sequence(dna_raw);
-    let bytes = s.as_bytes();
+    translate_sequence_report(dna_raw, frame_offset, table_id).protein
+}
+
+/// How many codons the translation names one by one before it counts the rest in one sentence.
+const UNREAD_CODONS_NAMED: usize = 10;
+
+/// Translates `dna_raw` as [`translate_sequence`] does, with a warning for every codon it cannot
+/// read as the genetic code reads it (D0189). The sequence is read as `clean_sequence` reads it,
+/// but `.` is kept: `-` and `.` are both gap positions, so a lone gap never shifts the frame.
+/// - A codon of three gaps is '-', as Biopython's `translate(gap='-')` reads it, with no warning.
+/// - A codon with a gap in part is 'X', and its sentence names the codon and its bases.
+/// - A codon holding a letter that is no IUPAC nucleotide code (I, E, F, L, P, X, a stop ...) is
+///   'X', and its sentence names those letters, each once, in the order the codon holds them.
+/// - Any other codon is [`translate_codon_ncbi`]'s reading, an ambiguous one (RAY → B) included,
+///   with no warning.
+///
+/// Codons are numbered from the frame's first, and bases from the cleaned sequence's first (1).
+/// The first [`UNREAD_CODONS_NAMED`] such codons are named; one last sentence counts the rest.
+/// `warnings` holds only these sentences: the RPC puts its genetic-code warning before them.
+pub fn translate_sequence_report(dna_raw: &str, frame_offset: usize, table_id: u8) -> TranslationReport {
+    let bytes: Vec<u8> = dna_raw
+        .bytes()
+        .filter(|&b| b.is_ascii_alphabetic() || b == b'*' || b == b'-' || b == b'.')
+        .map(|b| b.to_ascii_uppercase())
+        .collect();
+    let mut protein = String::new();
+    let mut warnings = Vec::new();
     if frame_offset >= bytes.len() {
-        return String::new();
+        return TranslationReport { protein, warnings };
     }
     let tbl = if table_id == 0 { 1 } else { table_id };
-    let mut out = Vec::with_capacity((bytes.len() - frame_offset) / 3);
+    let is_gap = |b: &u8| *b == b'-' || *b == b'.';
+    let reads = |b: &u8| b"ACGTURYSWKMBDHVN".contains(b);
+    protein.reserve((bytes.len() - frame_offset) / 3);
+    let mut unread = 0usize;
     let mut i = frame_offset;
+    let mut n = 0usize;
     while i + 3 <= bytes.len() {
-        out.push(translate_codon_ncbi(&bytes[i..i + 3], tbl));
+        let codon = &bytes[i..i + 3];
+        n += 1;
+        let sentence = if codon.iter().all(is_gap) {
+            protein.push('-');
+            None
+        } else if codon.iter().any(is_gap) {
+            protein.push('X');
+            Some("holds a gap: translated as X.".to_string())
+        } else if !codon.iter().all(reads) {
+            protein.push('X');
+            let mut letters: Vec<String> = Vec::new();
+            for b in codon.iter().filter(|b| !reads(b)) {
+                let l = (*b as char).to_string();
+                if !letters.contains(&l) {
+                    letters.push(l);
+                }
+            }
+            Some(format!("holds {}, which the genetic code does not read: translated as X.", letters.join(", ")))
+        } else {
+            protein.push(translate_codon_ncbi(codon, tbl) as char);
+            None
+        };
+        if let Some(what) = sentence {
+            unread += 1;
+            if unread <= UNREAD_CODONS_NAMED {
+                let text = String::from_utf8_lossy(codon);
+                warnings.push(format!("Codon {n} ({text}) at bases {}-{} {what}", i + 1, i + 3));
+            }
+        }
         i += 3;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    match unread.saturating_sub(UNREAD_CODONS_NAMED) {
+        0 => {}
+        1 => warnings.push("1 more codon holds a gap or a letter the genetic code does not read; it is translated as X.".into()),
+        k => warnings.push(format!("{k} more codons hold a gap or a letter the genetic code does not read; each is translated as X.")),
+    }
+    TranslationReport { protein, warnings }
 }
 
 /// Average mass (Da) of one residue in a polypeptide chain (free amino acid minus water), from
@@ -155,8 +218,9 @@ pub fn find_orfs_with_topology(raw_seq: &str, min_length_aa: usize, allow_altern
 
 /// A translation as the `translate_sequence` RPC replies (D0005): the protein, and `warnings`, one
 /// plain sentence per default read in place of the request - a genetic code that names no NCBI
-/// table, read as the Standard code ([`crate::genetic_codes::resolve_genetic_code`]). Always
-/// serialised, as an empty list when there is none.
+/// table, read as the Standard code ([`crate::genetic_codes::resolve_genetic_code`]) - followed by
+/// [`translate_sequence_report`]'s sentences for the codons it could not read. Always serialised,
+/// as an empty list when there is none.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslationReport {
@@ -383,6 +447,52 @@ pub struct CodonOptimizationReport {
     pub length_bp: usize,
     pub gc_percent: f64,
     pub cai_score: f64,
+    /// One sentence per class of residue the host's codon table holds no codon for (U, O, B, Z, J,
+    /// X) and for internal stops, naming the residues and the codon written for them (D0005).
+    /// Always serialised, as an empty list when there is none.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// A residue with no synonymous codon in a host's table (U, O, B, Z, J, X, or a stop inside a
+/// protein): the codon written for it, `stop` being the host's most-used stop, and its sentence's
+/// text after the positions, in the singular and the plural. None for any other residue.
+fn unmapped_residue(aa: char, stop: &str) -> Option<(String, String, String)> {
+    let u = "selenocysteine (U), written as TGA: TGA reads as Sec only with a SECIS element downstream, and as a stop without one.";
+    let o = "pyrrolysine (O), written as TAG: TAG reads as Pyl only in a host with the pyrrolysine machinery (pylT, pylS) and a PylIS, and as a stop elsewhere.";
+    let degenerate = |code: &str, codon: &str| {
+        let tail = format!("no single codon: written as the degenerate codon {codon}.");
+        (codon.to_string(), format!("({code}) has {tail}"), format!("({code}) have {tail}"))
+    };
+    Some(match aa {
+        'U' => ("TGA".into(), format!("is {u}"), format!("are {u}")),
+        'O' => ("TAG".into(), format!("is {o}"), format!("are {o}")),
+        'B' => degenerate("B: D or N", "RAY"),
+        'Z' => degenerate("Z: E or Q", "SAR"),
+        'J' => degenerate("J: I or L", "MTH"),
+        'X' => ("NNN".into(), "(X) has no codon: written as NNN.".into(), "(X) have no codon: written as NNN.".into()),
+        '*' => (
+            stop.to_string(),
+            format!("is a stop (*): written as {stop}, so the CDS ends there."),
+            format!("are stops (*): written as {stop}, so the CDS ends at the first of them."),
+        ),
+        _ => return None,
+    })
+}
+
+/// How many residue positions one back-translation sentence names before it counts the rest.
+const UNMAPPED_POSITIONS_NAMED: usize = 10;
+
+/// "3", "3 and 7", "3, 7 and 9", or the first ten and "and k more".
+fn position_list(positions: &[usize]) -> String {
+    let named: Vec<String> = positions.iter().take(UNMAPPED_POSITIONS_NAMED).map(|p| p.to_string()).collect();
+    let rest = positions.len().saturating_sub(UNMAPPED_POSITIONS_NAMED);
+    match (named.split_last(), rest) {
+        (None, _) => String::new(),
+        (Some((last, [])), 0) => last.clone(),
+        (Some((last, head)), 0) => format!("{} and {last}", head.join(", ")),
+        (Some(_), k) => format!("{} and {k} more", named.join(", ")),
+    }
 }
 
 /// Codon-optimise a protein (or the translation of a CDS) for a host, using the host's codon
@@ -393,20 +503,31 @@ pub struct CodonOptimizationReport {
 /// hurt synthesis. The reported CAI is the real Sharp & Li (1987) index of the designed sequence:
 /// the geometric mean of the relative adaptiveness w = f / f_max of every codon (Met and Trp,
 /// which have no synonyms, are excluded as usual).
+///
+/// Every residue is written (US-01M6VF33). One the host's table holds no codon for is written as
+/// [`unmapped_residue`] names it, with a warning, and is left out of the CAI: U as TGA and O as
+/// TAG, each read as the residue only with its recoding element; B, Z, J and X as the degenerate
+/// codons RAY, SAR, MTH and NNN; and a stop inside a protein as the host's most-used stop. A
+/// protein's one final stop ends the CDS as the stop appended to every design does, with no warning.
 pub fn optimize_codons_for_host(protein_or_dna: &str, is_dna: bool, host: &str) -> CodonOptimizationReport {
     let prot: String = if is_dna {
         translate_sequence(protein_or_dna, 0, 1)
             .chars()
             .take_while(|&c| c != '*')
+            .filter(|c| c.is_ascii_alphabetic())
             .collect()
     } else {
-        protein_or_dna
+        let mut p: String = protein_or_dna
             .bytes()
             .filter_map(|b| {
                 let u = b.to_ascii_uppercase();
-                u.is_ascii_alphabetic().then_some(u as char)
+                (u.is_ascii_alphabetic() || u == b'*').then_some(u as char)
             })
-            .collect()
+            .collect();
+        if p.ends_with('*') {
+            p.pop();
+        }
+        p
     };
 
     let table = host_codon_table(host);
@@ -418,13 +539,22 @@ pub fn optimize_codons_for_host(protein_or_dna: &str, is_dna: bool, host: &str) 
         let fmax = v.first().map(|x| x.1).unwrap_or(1.0).max(1e-9);
         v.into_iter().map(|(c, f)| (c, f / fmax)).collect()
     };
+    let stop = synonyms('*').first().map(|x| x.0).unwrap_or("TAA");
 
     let mut dna = String::with_capacity(prot.len() * 3 + 3);
     let mut ln_w_sum = 0.0f64;
     let mut scored = 0usize;
-    for aa in prot.chars() {
-        let options = synonyms(aa.to_ascii_uppercase());
+    // The 1-based positions of each residue written without a synonymous codon, by class.
+    let mut unmapped: Vec<(char, Vec<usize>)> = "UOBZJX*".chars().map(|c| (c, Vec::new())).collect();
+    for (at, aa) in prot.chars().enumerate() {
+        let options = if aa == '*' { Vec::new() } else { synonyms(aa) };
         if options.is_empty() {
+            if let Some((codon, ..)) = unmapped_residue(aa, stop) {
+                dna.push_str(&codon);
+                if let Some((_, at_list)) = unmapped.iter_mut().find(|(c, _)| *c == aa) {
+                    at_list.push(at + 1);
+                }
+            }
             continue;
         }
         // Prefer the top codon; fall back to the next one if it would create a homopolymer run.
@@ -448,8 +578,20 @@ pub fn optimize_codons_for_host(protein_or_dna: &str, is_dna: bool, host: &str) 
             scored += 1;
         }
     }
-    let stop = synonyms('*').first().map(|x| x.0).unwrap_or("TAA");
     dna.push_str(stop);
+
+    let warnings: Vec<String> = unmapped
+        .iter()
+        .filter(|(_, at)| !at.is_empty())
+        .filter_map(|(aa, at)| {
+            let (_, one, many) = unmapped_residue(*aa, stop)?;
+            Some(if at.len() == 1 {
+                format!("Residue {} {one}", at[0])
+            } else {
+                format!("Residues {} {many}", position_list(at))
+            })
+        })
+        .collect();
 
     let gc = dna.as_bytes().iter().filter(|&&b| b == b'G' || b == b'C').count();
     let len = dna.len();
@@ -462,6 +604,7 @@ pub fn optimize_codons_for_host(protein_or_dna: &str, is_dna: bool, host: &str) 
         length_bp: len,
         gc_percent: ((gc as f64 / len.max(1) as f64) * 1000.0).round() / 10.0,
         cai_score: (cai * 1000.0).round() / 1000.0,
+        warnings,
     }
 }
 
