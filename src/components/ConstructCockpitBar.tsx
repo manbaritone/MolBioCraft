@@ -4,6 +4,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   calculatePrimerMetrics,
+  nucleotideLetterKind,
   tmNoAnswerSentence,
   translateSequence,
 } from '../core/bioEngine';
@@ -142,23 +143,29 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
     // over its bases with no copy (BG-01M6RTHN): they were taken from its first 4,000 bp only, so a
     // 200 kb sequence with an AT-rich head read that head's GC beside "Full Span: 1..200,000". N and
     // the other IUPAC codes are left out of the count, as the engine's composition leaves them out.
-    // They are counted apart, as the letters that are not A, C, G, T or U: the Tm rule's k. A gap
-    // ('-'), a stop ('*') or any other character that is not a letter is no base at all, as the
-    // composition reads it (analyze_sequence_composition, iupac.rs), so it is neither.
+    // They are counted apart, as the letters that are not A, C, G, T or U: the Tm rule's k, by kind
+    // (US-01M6VFP8): N and the other codes, inosine, and letters that are no nucleotide code. Each
+    // letter is sorted by the engine's rule (nucleotideLetterKind). A gap ('-'), a stop ('*') or any
+    // other character that is not a letter is no base at all, as the composition reads it
+    // (analyze_sequence_composition, iupac.rs), so it is neither.
     let g = 0;
     let c = 0;
     let a = 0;
     let t = 0;
-    let ambiguity = 0;
+    let codes = 0;
+    let inosine = 0;
+    let other = 0;
     for (let i = from; i < to; i++) {
-      const code = bases.charCodeAt(i);
-      const ch = code & 0xdf; // folded to upper case
-      if (ch === 71) g++;
-      else if (ch === 67) c++;
-      else if (ch === 65) a++;
-      else if (ch === 84 || ch === 85) t++;
-      else if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) ambiguity++; // another letter
+      const kind = nucleotideLetterKind(bases.charCodeAt(i));
+      if (kind === 'G') g++;
+      else if (kind === 'C') c++;
+      else if (kind === 'A') a++;
+      else if (kind === 'T') t++;
+      else if (kind === 'N' || kind === 'ambiguity') codes++;
+      else if (kind === 'inosine') inosine++;
+      else if (kind === 'other') other++;
     }
+    const ambiguity = codes + inosine + other;
     const total = Math.max(1, g + c + a + t);
     const gcPct = Number((((g + c) / total) * 100).toFixed(1));
     const gcSkew = g + c > 0 ? Number(((g - c) / (g + c)).toFixed(3)) : 0;
@@ -177,7 +184,7 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
     // an ambiguity base, so ACGTACGT-ACGTAC read "n/a: ... holds 1 N" where the status bar read 37.4 °C.
     const acgtBases = g + c + a + t;
     const tmNoAnswer = doc.moleculeType === 'DNA' && spanLen >= 10 && basicTmHasNoAnswer(acgtBases + ambiguity, acgtBases);
-    const tmNoAnswerReason = tmNoAnswer ? tmNoAnswerSentence(ambiguity) : null;
+    const tmNoAnswerReason = tmNoAnswer ? tmNoAnswerSentence(codes, inosine, other) : null;
     if (doc.moleculeType === 'DNA' && !tmNoAnswer && spanLen >= 10 && spanLen <= 65) {
       const m = calculatePrimerMetrics(slice);
       tmC = m.tmC;

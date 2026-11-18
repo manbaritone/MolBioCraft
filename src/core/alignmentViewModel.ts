@@ -7,7 +7,7 @@
  * independent of React so it can be unit tested.
  */
 
-import { analyzeProteinSequence, isNucleotideByAlphabet } from './bioEngine';
+import { analyzeProteinSequence, isNucleotideByAlphabet, joinedWithAnd, nucleotideLetterKind } from './bioEngine';
 import { invokeRustBioSync } from '../lib/rustBioEngine';
 
 export type AlignmentColorScheme =
@@ -1138,8 +1138,12 @@ export const IUPAC_NUCLEOTIDE_MEMBERS: Record<string, string> = {
 /**
  * Mean single- and double-stranded molecular weight (kDa) of the sequences in an alignment,
  * weighted by their actual base composition rather than a flat average mass per base — the flat
- * form is wrong by ~0.3% for a sequence as AT-rich as vertebrate mitochondrial COXII. Gaps are
- * ignored, and IUPAC ambiguity codes contribute the mean mass of the bases they stand for.
+ * form is wrong by ~0.3% for a sequence as AT-rich as vertebrate mitochondrial COXII. Gaps, missing
+ * data and any other character that is no letter are ignored, and IUPAC ambiguity codes contribute
+ * the mean mass of the bases they stand for. Inosine (I) and any other letter that is no nucleotide
+ * code are weighed as N, the mean of A, C, G and T (US-01M6VFP8; they were skipped, so ACGTIIIIII
+ * weighed as ACGT), and counted: `weighedAsMean` is their number, `inosine` and `other` its parts,
+ * `otherLetters` the other letters, each once, upper case, in alphabetical order.
  * For the 50-sequence COXII CDS alignment it gives 210.326 / 423.824 kDa. Biopython 1.88's
  * `molecular_weight` (average masses) refuses the alignment's one W and one K ("not a valid
  * unambiguous letter for DNA"), so for its figure each was averaged over its bases before the
@@ -1153,13 +1157,30 @@ export const IUPAC_NUCLEOTIDE_MEMBERS: Record<string, string> = {
 export function meanNucleotideMolecularWeightKda(seqs: readonly string[]): {
   ssKda: number;
   dsKda: number;
+  weighedAsMean: number;
+  inosine: number;
+  other: number;
+  otherLetters: string[];
 } {
-  if (seqs.length === 0) return { ssKda: 0, dsKda: 0 };
+  if (seqs.length === 0) return { ssKda: 0, dsKda: 0, weighedAsMean: 0, inosine: 0, other: 0, otherLetters: [] };
   const counts = { A: 0, C: 0, G: 0, T: 0 };
+  let inosine = 0;
+  let other = 0;
+  const otherLetters = new Set<string>();
   for (const seq of seqs) {
     for (const raw of seq) {
-      const members = IUPAC_NUCLEOTIDE_MEMBERS[raw.toUpperCase()];
-      if (!members) continue;
+      const upper = raw.toUpperCase();
+      let members = IUPAC_NUCLEOTIDE_MEMBERS[upper];
+      if (!members) {
+        const kind = nucleotideLetterKind(raw.charCodeAt(0));
+        if (kind === null) continue;
+        if (kind === 'inosine') inosine++;
+        else {
+          other++;
+          otherLetters.add(upper);
+        }
+        members = IUPAC_NUCLEOTIDE_MEMBERS.N;
+      }
       const share = 1 / members.length;
       for (const m of members) counts[m as 'A' | 'C' | 'G' | 'T'] += share;
     }
@@ -1174,7 +1195,29 @@ export function meanNucleotideMolecularWeightKda(seqs: readonly string[]): {
   const ss = strand(counts.A, counts.C, counts.G, counts.T);
   // The complementary strand swaps A<->T and C<->G.
   const complement = strand(counts.T, counts.G, counts.C, counts.A);
-  return { ssKda: ss / 1000, dsKda: (ss + complement) / 1000 };
+  return {
+    ssKda: ss / 1000,
+    dsKda: (ss + complement) / 1000,
+    weighedAsMean: inosine + other,
+    inosine,
+    other,
+    otherLetters: [...otherLetters].sort(),
+  };
+}
+
+/**
+ * The alignment Statistics note for the letters `meanNucleotideMolecularWeightKda` weighed as the mean
+ * of A, C, G and T (US-01M6VFP8), or null when it weighed none.
+ */
+export function nucleotideMassMeanNote(mw: { weighedAsMean: number; inosine: number; other: number; otherLetters: readonly string[] }): string | null {
+  if (mw.weighedAsMean === 0) return null;
+  const fmt = (k: number) => k.toLocaleString('en-US');
+  const parts: string[] = [];
+  if (mw.inosine > 0) parts.push(`${fmt(mw.inosine)} inosine (I)`);
+  if (mw.other > 0) {
+    parts.push(`${fmt(mw.other)} ${mw.other === 1 ? 'that is not a nucleotide code' : 'that are not nucleotide codes'} (${mw.otherLetters.join(', ')})`);
+  }
+  return `${fmt(mw.weighedAsMean)} ${mw.weighedAsMean === 1 ? 'letter is' : 'letters are'} weighed as the mean of A, C, G and T: ${joinedWithAnd(parts)}.`;
 }
 
 /** The pK scale the engine's pI and charge are computed on (D0190), named beside them where they are shown. */

@@ -392,7 +392,18 @@ pub struct SequenceStats {
     pub gc_skew: f64,
     pub at_skew: f64,
     pub shannon_entropy_bits: f64,
+    /// `N` counts every letter that is not A, C, G or T (U read as T); the masses weigh each as the
+    /// mean of the four.
     pub counts: HashMap<char, usize>,
+    /// Why `basic_tm_c`, which stays a number, is no answer: set when the sequence holds any letter
+    /// that is not A, C, G or T, naming N and the other codes, inosine and other letters apart
+    /// (`tm_no_answer_sentence`, US-01M6VFP8). Null otherwise.
+    #[serde(default)]
+    pub tm_no_answer_reason: Option<String>,
+    /// A sentence when the shared alphabet rule reads the sequence as protein, so these nucleotide
+    /// statistics do not apply to it; empty otherwise.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

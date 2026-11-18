@@ -176,9 +176,18 @@ export interface SequenceComposition {
   mwDsDnaDa: number;
   extinctionCoeff260: number;
   meltingTempBasicC: number;
-  counts: { A: number; T: number; G: number; C: number; N: number };
+  /**
+   * The engine's four kinds of letter (US-01M6VFP8, `nucleotideLetterKind`): A, C, G and T (U read as
+   * T); N, the literal N only; `ambiguity`, the other IUPAC codes; `inosine`, I; `other`, letters that
+   * are no nucleotide code. The engine leaves `ambiguity`, `inosine` and `other` out when 0.
+   */
+  counts: { A: number; T: number; G: number; C: number; N: number; ambiguity?: number; inosine?: number; other?: number };
+  /** The letters counted in `counts.other`, each once, upper case, in alphabetical order. */
+  otherLetters: string[];
   damSites: number[];
   dcmSites: number[];
+  /** The engine's sentences: a capped site list, and how ε260 weighed codes and what it left out. */
+  warnings: string[];
 }
 
 export function analyzeSequenceComposition(rawSeq: string): SequenceComposition {
@@ -444,17 +453,60 @@ export function digestEndLabel(fragment: DigestFragment, side: 'left' | 'right')
   return source === 'custom' ? `${name} (custom)` : name;
 }
 
+/** How a nucleotide readout reads one letter: its count key in the engine's composition (`counts`). */
+export type NucleotideLetterKind = 'A' | 'C' | 'G' | 'T' | 'N' | 'ambiguity' | 'inosine' | 'other';
+
+const NUCLEOTIDE_LETTER_KINDS: readonly (NucleotideLetterKind | null)[] = (() => {
+  const table: (NucleotideLetterKind | null)[] = new Array(128).fill(null);
+  for (let code = 65; code <= 90; code++) {
+    const letter = String.fromCharCode(code);
+    const kind: NucleotideLetterKind =
+      letter === 'U' ? 'T'
+        : 'ACGTN'.includes(letter) ? (letter as NucleotideLetterKind)
+          : 'RYSWKMBDHV'.includes(letter) ? 'ambiguity'
+            : letter === 'I' ? 'inosine'
+              : 'other';
+    table[code] = kind;
+    table[code + 32] = kind;
+  }
+  return table;
+})();
+
 /**
- * The one sentence a Tm readout shows in place of a Tm for a span or oligo holding `ambiguityBases`
- * bases that are not A, C, G or T (BG-01M6SHQ0): primer3-py 2.4.0 `calc_tm` refuses such a
- * sequence, whichever base it holds. The engine writes the same words
- * (`tm_no_answer_reason`, crates/molbiocraft-cloning/src/thermodynamics.rs) into the
+ * The kind of letter the character with this UTF-16 `code` is, case-blind, as the engine's
+ * `nucleotide_letter_kind` (iupac.rs) sorts it for every nucleotide readout (US-01M6VFP8): A, C, G
+ * and T (U read as T); the literal N; the other IUPAC codes (NC-IUB 1984); inosine (I), a modified
+ * base and no ambiguity code (INSDC 7.4.2); any other letter, no nucleotide code. Null for a
+ * character that is no letter (a gap, a stop, missing data), which no readout counts as a base. The
+ * cockpit and the quickbar count a span in one pass through it (BG-01M6RTHN).
+ */
+export function nucleotideLetterKind(code: number): NucleotideLetterKind | null {
+  return code < 128 ? NUCLEOTIDE_LETTER_KINDS[code] : null;
+}
+
+/**
+ * The one sentence a Tm readout shows in place of a Tm for a span or oligo holding `codes` N or other
+ * IUPAC codes, `inosine` I and `other` letters that are no nucleotide code (BG-01M6SHQ0, US-01M6VFP8):
+ * primer3-py 2.4.0 `calc_tm` refuses any base but A, C, G and T. A span of N and other codes alone
+ * reads the sentence BG-01M6SHQ0 wrote; otherwise each kind above 0 is named apart. The engine writes
+ * the same words (`tm_no_answer_sentence`, crates/molbiocraft-core/src/iupac.rs) into the
  * `tmNoAnswerReason` of its primer metrics, Gibson junctions and primer records.
  */
-export function tmNoAnswerSentence(ambiguityBases: number): string {
-  return `Tm n/a: the span holds ${ambiguityBases.toLocaleString('en-US')} N or other ambiguity base${
-    ambiguityBases === 1 ? '' : 's'
-  }; Tm is computed on A/C/G/T only, as Primer3 does`;
+export function tmNoAnswerSentence(codes: number, inosine = 0, other = 0): string {
+  const parts: string[] = [];
+  if (codes > 0 || (inosine === 0 && other === 0)) {
+    parts.push(`${codes.toLocaleString('en-US')} N or other ambiguity base${codes === 1 ? '' : 's'}`);
+  }
+  if (inosine > 0) parts.push(`${inosine.toLocaleString('en-US')} inosine (I)`);
+  if (other > 0) {
+    parts.push(other === 1 ? '1 letter that is not a nucleotide code' : `${other.toLocaleString('en-US')} letters that are not nucleotide codes`);
+  }
+  return `Tm n/a: the span holds ${joinedWithAnd(parts)}; Tm is computed on A/C/G/T only, as Primer3 does`;
+}
+
+/** "a", "a and b", "a, b and c". */
+export function joinedWithAnd(parts: readonly string[]): string {
+  return parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }
 
 export function calculatePrimerMetrics(

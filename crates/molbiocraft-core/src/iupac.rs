@@ -440,6 +440,108 @@ pub fn nucleotide_pair_class(a: u8, b: u8) -> NucleotidePairClass {
     }
 }
 
+/// How every nucleotide readout sorts one letter (US-01M6VFP8): A, C, G and T (U read as T); the
+/// literal N; the other IUPAC codes (NC-IUB 1984: R Y S W K M B D H V); inosine (I), a modified base
+/// and no ambiguity code (INSDC 7.4.2); and any other letter, which is no nucleotide code. None for
+/// a character that is no letter (a gap, a stop, a digit), which no readout counts as a base. The
+/// app's TypeScript readouts sort by the same rule (`nucleotideLetterKind`, src/core/bioEngine.ts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NucleotideLetterKind {
+    A,
+    C,
+    G,
+    T,
+    N,
+    Ambiguity,
+    Inosine,
+    Other,
+}
+
+/// The kind of letter `b` is, case-blind, or None when it is no letter (see [`NucleotideLetterKind`]).
+pub fn nucleotide_letter_kind(b: u8) -> Option<NucleotideLetterKind> {
+    if !b.is_ascii_alphabetic() {
+        return None;
+    }
+    Some(match b.to_ascii_uppercase() {
+        b'A' => NucleotideLetterKind::A,
+        b'C' => NucleotideLetterKind::C,
+        b'G' => NucleotideLetterKind::G,
+        b'T' | b'U' => NucleotideLetterKind::T,
+        b'N' => NucleotideLetterKind::N,
+        b'R' | b'Y' | b'S' | b'W' | b'K' | b'M' | b'B' | b'D' | b'H' | b'V' => NucleotideLetterKind::Ambiguity,
+        b'I' => NucleotideLetterKind::Inosine,
+        _ => NucleotideLetterKind::Other,
+    })
+}
+
+/// The one sentence a Tm reader shows in place of a Tm for a span holding `codes` N or other IUPAC
+/// codes, `inosine` I and `other` letters that are no nucleotide code (BG-01M6SHQ0, US-01M6VFP8):
+/// primer3-py 2.4.0 `calc_tm` refuses any base but A, C, G and T. A span of N and other codes alone
+/// (or of none) reads the sentence BG-01M6SHQ0 wrote; otherwise each kind above 0 is named apart.
+/// The app's `tmNoAnswerSentence` (src/core/bioEngine.ts) writes the same words.
+pub fn tm_no_answer_sentence(codes: usize, inosine: usize, other: usize) -> String {
+    let mut parts = Vec::new();
+    if codes > 0 || (inosine == 0 && other == 0) {
+        parts.push(format!(
+            "{} N or other ambiguity base{}",
+            crate::format_thousands(codes),
+            if codes == 1 { "" } else { "s" }
+        ));
+    }
+    if inosine > 0 {
+        parts.push(format!("{} inosine (I)", crate::format_thousands(inosine)));
+    }
+    if other > 0 {
+        parts.push(if other == 1 {
+            "1 letter that is not a nucleotide code".to_string()
+        } else {
+            format!("{} letters that are not nucleotide codes", crate::format_thousands(other))
+        });
+    }
+    format!(
+        "Tm n/a: the span holds {}; Tm is computed on A/C/G/T only, as Primer3 does",
+        joined_with_and(&parts)
+    )
+}
+
+/// "a", "a and b", "a, b and c".
+fn joined_with_and(parts: &[String]) -> String {
+    match parts.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, head)) => format!("{} and {last}", head.join(", ")),
+    }
+}
+
+/// The ε260 (M⁻¹ cm⁻¹) a nucleotide code adds, the mean of the values of the bases it may be
+/// (A 15,400, C 7,400, G 11,500, T 8,700: N 10,750, R 13,450), or None for a letter with no value
+/// (inosine, or no nucleotide code). U is read as T.
+fn extinction260_of(b: u8) -> Option<f64> {
+    const A: f64 = 15400.0;
+    const C: f64 = 7400.0;
+    const G: f64 = 11500.0;
+    const T: f64 = 8700.0;
+    let members: &[f64] = match b {
+        b'A' => &[A],
+        b'C' => &[C],
+        b'G' => &[G],
+        b'T' | b'U' => &[T],
+        b'R' => &[A, G],
+        b'Y' => &[C, T],
+        b'S' => &[C, G],
+        b'W' => &[A, T],
+        b'K' => &[G, T],
+        b'M' => &[A, C],
+        b'B' => &[C, G, T],
+        b'D' => &[A, G, T],
+        b'H' => &[A, C, T],
+        b'V' => &[A, C, G],
+        b'N' => &[A, C, G, T],
+        _ => return None,
+    };
+    Some(members.iter().sum::<f64>() / members.len() as f64)
+}
+
 /// Biopython's average dNMP masses in Da (`IUPACData.unambiguous_dna_weights`: A, C, G, T) and the
 /// water `molecular_weight` takes off for each bond (its `monoisotopic=False` value).
 const DNMP_DA: [f64; 4] = [331.2218, 307.1971, 347.2212, 322.2085];
@@ -466,8 +568,13 @@ fn linear_dna_masses_da(a: usize, c: usize, g: usize, t: usize, n: usize) -> (f6
     (strand, strand + complement)
 }
 
-/// Compute comprehensive nucleotide biophysical & informational statistics in a single $O(N)$ byte scan.
-/// Handles multi-megabase genomes with zero intermediate heap allocations for the sequence.
+/// The warning `compute_sequence_stats_fast` gives a sequence the alphabet rule reads as protein.
+pub const SEQUENCE_STATS_PROTEIN_WARNING: &str =
+    "The sequence reads as protein by the shared alphabet rule: these nucleotide statistics do not apply to it.";
+
+/// Compute comprehensive nucleotide biophysical & informational statistics in one $O(N)$ byte scan,
+/// and the alphabet rule's own pass (`classify_molecule`) for the protein warning. Handles
+/// multi-megabase genomes with zero intermediate heap allocations for the sequence.
 pub fn compute_sequence_stats_fast(seq: &str) -> SequenceStats {
     let mut a_cnt = 0usize;
     let mut t_cnt = 0usize;
@@ -476,19 +583,25 @@ pub fn compute_sequence_stats_fast(seq: &str) -> SequenceStats {
     let mut n_cnt = 0usize;
     let mut valid_len = 0usize;
 
+    let (mut codes, mut inosine, mut other) = (0usize, 0usize, 0usize);
+
     for b in seq.bytes() {
-        if !b.is_ascii_alphabetic() {
+        let Some(kind) = nucleotide_letter_kind(b) else {
             continue;
-        }
+        };
         valid_len += 1;
-        match b.to_ascii_uppercase() {
-            b'A' => a_cnt += 1,
-            b'T' | b'U' => t_cnt += 1,
-            b'G' => g_cnt += 1,
-            b'C' => c_cnt += 1,
-            _ => n_cnt += 1,
+        match kind {
+            NucleotideLetterKind::A => a_cnt += 1,
+            NucleotideLetterKind::T => t_cnt += 1,
+            NucleotideLetterKind::G => g_cnt += 1,
+            NucleotideLetterKind::C => c_cnt += 1,
+            NucleotideLetterKind::N | NucleotideLetterKind::Ambiguity => codes += 1,
+            NucleotideLetterKind::Inosine => inosine += 1,
+            NucleotideLetterKind::Other => other += 1,
         }
     }
+    // `counts['N']` and the masses read every letter that is not A, C, G or T, as before.
+    n_cnt += codes + inosine + other;
 
     let mut counts = HashMap::with_capacity(5);
     counts.insert('A', a_cnt);
@@ -519,6 +632,15 @@ pub fn compute_sequence_stats_fast(seq: &str) -> SequenceStats {
         64.9 + 41.0 * ((g + c - 16.4) / canonical)
     };
 
+    // The basic Tm stays a number; a span holding any letter that is not A, C, G or T has no answer
+    // by Primer3's rule, and says why (BG-01M6SHQ0), as the app's readouts do.
+    let tm_no_answer_reason = (n_cnt > 0).then(|| tm_no_answer_sentence(codes, inosine, other));
+    let warnings = if classify_molecule(&[seq]).molecule == Some(MoleculeType::Protein) {
+        vec![SEQUENCE_STATS_PROTEIN_WARNING.to_string()]
+    } else {
+        Vec::new()
+    };
+
     let mut entropy = 0.0;
     for cnt in [a, t, g, c] {
         if cnt > 0.0 {
@@ -539,6 +661,8 @@ pub fn compute_sequence_stats_fast(seq: &str) -> SequenceStats {
         at_skew,
         shannon_entropy_bits: entropy,
         counts,
+        tm_no_answer_reason,
+        warnings,
     }
 }
 
@@ -552,8 +676,23 @@ pub struct SequenceBaseCounts {
     pub g: usize,
     #[serde(rename = "C")]
     pub c: usize,
+    /// The literal N only (US-01M6VFP8); it held every letter that is not A, C, G or T.
     #[serde(rename = "N")]
     pub n: usize,
+    /// The other IUPAC codes: R, Y, S, W, K, M, B, D, H and V. Like `inosine` and `other`, left out
+    /// of the reply when 0, so a reader comparing the A/C/G/T/N counts whole still reads them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ambiguity: usize,
+    /// Inosine (I), a modified base and no ambiguity code.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub inosine: usize,
+    /// Letters that are no nucleotide code (E, F, X, ...), named in `other_letters`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub other: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -562,19 +701,26 @@ pub struct SequenceComposition {
     pub length: usize,
     pub gc_percent: f64,
     pub at_percent: f64,
-    /// The linear chain's masses in Da, Biopython's (`linear_dna_masses_da`); estimates when
-    /// `counts.n` is not 0.
+    /// The linear chain's masses in Da, Biopython's (`linear_dna_masses_da`); estimates when any
+    /// letter is not A, C, G or T (`counts.n`, `ambiguity`, `inosine` or `other` above 0), each
+    /// weighed as the mean of the four.
     pub mw_ss_dna_da: f64,
     pub mw_ds_dna_da: f64,
+    /// ε260 in M⁻¹ cm⁻¹: A/C/G/T by their values, each IUPAC code as the mean of its bases' values
+    /// (an estimate, said in `warnings`), inosine and other letters left out (said too).
     pub extinction_coeff260: f64,
     pub melting_temp_basic_c: f64,
     pub counts: SequenceBaseCounts,
+    /// The letters counted in `counts.other`, each once, upper case, in alphabetical order.
+    #[serde(default)]
+    pub other_letters: Vec<char>,
     /// The 1-based start of each Dam (`GATC`) site, the first [`METHYLATION_SITE_LIST_CAP`] at most.
     pub dam_sites: Vec<usize>,
     /// The 1-based start of each Dcm (`CCWGG`) site, the first [`METHYLATION_SITE_LIST_CAP`] at most.
     pub dcm_sites: Vec<usize>,
     /// A sentence for each site list the cap cut, with the whole count of its sites (D0005,
-    /// BG-01M6S17Y). Always serialised, as an empty list when both lists are whole.
+    /// BG-01M6S17Y), then the ε260 sentences: how many codes it weighed as a mean, and which letters
+    /// it left out (US-01M6VFP8). Always serialised, as an empty list when there is nothing to say.
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -593,35 +739,44 @@ pub fn analyze_sequence_composition(raw_seq: &str) -> SequenceComposition {
     let mut g_cnt = 0usize;
     let mut c_cnt = 0usize;
     let mut n_cnt = 0usize;
+    let (mut ambiguity_cnt, mut inosine_cnt, mut other_cnt) = (0usize, 0usize, 0usize);
+    let mut other_seen = [false; 26];
+    let mut extinction_coeff260 = 0.0f64;
 
     for b in raw_seq.bytes() {
-        if !b.is_ascii_alphabetic() {
+        let Some(kind) = nucleotide_letter_kind(b) else {
             continue;
-        }
+        };
         let u = match b.to_ascii_uppercase() {
             b'U' => b'T',
             other => other,
         };
         cleaned.push(u);
-        match u {
-            b'A' => a_cnt += 1,
-            b'T' => t_cnt += 1,
-            b'G' => g_cnt += 1,
-            b'C' => c_cnt += 1,
-            _ => n_cnt += 1,
+        extinction_coeff260 += extinction260_of(u).unwrap_or(0.0);
+        match kind {
+            NucleotideLetterKind::A => a_cnt += 1,
+            NucleotideLetterKind::T => t_cnt += 1,
+            NucleotideLetterKind::G => g_cnt += 1,
+            NucleotideLetterKind::C => c_cnt += 1,
+            NucleotideLetterKind::N => n_cnt += 1,
+            NucleotideLetterKind::Ambiguity => ambiguity_cnt += 1,
+            NucleotideLetterKind::Inosine => inosine_cnt += 1,
+            NucleotideLetterKind::Other => {
+                other_cnt += 1;
+                other_seen[(u - b'A') as usize] = true;
+            }
         }
     }
+    let codes_cnt = n_cnt + ambiguity_cnt;
+    let other_letters: Vec<char> = (b'A'..=b'Z').filter(|&l| other_seen[(l - b'A') as usize]).map(char::from).collect();
 
     let len = cleaned.len();
     let total_canonical = (a_cnt + t_cnt + g_cnt + c_cnt).max(1) as f64;
     let gc_percent = ((g_cnt + c_cnt) as f64 / total_canonical) * 100.0;
     let at_percent = ((a_cnt + t_cnt) as f64 / total_canonical) * 100.0;
 
-    let (mw_ss_dna_da, mw_ds_dna_da) = linear_dna_masses_da(a_cnt, c_cnt, g_cnt, t_cnt, n_cnt);
-    let extinction_coeff260 = (a_cnt as f64) * 15400.0
-        + (c_cnt as f64) * 7400.0
-        + (g_cnt as f64) * 11500.0
-        + (t_cnt as f64) * 8700.0;
+    let (mw_ss_dna_da, mw_ds_dna_da) =
+        linear_dna_masses_da(a_cnt, c_cnt, g_cnt, t_cnt, codes_cnt + inosine_cnt + other_cnt);
 
     let melting_temp_basic_c = if len < 14 {
         2.0 * ((a_cnt + t_cnt) as f64) + 4.0 * ((g_cnt + c_cnt) as f64)
@@ -661,6 +816,7 @@ pub fn analyze_sequence_composition(raw_seq: &str) -> SequenceComposition {
                 crate::format_thousands(total)
             )
         })
+        .chain(extinction260_warnings(codes_cnt, inosine_cnt, other_cnt, &other_letters))
         .collect();
 
     SequenceComposition {
@@ -677,11 +833,52 @@ pub fn analyze_sequence_composition(raw_seq: &str) -> SequenceComposition {
             g: g_cnt,
             c: c_cnt,
             n: n_cnt,
+            ambiguity: ambiguity_cnt,
+            inosine: inosine_cnt,
+            other: other_cnt,
         },
+        other_letters,
         dam_sites,
         dcm_sites,
         warnings,
     }
+}
+
+/// The ε260 sentences of a composition (US-01M6VFP8): one for the `codes` (N and the other IUPAC
+/// codes) it weighed as the mean of their bases, one for the inosine and the `other_letters` it has
+/// no value for and leaves out. None when there are none of either.
+fn extinction260_warnings(codes: usize, inosine: usize, other: usize, other_letters: &[char]) -> Vec<String> {
+    let mut out = Vec::new();
+    if codes > 0 {
+        out.push(format!(
+            "ε260 weighs {} N or other ambiguity base{} as the mean of the bases each may be; it is an estimate.",
+            crate::format_thousands(codes),
+            if codes == 1 { "" } else { "s" }
+        ));
+    }
+    let left_out = inosine + other;
+    if left_out > 0 {
+        let mut parts = Vec::new();
+        if inosine > 0 {
+            parts.push(format!("{} inosine (I)", crate::format_thousands(inosine)));
+        }
+        if other > 0 {
+            let listed: Vec<String> = other_letters.iter().map(char::to_string).collect();
+            parts.push(format!(
+                "{} {} ({})",
+                crate::format_thousands(other),
+                if other == 1 { "that is not a nucleotide code" } else { "that are not nucleotide codes" },
+                listed.join(", ")
+            ));
+        }
+        out.push(format!(
+            "ε260 leaves out {} letter{} it has no value for: {}.",
+            crate::format_thousands(left_out),
+            if left_out == 1 { "" } else { "s" },
+            joined_with_and(&parts)
+        ));
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

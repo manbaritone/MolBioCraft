@@ -5,6 +5,7 @@ use molbiocraft_core::{
     clean_alpha_sequence, format_thousands, reverse_complement_iupac, HistoryTreeNode,
     MoleculeType, PrimerRecord, PrimerThermodynamics, SequenceDocument, SequenceFeature, Topology,
 };
+use molbiocraft_core::iupac::{nucleotide_letter_kind, tm_no_answer_sentence, NucleotideLetterKind};
 use molbiocraft_core::motif_search::{nucleotide_window_certainty, MotifCertainty};
 use molbiocraft_protein::translate_codon_standard;
 use serde::{Deserialize, Serialize};
@@ -197,21 +198,29 @@ fn santalucia_nn_step(b1: u8, b2: u8) -> (f64, f64) {
 }
 
 /// The one sentence a Tm reader shows in place of a Tm for a span or oligo holding `ambiguity_bases`
-/// bases that are not A, C, G or T (BG-01M6SHQ0). The app's TypeScript readouts write the same words
-/// (`tmNoAnswerSentence`, src/core/bioEngine.ts), so a reader shows one reason wherever it reads it.
+/// N or other IUPAC codes and no other letter that is not A, C, G or T (BG-01M6SHQ0): the codes-only
+/// form of `tm_no_answer_sentence` (molbiocraft_core::iupac), which names inosine and the letters
+/// that are no nucleotide code apart (US-01M6VFP8). The app's TypeScript readouts write the same
+/// words (`tmNoAnswerSentence`, src/core/bioEngine.ts), so a reader shows one reason wherever it
+/// reads it.
 pub fn tm_no_answer_reason(ambiguity_bases: usize) -> String {
-    format!(
-        "Tm n/a: the span holds {} N or other ambiguity base{}; Tm is computed on A/C/G/T only, as Primer3 does",
-        format_thousands(ambiguity_bases),
-        if ambiguity_bases == 1 { "" } else { "s" }
-    )
+    tm_no_answer_sentence(ambiguity_bases, 0, 0)
 }
 
 /// The no-answer reason for an oligo already read as `calculate_primer_metrics` reads it (letters
-/// only, upper case, U as T): set when any base is not A, C, G or T, None otherwise.
+/// only, upper case, U as T): set when any base is not A, C, G or T, None otherwise. It counts N
+/// and the other codes, inosine and the other letters apart, by `nucleotide_letter_kind`.
 fn tm_no_answer_reason_of(cleaned: &[u8]) -> Option<String> {
-    let ambiguity_bases = cleaned.iter().filter(|b| !matches!(b, b'A' | b'C' | b'G' | b'T')).count();
-    (ambiguity_bases > 0).then(|| tm_no_answer_reason(ambiguity_bases))
+    let (mut codes, mut inosine, mut other) = (0usize, 0usize, 0usize);
+    for &b in cleaned {
+        match nucleotide_letter_kind(b) {
+            Some(NucleotideLetterKind::N | NucleotideLetterKind::Ambiguity) => codes += 1,
+            Some(NucleotideLetterKind::Inosine) => inosine += 1,
+            Some(NucleotideLetterKind::Other) => other += 1,
+            _ => {}
+        }
+    }
+    (codes + inosine + other > 0).then(|| tm_no_answer_sentence(codes, inosine, other))
 }
 
 /// SantaLucia (1998) nearest-neighbour oligonucleotide Tm as Primer3 computes it (SantaLucia salt

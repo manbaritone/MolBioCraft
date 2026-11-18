@@ -104,6 +104,7 @@ import {
   findOrfsInSequence,
   isSchemeValidFor,
   meanNucleotideMolecularWeightKda,
+  nucleotideMassMeanNote,
   meanPairwiseIdentity,
   pairwiseIdentitySampling,
   summariseProteins,
@@ -1803,9 +1804,13 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
     const gcCount = (charCounts.get('G') ?? 0) + (charCounts.get('C') ?? 0);
 
     // Molecular weight is composition-weighted, not a flat average mass per base.
+    // Inosine and letters that are no nucleotide code are weighed as N, so both masses are marked
+    // approximate and the note names them (US-01M6VFP8).
     const nucleotideMw = meanNucleotideMolecularWeightKda(alignmentRows.map((r) => r.sequence));
-    const ssDnaKda = nucleotideMw.ssKda.toFixed(3);
-    const dsDnaKda = nucleotideMw.dsKda.toFixed(3);
+    const nucleotideMwNote = nucleotideMassMeanNote(nucleotideMw);
+    const nucleotideMwMark = nucleotideMwNote === null ? '' : '≈ ';
+    const ssDnaKda = `${nucleotideMwMark}${nucleotideMw.ssKda.toFixed(3)}`;
+    const dsDnaKda = `${nucleotideMwMark}${nucleotideMw.dsKda.toFixed(3)}`;
 
     // The full residue alphabet is always listed for proteins, including the two rare
     // genetically encoded residues U (selenocysteine) and O (pyrrolysine) at zero.
@@ -1932,6 +1937,7 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
       pairwiseIdentityPairs,
       ssDnaKda,
       dsDnaKda,
+      nucleotideMwNote,
       proteinMwKda,
       isoelectricPoint,
       chargeAtPh7,
@@ -4779,6 +4785,9 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
                                   <span>dsDNA:</span>
                                   <strong>{alignmentStats.dsDnaKda} kDa</strong>
                                 </div>
+                                {alignmentStats.nucleotideMwNote !== null && (
+                                  <p className="mbc-summary-note">{alignmentStats.nucleotideMwNote}</p>
+                                )}
                               </div>
                             )}
                             <table className="mbc-aln-stat-freq-table">

@@ -26,7 +26,7 @@ import {
   SequenceFeature,
   Topology,
 } from '../types/bio';
-import { analyzeProteinSequence, CODON_TABLE, enzymeLabel, reverseComplement, tmNoAnswerSentence, translateSequence } from '../core/bioEngine';
+import { analyzeProteinSequence, CODON_TABLE, enzymeLabel, nucleotideLetterKind, reverseComplement, tmNoAnswerSentence, translateSequence } from '../core/bioEngine';
 import { PK_SCALE_LABEL } from '../core/alignmentViewModel';
 import { basicTmHasNoAnswer } from './ConstructCockpitBar';
 import {
@@ -2699,16 +2699,24 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     // (S and W too) count toward the length only, so GC and the Tm divide by the A/C/G/T(U) count,
     // and the Wallace rule holds below 14 bases. The length the Tm reads is the selection's letters,
     // as the composition counts them: a gap ('-'), a stop ('*') or any other character that is not
-    // a letter is no base, so it is neither in that length nor an ambiguity base.
+    // a letter is no base, so it is neither in that length nor an ambiguity base. Each letter is
+    // sorted by the engine's rule (nucleotideLetterKind), and the Tm reason names N and the other
+    // codes, inosine and letters that are no nucleotide code apart (US-01M6VFP8).
     let gc = 0;
     let at = 0;
     let letters = 0;
+    let codes = 0;
+    let inosine = 0;
+    let other = 0;
     for (let i = from; i < to; i++) {
-      const code = bases.charCodeAt(i);
-      const ch = code | 0x20; // folded to lower case
-      if (ch === 0x67 || ch === 0x63) gc++; // g, c
-      else if (ch === 0x61 || ch === 0x74 || ch === 0x75) at++; // a, t, u
-      if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) letters++; // a letter, a base
+      const kind = nucleotideLetterKind(bases.charCodeAt(i));
+      if (kind === null) continue;
+      letters++; // a letter, a base
+      if (kind === 'G' || kind === 'C') gc++;
+      else if (kind === 'A' || kind === 'T') at++;
+      else if (kind === 'N' || kind === 'ambiguity') codes++;
+      else if (kind === 'inosine') inosine++;
+      else other++;
     }
     const denom = Math.max(1, gc + at);
     const gcPercent = (gc / denom) * 100;
@@ -2718,7 +2726,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
     // its own copy, which read 26 N and 14 A/C/G/T as 37.4 °C. Otherwise the Wallace rule holds
     // below 14 bases and the basic formula from 14 up, on the bases: a gap counted in the length
     // read ACGTACGT-ACGTAC as "n/a: ... holds 1 N", and ACGTACGT-ACGTA by the 14-base formula.
-    const tmNoAnswerReason = basicTmHasNoAnswer(letters, gc + at) ? tmNoAnswerSentence(letters - (gc + at)) : null;
+    const tmNoAnswerReason = basicTmHasNoAnswer(letters, gc + at) ? tmNoAnswerSentence(codes, inosine, other) : null;
     const tmBasicC =
       tmNoAnswerReason !== null ? null : letters < 14 ? 2 * at + 4 * gc : 64.9 + (41 * (gc - 16.4)) / denom;
     return {

@@ -282,6 +282,7 @@ import {
   SequenceComposition,
   setCircularOrigin,
   tmNoAnswerSentence,
+  joinedWithAnd,
 } from './core/bioEngine';
 import {
   exportToEMBL,
@@ -704,7 +705,41 @@ interface DocumentUndoSnapshot {
  */
 const basicTmNoAnswerReason = (c: SequenceComposition) => {
   const acgt = c.counts.A + c.counts.C + c.counts.G + c.counts.T;
-  return basicTmHasNoAnswer(c.length, acgt) ? tmNoAnswerSentence(c.length - acgt) : null;
+  const { codes, inosine, other } = compositionLetterKinds(c);
+  return basicTmHasNoAnswer(c.length, acgt) ? tmNoAnswerSentence(codes, inosine, other) : null;
+};
+
+/** A composition's letters that are not A, C, G or T, by kind (US-01M6VFP8): `codes` is N and the other IUPAC codes. */
+const compositionLetterKinds = (c: SequenceComposition) => {
+  const n = c.counts.N;
+  const ambiguity = c.counts.ambiguity ?? 0;
+  const inosine = c.counts.inosine ?? 0;
+  const other = c.counts.other ?? 0;
+  return { n, ambiguity, codes: n + ambiguity, inosine, other, total: n + ambiguity + inosine + other };
+};
+
+/**
+ * Statistics' note under masses weighed with letters that are not A, C, G or T, each as the mean of
+ * the four (US-01M6VFP8), or null when there are none. A sequence of N and other codes alone reads the
+ * sentence it read before, as the Tm reason does; otherwise the note names each kind whose count is above 0.
+ */
+const massesApproximateNote = (c: SequenceComposition): string | null => {
+  const { n, ambiguity, codes, inosine, other, total } = compositionLetterKinds(c);
+  if (total === 0) return null;
+  const fmt = (k: number) => k.toLocaleString('en-US');
+  if (inosine === 0 && other === 0) {
+    return `Masses are approximate: ${fmt(codes)} ${codes === 1 ? 'base is' : 'bases are'} N or another IUPAC code, weighed as the mean of A, C, G and T.`;
+  }
+  const parts: string[] = [];
+  /** The first part of N, codes and inosine names its noun, "base" or "bases"; the others do not. */
+  const bases = (k: number) => (parts.length === 0 ? `${fmt(k)} ${k === 1 ? 'base is' : 'bases are'}` : `${fmt(k)} ${k === 1 ? 'is' : 'are'}`);
+  if (n > 0) parts.push(`${bases(n)} N`);
+  if (ambiguity > 0) parts.push(`${bases(ambiguity)} ${ambiguity === 1 ? 'another IUPAC code' : 'other IUPAC codes'}`);
+  if (inosine > 0) parts.push(`${bases(inosine)} inosine (I)`);
+  if (other > 0) {
+    parts.push(`${fmt(other)} ${other === 1 ? 'letter is not a nucleotide code' : 'letters are not nucleotide codes'} (${(c.otherLetters ?? []).join(', ')})`);
+  }
+  return `Masses are approximate: ${joinedWithAnd(parts)}; each is weighed as the mean of A, C, G and T.`;
 };
 
 /** The status bar's selection Tm: "n/a", with the reason as its title, where it has no answer. */
@@ -2595,10 +2630,12 @@ export const App: React.FC = () => {
     Boolean(openRightPanels.statistics);
   const wholeSequenceCount = statisticsShown ? wholeSequenceCounts.request(activeDoc.sequence) : null;
   const composition = wholeSequenceCount && 'composition' in wholeSequenceCount ? wholeSequenceCount.composition : null;
-  // The engine weighs the linear chain; a closed circle weighs one water less per strand. N and the
-  // other IUPAC codes, which Biopython will not weigh, make both masses estimates.
+  // The engine weighs the linear chain; a closed circle weighs one water less per strand. N, the
+  // other IUPAC codes, inosine and any other letter, which Biopython will not weigh, make both masses
+  // estimates, and the note names each kind (massesApproximateNote).
   const strandEnds = activeDoc.topology === 'circular' ? BIOPYTHON_WATER_DA : 0;
-  const massesApproximate = (composition?.counts.N ?? 0) > 0;
+  const massesNote = composition ? massesApproximateNote(composition) : null;
+  const massesApproximate = massesNote !== null;
   const massText = (da: number) => `${massesApproximate ? '≈ ' : ''}${(da / 1000).toFixed(1)} kDa`;
 
   // The status bar's selection readout is the whole selection's (BG-01M6RTHN): one engine pass,
@@ -17273,12 +17310,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                               <>
                                 <div className="stat-kv"><span>dsDNA mass:</span><strong>{massText(composition.mwDsDnaDa - 2 * strandEnds)}</strong></div>
                                 <div className="stat-kv"><span>ssDNA mass:</span><strong>{massText(composition.mwSsDnaDa - strandEnds)}</strong></div>
-                                {massesApproximate && (
-                                  <p className="mbc-summary-note">
-                                    Masses are approximate: {composition.counts.N.toLocaleString()} {composition.counts.N === 1 ? 'base is' : 'bases are'} N
-                                    or another IUPAC code, weighed as the mean of A, C, G and T.
-                                  </p>
-                                )}
+                                {massesNote !== null && <p className="mbc-summary-note">{massesNote}</p>}
                                 <div className="stat-kv"><span>Melting temp:</span><strong>{basicTmNoAnswerReason(composition) === null ? `${composition.meltingTempBasicC.toFixed(1)} °C` : 'n/a'}</strong></div>
                                 {basicTmNoAnswerReason(composition) !== null && (
                                   <p className="mbc-summary-note">{basicTmNoAnswerReason(composition)}</p>
