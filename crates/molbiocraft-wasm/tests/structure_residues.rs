@@ -239,11 +239,13 @@ fn parse_structure_gives_each_residue_its_code() {
 }
 
 /// One residue number modelled as two residue types under alternate ids (microheterogeneity):
-/// the full-atom model keeps both residues, but a sequence reads one letter per position, the
-/// residue (number, insertion code) of a chain, from the residue listed first, as the PDB C-alpha
-/// view keeps it. Wrong implementations, and the case that catches each:
-/// - a letter per residue rather than per position: ARG 2 alt A, LYS 2 alt B reads ARKG;
-/// - the last-listed residue kept: it reads AKG;
+/// the full-atom model keeps both residues, but a sequence reads one letter for the run (D0211):
+/// residues listed one after another at one (number, insertion code), each carrying alternate
+/// ids, read as the residue whose atoms carry alt id A, else the first listed, which is the
+/// residue the PDB C-alpha view keeps (it takes alt id A or blank). Wrong implementations, and
+/// the case that catches each:
+/// - a letter per residue rather than per run: ARG 2 alt A, LYS 2 alt B reads ARKG;
+/// - alt id A not kept (the last-listed residue kept, say): it reads AKG;
 /// - `modified` read from every residue rather than from the residue kept: an MSE listed second
 ///   at a position appears in `modified` though its letter is not in the sequence;
 /// - a position keyed by the number alone: GLY 3 and SER 3A (an insertion) merge into one letter.
@@ -276,8 +278,10 @@ fn microheterogeneous_cif(second: (&str, &str)) -> String {
     out
 }
 
-/// Part of AC4 (called from [`chain_sequences_read_parents_nucleic_chains_and_no_ions`], which
-/// its Verify line runs).
+/// Part of US-01M6VFMX AC4 (also called from
+/// [`chain_sequences_read_parents_nucleic_chains_and_no_ions`], which its Verify line runs), and
+/// of BG-01M7Q1X2 AC3, whose Verify line runs every test named `microheterogeneous`.
+#[test]
 fn a_microheterogeneous_position_reads_as_one_letter() {
     let one = |seq: &str, mods: &[(&str, i32, &str)]| {
         json!({ "chains": [chain("A", "Protein", seq, 1, mods)], "skipped": [], "warnings": [] })
@@ -303,4 +307,205 @@ fn a_microheterogeneous_position_reads_as_one_letter() {
     inserted.push_str(&alt_pdb_atom(5, ' ', "SER", 3, 'A', 11.4));
     inserted.push_str("END\n");
     assert_eq!(sequences(inserted), one("ARGS", &[]), "GLY 3 and SER 3A");
+}
+
+// ─── BG-01M7Q1X2: D0211, which residues sharing a number a sequence keeps ───
+
+/// A PDB C-alpha line with an alternate id, a chain column (`' '` for a blank chain), a residue
+/// number and an x coordinate.
+fn ca_line(serial: usize, alt: char, res: &str, chain: char, seq: i32, x: f64) -> String {
+    let mut line = atom("ATOM", serial, " CA", res, seq, x, "C").into_bytes();
+    line[16] = alt as u8;
+    line[21] = chain as u8;
+    String::from_utf8(line).unwrap()
+}
+
+/// PDB text from (alt id, residue, number) rows of one blank chain, with `TER` after the row
+/// `ter_after` names (if any).
+fn blank_chain_pdb(rows: &[(char, &str, i32)], ter_after: Option<usize>) -> String {
+    let mut out = String::from("HEADER    SYNTHETIC\n");
+    for (k, (alt, res, seq)) in rows.iter().enumerate() {
+        out.push_str(&ca_line(k + 1, *alt, res, ' ', *seq, 3.8 * k as f64));
+        if ter_after == Some(k) {
+            out.push_str("TER\n");
+        }
+    }
+    out.push_str("END\n");
+    out
+}
+
+/// mmCIF text, with `label_alt_id`, from (alt id, residue, number) rows of chain A ('.' for no alt
+/// id); the label and author numbers are the row's number.
+fn alt_cif(rows: &[(&str, &str, i32)]) -> String {
+    let mut out = CIF_HEADER.replace("_atom_site.label_atom_id\n", "_atom_site.label_atom_id\n_atom_site.label_alt_id\n");
+    for (k, (alt, res, seq)) in rows.iter().enumerate() {
+        out.push_str(&format!("ATOM {} C CA {alt} {res} A {seq} A {seq} {k}.000 1.000 2.000\n", k + 1));
+    }
+    out
+}
+
+fn c_alpha_names(text: String) -> Vec<String> {
+    let atoms = rpc("parse_pdb_ca", json!({ "pdbText": text }));
+    atoms.as_array().unwrap().iter().map(|a| a["resName"].as_str().unwrap().to_string()).collect()
+}
+
+fn protein_a(sequence: &str, first: i32) -> Value {
+    json!({ "chains": [chain("A", "Protein", sequence, first, &[])], "skipped": [], "warnings": [] })
+}
+
+/// AC1 (D0211): numbering that restarts under one chain id is not microheterogeneity, so every
+/// residue is read. Wrong implementations, and the case that catches each:
+/// - a position kept once per chain (the round-2 rule): ALA 1, GLY 2, SER 1, THR 2 reads AG;
+/// - `TER` read as ending the chain's sequence: the TER case reads AG;
+/// - residues dropped for sharing a number with the residue before them, alternate ids or not:
+///   ALA 1, SER 1 listed one after the other reads A.
+#[test]
+fn a_restarted_numbering_keeps_every_residue() {
+    let rows = [(' ', "ALA", 1), (' ', "GLY", 2), (' ', "SER", 1), (' ', "THR", 2)];
+    for (what, ter) in [("no TER", None), ("TER after GLY 2", Some(1))] {
+        let text = blank_chain_pdb(&rows, ter);
+        assert_eq!(sequences(text.clone()), protein_a("AGST", 1), "{what}");
+        assert_eq!(c_alpha_names(text), ["ALA", "GLY", "SER", "THR"], "{what}");
+    }
+    // Two residues at one number, one after the other, with no alternate ids: both are read.
+    let adjacent = blank_chain_pdb(&[(' ', "ALA", 1), (' ', "SER", 1), (' ', "GLY", 2)], None);
+    assert_eq!(sequences(adjacent.clone()), protein_a("ASG", 1), "ALA 1, SER 1, GLY 2, no alt ids");
+    assert_eq!(c_alpha_names(adjacent), ["ALA", "SER", "GLY"]);
+    let adjacent_cif = alt_cif(&[(".", "ALA", 1), (".", "SER", 1), (".", "GLY", 2)]);
+    assert_eq!(sequences(adjacent_cif), protein_a("ASG", 1), "mmCIF ALA 1, SER 1, GLY 2, no alt ids");
+}
+
+/// AC2 (D0211): a restarted number whose residue has alternate conformers keeps its residue, as
+/// the PDB C-alpha view keeps its alt-A atom. Wrong implementation, and the case that catches it:
+/// - an alternate-id residue dropped at any number an earlier residue of the chain took (the
+///   `!has_alt || positions.insert` rule): ALA 1 (A/B), GLY 2, SER 1 (A/B) reads AG against 3
+///   C-alpha atoms.
+#[test]
+fn a_restarted_number_with_alternate_conformers_keeps_its_residue() {
+    let rows = [('A', "ALA", 1), ('B', "ALA", 1), (' ', "GLY", 2), ('A', "SER", 1), ('B', "SER", 1)];
+    let text = blank_chain_pdb(&rows, None);
+    assert_eq!(sequences(text.clone()), protein_a("AGS", 1), "PDB");
+    assert_eq!(c_alpha_names(text), ["ALA", "GLY", "SER"]);
+    let cif_rows = [("A", "ALA", 1), ("B", "ALA", 1), (".", "GLY", 2), ("A", "SER", 1), ("B", "SER", 1)];
+    assert_eq!(sequences(alt_cif(&cif_rows)), protein_a("AGS", 1), "mmCIF");
+
+    // Residues with alternate conformers one after another at different numbers are a run of
+    // nothing: ALA 1 (A/B), GLY 2 (A/B) reads AG, not A.
+    let consecutive = blank_chain_pdb(&[('A', "ALA", 1), ('B', "ALA", 1), ('A', "GLY", 2), ('B', "GLY", 2)], None);
+    assert_eq!(sequences(consecutive.clone()), protein_a("AG", 1), "ALA 1 (A/B), GLY 2 (A/B)");
+    assert_eq!(c_alpha_names(consecutive), ["ALA", "GLY"]);
+}
+
+/// AC3 (D0211): within a microheterogeneous run the residue with alt id A is read, wherever it is
+/// listed, else the first listed. Wrong implementations, and the case that catches each:
+/// - the first-listed residue kept: LYS 2 alt B listed before ARG 2 alt A reads AKG, and the
+///   sequence disagrees with the PDB C-alpha view (ALA1 ARG2 GLY3);
+/// - `modified` read from a residue not kept: MSE 2 alt B before ARG 2 alt A lists MSE;
+/// - `modified` not read from the alt-A residue: LYS 2 alt B before SEP 2 alt A must list SEP 2 S;
+/// - no fallback when no residue of the run has alt id A: alt B, alt C reads both letters;
+/// - a run that needs alternate ids on one residue only: ARG 2 alt A next to a LYS 2 with none
+///   reads one letter, though the C-alpha view gives both;
+/// - a run keyed by the number alone: GLY 3 alt A and SER 3A alt A read one letter.
+#[test]
+fn a_microheterogeneous_position_keeps_its_alt_a_residue_wherever_listed() {
+    let pdb = |b: &str, a: &str| blank_chain_pdb(&[(' ', "ALA", 1), ('B', b, 2), ('A', a, 2), (' ', "GLY", 3)], None);
+    let cif = |b: &str, a: &str| alt_cif(&[(".", "ALA", 1), ("B", b, 2), ("A", a, 2), (".", "GLY", 3)]);
+    for (what, text) in [("PDB", pdb("LYS", "ARG")), ("mmCIF", cif("LYS", "ARG"))] {
+        assert_eq!(sequences(text), protein_a("ARG", 1), "{what}: LYS 2 alt B, then ARG 2 alt A");
+    }
+    let names = c_alpha_names(pdb("LYS", "ARG"));
+    assert_eq!(names, ["ALA", "ARG", "GLY"]);
+    let atoms = rpc("parse_pdb_ca", json!({ "pdbText": pdb("LYS", "ARG") }));
+    let numbers: Vec<i64> = atoms.as_array().unwrap().iter().map(|a| a["resSeq"].as_i64().unwrap()).collect();
+    assert_eq!(numbers, [1, 2, 3]);
+
+    for (what, text) in [("PDB", pdb("MSE", "ARG")), ("mmCIF", cif("MSE", "ARG"))] {
+        assert_eq!(sequences(text), protein_a("ARG", 1), "{what}: MSE 2 alt B, then ARG 2 alt A");
+    }
+    let sep = json!({ "chains": [chain("A", "Protein", "ASG", 1, &[("SEP", 2, "S")])], "skipped": [], "warnings": [] });
+    for (what, text) in [("PDB", pdb("LYS", "SEP")), ("mmCIF", cif("LYS", "SEP"))] {
+        assert_eq!(sequences(text), sep, "{what}: LYS 2 alt B, then SEP 2 alt A");
+    }
+
+    // A run of three, alt A listed last; and a run with no alt id A, read from the first listed.
+    let three = blank_chain_pdb(&[('B', "LYS", 1), ('C', "SER", 1), ('A', "ARG", 1), (' ', "GLY", 2)], None);
+    assert_eq!(sequences(three), protein_a("RG", 1), "LYS 1 alt B, SER 1 alt C, ARG 1 alt A");
+    let no_a = blank_chain_pdb(&[(' ', "ALA", 1), ('B', "LYS", 2), ('C', "ARG", 2), (' ', "GLY", 3)], None);
+    assert_eq!(sequences(no_a), protein_a("AKG", 1), "LYS 2 alt B, then ARG 2 alt C");
+
+    // A run needs alternate ids on both residues: either order of ARG 2 alt A and a LYS 2 with
+    // none reads both, as the C-alpha view gives both.
+    for (rows, read) in [
+        ([(' ', "ALA", 1), ('A', "ARG", 2), (' ', "LYS", 2), (' ', "GLY", 3)], "ARKG"),
+        ([(' ', "ALA", 1), (' ', "LYS", 2), ('A', "ARG", 2), (' ', "GLY", 3)], "AKRG"),
+    ] {
+        let text = blank_chain_pdb(&rows, None);
+        assert_eq!(sequences(text.clone()), protein_a(read, 1), "{read}");
+        assert_eq!(c_alpha_names(text).len(), 4, "{read}");
+    }
+
+    // An insertion code is its own position, alternate ids or not: GLY 3 alt A, SER 3A alt A.
+    let mut inserted = String::from("HEADER    SYNTHETIC\n");
+    inserted.push_str(&alt_pdb_atom(1, ' ', "ALA", 1, ' ', 0.0));
+    inserted.push_str(&alt_pdb_atom(2, 'A', "GLY", 3, ' ', 3.8));
+    inserted.push_str(&alt_pdb_atom(3, 'A', "SER", 3, 'A', 7.6));
+    inserted.push_str("END\n");
+    assert_eq!(sequences(inserted), protein_a("AGS", 1), "GLY 3 alt A, SER 3A alt A");
+}
+
+/// AC10 (folded from BG-01M7Q015): the first model, the blank chain, and the molecule ties.
+/// Wrong implementations, and the case that catches each:
+/// - every model read: the two-model file gives chain A twice (or model 2's residues);
+/// - a blank chain id passed through: it reads "" rather than A;
+/// - an amino acid in a nucleic-acid chain read by its code, or silently: DA DC DG ALA must read
+///   ACGN with the ALA4 sentence;
+/// - the Protein tie broken toward nucleic acid (`>` for `>=`): ALA GLY DA DC reads as DNA;
+/// - the DNA/RNA tie broken toward DNA (`>=` for `>`): DA DC G U reads as DNA.
+#[test]
+fn chain_sequences_pin_model_chain_and_tie_rules() {
+    let model = |n: usize, res: [&str; 2]| {
+        format!("MODEL     {n:>4}\n{}{}ENDMDL\n", ca_line(1, ' ', res[0], 'A', 1, 0.0), ca_line(2, ' ', res[1], 'A', 2, 3.8))
+    };
+    let two_models = format!("HEADER    SYNTHETIC\n{}{}END\n", model(1, ["GLY", "ALA"]), model(2, ["SER", "THR"]));
+    assert_eq!(sequences(two_models), protein_a("GA", 1), "two models");
+
+    let blank = blank_chain_pdb(&[(' ', "MET", 1), (' ', "LYS", 2)], None);
+    assert!(blank.lines().nth(1).is_some_and(|l| &l[21..22] == " "), "{blank}");
+    assert_eq!(sequences(blank)["chains"][0]["chainId"], json!("A"), "a blank chain reads A");
+
+    let nucleic = |chain_id: &str, residues: &[&str]| -> Vec<(&'static str, &'static str, &'static str, String, String, String, i32)> {
+        residues
+            .iter()
+            .enumerate()
+            .map(|(k, r)| ("ATOM", "P", "P", r.to_string(), chain_id.to_string(), (k + 1).to_string(), k as i32 + 1))
+            .collect()
+    };
+    let text = |rows: Vec<(&str, &str, &str, String, String, String, i32)>| {
+        let rows: Vec<(&str, &str, &str, &str, &str, &str, i32)> =
+            rows.iter().map(|r| (r.0, r.1, r.2, r.3.as_str(), r.4.as_str(), r.5.as_str(), r.6)).collect();
+        cif(&rows)
+    };
+    assert_eq!(
+        sequences(text(nucleic("B", &["DA", "DC", "DG", "ALA"]))),
+        json!({
+            "chains": [chain("B", "DNA", "ACGN", 1, &[])],
+            "skipped": [],
+            "warnings": ["Residue ALA4 in chain B is an amino acid in a nucleic-acid chain: read as N."]
+        })
+    );
+    assert_eq!(
+        sequences(text(nucleic("A", &["ALA", "GLY", "DA", "DC"]))),
+        json!({
+            "chains": [chain("A", "Protein", "AGXX", 1, &[])],
+            "skipped": [],
+            "warnings": [
+                "Residue DA3 in chain A is a nucleotide in a protein chain: read as X.",
+                "Residue DC4 in chain A is a nucleotide in a protein chain: read as X."
+            ]
+        })
+    );
+    assert_eq!(
+        sequences(text(nucleic("A", &["DA", "DC", "G", "U"]))),
+        json!({ "chains": [chain("A", "RNA", "ACGU", 1, &[])], "skipped": [], "warnings": [] })
+    );
 }
