@@ -234,8 +234,12 @@ describe('US-01M7NKEM AC7 exports', () => {
       expect(app.canvas().querySelectorAll('.mbc-aln-textview-scroll pre')[0]?.textContent, 'fixture: FASTA is shown').toContain('>foreign_aln_2');
       expect(app.all('[aria-label="NEXUS text warnings"] p')).toHaveLength(0);
 
-      const clean = await nexusTextView(app, alignment('clean_aln', ['ACGTRYN?', 'AC-TACGT', 'ACGTACGT']));
+      // Every IUPAC nucleotide code, missing (?) and gap (-): a view that warns on any one of them fails.
+      const cleanRows = ['ACGTURYSWKMBDHVN?-', 'ACGTACGTACGTACGTAC', 'AC-TACGTACGTACGTAC'];
+      expect(new Set(cleanRows[0]), 'fixture: the clean row holds each code once').toEqual(new Set('ACGTURYSWKMBDHVN?-'));
+      const clean = await nexusTextView(app, alignment('clean_aln', cleanRows));
       expect(clean.text, 'fixture: the clean text is shown').toContain('NEXUS');
+      expect(clean.text, 'fixture: the clean text holds every code as written').toContain('clean_aln_1 ACGTURYSWKMBDHVN?-');
       expect(clean.warnings).toEqual([]);
     });
   });
