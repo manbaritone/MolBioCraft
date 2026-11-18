@@ -3762,6 +3762,8 @@ export const App: React.FC = () => {
    * the split pane, its document, view, zoom, rotation and focus stay as they are.
    */
   const openMapGallery = () => {
+    // Both entry points are disabled under this rule, so no call reaches this check today; it stays, as the
+    // View › Tracks handlers keep theirs, so a caller that does not read the rule first still gets the reason.
     if (!ensureCommandAvailable('multi-record-view', 'Map Gallery')) return;
     setMapGalleryOpen(true);
   };
@@ -15877,9 +15879,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       <button type="button" role="tab" data-view={tab}
                         tabIndex={viewerTab === tab ? 0 : -1} aria-selected={viewerTab === tab}
                         className={`mbc-vtab ${viewerTab === tab ? 'active' : ''}`}
-                        onClick={() => tab === 'history-hybrid'
-                          ? openHybridSubTab(activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'enzymes-view' : 'lineage')
-                          : setViewerTab(tab)}>
+                        onClick={() => {
+                          // A tab clicked behind the Map Gallery, the one behind it included, closes it onto that tab (US-01M7DVS2).
+                          setMapGalleryOpen(false);
+                          if (tab === 'history-hybrid') openHybridSubTab(activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'enzymes-view' : 'lineage');
+                          else setViewerTab(tab);
+                        }}>
                         {tab === 'document-info' ? <FileSpreadsheet size={13} /> : <MolBioViewerTabIcon tabId={tab} />}
                         <span>{viewerTabLabels[tab]}</span>
                       </button>

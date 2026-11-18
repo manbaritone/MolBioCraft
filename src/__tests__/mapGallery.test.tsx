@@ -15,7 +15,7 @@ import type { SequenceDocument } from '../types/bio';
 import { parseMbcWorkbench } from '../core/mbcSessionFormat';
 import { buildCommandDocumentContext, circularMapUnavailableReason, commandAvailability } from '../core/commandAvailability';
 import { mountApp, type AppHarness } from './appHarness';
-import { dispatchLiveEvent, type LiveElement } from './liveDom';
+import { dispatchLiveEvent, memoryStorage, type LiveElement } from './liveDom';
 
 vi.setConfig({ testTimeout: 240_000 });
 
@@ -89,6 +89,15 @@ const GATC = doc('ggatc', 'Gatc_Repeat', 'GATC'.repeat(2_100));
 // floor leaves some callouts out.
 const CROWD = doc('gcrowd', 'Crowded_Map', dna(8_000, 53), {
   features: Array.from({ length: 20 }, (_, i) => ({ ...mark('gcrowd', i, 100 + i * 350), end: 150 + i * 350, name: `Crowd_${i}` })),
+});
+
+// A record in the built-in Cloning folder's alias: the explorer files it under Sample Documents › Cloning.
+const CLONE_ALIAS = 'Cloning Inserts & PCR';
+const CLONED = doc('gclone', 'Clone_Insert', dna(4_000, 61), { folder: CLONE_ALIAS });
+// A circular RNA, drawn as a bar, whose feature runs across the origin (2,800..200 of 3,000).
+const WRAP = doc('gwrap', 'Rna_Wrap', dna(3_000, 67).replace(/T/g, 'U'), {
+  moleculeType: 'RNA', topology: 'circular',
+  features: [{ ...mark('gwrap', 1, 0), start: 2_800, end: 200, name: 'Across_Origin' }],
 });
 
 const sentenceFor = (d: SequenceDocument) => circularMapUnavailableReason(buildCommandDocumentContext(d)!);
@@ -350,6 +359,19 @@ describe("US-01M7DVS2 AC2: one card per checked row the table shows, in the tabl
       expect(toolbarButton(app).getAttribute('title')).toBe(reasonFor(1));
     });
   });
+
+  it("US-01M7DVS2 AC2 a record filed under a built-in folder's alias shows the path of the folder the explorer files it in", async () => {
+    const docs = [CA, CLONED];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id, { selectedFolder: ROOT_PATH });
+      for (const d of docs) await check(app, d);
+      await openByToolbar(app);
+      const byAcc = new Map(cards(app).map((c) => [cardAcc(c), c]));
+      expect(byAcc.size).toBe(2);
+      expect(field(byAcc.get(CLONED.accession)!, 'folder'), `${CLONE_ALIAS} is gathered by Sample Documents › Cloning`).toBe(`${ROOT_PATH} › Sample Documents › Cloning`);
+      expect(field(byAcc.get(CA.accession)!, 'folder')).toBe(`${ROOT_PATH} › ${ALPHA}`);
+    });
+  });
 });
 
 // ─── AC3 ───
@@ -421,6 +443,26 @@ describe('US-01M7DVS2 AC3: a card says why it has no map, or draws a circle or a
       expect(parts().every((p) => p.features > 0 && p.sites > 0), 'both shown again').toBe(true);
     });
   });
+
+  it("US-01M7DVS2 AC3 a bar draws a feature across a circular record's origin as its two parts, to the bar's end and from its start", async () => {
+    await withApp(async (app) => {
+      expect(sentenceFor(WRAP), 'a circular RNA is drawn as a bar').not.toBeNull();
+      await restore(app, [CA, WRAP], CA.id);
+      await checkAll(app);
+      await openByToolbar(app);
+      const card = cards(app).find((c) => cardAcc(c) === WRAP.accession)!;
+      const bar = card.querySelectorAll('svg.mbc-map-gallery-bar');
+      expect(bar).toHaveLength(1);
+      const width = Number(/^0 0 (\d+) /.exec(bar[0].getAttribute('viewBox') ?? '')?.[1]);
+      const at = (bp: number) => ((bp - 1) / WRAP.sequence.length) * width;
+      const boxes = bar[0].querySelectorAll('[data-map-part="feature-box"]').map((r) => [Number(r.getAttribute('x')), Number(r.getAttribute('x')) + Number(r.getAttribute('width'))]);
+      expect(boxes, 'two parts: 2,800 to the end, then 1 to 200').toHaveLength(2);
+      expect(boxes[0][0]).toBeCloseTo(at(2_800), 6);
+      expect(boxes[0][1]).toBeCloseTo(width, 6);
+      expect(boxes[1][0]).toBe(0);
+      expect(boxes[1][1]).toBeCloseTo(at(201), 6);
+    });
+  });
 });
 
 // ─── AC4 ───
@@ -442,7 +484,8 @@ describe('US-01M7DVS2 AC4: at most SPLIT_PICKER_CAP cards and GALLERY_MAPS_DRAWN
       expect(shown.map(cardName), 'the first in table order').toEqual(rowNames.slice(0, SPLIT_PICKER_CAP));
       const text = words(gallery(app).textContent);
       expect(text).toContain(subsetNote('The gallery shows', SPLIT_PICKER_CAP, M, 'records', 'first')[0]);
-      expect(text).toContain(subsetNote('The gallery draws maps for', GALLERY_MAPS_DRAWN_FIRST, M, 'records', 'first')[0]);
+      // Every record here has a map, so the maps are counted against all M.
+      expect(text).toContain(subsetNote('The gallery draws maps for', GALLERY_MAPS_DRAWN_FIRST, M, 'records with a map', 'first')[0]);
       const withMap = shown.map((c) => c.querySelectorAll('svg.plasmid-svg').length);
       expect(withMap.slice(0, GALLERY_MAPS_DRAWN_FIRST), 'the first cards draw maps').toEqual(Array(GALLERY_MAPS_DRAWN_FIRST).fill(1));
       expect(withMap.slice(GALLERY_MAPS_DRAWN_FIRST).every((n) => n === 0), 'the rest draw none').toBe(true);
@@ -457,9 +500,36 @@ describe('US-01M7DVS2 AC4: at most SPLIT_PICKER_CAP cards and GALLERY_MAPS_DRAWN
       // The gallery follows the checked rows, the open record's among them or not.
       expect(galleries(app), 'the gallery stays').toHaveLength(1);
       expect(cards(app)).toHaveLength(0);
+      const EMPTY_SENTENCE = 'No record is checked in the document table: check the rows to show their maps here.';
+      expect(gallery(app).querySelectorAll('[role="status"]').map((p) => words(p.textContent)), 'an empty gallery says why').toEqual([EMPTY_SENTENCE]);
       for (const d of many.slice(1, GALLERY_MAPS_DRAWN_FIRST)) await check(app, d);
       expect(cards(app)).toHaveLength(GALLERY_MAPS_DRAWN_FIRST - 1);
       expect(words(gallery(app).textContent)).not.toMatch(/The gallery (shows|draws maps for) the first/);
+      expect(words(gallery(app).textContent), 'and says nothing of it once rows are checked').not.toContain(EMPTY_SENTENCE);
+    });
+  });
+
+  it('US-01M7DVS2 AC4 a card with no map takes no drawn slot, and the note counts only the records that have a map', async () => {
+    await withApp(async (app) => {
+      const { GALLERY_MAPS_DRAWN_FIRST, subsetNote } = await components();
+      const mapped = Array.from({ length: GALLERY_MAPS_DRAWN_FIRST + 1 }, (_, i) => doc(`s${String(i).padStart(3, '0')}`, `Slot_${String(i).padStart(3, '0')}`, dna(300 + i, 200 + i)));
+      const docs = [EMPTY, TEXT, ...mapped];
+      await restore(app, docs, mapped[0].id);
+      await checkAll(app);
+      await openByToolbar(app);
+      const order = tableRows(app).map((r) => rowAccession(r, docs));
+      expect(cards(app).map(cardAcc), 'one card per row, in table order').toEqual(order);
+      expect([EMPTY, TEXT].every((d) => order.indexOf(d.accession) < GALLERY_MAPS_DRAWN_FIRST), 'both no-map cards sit among the first cards').toBe(true);
+      const drawnAcc = () => cards(app).filter((c) => c.querySelectorAll('svg.plasmid-svg, svg.mbc-map-gallery-bar').length > 0).map(cardAcc);
+      const mappedInOrder = order.filter((a) => mapped.some((d) => d.accession === a));
+      expect(drawnAcc(), 'the first records that have a map, all GALLERY_MAPS_DRAWN_FIRST of them').toEqual(mappedInOrder.slice(0, GALLERY_MAPS_DRAWN_FIRST));
+      const text = () => words(gallery(app).textContent);
+      expect(text()).toContain(subsetNote('The gallery draws maps for', GALLERY_MAPS_DRAWN_FIRST, mapped.length, 'records with a map', 'first')[0]);
+      expect(text(), 'the no-map records are not counted').not.toContain(`of ${docs.length} records`);
+      // With every record that has a map drawn, the gallery says nothing of a limit.
+      await check(app, mapped.find((d) => d.accession === mappedInOrder[GALLERY_MAPS_DRAWN_FIRST])!, false);
+      expect(drawnAcc().sort()).toEqual(mappedInOrder.slice(0, GALLERY_MAPS_DRAWN_FIRST).sort());
+      expect(text()).not.toMatch(/The gallery draws maps for/);
     });
   });
 });
@@ -506,6 +576,31 @@ describe("US-01M7DVS2 AC5: a card shows its map's warnings as the split pane doe
       expect(notes, 'the card says labels were left out').toHaveLength(1);
       expect(words(notes[0].textContent)).toMatch(/^\d+ more labels? in Annotations$|^\d+ more labels? not shown$/);
     });
+  });
+
+  it('US-01M7DVS2 AC5 with a collection chosen for site scans, a card scans with it, as the split pane does', async () => {
+    const ids = ['EcoRI', 'BamHI', 'HindIII', 'PstI', 'SacI', 'KpnI', 'XbaI', 'SalI', 'NcoI', 'XhoI'];
+    const T0 = '2026-01-01T00:00:00.000Z';
+    const storage = memoryStorage({
+      'molbiocraft.enzymeCollections': JSON.stringify({ schema: 1, collections: [{ id: 'collection:six', name: 'Six cutters', enzymeIds: ids, createdAt: T0, modifiedAt: T0 }] }),
+      'molbiocraft.enzymeScanCollection': JSON.stringify({ schema: 1, collectionId: 'collection:six' }),
+    });
+    const app = await mountApp({ storage });
+    try {
+      const { scanDocumentForMap } = await components();
+      const members = ids.map((id) => REBASE_ENZYMES.find((e) => (e.id ?? e.name) === id)!);
+      const chosen = scanDocumentForMap(LIN, REBASE_ENZYMES, { name: 'Six cutters', members, notScanned: [] }).scan.sites.length;
+      const every = scanDocumentForMap(LIN, REBASE_ENZYMES, null).scan.sites.length;
+      expect(chosen, 'the collection cuts the record').toBeGreaterThan(0);
+      expect(chosen, 'fewer sites than every enzyme').toBeLessThan(every);
+      await restore(app, [CA, LIN], CA.id);
+      await checkAll(app);
+      await openByToolbar(app);
+      const card = cards(app).find((c) => cardAcc(c) === LIN.accession)!;
+      expect(card.querySelectorAll('svg.mbc-map-gallery-bar [data-map-part="cut-site"]'), "the card draws the collection's sites").toHaveLength(chosen);
+    } finally {
+      app.unmount();
+    }
   });
 });
 
@@ -605,6 +700,33 @@ describe('US-01M7DVS2 AC8: View commands behind the gallery act on the focused p
         expect(headerZoom(app), `${id} zooms the main view`).toBe(zoom);
         expect(cardViews(app), `${id} changes no card`).toEqual(cardsBefore);
       }
+    });
+  });
+
+  it('US-01M7DVS2 AC8 a viewer tab clicked behind the gallery closes it onto that tab, the tab behind it included', async () => {
+    await withApp(async (app) => {
+      await restore(app, [CA, CB, LIN], CA.id);
+      await check(app, CB);
+      await check(app, CA);
+      await openByToolbar(app);
+      expect(app.activeTab(), 'the tab behind the gallery').toBe('sequence-view');
+      await app.clickTab('document-info');
+      expect(galleries(app), 'Document Info closes the gallery').toHaveLength(0);
+      expect(app.activeTab()).toBe('document-info');
+      expect(app.canvas().querySelectorAll('section[aria-label="Document information"]'), 'and shows its panel').toHaveLength(1);
+      await openByToolbar(app);
+      await app.clickTab('document-info');
+      expect(galleries(app), 'the tab behind the gallery closes it too').toHaveLength(0);
+      expect(app.canvas().querySelectorAll('section[aria-label="Document information"]')).toHaveLength(1);
+      await openByToolbar(app);
+      await app.clickTab('history-hybrid');
+      expect(galleries(app), 'the hybrid studio tab closes it').toHaveLength(0);
+      expect(app.activeTab()).toBe('history-hybrid');
+      await openByToolbar(app);
+      await app.clickTab('sequence-view');
+      expect(galleries(app), 'Sequence View closes it').toHaveLength(0);
+      expect(app.activeTab()).toBe('sequence-view');
+      oneMap(app.canvas(), "the main view's circle, shown again");
     });
   });
 

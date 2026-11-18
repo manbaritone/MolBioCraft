@@ -14,7 +14,9 @@
  * (`measuredBox`), so its callout note says which labels the card left out.
  *
  * The gallery lists at most SPLIT_PICKER_CAP cards and draws maps for the first
- * GALLERY_MAPS_DRAWN_FIRST of them, each mounting a full map and a scan; both are said by subsetNote.
+ * GALLERY_MAPS_DRAWN_FIRST cards that have one, each mounting a full map and a scan; a card with no
+ * map takes no drawn slot. Both limits are said by subsetNote, the second counted over the records
+ * that have a map.
  */
 
 import React, { useId, useMemo } from 'react';
@@ -28,7 +30,7 @@ import { CircularPlasmidMap, restrictionScopeWords, subsetNote, type ChosenScanC
 import { ResultWarnings } from './ResultWarnings';
 import { scanDocumentForMap, SPLIT_PICKER_CAP } from './SplitDocumentPane';
 
-/** The most cards the gallery draws a map for, the first in its order (until US-01M7DV75 draws them lazily). */
+/** The most cards the gallery draws a map for, the first in its order that have one (until US-01M7DV75 draws them lazily). */
 export const GALLERY_MAPS_DRAWN_FIRST = 12;
 
 /** The box a card's circle is laid out at, in pixels: the 680x540 map view at 0.44. */
@@ -127,7 +129,10 @@ export const MapGallery: React.FC<MapGalleryProps> = (props) => {
   const { docs, folderPath, onOpen, onClose } = props;
   const fitNoteId = useId();
   const shown = docs.slice(0, SPLIT_PICKER_CAP);
-  const drawn = Math.min(GALLERY_MAPS_DRAWN_FIRST, shown.length);
+  // A card with no map takes no drawn slot, so the note counts maps drawn against the records that have one.
+  const noMapReasons = docs.map(galleryNoMapReason);
+  const withMap = noMapReasons.filter((r) => r === null).length;
+  const drawnIds = new Set(shown.filter((_, i) => noMapReasons[i] === null).slice(0, GALLERY_MAPS_DRAWN_FIRST).map((d) => d.id));
   return (
     <section className="mbc-map-gallery" aria-label="Map Gallery">
       <div className="mbc-map-gallery-head">
@@ -144,11 +149,11 @@ export const MapGallery: React.FC<MapGalleryProps> = (props) => {
         </button>
       </div>
       <ResultWarnings warnings={subsetNote('The gallery shows', shown.length, docs.length, 'records', 'first')} label="Map Gallery cards" />
-      <ResultWarnings warnings={subsetNote('The gallery draws maps for', drawn, docs.length, 'records', 'first')} label="Map Gallery maps" />
+      <ResultWarnings warnings={subsetNote('The gallery draws maps for', drawnIds.size, withMap, 'records with a map', 'first')} label="Map Gallery maps" />
       {docs.length === 0 && <p className="mbc-help-where" role="status">No record is checked in the document table: check the rows to show their maps here.</p>}
       <div className="mbc-map-gallery-grid">
         {shown.map((doc, i) => {
-          const noMap = galleryNoMapReason(doc);
+          const noMap = noMapReasons[i];
           const metrics = computeDocumentTableMetrics(doc);
           return (
             <article key={doc.id} className="mbc-map-gallery-card" aria-label={doc.name}>
@@ -165,7 +170,7 @@ export const MapGallery: React.FC<MapGalleryProps> = (props) => {
                 <dt>Folder</dt>
                 <dd className="mbc-map-gallery-folder">{folderPath(doc).join(' › ')}</dd>
               </dl>
-              {noMap ? <p className="mbc-map-gallery-nomap">{noMap}</p> : i < drawn ? <CardMap doc={doc} props={props} /> : null}
+              {noMap ? <p className="mbc-map-gallery-nomap">{noMap}</p> : drawnIds.has(doc.id) ? <CardMap doc={doc} props={props} /> : null}
               <button type="button" className="mbc-btn" aria-label={`Open ${doc.name} in viewer`} onClick={() => onOpen(doc.id)}>
                 Open in viewer
               </button>
