@@ -8,7 +8,7 @@
 
 use molbiocraft_core::Topology;
 use molbiocraft_formats::{
-    compute_chromatogram_viewport, encode_abif_chromatogram_bytes, export_embl_flatfile, export_genbank_flatfile,
+    compute_chromatogram_viewport, encode_abif_chromatogram_bytes, export_embl_flatfile, export_genbank_flatfile, export_genbank_flatfile_dated,
     parse_binary_sequence_packet, parse_embl_flatfile, parse_genbank_flatfile, trim_sanger_trace_mott_phred,
 };
 use std::path::{Path, PathBuf};
@@ -2527,4 +2527,213 @@ fn viewport_reply_has_no_trimmed_region_for_an_all_bad_read() {
         assert!(vp.has_quality_values, "310.ab1 has a quality value for every call");
         assert_eq!((vp.hq_trim_start_1based, vp.hq_trim_end_1based), (1, 0), "310.ab1: no window");
     }
+}
+
+// US-01M6P2KY. A 60-bp synthetic record: the first 60 bases of pUC19's multiple cloning site region
+// as a layout fixture; nothing here depends on the bases being pUC19's own.
+const MCS_60: &str = "GAATTCGAGCTCGGTACCCGGGGATCCTCTAGAGTCGACCTGCAGGCATGCAAGCTTGGC";
+
+fn mcs_doc(name: &str) -> molbiocraft_core::SequenceDocument {
+    let mut doc = parse_genbank_flatfile(
+        &format!(
+            "LOCUS       MCS60                     60 bp    DNA     linear   SYN 01-JAN-2000\n\
+             FEATURES             Location/Qualifiers\n\
+             \x20    misc_feature    7..12\n\
+             \x20                    /label=\"SacI\"\n\
+             ORIGIN\n\
+             \x20       1 {}\n//\n",
+            MCS_60.to_ascii_lowercase()
+        ),
+        "MCS60",
+    );
+    doc.name = name.to_string();
+    doc
+}
+
+fn revcomp(s: &str) -> String {
+    s.bytes()
+        .rev()
+        .map(|b| match b {
+            b'A' => 'T',
+            b'T' => 'A',
+            b'G' => 'C',
+            b'C' => 'G',
+            other => other as char,
+        })
+        .collect()
+}
+
+/// AC1 (D0200): the LOCUS date is the date part of the ISO string the caller passes, `DD-MMM-YYYY`
+/// in upper case at columns 69-79; the undated export writes the date of `doc.updated_at` when it
+/// parses, else 01-JAN-1970.
+#[test]
+fn genbank_locus_date_is_the_export_date() {
+    let mut doc = mcs_doc("MCS60");
+    // The parser's own placeholder, so a date taken from the document would show here.
+    assert_eq!(doc.updated_at, "2026-10-31");
+    let gb = export_genbank_flatfile_dated(&doc, "2027-03-04T10:00:00Z");
+    let locus = gb.lines().next().unwrap();
+    assert!(locus.ends_with(" SYN 04-MAR-2027"), "LOCUS line: {locus:?}");
+    assert_eq!(locus.len(), 79, "LOCUS line: {locus:?}");
+    assert_eq!(&locus[68..79], "04-MAR-2027", "columns 69-79 of {locus:?}");
+    assert!(!gb.lines().any(|l| l.contains("31-OCT-2026")), "{gb}");
+    // Every month by its own three letters, and a plain date with no time.
+    for (iso, want) in [("2026-01-09", "09-JAN-2026"), ("2026-12-31T23:59:59Z", "31-DEC-2026"), ("2028-02-29", "29-FEB-2028")] {
+        let first = export_genbank_flatfile_dated(&doc, iso);
+        assert!(first.lines().next().unwrap().ends_with(&format!(" SYN {want}")), "{iso}: {first}");
+    }
+    // The undated export: the date of doc.updated_at, else 01-JAN-1970.
+    doc.updated_at = "2025-07-15T08:00:00Z".to_string();
+    assert!(export_genbank_flatfile(&doc).lines().next().unwrap().ends_with(" SYN 15-JUL-2025"));
+    for unparsed in ["", "2025-13-01", "2025-02-30", "2025-00-10", "2025-04-00", "2025/07/15", "2025-07-15x", "2025\u{e9}07-15", "not a date"] {
+        doc.updated_at = unparsed.to_string();
+        let locus_line = export_genbank_flatfile(&doc).lines().next().unwrap().to_string();
+        assert!(locus_line.ends_with(" SYN 01-JAN-1970"), "updated_at {unparsed:?}: {locus_line}");
+    }
+}
+
+/// AC2 (D0201, D0202): the user's primers come back as primers, a third-party primer_bind stays a
+/// feature, and the record name comes back whole.
+#[test]
+fn genbank_round_trip_keeps_primers_and_name() {
+    use molbiocraft_core::PrimerRecord;
+    let mut doc = mcs_doc("pUC19 MCS v2");
+    let fwd_anneal = &MCS_60[0..20];
+    let rev_anneal = revcomp(&MCS_60[40..60]);
+    doc.primers = vec![
+        PrimerRecord {
+            id: "p1".into(),
+            name: "MCS fwd tailed".into(),
+            sequence: format!("GCGGCCGCTT{fwd_anneal}"),
+            anneal_sequence: fwd_anneal.into(),
+            tail5_prime: "GCGGCCGCTT".into(),
+            bind_start: 1,
+            bind_end: 20,
+            strand: 1,
+            length: 30,
+            ..Default::default()
+        },
+        PrimerRecord {
+            id: "p2".into(),
+            name: "MCS_rev".into(),
+            sequence: rev_anneal.clone(),
+            anneal_sequence: rev_anneal.clone(),
+            tail5_prime: String::new(),
+            bind_start: 41,
+            bind_end: 60,
+            strand: -1,
+            length: 20,
+            ..Default::default()
+        },
+    ];
+    // Third-party primer_bind features: none carries the marker note in its exact form.
+    let mut foreign = doc.features[0].clone();
+    foreign.feature_type = "primer_bind".into();
+    for (i, note) in [None, Some("M13 fwd"), Some("MolBioCraft primer ACGT"), Some("Primer: ACGT"), Some("MolBioCraft primer: 5'-ACGT-3'"), Some("MolBioCraft primer: ACGT\nand a second note")]
+        .into_iter()
+        .enumerate()
+    {
+        let mut f = foreign.clone();
+        f.id = format!("foreign-{i}");
+        f.name = format!("foreign primer {i}");
+        f.notes = note.map(str::to_string);
+        doc.features.push(f);
+    }
+    let gb = export_genbank_flatfile_dated(&doc, "2027-03-04");
+    assert!(gb.contains("COMMENT     MolBioCraft name: pUC19 MCS v2\n"), "{gb}");
+    assert!(gb.contains("/note=\"MolBioCraft primer: GCGGCCGCTTGAATTCGAGCTCGGTACCCG\""), "{gb}");
+    assert!(gb.contains("     primer_bind     complement(41..60)\n"), "{gb}");
+
+    let back = parse_genbank_flatfile(&gb, "fallback");
+    assert_eq!(back.name, "pUC19 MCS v2");
+    assert_eq!(back.primers.len(), 2, "{gb}");
+    for (got, want) in back.primers.iter().zip(&doc.primers) {
+        assert_eq!(
+            (&got.name, &got.sequence, &got.anneal_sequence, &got.tail5_prime, got.bind_start, got.bind_end, got.strand),
+            (&want.name, &want.sequence, &want.anneal_sequence, &want.tail5_prime, want.bind_start, want.bind_end, want.strand),
+        );
+        assert_eq!(got.length, want.sequence.len());
+    }
+    // The foreign primer_bind features stay features, with their notes; no primer became one.
+    let kept: Vec<(&str, Option<&str>)> = back
+        .features
+        .iter()
+        .filter(|f| f.feature_type == "primer_bind")
+        .map(|f| (f.name.as_str(), f.notes.as_deref()))
+        .collect();
+    assert_eq!(
+        kept,
+        vec![
+            ("foreign primer 0", None),
+            ("foreign primer 1", Some("M13 fwd")),
+            ("foreign primer 2", Some("MolBioCraft primer ACGT")),
+            ("foreign primer 3", Some("Primer: ACGT")),
+            ("foreign primer 4", Some("MolBioCraft primer: 5'-ACGT-3'")),
+            ("foreign primer 5", Some("MolBioCraft primer: ACGT\nand a second note")),
+        ]
+    );
+    // A second export of what was read is the first.
+    assert_eq!(export_genbank_flatfile_dated(&back, "2027-03-04"), gb);
+
+    // A name that is already a LOCUS token writes no COMMENT line; one the token cuts does.
+    let plain = export_genbank_flatfile_dated(&mcs_doc("pUC19_MCS-v2"), "2027-03-04");
+    assert!(!plain.contains("COMMENT"), "{plain}");
+    assert_eq!(parse_genbank_flatfile(&plain, "fallback").name, "pUC19_MCS-v2");
+    let long = "pUC19_MCS_with_a_long_token_name";
+    let cut = export_genbank_flatfile_dated(&mcs_doc(long), "2027-03-04");
+    assert!(cut.contains(&format!("COMMENT     MolBioCraft name: {long}\n")), "{cut}");
+    assert_eq!(parse_genbank_flatfile(&cut, "fallback").name, long);
+}
+
+/// A primer whose binding site crosses the origin of a circular record, and one longer than a
+/// note line, keep their site and sequence (D0201).
+#[test]
+fn genbank_round_trip_keeps_a_primer_across_the_origin() {
+    use molbiocraft_core::PrimerRecord;
+    let mut doc = mcs_doc("MCS60");
+    doc.topology = Topology::Circular;
+    let anneal = format!("{}{}", &MCS_60[50..60], &MCS_60[0..10]);
+    let tail = "ACGTTGCAAGGCTTAACCGGTTAAGCTTGCATGCCTGCAGGTCGACTCTAGAGGATCC";
+    let rev = revcomp(&anneal);
+    doc.primers = vec![
+        PrimerRecord {
+            name: "origin".into(),
+            sequence: format!("{tail}{anneal}"),
+            anneal_sequence: anneal.clone(),
+            tail5_prime: tail.into(),
+            bind_start: 51,
+            bind_end: 10,
+            strand: 1,
+            ..Default::default()
+        },
+        // The minus strand stores the two parts in the other order.
+        PrimerRecord {
+            name: "origin rev".into(),
+            sequence: rev.clone(),
+            anneal_sequence: rev.clone(),
+            bind_start: 51,
+            bind_end: 10,
+            strand: -1,
+            ..Default::default()
+        },
+    ];
+    let gb = export_genbank_flatfile_dated(&doc, "2027-03-04");
+    assert!(gb.contains("     primer_bind     join(51..60,1..10)\n"), "{gb}");
+    assert!(gb.contains("     primer_bind     complement(join(51..60,1..10))\n"), "{gb}");
+    let back = parse_genbank_flatfile(&gb, "fallback");
+    assert_eq!(back.primers.len(), 2, "{gb}");
+    let got: Vec<_> = back
+        .primers
+        .iter()
+        .map(|p| (p.sequence.clone(), p.anneal_sequence.clone(), p.tail5_prime.clone(), p.bind_start, p.bind_end, p.strand))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (doc.primers[0].sequence.clone(), anneal.clone(), tail.to_string(), 51, 10, 1),
+            (rev.clone(), rev.clone(), String::new(), 51, 10, -1),
+        ],
+        "{gb}"
+    );
+    assert!(!back.features.iter().any(|f| f.feature_type == "primer_bind"), "{gb}");
 }

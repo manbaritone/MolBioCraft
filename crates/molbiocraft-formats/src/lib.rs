@@ -31,8 +31,8 @@ pub use genomic_tracks_noodles::{
 };
 
 pub use flatfiles::{
-    encode_abif_chromatogram_bytes, export_embl_flatfile, export_genbank_flatfile, parse_embl_flatfile,
-    parse_abif_chromatogram, parse_binary_sequence_packet, parse_genbank_flatfile,
+    encode_abif_chromatogram_bytes, export_embl_flatfile, export_genbank_flatfile, export_genbank_flatfile_dated,
+    genbank_locus_date, parse_embl_flatfile, parse_abif_chromatogram, parse_binary_sequence_packet, parse_genbank_flatfile,
     prepare_genbank_submission_package, synthesize_sanger_chromatogram, GenBankSubmissionMeta,
     GenBankSubmissionPackage, GenBankValidationIssue,
 };

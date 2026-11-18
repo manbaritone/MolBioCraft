@@ -19,8 +19,8 @@ import {
   parseVcfNoodlesRust,
   SamAlignmentSummary,
 } from '../lib/rustBioEngine';
-import type { MoleculeType, SequenceDocument, SequenceFeature } from '../types/bio';
-import { checkSequenceAlphabet, classifySequenceAlphabet, isNucleotideByAlphabet } from './bioEngine';
+import type { MoleculeType, PrimerRecord, SequenceDocument, SequenceFeature } from '../types/bio';
+import { calculatePrimerMetrics, checkSequenceAlphabet, classifySequenceAlphabet, isNucleotideByAlphabet } from './bioEngine';
 
 export function parseFasta(text: string, defaultName = 'Imported_FASTA'): SequenceDocument[] {
   return invokeRustBioSync<SequenceDocument[]>('parse_fasta', { text, defaultName });
@@ -33,9 +33,36 @@ export function parseFasta(text: string, defaultName = 'Imported_FASTA'): Sequen
  * join that mixes plus- and minus-strand parts is kept on the plus strand in its listed order, and
  * the document's Notes end with the D0005 "Warnings:" block withWarningNotes writes, naming it
  * (BG-01M6SMBS).
+ *
+ * The primers the export wrote (D0201, "Only a primer_bind carrying exactly that note form is read
+ * back as a PrimerRecord") come back from the importer with their sequences and sites only, since
+ * the formats crate cannot compute primer numbers; each gets them here from the engine's
+ * `calculatePrimerMetrics`, as a Primer Database primer does: the Tm, 3' GC clamp and Tm reason of
+ * its anneal sequence, and the full-sequence Tm, GC %, ΔG, hairpin and self-dimer ΔG. A primer
+ * holding N keeps the reason its Tm has no answer (BG-01M6SHQ0).
  */
 export function parseGenBank(text: string, fallbackName = 'Imported_GenBank'): SequenceDocument {
-  return invokeRustBioSync<SequenceDocument>('parse_genbank', { text, fallbackName });
+  const doc = invokeRustBioSync<SequenceDocument>('parse_genbank', { text, fallbackName });
+  return doc.primers.length ? { ...doc, primers: doc.primers.map(withPrimerMetrics) } : doc;
+}
+
+/** A primer read from a GenBank file with the engine's numbers for its sequences. */
+function withPrimerMetrics(p: PrimerRecord): PrimerRecord {
+  const anneal = calculatePrimerMetrics(p.annealSequence);
+  const full = calculatePrimerMetrics(p.sequence);
+  const { tmNoAnswerReason: _readReason, ...rest } = p;
+  return {
+    ...rest,
+    length: p.sequence.length,
+    gcPercent: full.gcPercent,
+    tmAnnealC: anneal.tmC,
+    tmFullC: full.tmC,
+    deltaG37: full.deltaG37,
+    hairpinDeltaG: full.hairpinDeltaG,
+    selfDimerDeltaG: full.selfDimerDeltaG,
+    gcClamp3Prime: anneal.gcClamp3Prime,
+    ...(anneal.tmNoAnswerReason ? { tmNoAnswerReason: anneal.tmNoAnswerReason } : {}),
+  };
 }
 
 /**
@@ -158,8 +185,19 @@ export function parseDnaBinaryPacket(buffer: ArrayBuffer, fileName: string): Seq
   });
 }
 
+/** Today's date on the user's own calendar, `YYYY-MM-DD`. */
+function localIsoDate(now = new Date()): string {
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
+}
+
+/**
+ * The document as a GenBank flat file, dated the day it is exported. D0200: "The export_genbank RPC
+ * op and the TS wrapper exportToGenBank always pass the export date." The date is the local
+ * calendar day, since the engine has no clock (engineTimestamps.ts).
+ */
 export function exportToGenBank(doc: SequenceDocument): string {
-  return invokeRustBioSync<string>('export_genbank', { doc });
+  return invokeRustBioSync<string>('export_genbank', { doc, exportDate: localIsoDate() });
 }
 
 export function exportToFasta(doc: SequenceDocument): string {

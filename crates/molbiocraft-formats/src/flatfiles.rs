@@ -8,8 +8,8 @@
 use crate::noodles_io::color_for_feature_type;
 use molbiocraft_core::iupac::alphabet_warnings;
 use molbiocraft_core::{
-    clean_alpha_sequence, ChromatogramData, FeatureSegment, HistoryTreeNode, MoleculeType, SequenceDocument,
-    SequenceFeature, Topology,
+    clean_alpha_sequence, ChromatogramData, FeatureSegment, HistoryTreeNode, MoleculeType, PrimerRecord,
+    SequenceDocument, SequenceFeature, Topology,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -548,6 +548,18 @@ fn segments_from_intervals(name: &str, color: &str, intervals: &[(usize, usize)]
 /// characters, stops and a lost soft-mask. Before them it says when ORIGIN holds fewer or more
 /// bases than the LOCUS line declares. A record with no ORIGIN (a CONTIG summary) has no bases to
 /// read and gets no length sentence.
+///
+/// D0201: "Only a primer_bind carrying exactly that note form is read back as a PrimerRecord;
+/// every other primer_bind stays a feature." That form is one /note, `MolBioCraft primer: ` and
+/// then the primer's letters, which [`export_genbank_flatfile`] writes (the space a wrapped line
+/// adds is dropped). The primer's name is the feature's, its site the feature's location (across
+/// the origin as a join of the record's end and its start), and its anneal sequence the last
+/// letters of the sequence, as many as the site holds bases; the letters before them are its 5'
+/// tail. Its Tm, ΔG and the other numbers are 0 here: the formats crate cannot compute them, and
+/// the app's `parseGenBank` fills them. EMBL import reads no primers (BG-01M7Q9BP).
+///
+/// D0202: "the parser takes the record name from that line when present", the line being
+/// `COMMENT     MolBioCraft name: <name>`; the document id is still made from the LOCUS name.
 pub fn parse_genbank_flatfile(text: &str, fallback_name: &str) -> SequenceDocument {
     parse_insdc_record(text, fallback_name, InsdcSource::GenBank)
 }
@@ -584,6 +596,7 @@ fn parse_insdc_record(text: &str, fallback_name: &str, source: InsdcSource) -> S
     let mut definition = String::new();
     let without_final_stop = |d: &str| d.strip_suffix('.').unwrap_or(d).to_string();
     let mut locus_length: usize = 0;
+    let mut comment_name: Option<String> = None;
 
     // The D0005 warnings the import writes into the document's Notes (see this function's doc).
     let mut warnings: Vec<String> = Vec::new();
@@ -698,6 +711,14 @@ fn parse_insdc_record(text: &str, fallback_name: &str, source: InsdcSource) -> S
         if let Some(rest) = raw_line.strip_prefix("ACCESSION") {
             if let Some(tok) = rest.split_whitespace().next() {
                 accession = tok.to_string();
+            }
+            continue;
+        }
+
+        // D0202: the record name the LOCUS token could not hold (see this function's doc).
+        if let Some(n) = raw_line.strip_prefix("COMMENT").map(str::trim_start).and_then(|r| r.strip_prefix(NAME_COMMENT)) {
+            if comment_name.is_none() && !in_features && !n.trim().is_empty() {
+                comment_name = Some(n.trim_end().to_string());
             }
             continue;
         }
@@ -877,7 +898,23 @@ fn parse_insdc_record(text: &str, fallback_name: &str, source: InsdcSource) -> S
 
     let len = seq_buf.len();
     features.retain(|f| f.start > 0);
-    resolve_wrapped_features(&mut features, if len > 0 { len } else { locus_length });
+    let record_len = if len > 0 { len } else { locus_length };
+    resolve_wrapped_features(&mut features, record_len);
+    // D0201: the user's primers, written as marked primer_bind features (see this function's doc).
+    let mut primers: Vec<PrimerRecord> = Vec::new();
+    if source == InsdcSource::GenBank {
+        features.retain(|f| match marked_primer(f, record_len, primers.len() + 1) {
+            Some(p) => {
+                primers.push(p);
+                false
+            }
+            None => true,
+        });
+    }
+    let id = format!("gb-{}-{}", name.to_ascii_lowercase(), len);
+    if let Some(n) = comment_name {
+        name = n;
+    }
     let now = "2026-10-31".to_string();
     let folder = if molecule_type == MoleculeType::Protein {
         "Protein Documents"
@@ -890,7 +927,7 @@ fn parse_insdc_record(text: &str, fallback_name: &str, source: InsdcSource) -> S
     };
 
     SequenceDocument {
-        id: format!("gb-{}-{}", name.to_ascii_lowercase(), len),
+        id,
         name,
         accession,
         description,
@@ -898,7 +935,7 @@ fn parse_insdc_record(text: &str, fallback_name: &str, source: InsdcSource) -> S
         topology,
         sequence: seq_buf,
         features,
-        primers: Vec::new(),
+        primers,
         history: vec![HistoryTreeNode {
             id: "hist-gb-1".into(),
             timestamp: now.clone(),
@@ -936,7 +973,135 @@ pub(crate) fn record_length(doc: &SequenceDocument) -> usize {
     }
 }
 
-/// Export a `SequenceDocument` to INSDC GenBank flatfile format.
+/// The start of the one /note that marks a primer_bind feature as one of the document's primers
+/// (D0201).
+const PRIMER_NOTE: &str = "MolBioCraft primer: ";
+
+/// The start of the COMMENT line that holds a record name the LOCUS token cannot (D0202).
+const NAME_COMMENT: &str = "MolBioCraft name: ";
+
+const MONTHS: [&str; 12] = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+/// The LOCUS date of an ISO 8601 string: its date part, `YYYY-MM-DD` and then nothing, a `T` or a
+/// space, written `DD-MMM-YYYY` with the month in upper case, as INSDC writes columns 69-79
+/// (`2027-03-04T10:00:00Z` is `04-MAR-2027`). None when the date part is not a calendar day, as in
+/// `2025-02-30`, or the text holds none.
+pub fn genbank_locus_date(iso: &str) -> Option<String> {
+    let iso = iso.trim();
+    let date = iso.get(..10).filter(|d| d.is_ascii())?;
+    if !(iso.len() == 10 || iso[10..].starts_with(['T', ' '])) {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| -> Option<u32> {
+        let t = &date[range];
+        t.bytes().all(|b| b.is_ascii_digit()).then(|| t.parse().ok()).flatten()
+    };
+    if date.as_bytes()[4] != b'-' || date.as_bytes()[7] != b'-' {
+        return None;
+    }
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days = *days.get((month as usize).checked_sub(1)?)?;
+    (1..=month_days).contains(&day).then(|| format!("{day:02}-{}-{year:04}", MONTHS[month as usize - 1]))
+}
+
+/// The date [`export_genbank_flatfile`] writes: D0200, "The undated function writes the date part
+/// of doc.updated_at when it parses, else 01-JAN-1970."
+fn undated_locus_date(doc: &SequenceDocument) -> String {
+    genbank_locus_date(&doc.updated_at).unwrap_or_else(|| "01-JAN-1970".to_string())
+}
+
+/// A primer_bind feature as one of the document's primers, when its one /note is the D0201 marker
+/// (see [`parse_genbank_flatfile`]); `n` numbers its id.
+fn marked_primer(f: &SequenceFeature, record_len: usize, n: usize) -> Option<PrimerRecord> {
+    if f.feature_type != "primer_bind" {
+        return None;
+    }
+    let note = f.notes.as_deref().filter(|n| !n.contains('\n'))?;
+    // A wrapped note is rejoined with a space; a primer's letters hold none.
+    let sequence: String = note.strip_prefix(PRIMER_NOTE)?.chars().filter(|c| !c.is_whitespace()).collect();
+    if sequence.is_empty() || !sequence.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    let (bind_start, bind_end, site_len) = match f.segments.as_deref() {
+        None => (f.start, f.end, f.end - f.start + 1),
+        // A site across the origin: the record's end, then its start, as both strands store it.
+        Some([a, b]) if a.end == record_len && b.start == 1 && a.start > b.end => {
+            (a.start, b.end, a.end - a.start + 1 + b.end)
+        }
+        Some(_) => return None,
+    };
+    let cut = sequence.len() - site_len.min(sequence.len());
+    Some(PrimerRecord {
+        id: format!("gb-primer-{n}"),
+        name: f.name.clone(),
+        anneal_sequence: sequence[cut..].to_string(),
+        tail5_prime: sequence[..cut].to_string(),
+        bind_start,
+        bind_end,
+        strand: f.strand,
+        length: sequence.len(),
+        sequence,
+        ..Default::default()
+    })
+}
+
+/// A primer as the primer_bind feature D0201 writes: "a primer is exported to GenBank as a
+/// primer_bind feature with /label=<name> and /note="MolBioCraft primer: <full 5'->3'
+/// sequence>"". Its site is its bind start to its bind end, a join of the record's end and its
+/// start when it crosses the origin (bind start after bind end), on its strand. None for a primer
+/// with no site on the record (a bind start or end of 0 or past the record's length), which no
+/// location can hold.
+fn primer_feature(p: &PrimerRecord, record_len: usize) -> Option<SequenceFeature> {
+    let on_record = |i: usize| (1..=record_len).contains(&i);
+    if !on_record(p.bind_start) || !on_record(p.bind_end) {
+        return None;
+    }
+    let color = color_for_feature_type("primer_bind").to_string();
+    let segment = |index: usize, start: usize, end: usize| FeatureSegment {
+        index,
+        name: format!("{} part {index}", p.name),
+        start,
+        end,
+        color: color.clone(),
+    };
+    let wraps = p.bind_start > p.bind_end;
+    Some(SequenceFeature {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        feature_type: "primer_bind".to_string(),
+        start: if wraps { 1 } else { p.bind_start },
+        end: if wraps { record_len } else { p.bind_end },
+        strand: if p.strand < 0 { -1 } else { 1 },
+        notes: Some(format!("{PRIMER_NOTE}{}", p.sequence)),
+        qualifiers: None,
+        segments: wraps.then(|| vec![segment(1, p.bind_start, record_len), segment(2, 1, p.bind_end)]),
+        cleavage_site: None,
+        color,
+    })
+}
+
+/// Export a `SequenceDocument` to INSDC GenBank flatfile format, with the date part of `date_iso`,
+/// the export's own date, as its LOCUS date (see [`genbank_locus_date`]). D0200: "The
+/// export_genbank RPC op and the TS wrapper exportToGenBank always pass the export date." A
+/// `date_iso` that holds no date writes the date [`export_genbank_flatfile`] writes; the op
+/// refuses one before it gets here.
+pub fn export_genbank_flatfile_dated(doc: &SequenceDocument, date_iso: &str) -> String {
+    genbank_flatfile(doc, &genbank_locus_date(date_iso).unwrap_or_else(|| undated_locus_date(doc)))
+}
+
+/// Export a `SequenceDocument` to INSDC GenBank flatfile format. D0200: "The undated function
+/// writes the date part of doc.updated_at when it parses, else 01-JAN-1970."
+///
+/// D0202: "when doc.name differs from the sanitised LOCUS token, the GenBank export writes a
+/// 'COMMENT MolBioCraft name: <name>' line, and the parser takes the record name from that line
+/// when present. A name that is already a valid LOCUS token writes no COMMENT line." The line is
+/// `COMMENT     MolBioCraft name: <name>`, the name on one line as DEFINITION writes the
+/// description (see [`description_line`]).
+///
+/// D0201: each primer is written after the features as a primer_bind feature (see
+/// [`primer_feature`]), so the document's features are written as before.
 ///
 /// The DEFINITION ends with GenBank's full stop, written after any the description already ends
 /// with, and [`parse_genbank_flatfile`] drops exactly that one again: a description ending in an
@@ -944,6 +1109,11 @@ pub(crate) fn record_length(doc: &SequenceDocument) -> usize {
 /// writes and reads it. A line break in the description is written as one space (see
 /// [`description_line`]), so "a\n//\nb" reads back "a // b".
 pub fn export_genbank_flatfile(doc: &SequenceDocument) -> String {
+    genbank_flatfile(doc, &undated_locus_date(doc))
+}
+
+/// The GenBank flatfile of `doc` with `date` (`DD-MMM-YYYY`) as its LOCUS date.
+fn genbank_flatfile(doc: &SequenceDocument, date: &str) -> String {
     // Annotation-only summary records keep their declared length and have no ORIGIN bases.
     let len = record_length(doc);
     let unit = if doc.molecule_type == MoleculeType::Protein {
@@ -973,12 +1143,13 @@ pub fn export_genbank_flatfile(doc: &SequenceDocument) -> String {
     let name_field = if safe_locus.len() <= 16 { format!("{:<16}", safe_locus) } else { safe_locus.clone() };
     let len_width = if safe_locus.len() <= 16 { 11 } else { 1 };
     out.push_str(&format!(
-        "LOCUS       {} {:>w$} {} {:<9}  {} SYN 31-OCT-2026\n",
+        "LOCUS       {} {:>w$} {} {:<9}  {} SYN {}\n",
         name_field,
         len,
         unit,
         mol_str,
         topo_str,
+        date,
         w = len_width
     ));
     // GenBank's final full stop, after any the description ends with (see this function's doc).
@@ -986,6 +1157,9 @@ pub fn export_genbank_flatfile(doc: &SequenceDocument) -> String {
     let accession = if doc.accession.trim().is_empty() { safe_locus.clone() } else { doc.accession.clone() };
     out.push_str(&format!("ACCESSION   {}\n", accession));
     out.push_str(&format!("VERSION     {}\n", accession));
+    if doc.name != safe_locus {
+        out.push_str(&format!("COMMENT     {NAME_COMMENT}{}\n", description_line(&doc.name)));
+    }
     out.push_str("FEATURES             Location/Qualifiers\n");
     let has_source = doc.features.iter().any(|f| f.feature_type == "source");
     if !has_source {
@@ -1001,7 +1175,8 @@ pub fn export_genbank_flatfile(doc: &SequenceDocument) -> String {
     }
 
     const QUAL: &str = "                     ";
-    for feat in &doc.features {
+    let primers: Vec<SequenceFeature> = doc.primers.iter().filter_map(|p| primer_feature(p, len)).collect();
+    for feat in doc.features.iter().chain(&primers) {
         let key = &feat.feature_type;
         out.push_str(&wrap_feature_line(&format!("     {:<15} ", key), QUAL, &format_insdc_location(feat), BreakAt::Comma));
         out.push_str(&feature_qualifier_lines(feat, QUAL, key != "source"));

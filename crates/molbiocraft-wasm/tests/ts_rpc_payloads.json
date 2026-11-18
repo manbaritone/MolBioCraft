@@ -352,7 +352,8 @@
   "doc"
  ],
  "export_genbank": [
-  "doc"
+  "doc",
+  "exportDate"
  ],
  "export_gff3": [
   "doc"

@@ -85,7 +85,7 @@ use molbiocraft_formats::{
     build_ncbi_reference_preset_document, compute_chromatogram_viewport,
     compute_mbc_payload_checksum, compute_sam_pileup_and_coverage_noodles, export_embl_flatfile,
     parse_embl_flatfile,
-    export_fasta_noodles, export_genbank_flatfile, export_gff3_noodles,
+    export_fasta_noodles, export_genbank_flatfile_dated, export_gff3_noodles, genbank_locus_date,
     get_curated_database_records, get_reference_database_categories,
     intersect_genomic_intervals_noodles, is_mbc_file_or_payload_rust, parse_bed_noodles,
     parse_binary_sequence_packet, parse_fasta_noodles, parse_fastq_noodles, parse_genbank_flatfile,
@@ -573,7 +573,13 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         }
         "export_genbank" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
-            Ok(Value::String(export_genbank_flatfile(&doc)))
+            // D0200: "The export_genbank RPC op and the TS wrapper exportToGenBank always pass the
+            // export date." The WASM has no clock, so a missing or unreadable date is refused.
+            let date = str_arg(&payload, "exportDate", "");
+            if genbank_locus_date(date).is_none() {
+                return Err(format!("export_genbank needs exportDate, the export's ISO date (YYYY-MM-DD); got {date:?}"));
+            }
+            Ok(Value::String(export_genbank_flatfile_dated(&doc, date)))
         }
         "parse_embl" => {
             let text = str_arg(&payload, "text", "");
