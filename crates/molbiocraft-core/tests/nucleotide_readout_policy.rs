@@ -76,4 +76,24 @@ fn extinction_weighs_codes_by_their_bases_and_names_what_it_leaves_out() {
         assert!((comp.extinction_coeff260 - eps).abs() < 1e-6, "{seq}: ε260 {} not {eps}", comp.extinction_coeff260);
         assert_eq!(comp.warnings, warnings, "{seq}");
     }
+    // The six codes the cases above do not reach, each weighed as the mean of its bases' ε260 values,
+    // the values the cases above already rest on: A 15,400, C 7,400, G 11,500, T 8,700 (so ACGT×4 is
+    // 4 × 43,000 = 172,000). Each code stands alone in its own case, four times over ACGT×4, so a swap
+    // of two codes (S for W) or a code weighed as N moves that case's sum; one SWBDHV tail would hide
+    // the swap, as S + W sums the same either way round.
+    let means: [(char, f64); 6] = [
+        ('S', (7_400.0 + 11_500.0) / 2.0),             // C + G = 18,900; / 2 = 9,450
+        ('W', (15_400.0 + 8_700.0) / 2.0),             // A + T = 24,100; / 2 = 12,050
+        ('B', (7_400.0 + 11_500.0 + 8_700.0) / 3.0),   // C + G + T = 27,600; / 3 = 9,200
+        ('D', (15_400.0 + 11_500.0 + 8_700.0) / 3.0),  // A + G + T = 35,600; / 3 = 11,866.67
+        ('H', (15_400.0 + 7_400.0 + 8_700.0) / 3.0),   // A + C + T = 31,500; / 3 = 10,500
+        ('V', (15_400.0 + 7_400.0 + 11_500.0) / 3.0),  // A + C + G = 34,300; / 3 = 11,433.33
+    ];
+    for (code, mean) in means {
+        let seq = format!("{ACGT4}{}", code.to_string().repeat(4));
+        let eps = 172_000.0 + 4.0 * mean;
+        let comp = analyze_sequence_composition(&seq);
+        assert!((comp.extinction_coeff260 - eps).abs() < 1e-6, "{seq}: ε260 {} not {eps}", comp.extinction_coeff260);
+        assert_eq!(comp.warnings, vec![codes(4)], "{seq}");
+    }
 }
