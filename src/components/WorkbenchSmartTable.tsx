@@ -705,17 +705,25 @@ export interface WorkbenchSmartTableProps
    * order it draws them, read from each row's own `data-mbc-row-id`. Returning `null` exports the
    * visible cells as ever. The export path itself - its formats, its serializer and its filename -
    * is the shared one either way. The second argument says what the table shows besides its rows
-   * (US-01M7DVV8, D0196): its visible columns in on-screen order and whether a filter is active.
+   * (US-01M7DVV8, D0209): its visible columns in on-screen order, all its columns, whether a filter
+   * is in force, and the filter's own predicate, so a host can test rows the table does not hold.
    */
   exportTable?: (shownRowIds: string[], view: SmartTableExportView) => FigureTable | null;
 }
 
-/** What a smart table shows when it exports, beyond the ids of its rows (D0196). */
+/** What a smart table shows when it exports, beyond the ids of its rows (D0209). */
 export interface SmartTableExportView {
   /** The visible columns in the order the table draws them; `index` is the column's place in the host's own header row. */
   columns: { id: string; label: string; index: number }[];
+  /** Every column, hidden ones included, in the host's header order, so a rule on a hidden column can be evaluated too. */
+  allColumns: { id: string; label: string; index: number }[];
   /** Whether the quick filter or a column filter rule is in force. */
   filterActive: boolean;
+  /**
+   * The table's own row predicate (evaluateTableRowFilters): its quick filter over the visible
+   * columns, its rules and its match mode, over a row whose cell text `textOf` gives by column id.
+   */
+  keeps: (textOf: (colId: string) => string) => boolean;
 }
 
 interface ExtractedColMeta {
@@ -1054,7 +1062,10 @@ export const WorkbenchSmartTable: React.FC<WorkbenchSmartTableProps> = ({
                 ),
                 {
                   columns: orderedVisibleCols.map((c) => ({ id: c.id, label: c.label, index: c.origIndex })),
+                  allColumns: extractedCols.map((c) => ({ id: c.id, label: c.label, index: c.origIndex })),
                   filterActive: activeFilterCount > 0,
+                  keeps: (textOf) =>
+                    evaluateTableRowFilters(textOf, orderedVisibleCols.map((c) => c.id), quickFilter, filterRules, filterMatchMode),
                 }
               );
               if (own) return own;

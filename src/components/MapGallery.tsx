@@ -40,9 +40,11 @@
  * (`getDocumentColumnDisplayValue` over `computeDocumentTableMetrics`), except Folder path, the card's;
  * where that text is '-' or blank the cell says "n/a" and why (compareTableCell). The table is a
  * WorkbenchSmartTable, whose Export writes TSV and CSV through the shared export: the columns the
- * table shows, in the order it draws them, over the rows it shows, in the order it draws them; with no
- * filter in force, every checked record past SPLIT_PICKER_CAP follows in card order, and while a filter
- * is in force only the rows shown (D0196). A row's name opens its record by id, as Open in viewer.
+ * table shows, in the order it draws them, over the rows it shows, in the order it draws them; then
+ * the checked records past SPLIT_PICKER_CAP follow in card order: every one with no filter in force,
+ * and while a filter is in force those the table's own predicate keeps, each tested over its Compare
+ * Table cell text, a rule on a hidden column included (D0209). A row's name opens its record by id, as
+ * Open in viewer.
  */
 
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
@@ -240,12 +242,11 @@ const FeatureBar: React.FC<{ doc: SequenceDocument; sites: RestrictionCutSite[];
 const CARD_GESTURES = ['wheel', 'gesturestart', 'gesturechange', 'gestureend'] as const;
 
 /**
- * Keeps a wheel or pinch over a card from its map (US-01M7DV6R AC1), so the map neither zooms nor
- * moves: a plain wheel is left to scroll the gallery, and a pinch (a ctrl- or meta-flagged wheel, or a
- * gesture event) is kept from zooming the page. Capture-phase and non-passive, so it runs before the
- * map's own listener and may prevent the default.
+ * The Compare Table (US-01M7DVV8): one row per card, in card order, up to the cap. Its Export writes
+ * the columns shown, in their on-screen order, over every checked record the filter keeps (D0209):
+ * the rows shown, in their on-screen order, then the past-cap records the table's own predicate keeps,
+ * in card order; with no filter in force, every checked record.
  */
-/** The Compare Table (US-01M7DVV8): one row per card, in card order; its Export writes the columns shown, and every checked record unless a filter is in force. */
 const CompareTable: React.FC<{ docs: SequenceDocument[]; shown: SequenceDocument[]; folderPath: MapGalleryProps['folderPath']; onOpen: (docId: string) => void }> = ({
   docs,
   shown,
@@ -253,13 +254,21 @@ const CompareTable: React.FC<{ docs: SequenceDocument[]; shown: SequenceDocument
   onOpen,
 }) => {
   const rowOf = (doc: SequenceDocument) => COMPARE_TABLE_COLUMNS.map((c) => compareTableCell(doc, c.id, folderPath(doc)));
-  // The columns the table shows, in its order, over the rows it shows; with no filter in force, the
-  // checked records past the cap follow in card order, which a filter cannot reach (D0196).
+  // The columns the table shows, in its order, over the rows it shows, then the checked records past
+  // the cap in card order: under a filter in force, only those the table's own predicate keeps, each
+  // tested over its Compare Table cell text, keyed by every column's id so a hidden column's rule holds (D0209).
   const exportTable = (shownRowIds: string[], view: SmartTableExportView): FigureTable => {
     const byId = new Map(docs.map((d) => [d.id, d]));
     const listed = shownRowIds.map((id) => byId.get(id)).filter((d): d is SequenceDocument => d !== undefined);
     const columns = view.columns.map((c) => COMPARE_TABLE_COLUMNS[c.index]).filter((c) => c !== undefined);
-    const rows = view.filterActive ? listed : [...listed, ...docs.slice(shown.length)];
+    const columnOf = new Map(view.allColumns.map((c) => [c.id, COMPARE_TABLE_COLUMNS[c.index]]));
+    const keeps = (d: SequenceDocument) =>
+      view.keeps((colId) => {
+        const column = columnOf.get(colId);
+        return column ? compareTableCell(d, column.id, folderPath(d)) : '';
+      });
+    const pastCap = docs.slice(shown.length);
+    const rows = [...listed, ...(view.filterActive ? pastCap.filter(keeps) : pastCap)];
     return { headers: columns.map((c) => c.label), rows: rows.map((d) => columns.map((c) => compareTableCell(d, c.id, folderPath(d)))), caption: 'Compare Table' };
   };
   return (
@@ -292,6 +301,12 @@ const CompareTable: React.FC<{ docs: SequenceDocument[]; shown: SequenceDocument
   );
 };
 
+/**
+ * Keeps a wheel or pinch over a card from its map (US-01M7DV6R AC1), so the map neither zooms nor
+ * moves: a plain wheel is left to scroll the gallery, and a pinch (a ctrl- or meta-flagged wheel, or a
+ * gesture event) is kept from zooming the page. Capture-phase and non-passive, so it runs before the
+ * map's own listener and may prevent the default.
+ */
 const holdCardGesture = (event: Event) => {
   event.stopPropagation();
   const wheel = event as WheelEvent;

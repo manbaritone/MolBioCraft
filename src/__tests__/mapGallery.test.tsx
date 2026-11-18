@@ -1622,7 +1622,7 @@ describe('US-01M7DVV8 AC4: Export writes TSV and CSV through the shared table ex
   });
 });
 
-describe('US-01M7DVV8 AC4: the export follows the columns and the filter on screen (D0196)', () => {
+describe('US-01M7DVV8 AC4: the export follows the columns and the filter on screen (D0209)', () => {
   it('US-01M7DVV8 AC4 with Modified hidden and % GC dragged before Folder path, the TSV and CSV header is the on-screen header in its order', async () => {
     const docs = [PROT, NOMOD, CA];
     await withApp(async (app) => {
@@ -1648,7 +1648,7 @@ describe('US-01M7DVV8 AC4: the export follows the columns and the filter on scre
     });
   });
 
-  it('US-01M7DVV8 AC4 over SPLIT_PICKER_CAP checked records, under a quick filter or a column rule the export writes only the rows shown, and no past-cap record', async () => {
+  it('US-01M7DVV8 AC4 over SPLIT_PICKER_CAP checked records, under a quick filter or a column rule that no past-cap record meets the export writes the rows shown only, and with the filter cleared every checked record', async () => {
     await withApp(async (app) => {
       const { SPLIT_PICKER_CAP } = await components();
       const many = Array.from({ length: SPLIT_PICKER_CAP + 2 }, (_, i) => doc(`f${String(i).padStart(4, '0')}`, `Row_${String(i).padStart(4, '0')}`, dna(300 + i, 300 + i)));
@@ -1682,6 +1682,108 @@ describe('US-01M7DVV8 AC4: the export follows the columns and the filter on scre
       await app.input(labelled(gallery(app), 'input', 'Filter condition value'), 'Row_0001');
       expect(ctGrid(app).map((r) => r[0]), 'the column rule shows one row').toEqual(['Row_0001']);
       expect(names((await exportCompare(app, 'TSV')).text), 'under a column rule, the rows shown only').toEqual(['Row_0001']);
+    });
+  });
+
+  /** SPLIT_PICKER_CAP + 2 checked records named Row_0000.., the Compare Table open over the first SPLIT_PICKER_CAP. */
+  async function overCap(app: AppHarness, more: (i: number) => Partial<SequenceDocument> = () => ({})) {
+    const { SPLIT_PICKER_CAP } = await components();
+    const many = Array.from({ length: SPLIT_PICKER_CAP + 2 }, (_, i) => doc(`q${String(i).padStart(4, '0')}`, `Row_${String(i).padStart(4, '0')}`, dna(300 + i, 300 + i), more(i)));
+    await restore(app, many, many[0].id);
+    await checkAll(app);
+    await openCompareByToolbar(app);
+    expect(ctRows(app), 'the fixture: the table shows the cap').toHaveLength(SPLIT_PICKER_CAP);
+    expect(many.slice(SPLIT_PICKER_CAP).map((d) => d.name), 'the fixture: two records past the cap').toEqual(['Row_0400', 'Row_0401']);
+    return { many, cap: SPLIT_PICKER_CAP };
+  }
+  const tsvNames = async (app: AppHarness) => (await exportCompare(app, 'TSV')).text.trim().split(/\r?\n/).slice(1).map((l) => l.split('\t')[0]);
+  const shownNames = (app: AppHarness) => ctRows(app).filter((r) => r.hasAttribute('data-mbc-row-id')).map((r) => ctCells(r)[0]);
+  const openFilter = (app: AppHarness) => app.click(ctToolbarButton(app, 'Filter rows by keyword or column rules'));
+  async function addRule(app: AppHarness, column: string, value: string) {
+    const add = gallery(app).querySelectorAll('button').filter((b) => words(b.textContent) === '+ Column Rule');
+    expect(add, 'a + Column Rule button').toHaveLength(1);
+    await app.click(add[0]);
+    const cols = gallery(app).querySelectorAll('select').filter((c) => c.getAttribute('aria-label') === 'Filter column');
+    const values = gallery(app).querySelectorAll('input').filter((c) => c.getAttribute('aria-label') === 'Filter condition value');
+    const col = cols[cols.length - 1];
+    const option = col.querySelectorAll('option').filter((o) => words(o.textContent) === column);
+    expect(option, `a ${column} rule column`).toHaveLength(1);
+    await app.change(col, option[0].getAttribute('value')!);
+    await app.input(values[values.length - 1], value);
+  }
+
+  it('BG-01M7Q1VN AC1 a filter that keeps every shown row writes every checked record; one that hides every shown row still writes the past-cap records it keeps', async () => {
+    await withApp(async (app) => {
+      const { many, cap } = await overCap(app);
+      const cardOrder = many.map((d) => d.name);
+      expect(shownNames(app), 'the fixture: card order on screen').toEqual(cardOrder.slice(0, cap));
+      await openFilter(app);
+      const quick = labelled(gallery(app), 'input', 'Quick filter across table columns');
+      await app.input(quick, 'Row_');
+      expect(shownNames(app), 'quick filter Row_ hides no shown row').toHaveLength(cap);
+      const all = await tsvNames(app);
+      expect(all, 'quick filter Row_: every checked record, ending Row_0401').toEqual(cardOrder);
+      expect(all[all.length - 1]).toBe('Row_0401');
+      // The rows shown come in their on-screen order, then the past-cap records the filter keeps, in card order.
+      await app.click(compareTable(app).querySelectorAll('thead th').filter((th) => words(th.textContent).startsWith('Name'))[0]);
+      await app.click(compareTable(app).querySelectorAll('thead th').filter((th) => words(th.textContent).startsWith('Name'))[0]);
+      const sorted = shownNames(app);
+      expect(sorted, 'the fixture: Name sorted descending on screen').toEqual(cardOrder.slice(0, cap).reverse());
+      expect(await tsvNames(app), 'on-screen order, then the past-cap records in card order').toEqual([...sorted, 'Row_0400', 'Row_0401']);
+      await app.input(quick, 'Row_04');
+      expect(shownNames(app), 'quick filter Row_04 hides every shown row').toEqual([]);
+      expect(words(compareTable(app).textContent)).toContain('No rows match the active filter.');
+      expect(await tsvNames(app), 'quick filter Row_04: the past-cap records it keeps').toEqual(['Row_0400', 'Row_0401']);
+      await app.input(quick, 'Row_0401');
+      expect(await tsvNames(app), 'each past-cap record is tested on its own').toEqual(['Row_0401']);
+      await app.input(quick, '');
+      expect(shownNames(app), 'the fixture: the filter cleared, the sort kept').toEqual(sorted);
+      expect(await tsvNames(app), 'no filter: every checked record, the rows shown in their order first').toEqual([...sorted, 'Row_0400', 'Row_0401']);
+    });
+  });
+
+  it('BG-01M7Q1VN AC1 a column rule writes the shown rows and past-cap records it keeps, under its match mode', async () => {
+    await withApp(async (app) => {
+      await overCap(app);
+      await openFilter(app);
+      await addRule(app, 'Name', 'Row_0001');
+      expect(shownNames(app), 'rule Name contains Row_0001 shows one row').toEqual(['Row_0001']);
+      expect(await tsvNames(app), 'rule Name contains Row_0001: Row_0001 only').toEqual(['Row_0001']);
+      await addRule(app, 'Name', 'Row_0400');
+      expect(shownNames(app), 'match all: no record meets both rules').toEqual([]);
+      expect(await tsvNames(app), 'match all: no record').toEqual([]);
+      const mode = labelled(gallery(app), 'select', 'Filter rule match mode');
+      const any = mode.querySelectorAll('option').map((o) => o.getAttribute('value')).filter((v) => v === 'any');
+      expect(any, 'a match-any mode').toHaveLength(1);
+      await app.change(mode, 'any');
+      expect(shownNames(app), 'match any: the shown row either rule keeps').toEqual(['Row_0001']);
+      expect(await tsvNames(app), 'match any: the shown row, then the past-cap record either rule keeps').toEqual(['Row_0001', 'Row_0400']);
+    });
+  });
+
+  const COMPARE_NA_MODIFIED_TEXT = 'n/a: not recorded';
+  it('BG-01M7Q1VN AC3 a rule on a hidden column keeps the same past-cap records it keeps with the column shown', async () => {
+    await withApp(async (app) => {
+      // Every even record has no modified date, so its Modified reads n/a; Row_0400 is even, Row_0401 odd.
+      const { many, cap } = await overCap(app, (i) => (i % 2 === 0 ? { updatedAt: '' } : {}));
+      const kept = many.filter((_, i) => i % 2 === 0).map((d) => d.name);
+      expect(kept.slice(-1), 'the fixture: one past-cap record with no modified date').toEqual(['Row_0400']);
+      await openFilter(app);
+      await addRule(app, 'Modified', 'n/a');
+      expect(ctHeaders(app), 'the fixture: Modified shown').toContain('Modified');
+      expect(shownNames(app), 'the shown rows with no modified date').toEqual(kept.slice(0, cap / 2));
+      const shown = await tsvNames(app);
+      expect(shown, 'Modified shown: the shown rows, then Row_0400').toEqual(kept);
+      await app.click(ctToolbarButton(app, 'Show, hide, lock, or save table columns'));
+      await app.click(gallery(app).querySelectorAll('.mbc-columns-check-item').filter((l) => words(l.textContent) === 'Modified')[0].querySelectorAll('input[type="checkbox"]')[0]);
+      expect(ctHeaders(app), 'the fixture: Modified hidden on screen').not.toContain('Modified');
+      expect(shownNames(app), 'the rule still holds on the shown rows').toEqual(kept.slice(0, cap / 2));
+      expect(await tsvNames(app), 'Modified hidden: the same records, Row_0400 included').toEqual(shown);
+      // The quick filter reads the visible columns only, as it does on screen: hidden Modified's n/a keeps no past-cap record.
+      await app.click(labelled(gallery(app), 'button', 'Remove filter rule'));
+      await app.input(labelled(gallery(app), 'input', 'Quick filter across table columns'), COMPARE_NA_MODIFIED_TEXT);
+      expect(shownNames(app), 'the fixture: no visible column of a shown row says it').toEqual([]);
+      expect(await tsvNames(app), 'a quick filter that only a hidden column meets keeps no past-cap record').toEqual([]);
     });
   });
 });
