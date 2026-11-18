@@ -90,7 +90,7 @@ use molbiocraft_formats::{
     intersect_genomic_intervals_noodles, is_mbc_file_or_payload_rust, parse_bed_noodles,
     parse_binary_sequence_packet, parse_fasta_noodles, parse_fastq_noodles, parse_genbank_flatfile,
     parse_gff3_noodles, parse_mbc_workbench_rust,
-    pdb_mmcif::{parse_mmcif_structure, try_parse_pdb_or_mmcif_ca_coordinates},
+    pdb_mmcif::{parse_mmcif_structure, structure_chain_sequences, try_parse_pdb_or_mmcif_ca_coordinates},
     parse_remote_database_payload, parse_sam_noodles, parse_vcf_noodles,
     prepare_genbank_submission_package, query_curated_database_records,
     serialize_mbc_workbench_rust, synthesize_folded_pdb_from_protein,
@@ -583,6 +583,16 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             parse_mmcif_structure(text)
                 .map_err(|e| e.to_string())
                 .and_then(to_val)
+        }
+        "structure_chain_sequences" => {
+            // PDB or mmCIF text: each polymer chain of the first model as a Protein, DNA or RNA
+            // sequence, modified residues read as their parents and ions never a chain.
+            note_key("text");
+            let text = payload
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("Missing required field 'text' in RPC payload")?;
+            structure_chain_sequences(text).and_then(to_val)
         }
         "synthesize_folded_pdb" => {
             let protein_seq = str_arg(&payload, "proteinSeq", "");

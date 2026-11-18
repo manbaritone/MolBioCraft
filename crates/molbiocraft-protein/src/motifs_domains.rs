@@ -8,6 +8,7 @@
 
 use aho_corasick::AhoCorasickBuilder;
 use molbiocraft_core::clean_alpha_sequence;
+use molbiocraft_formats::pdb_mmcif::protein_residue_code;
 use molbiocraft_formats::{parse_pdb_or_mmcif_ca_coordinates, PdbCaAtom};
 use nalgebra::Matrix3;
 use serde::{Deserialize, Serialize};
@@ -979,30 +980,10 @@ pub struct Pdb3dGeometryReport {
     pub residue_profiles: Vec<ResidueGeometryProfile>,
 }
 
-fn three_letter_to_one(res3: &str) -> char {
-    match res3.trim().to_ascii_uppercase().as_str() {
-        "ALA" => 'A',
-        "ARG" => 'R',
-        "ASN" => 'N',
-        "ASP" => 'D',
-        "CYS" => 'C',
-        "GLN" => 'Q',
-        "GLU" => 'E',
-        "GLY" => 'G',
-        "HIS" => 'H',
-        "ILE" => 'I',
-        "LEU" => 'L',
-        "LYS" => 'K',
-        "MET" => 'M',
-        "PHE" => 'F',
-        "PRO" => 'P',
-        "SER" => 'S',
-        "THR" => 'T',
-        "TRP" => 'W',
-        "TYR" => 'Y',
-        "VAL" => 'V',
-        _ => 'A',
-    }
+/// The amino-acid code of a C-alpha atom's residue by the formats crate's residue table: a
+/// modified residue's parent's (`MSE` is `M`), `X` for a residue the table lacks.
+fn residue_letter(res_name: &str) -> char {
+    protein_residue_code(res_name) as char
 }
 
 /// Tien et al. (2013) empirical maximum Gly-X-Gly tripeptide solvent-accessible surface areas (Å²).
@@ -1041,7 +1022,7 @@ fn compute_rg(atoms: &[PdbCaAtom]) -> (f64, [f64; 3]) {
     let mut cy = 0.0;
     let mut cz = 0.0;
     for a in atoms {
-        let m = residue_mass_da(three_letter_to_one(&a.res_name) as u8).max(57.0);
+        let m = residue_mass_da(residue_letter(&a.res_name) as u8).max(57.0);
         cx += m * a.x;
         cy += m * a.y;
         cz += m * a.z;
@@ -1053,7 +1034,7 @@ fn compute_rg(atoms: &[PdbCaAtom]) -> (f64, [f64; 3]) {
 
     let mut weighted_r2 = 0.0;
     for a in atoms {
-        let m = residue_mass_da(three_letter_to_one(&a.res_name) as u8).max(57.0);
+        let m = residue_mass_da(residue_letter(&a.res_name) as u8).max(57.0);
         let dx = a.x - cx;
         let dy = a.y - cy;
         let dz = a.z - cz;
@@ -1248,7 +1229,7 @@ pub fn analyze_pdb_3d_geometry(raw_pdb_or_cif: &str) -> Pdb3dGeometryReport {
     let mut residue_profiles = Vec::with_capacity(n);
 
     for (idx, a) in atoms.iter().enumerate() {
-        let aa1 = three_letter_to_one(&a.res_name);
+        let aa1 = residue_letter(&a.res_name);
         let max_asa = max_asa_tien_2013(aa1);
         // Sigmoidal coordination burial model (Durham et al. 2009 neighbor-vector / half-sphere exposure)
         let cn = coord_10a[idx];
@@ -1374,5 +1355,45 @@ mod geometry_validation {
         // Four chains: the two-state folding-rate correlation does not apply and is not reported.
         assert_eq!(r.chain_ids, vec!["A", "B", "D", "E"]);
         assert!(r.estimated_folding_ln_kf.is_nan());
+    }
+
+    /// A five-residue Cα trace whose first residue is `first` (a `HETATM` when it is not one of
+    /// the 20), the rest Gly.
+    fn trace_starting_with(first: &str) -> String {
+        let record = if matches!(first, "MET" | "ALA") { "ATOM  " } else { "HETATM" };
+        let mut out = String::new();
+        for k in 0..5 {
+            let (rec, res) = if k == 0 { (record, first) } else { ("ATOM  ", "GLY") };
+            let (x, y) = (3.8 * k as f64, if k % 2 == 0 { 0.0 } else { 1.5 });
+            out.push_str(&format!(
+                "{rec}{:>5}  CA  {res:>3} A{:>4}    {x:>8.3}{y:>8.3}{:>8.3}  1.00 20.00           C\n",
+                k + 1,
+                k + 1,
+                0.0
+            ));
+        }
+        out
+    }
+
+    /// US-01M6VFMX AC2 (delta k): the geometry reads the formats crate's residue table, so a
+    /// selenomethionine is weighed and sized as methionine, and a residue the table lacks is X,
+    /// not the alanine the old 20-letter map read anything else as.
+    #[test]
+    fn the_geometry_reads_a_modified_residue_as_its_parent() {
+        let report = |first: &str| analyze_pdb_3d_geometry(&trace_starting_with(first));
+        let (mse, met, ala, xyz) = (report("MSE"), report("MET"), report("ALA"), report("XYZ"));
+        assert_eq!(mse.residue_count, 5, "the HETATM MSE is a polymer C-alpha");
+        assert_eq!(mse.residue_profiles[0].res_name, "MSE");
+        assert_eq!(mse.total_estimated_sasa_angstrom2, met.total_estimated_sasa_angstrom2);
+        assert_eq!(mse.radius_of_gyration_angstrom, met.radius_of_gyration_angstrom);
+        assert_eq!(mse.centroid_xyz, met.centroid_xyz);
+        assert_ne!(mse.total_estimated_sasa_angstrom2, ala.total_estimated_sasa_angstrom2, "MSE is not Ala");
+        assert_ne!(mse.centroid_xyz, ala.centroid_xyz, "MSE is not weighed as Ala");
+        // XYZ is X (Tien 2013 gives X the default 175 Å², Ala 129 Å²). An ATOM XYZ is a polymer
+        // C-alpha in a PDB file, so the trace keeps it.
+        let xyz_atom = analyze_pdb_3d_geometry(&trace_starting_with("XYZ").replacen("HETATM", "ATOM  ", 1));
+        assert_eq!(xyz.residue_count, 4, "a HETATM the table lacks is not a polymer residue");
+        assert_eq!(xyz_atom.residue_count, 5);
+        assert_ne!(xyz_atom.total_estimated_sasa_angstrom2, ala.total_estimated_sasa_angstrom2, "XYZ is not Ala");
     }
 }

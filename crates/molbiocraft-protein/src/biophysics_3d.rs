@@ -13,10 +13,10 @@ use bio::alignment::pairwise::Aligner;
 use bio::alignment::AlignmentOperation;
 use bio::scores::blosum62;
 use molbiocraft_formats::pdb_mmcif::{
-    ca_atoms_of_structure, parse_mmcif_structure, parse_pdb_structure, AtomRecord, PdbError, SecondaryStructureKind,
-    Structure, StructureAtom, StructureChain, StructureModel, StructureResidue,
+    ca_atoms_of_structure, parse_mmcif_structure, parse_pdb_structure, polymer_c_alpha, protein_residue_code, PdbError,
+    SecondaryStructureKind, Structure, StructureChain, StructureModel, StructureResidue,
 };
-use molbiocraft_formats::{parse_pdb_or_mmcif_ca_coordinates, three_to_one_aa, PdbCaAtom};
+use molbiocraft_formats::{parse_pdb_or_mmcif_ca_coordinates, PdbCaAtom};
 use nalgebra::{Matrix3, Vector3};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -780,8 +780,9 @@ pub const SUPERPOSITION_PAIRING_METHOD: &str = "Residues paired by a global sequ
 /// One residue of a chain as the superposition reads it.
 pub(crate) struct TraceResidue {
     res_name: String,
-    /// One-letter code ([`residue_code`]): a modified residue has its parent's, anything else
-    /// outside the 20 standard amino acids is `X`.
+    /// One-letter code by the formats crate's residue table ([`protein_residue_code`]): a modified
+    /// residue has its parent's, `SEC` is `U`, and a residue the table does not give as an amino
+    /// acid is `X`.
     pub(crate) code: u8,
     res_seq: i32,
     pub(crate) pos: Vector3<f64>,
@@ -803,62 +804,6 @@ pub(crate) struct SuperpositionInput {
     chains: Vec<ChainTrace>,
     /// Whether the first model has any atom named `CA` at all, polymer or not.
     any_atom_named_ca: bool,
-}
-
-/// Modified amino acids and the standard residue each derives from: the parent its wwPDB
-/// Chemical Component Dictionary entry names (`_chem_comp.mon_nstd_parent_comp_id`), whose code
-/// RCSB's canonical one-letter sequence gives it. Every pair agrees with Biopython 1.88's
-/// `Bio.Data.PDBData.protein_letters_3to1_extended`, which is generated from that dictionary.
-const MODIFIED_RESIDUE_PARENTS: &[(&str, u8)] = &[
-    ("MSE", b'M'), // selenomethionine
-    ("FME", b'M'), // N-formylmethionine
-    ("MHO", b'M'), // S-oxymethionine
-    ("SEP", b'S'), // phosphoserine
-    ("TPO", b'T'), // phosphothreonine
-    ("PTR", b'Y'), // O-phosphotyrosine
-    ("TYS", b'Y'), // O-sulfotyrosine
-    ("CSO", b'C'), // S-hydroxycysteine
-    ("CSD", b'C'), // 3-sulfinoalanine
-    ("CME", b'C'), // S,S-(2-hydroxyethyl)thiocysteine
-    ("OCS", b'C'), // cysteinesulfonic acid
-    ("HYP", b'P'), // 4-hydroxyproline
-    ("PCA", b'Q'), // pyroglutamic acid
-    ("CGU", b'E'), // gamma-carboxyglutamic acid
-    ("MLY", b'K'), // N6,N6-dimethyllysine
-    ("M3L", b'K'), // N6,N6,N6-trimethyllysine
-    ("ALY", b'K'), // N6-acetyllysine
-    ("KCX", b'K'), // lysine NZ-carboxylic acid
-    ("LLP", b'K'), // lysine with pyridoxal 5'-phosphate
-];
-
-/// The one-letter code of a residue name: a standard amino acid's own, a modified residue's
-/// parent's ([`MODIFIED_RESIDUE_PARENTS`]), else `X`.
-fn residue_code(res_name: &str) -> u8 {
-    let name = res_name.trim().to_ascii_uppercase();
-    match three_to_one_aa(&name) {
-        'X' => MODIFIED_RESIDUE_PARENTS.iter().find(|(n, _)| *n == name).map_or(b'X', |&(_, code)| code),
-        code => code as u8,
-    }
-}
-
-/// The $C_\alpha$ of a residue of a polymer chain, by one rule for both formats: an atom named
-/// `CA` whose element is carbon (or not given), in a polymer residue. mmCIF marks a polymer
-/// residue itself, with a `label_seq_id`. A legacy PDB file gives every residue a number (waters
-/// and ligands too, [`Structure::label_ids_from_author`]), so there a polymer residue is one
-/// written as `ATOM`, or a `HETATM` amino acid ([`residue_code`] not `X`) such as a
-/// selenomethionine. A calcium ion's atom, also named `CA`, is never one: it is not carbon, and
-/// it is not in a polymer residue.
-fn polymer_c_alpha<'a>(structure: &Structure, residue: &'a StructureResidue) -> Option<&'a StructureAtom> {
-    let ca = residue
-        .atoms
-        .iter()
-        .find(|a| a.name == "CA" && a.element.as_deref().is_none_or(|e| e.eq_ignore_ascii_case("C")))?;
-    let polymer = if structure.label_ids_from_author {
-        ca.record == AtomRecord::Atom || residue_code(&residue.res_name) != b'X'
-    } else {
-        residue.label_seq_id.is_some()
-    };
-    polymer.then_some(ca)
 }
 
 /// Read PDB or mmCIF text through the full-atom model, the same way for both: a chain's residues
@@ -902,6 +847,8 @@ pub(crate) fn read_superposition_input(text: &str, which: char) -> Result<Superp
                     ins_code: r.ins_code.clone(),
                     secondary_structure: r.secondary_structure,
                     atoms: vec![ca.clone()],
+                    code: r.code,
+                    modified: r.modified,
                 })
             })
             .collect();
@@ -916,7 +863,7 @@ pub(crate) fn read_superposition_input(text: &str, which: char) -> Result<Superp
                 .iter()
                 .map(|r| TraceResidue {
                     res_name: r.res_name.clone(),
-                    code: residue_code(&r.res_name),
+                    code: protein_residue_code(&r.res_name),
                     res_seq: r.auth_seq_id.or(r.label_seq_id).unwrap_or_default(),
                     pos: Vector3::new(r.atoms[0].x, r.atoms[0].y, r.atoms[0].z),
                 })

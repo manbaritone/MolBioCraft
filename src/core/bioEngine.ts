@@ -87,6 +87,41 @@ export function classifySequenceAlphabet(rows: readonly string[]): SequenceAlpha
   return invokeRustBioSync<SequenceAlphabetCall>('classify_sequence_alphabet', { rows });
 }
 
+/** A modified residue of a structure chain, read as its parent's code (`MSE` 1 as `M`). */
+export interface StructureModifiedResidue {
+  resName: string;
+  number: number;
+  code: string;
+}
+
+/** One polymer chain of a structure read as a sequence (molbiocraft-formats `ChainSequence`). */
+export interface StructureChainSequence {
+  /** The chain id the C-alpha view (`parse_pdb_ca`) gives the chain. */
+  chainId: string;
+  molecule: 'Protein' | 'DNA' | 'RNA';
+  sequence: string;
+  firstResidueNumber: number;
+  modified: StructureModifiedResidue[];
+}
+
+/** The polymer chains of a structure's first model (`structure_chain_sequences`). */
+export interface StructureChainSequences {
+  chains: StructureChainSequence[];
+  /** Polymer chains with no amino-acid or nucleotide residue, and why each was not read. */
+  skipped: { chainId: string; reason: string }[];
+  /** One sentence per residue read as X (or N), each naming why. */
+  warnings: string[];
+}
+
+/**
+ * The sequence of each polymer chain of PDB or mmCIF text, by the engine's one residue table:
+ * modified residues read as their parents, nucleic-acid chains as DNA or RNA, and an ion or a
+ * water never a chain. Throws the reader's reason when the text cannot be read.
+ */
+export function structureChainSequences(text: string): StructureChainSequences {
+  return invokeRustBioSync<StructureChainSequences>('structure_chain_sequences', { text });
+}
+
 /** Whether the alphabet rule calls the rows DNA or RNA. */
 export function isNucleotideByAlphabet(rows: readonly string[]): boolean {
   const { molecule } = classifySequenceAlphabet(rows);

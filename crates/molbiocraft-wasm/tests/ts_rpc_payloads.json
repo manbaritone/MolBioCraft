@@ -736,6 +736,9 @@
   "part",
   "positionBp"
  ],
+ "structure_chain_sequences": [
+  "text"
+ ],
  "synthesize_folded_pdb": [
   "chainId",
   "perturbationAngstrom",

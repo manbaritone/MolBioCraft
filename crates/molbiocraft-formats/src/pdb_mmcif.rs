@@ -65,6 +65,8 @@ pub fn one_to_three_aa(aa: u8) -> &'static str {
         b'W' => "TRP",
         b'Y' => "TYR",
         b'V' => "VAL",
+        b'U' => "SEC",
+        b'O' => "PYL",
         _ => "UNK",
     }
 }
@@ -92,6 +94,163 @@ pub fn three_to_one_aa(res3: &str) -> char {
         "TYR" => 'Y',
         "VAL" => 'V',
         _ => 'X',
+    }
+}
+
+// ─── The residue table: one-letter codes and parents of PDB / mmCIF residue names ───
+
+/// The kind of polymer a residue name belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PolymerMolecule {
+    Protein,
+    #[serde(rename = "DNA")]
+    Dna,
+    #[serde(rename = "RNA")]
+    Rna,
+}
+
+/// What the residue table ([`residue_code_of`]) gives a residue name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResidueCode {
+    /// The one-letter code: the residue's own, or a modified residue's parent's.
+    pub code: char,
+    pub molecule: PolymerMolecule,
+    /// `true` for a modified residue, whose `code` is its parent's.
+    pub modified: bool,
+}
+
+/// Residues with a one-letter code of their own: the 20 standard amino acids, selenocysteine
+/// (`SEC`, U) and pyrrolysine (`PYL`, O) as INSDC 7.4.3 codes them, the four deoxyribonucleotides
+/// and the four ribonucleotides.
+const STANDARD_RESIDUES: &[(&str, char, PolymerMolecule)] = &[
+    ("ALA", 'A', PolymerMolecule::Protein),
+    ("ARG", 'R', PolymerMolecule::Protein),
+    ("ASN", 'N', PolymerMolecule::Protein),
+    ("ASP", 'D', PolymerMolecule::Protein),
+    ("CYS", 'C', PolymerMolecule::Protein),
+    ("GLN", 'Q', PolymerMolecule::Protein),
+    ("GLU", 'E', PolymerMolecule::Protein),
+    ("GLY", 'G', PolymerMolecule::Protein),
+    ("HIS", 'H', PolymerMolecule::Protein),
+    ("ILE", 'I', PolymerMolecule::Protein),
+    ("LEU", 'L', PolymerMolecule::Protein),
+    ("LYS", 'K', PolymerMolecule::Protein),
+    ("MET", 'M', PolymerMolecule::Protein),
+    ("PHE", 'F', PolymerMolecule::Protein),
+    ("PRO", 'P', PolymerMolecule::Protein),
+    ("SER", 'S', PolymerMolecule::Protein),
+    ("THR", 'T', PolymerMolecule::Protein),
+    ("TRP", 'W', PolymerMolecule::Protein),
+    ("TYR", 'Y', PolymerMolecule::Protein),
+    ("VAL", 'V', PolymerMolecule::Protein),
+    ("SEC", 'U', PolymerMolecule::Protein),
+    ("PYL", 'O', PolymerMolecule::Protein),
+    ("DA", 'A', PolymerMolecule::Dna),
+    ("DC", 'C', PolymerMolecule::Dna),
+    ("DG", 'G', PolymerMolecule::Dna),
+    ("DT", 'T', PolymerMolecule::Dna),
+    ("A", 'A', PolymerMolecule::Rna),
+    ("C", 'C', PolymerMolecule::Rna),
+    ("G", 'G', PolymerMolecule::Rna),
+    ("U", 'U', PolymerMolecule::Rna),
+];
+
+/// Modified residues and the code of the standard residue each derives from: the parent its
+/// wwPDB Chemical Component Dictionary entry names (`_chem_comp.mon_nstd_parent_comp_id`). The
+/// pairs are those of Biopython 1.88's `Bio.Data.PDBData.protein_letters_3to1_extended` and
+/// `nucleic_letters_3to1_extended`, which are generated from that dictionary.
+const MODIFIED_RESIDUES: &[(&str, char, PolymerMolecule)] = &[
+    ("MSE", 'M', PolymerMolecule::Protein), // selenomethionine
+    ("FME", 'M', PolymerMolecule::Protein), // N-formylmethionine
+    ("MHO", 'M', PolymerMolecule::Protein), // S-oxymethionine
+    ("SEP", 'S', PolymerMolecule::Protein), // phosphoserine
+    ("TPO", 'T', PolymerMolecule::Protein), // phosphothreonine
+    ("PTR", 'Y', PolymerMolecule::Protein), // O-phosphotyrosine
+    ("TYS", 'Y', PolymerMolecule::Protein), // O-sulfotyrosine
+    ("CSO", 'C', PolymerMolecule::Protein), // S-hydroxycysteine
+    ("CSD", 'C', PolymerMolecule::Protein), // 3-sulfinoalanine
+    ("CME", 'C', PolymerMolecule::Protein), // S,S-(2-hydroxyethyl)thiocysteine
+    ("OCS", 'C', PolymerMolecule::Protein), // cysteinesulfonic acid
+    ("HYP", 'P', PolymerMolecule::Protein), // 4-hydroxyproline
+    ("PCA", 'Q', PolymerMolecule::Protein), // pyroglutamic acid
+    ("CGU", 'E', PolymerMolecule::Protein), // gamma-carboxyglutamic acid
+    ("MLY", 'K', PolymerMolecule::Protein), // N6,N6-dimethyllysine
+    ("M3L", 'K', PolymerMolecule::Protein), // N6,N6,N6-trimethyllysine
+    ("ALY", 'K', PolymerMolecule::Protein), // N6-acetyllysine
+    ("KCX", 'K', PolymerMolecule::Protein), // lysine NZ-carboxylic acid
+    ("LLP", 'K', PolymerMolecule::Protein), // lysine with pyridoxal 5'-phosphate
+    ("NLE", 'L', PolymerMolecule::Protein), // norleucine
+    ("ORN", 'A', PolymerMolecule::Protein), // ornithine
+    ("PSU", 'U', PolymerMolecule::Rna),     // pseudouridine
+    ("5MC", 'C', PolymerMolecule::Rna),     // 5-methylcytidine
+    ("1MA", 'A', PolymerMolecule::Rna),     // 1-methyladenosine
+    ("2MG", 'G', PolymerMolecule::Rna),     // 2-methylguanosine
+    ("H2U", 'U', PolymerMolecule::Rna),     // 5,6-dihydrouridine
+    ("OMC", 'C', PolymerMolecule::Rna),     // 2'-O-methylcytidine
+];
+
+/// The residue table's entry for a PDB / mmCIF residue name (`resName`, `label_comp_id`), read
+/// trimmed and in upper case: a residue with a code of its own, or a modified residue under its
+/// parent's code. `None` for a name the table lacks (a ligand, a water, an ion, `UNK`).
+pub fn residue_code_of(res_name: &str) -> Option<ResidueCode> {
+    let name = res_name.trim().to_ascii_uppercase();
+    let find = |table: &[(&str, char, PolymerMolecule)], modified: bool| {
+        table.iter().find(|(n, _, _)| *n == name).map(|&(_, code, molecule)| ResidueCode { code, molecule, modified })
+    };
+    find(STANDARD_RESIDUES, false).or_else(|| find(MODIFIED_RESIDUES, true))
+}
+
+/// The amino-acid code of a residue name by the residue table: a modified amino acid's parent's,
+/// `X` for a name the table lacks or gives a nucleotide.
+pub fn protein_residue_code(res_name: &str) -> u8 {
+    match residue_code_of(res_name) {
+        Some(ResidueCode { code, molecule: PolymerMolecule::Protein, .. }) => code as u8,
+        _ => b'X',
+    }
+}
+
+/// Whether a residue belongs to a polymer chain, by one rule for both formats. mmCIF marks a
+/// polymer residue itself, with a `label_seq_id`. A legacy PDB file gives every residue a number
+/// (waters and ligands too, [`Structure::label_ids_from_author`]), so there a polymer residue is
+/// one written as `ATOM`, or a `HETATM` residue the table knows ([`residue_code_of`]) such as a
+/// selenomethionine or a pseudouridine.
+pub fn is_polymer_residue(structure: &Structure, residue: &StructureResidue) -> bool {
+    if structure.label_ids_from_author {
+        residue.atoms.iter().any(|a| a.record == AtomRecord::Atom) || residue_code_of(&residue.res_name).is_some()
+    } else {
+        residue.label_seq_id.is_some()
+    }
+}
+
+/// Whether an element symbol is carbon, or not given.
+fn carbon_or_unstated(element: Option<&str>) -> bool {
+    element.is_none_or(|e| e.trim().is_empty() || e.trim().eq_ignore_ascii_case("C"))
+}
+
+/// The $C_\alpha$ of a polymer residue ([`is_polymer_residue`]): its atom named `CA` whose
+/// element is carbon (or not given). A calcium ion's atom, also named `CA`, is never one: it is
+/// not carbon, and it is not in a polymer residue.
+pub fn polymer_c_alpha<'a>(structure: &Structure, residue: &'a StructureResidue) -> Option<&'a StructureAtom> {
+    let ca = residue.atoms.iter().find(|a| a.name == "CA" && carbon_or_unstated(a.element.as_deref()))?;
+    is_polymer_residue(structure, residue).then_some(ca)
+}
+
+/// Give every residue its [`StructureResidue::code`] and [`StructureResidue::modified`].
+fn assign_residue_codes(structure: &mut Structure) {
+    let mut codes = Vec::new();
+    for residue in structure.models.iter().flat_map(|m| &m.chains).flat_map(|c| &c.residues) {
+        let polymer = is_polymer_residue(structure, residue);
+        let entry = residue_code_of(&residue.res_name);
+        codes.push(match (polymer, entry) {
+            (false, _) => (None, false),
+            (true, Some(e)) => (Some(e.code), e.modified),
+            (true, None) => (Some('X'), false),
+        });
+    }
+    let residues = structure.models.iter_mut().flat_map(|m| &mut m.chains).flat_map(|c| &mut c.residues);
+    for (residue, (code, modified)) in residues.zip(codes) {
+        residue.code = code;
+        residue.modified = modified;
     }
 }
 
@@ -173,6 +332,14 @@ pub struct StructureResidue {
     /// Atoms in the order they first appear; an atom with alternate locations appears once
     /// (see [`parse_mmcif_structure`]).
     pub atoms: Vec<StructureAtom>,
+    /// The one-letter code of a polymer residue ([`is_polymer_residue`]) by the residue table
+    /// ([`residue_code_of`]): its own, a modified residue's parent's, or `X` for a polymer residue
+    /// the table lacks. `None` for a residue outside a polymer (a water, an ion, a ligand).
+    #[serde(default)]
+    pub code: Option<char>,
+    /// `true` when `code` is a modified residue's parent's (`MSE` coded `M`).
+    #[serde(default)]
+    pub modified: bool,
 }
 
 /// The secondary structure a file declares over a residue: inside one of its
@@ -369,14 +536,16 @@ pub fn parse_mmcif_structure(text: &str) -> Result<Structure, MmcifError> {
     };
     let mut structure = Structure { models, helices, strands, label_ids_from_author: false };
     assign_secondary_structure(&mut structure);
+    assign_residue_codes(&mut structure);
     Ok(structure)
 }
 
 /// The $C_\alpha$ list of a structure for the C-alpha consumers (superposition, the 3D canvas,
 /// radius of gyration), with the fields the earlier fixed-column mmCIF reader gave them: the
-/// atoms named `CA` (`ATOM` or `HETATM`) with the label chain id (`label_asym_id`), the label
-/// residue number (`label_seq_id`, or the atom's 1-based position in the list when the residue
-/// has none), the B-factor (85.0 when the file gives none), and secondary structure inferred from
+/// polymer $C_\alpha$ atoms ([`polymer_c_alpha`], `ATOM` or `HETATM`, so a selenomethionine is one
+/// and a calcium ion is not) with the label chain id (`label_asym_id`), the label residue number
+/// (`label_seq_id`, or the atom's 1-based position in the list when the residue has none), the
+/// B-factor (85.0 when the file gives none), and secondary structure inferred from
 /// $C_\alpha$ geometry. Atoms come chain by chain and residue by residue in the order each first
 /// appears, which is file order when the file keeps each chain's and residue's rows together.
 /// For a structure read from legacy PDB text the label chain id and residue number are the
@@ -390,7 +559,7 @@ pub fn ca_atoms_of_structure(structure: &Structure) -> Vec<PdbCaAtom> {
     if let Some(model) = structure.models.first() {
         for chain in &model.chains {
             for residue in &chain.residues {
-                for atom in residue.atoms.iter().filter(|a| a.name == "CA") {
+                if let Some(atom) = polymer_c_alpha(structure, residue) {
                     let res_seq = residue.label_seq_id.unwrap_or((atoms.len() + 1) as i32);
                     atoms.push(PdbCaAtom {
                         serial: atom.serial,
@@ -422,6 +591,134 @@ pub fn try_parse_pdb_or_mmcif_ca_coordinates(text: &str) -> Result<Vec<PdbCaAtom
 
 fn is_mmcif_text(text: &str) -> bool {
     text.contains("_atom_site.")
+}
+
+// ─── The sequence of each polymer chain ───
+
+/// The sequences of the polymer chains of a structure's first model
+/// ([`structure_chain_sequences`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructureChainSequences {
+    pub chains: Vec<ChainSequence>,
+    /// Polymer chains with no residue the table reads as an amino acid or a nucleotide.
+    pub skipped: Vec<SkippedChain>,
+    /// One sentence per residue read as `X` (or `N`), in chain order.
+    pub warnings: Vec<String>,
+}
+
+/// One polymer chain read as a sequence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainSequence {
+    /// The chain id the $C_\alpha$ view ([`parse_pdb_or_mmcif_ca_coordinates`]) gives the chain:
+    /// the label chain id for mmCIF, the chain column for PDB (a blank one read as `A`).
+    pub chain_id: String,
+    pub molecule: PolymerMolecule,
+    /// One letter per polymer residue ([`is_polymer_residue`]), in chain order.
+    pub sequence: String,
+    /// The number of the chain's first polymer residue: the author number, or the label number
+    /// when the file gives no author number.
+    pub first_residue_number: i32,
+    /// The modified residues of the chain, each read as its parent's code.
+    pub modified: Vec<ModifiedResidue>,
+}
+
+/// A modified residue of a chain, numbered as [`ChainSequence::first_residue_number`] is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModifiedResidue {
+    pub res_name: String,
+    pub number: i32,
+    pub code: char,
+}
+
+/// A polymer chain not read as a sequence, and why.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedChain {
+    pub chain_id: String,
+    pub reason: String,
+}
+
+/// Why [`structure_chain_sequences`] skips a polymer chain none of whose residues the table reads
+/// as an amino acid or a nucleotide (an oligosaccharide, say).
+pub const NO_SEQUENCE_RESIDUES: &str = "no amino-acid or nucleotide residues";
+
+/// The sequence of every polymer chain of the first model of PDB or mmCIF text (mmCIF when it
+/// holds `_atom_site.`), read by the residue table ([`residue_code_of`]). A chain with no polymer
+/// residue ([`is_polymer_residue`]), such as an ion's or a water's, is not a chain here. A chain is
+/// `Protein` when its amino-acid residues are at least as many as its nucleotides, otherwise `DNA`
+/// when its deoxyribonucleotides outnumber its ribonucleotides, otherwise `RNA`. A residue the
+/// table lacks, or that is a nucleotide in a protein chain (or an amino acid in a nucleic-acid
+/// chain), is read as `X` in a protein chain and `N` in a nucleic-acid chain, with a warning.
+///
+/// Text that cannot be read is refused with its reader's reason: the mmCIF reader's
+/// ([`MmcifError`]), or the PDB reader's ([`PdbError`]), which refuses empty text as holding no
+/// atom records.
+pub fn structure_chain_sequences(text: &str) -> Result<StructureChainSequences, String> {
+    let structure = if is_mmcif_text(text) {
+        parse_mmcif_structure(text).map_err(|e| e.to_string())?
+    } else {
+        parse_pdb_structure(text).map_err(|e| e.to_string())?
+    };
+    let mut out = StructureChainSequences { chains: Vec::new(), skipped: Vec::new(), warnings: Vec::new() };
+    for chain in structure.models.first().map_or(&[][..], |m| &m.chains[..]) {
+        let polymer: Vec<&StructureResidue> =
+            chain.residues.iter().filter(|r| is_polymer_residue(&structure, r)).collect();
+        let Some(first) = polymer.first() else { continue };
+        let blank = structure.label_ids_from_author && chain.label_asym_id.is_empty();
+        let chain_id = if blank { "A".to_string() } else { chain.label_asym_id.clone() };
+        let entries: Vec<Option<ResidueCode>> = polymer.iter().map(|r| residue_code_of(&r.res_name)).collect();
+        let count = |m: PolymerMolecule| entries.iter().flatten().filter(|e| e.molecule == m).count();
+        let (protein, dna, rna) = (count(PolymerMolecule::Protein), count(PolymerMolecule::Dna), count(PolymerMolecule::Rna));
+        if protein + dna + rna == 0 {
+            out.skipped.push(SkippedChain { chain_id, reason: NO_SEQUENCE_RESIDUES.to_string() });
+            continue;
+        }
+        let molecule = if protein >= dna + rna {
+            PolymerMolecule::Protein
+        } else if dna > rna {
+            PolymerMolecule::Dna
+        } else {
+            PolymerMolecule::Rna
+        };
+        let is_protein = molecule == PolymerMolecule::Protein;
+        let unknown = if is_protein { 'X' } else { 'N' };
+        let number = |r: &StructureResidue| r.auth_seq_id.or(r.label_seq_id).unwrap_or_default();
+        let mut sequence = String::with_capacity(polymer.len());
+        let mut modified = Vec::new();
+        for (r, entry) in polymer.iter().zip(&entries) {
+            let label = format!("{}{}{}", r.res_name, number(r), r.ins_code.as_deref().unwrap_or(""));
+            match entry {
+                Some(e) if (e.molecule == PolymerMolecule::Protein) == is_protein => {
+                    if e.modified {
+                        modified.push(ModifiedResidue { res_name: r.res_name.clone(), number: number(r), code: e.code });
+                    }
+                    sequence.push(e.code);
+                }
+                Some(e) => {
+                    let (what, chain_kind) = if e.molecule == PolymerMolecule::Protein {
+                        ("an amino acid", "nucleic-acid")
+                    } else {
+                        ("a nucleotide", "protein")
+                    };
+                    out.warnings.push(format!(
+                        "Residue {label} in chain {chain_id} is {what} in a {chain_kind} chain: read as {unknown}."
+                    ));
+                    sequence.push(unknown);
+                }
+                None => {
+                    out.warnings.push(format!(
+                        "Residue {label} in chain {chain_id} has no entry in the residue table: read as {unknown}."
+                    ));
+                    sequence.push(unknown);
+                }
+            }
+        }
+        out.chains.push(ChainSequence { chain_id, molecule, sequence, first_residue_number: number(first), modified });
+    }
+    Ok(out)
 }
 
 // ─── CIF tokens ───
@@ -940,6 +1237,8 @@ impl ModelsBuilder {
                         ins_code: ins_code.map(str::to_string),
                         secondary_structure: None,
                         atoms: Vec::new(),
+                        code: None,
+                        modified: false,
                     });
                     let i = cb.chain.residues.len() - 1;
                     cb.residue_index.insert(key, i);
@@ -1206,6 +1505,7 @@ pub fn parse_pdb_structure(text: &str) -> Result<Structure, PdbError> {
     }
     let mut structure = Structure { models: models.finish(), helices, strands, label_ids_from_author: true };
     assign_secondary_structure(&mut structure);
+    assign_residue_codes(&mut structure);
     Ok(structure)
 }
 
@@ -1291,7 +1591,7 @@ fn element_from_atom_name(name: &str) -> Option<String> {
     Some(name[..if two_letters { 2 } else { 1 }].to_string())
 }
 
-/// Parse PDB `ATOM` (`CA`) records + `HELIX`/`SHEET` secondary-structure ranges,
+/// Parse PDB polymer `CA` records + `HELIX`/`SHEET` secondary-structure ranges,
 /// OR mmCIF `_atom_site` records into normalized `PdbCaAtom` coordinates.
 ///
 /// mmCIF text (anything containing `_atom_site.`) is read into the full-atom model and its
@@ -1302,7 +1602,9 @@ pub fn parse_pdb_or_mmcif_ca_coordinates(text: &str) -> Vec<PdbCaAtom> {
     try_parse_pdb_or_mmcif_ca_coordinates(text).unwrap_or_default()
 }
 
-/// Legacy fixed-column PDB: `ATOM` `CA` records, with `HELIX`/`SHEET` ranges when present.
+/// Legacy fixed-column PDB: the polymer $C_\alpha$ records (`ATOM`, or `HETATM` of a residue the
+/// table knows, such as `MSE` or `SEC`; never a calcium ion), with `HELIX`/`SHEET` ranges when
+/// present.
 ///
 /// Only the **first model** is read: `ATOM` records after a second `MODEL` record are not, so an
 /// NMR entry such as 1A5R is one chain of 103 residues rather than ten copies end to end, as from
@@ -1332,9 +1634,13 @@ fn parse_legacy_pdb_ca_coordinates(text: &str) -> Vec<PdbCaAtom> {
         } else if line.starts_with("MODEL") {
             models_begun += 1;
             first_model_ended |= models_begun > 1;
-        } else if line.starts_with("ATOM  ") && line.len() >= 54 && !first_model_ended {
+        } else if (line.starts_with("ATOM  ") || line.starts_with("HETATM")) && line.len() >= 54 && !first_model_ended {
+            // The polymer C-alpha rule ([`polymer_c_alpha`]): an `ATOM` residue, or a `HETATM`
+            // residue the residue table knows, and a carbon (or unstated) element.
             let atom_name = line.get(12..16).unwrap_or("").trim();
-            if atom_name != "CA" {
+            let res_name = line.get(17..20).unwrap_or("UNK").trim();
+            let polymer = line.starts_with("ATOM  ") || residue_code_of(res_name).is_some();
+            if atom_name != "CA" || !polymer || !carbon_or_unstated(line.get(76..78)) {
                 continue;
             }
             let alt_loc = line.as_bytes().get(16).copied().unwrap_or(b' ');
