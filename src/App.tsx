@@ -5505,7 +5505,11 @@ export const App: React.FC = () => {
     setHomeViewActive(false);
     setSessionActive(true);
 
-    const warnNote = parsed.warnings.length ? ` (${parsed.warnings[0]})` : '';
+    // The gzip, PKZIP and autosave routes hand in a re-serialised envelope, whose re-read verifies; the
+    // sentence then carries the first read's checksum mismatch (BG-01M7RG7D), so an edited file says so.
+    const sentenceWarning =
+      parsed.warnings[0] ?? (options.earlierWarnings ?? []).find((w) => w.startsWith('Checksum mismatch'));
+    const warnNote = sentenceWarning ? ` (${sentenceWarning})` : '';
     setStatusBanner(
       `Restored workbench "${env.sessionName}.mbc" — ${restoredDocuments.length} documents (${restoredDocuments.reduce((total, doc) => total + doc.sequence.length, 0).toLocaleString()} bp)${warnNote}`
     );
