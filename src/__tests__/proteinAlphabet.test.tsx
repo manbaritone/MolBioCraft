@@ -26,6 +26,10 @@ vi.setConfig({ testTimeout: 120_000 });
 const words = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 const LABEL = "pI and charge: Bjellqvist pK scale (ExPASy ProtParam's), selenocysteine pKa 5.2";
 const BASE = 'MKWVTFISLLFLFSSAYS';
+/** BASE with I7 and S14 made cysteines: one cystine, so its cystine ε280 is the reduced 6,990 + 125. */
+const CYS_PAIR = 'MKWVTFCSLLFLFCSAYS';
+/** Its MW by hand: 2140.57 - I 113.1594 - S 87.0782 + 2 x C 103.1388 = 2146.61 Da. */
+const CYS_PAIR_DA = 2146.61;
 const U_SENTENCE =
   '1 selenocysteine (U): weighed as 150.04 Da and charged with a selenol pKa of 5.2; it has no GRAVY, aliphatic or instability value, so those indices leave it out.';
 
@@ -77,12 +81,24 @@ describe('the protein views read the engine (US-01M6VF2M)', () => {
       expect(kids[at + 1]?.getAttribute('class'), 'the label is beside the KPI grid').toBe('thermo-kpi-grid');
 
       const plain = await onProteinTab(app, protein('plain_protein', BASE));
+      expect(kpi(plain, 'GRAVY / Aliphatic'), 'a standard chain shows both').toBe('1.233 / 108.3');
       expect(kpi(plain, 'Molecular Weight')).toBe('2.14 kDa (18 aa)');
       expect(kpi(plain, 'Isoelectric Point (pI)')).toBe('pH 8.34');
       expect(warningsNamed(app, 'Protein analysis warnings'), 'no warnings list for the 20 standard residues').toEqual([]);
       expect(notes(plain)).toContain(LABEL);
 
+      // A chain of no standard residue has no GRAVY or aliphatic index, and says so.
+      const xs = await onProteinTab(app, protein('only_x', 'XXXX'));
+      expect(kpi(xs, 'GRAVY / Aliphatic')).toBe('n/a: no standard residue');
+
       await onProteinTab(app, protein('x_digest', 'GGGGGGXKGGGGGGIK'));
+      const intact = app.canvas().querySelectorAll('.kpi-box').filter((b) => words(b.querySelectorAll('.kpi-label')[0]?.textContent) === 'Intact Mass (Mono)');
+      expect(intact, 'one Intact Mass (Mono) box').toHaveLength(1);
+      expect(words(intact[0].querySelectorAll('.kpi-val')[0]?.textContent), 'a protein holding X has no monoisotopic mass').toBe('n/a');
+      // The MS2 picker opens on the first peptide, GGGGGGXK, which has no precursor m/z.
+      const precursor = app.canvas().querySelectorAll('label span').map((sp) => words(sp.textContent)).filter((t) => t.includes('Precursor [M+2H]'));
+      expect(precursor, 'one precursor line').toHaveLength(1);
+      expect(precursor[0]).toMatch(/Precursor \[M\+2H\]²⁺ = n\/a m\/z:$/);
       const mz = (peptide: string) => {
         const rows = app.canvas().querySelectorAll('tr').filter((r) => {
           const cells = r.querySelectorAll('td');
@@ -123,7 +139,27 @@ describe('the protein views read the engine (US-01M6VF2M)', () => {
       expect(kv['Isoelectric Point:'], 'the engine pI, not the EMBOSS 9.30').toBe('8.34');
       expect(kv['Charge at pH 7:'], 'the engine charge, not 0.97').toBe('0.50');
       expect(kv['Molecular Weight:']).toBe('2.14 kDa');
+      expect(kv['Extinction Coefficient:']).toBe('6,990');
       expect(notes(boxes[0])).toContain(LABEL);
+
+      // With a cystine the engine's cystine ε280 is 125 over the reduced one, and that is the one shown.
+      const cys = {
+        ...aln, id: 'vf2m-aln-cys', name: 'VF2M Cystine Alignment', accession: 'VF2M_0003', sequence: CYS_PAIR,
+        alignmentMeta: { isAligned: true, sequences: [{ id: 'vf2m-c1', name: 'Row C', sequence: CYS_PAIR }, { id: 'vf2m-c2', name: 'Row D', sequence: CYS_PAIR }] },
+      } as SequenceDocument;
+      await app.restoreSession({ documents: [cys], activeDocId: cys.id, viewerTab: 'sequence-alignment' });
+      await app.settle();
+      if (!app.all('.mbc-aln-group-box').some((b) => words(b.querySelectorAll('strong')[0]?.textContent) === 'Protein Statistics')) {
+        await app.click(app.one('button.mbc-aln-rail-btn[aria-label="Statistics"]', 'the Statistics rail button'));
+        await app.settle();
+      }
+      const cysBoxes = app.all('.mbc-aln-group-box').filter((b) => words(b.querySelectorAll('strong')[0]?.textContent) === 'Protein Statistics');
+      expect(cysBoxes, 'one Protein Statistics box').toHaveLength(1);
+      const cysKv = Object.fromEntries(cysBoxes[0].querySelectorAll('.mbc-aln-stat-kv').map((row) => [
+        words(row.querySelectorAll('span')[0]?.textContent), words(row.querySelectorAll('strong')[0]?.textContent),
+      ]));
+      expect(cysKv['Extinction Coefficient:'], 'the cystine ε280, not the reduced 6,990').toBe('7,115');
+      expect(cysKv['A[280] of 1 mg/ml (mean):']).toBe(`${(7115 / CYS_PAIR_DA).toFixed(2)} AU`);
     } finally {
       app.unmount();
     }
@@ -132,20 +168,28 @@ describe('the protein views read the engine (US-01M6VF2M)', () => {
   it('US-01M6VF2M AC7 reads the Translation Statistics charge from the engine, with its pK scale', async () => {
     const app = await mountApp();
     try {
-      const cds = 'ATGAAATGGGTTACCTTTATTTCTCTGCTGTTTCTGTTTAGCAGCGCGTATAGCTAA';
-      const sequence = `${cds}GGATCCAAGCTTGAATTC`;
-      const dna: SequenceDocument = {
-        ...BLANK, id: 'vf2m-dna', name: 'VF2M_CDS', accession: 'VF2M_0002', moleculeType: 'DNA', folder: 'Genomes/Bacteria', sequence,
-        features: [{ id: 'vf2m-cds', name: 'VF2M', type: 'CDS', start: 1, end: cds.length, strand: 1, color: '#d93025' }],
+      const panelsOf = async (id: string, cds: string) => {
+        const dna: SequenceDocument = {
+          ...BLANK, id, name: id, accession: id, moleculeType: 'DNA', folder: 'Genomes/Bacteria', sequence: `${cds}GGATCCAAGCTTGAATTC`,
+          features: [{ id: `${id}-cds`, name: 'VF2M', type: 'CDS', start: 1, end: cds.length, strand: 1, color: '#d93025' }],
+        };
+        await app.restoreSession({ documents: [dna], activeDocId: dna.id, viewerTab: 'sequence-view' });
+        await app.settle();
+        const panels = app.all('details').filter((d) => words(d.querySelectorAll('summary')[0]?.textContent).startsWith('Translation Statistics'));
+        expect(panels.length, 'the App shows Translation Statistics').toBeGreaterThan(0);
+        return panels.map((panel) => ({
+          panel,
+          kv: Object.fromEntries(panel.querySelectorAll('.stat-kv').map((row) => [
+            words(row.querySelectorAll('span')[0]?.textContent), words(row.querySelectorAll('strong')[0]?.textContent),
+          ])),
+        }));
       };
-      await app.restoreSession({ documents: [dna], activeDocId: dna.id, viewerTab: 'sequence-view' });
-      await app.settle();
-      const panels = app.all('details').filter((d) => words(d.querySelectorAll('summary')[0]?.textContent).startsWith('Translation Statistics'));
-      expect(panels.length, 'the App shows Translation Statistics').toBeGreaterThan(0);
-      for (const panel of panels) {
-        const kv = Object.fromEntries(panel.querySelectorAll('.stat-kv').map((row) => [
-          words(row.querySelectorAll('span')[0]?.textContent), words(row.querySelectorAll('strong')[0]?.textContent),
-        ]));
+      // MKWVTFCSLLFLFCSAYS: ATT (I7) and AGC (S14) made TGC (C).
+      for (const { kv } of await panelsOf('vf2m-cys', 'ATGAAATGGGTTACCTTTTGCTCTCTGCTGTTTCTGTTTTGCAGCGCGTATAGCTAA')) {
+        expect(kv['Extinction Coefficient (mean):'], 'the cystine ε280, not the reduced 6,990').toBe('7,115 M⁻¹cm⁻¹');
+        expect(kv['A[280] of 1 mg/ml (mean):']).toBe((7115 / CYS_PAIR_DA).toFixed(3));
+      }
+      for (const { panel, kv } of await panelsOf('vf2m-dna', 'ATGAAATGGGTTACCTTTATTTCTCTGCTGTTTCTGTTTAGCAGCGCGTATAGCTAA')) {
         expect(kv['Charge at pH 7:'], 'the engine charge, not K+R+0.1H-D-E = 1.00').toBe('0.50');
         expect(kv['Isoelectric point (mean):']).toBe('8.34');
         // ε280: one Trp (5500) and one Tyr (1490), no cystine; A280 is that over the engine's 2140.57 Da.

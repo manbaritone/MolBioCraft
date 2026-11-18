@@ -116,6 +116,12 @@ const groupDigits = (v: number) => v.toLocaleString('en-US');
  */
 export const NO_RESIDUE_TRANSLATED = 'n/a: no residue translated';
 
+/**
+ * What the GRAVY and aliphatic index read for a chain with no standard residue (all U, O, B, Z, J or
+ * X): the engine gives them no value (null), since those letters have none on either scale.
+ */
+export const NO_STANDARD_RESIDUE = 'n/a: no standard residue';
+
 /** A peptide m/z to `digits` places, or 'n/a' when the engine gives none (null: a peptide holding B, Z or X). */
 const mzText = (mz: number | null, digits: number) => (typeof mz === 'number' && Number.isFinite(mz) ? mz.toFixed(digits) : 'n/a');
 
@@ -1033,7 +1039,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
               <div className="kpi-box">
                 <span className="kpi-label">GRAVY / Aliphatic</span>
                 <strong className="kpi-val">
-                  {noResidue ? NO_RESIDUE_TRANSLATED : <>{proteinReport.gravyHydropathy} / {proteinReport.aliphaticIndex}</>}
+                  {noResidue ? NO_RESIDUE_TRANSLATED : !Number.isFinite(proteinReport.gravyHydropathy) ? NO_STANDARD_RESIDUE : <>{proteinReport.gravyHydropathy} / {proteinReport.aliphaticIndex}</>}
                 </strong>
               </div>
             </div>

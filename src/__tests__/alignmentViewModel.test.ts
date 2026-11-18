@@ -156,6 +156,8 @@ describe('alignment view model', () => {
     expect(mean.chargePh7).toBeCloseTo((0.5 - 0.49) / 2, 10);
     expect(mean.mwKda).toBeCloseTo((2140.57 + 2290.61) / 2 / 1000, 5);
     expect(mean.extinction).toBe(6990);
+    // A cystine adds 125 to the reduced 6,990: the summary reads the engine's cystine ε280.
+    expect(summariseProteins(['MKWVTFCSLLFLFCSAYS']).extinction).toBe(7115);
     // A280 of 1 mg/ml: ε280 (one Trp, one Tyr) over each row's molecular weight, then the mean.
     expect(mean.a280).toBeCloseTo((6990 / 2140.57 + 6990 / 2290.61) / 2, 4);
     expect(rulerStep(10, 56)).toBe(10);

@@ -480,7 +480,13 @@ fn residue_warnings(counts: &[usize; 128], stops_after: &[usize]) -> Vec<String>
         ));
     }
     if !stops_after.is_empty() {
-        let at: Vec<String> = stops_after.iter().map(|a| a.to_string()).collect();
+        // Two stops in a row follow the same residue, which is named once.
+        let mut at: Vec<String> = Vec::new();
+        for a in stops_after.iter().map(|a| a.to_string()) {
+            if at.last() != Some(&a) {
+                at.push(a);
+            }
+        }
         warnings.push(format!(
             "{} (*) after {} {}: the residues on either side are measured as one chain.",
             counted(stops_after.len(), "internal stop", "internal stops"),

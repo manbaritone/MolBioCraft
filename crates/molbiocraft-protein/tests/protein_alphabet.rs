@@ -106,14 +106,32 @@ fn the_report_names_every_nonstandard_letter() {
     assert!(protein(&format!("{BASE}*")).warnings.is_empty());
 
     // The counts and letters come from the input.
-    let two = protein("MKUUW");
-    assert_eq!(two.warnings.len(), 1);
-    assert!(two.warnings[0].starts_with("2 selenocysteines (U): "), "{}", two.warnings[0]);
+    assert_eq!(
+        protein("MKUUW").warnings,
+        vec!["2 selenocysteines (U): weighed as 150.04 Da and charged with a selenol pKa of 5.2; they have no GRAVY, aliphatic or instability value, so those indices leave them out."]
+    );
+    assert_eq!(
+        protein("MKOOW").warnings,
+        vec!["2 pyrrolysines (O): weighed as 237.30 Da with no charge; they have no GRAVY, aliphatic or instability value, so those indices leave them out."]
+    );
+    // The ambiguity letters are named in alphabet order, whatever order the chain holds them in.
+    let mixed = protein("MXZBW");
+    assert_eq!(mixed.warnings.len(), 1);
+    assert!(mixed.warnings[0].starts_with("3 ambiguous or unknown residues (B, X, Z): "), "{}", mixed.warnings[0]);
     let z = protein("MKZW");
     assert_eq!(z.warnings.len(), 1);
     assert!(z.warnings[0].starts_with("1 ambiguous or unknown residue (Z): "), "{}", z.warnings[0]);
     let stops = protein("MK*W*AY");
     assert_eq!(stops.warnings, vec!["2 internal stops (*) after residues 2 and 3: the residues on either side are measured as one chain."]);
+    // Two stops in a row follow one residue, named once.
+    assert_eq!(
+        protein("MK**W").warnings,
+        vec!["2 internal stops (*) after residue 2: the residues on either side are measured as one chain."]
+    );
+    // A stop before the first residue ends no chain and joins none: it is left out without a word,
+    // as a final stop is.
+    let leading = protein("*MKW");
+    assert_eq!((leading.length_aa, leading.warnings.len()), (3, 0), "{:?}", leading.warnings);
 }
 
 /// The intact average mass the digest gives `seq`, from its elemental composition.
@@ -171,6 +189,17 @@ fn digest_and_protparam_weigh_from_one_table() {
         vec!["Peptide GGGGGGXK holds X, which has no single elemental composition: its monoisotopic mass and m/z are not given."]
     );
     assert!(x.intact_monoisotopic_da.is_nan(), "nor has the intact protein");
+    assert!(
+        (x.intact_average_da - protein("GGGGGGXK").molecular_weight_da).abs() < 0.02,
+        "the intact average of a protein holding X reads the one table"
+    );
+    // A peptide with no monoisotopic mass is kept or dropped on its average (607.38 Da here).
+    let windowed = |max: f64| simulate_proteolytic_digest_ms("GGGGGGXK", "Trypsin", 0, 250.0, max, false).peptides.len();
+    assert_eq!((windowed(700.0), windowed(500.0)), (1, 0), "the mass window reads the average");
+    // Carbamidomethyl cysteine adds C2H3NO (57.05 Da average) to such a peptide's average too.
+    let cam = |on: bool| simulate_proteolytic_digest_ms("GGGGCGXK", "Trypsin", 0, 0.0, 100_000.0, on).peptides[0].average_neutral_da;
+    let added = 2.0 * 12.0107 + 3.0 * 1.00794 + 14.0067 + 15.9994;
+    assert!((cam(true) - cam(false) - added).abs() < 0.001, "{} vs {}", cam(true) - cam(false), added);
     let two = simulate_proteolytic_digest_ms("GGBGGZXK", "Trypsin", 0, 0.0, 100_000.0, false);
     assert_eq!(
         two.warnings,
