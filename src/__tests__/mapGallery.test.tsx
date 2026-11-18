@@ -1422,6 +1422,8 @@ const OVR = doc('govr', 'Override_Doc', dna(2_400, 71), { docMetadata: { 'Sequen
 /** A record with no modified date. */
 const NOMOD = doc('gnomod', 'NoMod_Doc', dna(2_000, 73), { updatedAt: '' });
 /** A DNA record whose length and GC are recorded blank, so the document table shows '-' for both, and whose Modified is recorded empty, which it shows blank. */
+/** A protein with no modified date, so its Modified is not a protein's GC reason. */
+const PROT_NOMOD = doc('gprotnomod', 'ProtNoMod_Doc', 'MKTAYIAKQRQISFVKSHFSRQ'.repeat(12), { moleculeType: 'Protein', topology: 'linear', features: [], updatedAt: '' });
 const BLANK = doc('gblank', 'Blank_Doc', dna(2_200, 79), { docMetadata: { 'Sequence Length': ' ', '% GC': ' ', Modified: '' } } as Partial<SequenceDocument>);
 
 const ctButton = (app: AppHarness) => app.one('.doc-table-toolbar button.mbc-compare-table-btn', "the table toolbar's Compare Table button");
@@ -1455,6 +1457,21 @@ async function exportCompare(app: AppHarness, format: 'TSV' | 'CSV') {
   const files = app.downloads().slice(before);
   expect(files, `one ${format} file saved`).toHaveLength(1);
   return { filename: files[0].filename, text: await files[0].text() };
+}
+
+/** A button in the Compare Table's own toolbar, by its title. */
+const ctToolbarButton = (app: AppHarness, title: string) => {
+  const b = gallery(app).querySelectorAll('.mbc-smart-table-shell button').filter((x) => x.getAttribute('title') === title);
+  expect(b, `the Compare Table's "${title}" button`).toHaveLength(1);
+  return b[0];
+};
+/** Drags one Compare Table header onto another, as the smart table reorders its columns. */
+async function dragHeader(app: AppHarness, from: string, onto: string) {
+  const th = (label: string) => { const t = compareTable(app).querySelectorAll('thead th').filter((x) => words(x.textContent).replace(/[↑↓▲▼▴▾]+$/g, '').trim() === label); expect(t, `the ${label} header`).toHaveLength(1); return t[0]; };
+  await React.act(async () => { dispatchLiveEvent(th(from), 'dragstart'); });
+  await React.act(async () => { dispatchLiveEvent(th(onto), 'dragover'); });
+  await React.act(async () => { dispatchLiveEvent(th(onto), 'drop'); });
+  await React.act(async () => { dispatchLiveEvent(th(from), 'dragend'); });
 }
 
 describe('US-01M7DVV8 AC1: the toolbar button and View › Compare Table open the gallery on its Compare Table, and a switch moves between the views', () => {
@@ -1535,15 +1552,17 @@ describe("US-01M7DVV8 AC2: one row per card in card order, each cell the documen
 
 describe("US-01M7DVV8 AC3: where the document table shows '-', the cell names why", () => {
   it('US-01M7DVV8 AC3 a protein GC, a missing Modified and a blank recorded length or GC each say n/a with the reason', async () => {
-    const docs = [PROT, NOMOD, BLANK, CA];
+    const docs = [PROT, NOMOD, BLANK, PROT_NOMOD, CA];
     await withApp(async (app) => {
       await restore(app, docs, CA.id);
       await checkAll(app);
       expect([await docTableText(PROT, 'gc'), await docTableText(NOMOD, 'modified'), await docTableText(BLANK, 'length'), await docTableText(BLANK, 'gc')], "the fixture: the document table shows '-'").toEqual(['-', '-', '-', '-']);
+      expect([await docTableText(PROT_NOMOD, 'gc'), await docTableText(PROT_NOMOD, 'modified')], "the fixture: a protein whose GC and Modified the document table shows as '-'").toEqual(['-', '-']);
       await openCompareByToolbar(app);
       const row = (d: SequenceDocument) => { const r = ctGrid(app).filter((c) => c[0] === d.name); expect(r, `one row for ${d.name}`).toHaveLength(1); return r[0]; };
       expect(row(PROT)[6]).toBe('n/a: GC% does not apply to a protein');
       expect(row(NOMOD)[7]).toBe('n/a: not recorded');
+      expect([row(PROT_NOMOD)[6], row(PROT_NOMOD)[7]], "a protein's missing Modified is not its GC reason").toEqual(['n/a: GC% does not apply to a protein', 'n/a: not recorded']);
       expect([row(BLANK)[4], row(BLANK)[6]], "a DNA record's blank GC is not a protein's").toEqual(['n/a: not recorded for this record', 'n/a: not recorded for this record']);
       expect(await docTableText(BLANK, 'modified'), 'the fixture: the document table shows a blank Modified').toBe('');
       expect(row(BLANK)[7], 'a blank cell says n/a too').toBe('n/a: not recorded');
@@ -1599,6 +1618,70 @@ describe('US-01M7DVV8 AC4: Export writes TSV and CSV through the shared table ex
       expect(lines.slice(1).map((l) => l[0]), 'every checked record, in card order').toEqual(rowNames);
       const last = many.find((d) => d.name === rowNames[rowNames.length - 1])!;
       expect(lines[lines.length - 1]).toEqual([last.name, folderWords(last), ...(await Promise.all(CT_DOC_COLUMNS.map((c) => docTableText(last, c))))]);
+    });
+  });
+});
+
+describe('US-01M7DVV8 AC4: the export follows the columns and the filter on screen (D0196)', () => {
+  it('US-01M7DVV8 AC4 with Modified hidden and % GC dragged before Folder path, the TSV and CSV header is the on-screen header in its order', async () => {
+    const docs = [PROT, NOMOD, CA];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id);
+      await checkAll(app);
+      await openCompareByToolbar(app);
+      expect(ctHeaders(app), 'the fixture: all eight columns at first').toEqual(CT_HEADERS);
+      await app.click(ctToolbarButton(app, 'Show, hide, lock, or save table columns'));
+      const modified = gallery(app).querySelectorAll('.mbc-columns-check-item').filter((l) => words(l.textContent) === 'Modified');
+      expect(modified, 'a Modified column toggle').toHaveLength(1);
+      await app.click(modified[0].querySelectorAll('input[type="checkbox"]')[0]);
+      await dragHeader(app, '% GC', 'Folder path');
+      const headers = ctHeaders(app);
+      expect(headers, 'the fixture: Modified hidden and % GC moved, on screen').toEqual(['Name', '% GC', 'Folder path', 'Type', 'Topology', 'Sequence Length', 'Annotations']);
+      const grid = ctGrid(app);
+      expect(grid.every((r) => r.length === 7), 'every on-screen row has the seven shown cells').toBe(true);
+      const tsv = await exportCompare(app, 'TSV');
+      expect(tsv.text.trim().split(/\r?\n/).map((l) => l.split('\t')), 'the TSV is the table on screen').toEqual([headers, ...grid]);
+      expect(tsv.text).not.toContain('Modified');
+      const { exportDelimitedTableViaRust } = await import('../core/workbenchBatchOperations');
+      const csv = await exportCompare(app, 'CSV');
+      expect(csv.text, 'the CSV is the table on screen').toBe(exportDelimitedTableViaRust(headers, grid, ','));
+    });
+  });
+
+  it('US-01M7DVV8 AC4 over SPLIT_PICKER_CAP checked records, under a quick filter or a column rule the export writes only the rows shown, and no past-cap record', async () => {
+    await withApp(async (app) => {
+      const { SPLIT_PICKER_CAP } = await components();
+      const many = Array.from({ length: SPLIT_PICKER_CAP + 2 }, (_, i) => doc(`f${String(i).padStart(4, '0')}`, `Row_${String(i).padStart(4, '0')}`, dna(300 + i, 300 + i)));
+      await restore(app, many, many[0].id);
+      await checkAll(app);
+      await openCompareByToolbar(app);
+      expect(ctRows(app), 'the fixture: the table shows the cap').toHaveLength(SPLIT_PICKER_CAP);
+      const names = (text: string) => text.trim().split(/\r?\n/).slice(1).map((l) => l.split('\t')[0]);
+      const cardOrder = ctGrid(app).map((r) => r[0]).concat(many.slice(SPLIT_PICKER_CAP).map((d) => d.name));
+      // With Modified hidden and no filter, every checked record is written, the past-cap ones in the shown columns too.
+      await app.click(ctToolbarButton(app, 'Show, hide, lock, or save table columns'));
+      await app.click(gallery(app).querySelectorAll('.mbc-columns-check-item').filter((l) => words(l.textContent) === 'Modified')[0].querySelectorAll('input[type="checkbox"]')[0]);
+      const shownHeaders = CT_HEADERS.filter((h) => h !== 'Modified');
+      expect(ctHeaders(app), 'the fixture: Modified hidden on screen').toEqual(shownHeaders);
+      const all = (await exportCompare(app, 'TSV')).text.trim().split(/\r?\n/).map((l) => l.split('\t'));
+      expect(all[0]).toEqual(shownHeaders);
+      expect(all.slice(1).map((l) => l[0]), 'no filter: every checked record, in card order').toEqual(cardOrder);
+      const last = many[many.length - 1];
+      expect(all[all.length - 1], 'a past-cap record in the shown columns').toEqual([last.name, folderWords(last), ...(await Promise.all(CT_DOC_COLUMNS.filter((c) => c !== 'modified').map((c) => docTableText(last, c))))]);
+      await app.click(ctToolbarButton(app, 'Filter rows by keyword or column rules'));
+      const quick = labelled(gallery(app), 'input', 'Quick filter across table columns');
+      await app.input(quick, 'Row_0000');
+      expect(ctGrid(app).map((r) => r[0]), 'the quick filter shows one row').toEqual(['Row_0000']);
+      expect(names((await exportCompare(app, 'TSV')).text), 'under the quick filter, the rows shown only').toEqual(['Row_0000']);
+      await app.input(quick, '');
+      expect(ctRows(app), 'the fixture: clearing the quick filter shows the cap again').toHaveLength(SPLIT_PICKER_CAP);
+      expect(names((await exportCompare(app, 'TSV')).text), 'a cleared filter, its panel still open, writes every checked record again').toEqual(cardOrder);
+      const addRule = gallery(app).querySelectorAll('button').filter((b) => words(b.textContent) === '+ Column Rule');
+      expect(addRule, 'a + Column Rule button').toHaveLength(1);
+      await app.click(addRule[0]);
+      await app.input(labelled(gallery(app), 'input', 'Filter condition value'), 'Row_0001');
+      expect(ctGrid(app).map((r) => r[0]), 'the column rule shows one row').toEqual(['Row_0001']);
+      expect(names((await exportCompare(app, 'TSV')).text), 'under a column rule, the rows shown only').toEqual(['Row_0001']);
     });
   });
 });

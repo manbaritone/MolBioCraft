@@ -704,9 +704,18 @@ export interface WorkbenchSmartTableProps
    * show (US-01M7DV5P): it is called with the ids of the rows the table shows right now, in the
    * order it draws them, read from each row's own `data-mbc-row-id`. Returning `null` exports the
    * visible cells as ever. The export path itself - its formats, its serializer and its filename -
-   * is the shared one either way.
+   * is the shared one either way. The second argument says what the table shows besides its rows
+   * (US-01M7DVV8, D0196): its visible columns in on-screen order and whether a filter is active.
    */
-  exportTable?: (shownRowIds: string[]) => FigureTable | null;
+  exportTable?: (shownRowIds: string[], view: SmartTableExportView) => FigureTable | null;
+}
+
+/** What a smart table shows when it exports, beyond the ids of its rows (D0196). */
+export interface SmartTableExportView {
+  /** The visible columns in the order the table draws them; `index` is the column's place in the host's own header row. */
+  columns: { id: string; label: string; index: number }[];
+  /** Whether the quick filter or a column filter rule is in force. */
+  filterActive: boolean;
 }
 
 interface ExtractedColMeta {
@@ -1042,7 +1051,11 @@ export const WorkbenchSmartTable: React.FC<WorkbenchSmartTableProps> = ({
               const own = exportTable?.(
                 shown.map(
                   (r) => String((r.tr.props as { 'data-mbc-row-id'?: unknown })['data-mbc-row-id'] ?? '')
-                )
+                ),
+                {
+                  columns: orderedVisibleCols.map((c) => ({ id: c.id, label: c.label, index: c.origIndex })),
+                  filterActive: activeFilterCount > 0,
+                }
               );
               if (own) return own;
               return {

@@ -39,9 +39,10 @@
  * card order. A Compare Table cell is the document table's own text for its record
  * (`getDocumentColumnDisplayValue` over `computeDocumentTableMetrics`), except Folder path, the card's;
  * where that text is '-' or blank the cell says "n/a" and why (compareTableCell). The table is a
- * WorkbenchSmartTable, whose Export writes TSV and CSV through the shared export: the rows the table
- * shows, in the order it draws them, then every checked record past SPLIT_PICKER_CAP in card order
- * (the table's filter does not reach those). A row's name opens its record by id, as Open in viewer.
+ * WorkbenchSmartTable, whose Export writes TSV and CSV through the shared export: the columns the
+ * table shows, in the order it draws them, over the rows it shows, in the order it draws them; with no
+ * filter in force, every checked record past SPLIT_PICKER_CAP follows in card order, and while a filter
+ * is in force only the rows shown (D0196). A row's name opens its record by id, as Open in viewer.
  */
 
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
@@ -67,7 +68,7 @@ import {
 import type { FigureTable } from '../core/figureExport';
 import { ResultWarnings } from './ResultWarnings';
 import { scanDocumentForMap, SPLIT_PICKER_CAP, type SplitRange } from './SplitDocumentPane';
-import { WorkbenchSmartTable } from './WorkbenchSmartTable';
+import { WorkbenchSmartTable, type SmartTableExportView } from './WorkbenchSmartTable';
 
 /**
  * How many cards the gallery draws a map for on opening, the first in its order that have one; and
@@ -244,7 +245,7 @@ const CARD_GESTURES = ['wheel', 'gesturestart', 'gesturechange', 'gestureend'] a
  * gesture event) is kept from zooming the page. Capture-phase and non-passive, so it runs before the
  * map's own listener and may prevent the default.
  */
-/** The Compare Table (US-01M7DVV8): one row per card, in card order; its Export writes every checked record. */
+/** The Compare Table (US-01M7DVV8): one row per card, in card order; its Export writes the columns shown, and every checked record unless a filter is in force. */
 const CompareTable: React.FC<{ docs: SequenceDocument[]; shown: SequenceDocument[]; folderPath: MapGalleryProps['folderPath']; onOpen: (docId: string) => void }> = ({
   docs,
   shown,
@@ -252,11 +253,14 @@ const CompareTable: React.FC<{ docs: SequenceDocument[]; shown: SequenceDocument
   onOpen,
 }) => {
   const rowOf = (doc: SequenceDocument) => COMPARE_TABLE_COLUMNS.map((c) => compareTableCell(doc, c.id, folderPath(doc)));
-  // The rows the table shows, in its order, then the checked records past the cap, which it does not list.
-  const exportTable = (shownRowIds: string[]): FigureTable => {
+  // The columns the table shows, in its order, over the rows it shows; with no filter in force, the
+  // checked records past the cap follow in card order, which a filter cannot reach (D0196).
+  const exportTable = (shownRowIds: string[], view: SmartTableExportView): FigureTable => {
     const byId = new Map(docs.map((d) => [d.id, d]));
     const listed = shownRowIds.map((id) => byId.get(id)).filter((d): d is SequenceDocument => d !== undefined);
-    return { headers: COMPARE_TABLE_COLUMNS.map((c) => c.label), rows: [...listed, ...docs.slice(shown.length)].map(rowOf), caption: 'Compare Table' };
+    const columns = view.columns.map((c) => COMPARE_TABLE_COLUMNS[c.index]).filter((c) => c !== undefined);
+    const rows = view.filterActive ? listed : [...listed, ...docs.slice(shown.length)];
+    return { headers: columns.map((c) => c.label), rows: rows.map((d) => columns.map((c) => compareTableCell(d, c.id, folderPath(d)))), caption: 'Compare Table' };
   };
   return (
     <WorkbenchSmartTable tableId="map-gallery-compare-table" tableLabel="Compare Table" className="mbc-compare-table" exportTable={exportTable}>
