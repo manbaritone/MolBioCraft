@@ -1277,6 +1277,36 @@ describe('US-01M7DV75 AC1: Common scale draws every map at one px-per-base scale
       expect(drawnPx(cardFor(app, LAMBDA)), 'the longest circle no longer fills its card').toBeLessThan(Math.PI * cardDiameter - 1);
     });
   });
+
+  it('US-01M7DV75 AC1 a crowded circle drawn smaller under Common scale leaves labels out and says so, and no label it draws falls below the label floor on screen', async () => {
+    await withApp(async (app) => {
+      const { GALLERY_CARD_MAP_BOX, CIRCULAR_MAP_BACKBONE_R, CIRCULAR_MAP_LABEL_FLOOR_PX, fitCircularMapScale } = await components();
+      const cardDiameter = 2 * CIRCULAR_MAP_BACKBONE_R * fitCircularMapScale(GALLERY_CARD_MAP_BOX.width, GALLERY_CARD_MAP_BOX.height);
+      await restore(app, [CROWD, LAMBDA], LAMBDA.id);
+      // Restriction sites off, as US-01M7DVS2 AC5 has them: the labels are the twenty features'.
+      await app.menu('view:track-restriction-sites');
+      await checkAll(app);
+      await openByToolbar(app);
+      const svg = () => drawnMap(cardFor(app, CROWD))!;
+      const labels = () => svg().querySelectorAll('g[data-callout] text');
+      // A label's size on screen: its font size times the circle's drawn scale (data-drawn-px is
+      // the backbone's circumference on screen, 2 pi R at scale 1).
+      const onScreen = () => labels().map((t) => Number(t.getAttribute('font-size')) * (drawnPx(cardFor(app, CROWD)) / (2 * Math.PI * CIRCULAR_MAP_BACKBONE_R)));
+      expect(svg().querySelectorAll('[data-map-part="cut-site"]'), 'the fixture: no cut sites drawn').toHaveLength(0);
+      const fitLabels = labels().length;
+      expect(fitLabels, 'the fixture: the crowded circle fitted to its card draws labels').toBeGreaterThan(1);
+
+      await app.click(labelled(gallery(app), 'input[type="radio"]', 'Common scale'));
+      expect(drawnPx(cardFor(app, CROWD)), 'the fixture: the crowded circle is drawn well under its card').toBeLessThan((Math.PI * cardDiameter) / 2);
+      expect(labels().length, 'the smaller circle leaves labels out').toBeLessThan(fitLabels);
+      const notes = svg().querySelectorAll('.circular-callout-note');
+      expect(notes, 'the smaller circle says labels were left out').toHaveLength(1);
+      expect(words(notes[0].textContent)).toMatch(/^[\d,]+ more labels? in Annotations$|^[\d,]+ more labels? not shown$/);
+      const sizes = onScreen();
+      expect(sizes.length, 'the smaller circle still draws a label').toBeGreaterThan(0);
+      for (const px of sizes) expect(px, 'no label below the floor on screen').toBeGreaterThanOrEqual(CIRCULAR_MAP_LABEL_FLOOR_PX - 0.01);
+    });
+  });
 });
 
 describe('US-01M7DV75 AC2: the first GALLERY_MAPS_DRAWN_FIRST maps are drawn, and Draw next draws GALLERY_DRAW_STEP more in table order', () => {
