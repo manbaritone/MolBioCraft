@@ -24,8 +24,13 @@
  * only fetches, on either runtime (the loopback fetch check covers both); a splash that waits on a
  * backend check that never settles, or whose completion was dropped with the check (the splash still
  * on the page after its timers have run).
+ *
+ * US-01M6P2WH AC1 (D0174): the desktop shell's own Rust sources no longer describe a REST server, REST
+ * API, loopback address or the old port and path, so a doc comment orphaned by the removal (as round 1
+ * left one above queue_open_files) cannot keep documenting a server the shell no longer runs.
  */
 
+import nodeFs from 'node:fs';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mountApp, type AppHarness } from './appHarness';
@@ -104,5 +109,26 @@ describe('startup splash completes without a REST probe', () => {
 
     expect(await runSplashToCompletion(app)).toBe(true);
     expect(fetched.filter((url) => LOOPBACK.test(url))).toEqual([]);
+  });
+});
+
+describe('the desktop shell runs no REST server', () => {
+  /** What a shell source says only while it still serves REST: the server, its API, its loopback address, port or path. */
+  const STALE_REST = /REST (server|API)|RESTful|loopback|127\.0\.0\.1|18420|api\/v1/i;
+
+  /** Every Rust source under src-tauri/src, as a path relative to the repository root. */
+  function shellSources(dir = 'src-tauri/src/'): string[] {
+    return nodeFs.readdirSync(new URL(`../../${dir}`, import.meta.url), { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory() ? shellSources(`${dir}${entry.name}/`) : entry.name.endsWith('.rs') ? [`${dir}${entry.name}`] : []);
+  }
+
+  it('its sources name no REST server, REST API, loopback address, 127.0.0.1, port 18420 or /api/v1', () => {
+    const sources = shellSources();
+    // A guard: the walk reached the shell's entry point and its command modules.
+    expect(sources).toEqual(expect.arrayContaining(['src-tauri/src/main.rs', 'src-tauri/src/commands/mod.rs']));
+    const stale = sources.flatMap((file) =>
+      nodeFs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8').split('\n')
+        .flatMap((line, i) => (STALE_REST.test(line) ? [`${file}:${i + 1}: ${line.trim()}`] : [])));
+    expect(stale).toEqual([]);
   });
 });

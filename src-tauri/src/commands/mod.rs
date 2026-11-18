@@ -159,7 +159,6 @@ impl AppBackendState {
             .store(0, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Secret the loopback REST server requires on every request.
     /// Queue files the OS asked us to open; duplicates are ignored.
     pub fn queue_open_files<I: IntoIterator<Item = std::path::PathBuf>>(&self, paths: I) -> usize {
         let mut q = self
