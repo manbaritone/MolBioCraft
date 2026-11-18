@@ -3,7 +3,7 @@
 
 import { ProjectFolderTree } from './components/ProjectFolderTree';
 import { documentsInFolder, folderDescendants, folderPathLabels, toggleVisibleSelection, normalizeProjectExplorer, PROJECT_ROOT, type ExplorerFolder } from './core/projectExplorer';
-import { MapGallery } from './components/MapGallery';
+import { MapGallery, type MapGalleryView } from './components/MapGallery';
 import { DocumentInfoPanel, DocumentNotesEditor } from './components/DocumentInfoPanel';
 import { EMPTY_WORKSPACE_DOCUMENT, removeUntouchedLegacyStarter } from './core/emptyWorkspace';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -1260,6 +1260,8 @@ export const App: React.FC = () => {
    * App state, not a viewer tab, so the tab behind it is the one saved, and nothing about it is saved.
    */
   const [mapGalleryOpen, setMapGalleryOpen] = useState(false);
+  /** The gallery's view (US-01M7DVV8): its maps or its Compare Table, set by the entry point that opened it. */
+  const [mapGalleryView, setMapGalleryView] = useState<MapGalleryView>('maps');
   /** The document split (US-01M7DVR0): Single Pane, or the second pane Side by Side or Top and Bottom. */
   const [documentSplit, setDocumentSplit] = useState<DocumentSplitOrientation>('single');
   /** The split the toggle returns to from Single Pane: the last one chosen, Side by Side the first time. */
@@ -3759,12 +3761,15 @@ export const App: React.FC = () => {
   /**
    * Map Gallery (US-01M7DVS2): the table toolbar's button and View › Map Gallery, under the
    * `multi-record-view` rule over the checked rows the table shows. It takes the main view's place;
-   * the split pane, its document, view, zoom, rotation and focus stay as they are.
+   * the split pane, its document, view, zoom, rotation and focus stay as they are. The table toolbar's
+   * Compare Table and View › Compare Table (US-01M7DVV8) open it, under the same rule, on its Compare
+   * Table; an open gallery moves to the view asked for.
    */
-  const openMapGallery = () => {
-    // Both entry points are disabled under this rule, so no call reaches this check today; it stays, as the
+  const openMapGallery = (view: MapGalleryView = 'maps') => {
+    // Every entry point is disabled under this rule, so no call reaches this check today; it stays, as the
     // View › Tracks handlers keep theirs, so a caller that does not read the rule first still gets the reason.
-    if (!ensureCommandAvailable('multi-record-view', 'Map Gallery')) return;
+    if (!ensureCommandAvailable('multi-record-view', view === 'compare-table' ? 'Compare Table' : 'Map Gallery')) return;
+    setMapGalleryView(view);
     setMapGalleryOpen(true);
   };
   /** A card's Open in viewer: the gallery closes onto the card's record, the checked rows kept so it reopens on the same cards. */
@@ -10348,7 +10353,16 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         label: 'Map Gallery',
         disabled: !isCommandEnabled('multi-record-view'),
         description: commandDisabledReason('multi-record-view'),
-        onSelect: () => requireActiveSession(() => openMapGallery()),
+        onSelect: () => requireActiveSession(() => openMapGallery('maps')),
+      },
+      {
+        // US-01M7DVV8: the checked rows side by side in the gallery's Compare Table, under the same rule.
+        kind: 'command',
+        id: 'view-compare-table',
+        label: 'Compare Table',
+        disabled: !isCommandEnabled('multi-record-view'),
+        description: commandDisabledReason('multi-record-view'),
+        onSelect: () => requireActiveSession(() => openMapGallery('compare-table')),
       },
       {
         kind: 'submenu',
@@ -15183,10 +15197,22 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   className="mbc-multifile-action-btn mbc-map-gallery-btn"
                   disabled={!isCommandEnabled('multi-record-view')}
                   title={commandDisabledReason('multi-record-view') ?? 'Show the maps of the checked records side by side'}
-                  onClick={openMapGallery}
+                  onClick={() => openMapGallery('maps')}
                 >
                   <LayoutGrid size={13} aria-hidden="true" />
                   <span>Map Gallery</span>
+                </button>
+
+                {/* US-01M7DVV8: the checked rows side by side, under the rule View › Compare Table reads. */}
+                <button
+                  type="button"
+                  className="mbc-multifile-action-btn mbc-compare-table-btn"
+                  disabled={!isCommandEnabled('multi-record-view')}
+                  title={commandDisabledReason('multi-record-view') ?? 'Compare the checked records side by side in a table'}
+                  onClick={() => openMapGallery('compare-table')}
+                >
+                  <Table2 size={13} aria-hidden="true" />
+                  <span>Compare Table</span>
                 </button>
 
                 <div className="toolbar-dropdown-anchor">
@@ -16029,6 +16055,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       onOpen={openFromMapGallery}
                       onCompare={compareFromMapGallery}
                       onClose={() => setMapGalleryOpen(false)}
+                      view={mapGalleryView}
+                      onViewChange={setMapGalleryView}
                     />
                   </ErrorBoundary>
                 )}

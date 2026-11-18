@@ -205,9 +205,9 @@ async function viewRow(app: AppHarness, label: string): Promise<LiveElement> {
   if (!row) throw new Error(`no "${label}" in the View menu: ${menuButtons(app).map(rowLabel).join(' | ')}`);
   return row;
 }
-/** View › Map Gallery: [disabled, the Function Info it shows on hover]. */
-async function viewItem(app: AppHarness): Promise<[boolean, string]> {
-  const row = await viewRow(app, 'Map Gallery');
+/** View › Map Gallery (or another View row): [disabled, the Function Info it shows on hover]. */
+async function viewItem(app: AppHarness, label = 'Map Gallery'): Promise<[boolean, string]> {
+  const row = await viewRow(app, label);
   await React.act(async () => { dispatchLiveEvent(row, 'pointerover', { pointerId: 1, pointerType: 'mouse', isPrimary: true }); });
   await app.settle();
   const tips = app.all('[role="tooltip"]').map((t) => words(t.textContent));
@@ -1403,6 +1403,224 @@ describe('US-01M7DV75 AC4: an undrawn card keeps its identity and opens its own 
         expect(galleries(app), 'the gallery closes').toHaveLength(0);
         expect(app.all('tr.selected-row').map((r) => rowAccession(r, docs)), `${d.accession} is the main view's record`).toEqual([d.accession]);
         await openByToolbar(app);
+      }
+    });
+  });
+});
+
+// ─── US-01M7DVV8: the Compare Table ───
+
+/** The document table's own text for a record's column, read through the shared functions (loaded after the mount). */
+const docTableText = async (d: SequenceDocument, colId: string) => {
+  const { computeDocumentTableMetrics, getDocumentColumnDisplayValue } = await import('../core/workbenchBatchOperations');
+  return getDocumentColumnDisplayValue(d, computeDocumentTableMetrics(d), colId);
+};
+const CT_HEADERS = ['Name', 'Folder path', 'Type', 'Topology', 'Sequence Length', 'Annotations', '% GC', 'Modified'];
+const CT_DOC_COLUMNS = ['type', 'topology', 'length', 'annotations', 'gc', 'modified'] as const;
+/** A record whose docMetadata overrides the computed length and GC, so a recomputed cell differs. */
+const OVR = doc('govr', 'Override_Doc', dna(2_400, 71), { docMetadata: { 'Sequence Length': '9,999 bp', '% GC': '61.5%' } } as Partial<SequenceDocument>);
+/** A record with no modified date. */
+const NOMOD = doc('gnomod', 'NoMod_Doc', dna(2_000, 73), { updatedAt: '' });
+/** A DNA record whose length and GC are recorded blank, so the document table shows '-' for both, and whose Modified is recorded empty, which it shows blank. */
+const BLANK = doc('gblank', 'Blank_Doc', dna(2_200, 79), { docMetadata: { 'Sequence Length': ' ', '% GC': ' ', Modified: '' } } as Partial<SequenceDocument>);
+
+const ctButton = (app: AppHarness) => app.one('.doc-table-toolbar button.mbc-compare-table-btn', "the table toolbar's Compare Table button");
+const compareTables = (app: AppHarness) => gallery(app).querySelectorAll('table.mbc-compare-table');
+const compareTable = (app: AppHarness) => { const t = compareTables(app); expect(t, 'one Compare Table in the gallery').toHaveLength(1); return t[0]; };
+const ctHeaders = (app: AppHarness) => compareTable(app).querySelectorAll('thead th').map((th) => words(th.textContent).replace(/[↑↓▲▼▴▾]+$/g, '').trim());
+const ctRows = (app: AppHarness) => compareTable(app).querySelectorAll('tbody tr');
+const ctCells = (row: LiveElement) => row.querySelectorAll('td').map((td) => words(td.textContent));
+const ctGrid = (app: AppHarness) => ctRows(app).map(ctCells);
+const switchTo = (app: AppHarness, view: 'Maps' | 'Compare Table') => app.click(labelled(gallery(app), 'input', view));
+async function openCompareByToolbar(app: AppHarness) {
+  expect(ctButton(app).hasAttribute('disabled'), 'the Compare Table button is enabled').toBe(false);
+  await app.click(ctButton(app));
+}
+async function openCompareByView(app: AppHarness) {
+  const row = await viewRow(app, 'Compare Table');
+  expect(row.hasAttribute('disabled'), 'View › Compare Table is enabled').toBe(false);
+  await app.click(row);
+  await closeMenus(app);
+}
+const folderWords = (d: SequenceDocument) => (d.folder === BETA ? `${ROOT_PATH} › ${ALPHA} › ${BETA}` : `${ROOT_PATH} › ${ALPHA}`);
+/** The Compare Table's Export, saving one file in the given format: its name and text. */
+async function exportCompare(app: AppHarness, format: 'TSV' | 'CSV') {
+  const triggers = gallery(app).querySelectorAll('.mbc-smart-table-shell .mbc-figure-export-trigger');
+  expect(triggers, "the Compare Table's Export control").toHaveLength(1);
+  const before = app.downloads().length;
+  await app.click(triggers[0]);
+  const items = gallery(app).querySelectorAll('.mbc-figure-export-item').filter((b) => words(b.textContent).startsWith(format));
+  expect(items, `the Export menu offers ${format}`).toHaveLength(1);
+  await app.click(items[0]);
+  const files = app.downloads().slice(before);
+  expect(files, `one ${format} file saved`).toHaveLength(1);
+  return { filename: files[0].filename, text: await files[0].text() };
+}
+
+describe('US-01M7DVV8 AC1: the toolbar button and View › Compare Table open the gallery on its Compare Table, and a switch moves between the views', () => {
+  it('US-01M7DVV8 AC1 both entries read the multi-record-view rule, open the Compare Table, and Maps / Compare Table switch over the same records', async () => {
+    await withApp(async (app) => {
+      await restore(app, [CA, CB, PROT], CA.id);
+      // One checked row: both are off, with the rule's reason.
+      expect([ctButton(app).hasAttribute('disabled'), ctButton(app).getAttribute('title')]).toEqual([true, reasonFor(1)]);
+      expect(await viewItem(app, 'Compare Table')).toEqual([true, expect.stringContaining(reasonFor(1))]);
+      await app.click(ctButton(app));
+      expect(galleries(app), 'a disabled Compare Table opens nothing').toHaveLength(0);
+      await check(app, PROT);
+      expect(ctButton(app).getAttribute('title')).not.toBe(reasonFor(2));
+      expect((await viewItem(app, 'Compare Table'))[0]).toBe(false);
+
+      await openCompareByToolbar(app);
+      expect(app.canvas().querySelectorAll('section[aria-label="Map Gallery"]'), "the gallery takes the main view's place").toHaveLength(1);
+      expect(ctGrid(app).map((r) => r[0]), 'the Compare Table lists the checked records').toEqual(['Circ_A', 'Prot_Doc']);
+      expect(cards(app), 'no cards under the Compare Table').toHaveLength(0);
+      expect(labelled(gallery(app), 'input', 'Compare Table').checked).toBe(true);
+
+      await switchTo(app, 'Maps');
+      expect(compareTables(app), 'Maps shows no Compare Table').toHaveLength(0);
+      expect(cards(app).map(cardName)).toEqual(['Circ_A', 'Prot_Doc']);
+      expect(labelled(gallery(app), 'input', 'Maps').checked).toBe(true);
+      // While the gallery shows its maps, the toolbar's Compare Table moves it to the table.
+      await openCompareByToolbar(app);
+      expect(ctGrid(app).map((r) => r[0])).toEqual(['Circ_A', 'Prot_Doc']);
+      await switchTo(app, 'Maps');
+      await switchTo(app, 'Compare Table');
+      expect(ctGrid(app).map((r) => r[0]), 'the switch back shows the same records').toEqual(['Circ_A', 'Prot_Doc']);
+
+      // Map Gallery still opens on the maps, and View › Compare Table on the table.
+      await closeGallery(app);
+      await openByToolbar(app);
+      expect([cards(app).map(cardName), compareTables(app).length]).toEqual([['Circ_A', 'Prot_Doc'], 0]);
+      await closeGallery(app);
+      await openCompareByView(app);
+      expect([ctGrid(app).map((r) => r[0]), cards(app).length]).toEqual([['Circ_A', 'Prot_Doc'], 0]);
+      await openByView(app);
+      expect([cards(app).map(cardName), compareTables(app).length], 'View › Map Gallery moves the open gallery to its maps').toEqual([['Circ_A', 'Prot_Doc'], 0]);
+    });
+  });
+});
+
+describe("US-01M7DVV8 AC2: one row per card in card order, each cell the document table's own text", () => {
+  it("US-01M7DVV8 AC2 the eight columns, rows in card order after a sort, and every cell but Folder path read from the document table's functions", async () => {
+    const docs = [CA, LIN, OVR, TWIN_B, RNA];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id);
+      await checkAll(app);
+      // Sort the document table by Sequence Length, so card order is not the order the records were given in.
+      await app.click(lengthColumn(app).th);
+      await openByToolbar(app);
+      const cardOrder = cards(app).map(cardAcc);
+      expect(cardOrder, 'the fixture: the sort reorders the records').not.toEqual(docs.map((d) => d.accession));
+      await switchTo(app, 'Compare Table');
+      expect(ctHeaders(app)).toEqual(CT_HEADERS);
+      const grid = ctGrid(app);
+      expect(grid, 'one row per card').toHaveLength(cardOrder.length);
+      const byAcc = new Map(docs.map((d) => [d.accession, d]));
+      for (const [i, acc] of cardOrder.entries()) {
+        const d = byAcc.get(acc)!;
+        const own = await Promise.all(CT_DOC_COLUMNS.map((c) => docTableText(d, c)));
+        expect(own.includes('-'), `the fixture: ${d.name} shows no '-'`).toBe(false);
+        expect(grid[i], `row ${i}, ${d.name}`).toEqual([d.name, folderWords(d), ...own]);
+      }
+      // The overrides are the cells, not a recomputed length or GC.
+      const ovr = grid[cardOrder.indexOf(OVR.accession)];
+      expect([ovr[4], ovr[6]]).toEqual(['9,999 bp', '61.5%']);
+      // The Sequence Length cell is the text of the document table's own column for that row.
+      const { at } = lengthColumn(app);
+      const tableLength = new Map(tableRows(app).map((r) => [rowAccession(r, docs), words(r.children[at].textContent)]));
+      expect(grid.map((r) => r[4])).toEqual(cardOrder.map((a) => tableLength.get(a)));
+    });
+  });
+});
+
+describe("US-01M7DVV8 AC3: where the document table shows '-', the cell names why", () => {
+  it('US-01M7DVV8 AC3 a protein GC, a missing Modified and a blank recorded length or GC each say n/a with the reason', async () => {
+    const docs = [PROT, NOMOD, BLANK, CA];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id);
+      await checkAll(app);
+      expect([await docTableText(PROT, 'gc'), await docTableText(NOMOD, 'modified'), await docTableText(BLANK, 'length'), await docTableText(BLANK, 'gc')], "the fixture: the document table shows '-'").toEqual(['-', '-', '-', '-']);
+      await openCompareByToolbar(app);
+      const row = (d: SequenceDocument) => { const r = ctGrid(app).filter((c) => c[0] === d.name); expect(r, `one row for ${d.name}`).toHaveLength(1); return r[0]; };
+      expect(row(PROT)[6]).toBe('n/a: GC% does not apply to a protein');
+      expect(row(NOMOD)[7]).toBe('n/a: not recorded');
+      expect([row(BLANK)[4], row(BLANK)[6]], "a DNA record's blank GC is not a protein's").toEqual(['n/a: not recorded for this record', 'n/a: not recorded for this record']);
+      expect(await docTableText(BLANK, 'modified'), 'the fixture: the document table shows a blank Modified').toBe('');
+      expect(row(BLANK)[7], 'a blank cell says n/a too').toBe('n/a: not recorded');
+      // Every other cell is the document table's own text, and none is '-', '0' in place of a value, or blank.
+      expect(row(PROT)[4]).toBe(await docTableText(PROT, 'length'));
+      expect(row(NOMOD)[6]).toBe(await docTableText(NOMOD, 'gc'));
+      for (const r of ctGrid(app)) expect(r.filter((c) => c === '-' || c === ''), `row ${r[0]}`).toEqual([]);
+    });
+  });
+});
+
+describe('US-01M7DVV8 AC4: Export writes TSV and CSV through the shared table export; over the cap it writes every checked record', () => {
+  it('US-01M7DVV8 AC4 the TSV and CSV carry the on-screen header and cells, n/a reasons included', async () => {
+    const docs = [PROT, NOMOD, OVR, CA];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id);
+      await checkAll(app);
+      await openCompareByToolbar(app);
+      const given = ctGrid(app).map((r) => r[0]);
+      // Sort the Compare Table itself by Name, so the export must follow the rows as the table draws them.
+      await app.click(compareTable(app).querySelectorAll('thead th').filter((th) => words(th.textContent).startsWith('Name'))[0]);
+      const headers = ctHeaders(app);
+      const grid = ctGrid(app);
+      expect(grid.map((r) => r[0]), 'the fixture: the sort reorders the rows').not.toEqual(given);
+      expect(grid.map((r) => r[0])).toEqual([...given].sort());
+      const { exportDelimitedTableViaRust } = await import('../core/workbenchBatchOperations');
+      const tsv = await exportCompare(app, 'TSV');
+      expect(tsv.filename.endsWith('.tsv'), tsv.filename).toBe(true);
+      expect(tsv.text.trim().split(/\r?\n/).map((l) => l.split('\t'))).toEqual([headers, ...grid]);
+      expect(tsv.text).toContain('n/a: GC% does not apply to a protein');
+      expect(tsv.text).toContain('n/a: not recorded');
+      const csv = await exportCompare(app, 'CSV');
+      expect(csv.filename.endsWith('.csv'), csv.filename).toBe(true);
+      expect(csv.text, 'the shared serializer over the on-screen text').toBe(exportDelimitedTableViaRust(headers, grid, ','));
+      expect(csv.text).toContain('"9,999 bp"');
+    });
+  });
+
+  it('US-01M7DVV8 AC4 over SPLIT_PICKER_CAP checked records the table shows the first with the subsetNote, and the export writes every one', async () => {
+    await withApp(async (app) => {
+      const { SPLIT_PICKER_CAP, subsetNote } = await components();
+      const many = Array.from({ length: SPLIT_PICKER_CAP + 2 }, (_, i) => doc(`v${String(i).padStart(4, '0')}`, `Row_${String(i).padStart(4, '0')}`, dna(300 + i, 300 + i)));
+      await restore(app, many, many[0].id);
+      await checkAll(app);
+      const rowNames = tableRows(app).map((r) => r.querySelectorAll('input[type="checkbox"]')[0].getAttribute('aria-label')!.replace(/^Select /, ''));
+      expect(rowNames).toHaveLength(many.length);
+      await openCompareByToolbar(app);
+      expect(ctGrid(app).map((r) => r[0]), 'the first in table order').toEqual(rowNames.slice(0, SPLIT_PICKER_CAP));
+      expect(words(gallery(app).textContent)).toContain(subsetNote('The gallery shows', SPLIT_PICKER_CAP, many.length, 'records', 'first')[0]);
+      const tsv = await exportCompare(app, 'TSV');
+      const lines = tsv.text.trim().split(/\r?\n/).map((l) => l.split('\t'));
+      expect(lines[0]).toEqual(CT_HEADERS);
+      expect(lines.slice(1).map((l) => l[0]), 'every checked record, in card order').toEqual(rowNames);
+      const last = many.find((d) => d.name === rowNames[rowNames.length - 1])!;
+      expect(lines[lines.length - 1]).toEqual([last.name, folderWords(last), ...(await Promise.all(CT_DOC_COLUMNS.map((c) => docTableText(last, c))))]);
+    });
+  });
+});
+
+describe("US-01M7DVV8 AC5: a row's name opens its record by id", () => {
+  it('US-01M7DVV8 AC5 opens the right one of two same-name records, as Open in viewer does', async () => {
+    const docs = [CA, TWIN_A, TWIN_B];
+    await withApp(async (app) => {
+      await restore(app, docs, CA.id);
+      await checkAll(app);
+      const checked = () => tableRows(app).filter((r) => r.querySelectorAll('input[type="checkbox"]')[0].checked).map((r) => rowAccession(r, docs)).sort();
+      const before = checked();
+      expect(before).toHaveLength(3);
+      for (const target of [TWIN_B, TWIN_A]) {
+        await openCompareByToolbar(app);
+        const rows = ctRows(app).filter((r) => ctCells(r)[0] === 'Twin' && ctCells(r)[1] === folderWords(target));
+        expect(rows, `one Twin row in ${folderWords(target)}`).toHaveLength(1);
+        await app.click(labelled(rows[0], 'button', `Open ${target.name} in viewer`));
+        expect(galleries(app), 'the gallery closes').toHaveLength(0);
+        expect(app.all('tr.selected-row').map((r) => rowAccession(r, docs)), `${target.accession} is the main view's record`).toEqual([target.accession]);
+        expect(app.activeTab()).toBe('sequence-view');
+        expect(checked(), 'the rows stay checked').toEqual(before);
       }
     });
   });

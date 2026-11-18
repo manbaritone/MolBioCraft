@@ -33,6 +33,15 @@
  * pinch over it is kept from its map (holdCardGesture), so it zooms and moves nothing; its state lives
  * only while the gallery is shown. Compare in split hands the two
  * chosen records, in card order, to the App.
+ *
+ * The gallery has two views over the same cards (US-01M7DVV8), switched by its Maps / Compare Table
+ * radios and chosen by the App's entry points: the maps, and the Compare Table, one row per card in
+ * card order. A Compare Table cell is the document table's own text for its record
+ * (`getDocumentColumnDisplayValue` over `computeDocumentTableMetrics`), except Folder path, the card's;
+ * where that text is '-' or blank the cell says "n/a" and why (compareTableCell). The table is a
+ * WorkbenchSmartTable, whose Export writes TSV and CSV through the shared export: the rows the table
+ * shows, in the order it draws them, then every checked record past SPLIT_PICKER_CAP in card order
+ * (the table's filter does not reach those). A row's name opens its record by id, as Open in viewer.
  */
 
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
@@ -55,8 +64,10 @@ import {
   subsetNote,
   type ChosenScanCollection,
 } from './CircularPlasmidMap';
+import type { FigureTable } from '../core/figureExport';
 import { ResultWarnings } from './ResultWarnings';
 import { scanDocumentForMap, SPLIT_PICKER_CAP, type SplitRange } from './SplitDocumentPane';
+import { WorkbenchSmartTable } from './WorkbenchSmartTable';
 
 /**
  * How many cards the gallery draws a map for on opening, the first in its order that have one; and
@@ -99,6 +110,39 @@ export function galleryNoMapReason(doc: SequenceDocument): string | null {
   return null;
 }
 
+/** The gallery's two views over the same cards (US-01M7DVV8). */
+export type MapGalleryView = 'maps' | 'compare-table';
+
+/** The Compare Table's columns, in order: its own Folder path, and the document table's columns by id. */
+export const COMPARE_TABLE_COLUMNS = [
+  { id: 'name', label: 'Name' },
+  { id: 'folder', label: 'Folder path' },
+  { id: 'type', label: 'Type' },
+  { id: 'topology', label: 'Topology' },
+  { id: 'length', label: 'Sequence Length' },
+  { id: 'annotations', label: 'Annotations' },
+  { id: 'gc', label: '% GC' },
+  { id: 'modified', label: 'Modified' },
+] as const;
+
+/** What a Compare Table cell says where the document table shows '-' or nothing. */
+export const COMPARE_NA_PROTEIN_GC = 'n/a: GC% does not apply to a protein';
+export const COMPARE_NA_MODIFIED = 'n/a: not recorded';
+export const COMPARE_NA_OTHER = 'n/a: not recorded for this record';
+
+/**
+ * A Compare Table cell's text: Folder path joined as the card shows it, and every other column the
+ * document table's own text for the record, never recomputed; where that is '-' or blank, "n/a" with
+ * the reason, so a missing value never reads as a zero or an empty cell.
+ */
+export function compareTableCell(doc: SequenceDocument, colId: string, folder: string[]): string {
+  const text = colId === 'folder' ? folder.join(' › ') : getDocumentColumnDisplayValue(doc, computeDocumentTableMetrics(doc), colId);
+  if (text.trim() !== '' && text.trim() !== '-') return text;
+  if (colId === 'gc' && doc.moleculeType === 'Protein') return COMPARE_NA_PROTEIN_GC;
+  if (colId === 'modified') return COMPARE_NA_MODIFIED;
+  return COMPARE_NA_OTHER;
+}
+
 export interface MapGalleryProps {
   /** The checked rows the document table shows, in its order, uncapped: their count is the M the notes count against. */
   docs: SequenceDocument[];
@@ -115,6 +159,9 @@ export interface MapGalleryProps {
   /** Compare in split: the two chosen records' ids, the first in card order first. */
   onCompare: (mainDocId: string, paneDocId: string) => void;
   onClose: () => void;
+  /** The view shown: the maps or the Compare Table (US-01M7DVV8); the App's entry points set it. */
+  view: MapGalleryView;
+  onViewChange: (view: MapGalleryView) => void;
 }
 
 /**
@@ -197,6 +244,50 @@ const CARD_GESTURES = ['wheel', 'gesturestart', 'gesturechange', 'gestureend'] a
  * gesture event) is kept from zooming the page. Capture-phase and non-passive, so it runs before the
  * map's own listener and may prevent the default.
  */
+/** The Compare Table (US-01M7DVV8): one row per card, in card order; its Export writes every checked record. */
+const CompareTable: React.FC<{ docs: SequenceDocument[]; shown: SequenceDocument[]; folderPath: MapGalleryProps['folderPath']; onOpen: (docId: string) => void }> = ({
+  docs,
+  shown,
+  folderPath,
+  onOpen,
+}) => {
+  const rowOf = (doc: SequenceDocument) => COMPARE_TABLE_COLUMNS.map((c) => compareTableCell(doc, c.id, folderPath(doc)));
+  // The rows the table shows, in its order, then the checked records past the cap, which it does not list.
+  const exportTable = (shownRowIds: string[]): FigureTable => {
+    const byId = new Map(docs.map((d) => [d.id, d]));
+    const listed = shownRowIds.map((id) => byId.get(id)).filter((d): d is SequenceDocument => d !== undefined);
+    return { headers: COMPARE_TABLE_COLUMNS.map((c) => c.label), rows: [...listed, ...docs.slice(shown.length)].map(rowOf), caption: 'Compare Table' };
+  };
+  return (
+    <WorkbenchSmartTable tableId="map-gallery-compare-table" tableLabel="Compare Table" className="mbc-compare-table" exportTable={exportTable}>
+      <thead>
+        <tr>
+          {COMPARE_TABLE_COLUMNS.map((c) => (
+            <th key={c.id}>{c.label}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {shown.map((doc) => {
+          const cells = rowOf(doc);
+          return (
+            <tr key={doc.id} data-mbc-row-id={doc.id}>
+              <td>
+                <button type="button" className="mbc-aln-link-btn mbc-compare-table-open" aria-label={`Open ${doc.name} in viewer`} onClick={() => onOpen(doc.id)}>
+                  {cells[0]}
+                </button>
+              </td>
+              {cells.slice(1).map((text, i) => (
+                <td key={COMPARE_TABLE_COLUMNS[i + 1].id}>{text}</td>
+              ))}
+            </tr>
+          );
+        })}
+      </tbody>
+    </WorkbenchSmartTable>
+  );
+};
+
 const holdCardGesture = (event: Event) => {
   event.stopPropagation();
   const wheel = event as WheelEvent;
@@ -272,7 +363,8 @@ const CardMap: React.FC<{
 };
 
 export const MapGallery: React.FC<MapGalleryProps> = (props) => {
-  const { docs, folderPath, onOpen, onCompare, onClose } = props;
+  const { docs, folderPath, onOpen, onCompare, onClose, view, onViewChange } = props;
+  const tableView = view === 'compare-table';
   const fitNoteId = useId();
   const commonNoteId = useId();
   const shown = docs.slice(0, SPLIT_PICKER_CAP);
@@ -317,6 +409,17 @@ export const MapGallery: React.FC<MapGalleryProps> = (props) => {
     <section className={commonScale ? 'mbc-map-gallery mbc-map-gallery--common' : 'mbc-map-gallery'} aria-label="Map Gallery">
       <div className="mbc-map-gallery-head">
         <h2>Map Gallery</h2>
+        <div className="mbc-map-gallery-view" role="radiogroup" aria-label="Gallery view">
+          <label>
+            <input type="radio" name={`${fitNoteId}-view`} aria-label="Maps" checked={!tableView} onChange={() => onViewChange('maps')} />
+            Maps
+          </label>
+          <label>
+            <input type="radio" name={`${fitNoteId}-view`} aria-label="Compare Table" checked={tableView} onChange={() => onViewChange('compare-table')} />
+            Compare Table
+          </label>
+        </div>
+        {!tableView && (
         <div className="mbc-map-gallery-size" role="radiogroup" aria-label="Map size">
           <label>
             <input type="radio" name={`${fitNoteId}-size`} aria-label="Fit each map" aria-describedby={fitNoteId} checked={!commonScale} onChange={() => setCommonScale(false)} />
@@ -333,10 +436,20 @@ export const MapGallery: React.FC<MapGalleryProps> = (props) => {
             </span>
           )}
         </div>
+        )}
         <button type="button" className="mbc-zoom-btn" title="Close Map Gallery" aria-label="Close Map Gallery" onClick={onClose}>
           <X size={13} />
         </button>
       </div>
+      {tableView && (
+        <>
+          <ResultWarnings warnings={subsetNote('The gallery shows', shown.length, docs.length, 'records', 'first')} label="Map Gallery cards" />
+          {docs.length === 0 && <p className="mbc-help-where" role="status">No record is checked in the document table. Check the rows to compare them here.</p>}
+          <CompareTable docs={docs} shown={shown} folderPath={folderPath} onOpen={onOpen} />
+        </>
+      )}
+      {!tableView && (
+      <>
       <div className="mbc-map-gallery-compare">
         <button
           type="button"
@@ -419,6 +532,8 @@ export const MapGallery: React.FC<MapGalleryProps> = (props) => {
           );
         })}
       </div>
+      </>
+      )}
     </section>
   );
 };
