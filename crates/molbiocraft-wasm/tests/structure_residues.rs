@@ -214,6 +214,8 @@ fn chain_sequences_read_parents_nucleic_chains_and_no_ions() {
     let reason = parse_mmcif_structure(unreadable).unwrap_err().to_string();
     assert!(!reason.is_empty());
     assert_eq!(dispatch_bio_rpc("structure_chain_sequences", json!({ "text": unreadable })), Err(reason));
+
+    a_microheterogeneous_position_reads_as_one_letter();
 }
 
 /// The code each residue carries reaches the app through `parse_structure`.
@@ -234,4 +236,71 @@ fn parse_structure_gives_each_residue_its_code() {
             ("CA", &Value::Null, &json!(false)),
         ]
     );
+}
+
+/// One residue number modelled as two residue types under alternate ids (microheterogeneity):
+/// the full-atom model keeps both residues, but a sequence reads one letter per position, the
+/// residue (number, insertion code) of a chain, from the residue listed first, as the PDB C-alpha
+/// view keeps it. Wrong implementations, and the case that catches each:
+/// - a letter per residue rather than per position: ARG 2 alt A, LYS 2 alt B reads ARKG;
+/// - the last-listed residue kept: it reads AKG;
+/// - `modified` read from every residue rather than from the residue kept: an MSE listed second
+///   at a position appears in `modified` though its letter is not in the sequence;
+/// - a position keyed by the number alone: GLY 3 and SER 3A (an insertion) merge into one letter.
+fn alt_pdb_atom(serial: usize, alt: char, res: &str, seq: i32, ins: char, x: f64) -> String {
+    let mut line = atom("ATOM", serial, " CA", res, seq, x, "C").into_bytes();
+    line[16] = alt as u8;
+    line[26] = ins as u8;
+    String::from_utf8(line).unwrap()
+}
+
+fn microheterogeneous_pdb(second: (&str, &str)) -> String {
+    let mut out = String::from("HEADER    SYNTHETIC\n");
+    out.push_str(&alt_pdb_atom(1, ' ', "ALA", 1, ' ', 0.0));
+    out.push_str(&alt_pdb_atom(2, 'A', second.0, 2, ' ', 3.8));
+    out.push_str(&alt_pdb_atom(3, 'B', second.1, 2, ' ', 3.9));
+    out.push_str(&alt_pdb_atom(4, ' ', "GLY", 3, ' ', 7.6));
+    out.push_str("END\n");
+    out
+}
+
+fn microheterogeneous_cif(second: (&str, &str)) -> String {
+    let header = CIF_HEADER.replace("_atom_site.label_atom_id\n", "_atom_site.label_atom_id\n_atom_site.label_alt_id\n");
+    let mut out = header;
+    let rows = [("ALA", "."), (second.0, "A"), (second.1, "B"), ("GLY", ".")];
+    for (k, (res, alt)) in rows.iter().enumerate() {
+        let seq = [1, 2, 2, 3][k];
+        let group = if matches!(*res, "MSE" | "SEP") { "HETATM" } else { "ATOM" };
+        out.push_str(&format!("{group} {} C CA {alt} {res} A {seq} A {seq} {k}.000 1.000 2.000\n", k + 1));
+    }
+    out
+}
+
+/// Part of AC4 (called from [`chain_sequences_read_parents_nucleic_chains_and_no_ions`], which
+/// its Verify line runs).
+fn a_microheterogeneous_position_reads_as_one_letter() {
+    let one = |seq: &str, mods: &[(&str, i32, &str)]| {
+        json!({ "chains": [chain("A", "Protein", seq, 1, mods)], "skipped": [], "warnings": [] })
+    };
+    for (what, text) in [("PDB", microheterogeneous_pdb(("ARG", "LYS"))), ("mmCIF", microheterogeneous_cif(("ARG", "LYS")))] {
+        assert_eq!(sequences(text), one("ARG", &[]), "{what}: ARG 2 alt A, LYS 2 alt B");
+    }
+    // The sequence and the PDB C-alpha view of one file agree in length.
+    let atoms = rpc("parse_pdb_ca", json!({ "pdbText": microheterogeneous_pdb(("ARG", "LYS")) }));
+    let names: Vec<&str> = atoms.as_array().unwrap().iter().map(|a| a["resName"].as_str().unwrap()).collect();
+    assert_eq!(names, ["ALA", "ARG", "GLY"]);
+
+    // `modified` follows the residue kept.
+    for (what, text) in [("PDB", microheterogeneous_pdb(("ARG", "MSE"))), ("mmCIF", microheterogeneous_cif(("ARG", "MSE")))] {
+        assert_eq!(sequences(text), one("ARG", &[]), "{what}: ARG 2 alt A, MSE 2 alt B");
+    }
+    for (what, text) in [("PDB", microheterogeneous_pdb(("SEP", "LYS"))), ("mmCIF", microheterogeneous_cif(("SEP", "LYS")))] {
+        assert_eq!(sequences(text), one("ASG", &[("SEP", 2, "S")]), "{what}: SEP 2 alt A, LYS 2 alt B");
+    }
+
+    // An insertion code is its own position: GLY 3 and SER 3A are two letters.
+    let mut inserted = microheterogeneous_pdb(("ARG", "LYS")).replace("END\n", "");
+    inserted.push_str(&alt_pdb_atom(5, ' ', "SER", 3, 'A', 11.4));
+    inserted.push_str("END\n");
+    assert_eq!(sequences(inserted), one("ARGS", &[]), "GLY 3 and SER 3A");
 }

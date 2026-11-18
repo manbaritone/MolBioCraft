@@ -15,7 +15,7 @@
 //! reader, which reads the first model only.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 use std::fmt;
 
@@ -615,12 +615,15 @@ pub struct ChainSequence {
     /// the label chain id for mmCIF, the chain column for PDB (a blank one read as `A`).
     pub chain_id: String,
     pub molecule: PolymerMolecule,
-    /// One letter per polymer residue ([`is_polymer_residue`]), in chain order.
+    /// One letter per polymer residue position ([`is_polymer_residue`]), in chain order: a
+    /// position is a residue number and insertion code, and one modelled as two residue types
+    /// under alternate ids (microheterogeneity) is read from the residue listed first.
     pub sequence: String,
     /// The number of the chain's first polymer residue: the author number, or the label number
     /// when the file gives no author number.
     pub first_residue_number: i32,
-    /// The modified residues of the chain, each read as its parent's code.
+    /// The modified residues of the chain's sequence, each read as its parent's code; a residue
+    /// not read at its position (the second type of a microheterogeneous one) is not listed.
     pub modified: Vec<ModifiedResidue>,
 }
 
@@ -647,7 +650,9 @@ pub const NO_SEQUENCE_RESIDUES: &str = "no amino-acid or nucleotide residues";
 
 /// The sequence of every polymer chain of the first model of PDB or mmCIF text (mmCIF when it
 /// holds `_atom_site.`), read by the residue table ([`residue_code_of`]). A chain with no polymer
-/// residue ([`is_polymer_residue`]), such as an ion's or a water's, is not a chain here. A chain is
+/// residue ([`is_polymer_residue`]), such as an ion's or a water's, is not a chain here. A chain
+/// reads one letter per position (residue number and insertion code), from the residue listed
+/// first where the file models a position as two residue types. A chain is
 /// `Protein` when its amino-acid residues are at least as many as its nucleotides, otherwise `DNA`
 /// when its deoxyribonucleotides outnumber its ribonucleotides, otherwise `RNA`. A residue the
 /// table lacks, or that is a nucleotide in a protein chain (or an amino acid in a nucleic-acid
@@ -664,8 +669,16 @@ pub fn structure_chain_sequences(text: &str) -> Result<StructureChainSequences, 
     };
     let mut out = StructureChainSequences { chains: Vec::new(), skipped: Vec::new(), warnings: Vec::new() };
     for chain in structure.models.first().map_or(&[][..], |m| &m.chains[..]) {
-        let polymer: Vec<&StructureResidue> =
-            chain.residues.iter().filter(|r| is_polymer_residue(&structure, r)).collect();
+        let number = |r: &StructureResidue| r.auth_seq_id.or(r.label_seq_id).unwrap_or_default();
+        // One residue per position: a residue number modelled as two residue types under
+        // alternate ids keeps the residue listed first, as the PDB C-alpha view does.
+        let mut positions: HashSet<(i32, Option<&str>)> = HashSet::new();
+        let polymer: Vec<&StructureResidue> = chain
+            .residues
+            .iter()
+            .filter(|r| is_polymer_residue(&structure, r))
+            .filter(|r| positions.insert((number(r), r.ins_code.as_deref())))
+            .collect();
         let Some(first) = polymer.first() else { continue };
         let blank = structure.label_ids_from_author && chain.label_asym_id.is_empty();
         let chain_id = if blank { "A".to_string() } else { chain.label_asym_id.clone() };
@@ -685,7 +698,6 @@ pub fn structure_chain_sequences(text: &str) -> Result<StructureChainSequences, 
         };
         let is_protein = molecule == PolymerMolecule::Protein;
         let unknown = if is_protein { 'X' } else { 'N' };
-        let number = |r: &StructureResidue| r.auth_seq_id.or(r.label_seq_id).unwrap_or_default();
         let mut sequence = String::with_capacity(polymer.len());
         let mut modified = Vec::new();
         for (r, entry) in polymer.iter().zip(&entries) {
