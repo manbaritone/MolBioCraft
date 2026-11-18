@@ -80,7 +80,7 @@ pub enum BioEngineError {
     EmptySequence(String),
     InvalidFilename(String),
     WindowsReservedDeviceName(String),
-    PathTooLong(String),
+    PayloadTooLarge(String),
     FileLocked { path: String, attempts: u32 },
     PermissionDenied(String),
     ReadOnlyFilesystem(String),
@@ -96,7 +96,7 @@ impl fmt::Display for BioEngineError {
             BioEngineError::WindowsReservedDeviceName(msg) => {
                 write!(f, "[ERR_WINDOWS_RESERVED_NAME] {}", msg)
             }
-            BioEngineError::PathTooLong(msg) => write!(f, "[ERR_PATH_TOO_LONG] {}", msg),
+            BioEngineError::PayloadTooLarge(msg) => write!(f, "[ERR_PAYLOAD_TOO_LARGE] {}", msg),
             BioEngineError::FileLocked { path, attempts } => write!(
                 f,
                 "[ERR_FILE_LOCKED] File '{}' remained locked after {} retries",

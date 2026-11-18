@@ -7,8 +7,7 @@ mod commands;
 
 use commands::bio_commands::{
     cmd_batch_sequence_stats, cmd_genome_tracks, cmd_genome_viewport, cmd_pairwise_align,
-    cmd_platform_diagnostics, cmd_primer_thermodynamics, cmd_reverse_complement,
-    cmd_rust_bio_invoke, cmd_sequence_stats,
+    cmd_platform_diagnostics, cmd_reverse_complement, cmd_rust_bio_invoke, cmd_sequence_stats,
 };
 use commands::fs_commands::{
     cmd_native_open_files_dialog, cmd_native_save_file_dialog, cmd_read_dropped_file_bytes,
@@ -1505,7 +1504,6 @@ fn main() {
             cmd_sequence_stats,
             cmd_batch_sequence_stats,
             cmd_reverse_complement,
-            cmd_primer_thermodynamics,
             cmd_pairwise_align,
             cmd_rust_bio_invoke,
             cmd_detect_tree_programs,

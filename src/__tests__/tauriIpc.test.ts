@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   invokeBatchSequenceStatsHybrid,
   invokePairwiseAlignHybrid,
-  invokePrimerThermodynamicsHybrid,
   invokeReverseComplementHybrid,
   isTauriDesktopRuntime,
   listenTauriEvent,
@@ -20,6 +19,9 @@ import {
   toggleDesktopWindowMaximizeTauri,
   writeWorkspaceFileTauri,
 } from '../lib/tauriIpc';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { ERROR_CODES, MolBioCraftError } from '../platform/osPlatform';
 
 interface MockTauriInternals {
   __TAURI_INTERNALS__?: {
@@ -51,10 +53,6 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
     const align = await invokePairwiseAlignHybrid('ATGGTGAGCAAG', 'ATGGTGTCTAAG', false);
     expect(align.engineUsed).toBe('C++ Native / Rust FFI');
     expect(align.identityPct).toBeGreaterThan(70);
-
-    const thermo = await invokePrimerThermodynamicsHybrid('GCTAGCTAGCTAGCTAGCTA', 50, 1.5, 250);
-    expect(thermo.length).toBe(20);
-    expect(thermo.tm_salt_corrected_c).toBeGreaterThan(45);
 
     const rc = await invokeReverseComplementHybrid('GAATTC');
     expect(rc).toBe('GAATTC');
@@ -275,5 +273,52 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+
+  it('keeps the code of a Rust ERR_PAYLOAD_TOO_LARGE or ERR_IO_FAILURE reply', async () => {
+    // A reply whose tag the parser does not know turns into ERR_INVALID_FILENAME, so a size limit
+    // or a missing file would read as a bad file name. The parser's known codes are ERROR_CODES,
+    // the one list ErrorCode is derived from (US-01M6P2C1).
+    let reply = '';
+    g.__TAURI_INTERNALS__ = {
+      invoke: async () => {
+        throw reply;
+      },
+    };
+    const codeOf = async (rustReply: string): Promise<string> => {
+      reply = rustReply;
+      try {
+        await readDroppedFileBytesTauri('/Users/researcher/Desktop/trace_sample.ab1');
+      } catch (err) {
+        expect(err).toBeInstanceOf(MolBioCraftError);
+        return (err as MolBioCraftError).code;
+      }
+      throw new Error(`no error for ${rustReply}`);
+    };
+
+    // a dropped file over the limit, and one that is gone: told apart from an ungranted one
+    expect(await codeOf("[ERR_PAYLOAD_TOO_LARGE] Dropped file 'big.fasta' (67108865 bytes) exceeds 64 MiB limit")).toBe(
+      'ERR_PAYLOAD_TOO_LARGE'
+    );
+    expect(await codeOf('[ERR_IO_FAILURE] No such file or directory (os error 2)')).toBe('ERR_IO_FAILURE');
+    expect(await codeOf('[ERR_PERMISSION_DENIED] Operation not permitted (os error 1)')).toBe(
+      'ERR_PERMISSION_DENIED'
+    );
+
+    // every tag the Rust engine's errors print reaches the UI with its own code
+    const engine = readFileSync(resolve(process.cwd(), 'crates/molbiocraft-core/src/lib.rs'), 'utf8');
+    const display = engine.slice(engine.indexOf('impl fmt::Display for BioEngineError'));
+    const rustTags = [...display.slice(0, display.indexOf('\nimpl ')).matchAll(/"\[(ERR_[A-Z_]+)\]/g)].map((m) => m[1]);
+    expect(rustTags).toEqual(expect.arrayContaining(['ERR_PAYLOAD_TOO_LARGE', 'ERR_IO_FAILURE']));
+    expect(rustTags).not.toContain('ERR_PATH_TOO_LONG');
+    for (const tag of rustTags) {
+      expect(await codeOf(`[${tag}] detail`), tag).toBe(tag);
+    }
+    // and so does every code in the list, which is the whole of what the parser knows
+    for (const code of ERROR_CODES) {
+      expect(await codeOf(`[${code}] detail`), code).toBe(code);
+    }
+    // a tag outside the list is still not passed through as a code
+    expect(await codeOf('[ERR_ASYNC_JOIN] task panicked')).toBe('ERR_INVALID_FILENAME');
   });
 });

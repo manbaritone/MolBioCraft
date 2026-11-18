@@ -13,18 +13,28 @@ export type CpuArch = 'arm64' | 'x86_64' | 'unknown';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 export type ThemePreference = 'system' | 'light' | 'dark';
 
-export type ErrorCode =
-  | 'ERR_INVALID_FILENAME'
-  | 'ERR_WINDOWS_RESERVED_NAME'
-  | 'ERR_PATH_TOO_LONG'
-  | 'ERR_FILE_LOCKED'
-  | 'ERR_PERMISSION_DENIED'
-  | 'ERR_SANDBOX_VIOLATION'
-  | 'ERR_READ_ONLY_FILESYSTEM'
-  | 'ERR_TASK_ABORTED'
-  | 'ERR_CORRUPT_PACKET'
-  | 'ERR_EMPTY_SEQUENCE'
-  | 'ERR_UNSUPPORTED_INPUT';
+/**
+ * Every code a {@link MolBioCraftError} carries, and the one list both {@link ErrorCode} and the Tauri IPC
+ * reply parser read: a Rust reply tagged with a code outside it reaches the UI as
+ * ERR_INVALID_FILENAME. ERR_PAYLOAD_TOO_LARGE is a size limit, ERR_PATH_TOO_LONG a path length.
+ */
+export const ERROR_CODES = [
+  'ERR_INVALID_FILENAME',
+  'ERR_WINDOWS_RESERVED_NAME',
+  'ERR_PATH_TOO_LONG',
+  'ERR_PAYLOAD_TOO_LARGE',
+  'ERR_FILE_LOCKED',
+  'ERR_PERMISSION_DENIED',
+  'ERR_SANDBOX_VIOLATION',
+  'ERR_READ_ONLY_FILESYSTEM',
+  'ERR_IO_FAILURE',
+  'ERR_TASK_ABORTED',
+  'ERR_CORRUPT_PACKET',
+  'ERR_EMPTY_SEQUENCE',
+  'ERR_UNSUPPORTED_INPUT',
+] as const;
+
+export type ErrorCode = (typeof ERROR_CODES)[number];
 
 export class MolBioCraftError extends Error {
   public readonly code: ErrorCode;

@@ -21,6 +21,7 @@ import {
   createPlatformAdapter,
   detectCpuArch,
   detectHostOS,
+  ERROR_CODES,
   ErrorCode,
   Logger,
   MolBioCraftError,
@@ -56,19 +57,6 @@ export interface TauriBatchSequenceStatsEntry {
   id: string;
   name: string;
   stats: TauriSequenceStats;
-}
-
-export interface TauriPrimerThermodynamics {
-  sequence: string;
-  length: number;
-  gc_percent: number;
-  delta_h_kcal: number;
-  delta_s_cal: number;
-  delta_g_37_kcal: number;
-  tm_salt_corrected_c: number;
-  hairpin_dg_kcal: number;
-  self_dimer_dg_kcal: number;
-  gc_clamp_3prime: boolean;
 }
 
 export interface TauriAlignmentOutput {
@@ -128,10 +116,6 @@ export interface TauriCommandMap {
   cmd_reverse_complement: {
     args: { seq: string };
     result: string;
-  };
-  cmd_primer_thermodynamics: {
-    args: { seq: string; naMm: number; mgMm: number; primerNm: number };
-    result: TauriPrimerThermodynamics;
   };
   cmd_pairwise_align: {
     args: {
@@ -323,19 +307,8 @@ function parseRustErrorToMolBioCraftError(rawError: unknown, cmd: string): MolBi
   if (tagMatch) {
     const rawCode = tagMatch[1];
     const detail = tagMatch[2] || msg;
-    const knownCodes = new Set<ErrorCode>([
-      'ERR_INVALID_FILENAME',
-      'ERR_WINDOWS_RESERVED_NAME',
-      'ERR_PATH_TOO_LONG',
-      'ERR_FILE_LOCKED',
-      'ERR_PERMISSION_DENIED',
-      'ERR_SANDBOX_VIOLATION',
-      'ERR_READ_ONLY_FILESYSTEM',
-      'ERR_TASK_ABORTED',
-      'ERR_CORRUPT_PACKET',
-      'ERR_EMPTY_SEQUENCE',
-    ]);
-    const mappedCode: ErrorCode = knownCodes.has(rawCode as ErrorCode)
+    const knownCodes: ReadonlySet<string> = new Set(ERROR_CODES);
+    const mappedCode: ErrorCode = knownCodes.has(rawCode)
       ? (rawCode as ErrorCode)
       : 'ERR_INVALID_FILENAME';
     return new MolBioCraftError(mappedCode, `Tauri IPC "${cmd}": ${detail}`);
@@ -684,42 +657,8 @@ export async function invokeBatchSequenceStatsHybrid(
 }
 
 /**
- * Hybrid SantaLucia (1998) primer thermodynamics & IUPAC reverse-complement helpers with LRU cache.
+ * Hybrid IUPAC reverse-complement helper with LRU cache.
  */
-export async function invokePrimerThermodynamicsHybrid(
-  seq: string,
-  naMm = 50,
-  mgMm = 1.5,
-  primerNm = 250
-): Promise<TauriPrimerThermodynamics> {
-  const clean = seq.trim();
-  if (!clean) {
-    throw new MolBioCraftError('ERR_EMPTY_SEQUENCE', 'Primer sequence cannot be empty.');
-  }
-  const cacheKey = `thermo:${naMm}:${mgMm}:${primerNm}:${clean}`;
-  if (isTauriDesktopRuntime()) {
-    return invokeTauriCommand(
-      'cmd_primer_thermodynamics',
-      { seq: clean, naMm, mgMm, primerNm },
-      { cacheKey }
-    );
-  }
-  const cached = TauriIpcCache.get<TauriPrimerThermodynamics>(cacheKey);
-  if (cached) return cached;
-
-  const fallback = invokeRustBioSync<TauriPrimerThermodynamics>(
-    'calculate_primer_thermodynamics_santalucia',
-    {
-      seq: clean,
-      naMm,
-      mgMm,
-      primerNm,
-    }
-  );
-  TauriIpcCache.set(cacheKey, fallback);
-  return fallback;
-}
-
 export async function invokeReverseComplementHybrid(seq: string): Promise<string> {
   const clean = seq.trim();
   if (!clean) {

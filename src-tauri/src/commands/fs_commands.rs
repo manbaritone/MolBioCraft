@@ -254,7 +254,7 @@ pub async fn cmd_read_workspace_file(
             }
         })?;
         if meta.len() > MAX_WORKSPACE_FILE_BYTES {
-            return Err(BioEngineError::PathTooLong(format!(
+            return Err(BioEngineError::PayloadTooLarge(format!(
                 "Workspace file '{}' ({} bytes) exceeds 64 MiB limit",
                 safe_path.display(),
                 meta.len()
@@ -283,7 +283,7 @@ pub async fn cmd_write_workspace_file(
 ) -> Result<(), String> {
     state.record_call();
     if content.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
-        return Err(BioEngineError::PathTooLong(
+        return Err(BioEngineError::PayloadTooLarge(
             "Content payload exceeds 64 MiB safety limit".into(),
         )
         .to_string());
@@ -339,7 +339,7 @@ fn read_dropped_file(
         .to_string());
     }
     if meta.len() > MAX_WORKSPACE_FILE_BYTES {
-        return Err(BioEngineError::PathTooLong(format!(
+        return Err(BioEngineError::PayloadTooLarge(format!(
             "Dropped file '{}' ({} bytes) exceeds 64 MiB limit",
             safe_path.display(),
             meta.len()
@@ -465,7 +465,7 @@ async fn read_picked_files(
                 continue;
             }
             if meta.len() > MAX_WORKSPACE_FILE_BYTES {
-                return Err(BioEngineError::PathTooLong(format!(
+                return Err(BioEngineError::PayloadTooLarge(format!(
                     "Selected file '{}' ({} bytes) exceeds 64 MiB limit",
                     path.display(),
                     meta.len()
@@ -510,7 +510,7 @@ pub async fn cmd_native_save_file_dialog(
         None => content.into_bytes(),
     };
     if bytes.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
-        return Err(BioEngineError::PathTooLong(
+        return Err(BioEngineError::PayloadTooLarge(
             "Content payload exceeds 64 MiB safety limit".into(),
         )
         .to_string());
@@ -726,6 +726,29 @@ mod tests {
             assert_eq!(json["filesLeftOut"], serde_json::json!(left_out), "{name}");
         }
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A dropped file over the 64 MiB limit is refused as too large a payload, not as a long path
+    /// (US-01M6P2C1). The file is sparse, so only the size check before the read can refuse it: a
+    /// reader that skipped the check would read it whole and succeed. A missing drop reports
+    /// ERR_IO_FAILURE, never the size or a permission code.
+    #[test]
+    fn oversize_dropped_file_reports_payload_too_large() {
+        use super::{read_dropped_file, MAX_WORKSPACE_FILE_BYTES};
+        let dir = std::env::temp_dir().join(format!("mbc-oversize-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.fasta");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(MAX_WORKSPACE_FILE_BYTES + 1).unwrap();
+        drop(file);
+        let err = read_dropped_file(big.clone(), false).unwrap_err();
+        assert!(err.starts_with("[ERR_PAYLOAD_TOO_LARGE] "), "{err}");
+        assert!(err.contains("exceeds 64 MiB"), "{err}");
+
+        let missing = read_dropped_file(dir.join("gone.fasta"), false).unwrap_err();
+        assert!(missing.starts_with("[ERR_IO_FAILURE] "), "{missing}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

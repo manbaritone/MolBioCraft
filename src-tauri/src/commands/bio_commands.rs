@@ -7,7 +7,7 @@ use molbiocraft_core::{
     compute_batch_sequence_stats, compute_genome_track_overview, compute_sequence_stats,
     query_platform_diagnostics, reverse_complement, slice_genome_viewport, AlignmentOutput,
     BatchSequenceItem, BatchSequenceStatsEntry, BioEngineError, GenomeTrackOverview,
-    GenomeViewportSlice, PlatformDiagnostics, PrimerThermodynamics, SequenceFeature, SequenceStats,
+    GenomeViewportSlice, PlatformDiagnostics, SequenceFeature, SequenceStats,
 };
 use molbiocraft_wasm::dispatch_bio_rpc;
 use serde::Serialize;
@@ -32,7 +32,7 @@ fn validate_sequence_input(seq: &str, field_name: &str) -> Result<(), String> {
         );
     }
     if trimmed.len() > MAX_SEQUENCE_BYTES {
-        return Err(BioEngineError::PathTooLong(format!(
+        return Err(BioEngineError::PayloadTooLarge(format!(
             "{} length ({} bytes) exceeds 50 MiB IPC safety limit",
             field_name,
             trimmed.len()
@@ -125,36 +125,6 @@ pub async fn cmd_reverse_complement(
 }
 
 #[tauri::command]
-pub async fn cmd_primer_thermodynamics(
-    seq: String,
-    na_mm: f64,
-    mg_mm: f64,
-    primer_nm: f64,
-    state: State<'_, AppBackendState>,
-) -> Result<PrimerThermodynamics, String> {
-    state.record_call();
-    validate_sequence_input(&seq, "primer_seq")?;
-
-    if !na_mm.is_finite()
-        || na_mm <= 0.0
-        || !mg_mm.is_finite()
-        || mg_mm < 0.0
-        || !primer_nm.is_finite()
-        || primer_nm <= 0.0
-    {
-        return Err("[ERR_INVALID_FILENAME] Salt (Na+/Mg2+) and primer concentrations must be finite positive numbers".into());
-    }
-
-    tauri::async_runtime::spawn_blocking(move || {
-        molbiocraft_cloning::calculate_primer_thermodynamics_santalucia(
-            &seq, na_mm, mg_mm, primer_nm,
-        )
-    })
-    .await
-    .map_err(|e| format!("[ERR_ASYNC_JOIN] {}", e))
-}
-
-#[tauri::command]
 pub async fn cmd_pairwise_align(
     seq1: String,
     seq2: String,
@@ -240,4 +210,21 @@ pub async fn cmd_genome_tracks(
     tauri::async_runtime::spawn_blocking(move || compute_genome_track_overview(&seq, bins))
         .await
         .map_err(|e| format!("[ERR_ASYNC_JOIN] {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_sequence_input, MAX_SEQUENCE_BYTES};
+
+    /// A sequence over the 50 MiB IPC limit is refused as too large a payload, not as a long path
+    /// (US-01M6P2C1); one at exactly the limit is accepted.
+    #[test]
+    fn oversize_sequence_reports_payload_too_large() {
+        let at_limit = "A".repeat(MAX_SEQUENCE_BYTES);
+        assert_eq!(validate_sequence_input(&at_limit, "seq"), Ok(()));
+        let over = "A".repeat(MAX_SEQUENCE_BYTES + 1);
+        let err = validate_sequence_input(&over, "seq").unwrap_err();
+        assert!(err.starts_with("[ERR_PAYLOAD_TOO_LARGE] "), "{err}");
+        assert!(err.contains("exceeds 50 MiB"), "{err}");
+    }
 }
