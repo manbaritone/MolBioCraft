@@ -5,6 +5,7 @@ use molbiocraft_core::{
     clean_alpha_sequence, format_thousands, reverse_complement_iupac, HistoryTreeNode,
     MoleculeType, PrimerRecord, PrimerThermodynamics, SequenceDocument, SequenceFeature, Topology,
 };
+use molbiocraft_core::motif_search::{nucleotide_window_certainty, MotifCertainty};
 use molbiocraft_protein::translate_codon_standard;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -642,7 +643,15 @@ pub fn design_pcr_primers_with_slack(
 }
 
 /// Screen a library of saved primers against a target sequence on both strands,
-/// requiring an exact 5-nt 3' pentamer clamp while tolerating up to `max_mismatches` in the 5' body.
+/// requiring every letter of the 5-nt 3' pentamer clamp to match while tolerating up to
+/// `max_mismatches` in the 5' body.
+///
+/// A primer letter matches by its IUPAC set (US-01M6VF1T), by D0181's rule (motif_search.rs): the
+/// primer is read against the strand it is identical to (the top strand, or its reverse complement
+/// for a reverse hit), and a template letter under it matches only when its set lies inside the
+/// primer letter's. Inosine (I) pairs with C, A and T on the strand it anneals to, so on its own
+/// strand it reads as their complements {G, T, A} (IUPAC D). Every letter of the 3' pentamer must
+/// match so; any other letter that does not is a mismatch.
 pub fn test_saved_primers_on_sequence(
     raw_seq: &str,
     saved_primers: &[PrimerRecord],
@@ -669,18 +678,21 @@ pub fn test_saved_primers_on_sequence(
         if l < 12 || l > seq_len {
             continue;
         }
-        let oligo_b = oligo.as_bytes();
+        // Inosine is read as D, its set {G, T, A} on the primer's own strand.
+        let oligo_sets: Vec<u8> = oligo.bytes().map(|b| if b == b'I' { b'D' } else { b }).collect();
+        let oligo_b = oligo_sets.as_slice();
         let clamp5 = &oligo_b[l - 5..];
+        let matches = |site: &[u8], window: &[u8]| nucleotide_window_certainty(site, window) == Some(MotifCertainty::Definite);
         let metrics = calculate_primer_metrics(&oligo, 50.0, 1.5, 250.0);
 
         for (target_b, strand) in [(s_bytes, 1i8), (rc_bytes, -1i8)] {
             for start_idx in 0..=(seq_len - l) {
-                if &target_b[start_idx + l - 5..start_idx + l] != clamp5 {
+                if !matches(clamp5, &target_b[start_idx + l - 5..start_idx + l]) {
                     continue;
                 }
                 let mut mm = 0usize;
                 for k in 0..(l - 5) {
-                    if target_b[start_idx + k] != oligo_b[k] {
+                    if !matches(&oligo_b[k..k + 1], &target_b[start_idx + k..start_idx + k + 1]) {
                         mm += 1;
                         if mm > max_mismatches {
                             break;

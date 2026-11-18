@@ -9,7 +9,7 @@
 
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { invokeRustBioNativeAsync, invokeRustBioSync } from '../lib/rustBioEngine';
-import { sequenceRevision } from './restrictionDisplay';
+import { enzymeKey, sequenceRevision } from './restrictionDisplay';
 import type {
   AnnealedOligoResult,
   BlastHitRecord,
@@ -300,6 +300,12 @@ export interface EnzymeSiteCount {
   enzymeId: string;
   sites: number;
   methylationBlocked: number;
+  /**
+   * The enzyme's complete count of possible sites (US-01M6VF1T): windows that match its site only
+   * where the sequence holds N or another ambiguity code. A possible site is not a cut: it is not
+   * in `sites`, and an enzyme with one is no noncutter.
+   */
+  possibleSites: number;
 }
 
 /**
@@ -564,9 +570,11 @@ export function alignPairwiseTypeScript(
   gapExtend = -1,
   moleculeType?: 'DNA' | 'RNA' | 'Protein',
   proteinMatrix: 'blosum62' | 'pam250' = 'blosum62'
-): PairwiseAlignmentResult {
+): PairwiseAlignmentResult & { warnings?: string[] } {
   // Both ops take `mode`; `matrix` and `maxLen` only apply to the Gotoh (typed) path.
-  return invokeRustBioSync<PairwiseAlignmentResult>(moleculeType ? 'align_pairwise_gotoh' : 'align_pairwise', {
+  // The typed path's reply also carries `warnings` (D0005): a name replaced by its default, and how
+  // many columns pair N or another ambiguity code, which identity does not count (US-01M6VF1T).
+  return invokeRustBioSync<PairwiseAlignmentResult & { warnings?: string[] }>(moleculeType ? 'align_pairwise_gotoh' : 'align_pairwise', {
     seq1: rawSeq1,
     seq2: rawSeq2,
     mode: local ? 'local' : 'global',
@@ -984,6 +992,24 @@ export function findNonCuttingEnzymes(
     topology,
     customEnzymes: enzymes === REBASE_ENZYMES ? null : enzymes,
   });
+}
+
+/**
+ * The enzymes of `enzymes`, in their order, that `findNonCuttingEnzymes` leaves out because they
+ * may cut (US-01M6VF1T): no site on the whole molecule, but a possible one where the sequence holds
+ * N or another ambiguity code, as the engine's scan counts them. The whole list is scanned, with no
+ * core cut at any length, as for the noncutters. A sequence of A, C, G, T and U alone has no
+ * possible site, so it is not scanned again.
+ */
+export function findPossiblyCuttingEnzymes(
+  rawSeq: string,
+  topology: 'circular' | 'linear' = 'circular',
+  enzymes: RestrictionEnzyme[] = REBASE_ENZYMES
+): RestrictionEnzyme[] {
+  if (!/[^ACGTU]/i.test(rawSeq.replace(/[^A-Za-z]/g, ''))) return [];
+  const scan = invokeRustBioSync<RestrictionSiteScan>('scan_restriction_sites', { seq: rawSeq, topology, customEnzymes: enzymes });
+  const possible = new Set(scan.siteCounts.filter((c) => c.sites === 0 && c.possibleSites > 0).map((c) => c.enzymeId));
+  return enzymes.filter((e) => possible.has(enzymeKey(e)));
 }
 
 /**

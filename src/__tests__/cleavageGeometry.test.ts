@@ -663,7 +663,10 @@ describe('US-01M7DVY6 AC6 a custom site is drawn as the engine cuts it, negative
   function customSite(seq: string, topology: 'circular' | 'linear', enzyme: RestrictionEnzyme): RestrictionCutSite {
     const scan = scanRestrictionSites(seq, topology, [enzyme]);
     // The definition is sent with no id, so the engine reads its name as its id (US-01M7DV1V AC3).
-    expect(scan.siteCounts).toEqual([{ enzyme: enzyme.name, enzymeId: enzyme.name, sites: 1, methylationBlocked: 0 }]);
+    // Its possible sites are always sent (US-01M6VF1T, D0197): 0 here, since every record this
+    // reads holds only A, C, G and T, so no window holds an ambiguity code.
+    expect(seq, 'the record holds no ambiguity code').toMatch(/^[ACGT]+$/);
+    expect(scan.siteCounts).toEqual([{ enzyme: enzyme.name, enzymeId: enzyme.name, sites: 1, methylationBlocked: 0, possibleSites: 0 }]);
     expect(scan.sites).toHaveLength(1);
     return scan.sites[0];
   }

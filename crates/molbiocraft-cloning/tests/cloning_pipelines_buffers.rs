@@ -1395,8 +1395,20 @@ fn reader_visible_snapshot(report: &BioPipelineExecutionReport) -> String {
 /// Wrong implementations this kills: a seed threshold that moves a PASS to a WARN (`off <= 1` on
 /// this library moves none, but `off >= 1` or a rank threshold change moves many), and any edit to
 /// the step's numbers or wording smuggled in beside the one sentence this bug rewrites.
+///
+/// US-01M6VF1T (D0197) moved `cloning-expression-qc`, and only it, from 42f64ead527cdced: its
+/// restriction step reads the noncutters and the unique cutters, which now follow D0181's subset
+/// rule (a sequence letter whose base set lies inside the site letter's is a definite match; one
+/// whose set only meets it makes a possible site, and an enzyme with a possible site is no
+/// noncutter). Four sample records hold ambiguity codes, and on each the noncutters lose the
+/// enzymes that may cut there: 16S_rRNA_27F_Universal (M) 168 -> 162, without BclI, NlaIII,
+/// CviAII, FatI, ScrFI and BstNI; 16S_rRNA_1492R_Universal (Y) 174 -> 173, without BstEII-HF; COXII
+/// CDS and COXII (M, R, W, Y) 141 -> 137 each, without BstZ17I-HF, MslI, StuI and HpyCH4V. On the
+/// two COXII records MslI (CAYNNNNRTG) also gains a definite site, a sequence code lying inside its
+/// Y, N or R, so it becomes a unique cutter there. No other record holds a letter other than A, C, G
+/// or T, so no other number moves.
 const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
-    ("cloning-expression-qc", "42f64ead527cdced"),
+    ("cloning-expression-qc", "4d07376a9b25b0c7"),
     ("crispr-hdr-knockout", "48ee426c46530b6e"),
     ("multihost-protein-mrna", "b86e224078c60f5f"),
     ("viral-twist-onboarding", "b355cabe03450c44"),

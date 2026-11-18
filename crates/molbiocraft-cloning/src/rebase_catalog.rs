@@ -3,9 +3,10 @@
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use molbiocraft_core::{
-    clean_alpha_sequence, format_thousands, iupac_base_matches, reverse_complement_iupac,
+    clean_alpha_sequence, format_thousands, reverse_complement_iupac,
     RestrictionCutSite, RestrictionEnzyme, SequenceDocument, Topology,
 };
+use molbiocraft_core::motif_search::{nucleotide_window_certainty, MotifCertainty};
 use molbiocraft_core::types::{EnzymeSource, CUSTOM_ENZYME_ID_PREFIX};
 use molbiocraft_protein::translate_codon_standard;
 use rustc_hash::FxHashSet;
@@ -383,6 +384,13 @@ pub struct EnzymeSiteCount {
     /// Of `sites`, every one a dam+ dcm+ host's methylation blocks, by the rule each kept site's
     /// `methylation_blocked` follows; the others are the enzyme's cuts (BG-01M6S1K2).
     pub methylation_blocked: usize,
+    /// The enzyme's complete number of possible sites over the scanned range (US-01M6VF1T): windows
+    /// that match its recognition sequence only where the sequence holds N or another ambiguity
+    /// code whose bases the site's letter does not all allow (D0181's rule, motif_search.rs). A
+    /// possible site is not a cut: it is not in `sites`, not drawn and not digested, and an enzyme
+    /// with one is no noncutter.
+    #[serde(default)]
+    pub possible_sites: usize,
 }
 
 /// A restriction scan: every scanned enzyme's complete site count, the cut sites it kept, and
@@ -408,7 +416,8 @@ pub struct RestrictionSiteScan {
     pub stopped_early: bool,
     /// One plain sentence per position limit that left sites out (D0005), then one per enzyme not
     /// scanned because its recognition sequence holds a letter the scan cannot read, naming it and
-    /// the letter (US-01M7DVY6).
+    /// the letter (US-01M7DVY6), then one summing up the enzymes with possible sites
+    /// (US-01M6VF1T).
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -425,9 +434,10 @@ fn is_exact_acgt(motif: &str) -> bool {
             .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T'))
 }
 
-/// The sequence bases an IUPAC recognition-site base matches, as `iupac_base_matches` reads them:
-/// an N also matches an N in the sequence. Empty for a code it does not know: a site holding one is
-/// not scanned (`unreadable_letters`).
+/// The definite bases an IUPAC recognition-site base allows, which the Aho-Corasick pass spells a
+/// degenerate site into. A sequence letter that is not A, C, G or T is read by D0181's rule instead
+/// (`count_and_keep_sites`). Empty for a code it does not know: a site holding one is not scanned
+/// (`unreadable_letters`).
 fn iupac_options(pattern_base: u8) -> &'static [u8] {
     match pattern_base {
         b'A' => b"A",
@@ -444,7 +454,7 @@ fn iupac_options(pattern_base: u8) -> &'static [u8] {
         b'D' => b"AGT",
         b'H' => b"ACT",
         b'V' => b"ACG",
-        b'N' => b"ACGTN",
+        b'N' => b"ACGT",
         _ => b"",
     }
 }
@@ -475,13 +485,10 @@ fn unreadable_motif_warning(enz: &RestrictionEnzyme, letters: &[char]) -> String
     )
 }
 
-/// Every exact motif a degenerate site matches, when there are at most `MAX_SPELLED_OUT_MOTIFS`.
-/// An N in the site is spelled out as an N too only when the sequence holds one (`sequence_has_n`).
-fn spell_out_motif(motif: &[u8], sequence_has_n: bool) -> Option<Vec<Vec<u8>>> {
-    let options = |b: u8| {
-        let o = iupac_options(b);
-        if b == b'N' && !sequence_has_n { &o[..4] } else { o }
-    };
+/// Every exact A/C/G/T motif a degenerate site matches, when there are at most
+/// `MAX_SPELLED_OUT_MOTIFS`.
+fn spell_out_motif(motif: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let options = iupac_options;
     let mut total = 1usize;
     for &b in motif {
         total = total.saturating_mul(options(b).len());
@@ -677,6 +684,8 @@ struct SiteTally {
     counts: Vec<usize>,
     /// Of those, every one Dam or Dcm methylation blocks.
     blocked: Vec<usize>,
+    /// Every possible site (D0181's rule) that would cut the molecule.
+    possible: Vec<usize>,
     /// The first `keep` sites by position, as (start, strand).
     kept: Vec<Vec<(usize, i8)>>,
     /// The letters each enzyme's recognition sequence holds that the scan cannot read; an enzyme
@@ -686,9 +695,10 @@ struct SiteTally {
 
 /// Every site of every enzyme in `search` (the first `seq_len` bases are the molecule): each
 /// enzyme's complete count of sites that cut the molecule and of those methylation blocks, and its
-/// first `keep` sites by position. Exact and slightly degenerate sites are found in one
-/// Aho-Corasick pass over the sequence; a highly degenerate site is matched base by base, strand
-/// by strand.
+/// first `keep` sites by position, and its count of possible sites. Exact and slightly degenerate
+/// sites are found over A/C/G/T in one Aho-Corasick pass; every window holding another letter is
+/// then read by D0181's rule (`nucleotide_window_certainty`), definite or possible. A highly
+/// degenerate site is read by that rule window by window, strand by strand.
 fn count_and_keep_sites(
     search: &[u8],
     seq_len: usize,
@@ -698,17 +708,20 @@ fn count_and_keep_sites(
 ) -> SiteTally {
     let mut counts = vec![0usize; enzymes.len()];
     let mut blocked = vec![0usize; enzymes.len()];
+    let mut possible = vec![0usize; enzymes.len()];
     let mut kept: Vec<Vec<(usize, i8)>> = vec![Vec::new(); enzymes.len()];
     let unreadable: Vec<Vec<char>> = enzymes.iter().map(|e| unreadable_letters(&e.recognition_seq)).collect();
     if seq_len == 0 {
-        return SiteTally { counts, blocked, kept, unreadable };
+        return SiteTally { counts, blocked, possible, kept, unreadable };
     }
     let sensitivity: Vec<MethylationSensitivity> = enzymes.iter().map(MethylationSensitivity::of).collect();
-    let sequence_has_n = search[..seq_len].contains(&b'N');
 
     let mut ac_patterns: Vec<Vec<u8>> = Vec::with_capacity(enzymes.len() * 2);
     let mut ac_meta: Vec<(usize, i8, usize)> = Vec::with_capacity(enzymes.len() * 2);
     let mut window_patterns: Vec<(usize, Vec<u8>, i8)> = Vec::new();
+    // The motifs the Aho-Corasick pass reads, for the windows it cannot: those holding a letter
+    // other than A, C, G or T.
+    let mut spelled_motifs: Vec<(usize, Vec<u8>, i8)> = Vec::new();
     for (e_idx, e) in enzymes.iter().enumerate() {
         // U is read as T here, once, so the palindrome rule below reads the motif the matcher
         // reads: GAAUUC is its own reverse complement and is scanned on one strand (BG-01M7GN42).
@@ -725,13 +738,14 @@ fn count_and_keep_sites(
         };
         for (motif, strand) in strands {
             let exact = is_exact_acgt(std::str::from_utf8(&motif).unwrap_or(""));
-            let spelled = if exact { Some(vec![motif.clone()]) } else { spell_out_motif(&motif, sequence_has_n) };
+            let spelled = if exact { Some(vec![motif.clone()]) } else { spell_out_motif(&motif) };
             match spelled {
                 Some(list) => {
                     for p in list {
                         ac_meta.push((e_idx, strand, p.len()));
                         ac_patterns.push(p);
                     }
+                    spelled_motifs.push((e_idx, motif, strand));
                 }
                 None => window_patterns.push((e_idx, motif, strand)),
             }
@@ -770,17 +784,66 @@ fn count_and_keep_sites(
         let limit = seq_len.min(search.len() - m_len + 1);
         let mut kept_here = 0usize;
         for i in 0..limit {
-            if (0..m_len).all(|k| iupac_base_matches(search[i + k], pat[k]))
-                && site_cuts_molecule(&enzymes[*e_idx], i, m_len, *strand, seq_len, topology)
-            {
-                counts[*e_idx] += 1;
-                if sensitivity[*e_idx].blocks(i, m_len, search, seq_len, topology) {
-                    blocked[*e_idx] += 1;
+            let Some(certainty) = nucleotide_window_certainty(pat, &search[i..i + m_len]) else {
+                continue;
+            };
+            if !site_cuts_molecule(&enzymes[*e_idx], i, m_len, *strand, seq_len, topology) {
+                continue;
+            }
+            if certainty == MotifCertainty::Possible {
+                possible[*e_idx] += 1;
+                continue;
+            }
+            counts[*e_idx] += 1;
+            if sensitivity[*e_idx].blocks(i, m_len, search, seq_len, topology) {
+                blocked[*e_idx] += 1;
+            }
+            if kept_here < keep {
+                kept[*e_idx].push((i, *strand));
+                kept_here += 1;
+            }
+        }
+    }
+
+    // The windows the Aho-Corasick pass cannot read: every one holding a letter other than A, C, G
+    // or T, read by D0181's rule. A definite one (an R under a site's N) is a site like any other;
+    // a possible one (an N under a site's A) is only counted.
+    let ambiguous: Vec<usize> = (0..search.len()).filter(|&i| !matches!(search[i], b'A' | b'C' | b'G' | b'T')).collect();
+    if !ambiguous.is_empty() {
+        for (e_idx, motif, strand) in &spelled_motifs {
+            let m_len = motif.len();
+            if m_len == 0 || search.len() < m_len {
+                continue;
+            }
+            let limit = seq_len.min(search.len() - m_len + 1);
+            let mut kept_here = 0usize;
+            // Each window start once: the starts of the windows covering each ambiguous position,
+            // in order, those already read skipped.
+            let mut next = 0usize;
+            for &p in &ambiguous {
+                let from = (p + 1).saturating_sub(m_len).max(next);
+                let to = (p + 1).min(limit);
+                for i in from..to {
+                    let Some(certainty) = nucleotide_window_certainty(motif, &search[i..i + m_len]) else {
+                        continue;
+                    };
+                    if !site_cuts_molecule(&enzymes[*e_idx], i, m_len, *strand, seq_len, topology) {
+                        continue;
+                    }
+                    if certainty == MotifCertainty::Possible {
+                        possible[*e_idx] += 1;
+                        continue;
+                    }
+                    counts[*e_idx] += 1;
+                    if sensitivity[*e_idx].blocks(i, m_len, search, seq_len, topology) {
+                        blocked[*e_idx] += 1;
+                    }
+                    if kept_here < keep {
+                        kept[*e_idx].push((i, *strand));
+                        kept_here += 1;
+                    }
                 }
-                if kept_here < keep {
-                    kept[*e_idx].push((i, *strand));
-                    kept_here += 1;
-                }
+                next = next.max(to);
             }
         }
     }
@@ -789,7 +852,24 @@ fn count_and_keep_sites(
         k.sort_unstable();
         k.truncate(keep);
     }
-    SiteTally { counts, blocked, kept, unreadable }
+    SiteTally { counts, blocked, possible, kept, unreadable }
+}
+
+/// The D0005 sentence summing up the enzymes with possible sites (US-01M6VF1T), or `None` when
+/// no enzyme has one.
+fn possible_sites_warning(possible: &[usize]) -> Option<String> {
+    let enzymes = possible.iter().filter(|&&n| n > 0).count();
+    if enzymes == 0 {
+        return None;
+    }
+    let sites: usize = possible.iter().sum();
+    Some(format!(
+        "{} {} may cut at {} {} where the sequence holds N or another ambiguity code; these are counted as possible sites, not cuts.",
+        format_thousands(enzymes),
+        if enzymes == 1 { "enzyme" } else { "enzymes" },
+        format_thousands(sites),
+        if sites == 1 { "site" } else { "sites" },
+    ))
 }
 
 /// The D0005 sentence for a scan whose position limit left sites of `capped` out.
@@ -851,7 +931,7 @@ pub fn scan_restriction_sites(
         RestrictionPositionLimit::All => usize::MAX,
         RestrictionPositionLimit::PerEnzyme(n) | RestrictionPositionLimit::Total(n) => n,
     };
-    let SiteTally { counts, blocked, kept, unreadable } = count_and_keep_sites(&search, seq_len, enzymes, topology, keep);
+    let SiteTally { counts, blocked, possible, kept, unreadable } = count_and_keep_sites(&search, seq_len, enzymes, topology, keep);
 
     let mut picks: Vec<(usize, i8, usize)> = kept
         .iter()
@@ -888,6 +968,7 @@ pub fn scan_restriction_sites(
             .filter(|(_, letters)| !letters.is_empty())
             .map(|(e, letters)| unreadable_motif_warning(e, letters)),
     );
+    warnings.extend(possible_sites_warning(&possible));
     RestrictionSiteScan {
         sites,
         site_counts: enzymes
@@ -899,6 +980,7 @@ pub fn scan_restriction_sites(
                 enzyme_id: e.id.clone(),
                 sites: counts[i],
                 methylation_blocked: blocked[i],
+                possible_sites: possible[i],
             })
             .collect(),
         stopped_early: !capped.is_empty(),
@@ -946,7 +1028,8 @@ pub fn find_non_cutting_enzymes(
 /// the whole molecule and the whole catalog (or `custom_enzymes`). A linear molecule has no
 /// end-to-start junction, so a site that only exists across that junction does not make the
 /// enzyme a cutter (previously always scanned as circular). An enzyme whose recognition sequence
-/// holds a letter the scan cannot read was not scanned, so it is not listed (US-01M7DVY6).
+/// holds a letter the scan cannot read was not scanned, so it is not listed (US-01M7DVY6), nor is
+/// one with a possible site where the sequence holds N or another ambiguity code (US-01M6VF1T).
 pub fn find_non_cutting_enzymes_for_topology(
     raw_seq: &str,
     topology: Topology,
@@ -961,12 +1044,12 @@ pub fn find_non_cutting_enzymes_for_topology(
         }
     };
     let (search, seq_len) = scan_search_space(raw_seq, topology);
-    let SiteTally { counts, unreadable, .. } = count_and_keep_sites(&search, seq_len, catalog, topology, 0);
+    let SiteTally { counts, possible, unreadable, .. } = count_and_keep_sites(&search, seq_len, catalog, topology, 0);
     catalog
         .iter()
-        .zip(counts.iter().zip(&unreadable))
-        .filter(|(_, (&n, letters))| n == 0 && letters.is_empty())
-        .map(|(e, _)| e.clone())
+        .enumerate()
+        .filter(|&(i, _)| counts[i] == 0 && possible[i] == 0 && unreadable[i].is_empty())
+        .map(|(_, e)| e.clone())
         .collect()
 }
 

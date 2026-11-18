@@ -698,10 +698,20 @@ export function runTestSavedPrimers(targets: SequenceDocument[], primerDocs: Seq
   const maxMm = Math.max(0, Math.min(5, num(v.maxMismatches ?? 1)));
   const t = now();
   let total = 0;
+  // Sites from primers holding a letter other than A, C, G, T or U, which the engine matched by
+  // their IUPAC sets (US-01M6VF1T), and the primers they came from.
+  let fromDegenerate = 0;
+  const degeneratePrimers = new Set<string>();
   const updated: SequenceDocument[] = [];
   for (const d of targets) {
     if (d.moleculeType === 'Protein' || !d.sequence) continue;
     const hits = testSavedPrimersOnSequence(d.sequence, primers, maxMm);
+    for (const h of hits) {
+      if (/[^ACGTU]/i.test((h.primer.annealSequence || h.primer.sequence).replace(/[^A-Za-z]/g, ''))) {
+        fromDegenerate += 1;
+        degeneratePrimers.add(h.primer.id);
+      }
+    }
     const placed: PrimerRecord[] = hits.map((h, i) => ({
       ...h.primer,
       id: uid(`sp${i}`),
@@ -722,7 +732,10 @@ export function runTestSavedPrimers(targets: SequenceDocument[], primerDocs: Seq
       history: [...d.history, { id: uid('hist'), timestamp: t, operation: 'Test with Saved Primers', description: `${placed.length} binding site${placed.length === 1 ? '' : 's'} from ${primers.length} primers (≤ ${maxMm} mismatches)`, parentIds: [d.id], lengthBp: d.sequence.length, topology: d.topology }],
     });
   }
-  return { created: [], updated, summary: `${total} primer binding site${total === 1 ? '' : 's'} on ${updated.length} sequence${updated.length === 1 ? '' : 's'} (${primers.length} primers, ≤ ${maxMm} mismatches)` };
+  const degenerate = fromDegenerate
+    ? `; ${fromDegenerate} from ${degeneratePrimers.size === 1 ? 'a degenerate primer' : 'degenerate primers'}, matched by IUPAC codes`
+    : '';
+  return { created: [], updated, summary: `${total} primer binding site${total === 1 ? '' : 's'} on ${updated.length} sequence${updated.length === 1 ? '' : 's'} (${primers.length} primers, ≤ ${maxMm} mismatches${degenerate})` };
 }
 
 // ───────────────────────────── read processing ─────────────────────────────

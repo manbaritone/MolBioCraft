@@ -396,6 +396,50 @@ pub fn iupac_base_matches(seq_base: u8, pattern_base: u8) -> bool {
     }
 }
 
+/// How two aligned nucleotide letters relate (US-01M6VF1T): the one rule the pairwise and the
+/// progressive aligners score, count and mark a nucleotide column by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NucleotidePairClass {
+    /// The same definite base: A, C, G or T, U read as T.
+    Identity,
+    /// A definite base against a two-base code that holds it (A/R, A/W, A/M, C/S, C/Y, C/M, G/R,
+    /// G/S, G/K, T/W, T/Y, T/K): exactly the off-diagonal pairs NCBI NUC.4.4 (EDNAFULL) scores +1.
+    Overlap,
+    /// Everything else: two different definite bases, N against any letter, the same ambiguity
+    /// code twice (N/N, R/R), a base against a three-base code (A/V), and a letter outside the
+    /// IUPAC alphabet. NUC.4.4 scores none of these above 0.
+    Mismatch,
+}
+
+/// The [`NucleotidePairClass`] of two aligned letters, case ignored, U read as T.
+pub fn nucleotide_pair_class(a: u8, b: u8) -> NucleotidePairClass {
+    fn definite(b: u8) -> Option<u8> {
+        match b.to_ascii_uppercase() {
+            b'U' => Some(b'T'),
+            c @ (b'A' | b'C' | b'G' | b'T') => Some(c),
+            _ => None,
+        }
+    }
+    fn two_base_code_holds(code: u8, base: u8) -> bool {
+        let held: &[u8] = match code.to_ascii_uppercase() {
+            b'R' => b"AG",
+            b'Y' => b"CT",
+            b'S' => b"CG",
+            b'W' => b"AT",
+            b'K' => b"GT",
+            b'M' => b"AC",
+            _ => b"",
+        };
+        held.contains(&base)
+    }
+    match (definite(a), definite(b)) {
+        (Some(x), Some(y)) if x == y => NucleotidePairClass::Identity,
+        (Some(x), None) if two_base_code_holds(b, x) => NucleotidePairClass::Overlap,
+        (None, Some(y)) if two_base_code_holds(a, y) => NucleotidePairClass::Overlap,
+        _ => NucleotidePairClass::Mismatch,
+    }
+}
+
 /// Biopython's average dNMP masses in Da (`IUPACData.unambiguous_dna_weights`: A, C, G, T) and the
 /// water `molecular_weight` takes off for each bond (its `monoisotopic=False` value).
 const DNMP_DA: [f64; 4] = [331.2218, 307.1971, 347.2212, 322.2085];

@@ -8,8 +8,10 @@
 //! mode) stands for no base and matches nothing. A window is definite when every position is,
 //! possible when every position matches and at least one only possibly.
 //!
-//! This is separate from `iupac_base_matches` (iupac.rs), which restriction scanning reads and
-//! which treats a target N under a query N as a match without telling definite from possible.
+//! The rule is shared through [`nucleotide_window_certainty`] (US-01M6VF1T): the restriction scan
+//! reads a recognition site against the sequence by it, and the saved-primer test a primer against
+//! its template. `iupac_base_matches` (iupac.rs) is a separate, older test that does not tell
+//! definite from possible.
 
 use crate::format_thousands;
 use serde::{Deserialize, Serialize};
@@ -143,9 +145,15 @@ fn complement_set(set: u32) -> u32 {
 /// A window's certainty against `pattern` (one set per query letter), or `None` when a position
 /// does not match. `base(i)` is the set of the window's i-th target letter.
 fn classify(pattern: &[u32], base: impl Fn(usize) -> u32) -> Option<MotifCertainty> {
+    classify_by(pattern.len(), |i| pattern[i], base)
+}
+
+/// [`classify`] with the query's sets read one by one: `query(i)` and `base(i)` are the sets of
+/// the i-th query and target letters of a window `len` letters long.
+fn classify_by(len: usize, query: impl Fn(usize) -> u32, base: impl Fn(usize) -> u32) -> Option<MotifCertainty> {
     let mut certainty = MotifCertainty::Definite;
-    for (i, &q) in pattern.iter().enumerate() {
-        let t = base(i);
+    for i in 0..len {
+        let (q, t) = (query(i), base(i));
         // A letter outside the alphabet is the empty set, which is a subset of every set; it
         // stands for no base, so it matches nothing.
         if t & q == 0 {
@@ -156,6 +164,19 @@ fn classify(pattern: &[u32], base: impl Fn(usize) -> u32) -> Option<MotifCertain
         }
     }
     Some(certainty)
+}
+
+/// The certainty with which a nucleotide `window` of a sequence matches `site`, letter for letter,
+/// by the rule of this module (D0181): definite when every window letter's set is a subset of the
+/// site letter's set, possible when every pair of sets meets and at least one window letter's set
+/// is not inside its site letter's, and `None` when a pair of sets does not meet (a letter outside
+/// the nucleotide alphabet, on either side, meets nothing) or the two lengths differ. Case is
+/// ignored and U is read as T.
+pub fn nucleotide_window_certainty(site: &[u8], window: &[u8]) -> Option<MotifCertainty> {
+    if site.len() != window.len() {
+        return None;
+    }
+    classify_by(site.len(), |i| nucleotide_set(site[i]), |i| nucleotide_set(window[i]))
 }
 
 /// Finds every window of `target` that matches `query` by IUPAC rules, as `MotifSearchOptions`

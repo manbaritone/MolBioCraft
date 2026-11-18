@@ -611,11 +611,14 @@ describe('Enzyme database: a definition keeps its id through the engine (US-01M7
       expect(builtIn[0].position).toBe(ofId(TWIN_ID)[0].position);
       expect(new Set(scan.sites.map((s) => s.id)).size).toBe(scan.sites.length);
 
-      // Each count entry carries the enzyme's id beside its name.
+      // Each count entry carries the enzyme's id beside its name, and its possible sites
+      // (US-01M6VF1T, D0197): always sent, here 0, since the record holds only A, C, G and T, so no
+      // window holds an ambiguity code.
+      expect(SEQ, 'the record holds no ambiguity code').toMatch(/^[ACGT]+$/);
       expect(scan.siteCounts).toEqual([
-        { enzyme: 'EcoRI', enzymeId: 'EcoRI', sites: 1, methylationBlocked: 0 },
-        { enzyme: 'MyBsa', enzymeId: MINE_ID, sites: 2, methylationBlocked: 0 },
-        { enzyme: 'EcoRI', enzymeId: TWIN_ID, sites: 1, methylationBlocked: 0 },
+        { enzyme: 'EcoRI', enzymeId: 'EcoRI', sites: 1, methylationBlocked: 0, possibleSites: 0 },
+        { enzyme: 'MyBsa', enzymeId: MINE_ID, sites: 2, methylationBlocked: 0, possibleSites: 0 },
+        { enzyme: 'EcoRI', enzymeId: TWIN_ID, sites: 1, methylationBlocked: 0, possibleSites: 0 },
       ]);
     });
   }

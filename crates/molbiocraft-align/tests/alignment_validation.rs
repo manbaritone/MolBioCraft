@@ -305,22 +305,34 @@ fn four_pairwise_modes_match_independent_affine_score_oracle() {
 
 #[test]
 fn ambiguous_nucleotide_scoring_is_symmetric_and_not_protein_scoring() {
-    // Biopython 1.88 PairwiseAligner scores (mode="global", then mode="local") with a substitution
-    // matrix over ACGTRYSWKMBDHVN built from Bio.Data.IUPACData.ambiguous_dna_values: 2 for the same
-    // letter, 1 (half the match score) for two letters whose base sets overlap, -1 otherwise;
-    // open_gap_score -6, extend_gap_score -1 (rust-bio open -5, extend -1). The last three pairs are
-    // seeded random IUPAC strings against seeded random ACGT strings. Scoring this IUPAC input with
-    // BLOSUM62, or dropping the half-match credit to a mismatch, fails these pins.
+    // Scores under the NUC.4.4 (EDNAFULL) sign class that US-01M6VF1T makes the one nucleotide pair
+    // rule (D0197 re-pins this test from the superseded base-set-overlap rule): the same definite
+    // base scores the match score (2), a definite base against a two-base code that holds it (A/R,
+    // A/W, A/M, C/S, C/Y, C/M, G/R, G/S, G/K, T/W, T/Y, T/K: NUC.4.4's +1 off-diagonal entries)
+    // scores the match score halved (1), and every other pair scores the mismatch (-1): N against
+    // anything (NUC.4.4 -2 or -1), the same ambiguity code twice (R/R -1), a base against a
+    // three-base code (A/V -1), two different bases. A gap of k columns costs -5 - k. Every expected
+    // value is the optimum of an independent Gotoh dynamic programme over that column rule, global
+    // and local, both ways round (equal both ways), not the engine's output. The last three pairs
+    // are seeded random IUPAC strings against seeded random ACGT strings. Scoring this IUPAC input
+    // with BLOSUM62, dropping the overlap credit to a mismatch, or giving it back to every pair of
+    // meeting base sets (the superseded rule) fails these pins.
     let pinned: [(&str, &str, i32, i32); 9] = [
-        ("RYSWKMBDHVN", "ACGTACGTACG", 9, 9),
-        ("R", "M", 1, 1),
-        ("N", "A", 1, 1),
-        ("GATTACAN", "GATYACAG", 14, 14),
+        // the derivation of this pair is written out below
+        ("RYSWKMBDHVN", "ACGTACGTACG", -1, 4),
+        // R/M share A but M is no definite base: NUC.4.4 R/M is -1, a mismatch
+        ("R", "M", -1, 0),
+        // N/A: NUC.4.4 -2, a mismatch
+        ("N", "A", -1, 0),
+        // G A T T/Y A C A N/G: 2+2+2+1+2+2+2-1 = 12; locally the N/G column is left off: 13
+        ("GATTACAN", "GATYACAG", 12, 13),
+        // ACGT against ACGT (8) and the four Ns gapped (-5 - 4): -1; locally 8
         ("NNNNACGT", "ACGT", -1, 8),
+        // ACGT, R/A +1, Y/G -1, ACGT, K/T +1, M/C +1: 8+1-1+8+1+1 = 18
         ("ACGTRYACGTKM", "ACGTAGACGTTC", 18, 18),
-        ("ACGTAMVYSRNBABANCTRGGRMGYNBATD", "AATCCAGTTACTAGCTTCTCGACATACCGTAT", 0, 14),
-        ("TKASACYWMATCMWTRAWKVRDYN", "GGGATTCAGGTGTGATTGAGCGAAGGTTT", -4, 13),
-        ("KWDWBSSDGTMTMMSDNKYSHGYKBDHGHYC", "GCCAGCAAAAGGTGGCGTTTGATTCTGTG", -2, 15),
+        ("ACGTAMVYSRNBABANCTRGGRMGYNBATD", "AATCCAGTTACTAGCTTCTCGACATACCGTAT", -16, 8),
+        ("TKASACYWMATCMWTRAWKVRDYN", "GGGATTCAGGTGTGATTGAGCGAAGGTTT", -10, 8),
+        ("KWDWBSSDGTMTMMSDNKYSHGYKBDHGHYC", "GCCAGCAAAAGGTGGCGTTTGATTCTGTG", -15, 6),
     ];
     for (a, b, global, local) in pinned {
         let forward = align_pairwise_standard(a, b, false, 2, -1, -5, -1);
@@ -331,29 +343,31 @@ fn ambiguous_nucleotide_scoring_is_symmetric_and_not_protein_scoring() {
         assert_eq!((lf.score, lb.score), (local, local), "local {a}/{b}");
     }
     // The overlap credit is the match score halved and rounded down, but never below 1, so at match
-    // score 1 an overlap such as R/A scores 1, as much as an identity, and at match score 3 it scores
-    // 1, not 1.5. Biopython 1.88 scores under that matrix rule (the same letter scores the match
-    // score, an overlap max(match / 2 rounded down, 1), anything else -1; open -6, extend -1). On the
-    // first pair an exact-half matrix (0.5, 1.5) scores 4 at match score 1 and 14 at match score 3
-    // instead of 9, and halving without the floor (0 at match score 1) scores global -1, local 0.
+    // score 1 an overlap such as R/A scores 1, as much as an identity (halving without the floor
+    // scores it 0, global and local), and at match score 3 it scores 1, not 1.5: GATTACAN/GATYACAG
+    // is 6 identities x 3 + T/Y 1 - N/G 1 = 18, locally 19. The first pair has no identity, so its
+    // five overlaps score 1 at every match score here and its value does not move.
     let floored: [(i32, &str, &str, i32, i32); 4] = [
-        (1, "RYSWKMBDHVN", "ACGTACGTACG", 9, 9),
+        (1, "RYSWKMBDHVN", "ACGTACGTACG", -1, 4),
         (1, "R", "A", 1, 1),
-        (3, "RYSWKMBDHVN", "ACGTACGTACG", 9, 9),
-        (3, "GATTACAN", "GATYACAG", 20, 20),
+        (3, "RYSWKMBDHVN", "ACGTACGTACG", -1, 4),
+        (3, "GATTACAN", "GATYACAG", 18, 19),
     ];
     for (ms, a, b, global, local) in floored {
         let (g, l) = (align_pairwise_standard(a, b, false, ms, -1, -5, -1), align_pairwise_standard(a, b, true, ms, -1, -5, -1));
         assert_eq!((g.score, l.score), (global, local), "match score {ms}: {a}/{b}");
     }
-    // Hand derivation of the first pair's only optimum (any gap costs at least -6, twice over in a
-    // global alignment of equal lengths, so it is ungapped): R/A Y/C S/G W/T M/C B/G D/T H/A V/C N/G
-    // share a base (+1 each, ':' in the midline) and K/A does not (-1, '.'): 10 - 1 = 9, no identical
-    // column, 10 of 11 similar.
+    // Hand derivation of the first pair's only global optimum, column by column under NUC.4.4 signs:
+    // R/A +1 (NUC.4.4 +1), Y/C +1 (+1), S/G +1 (+1), W/T +1 (+1), K/A -1 (K holds G and T, NUC.4.4
+    // -4), M/C +1 (+1), B/G -1 (three-base code, NUC.4.4 -1), D/T -1 (-1), H/A -1 (-1), V/C -1 (-1),
+    // N/G -1 (-2): 5 - 6 = -1. It is ungapped: the first row holds no definite base, so no column
+    // scores more than 1, and a gapped global alignment of these equal lengths has at least two gaps
+    // (-12 or less) beside at most 10 aligned columns (+10 at most), -2 at best. Locally the first
+    // four columns score 4 (adding K/A and M/C keeps 4). No column is identical; 5 of 11 are similar.
     let r = align_pairwise_standard("RYSWKMBDHVN", "ACGTACGTACG", false, 2, -1, -5, -1);
     assert_eq!((r.aligned_seq1.as_str(), r.aligned_seq2.as_str()), ("RYSWKMBDHVN", "ACGTACGTACG"));
-    assert_eq!(r.midline, "::::.::::::");
-    assert_eq!((r.matches, r.mismatches, r.gaps, r.identity_pct, r.similarity_pct), (0, 11, 0, 0.0, 90.91));
+    assert_eq!(r.midline, "::::.:.....");
+    assert_eq!((r.matches, r.mismatches, r.gaps, r.identity_pct, r.similarity_pct), (0, 11, 0, 0.0, 45.45));
 }
 
 fn lcg_seq(len: usize, alphabet: &[u8], seed: u64) -> String {

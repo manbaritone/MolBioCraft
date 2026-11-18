@@ -18,6 +18,7 @@
 
 use bio::alignment::pairwise::{Aligner, Scoring};
 use bio::scores::blosum62;
+use molbiocraft_core::iupac::{nucleotide_pair_class, NucleotidePairClass};
 
 /// Options of one progressive run.
 #[derive(Clone, Copy, Debug)]
@@ -55,15 +56,17 @@ fn alphabet(seqs: &[Vec<u8>], protein: bool) -> Alphabet {
     Alphabet { symbols, index, score }
 }
 
-fn pair_score(a: u8, b: u8, protein: bool) -> f32 {
+/// The substitution score the profile alignment gives two residues: BLOSUM62 for proteins, and for
+/// nucleotides 5, 1 or -4 by their `nucleotide_pair_class` (iupac.rs), the rule the pairwise
+/// aligner scores by, so N/N and R/R score -4 (US-01M6VF1T).
+pub fn pair_score(a: u8, b: u8, protein: bool) -> f32 {
     if protein {
-        blosum62(a, b) as f32
-    } else if a == b && a != b'N' {
-        5.0
-    } else if crate::pairwise::compatible_nucleotides(a, b) {
-        1.0
-    } else {
-        -4.0
+        return blosum62(a, b) as f32;
+    }
+    match nucleotide_pair_class(a, b) {
+        NucleotidePairClass::Identity => 5.0,
+        NucleotidePairClass::Overlap => 1.0,
+        NucleotidePairClass::Mismatch => -4.0,
     }
 }
 

@@ -11,6 +11,7 @@ use bio::alignment::pairwise::{Aligner, MatchFunc, Scoring};
 use bio::alignment::AlignmentOperation;
 use bio::scores::{blosum62, pam250};
 use molbiocraft_core::clean_alpha_sequence;
+use molbiocraft_core::iupac::{nucleotide_pair_class, NucleotidePairClass};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,23 +134,50 @@ pub fn align_pairwise_named(
             Some(used)
         }
     };
-    NamedPairwiseAlignment {
-        alignment: align_pairwise_gotoh(
-            raw_seq1,
-            raw_seq2,
-            mode_kind,
-            matrix_kind,
-            match_score,
-            mismatch_penalty,
-            gap_open,
-            gap_extend,
-            max_bases,
+    let alignment = align_pairwise_gotoh(
+        raw_seq1,
+        raw_seq2,
+        mode_kind,
+        matrix_kind,
+        match_score,
+        mismatch_penalty,
+        gap_open,
+        gap_extend,
+        max_bases,
+    );
+    let used = matrix_kind.unwrap_or_else(|| default_matrix(&alignment_residues(raw_seq1), &alignment_residues(raw_seq2)));
+    if used == ScoringMatrixKind::DnaIupac {
+        warnings.extend(ambiguity_identity_warning(&alignment));
+    }
+    NamedPairwiseAlignment { alignment, warnings }
+}
+
+/// The sentence saying how many aligned columns of a nucleotide alignment pair N or another
+/// ambiguity code, none of which counts as an identity (US-01M6VF1T), or `None` when no column
+/// does: a column of two letters, either of them not A, C, G, T or U.
+fn ambiguity_identity_warning(alignment: &PairwiseAlignmentResult) -> Option<String> {
+    let definite = |b: u8| matches!(b.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T' | b'U');
+    let n = alignment
+        .aligned_seq1
+        .bytes()
+        .zip(alignment.aligned_seq2.bytes())
+        .filter(|&(a, b)| a != b'-' && b != b'-' && !(definite(a) && definite(b)))
+        .count();
+    match n {
+        0 => None,
+        1 => Some(
+            "Identity counts only identical A, C, G and T/U; 1 column pairs N or another ambiguity code and is not counted as an identity."
+                .to_string(),
         ),
-        warnings,
+        n => Some(format!(
+            "Identity counts only identical A, C, G and T/U; {n} columns pair N or another ambiguity code and are not counted as identities."
+        )),
     }
 }
 
-/// Symmetric ambiguity compatibility for two aligned residues (not motif matching).
+/// Symmetric ambiguity compatibility for two aligned residues (not motif matching): whether their
+/// base sets meet. The pairwise and progressive aligners score by `nucleotide_pair_class` instead;
+/// the POA and banded paths (poa_and_banded.rs) still read this.
 pub(crate) fn compatible_nucleotides(a: u8, b: u8) -> bool {
     fn mask(b: u8) -> u8 {
         match b.to_ascii_uppercase() {
@@ -231,13 +259,13 @@ pub fn align_pairwise_gotoh(
         ScoringMatrixKind::Blosum62 => run_modes(Scoring::new(go, ge, blosum62), x, y, mode, banded, k),
         ScoringMatrixKind::Pam250 => run_modes(Scoring::new(go, ge, pam250), x, y, mode, banded, k),
         ScoringMatrixKind::DnaIupac => {
+            // One pair class (iupac.rs) for the score, the identity count, the CIGAR and the
+            // similarity: N/N and R/R score as the mismatch they are under NUC.4.4 (US-01M6VF1T).
             let score_fn = move |a: u8, b: u8| -> i32 {
-                if a == b {
-                    ms
-                } else if compatible_nucleotides(a, b) {
-                    (ms / 2).max(1)
-                } else {
-                    mm
+                match nucleotide_pair_class(a, b) {
+                    NucleotidePairClass::Identity => ms,
+                    NucleotidePairClass::Overlap => (ms / 2).max(1),
+                    NucleotidePairClass::Mismatch => mm,
                 }
             };
             run_modes(Scoring::new(go, ge, score_fn), x, y, mode, banded, k)
@@ -367,7 +395,16 @@ fn run_modes<F: MatchFunc + Clone>(
     }
 }
 
-fn encode_cigar_from_columns(a1: &[u8], a2: &[u8]) -> String {
+/// Whether an aligned column of two residues is an identity: for nucleotides only the same definite
+/// base ([`NucleotidePairClass::Identity`]), so N/N and R/R are not; for proteins the same letter.
+fn is_identity(bx: u8, by: u8, matrix_kind: ScoringMatrixKind) -> bool {
+    match matrix_kind {
+        ScoringMatrixKind::DnaIupac => nucleotide_pair_class(bx, by) == NucleotidePairClass::Identity,
+        ScoringMatrixKind::Blosum62 | ScoringMatrixKind::Pam250 => bx == by,
+    }
+}
+
+fn encode_cigar_from_columns(a1: &[u8], a2: &[u8], matrix_kind: ScoringMatrixKind) -> String {
     let mut cigar = String::new();
     let mut cur_op = 0u8;
     let mut cur_len = 0usize;
@@ -376,7 +413,7 @@ fn encode_cigar_from_columns(a1: &[u8], a2: &[u8]) -> String {
             b'D'
         } else if by == b'-' {
             b'I'
-        } else if bx == by {
+        } else if is_identity(bx, by, matrix_kind) {
             b'='
         } else {
             b'X'
@@ -475,23 +512,14 @@ fn reconstruct_alignment_columns(
 
     for &op in &aln.operations {
         match op {
-            AlignmentOperation::Match => {
+            // rust-bio calls a column `Match` when its two letters are equal, N/N and R/R included,
+            // so both operations are read by the same identity rule.
+            AlignmentOperation::Match | AlignmentOperation::Subst => {
                 let bx = x.get(ix).copied().unwrap_or(b'N');
                 let by = y.get(iy).copied().unwrap_or(b'N');
                 a1.push(bx);
                 a2.push(by);
-                mid.push(b'|');
-                matches += 1;
-                similar += 1;
-                ix += 1;
-                iy += 1;
-            }
-            AlignmentOperation::Subst => {
-                let bx = x.get(ix).copied().unwrap_or(b'N');
-                let by = y.get(iy).copied().unwrap_or(b'N');
-                a1.push(bx);
-                a2.push(by);
-                if bx == by {
+                if is_identity(bx, by, matrix_kind) {
                     mid.push(b'|');
                     matches += 1;
                     similar += 1;
@@ -499,7 +527,7 @@ fn reconstruct_alignment_columns(
                     let pos_sub = match matrix_kind {
                         ScoringMatrixKind::Blosum62 => blosum62(bx, by) > 0,
                         ScoringMatrixKind::Pam250 => pam250(bx, by) > 0,
-                        ScoringMatrixKind::DnaIupac => compatible_nucleotides(bx, by),
+                        ScoringMatrixKind::DnaIupac => nucleotide_pair_class(bx, by) == NucleotidePairClass::Overlap,
                     };
                     if pos_sub {
                         mid.push(b':');
@@ -604,7 +632,7 @@ fn reconstruct_alignment_columns(
         xend: aln.xend,
         ystart: aln.ystart + 1,
         yend: aln.yend,
-        cigar: encode_cigar_from_columns(&a1, &a2),
+        cigar: encode_cigar_from_columns(&a1, &a2, matrix_kind),
         algorithm,
         engine_used: "C++ Native / Rust FFI".to_string(),
     }

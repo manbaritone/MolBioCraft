@@ -25,6 +25,7 @@ import {
   enzymeDigestSelection,
   enzymeLabel,
   findNonCuttingEnzymes,
+  findPossiblyCuttingEnzymes,
   isCustomEnzyme,
   simulateEnzymeDigest,
   simulateMolecularCloning,
@@ -216,6 +217,12 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
 
   const nonCuttingEnzymes = useMemo(
     () => findNonCuttingEnzymes(activeDoc.sequence, activeDoc.topology, enzymes),
+    [activeDoc.sequence, activeDoc.topology, enzymes]
+  );
+  // The enzymes the noncutter list leaves out because they may cut under N or another ambiguity
+  // code (US-01M6VF1T), named beside it so their absence is not read as a cut.
+  const possiblyCuttingEnzymes = useMemo(
+    () => findPossiblyCuttingEnzymes(activeDoc.sequence, activeDoc.topology, enzymes),
     [activeDoc.sequence, activeDoc.topology, enzymes]
   );
 
@@ -1442,6 +1449,13 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
               Restriction enzymes with <strong>0 recognition sites</strong> in{' '}
               <strong>{activeDoc.name}</strong> ({activeDoc.sequence.length.toLocaleString()} bp) — safe for flanking MCS primer extensions without internal cleavage:
             </div>
+            {possiblyCuttingEnzymes.length > 0 && (
+              <div className="info-callout cloning-noncutters-possible" role="status" style={{ marginBottom: 8 }}>
+                {possiblyCuttingEnzymes.length === 1
+                  ? `1 enzyme may cut where the sequence holds N or another ambiguity code and is not listed: ${enzymeLabel(possiblyCuttingEnzymes[0])}.`
+                  : `${possiblyCuttingEnzymes.length} enzymes may cut where the sequence holds N or another ambiguity code and are not listed: ${possiblyCuttingEnzymes.map(enzymeLabel).join(', ')}.`}
+              </div>
+            )}
             <WorkbenchSmartTable
               tableId="cloning-non-cutting-enzymes"
               tableLabel="Non-Cutting Restriction Enzymes"

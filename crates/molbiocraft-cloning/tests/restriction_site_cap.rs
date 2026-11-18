@@ -7,7 +7,9 @@
 //! list of positions is limited, per enzyme, and the scan says when it limited it.
 //!
 //! Every count here is checked against a direct count written in this file: each recognition site
-//! matched base by base on both strands, with nothing taken from the engine's scanner.
+//! matched base by base on both strands, a sequence letter matching a site letter when its base set
+//! lies inside the site letter's (D0181's subset rule, which US-01M6VF1T makes the scan's), with
+//! nothing taken from the engine's scanner.
 
 use molbiocraft_cloning::compute_document_table_metrics_rust;
 use molbiocraft_cloning::rebase_catalog::{
@@ -56,11 +58,12 @@ fn dna_with_gatc_block(len: usize, repeats: usize, seed: u64) -> String {
     s
 }
 
-/// `s` with bases a recognition site can match only through its own N (an N in a site matches an
-/// N in the sequence, as `iupac_base_matches` reads it): five copies each of HinfI, DdeI, Sau96I,
-/// ScrFI, BlpI, Bsu36I and PflFI/Tth111I sites spelled with an N, from base 70,001; a 300 bp run of
-/// N; and R and Y bases, which match no site's base, every 37 bases from base 86,001. A scan that
-/// spells a site's N out as A, C, G and T only finds none of the planted sites.
+/// `s` with bases a recognition site can match only through its own N (an N in the sequence lies
+/// inside a site's N and no other site letter): five copies each of HinfI, DdeI, Sau96I, ScrFI,
+/// BlpI, Bsu36I and PflFI/Tth111I sites spelled with an N, from base 70,001; a 300 bp run of N;
+/// and R and Y bases every 37 bases from base 86,001, each a definite match only for a site letter
+/// whose set holds both its bases (R under R, D, V or N; Y under Y, B, H or N). A scan that spells
+/// a site's N out as A, C, G and T only finds none of the planted sites.
 fn with_ambiguous_bases(mut s: String) -> String {
     let planted = ["GANTC", "CTNAG", "GGNCC", "CCNGG", "GCTNAGC", "CCTNAGG", "GACNNNGTC"];
     for (k, site) in planted.iter().enumerate() {
@@ -90,26 +93,34 @@ fn dna_doc(id: &str, sequence: String, topology: Topology) -> SequenceDocument {
 
 // ─── The direct count ───
 
+/// Whether a sequence letter is a definite match for a site letter, by D0181's subset rule
+/// (US-01M6VF1T, re-pinned by D0197): the sequence letter's base set lies inside the site letter's,
+/// so an R in the sequence is a definite match for a site R, D or N, and an N only for a site N. A
+/// letter outside the IUPAC codes stands for no base and matches nothing. The sets are written here,
+/// not taken from the engine.
 fn base_matches(seq_base: u8, site_base: u8) -> bool {
-    let set: &[u8] = match site_base {
-        b'A' => b"A",
-        b'C' => b"C",
-        b'G' => b"G",
-        b'T' => b"T",
-        b'R' => b"AG",
-        b'Y' => b"CT",
-        b'S' => b"CG",
-        b'W' => b"AT",
-        b'K' => b"GT",
-        b'M' => b"AC",
-        b'B' => b"CGT",
-        b'D' => b"AGT",
-        b'H' => b"ACT",
-        b'V' => b"ACG",
-        b'N' => b"ACGTN",
-        _ => b"",
-    };
-    set.contains(&seq_base)
+    fn bases(letter: u8) -> &'static [u8] {
+        match letter {
+            b'A' => b"A",
+            b'C' => b"C",
+            b'G' => b"G",
+            b'T' => b"T",
+            b'R' => b"AG",
+            b'Y' => b"CT",
+            b'S' => b"CG",
+            b'W' => b"AT",
+            b'K' => b"GT",
+            b'M' => b"AC",
+            b'B' => b"CGT",
+            b'D' => b"AGT",
+            b'H' => b"ACT",
+            b'V' => b"ACG",
+            b'N' => b"ACGT",
+            _ => b"",
+        }
+    }
+    let (seq, site) = (bases(seq_base), bases(site_base));
+    !seq.is_empty() && seq.iter().all(|b| site.contains(b))
 }
 
 fn reverse_complement(site: &str) -> String {
@@ -211,6 +222,16 @@ fn every_scanned_enzyme_count_is_complete() {
         let direct = direct_sites(planted_region, e, Topology::Linear, usize::MAX);
         assert_eq!((planted_region.matches(site).count(), direct >= 5), (5, true), "the fixture plants five {name} sites with an N: {direct}");
     }
+    // The subset rule at work on the R and Y bases: BstYI (RGATCY) has 91 sites on the linear
+    // record with them, one of them a window whose sequence R lies under the site's R (or Y under
+    // its Y), which a rule matching an R in the sequence to no site letter does not count.
+    let bst = catalog.iter().find(|e| e.name == "BstYI").unwrap();
+    assert_eq!(direct_sites(&cases[1].0, bst, Topology::Linear, usize::MAX), 91, "BstYI by the subset rule");
+    let seq = cases[1].0.as_bytes();
+    let through_r_or_y = (0..seq.len() - 5)
+        .filter(|&i| (0..6).all(|k| base_matches(seq[i + k], b"RGATCY"[k])) && seq[i..i + 6].iter().any(|b| matches!(b, b'R' | b'Y')))
+        .count();
+    assert_eq!(through_r_or_y, 1, "one BstYI site is definite only through an R or Y in the sequence");
     for (seq, scanned) in &cases {
         for topology in [Topology::Linear, Topology::Circular] {
             let scan = default_scan(seq, topology);

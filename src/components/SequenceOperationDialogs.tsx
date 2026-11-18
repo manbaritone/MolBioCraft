@@ -10,7 +10,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { OperationDialog, OptionRow } from './OperationDialog';
-import { featuresWithin, runDigest } from '../core/operationRunners';
+import { featuresWithin, runDigest, withWarningNotes } from '../core/operationRunners';
 import { alignmentInputError } from '../core/alignmentExecution';
 import { alignPairwiseTypeScript, CUSTOM_ENZYME_NO_LONGER_STORED, designPCRPrimers, enzymeLabel, scanRestrictionSites } from '../core/bioEngine';
 import { customEnzymeCount, primerTmText, restrictionScanEnzymes, restrictionScanScope, restrictionScopeWords } from './CircularPlasmidMap';
@@ -111,7 +111,9 @@ export const PairwiseOperationDialog: React.FC<PairwiseOperationDialogProps> = (
         const id = uid('pw');
         const label = `${v.mode === 'local' ? 'Local (Smith–Waterman)' : 'Global (Needleman–Wunsch)'} pairwise, ${protein ? String(v.matrix).toUpperCase() : `match ${v.matchScore} / mismatch ${v.mismatch}`}, gaps ${v.gapOpen}/${v.gapExtend}`;
         const region = v.mode === 'local' && r.xstart ? ` (aligned region ${a.name} ${r.xstart}–${r.xend}, ${b.name} ${r.ystart}–${r.yend})` : '';
-        onCreate({
+        // The engine's warnings end the Notes (D0005): a name replaced by its default, and the columns
+        // pairing N or another ambiguity code, which identity does not count (US-01M6VF1T).
+        onCreate(withWarningNotes({
           id,
           name: String(v.resultName).trim() || `${a.name} vs ${b.name}`,
           accession: '',
@@ -142,7 +144,7 @@ export const PairwiseOperationDialog: React.FC<PairwiseOperationDialogProps> = (
           createdAt: t,
           updatedAt: t,
           folder: (folder ?? 'Alignments') as SequenceDocument['folder'],
-        });
+        }, r.warnings));
       }}
       onClose={onClose}
     />
