@@ -453,7 +453,7 @@ import {
   shortcutLabelToAriaKeyshortcuts,
   ShortcutMenuNode,
 } from './core/menuShortcuts';
-import { command as registryCommand, formatCommandShortcut, menubarCommands, rankPaletteCommands, toolbarMenuItems, type ToolbarGroupId } from './core/commandRegistry';
+import { command as registryCommand, formatCommandShortcut, menubarCommands, nativeTargets, rankPaletteCommands, toolbarMenuItems, type ToolbarGroupId } from './core/commandRegistry';
 import {
   decideSessionReplacement,
   isSessionContentDirty,
@@ -495,6 +495,9 @@ import {
   buildCloningActionVectorDocument,
   CLONING_ACTION_VECTOR_PRESETS,
 } from './data/cloningActionVectors';
+
+/** Every native menu id and the registry command it runs (US-01M6Q159). */
+const NATIVE_MENU_TARGETS = nativeTargets(CLONING_ACTION_VECTOR_PRESETS);
 import {
   addAttBSitesToSequence,
   annotateGatewayAttSites,
@@ -3901,6 +3904,7 @@ export const App: React.FC = () => {
       ? { circularMapShown: splitPaneCircleShown, sequenceMapShown: splitPaneShowsSequenceMap(splitDoc, splitView) }
       : undefined,
     checkedRecordCount: selectedInFilteredDocs.length,
+    trashCount: deletedDocIds.length,
     studiosApplying: Object.fromEntries(STUDIOS.map((e) => [e.id, studioAvailability(e, doc).ok])),
   });
   const isCommandEnabled = (id: CommandId | WorkbenchCommandId | ViewCommandId, doc?: SequenceDocument): boolean =>
@@ -7496,1049 +7500,41 @@ export const App: React.FC = () => {
     onMenuAction: (actionId: string) => {
       setOpenTopMenu(null);
       setOpenToolbarDropdown(null);
-      switch (actionId) {
-        case 'app:about':
-        case 'help:about':
-          setAboutModalOpen(true);
-          break;
-        case 'app:preferences':
-        case 'tools:preferences':
-        case 'help:updates':
-          setPrefsModalTab('General');
-          break;
-        case 'app:toggle-theme':
-          handleQuickThemeToggle();
-          break;
-        case 'app:request-quit':
-        case 'file:quit':
-          // Prove liveness so the backend keeps waiting for our confirmation.
-          ackQuitRequestTauri().catch(() => {});
-          handleRequestAppQuit();
-          break;
-        case 'help:shortcuts':
-          setPrefsModalTab('Keyboard');
-          break;
-
-        // New Session actions (always start/activate a session)
-        case 'new-session:blank':
-          handleStartNewSession('blank');
-          break;
-        case 'new-session:sequence':
-        case 'file:new-sequence':
-        case 'sequence:new':
-          handleStartNewSession('new-sequence');
-          break;
-        case 'new-session:vector-catalog':
-          handleStartNewSession('vector-catalog');
-          break;
-        case 'new-session:vector-architect':
-          handleStartNewSession('vector-architect');
-          break;
-        case 'new-session:twist-onboarding':
-        case 'help:vector-guide':
-          handleStartNewSession('twist-onboarding');
-          break;
-        case 'new-session:text-doc':
-          handleStartNewSession('text-doc');
-          break;
-        case 'new-session:cloning-restriction':
-          handleStartNewSession('cloning-restriction');
-          break;
-        case 'new-session:cloning-assembly':
-          handleStartNewSession('cloning-assembly');
-          break;
-        case 'new-session:primers-crispr':
-          handleStartNewSession('primers-crispr');
-          break;
-        case 'new-session:enzyme-set':
-          handleStartNewSession('enzyme-set');
-          break;
-        case 'new-session:align-task':
-          handleStartNewSession('align-task');
-          break;
-        case 'new-session:phylo-task':
-          handleStartNewSession('phylo-task');
-          break;
-        case 'new-session:sanger-task':
-          handleStartNewSession('sanger-task');
-          break;
-        case 'new-session:ngs-genomics':
-          handleStartNewSession('ngs-genomics');
-          break;
-        case 'new-session:pipeline-task':
-          handleStartNewSession('pipeline-task');
-          break;
-        case 'new-session:import-files':
-        case 'file:import-files':
-          handleStartNewSession('import-files');
-          break;
-        case 'file:import-folder':
-          triggerImportFolderPicker();
-          break;
-        case 'file:import-samples':
-          handleImportSampleDocuments();
-          break;
-        case 'new-session:import-clipboard':
-        case 'file:import-clipboard':
-          handleImportFromClipboardAction();
-          break;
-        case 'file:import-sanger':
-          setHomeViewActive(false);
-          handleStartNewSession('sanger-task');
-          break;
-        case 'file:import-ngs':
-          setHomeViewActive(false);
-          handleStartNewSession('ngs-genomics');
-          break;
-        case 'file:import-vector-catalog':
-          setHomeViewActive(false);
-          handleStartNewSession('vector-catalog');
-          break;
-        case 'file:import-twist-vector':
-          setHomeViewActive(false);
-          handleStartNewSession('twist-onboarding');
-          break;
-        case 'file:import-ncbi-db':
-          openDatabaseExplorer('ncbi-nucleotide');
-          break;
-        case 'new-session:folder':
-        case 'file:new-folder':
-          handleStartNewSession('new-folder');
-          break;
-        case 'new-session:sample-library':
-        case 'file:reset-library':
-        case 'help:tutorials':
-          handleStartNewSession('sample-library');
-          break;
-        case 'help:panel':
-          setHelpPanelOpen((o) => !o);
-          break;
-        case 'help:bench-genome':
-          handleLoadBenchmarkDocument('genome-500k');
-          break;
-        case 'help:bench-protein':
-          handleLoadBenchmarkDocument('protein-10k');
-          break;
-        case 'help:examples':
-          // Works without a session: adding the examples opens one.
-          setHomeViewActive(false);
-          setOperationDialog({ kind: 'examples' });
-          break;
-
-        // Open, Restore, Save & Close Session
-        case 'file:open-session':
-          triggerOpenMbcPicker('replace');
-          break;
-        case 'file:merge-session':
-          requireActiveSession(() => triggerOpenMbcPicker('merge'));
-          break;
-        case 'file:restore-autosave':
-          handleRestoreLocalAutosave();
-          break;
-        case 'file:close-session':
-          handleCloseSession();
-          break;
-        case 'file:save-session':
-          requireActiveSession(() => handleSaveMbcWorkbench(false));
-          break;
-        case 'file:save-session-as':
-          requireActiveSession(() => handleSaveMbcWorkbench(true));
-          break;
-
-        // Sequence Export & Print (requires active session)
-        case 'file:save-gb':
-          requireActiveSession(() =>
-            handleExportActiveDocument('genbank')
-          );
-          break;
-        case 'file:save-fasta':
-          requireActiveSession(() =>
-            handleExportActiveDocument('fasta')
-          );
-          break;
-        case 'file:export-embl':
-          requireActiveSession(() =>
-            handleExportActiveDocument('embl')
-          );
-          break;
-        case 'file:export-gff3':
-          requireActiveSession(() =>
-            handleExportActiveDocument('gff3')
-          );
-          break;
-        case 'file:convert-genbank':
-          // D0228: needs no session; a GenBank file can be converted with none open.
-          setOperationDialog({ kind: 'convert-genbank' });
-          break;
-        case 'file:print':
-          requireActiveSession(() => handlePrintWorkbench());
-          break;
-
-        // Edit, View, Enzymes, Features, Actions, Tools, Sequence, Annotate & Predict (guarded by active session)
-        case 'edit:copy-sequence':
-requireActiveSession(() => handleCopySequenceToClipboard());
-          break;
-        case 'edit:select-all-sequence':
-          requireActiveSession(() =>
-            setSelectedRange({
-              start: 1,
-              end: activeDoc.sequence.length,
-              label: 'Full Sequence',
-            })
-          );
-          break;
-        case 'edit:find-in-doc':
-          requireActiveSession(() => {
-            setViewerTab('sequence-view');
-            setMapLayoutMode((m) => (m === 'circular' ? 'split' : m));
-            window.setTimeout(() => {
-              document.getElementById('mbc-seq-search-input')?.focus();
-            }, 40);
-          });
-          break;
-        case 'edit:next-feature':
-          requireActiveSession(() => handleSelectNextFeature());
-          break;
-
-        case 'view:back':
-          requireActiveSession(() => handleGoBack());
-          break;
-        case 'view:forward':
-          requireActiveSession(() => handleGoForward());
-          break;
-        case 'view:home':
-          if (sessionActive) setHomeViewActive((v) => !v);
-          break;
-        case 'view:toggle-sidebar':
-          setSidebarOpen((v) => !v);
-          break;
-        case 'view:toggle-doctable':
-          requireActiveSession(() => applyDocTableEvent({ kind: 'toggle' }));
-          break;
-        case 'view:toggle-inspector':
-          requireActiveSession(() => handleToggleInspector());
-          break;
-        case 'view:studio-sequence-map':
-        case 'view:studio-annotations':
-        case 'view:studio-flatfile':
-        case 'view:studio-cloning-gel':
-        case 'view:studio-vectors':
-        case 'view:studio-primers-crispr':
-        case 'view:studio-alignment':
-        case 'view:studio-phylogenetics':
-        case 'view:studio-sanger-contig':
-        case 'view:studio-protein-3d':
-        case 'view:studio-pipelines-ngs':
-          requireActiveSession(() => openStudioByKey(STUDIOS.find((e) => `view:studio-${e.id}` === actionId)!));
-          break;
-        case 'view:layout-split':
-          requireActiveSession(() => chooseMapLayout('split'));
-          break;
-        case 'view:layout-circular':
-          requireActiveSession(() => chooseMapLayout('circular'));
-          break;
-        case 'view:layout-linear':
-          requireActiveSession(() => chooseMapLayout('linear'));
-          break;
-        case 'view:track-features':
-          requireActiveSession(() => toggleTrack('features'));
-          break;
-        case 'view:track-primers':
-          requireActiveSession(() => toggleTrack('primers'));
-          break;
-        case 'view:track-restriction-sites':
-          requireActiveSession(() => toggleTrack('restriction-sites'));
-          break;
-        case 'view:track-orfs':
-          requireActiveSession(() => toggleTrack('orfs'));
-          break;
-        case 'view:track-translation':
-          requireActiveSession(() => toggleTrack('translation'));
-          break;
-        case 'view:track-gc-graph':
-          requireActiveSession(() => toggleTrack('gc-graph'));
-          break;
-        case 'view:track-hydropathy-graph':
-          requireActiveSession(() => toggleTrack('hydropathy-graph'));
-          break;
-        case 'view:enzymes':
-        case 'enzymes:choose':
-        case 'enzymes:table':
-          requireActiveSession(() => openEnzymesView());
-          break;
-        case 'view:annotations':
-          requireActiveSession(() => setViewerTab('annotations-table'));
-          break;
-        case 'features:add':
-          requireActiveSession(() => handleAddFeatureFromSelection());
-          break;
-        case 'annotate:transfer':
-          requireActiveSession(() => handleOpenTransferAnnotations());
-          break;
-        case 'tools:extract-annotations':
-          requireActiveSession(() => handleExtractAnnotatedFeatures());
-          break;
-        case 'file:rename-folder':
-          requireActiveSession(() => handleRenameSelectedFolder());
-          break;
-        case 'file:set-folder-color':
-          requireActiveSession(() => handleCycleSelectedFolderColor());
-          break;
-        case 'file:move-to-folder':
-          requireActiveSession(() => handleMoveSelectedDocsToFolder());
-          break;
-        case 'file:toggle-favorite':
-          requireActiveSession(() => handleToggleFavoriteDocs());
-          break;
-        case 'file:soft-delete':
-          requireActiveSession(() => handleSoftDeleteSelectedDocs());
-          break;
-        case 'file:restore-deleted':
-          requireActiveSession(() => handleRestoreFromDeletedItems());
-          break;
-        case 'file:erase-deleted':
-          requireActiveSession(() => handleEraseAllDeletedItems());
-          break;
-        case 'file:backup-data':
-          requireActiveSession(() => handleSaveMbcWorkbench(true));
-          break;
-        case 'file:restore-backup':
-          triggerOpenMbcPicker('replace');
-          break;
-        case 'file:import-preferences':
-          triggerImportPreferencesPicker();
-          break;
-        case 'file:export-preferences':
-          handleExportPreferencesFile();
-          break;
-        case 'file:export-batch-fasta':
-          requireActiveSession(() => handleExportBatchDocuments('selected', 'fasta'));
-          break;
-        case 'file:export-batch-fastq':
-          requireActiveSession(() => handleExportBatchDocuments('selected', 'fastq'));
-          break;
-        case 'file:export-mbc-json':
-          requireActiveSession(() => handleExportMbcJson());
-          break;
-        case 'file:export-folder-mbc':
-          requireActiveSession(() => handleExportFolderMbc());
-          break;
-        case 'file:export-folder-gb':
-          requireActiveSession(() => handleExportBatchDocuments('folder', 'gb'));
-          break;
-        case 'file:export-lineage':
-          requireActiveSession(() => handleExportLineageBundle());
-          break;
-        case 'file:export-consensus':
-          requireActiveSession(() => handleExportConsensusFasta());
-          break;
-        case 'file:save-svg-image':
-          requireActiveSession(() => handleSaveViewerAsSvgImage());
-          break;
-        case 'view:filter-folder':
-          requireActiveSession(() => handleFocusFolderFilter());
-          break;
-        case 'view:search-tools':
-          // The native 'Search Tools & Files' (⇧⌘F) opens ⌘K (D0255 (3)).
-          setCommandPaletteQuery('');
-          setCommandPaletteIdx(0);
-          setCommandPaletteOpen(true);
-          break;
-        case 'view:search-project':
-          requireActiveSession(() => openProjectSearch(PROJECT_ROOT, 'Entire project'));
-          break;
-        case 'view:split-top-bottom':
-          requireActiveSession(() => {
-            setDocTableCollapsed(false);
-            setWorkspaceSplitMode('top-bottom');
-          });
-          break;
-        case 'view:split-left-right':
-          requireActiveSession(() => {
-            setDocTableCollapsed(false);
-            setWorkspaceSplitMode('left-right');
-          });
-          break;
-        case 'view:document-split-single':
-          requireActiveSession(() => chooseDocumentSplit('single'));
-          break;
-        case 'view:document-split-side-by-side':
-          requireActiveSession(() => chooseDocumentSplit('side-by-side'));
-          break;
-        case 'view:document-split-top-bottom':
-          requireActiveSession(() => chooseDocumentSplit('top-bottom'));
-          break;
-        case 'view:map-gallery':
-          requireActiveSession(() => openMapGallery('maps'));
-          break;
-        case 'view:compare-table':
-          requireActiveSession(() => openMapGallery('compare-table'));
-          break;
-        case 'view:expand-doc-view':
-          requireActiveSession(() => handleToggleExpandDocumentView());
-          break;
-        case 'view:restore-default-layout':
-          requireActiveSession(() => restoreDefaultLayout());
-          break;
-        case 'view:col-preset-cloning':
-          requireActiveSession(() => handleApplyColumnPreset('standard-cloning'));
-          break;
-        case 'view:col-preset-align':
-          requireActiveSession(() => handleApplyColumnPreset('alignment-phylogeny'));
-          break;
-        case 'view:col-preset-genomics':
-          requireActiveSession(() => handleApplyColumnPreset('genomics-sequencing'));
-          break;
-        case 'view:col-preset-all':
-          requireActiveSession(() => handleApplyColumnPreset('all-columns'));
-          break;
-        case 'view:col-lock':
-          requireActiveSession(() => setLockColumnOrder((v) => !v));
-          break;
-        case 'tools:databases-explorer':
-          openDatabaseExplorer('ncbi-nucleotide');
-          break;
-        case 'tools:primer-database':
-          openPrimerDatabaseWindow();
-          break;
-        case 'tools:enzyme-database':
-          openEnzymeDatabaseWindow();
-          break;
-        case 'align:expression-levels-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'expression-levels' }));
-          break;
-        case 'align:structural-variants-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'structural-variants' }));
-          break;
-        case 'align:structures-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'align-structures' }));
-          break;
-        case 'tools:make-blast-db':
-          requireActiveSession(() => setOperationDialog({ kind: 'make-blast-db' }));
-          break;
-        case 'tools:local-blast-dbs':
-        case 'tools:blast-setup':
-          openDatabaseExplorer('local-blast-dbs');
-          break;
-        case 'tools:mask-selection':
-          requireActiveSession(() => handleMaskActiveSequence('selection'));
-          break;
-        case 'tools:mask-low-complexity':
-          requireActiveSession(() => handleMaskActiveSequence('low-complexity'));
-          break;
-        case 'tools:concatenate':
-          requireActiveSession(() => handleConcatenateSelectedSequences());
-          break;
-        case 'tools:generate-consensus':
-          requireActiveSession(() => handleGenerateConsensusFromSelected());
-          break;
-        case 'primers:convert-to-oligo':
-          requireActiveSession(() => handleConvertSelectionToOligo());
-          break;
-        case 'actions:annotate-att':
-          requireActiveSession(() => handleAnnotateGatewaySites());
-          break;
-        case 'actions:add-attb':
-          requireActiveSession(() => handleAddAttBSitesToActive());
-          break;
-        case 'workflows:manage':
-          requireActiveSession(() => setManageWorkflowsOpen(true));
-          break;
-        case 'workflows:run':
-          requireActiveSession(() => setRunWorkflowFor({}));
-          break;
-        case 'workflows:modify-intervals':
-          requireActiveSession(() => handleWorkflowModifyAnnotationIntervals());
-          break;
-        case 'workflows:set-cds-translation':
-          requireActiveSession(() => handleWorkflowSetCdsTranslation());
-          break;
-        case 'workflows:random-sample':
-          requireActiveSession(() => handleWorkflowRandomlySample());
-          break;
-        case 'workflows:group-by-name':
-          requireActiveSession(() => handleWorkflowGroupByName());
-          break;
-        case 'view:text':
-          requireActiveSession(() => setViewerTab('text-view'));
-          break;
-        case 'view:secondary-structure':
-          requireActiveSession(() => openFoldingPanel());
-          break;
-        case 'view:lineage':
-        case 'tools:workflows':
-          requireActiveSession(() => openHybridSubTab('lineage'));
-          break;
-        case 'view:zoom-in':
-          requireActiveSession(() => zoomFocusedPane(1));
-          break;
-        case 'view:zoom-out':
-          requireActiveSession(() => zoomFocusedPane(-1));
-          break;
-        case 'view:zoom-reset':
-          requireActiveSession(() => zoomFocusedPane('actual'));
-          break;
-        case 'view:fit':
-          requireActiveSession(() => fitFocusedPane('fit'));
-          break;
-        case 'view:reset-view':
-          requireActiveSession(() => fitFocusedPane('reset'));
-          break;
-        case 'view:set-origin':
-          requireActiveSession(() => handleSetOriginToSelection());
-          break;
-        case 'view:rotate-map':
-          requireActiveSession(() => handleRotateMapCommand('open'));
-          break;
-        case 'view:reset-rotation':
-          requireActiveSession(() => handleRotateMapCommand('reset'));
-          break;
-
-        case 'enzymes:find-sites':
-          requireActiveSession(() => {
-            setViewerTab('sequence-view');
-            setRightPanelOpen(true);
-            setOpenRightPanels((p) => ({ ...p, restriction: true }));
-          });
-          break;
-        case 'enzymes:noncutters':
-          requireActiveSession(() =>
-            openCloningMethod('Restriction Ligation', 'non-cutters')
-          );
-          break;
-        case 'enzymes:silent-mutations':
-          requireActiveSession(() =>
-            openCloningMethod('Restriction Ligation', 'silent-mutations')
-          );
-          break;
-        case 'enzymes:suppliers':
-        case 'prefs:enzymes':
-          setPrefsModalTab('Enzymes');
-          break;
-        case 'prefs:gels':
-          setPrefsModalTab('Agarose Gels');
-          break;
-        case 'prefs:traces':
-          setPrefsModalTab('Traces & Alignment');
-          break;
-        case 'prefs:primers':
-        case 'primers:preferences':
-          setPrefsModalTab('Primers');
-          break;
-
-        case 'features:detect-common':
-          requireActiveSession(() => handleAutoDetectCommonFeatures());
-          break;
-        case 'features:add-protease':
-          requireActiveSession(() => handleDetectTagsAndProteaseSites());
-          break;
-        case 'features:manage-library':
-          requireActiveSession(() => {
-            setSidebarOpen(true);
-            setViewerTab('annotations-table');
-          });
-          break;
-
-        case 'primers:add':
-        case 'primers:add-list':
-          requireActiveSession(() => setOperationDialog({ kind: 'import-primers' }));
-          break;
-        case 'primers:crispr-editing-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'crispr-editing' }));
-          break;
-        case 'primers:design':
-        case 'actions:pcr':
-        case 'tools:primers':
-          requireActiveSession(() => openPrimersStudio('design'));
-          break;
-        case 'primers:import-saved':
-        case 'primers:specificity':
-          requireActiveSession(() => openPrimersStudio('saved'));
-          break;
-        case 'primers:export':
-          requireActiveSession(() => handleExportPrimersFasta());
-          break;
-        case 'primers:crispr':
-        case 'annotate:find-crispr':
-          requireActiveSession(() => openPrimersStudio('crispr'));
-          break;
-        case 'primers:pcr':
-          requireActiveSession(() => setViewerTab('primers-pcr'));
-          break;
-        case 'primers:mutagenesis':
-          requireActiveSession(() =>
-            openCloningMethod('Restriction Ligation', 'mutagenesis')
-          );
-          break;
-
-        case 'actions:restriction-cloning':
-        case 'actions:ligate-fragments':
-        case 'tools:agarose-gel':
-          requireActiveSession(() => openCloningMethod('Restriction Ligation', 'gel'));
-          break;
-        case 'actions:parts-cloning':
-          requireActiveSession(() => openCloningMethod('Parts Cloning', 'gel'));
-          break;
-        case 'actions:soe-pcr':
-          requireActiveSession(() => openCloningMethod('Overlap Extension PCR', 'gel'));
-          break;
-        case 'actions:mutagenesis':
-          requireActiveSession(() =>
-            openCloningMethod('Restriction Ligation', 'mutagenesis')
-          );
-          break;
-        case 'actions:gateway':
-          requireActiveSession(() =>
-            openCloningMethod('Gateway BP/LR Recombination', 'gel')
-          );
-          break;
-        case 'actions:gibson':
-          requireActiveSession(() => openCloningMethod('Gibson Assembly', 'gel'));
-          break;
-        case 'actions:golden-gate':
-          requireActiveSession(() => openCloningMethod('Golden Gate (Type IIS)', 'gel'));
-          break;
-        case 'actions:in-fusion':
-          requireActiveSession(() => openCloningMethod('In-Fusion Cloning', 'gel'));
-          break;
-        case 'actions:hifi':
-          requireActiveSession(() => openCloningMethod('NEBuilder HiFi Assembly', 'gel'));
-          break;
-        case 'actions:ta-gc':
-          requireActiveSession(() => openCloningMethod('TA / GC Cloning', 'gel'));
-          break;
-        case 'actions:topo':
-          requireActiveSession(() => openCloningMethod('TOPO Cloning', 'gel'));
-          break;
-        case 'actions:anneal-oligos':
-          requireActiveSession(() =>
-            openCloningMethod('Restriction Ligation', 'anneal-oligos')
-          );
-          break;
-
-        case 'tools:dna-calc':
-          requireActiveSession(() =>
-            openCloningMethod('Restriction Ligation', 'dna-calculations')
-          );
-          break;
-        case 'tools:blast':
-        case 'annotate:blast':
-          requireActiveSession(() => setOperationDialog({ kind: 'annotate-by-blast' }));
-          break;
-        case 'tools:vectors':
-          requireActiveSession(() => openVectorStudio('catalog'));
-          break;
-        case 'tools:vectors-architect':
-          requireActiveSession(() => openVectorStudio('architect'));
-          break;
-        // Dedicated Main Menu: Alignment
-        case 'align:msa-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'align' }));
-          break;
-        case 'align:pairwise-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'pairwise' }));
-          break;
-        case 'enzymes:digest-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'digest' }));
-          break;
-        case 'primers:design-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'primers' }));
-          break;
-        case 'primers:degenerate-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'degenerate-primers' }));
-          break;
-        case 'annotate:from-documents-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'annotate-from-documents' }));
-          break;
-        case 'primers:test-saved-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'saved-primers' }));
-          break;
-        case 'align:trim-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'trim' }));
-          break;
-        case 'sequence:back-translate-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'backtranslate' }));
-          break;
-        case 'annotate:find-orfs-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'orfs' }));
-          break;
-        case 'actions:clone-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'cloning' }));
-          break;
-        case 'align:denovo-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'denovo' }));
-          break;
-        case 'align:map-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'map' }));
-          break;
-        case 'align:translation-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'transalign' }));
-          break;
-        case 'align:highlight-sites-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'highlight-sites' }));
-          break;
-        case 'align:add-to-alignment-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'add-to-alignment' }));
-          break;
-        case 'align:qc-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'read-qc' }));
-          break;
-        case 'align:merge-pairs-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'merge-pairs' }));
-          break;
-        case 'annotate:microsatellites-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'microsatellites' }));
-          break;
-        case 'annotate:expression-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'expression' }));
-          break;
-        case 'annotate:compare-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'compare-annotations' }));
-          break;
-        case 'file:import-metadata':
-          requireActiveSession(() => setOperationDialog({ kind: 'import-metadata' }));
-          break;
-        case 'actions:validate-clone-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'validate-clone' }));
-          break;
-        case 'align:mask-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'mask' }));
-          break;
-        case 'align:consensus-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'consensus' }));
-          break;
-        case 'edit:find-duplicates':
-          requireActiveSession(() => setOperationDialog({ kind: 'duplicates' }));
-          break;
-        case 'edit:batch-rename':
-          requireActiveSession(() => setOperationDialog({ kind: 'rename' }));
-          break;
-        case 'phylo:build-tree':
-          requireActiveSession(() => setOperationDialog({ kind: 'tree' }));
-          break;
-        case 'phylo:compute-distances-dialog':
-          requireActiveSession(() => setOperationDialog({ kind: 'compute-distances' }));
-          break;
-        case 'phylo:timetree':
-          requireActiveSession(() => setOperationDialog({ kind: 'timetree' }));
-          break;
-        case 'phylo:condense-tree':
-          requireActiveSession(() => setOperationDialog({ kind: 'condense-tree' }));
-          break;
-        case 'phylo:gene-duplications':
-          requireActiveSession(() => setOperationDialog({ kind: 'gene-duplications' }));
-          break;
-        case 'phylo:consensus-tree':
-          requireActiveSession(() => setOperationDialog({ kind: 'consensus-tree' }));
-          break;
-        case 'align:msa-mafft':
-        case 'tools:align':
-          requireActiveSession(() =>
-            openSequenceAlignment('msa', {
-              msaAlgo: 'consistency-nj',
-            })
-          );
-          break;
-        case 'align:msa-clustalo':
-          requireActiveSession(() =>
-            openSequenceAlignment('msa', {
-              msaAlgo: 'progressive-upgma',
-            })
-          );
-          break;
-        case 'align:msa-muscle':
-          requireActiveSession(() =>
-            openSequenceAlignment('msa', {
-              msaAlgo: 'consistency-upgma',
-            })
-          );
-          break;
-        case 'align:pairwise-nw':
-          requireActiveSession(() =>
-            openSequenceAlignment('pairwise', { pairwiseAlgo: 'nw' })
-          );
-          break;
-        case 'align:pairwise-sw':
-          requireActiveSession(() =>
-            openSequenceAlignment('pairwise', { pairwiseAlgo: 'sw' })
-          );
-          break;
-        case 'align:dotplot':
-          requireActiveSession(() => openSequenceAlignment('dotplot'));
-          break;
-        case 'align:map-reference':
-        case 'align:denovo-assemble':
-          requireActiveSession(() => openGenomicsSuite('ngs-assembly'));
-          break;
-        case 'align:whole-genome':
-          requireActiveSession(() => openGenomicsSuite('genome-variants'));
-          break;
-        case 'align:sanger-contig':
-          requireActiveSession(() => setViewerTab('sanger-contig'));
-          break;
-
-        // Dedicated Main Menu: Phylogenetics
-        case 'phylo:tree-ml':
-        case 'tools:tree':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'tree', method: 'Maximum Likelihood (ML)' })
-          );
-          break;
-        case 'phylo:tree-fasttree':
-          requireActiveSession(() =>
-            openPhylogeneticsModule('phylogeny', {
-              treeAlgo: 'FastTree (Approx-ML)',
-            })
-          );
-          break;
-        case 'phylo:tree-phyml':
-          requireActiveSession(() =>
-            openPhylogeneticsModule('phylogeny', {
-              treeAlgo: 'PhyML (ML + SH-aLRT)',
-            })
-          );
-          break;
-        case 'phylo:tree-raxml':
-          requireActiveSession(() =>
-            openPhylogeneticsModule('phylogeny', {
-              treeAlgo: 'RAxML (GTR+G Rapid ML)',
-            })
-          );
-          break;
-        case 'phylo:tree-mrbayes':
-          requireActiveSession(() =>
-            openPhylogeneticsModule('phylogeny', {
-              treeAlgo: 'MrBayes (Bayesian MCMC)',
-            })
-          );
-          break;
-        case 'phylo:tree-nj':
-          requireActiveSession(() =>
-            openPhylogeneticsModule('phylogeny', {
-              treeAlgo: 'Neighbor-Joining (NJ)',
-            })
-          );
-          break;
-        case 'phylo:tree-me':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'tree', method: 'Minimum-Evolution (ME)' })
-          );
-          break;
-        case 'phylo:tree-upgma':
-          requireActiveSession(() =>
-            openPhylogeneticsModule('phylogeny', {
-              treeAlgo: 'UPGMA',
-            })
-          );
-          break;
-        case 'phylo:tree-mp':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'tree', method: 'Maximum Parsimony (MP)' })
-          );
-          break;
-        case 'phylo:usertree':
-          requireActiveSession(() => openPhylogeneticsModule('usertree'));
-          break;
-        case 'phylo:ancestors-ml':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'evo', analysis: 'ancestors', initial: { method: 'ml' } })
-          );
-          break;
-        case 'phylo:ancestors-mp':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'evo', analysis: 'ancestors', initial: { method: 'mp' } })
-          );
-          break;
-        case 'phylo:data':
-          requireActiveSession(() => openPhylogeneticsModule('data'));
-          break;
-        case 'phylo:models-best':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'best' } })
-          );
-          break;
-        case 'phylo:models-matrix':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'matrix' } })
-          );
-          break;
-        case 'phylo:models-disparity':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'disparity' } })
-          );
-          break;
-        case 'phylo:models-composition':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'composition' } })
-          );
-          break;
-        case 'phylo:models-rscu':
-          requireActiveSession(() =>
-            setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'rscu' } })
-          );
-          break;
-        case 'phylo:distance':
-          requireActiveSession(() => openPhylogeneticsModule('distance'));
-          break;
-        case 'phylo:diversity':
-          requireActiveSession(() => setOperationDialog({ kind: 'evo', analysis: 'diversity' }));
-          break;
-        case 'phylo:selection':
-          requireActiveSession(() => setOperationDialog({ kind: 'evo', analysis: 'selection' }));
-          break;
-        case 'phylo:rates':
-          requireActiveSession(() => setOperationDialog({ kind: 'evo', analysis: 'rates' }));
-          break;
-        case 'phylo:clocks':
-          requireActiveSession(() => setOperationDialog({ kind: 'evo', analysis: 'clocks' }));
-          break;
-        case 'phylo:diagnose':
-          requireActiveSession(() => openPhylogeneticsModule('diagnose'));
-          break;
-
-        case 'tools:consensus':
-          requireActiveSession(() => handleGenerateConsensusFromSelected());
-          break;
-        case 'tools:sanger':
-        case 'sequence:contig-assembly':
-          requireActiveSession(() => setViewerTab('sanger-contig'));
-          break;
-        case 'tools:ngs-suite':
-        case 'sequence:denovo-assemble':
-        case 'annotate:trim-ends':
-        case 'annotate:bbduk-trim':
-          requireActiveSession(() => openGenomicsSuite('ngs-assembly'));
-          break;
-        case 'tools:genbank-submit':
-        case 'sequence:mutate-shuffle':
-          requireActiveSession(() => openGenomicsSuite('transform-submit'));
-          break;
-        case 'tools:genome-variants':
-        case 'annotate:find-snps':
-        case 'annotate:freebayes-str':
-        case 'annotate:classify-16s':
-          requireActiveSession(() => openGenomicsSuite('genome-variants'));
-          break;
-        case 'annotate:glimmer-genes':
-        case 'annotate:cpg-repeats':
-          requireActiveSession(() => openGenomicsSuite('genes-cpg-repeats'));
-          break;
-        case 'annotate:coils-tm-pdb':
-          requireActiveSession(() => openProteinStudio());
-          break;
-        case 'tools:pipelines':
-          requireActiveSession(() => setViewerTab('guided-pipelines'));
-          break;
-        case 'tools:plugin-euk-gene':
-          requireActiveSession(() => openPluginTool('plugin-euk-gene-predictor'));
-          break;
-        case 'tools:plugin-microbial-gene':
-          requireActiveSession(() => openPluginTool('plugin-microbial-gene-predictor'));
-          break;
-        case 'tools:plugin-crispr-arrays':
-          requireActiveSession(() => openPluginTool('plugin-crispr-repeat-arrays'));
-          break;
-        case 'tools:plugin-tandem-repeats':
-          requireActiveSession(() => openPluginTool('plugin-tandem-repeat-finder'));
-          break;
-        case 'tools:plugin-haplotype-part':
-          requireActiveSession(() => openPluginTool('plugin-haplotype-partitioner'));
-          break;
-        case 'tools:plugin-taxonomic-class':
-          requireActiveSession(() => openPluginTool('plugin-taxonomic-classifier'));
-          break;
-        case 'tools:plugin-species-delim':
-          requireActiveSession(() => openPluginTool('plugin-species-delimitation'));
-          break;
-        case 'tools:plugin-protein-domains':
-          requireActiveSession(() => openPluginTool('plugin-protein-domains-epitopes'));
-          break;
-        case 'tools:plugin-tm-topology':
-          requireActiveSession(() => openPluginTool('plugin-transmembrane-topology'));
-          break;
-        case 'tools:plugin-adapter-trimmer':
-          requireActiveSession(() => openPluginTool('plugin-adapter-quality-trimmer'));
-          break;
-        case 'tools:plugin-synteny-blocks':
-          requireActiveSession(() => openPluginTool('plugin-genome-synteny-blocks'));
-          break;
-        case 'tools:plugin-hpc-phylo':
-          requireActiveSession(() => openPluginTool('plugin-hpc-phylogeny-script'));
-          break;
-        case 'tools:plugin-ext-cli':
-          requireActiveSession(() => openPluginTool('plugin-external-cli-suite'));
-          break;
-
-        case 'sequence:extract-region':
-          requireActiveSession(() => handleExtractSelectedRegion());
-          break;
-        case 'sequence:reverse-complement':
-          requireActiveSession(() => handleReverseComplementActiveDoc());
-          break;
-        case 'sequence:complement-only':
-          requireActiveSession(() => handleComplementOnlyActiveDoc());
-          break;
-        case 'sequence:reverse-only':
-          requireActiveSession(() => handleReverseOnlyActiveDoc());
-          break;
-        case 'sequence:translate':
-          requireActiveSession(() => {
-            setShowTranslation(true);
-            setViewerTab('sequence-view');
-          });
-          break;
-        case 'sequence:back-translate':
-          requireActiveSession(() => openProteinStudio());
-          break;
-        case 'annotate:find-motifs':
-          requireActiveSession(() => handleOpenMotifSearch('Find Motifs'));
-          break;
-        case 'annotate:protein-domains':
-          requireActiveSession(() => handleOpenMotifSearch('Protein Domains'));
-          break;
-        case 'sequence:toggle-topology':
-          requireActiveSession(() => handleToggleCircularLinear());
-          break;
-        case 'sequence:convert-dna-rna':
-          requireActiveSession(() => handleConvertDnaRna());
-          break;
-
-        case 'annotate:find-orfs':
-          requireActiveSession(() => {
-            setShowOrfs(true);
-            setRightPanelOpen(true);
-            setOpenRightPanels((p) => ({ ...p, orfs: true }));
-            setViewerTab('sequence-view');
-          });
-          break;
-
-        case 'edit:undo':
-        case 'edit:redo': {
-          // Native Edit › Undo/Redo: inside a text field keep standard text
-          // undo; otherwise undo/redo document edits (the predefined AppKit
-          // items only ever reached WKWebView's text undo manager).
-          const focused = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
-          const inTextField =
-            !!focused &&
-            (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA' || focused.isContentEditable);
-          if (inTextField) {
-            document.execCommand(actionId === 'edit:undo' ? 'undo' : 'redo');
-          } else if (actionId === 'edit:undo') {
-            handleUndoDocumentEdit();
-          } else {
-            handleRedoDocumentEdit();
-          }
-          break;
-        }
-
-        default: {
-          if (actionId.startsWith('action-vec:')) {
-            const presetId = actionId.slice('action-vec:'.length);
-            handleLoadActionVectorPreset(presetId);
-          }
-          break;
+      // US-01M6Q159: a native id runs its registry command, the in-window menubar item of that id,
+      // so the native and in-window menus share one handler. The few native-only steps come first.
+      const target = NATIVE_MENU_TARGETS.get(actionId);
+      if (!target) {
+        setStatusBanner(`The menu sent "${actionId}", which no command handles.`);
+        return;
+      }
+      if (actionId === 'app:request-quit' || actionId === 'file:quit') {
+        // Prove liveness so the backend keeps waiting for our confirmation (the window-close veto).
+        ackQuitRequestTauri().catch(() => {});
+      }
+      if (actionId === 'edit:undo' || actionId === 'edit:redo') {
+        // Native Edit › Undo/Redo: inside a text field keep standard text undo (the predefined
+        // AppKit items only ever reached WKWebView's text undo manager).
+        const focused = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
+        if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA' || focused.isContentEditable)) {
+          document.execCommand(actionId === 'edit:undo' ? 'undo' : 'redo');
+          return;
         }
       }
+      if (!target.runs) {
+        // A native id with no menubar item behind it.
+        if (actionId === 'view:home') {
+          if (sessionActive) setHomeViewActive((v) => !v);
+        } else if (actionId === 'tools:primers') {
+          requireActiveSession(() => openPrimersStudio('design'));
+        }
+        return;
+      }
+      const command = menubarCommands(menubarRef.current.trees, menubarRef.current.labels).find((c) => c.id === target.runs);
+      if (!command) {
+        setStatusBanner(`"${actionId}" runs ${target.runs}, which the menu bar does not show now.`);
+        return;
+      }
+      command.run();
     },
     onNativeFileOpen: (file, mode) => {
       fileDragDepthRef.current = 0;
@@ -9987,14 +8983,14 @@ requireActiveSession(() => handleCopySequenceToClipboard());
             kind: 'command',
             id: 'file-put-back',
             label: registryCommand('file-put-back').label,
-            disabled: deletedDocIds.length === 0,
+            disabled: !isCommandEnabled('trash-items'),
             onSelect: () => requireActiveSession(() => handleRestoreFromDeletedItems()),
           },
           {
             kind: 'command',
             id: 'file-erase-all',
             label: registryCommand('file-erase-all').label,
-            disabled: deletedDocIds.length === 0,
+            disabled: !isCommandEnabled('trash-items'),
             onSelect: () => requireActiveSession(() => handleEraseAllDeletedItems()),
           },
         ],
@@ -10338,7 +9334,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         kind: 'submenu',
         id: 'view-search-filter-sub',
         label: 'Search & Filter',
-        disabled: !sessionActive,
+        // Command Palette works with no session (⌘K opens it then), so the submenu stays open (D0262).
         minWidth: 215,
         children: [
           {
@@ -10346,6 +9342,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'view-filter-folder',
             label: registryCommand('view-filter-folder').label,
             shortcut: registryKey('view-filter-folder'),
+            disabled: !sessionActive,
             onSelect: () =>
               requireActiveSession(() => handleFocusFolderFilter()),
           },
@@ -10365,6 +9362,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'view-search-project',
             label: registryCommand('view-search-project').label,
+            disabled: !sessionActive,
             onSelect: () => requireActiveSession(() => openProjectSearch(PROJECT_ROOT, 'Entire project')),
           },
         ],
@@ -11003,7 +10001,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'prm-add',
             label: registryCommand('prm-add').label,
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
+            // Add Primer opens the primer import dialog, as the native item did before it ran this one (US-01M6Q159).
+            onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'import-primers' })),
           },
           {
             kind: 'command',
@@ -11015,7 +10014,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'prm-design-pair',
             label: registryCommand('prm-design-pair').label,
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
+            // Design Primer Pair opens the Primers studio on Design, as the native item did before it ran this one (US-01M6Q159).
+            onSelect: () => requireActiveSession(() => openPrimersStudio('design')),
           },
           {
             kind: 'command',
@@ -11036,13 +10036,15 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'prm-saved',
             label: registryCommand('prm-saved').label,
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
+            // Map Saved Primers opens the Primers studio on Saved, as the native item did before it ran this one (US-01M6Q159).
+            onSelect: () => requireActiveSession(() => openPrimersStudio('saved')),
           },
           {
             kind: 'command',
             id: 'prm-specificity',
             label: registryCommand('prm-specificity').label,
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
+            // Binding Specificity is screened on the Primers studio's Saved sub-tab (the native item's route too).
+            onSelect: () => requireActiveSession(() => openPrimersStudio('saved')),
           },
           {
             kind: 'command',
@@ -11217,7 +10219,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'act-pcr',
             label: registryCommand('act-pcr').label,
             shortcut: registryKey('act-pcr'),
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
+            // PCR Amplification opens the Primers studio on Design, as the native item did before it ran this one (US-01M6Q159).
+            onSelect: () => requireActiveSession(() => openPrimersStudio('design')),
           },
           {
             kind: 'command',
@@ -12291,6 +11294,26 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
     ],
     help: helpMenuNodes,
   };
+  const topMenuBarEntries: {
+    id: Exclude<TopMenuId, 'app' | null>;
+    label: string;
+    minWidth: number;
+  }[] = [
+    { id: 'file', label: 'File', minWidth: 215 },
+    { id: 'edit', label: 'Edit', minWidth: 210 },
+    { id: 'view', label: 'View', minWidth: 215 },
+    { id: 'sequence', label: 'Sequence', minWidth: 215 },
+    { id: 'cloning', label: 'Cloning', minWidth: 215 },
+    { id: 'tools', label: 'Tools', minWidth: 220 },
+    { id: 'help', label: 'Help', minWidth: 210 },
+  ];
+  const topMenuLabels = Object.keys(topMenus).map((id) =>
+    id === 'app' ? 'MolBioCraft' : topMenuBarEntries.find((entry) => entry.id === id)?.label ?? id
+  );
+  // The menubar the native dispatcher runs commands from (its latest render); set before the shortcut
+  // bindings are collected, so a dispatch during this render finds this render's menus.
+  const menubarRef = useRef<{ trees: MenuNode[][]; labels: string[] }>({ trees: [], labels: [] });
+  menubarRef.current = { trees: Object.values(topMenus), labels: topMenuLabels };
 
   // Shortcuts displayed in the in-window menus are dispatched from the menu
   // definitions themselves (Windows, Linux, browser). Explicit handlers above
@@ -12338,22 +11361,6 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
 
   // The toolbar dropdowns are named groups of the menubar (US-01M6Q1N2): the same nodes, so the same
   // ids, labels, keys, availability and handlers (commandRegistry.ts TOOLBAR_GROUPS).
-  const topMenuBarEntries: {
-    id: Exclude<TopMenuId, 'app' | null>;
-    label: string;
-    minWidth: number;
-  }[] = [
-    { id: 'file', label: 'File', minWidth: 215 },
-    { id: 'edit', label: 'Edit', minWidth: 210 },
-    { id: 'view', label: 'View', minWidth: 215 },
-    { id: 'sequence', label: 'Sequence', minWidth: 215 },
-    { id: 'cloning', label: 'Cloning', minWidth: 215 },
-    { id: 'tools', label: 'Tools', minWidth: 220 },
-    { id: 'help', label: 'Help', minWidth: 210 },
-  ];
-  const topMenuLabels = Object.keys(topMenus).map((id) =>
-    id === 'app' ? 'MolBioCraft' : topMenuBarEntries.find((entry) => entry.id === id)?.label ?? id
-  );
   const toolbarGroup = (id: ToolbarGroupId): MenuNode[] => toolbarMenuItems(Object.values(topMenus), topMenuLabels, id);
   // ⌘K (US-01M6Q1N2): with a query, every menubar command whose label or path matches, ranked and
   // capped, with its path, key, availability and the menu's own handler; each studio carries its

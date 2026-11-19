@@ -1,0 +1,2732 @@
+{
+  "generated": "Generated from src/core/commandRegistry.ts by scripts/gen_native_menu.mjs (npm run menu:native). Do not edit.",
+  "menus": [
+    {
+      "label": "MolBioCraft",
+      "items": [
+        {
+          "type": "submenu",
+          "label": "About MolBioCraft",
+          "items": [
+            {
+              "type": "item",
+              "id": "app:about",
+              "label": "About MolBioCraft"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Settings",
+          "items": [
+            {
+              "type": "item",
+              "id": "app:preferences",
+              "label": "Preferences",
+              "accel": "CmdOrCtrl+,"
+            },
+            {
+              "type": "item",
+              "id": "app:toggle-theme",
+              "label": "Dark Appearance",
+              "accel": "CmdOrCtrl+Shift+L"
+            }
+          ]
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "predefined",
+          "kind": "services"
+        },
+        {
+          "type": "predefined",
+          "kind": "hide"
+        },
+        {
+          "type": "predefined",
+          "kind": "hide_others"
+        },
+        {
+          "type": "predefined",
+          "kind": "show_all"
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "item",
+          "id": "app:request-quit",
+          "label": "Quit MolBioCraft",
+          "accel": "CmdOrCtrl+Q"
+        }
+      ]
+    },
+    {
+      "label": "File",
+      "items": [
+        {
+          "type": "submenu",
+          "label": "New Session",
+          "items": [
+            {
+              "type": "item",
+              "id": "new-session:blank",
+              "label": "Blank Session",
+              "accel": "CmdOrCtrl+Alt+N"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "submenu",
+              "label": "Sequences & Vectors",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "new-session:sequence",
+                  "label": "New Sequence",
+                  "accel": "CmdOrCtrl+N"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:vector-catalog",
+                  "label": "Vector Catalog"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:vector-architect",
+                  "label": "Custom Vector"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:twist-onboarding",
+                  "label": "Vector QC"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:text-doc",
+                  "label": "Flatfile Document"
+                },
+                {
+                  "type": "item",
+                  "id": "file-ns-new-text-doc",
+                  "label": "Text Document"
+                },
+                {
+                  "type": "item",
+                  "id": "file-ns-new-enzyme-set",
+                  "label": "Enzyme Set"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Cloning & Primers",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "new-session:cloning-restriction",
+                  "label": "Restriction Cloning"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:cloning-assembly",
+                  "label": "Seamless Assembly"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:primers-crispr",
+                  "label": "Primers & CRISPR"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:enzyme-set",
+                  "label": "Enzyme Digest"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Alignment & Trees",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "new-session:align-task",
+                  "label": "Sequence Alignment"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:phylo-task",
+                  "label": "Phylogenetic Tree"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Sequencing & Genomics",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "new-session:sanger-task",
+                  "label": "Sanger Traces"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:ngs-genomics",
+                  "label": "NGS & 3D Structure"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:pipeline-task",
+                  "label": "Guided Pipeline"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Starter & Import",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "new-session:import-files",
+                  "label": "Import Files",
+                  "accel": "CmdOrCtrl+I"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:import-clipboard",
+                  "label": "From Clipboard",
+                  "accel": "CmdOrCtrl+Shift+I"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:folder",
+                  "label": "New Folder",
+                  "accel": "CmdOrCtrl+Shift+N"
+                },
+                {
+                  "type": "separator"
+                },
+                {
+                  "type": "item",
+                  "id": "new-session:sample-library",
+                  "label": "Sample Project"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Open Session",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:open-session",
+              "label": "Open Session",
+              "accel": "CmdOrCtrl+O"
+            },
+            {
+              "type": "item",
+              "id": "file:merge-session",
+              "label": "Merge Session"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "item",
+              "id": "file:restore-autosave",
+              "label": "Restore Autosave"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Save Session",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:save-session",
+              "label": "Save Session",
+              "accel": "CmdOrCtrl+S"
+            },
+            {
+              "type": "item",
+              "id": "file:save-session-as",
+              "label": "Save Session As",
+              "accel": "CmdOrCtrl+Alt+Shift+S"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "item",
+              "id": "file:close-session",
+              "label": "Close Session",
+              "accel": "CmdOrCtrl+Shift+W"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Folders",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:rename-folder",
+              "label": "Rename Folder"
+            },
+            {
+              "type": "item",
+              "id": "file:set-folder-color",
+              "label": "Set Folder Color"
+            },
+            {
+              "type": "item",
+              "id": "file:move-to-folder",
+              "label": "Move to Folder"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Favorites & Trash",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:toggle-favorite",
+              "label": "Toggle Favorite"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "item",
+              "id": "file:soft-delete",
+              "label": "Move to Trash"
+            },
+            {
+              "type": "item",
+              "id": "file:restore-deleted",
+              "label": "Restore from Trash"
+            },
+            {
+              "type": "item",
+              "id": "file:erase-deleted",
+              "label": "Empty Trash"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Project Backup",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:backup-data",
+              "label": "Back Up Project"
+            },
+            {
+              "type": "item",
+              "id": "file:restore-backup",
+              "label": "Restore Backup"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Preferences",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:import-preferences",
+              "label": "Import Preferences"
+            },
+            {
+              "type": "item",
+              "id": "file:export-preferences",
+              "label": "Export Preferences"
+            }
+          ]
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "submenu",
+          "label": "Import Data",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:import-files",
+              "label": "Import Files"
+            },
+            {
+              "type": "item",
+              "id": "file:import-folder",
+              "label": "Import Folder"
+            },
+            {
+              "type": "item",
+              "id": "file:import-metadata",
+              "label": "Metadata from Spreadsheet…"
+            },
+            {
+              "type": "item",
+              "id": "file-imp-direct-clipboard",
+              "label": "Import From Clipboard"
+            },
+            {
+              "type": "submenu",
+              "label": "Import Other",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "file-imp-other-restore-backup",
+                  "label": "Restore Backup"
+                },
+                {
+                  "type": "item",
+                  "id": "file:import-samples",
+                  "label": "Sample Documents"
+                },
+                {
+                  "type": "item",
+                  "id": "file-imp-other-mbc-prefs",
+                  "label": "MolBioCraft Preferences"
+                },
+                {
+                  "type": "item",
+                  "id": "file:import-ncbi-db",
+                  "label": "New Database Connection"
+                }
+              ]
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "submenu",
+              "label": "Sequence Files",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "file-imp-gb-fasta",
+                  "label": "Sequence Files"
+                },
+                {
+                  "type": "item",
+                  "id": "file:import-clipboard",
+                  "label": "From Clipboard"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Traces & Reads",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "file:import-sanger",
+                  "label": "Sanger Traces"
+                },
+                {
+                  "type": "item",
+                  "id": "file:import-ngs",
+                  "label": "NGS Reads"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Vector Catalog",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "file:import-vector-catalog",
+                  "label": "Built-In Vectors"
+                },
+                {
+                  "type": "item",
+                  "id": "file:import-twist-vector",
+                  "label": "Custom Vector QC"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Databases",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "file-imp-ncbi-uniprot",
+                  "label": "NCBI & UniProt"
+                },
+                {
+                  "type": "item",
+                  "id": "file-imp-primer-database",
+                  "label": "Primers"
+                },
+                {
+                  "type": "item",
+                  "id": "file-imp-enzyme-database",
+                  "label": "Restriction Enzymes"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Session",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "file-imp-merge-mbc",
+                  "label": "Merge Session"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Preferences",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "file-imp-prefs-json",
+                  "label": "Import Preferences"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Export Sequences",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:save-gb",
+              "label": "Export GenBank",
+              "accel": "CmdOrCtrl+Shift+E"
+            },
+            {
+              "type": "item",
+              "id": "file:save-fasta",
+              "label": "Export FASTA",
+              "accel": "CmdOrCtrl+Shift+S"
+            },
+            {
+              "type": "item",
+              "id": "file:export-embl",
+              "label": "Export EMBL"
+            },
+            {
+              "type": "item",
+              "id": "file:export-gff3",
+              "label": "Export GFF3"
+            },
+            {
+              "type": "item",
+              "id": "file:convert-genbank",
+              "label": "Convert GenBank…"
+            },
+            {
+              "type": "item",
+              "id": "file-exp-ncbi-tbl",
+              "label": "GenBank Submission"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Batch & SVG Export",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:export-batch-fasta",
+              "label": "Batch FASTA"
+            },
+            {
+              "type": "item",
+              "id": "file:export-batch-fastq",
+              "label": "Reads as FASTQ"
+            },
+            {
+              "type": "item",
+              "id": "file:export-mbc-json",
+              "label": "Export MBC JSON"
+            },
+            {
+              "type": "item",
+              "id": "file:export-folder-mbc",
+              "label": "Export Folder as MBC"
+            },
+            {
+              "type": "item",
+              "id": "file:export-folder-gb",
+              "label": "Export Folder"
+            },
+            {
+              "type": "item",
+              "id": "file:export-lineage",
+              "label": "Export Lineage"
+            },
+            {
+              "type": "item",
+              "id": "file:export-consensus",
+              "label": "Export Consensus"
+            },
+            {
+              "type": "item",
+              "id": "file:save-svg-image",
+              "label": "Save SVG Map"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Print & PDF",
+          "items": [
+            {
+              "type": "item",
+              "id": "file:print",
+              "label": "Print / Export PDF",
+              "accel": "CmdOrCtrl+P"
+            }
+          ]
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "item",
+          "id": "file:quit",
+          "label": "Quit MolBioCraft"
+        }
+      ]
+    },
+    {
+      "label": "Edit",
+      "items": [
+        {
+          "type": "item",
+          "id": "edit:undo",
+          "label": "Undo",
+          "accel": "CmdOrCtrl+Z"
+        },
+        {
+          "type": "item",
+          "id": "edit:redo",
+          "label": "Redo",
+          "accel": "CmdOrCtrl+Shift+Z"
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "predefined",
+          "kind": "cut"
+        },
+        {
+          "type": "predefined",
+          "kind": "copy"
+        },
+        {
+          "type": "predefined",
+          "kind": "paste"
+        },
+        {
+          "type": "predefined",
+          "kind": "select_all"
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "submenu",
+          "label": "Selection",
+          "items": [
+            {
+              "type": "item",
+              "id": "edit:copy-sequence",
+              "label": "Copy Sequence",
+              "accel": "CmdOrCtrl+Shift+C"
+            },
+            {
+              "type": "item",
+              "id": "edit:select-all-sequence",
+              "label": "Select Sequence",
+              "accel": "CmdOrCtrl+Shift+A"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Find & Navigate",
+          "items": [
+            {
+              "type": "item",
+              "id": "edit:find-in-doc",
+              "label": "Find in Sequence",
+              "accel": "CmdOrCtrl+F"
+            },
+            {
+              "type": "item",
+              "id": "edit:next-feature",
+              "label": "Next Feature",
+              "accel": "CmdOrCtrl+G"
+            },
+            {
+              "type": "item",
+              "id": "edit:find-duplicates",
+              "label": "Find Duplicates…"
+            },
+            {
+              "type": "item",
+              "id": "edit:batch-rename",
+              "label": "Batch Rename…"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "View",
+      "items": [
+        {
+          "type": "submenu",
+          "label": "History",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:back",
+              "label": "Back",
+              "accel": "CmdOrCtrl+["
+            },
+            {
+              "type": "item",
+              "id": "view:forward",
+              "label": "Forward",
+              "accel": "CmdOrCtrl+]"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Search & Filter",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:filter-folder",
+              "label": "Filter Folder",
+              "accel": "CmdOrCtrl+Alt+F"
+            },
+            {
+              "type": "item",
+              "id": "view:search-tools",
+              "label": "Command Palette",
+              "accel": "CmdOrCtrl+K"
+            },
+            {
+              "type": "item",
+              "id": "view:search-project",
+              "label": "Search Project…"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Panels",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:toggle-sidebar",
+              "label": "Project Sidebar",
+              "accel": "CmdOrCtrl+Ctrl+S"
+            },
+            {
+              "type": "item",
+              "id": "view:toggle-doctable",
+              "label": "Document Table"
+            },
+            {
+              "type": "item",
+              "id": "view:toggle-inspector",
+              "label": "Inspector",
+              "accel": "CmdOrCtrl+Alt+I"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Split & Expand",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:split-top-bottom",
+              "label": "Document Table Below Viewer"
+            },
+            {
+              "type": "item",
+              "id": "view:split-left-right",
+              "label": "Document Table Beside Viewer"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "item",
+              "id": "view:expand-doc-view",
+              "label": "Expand Viewer",
+              "accel": "CmdOrCtrl+Shift+O"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Document Split",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:document-split-single",
+              "label": "Single Pane"
+            },
+            {
+              "type": "item",
+              "id": "view:document-split-side-by-side",
+              "label": "Side by Side"
+            },
+            {
+              "type": "item",
+              "id": "view:document-split-top-bottom",
+              "label": "Top and Bottom"
+            }
+          ]
+        },
+        {
+          "type": "item",
+          "id": "view:map-gallery",
+          "label": "Map Gallery"
+        },
+        {
+          "type": "item",
+          "id": "view:compare-table",
+          "label": "Compare Table"
+        },
+        {
+          "type": "submenu",
+          "label": "Table Columns",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:col-preset-cloning",
+              "label": "Standard Molecular Cloning"
+            },
+            {
+              "type": "item",
+              "id": "view:col-preset-align",
+              "label": "Alignment & Phylogenetics"
+            },
+            {
+              "type": "item",
+              "id": "view:col-preset-genomics",
+              "label": "Genomics & Sequencing"
+            },
+            {
+              "type": "item",
+              "id": "view:col-preset-all",
+              "label": "Show All Columns"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "item",
+              "id": "view:col-lock",
+              "label": "Lock Column Order"
+            },
+            {
+              "type": "item",
+              "id": "view:col-save",
+              "label": "Save Current State"
+            },
+            {
+              "type": "item",
+              "id": "view:col-choose",
+              "label": "Choose Columns…"
+            }
+          ]
+        },
+        {
+          "type": "item",
+          "id": "view:restore-default-layout",
+          "label": "Restore Default Layout"
+        },
+        {
+          "type": "submenu",
+          "label": "Studios",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:studio-sequence-map",
+              "label": "Sequence Map",
+              "accel": "CmdOrCtrl+1"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-annotations",
+              "label": "Annotations",
+              "accel": "CmdOrCtrl+2"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-flatfile",
+              "label": "Flatfile",
+              "accel": "CmdOrCtrl+3"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-cloning-gel",
+              "label": "Cloning & Gel",
+              "accel": "CmdOrCtrl+4"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-vectors",
+              "label": "Vectors & Architect",
+              "accel": "CmdOrCtrl+5"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-primers-crispr",
+              "label": "Primers & CRISPR",
+              "accel": "CmdOrCtrl+6"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-alignment",
+              "label": "Alignment",
+              "accel": "CmdOrCtrl+7"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-phylogenetics",
+              "label": "Phylogenetics",
+              "accel": "CmdOrCtrl+8"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-sanger-contig",
+              "label": "Sanger & Contig",
+              "accel": "CmdOrCtrl+9"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-protein-3d",
+              "label": "Protein & 3D"
+            },
+            {
+              "type": "item",
+              "id": "view:studio-pipelines-ngs",
+              "label": "Pipelines & NGS"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Map Layout",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:layout-split",
+              "label": "Split Map & Sequence",
+              "accel": "CmdOrCtrl+Alt+1"
+            },
+            {
+              "type": "item",
+              "id": "view:layout-circular",
+              "label": "Circular Map",
+              "accel": "CmdOrCtrl+Alt+2"
+            },
+            {
+              "type": "item",
+              "id": "view:layout-linear",
+              "label": "Linear Sequence",
+              "accel": "CmdOrCtrl+Alt+3"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "item",
+              "id": "view:set-origin",
+              "label": "Set Origin",
+              "accel": "CmdOrCtrl+Shift+0"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Tracks",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:track-features",
+              "label": "Features"
+            },
+            {
+              "type": "item",
+              "id": "view:track-primers",
+              "label": "Primers"
+            },
+            {
+              "type": "item",
+              "id": "view:track-restriction-sites",
+              "label": "Restriction Sites"
+            },
+            {
+              "type": "item",
+              "id": "view:track-orfs",
+              "label": "ORFs"
+            },
+            {
+              "type": "item",
+              "id": "view:track-translation",
+              "label": "Translation"
+            },
+            {
+              "type": "item",
+              "id": "view:track-gc-graph",
+              "label": "GC Graph"
+            },
+            {
+              "type": "item",
+              "id": "view:track-hydropathy-graph",
+              "label": "Hydropathy Graph"
+            }
+          ]
+        },
+        {
+          "type": "item",
+          "id": "view:rotate-map",
+          "label": "Rotate Circular Map…"
+        },
+        {
+          "type": "item",
+          "id": "view:reset-rotation",
+          "label": "Reset Rotation"
+        },
+        {
+          "type": "submenu",
+          "label": "Studio Views",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:enzymes",
+              "label": "Enzymes View"
+            },
+            {
+              "type": "item",
+              "id": "view:annotations",
+              "label": "Annotations Table"
+            },
+            {
+              "type": "item",
+              "id": "view:text",
+              "label": "Flatfile View"
+            },
+            {
+              "type": "item",
+              "id": "view:secondary-structure",
+              "label": "Secondary Structure"
+            },
+            {
+              "type": "item",
+              "id": "view:lineage",
+              "label": "History"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Zoom",
+          "items": [
+            {
+              "type": "item",
+              "id": "view:zoom-in",
+              "label": "Zoom In",
+              "accel": "CmdOrCtrl+="
+            },
+            {
+              "type": "item",
+              "id": "view:zoom-out",
+              "label": "Zoom Out",
+              "accel": "CmdOrCtrl+-"
+            },
+            {
+              "type": "item",
+              "id": "view:zoom-reset",
+              "label": "Actual Size (100%)",
+              "accel": "CmdOrCtrl+0"
+            },
+            {
+              "type": "item",
+              "id": "view:fit",
+              "label": "Fit"
+            },
+            {
+              "type": "item",
+              "id": "view:reset-view",
+              "label": "Reset View"
+            }
+          ]
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "item",
+          "id": "view-tog-menu-func-info",
+          "label": "Show Menu Function Info"
+        }
+      ]
+    },
+    {
+      "label": "Sequence",
+      "items": [
+        {
+          "type": "submenu",
+          "label": "Strand",
+          "items": [
+            {
+              "type": "item",
+              "id": "sequence:reverse-complement",
+              "label": "Reverse Complement",
+              "accel": "CmdOrCtrl+Shift+R"
+            },
+            {
+              "type": "item",
+              "id": "sequence:complement-only",
+              "label": "Complement Only"
+            },
+            {
+              "type": "item",
+              "id": "sequence:reverse-only",
+              "label": "Reverse Only"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Translation",
+          "items": [
+            {
+              "type": "item",
+              "id": "sequence:back-translate-dialog",
+              "label": "Back-Translate…"
+            },
+            {
+              "type": "item",
+              "id": "sequence:translate",
+              "label": "Translate Frames"
+            },
+            {
+              "type": "item",
+              "id": "sequence:back-translate",
+              "label": "Back Translate"
+            },
+            {
+              "type": "item",
+              "id": "sequence:convert-dna-rna",
+              "label": "Convert DNA / RNA"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Topology & Edit",
+          "items": [
+            {
+              "type": "item",
+              "id": "sequence:toggle-topology",
+              "label": "Circular Topology"
+            },
+            {
+              "type": "item",
+              "id": "sequence:extract-region",
+              "label": "Extract Region"
+            },
+            {
+              "type": "item",
+              "id": "sequence:mutate-shuffle",
+              "label": "Mutate & Shuffle"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Read Assembly",
+          "items": [
+            {
+              "type": "item",
+              "id": "sequence:contig-assembly",
+              "label": "Merge Reads"
+            },
+            {
+              "type": "item",
+              "id": "sequence:denovo-assemble",
+              "label": "De Novo Assembly"
+            }
+          ]
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "submenu",
+          "label": "Features",
+          "items": [
+            {
+              "type": "submenu",
+              "label": "Add & Detect",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "features:add",
+                  "label": "Add Feature",
+                  "accel": "CmdOrCtrl+T"
+                },
+                {
+                  "type": "item",
+                  "id": "features:detect-common",
+                  "label": "Detect Common Features"
+                },
+                {
+                  "type": "item",
+                  "id": "features:add-protease",
+                  "label": "Add Tag / Protease"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Feature Library",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "features:manage-library",
+                  "label": "Manage Library"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:transfer",
+                  "label": "Transfer Features"
+                },
+                {
+                  "type": "item",
+                  "id": "tools:extract-annotations",
+                  "label": "Extract Features"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Annotate",
+          "items": [
+            {
+              "type": "submenu",
+              "label": "Genes & ORFs",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "annotate:find-orfs-dialog",
+                  "label": "Find ORFs…"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:from-documents-dialog",
+                  "label": "Annotate from Documents…"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:microsatellites-dialog",
+                  "label": "Microsatellite Analysis…"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:expression-dialog",
+                  "label": "Compare Expression Levels…"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:compare-dialog",
+                  "label": "Compare Annotations…"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:find-orfs",
+                  "label": "Show ORFs"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:glimmer-genes",
+                  "label": "Predict Genes"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:cpg-repeats",
+                  "label": "CpG & Repeats"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:find-motifs",
+                  "label": "Find Motifs"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "CRISPR & Variants",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "annotate:find-crispr",
+                  "label": "Find CRISPR Sites"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:freebayes-str",
+                  "label": "Call Variants"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:classify-16s",
+                  "label": "16S / ITS Taxonomy"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Read QC & Transfer",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "annotate:bbduk-trim",
+                  "label": "Trim NGS Reads"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:blast",
+                  "label": "Annotate by BLAST…"
+                },
+                {
+                  "type": "item",
+                  "id": "ann-transfer",
+                  "label": "Transfer Features"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Protein & 3D",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "annotate:protein-domains",
+                  "label": "Protein Domains"
+                },
+                {
+                  "type": "item",
+                  "id": "annotate:coils-tm-pdb",
+                  "label": "3D Structure & Coils"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Cloning",
+      "items": [
+        {
+          "type": "item",
+          "id": "actions:clone-dialog",
+          "label": "Clone Insert into Vector…"
+        },
+        {
+          "type": "item",
+          "id": "actions:validate-clone-dialog",
+          "label": "Validate Clone…"
+        },
+        {
+          "type": "submenu",
+          "label": "Restriction Cloning",
+          "items": [
+            {
+              "type": "item",
+              "id": "enzymes:find-sites",
+              "label": "Find Sites"
+            },
+            {
+              "type": "item",
+              "id": "enzymes:digest-dialog",
+              "label": "Digest into Fragments…"
+            },
+            {
+              "type": "item",
+              "id": "act-rest-frag",
+              "label": "Agarose Digest"
+            },
+            {
+              "type": "item",
+              "id": "actions:ligate-fragments",
+              "label": "Ligate Fragments"
+            },
+            {
+              "type": "item",
+              "id": "actions:restriction-cloning",
+              "label": "Restriction Ligation"
+            },
+            {
+              "type": "item",
+              "id": "actions:anneal-oligos",
+              "label": "Anneal Oligos"
+            },
+            {
+              "type": "item",
+              "id": "enzymes:noncutters",
+              "label": "Non-Cutters"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "PCR Cloning",
+          "items": [
+            {
+              "type": "item",
+              "id": "actions:pcr",
+              "label": "PCR Amplification",
+              "accel": "CmdOrCtrl+D"
+            },
+            {
+              "type": "item",
+              "id": "actions:soe-pcr",
+              "label": "Overlap PCR"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Mutagenesis",
+          "items": [
+            {
+              "type": "item",
+              "id": "actions:mutagenesis",
+              "label": "Site Mutagenesis",
+              "accel": "CmdOrCtrl+J"
+            },
+            {
+              "type": "item",
+              "id": "act-mut-shuffle",
+              "label": "Point Mutation"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Seamless Assembly",
+          "items": [
+            {
+              "type": "item",
+              "id": "actions:gibson",
+              "label": "Gibson Assembly"
+            },
+            {
+              "type": "item",
+              "id": "actions:golden-gate",
+              "label": "Golden Gate"
+            },
+            {
+              "type": "item",
+              "id": "actions:hifi",
+              "label": "NEBuilder HiFi"
+            },
+            {
+              "type": "item",
+              "id": "actions:in-fusion",
+              "label": "In-Fusion"
+            },
+            {
+              "type": "item",
+              "id": "actions:parts-cloning",
+              "label": "Parts Cloning"
+            }
+          ]
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "submenu",
+          "label": "Gateway Cloning",
+          "items": [
+            {
+              "type": "item",
+              "id": "act-gw-lr",
+              "label": "Gateway LR Reaction"
+            },
+            {
+              "type": "item",
+              "id": "act-gw-bp",
+              "label": "Gateway BP Reaction"
+            },
+            {
+              "type": "item",
+              "id": "actions:annotate-att",
+              "label": "Annotate att Sites"
+            },
+            {
+              "type": "item",
+              "id": "actions:add-attb",
+              "label": "Add attB Sites"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "submenu",
+              "label": "Donor Vectors",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdonr221",
+                  "label": "pDONR221"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdonr201",
+                  "label": "pDONR201"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdonr207",
+                  "label": "pDONR207"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdonr-zeo",
+                  "label": "pDONR/Zeo"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdonr221-p1p4",
+                  "label": "pDONR221 P1-P4 (MultiSite)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdonr221-p4rp3r",
+                  "label": "pDONR221 P4r-P3r (MultiSite)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdonr221-p3p2",
+                  "label": "pDONR221 P3-P2 (MultiSite)"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Destination Vectors",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdest14",
+                  "label": "pDEST14 (Bacterial T7 Native)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdest15",
+                  "label": "pDEST15 (Bacterial N-GST)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pdest17",
+                  "label": "pDEST17 (Bacterial N-6xHis)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pcdna-dest40",
+                  "label": "pcDNA-DEST40 (Mammalian CMV V5-6xHis)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-plenti6-v5-dest",
+                  "label": "pLenti6/V5-DEST (Lentiviral CMV)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gw-pbad-dest49",
+                  "label": "pBAD-DEST49 (Arabinose Thioredoxin-His)"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "TA & GC Cloning",
+          "items": [
+            {
+              "type": "item",
+              "id": "actions:ta-gc",
+              "label": "TA / GC Cloning"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "submenu",
+              "label": "TA Vectors",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "action-vec:ta-pgem-t-easy",
+                  "label": "pGEM-T Easy (Linearized 3'-T)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:ta-pgem-t",
+                  "label": "pGEM-T (Linearized 3'-T)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:ta-pcr21",
+                  "label": "pCR2.1 (TA Cloning)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:ta-pcr4",
+                  "label": "pCR4-TA (Zero-Background ccdB)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:ta-ptz57r-t",
+                  "label": "pTZ57R/T (Linearized 3'-ddT)"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "GC Vectors",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "action-vec:gc-pgc-blue",
+                  "label": "pGC Blue (Linearized 3'-G)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gc-psmart-gc-hk",
+                  "label": "pSMART GC HK (Transcription-Free High-Copy KanR)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:gc-psmart-gc-lk",
+                  "label": "pSMART GC LK (Transcription-Free Low-Copy KanR)"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "TOPO Cloning",
+          "items": [
+            {
+              "type": "item",
+              "id": "actions:topo",
+              "label": "TOPO Cloning"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "submenu",
+              "label": "TOPO TA Vectors",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "action-vec:topo-pcr21-topo",
+                  "label": "pCR2.1-TOPO (TOPO TA)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:topo-pcr4-topo",
+                  "label": "pCR4-TOPO (Positive-Selection TOPO TA)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:topo-pcdna31-v5-his-topo",
+                  "label": "pcDNA3.1/V5-His-TOPO (Mammalian TOPO TA)"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Blunt TOPO Vectors",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "action-vec:topo-pcr-blunt-ii",
+                  "label": "pCR-Blunt II-TOPO (Blunt TOPO)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:topo-pcr4blunt",
+                  "label": "pCR4Blunt-TOPO (Sequencing Blunt TOPO)"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "D-TOPO Vectors",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "action-vec:topo-pentr-d-topo",
+                  "label": "pENTR/D-TOPO (Directional Gateway Entry)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:topo-pet100-d-topo",
+                  "label": "pET100/D-TOPO (Bacterial T7 N-6xHis Directional)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:topo-pet151-d-topo",
+                  "label": "pET151/D-TOPO (Bacterial T7 N-6xHis-V5-TEV Directional)"
+                },
+                {
+                  "type": "item",
+                  "id": "action-vec:topo-pcdna31d-v5-his-topo",
+                  "label": "pcDNA3.1D/V5-His-TOPO (Mammalian CMV Directional)"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "submenu",
+          "label": "Enzymes",
+          "items": [
+            {
+              "type": "submenu",
+              "label": "Enzyme Views",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "enzymes:choose",
+                  "label": "Choose Enzymes",
+                  "accel": "CmdOrCtrl+E"
+                },
+                {
+                  "type": "item",
+                  "id": "enz-digest-dialog",
+                  "label": "Digest into Fragments…"
+                },
+                {
+                  "type": "item",
+                  "id": "enzymes:table",
+                  "label": "Enzymes Table"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Site Screening",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "enz-noncut",
+                  "label": "Non-Cutters"
+                },
+                {
+                  "type": "item",
+                  "id": "enzymes:silent-mutations",
+                  "label": "Silent Mutations"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Methylation",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "enzymes:suppliers",
+                  "label": "Suppliers & Methylation"
+                },
+                {
+                  "type": "item",
+                  "id": "prefs:gels",
+                  "label": "Gel Preferences"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Primers",
+          "items": [
+            {
+              "type": "submenu",
+              "label": "Design Primers",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "primers:design-dialog",
+                  "label": "Design Primers…"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:degenerate-dialog",
+                  "label": "Design Degenerate Primers…"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:test-saved-dialog",
+                  "label": "Test with Saved Primers…"
+                },
+                {
+                  "type": "item",
+                  "id": "prm-db-binding-dialog",
+                  "label": "Find Where Stored Primers Bind…"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:add",
+                  "label": "Add Primer"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:add-list",
+                  "label": "Import Primers from Spreadsheet…"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:design",
+                  "label": "Design Primer Pair"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:convert-to-oligo",
+                  "label": "Selection to Oligo"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Specificity",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "primers:import-saved",
+                  "label": "Map Saved Primers"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:specificity",
+                  "label": "Binding Specificity"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:export",
+                  "label": "Export Primers"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "PCR & Mutagenesis",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "primers:pcr",
+                  "label": "In-Silico PCR"
+                },
+                {
+                  "type": "item",
+                  "id": "prm-soe",
+                  "label": "Overlap PCR"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:mutagenesis",
+                  "label": "Site Mutagenesis"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "CRISPR Guides",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "primers:crispr",
+                  "label": "Find CRISPR Sites"
+                },
+                {
+                  "type": "item",
+                  "id": "primers:crispr-editing-dialog",
+                  "label": "CRISPR Editing Analysis…"
+                }
+              ]
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "submenu",
+              "label": "Primer Settings",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "primers:preferences",
+                  "label": "Primer Preferences"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Tools",
+      "items": [
+        {
+          "type": "submenu",
+          "label": "Alignment",
+          "items": [
+            {
+              "type": "item",
+              "id": "align:msa-dialog",
+              "label": "Multiple Alignment…"
+            },
+            {
+              "type": "item",
+              "id": "align:pairwise-dialog",
+              "label": "Pairwise Alignment…"
+            },
+            {
+              "type": "item",
+              "id": "align:structures-dialog",
+              "label": "Align Structures…"
+            },
+            {
+              "type": "item",
+              "id": "align:qc-dialog",
+              "label": "Read QC Report…"
+            },
+            {
+              "type": "item",
+              "id": "align:merge-pairs-dialog",
+              "label": "Merge Paired Reads…"
+            },
+            {
+              "type": "item",
+              "id": "align:trim-dialog",
+              "label": "Trim Ends…"
+            },
+            {
+              "type": "item",
+              "id": "align:denovo-dialog",
+              "label": "De Novo Assemble…"
+            },
+            {
+              "type": "item",
+              "id": "align:map-dialog",
+              "label": "Map to Reference…"
+            },
+            {
+              "type": "item",
+              "id": "align:expression-levels-dialog",
+              "label": "Calculate Expression Levels…"
+            },
+            {
+              "type": "item",
+              "id": "align:structural-variants-dialog",
+              "label": "Find Structural Variants…"
+            },
+            {
+              "type": "item",
+              "id": "align:translation-dialog",
+              "label": "Translation Alignment…"
+            },
+            {
+              "type": "item",
+              "id": "align:highlight-sites-dialog",
+              "label": "Highlight Sites…"
+            },
+            {
+              "type": "item",
+              "id": "align:add-to-alignment-dialog",
+              "label": "Add Sequences to Alignment…"
+            },
+            {
+              "type": "item",
+              "id": "align:mask-dialog",
+              "label": "Mask Alignment…"
+            },
+            {
+              "type": "item",
+              "id": "align:consensus-dialog",
+              "label": "Generate Consensus…"
+            },
+            {
+              "type": "submenu",
+              "label": "Multiple Alignment",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "align:msa-mafft",
+                  "label": "MAFFT-style Alignment",
+                  "accel": "CmdOrCtrl+Alt+A"
+                },
+                {
+                  "type": "item",
+                  "id": "align:msa-clustalo",
+                  "label": "Clustal-style Alignment"
+                },
+                {
+                  "type": "item",
+                  "id": "align:msa-muscle",
+                  "label": "MUSCLE-style Alignment"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Pairwise & Dotplot",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "align:pairwise-nw",
+                  "label": "Global (Needleman-Wunsch)"
+                },
+                {
+                  "type": "item",
+                  "id": "align:pairwise-sw",
+                  "label": "Local (Smith-Waterman)"
+                },
+                {
+                  "type": "item",
+                  "id": "align:dotplot",
+                  "label": "K-mer Dotplot"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Read Mapping & Contigs",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "align:map-reference",
+                  "label": "Map Reads"
+                },
+                {
+                  "type": "item",
+                  "id": "align:denovo-assemble",
+                  "label": "De Novo Assembly"
+                },
+                {
+                  "type": "item",
+                  "id": "align:sanger-contig",
+                  "label": "Sanger Contigs"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Genome Alignment",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "align:whole-genome",
+                  "label": "Genome Synteny"
+                }
+              ]
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "submenu",
+              "label": "Consensus & Batch",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "tools:generate-consensus",
+                  "label": "Generate Consensus"
+                },
+                {
+                  "type": "item",
+                  "id": "tools:concatenate",
+                  "label": "Concatenate Sequences"
+                },
+                {
+                  "type": "item",
+                  "id": "tools:mask-low-complexity",
+                  "label": "Mask Homopolymers"
+                },
+                {
+                  "type": "item",
+                  "id": "top-align-export-consensus",
+                  "label": "Export Consensus"
+                },
+                {
+                  "type": "item",
+                  "id": "tools:plugin-haplotype-part",
+                  "label": "Haplotype & Allele Partitioner"
+                },
+                {
+                  "type": "item",
+                  "id": "tools:plugin-ext-cli",
+                  "label": "External CLI Suite"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Phylogenetics",
+          "items": [
+            {
+              "type": "item",
+              "id": "phylo:build-tree",
+              "label": "Build Tree…"
+            },
+            {
+              "type": "item",
+              "id": "phylo:compute-distances-dialog",
+              "label": "Compute Distances…"
+            },
+            {
+              "type": "item",
+              "id": "phylo:timetree",
+              "label": "Compute Timetree…"
+            },
+            {
+              "type": "item",
+              "id": "phylo:condense-tree",
+              "label": "Condense Tree…"
+            },
+            {
+              "type": "item",
+              "id": "phylo:gene-duplications",
+              "label": "Gene Duplication Inference…"
+            },
+            {
+              "type": "item",
+              "id": "phylo:consensus-tree",
+              "label": "Consensus Tree…"
+            },
+            {
+              "type": "submenu",
+              "label": "Tree Reconstruction",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "phylo:tree-ml",
+                  "label": "Maximum Likelihood",
+                  "accel": "CmdOrCtrl+Alt+T"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:tree-fasttree",
+                  "label": "FastTree (runs if installed)"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:tree-phyml",
+                  "label": "PhyML (runs if installed)"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:tree-raxml",
+                  "label": "RAxML (runs if installed)"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:tree-mrbayes",
+                  "label": "MrBayes (runs if installed)"
+                },
+                {
+                  "type": "separator"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:tree-nj",
+                  "label": "Neighbor-Joining"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:tree-me",
+                  "label": "Minimum Evolution"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:tree-upgma",
+                  "label": "UPGMA Clustering"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:tree-mp",
+                  "label": "Maximum Parsimony"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Ancestral States",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "phylo:usertree",
+                  "label": "Analyze User Tree"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:ancestors-ml",
+                  "label": "Ancestors (ML)"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:ancestors-mp",
+                  "label": "Ancestors (Parsimony)"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Substitution Models",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "phylo:models-best",
+                  "label": "Best Fit Models"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:models-matrix",
+                  "label": "Rate Matrix"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:models-disparity",
+                  "label": "Homogeneity Test"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Codon Usage & Data",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "phylo:data",
+                  "label": "Alignment Explorer"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:models-composition",
+                  "label": "Codon Composition"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:models-rscu",
+                  "label": "Codon Usage (RSCU)"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Distances & Diversity",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "phylo:distance",
+                  "label": "Pairwise Distances"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:diversity",
+                  "label": "Population Diversity"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Selection & Rates",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "phylo:selection",
+                  "label": "Codon Selection (dN/dS)"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:rates",
+                  "label": "Gamma Site Rates"
+                }
+              ]
+            },
+            {
+              "type": "submenu",
+              "label": "Clocks & Variants",
+              "items": [
+                {
+                  "type": "item",
+                  "id": "phylo:clocks",
+                  "label": "Molecular Clocks"
+                },
+                {
+                  "type": "item",
+                  "id": "phylo:diagnose",
+                  "label": "Variant Impact"
+                },
+                {
+                  "type": "item",
+                  "id": "tools:plugin-species-delim",
+                  "label": "Species Delimitation"
+                },
+                {
+                  "type": "item",
+                  "id": "tools:plugin-hpc-phylo",
+                  "label": "HPC Phylogeny Job Builder"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "submenu",
+          "label": "Gel & Calculators",
+          "items": [
+            {
+              "type": "item",
+              "id": "tools:agarose-gel",
+              "label": "Agarose Gel",
+              "accel": "CmdOrCtrl+Shift+G"
+            },
+            {
+              "type": "item",
+              "id": "tools:dna-calc",
+              "label": "DNA Calculations",
+              "accel": "CmdOrCtrl+Shift+M"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "BLAST & Vectors",
+          "items": [
+            {
+              "type": "item",
+              "id": "tools:blast",
+              "label": "BLAST Search",
+              "accel": "CmdOrCtrl+Shift+B"
+            },
+            {
+              "type": "item",
+              "id": "tools:vectors",
+              "label": "Vector Catalog"
+            },
+            {
+              "type": "item",
+              "id": "tools:vectors-architect",
+              "label": "Vector Architect"
+            },
+            {
+              "type": "item",
+              "id": "tools:primers",
+              "label": "Primers & CRISPR"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Databases",
+          "items": [
+            {
+              "type": "item",
+              "id": "tools:databases-explorer",
+              "label": "NCBI & UniProt"
+            },
+            {
+              "type": "item",
+              "id": "tools:primer-database",
+              "label": "Primers"
+            },
+            {
+              "type": "item",
+              "id": "tools:enzyme-database",
+              "label": "Restriction Enzymes"
+            },
+            {
+              "type": "item",
+              "id": "tools:make-blast-db",
+              "label": "Make BLAST Database from Selection…"
+            },
+            {
+              "type": "item",
+              "id": "tools:local-blast-dbs",
+              "label": "Local BLAST DBs"
+            },
+            {
+              "type": "item",
+              "id": "tools:blast-setup",
+              "label": "BLAST Setup"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Batch Operations",
+          "items": [
+            {
+              "type": "item",
+              "id": "tools-extract-ann",
+              "label": "Extract Features"
+            },
+            {
+              "type": "item",
+              "id": "tools:mask-selection",
+              "label": "Mask Selection"
+            },
+            {
+              "type": "item",
+              "id": "tools-mask-lowcomp",
+              "label": "Mask Homopolymers"
+            },
+            {
+              "type": "item",
+              "id": "tools-concat-seqs",
+              "label": "Concatenate"
+            },
+            {
+              "type": "item",
+              "id": "tools-gen-consensus",
+              "label": "Generate Consensus"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Sequencing & NGS",
+          "items": [
+            {
+              "type": "item",
+              "id": "tools:sanger",
+              "label": "Sanger Studio"
+            },
+            {
+              "type": "item",
+              "id": "tools:ngs-suite",
+              "label": "NGS Assembly"
+            },
+            {
+              "type": "item",
+              "id": "tools:genome-variants",
+              "label": "Genome Variants"
+            },
+            {
+              "type": "item",
+              "id": "tools:genbank-submit",
+              "label": "GenBank Submission"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Pipelines",
+          "items": [
+            {
+              "type": "item",
+              "id": "tools:pipelines",
+              "label": "Guided Pipelines",
+              "accel": "CmdOrCtrl+Shift+Y"
+            },
+            {
+              "type": "item",
+              "id": "tools:workflows",
+              "label": "Lineage Manager"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "item",
+              "id": "tools-wf-oligo",
+              "label": "Annealed Oligo Cloning"
+            },
+            {
+              "type": "item",
+              "id": "tools-wf-batch-rest",
+              "label": "Batch Restriction"
+            },
+            {
+              "type": "item",
+              "id": "tools-wf-align-tree-run",
+              "label": "Align & Build Tree"
+            },
+            {
+              "type": "item",
+              "id": "tools-wf-mafft",
+              "label": "Multi-Engine MSA"
+            },
+            {
+              "type": "item",
+              "id": "tools-wf-map-asm",
+              "label": "Map & Assemble"
+            },
+            {
+              "type": "item",
+              "id": "tools-wf-apply-var",
+              "label": "Apply Variants"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Batch Workflows",
+          "items": [
+            {
+              "type": "item",
+              "id": "workflows:manage",
+              "label": "Manage Workflows…"
+            },
+            {
+              "type": "item",
+              "id": "workflows:run",
+              "label": "Run Workflow…"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "item",
+              "id": "workflows:group-by-name",
+              "label": "Group by Prefix"
+            },
+            {
+              "type": "item",
+              "id": "workflows:modify-intervals",
+              "label": "Modify Intervals"
+            },
+            {
+              "type": "item",
+              "id": "workflows:random-sample",
+              "label": "Sample Sequences"
+            },
+            {
+              "type": "item",
+              "id": "workflows:set-cds-translation",
+              "label": "Set CDS Translation"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Bioinformatics Plugins",
+          "items": [
+            {
+              "type": "item",
+              "id": "tools:plugin-euk-gene",
+              "label": "Eukaryotic Gene Predictor"
+            },
+            {
+              "type": "item",
+              "id": "tools:plugin-microbial-gene",
+              "label": "Microbial Gene Predictor"
+            },
+            {
+              "type": "item",
+              "id": "tools:plugin-crispr-arrays",
+              "label": "CRISPR Repeat Array Finder"
+            },
+            {
+              "type": "item",
+              "id": "tools:plugin-tandem-repeats",
+              "label": "Microsatellite & Tandem Repeats"
+            },
+            {
+              "type": "item",
+              "id": "tools-plugin-haplotype-part",
+              "label": "Haplotype & Allele Partitioner"
+            },
+            {
+              "type": "item",
+              "id": "tools:plugin-taxonomic-class",
+              "label": "Taxonomic Sequence Classifier"
+            },
+            {
+              "type": "item",
+              "id": "tools-plugin-species-delim",
+              "label": "Species Delimitation"
+            },
+            {
+              "type": "item",
+              "id": "tools:plugin-protein-domains",
+              "label": "Protein Domains & Epitopes"
+            },
+            {
+              "type": "item",
+              "id": "tools:plugin-tm-topology",
+              "label": "Transmembrane & Signal Topology"
+            },
+            {
+              "type": "item",
+              "id": "tools:plugin-adapter-trimmer",
+              "label": "Adapter & Quality Read Trimmer"
+            },
+            {
+              "type": "item",
+              "id": "tools:plugin-synteny-blocks",
+              "label": "Whole-Genome Synteny Blocks"
+            },
+            {
+              "type": "item",
+              "id": "tools-plugin-hpc-phylo",
+              "label": "HPC Phylogeny Job Builder"
+            },
+            {
+              "type": "item",
+              "id": "tools-plugin-ext-cli",
+              "label": "External CLI Suite"
+            }
+          ]
+        },
+        {
+          "type": "separator"
+        },
+        {
+          "type": "submenu",
+          "label": "Settings",
+          "items": [
+            {
+              "type": "item",
+              "id": "tools:preferences",
+              "label": "Preferences",
+              "accel": "CmdOrCtrl+Shift+P"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Help",
+      "items": [
+        {
+          "type": "submenu",
+          "label": "Guides",
+          "items": [
+            {
+              "type": "item",
+              "id": "help:panel",
+              "label": "Show Help Panel",
+              "accel": "F1"
+            },
+            {
+              "type": "item",
+              "id": "help:shortcuts",
+              "label": "Keyboard Shortcuts"
+            },
+            {
+              "type": "item",
+              "id": "help:vector-guide",
+              "label": "Vector Guide"
+            },
+            {
+              "type": "item",
+              "id": "help:tutorials",
+              "label": "Sample Tutorial"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "Load Example Data",
+          "items": [
+            {
+              "type": "item",
+              "id": "help:examples",
+              "label": "Evolution Examples…"
+            },
+            {
+              "type": "item",
+              "id": "help:bench-genome",
+              "label": "500 kbp Annotated Genome"
+            },
+            {
+              "type": "item",
+              "id": "help:bench-protein",
+              "label": "10,000 aa Protein"
+            }
+          ]
+        },
+        {
+          "type": "submenu",
+          "label": "About",
+          "items": [
+            {
+              "type": "item",
+              "id": "help:updates",
+              "label": "Check for Updates"
+            },
+            {
+              "type": "item",
+              "id": "help:about",
+              "label": "About MolBioCraft"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Window",
+      "items": [
+        {
+          "type": "predefined",
+          "kind": "minimize"
+        },
+        {
+          "type": "predefined",
+          "kind": "maximize"
+        },
+        {
+          "type": "predefined",
+          "kind": "fullscreen"
+        }
+      ]
+    }
+  ],
+  "dispatchOnly": [
+    "file:new-sequence",
+    "view:home"
+  ]
+}

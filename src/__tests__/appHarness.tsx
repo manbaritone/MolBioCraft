@@ -16,7 +16,7 @@
  * - every input runs in React's act and then settles: pending promises resolve, animation frames run
  *   and resize observers hear of changed boxes, until the page stops changing;
  * - a menu command goes through the App's own dispatcher, by the `mbc:native-menu` window event the
- *   macOS app's native menu sends, and an id the dispatcher has no case for is refused by name;
+ *   macOS app's native menu sends, and an id that runs no registry command is refused by name;
  * - clicks, field edits and key presses with modifiers are the browser's own events (liveDom.ts), so
  *   they reach the handlers React gave the App's elements and the listeners the App put on the window;
  * - restoreSession writes a session built in the test with the App's own autosave writers
@@ -40,6 +40,7 @@
 
 import { afterEach, expect, vi } from 'vitest';
 import type { NativeMenuStatePayload } from '../core/commandAvailability';
+import { nativeTargets } from '../core/commandRegistry';
 import type { MbcViewerTabId, MbcWorkspaceUiState } from '../core/mbcSessionFormat';
 import type { SequenceDocument } from '../types/bio';
 import {
@@ -89,14 +90,9 @@ export function appTsxSource(): string {
   return appSource;
 }
 let dispatcherIds: Set<string> | null = null;
-/** The command ids the App's menu dispatcher (its onMenuAction) has a case for. */
+/** The command ids the App's menu dispatcher runs: the registry's native ids (US-01M6Q159, D0261). */
 export function menuCommandIds(): Set<string> {
-  if (dispatcherIds) return dispatcherIds;
-  const src = appTsxSource();
-  const start = src.indexOf('onMenuAction: (actionId: string) => {');
-  const end = src.indexOf('onNativeFileOpen: (file, mode) => {', start);
-  if (start < 0 || end < 0) throw new Error('App.tsx no longer holds the menu dispatcher the harness reads (onMenuAction, then onNativeFileOpen)');
-  dispatcherIds = new Set([...src.slice(start, end).matchAll(/case '([^']+)':/g)].map((m) => m[1]));
+  dispatcherIds ??= new Set(nativeTargets([]).keys());
   return dispatcherIds;
 }
 

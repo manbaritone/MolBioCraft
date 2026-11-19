@@ -14,6 +14,7 @@
 
 import type { MoleculeType, SequenceDocument, Topology } from '../types/bio';
 import { isContigSummaryRecord } from './contigSummary';
+import { NATIVE_ENABLED_ALWAYS, nativeTargets } from './commandRegistry';
 
 export interface CommandDocumentContext {
   id: string;
@@ -75,6 +76,12 @@ export interface CommandContext {
    * is then refused, not opened on records nobody counted.
    */
   checkedRecordCount?: number;
+  /**
+   * Records in the project's Trash (US-01M6Q159, D0262): Restore from Trash and Empty Trash
+   * (`trash-items`) need one. A caller that does not count them leaves it out, and the rule then
+   * follows the session alone.
+   */
+  trashCount?: number;
 }
 
 export type CommandId =
@@ -96,7 +103,7 @@ export type CommandId =
  * toolbar's Compare Table button (US-01M7DVV8), and the native View items for both (US-01M7NNGQ) read
  * the checked rows.
  */
-export type WorkbenchCommandId = 'align-structures' | 'multi-record-view';
+export type WorkbenchCommandId = 'align-structures' | 'multi-record-view' | 'trash-items';
 
 /**
  * Commands on the focused pane's view rather than on a document (US-01M7DV10): View › Zoom In, Zoom
@@ -270,6 +277,11 @@ const RULES: Record<CommandId | WorkbenchCommandId | ViewCommandId, (ctx: Comman
     if (ctx.checkedRecordCount === undefined) return off('The checked rows of the document table are not known.');
     return ctx.checkedRecordCount >= 2 ? ENABLED : off(`Check two or more records in the document table (now ${ctx.checkedRecordCount}).`);
   },
+  // File › Favorites & Trash's Restore from Trash and Empty Trash, in-window and native alike (D0262).
+  'trash-items': (ctx) => {
+    if (!ctx.sessionActive) return off(NO_SESSION);
+    return ctx.trashCount === 0 ? off('The Trash is empty.') : ENABLED;
+  },
 };
 
 /**
@@ -372,83 +384,20 @@ export function checkMultiDocumentSelection(
 // ---------------------------------------------------------------------------
 
 /**
- * Native menu ids that work without an active session (the dispatcher does
- * not wrap them in requireActiveSession). Every other native id is disabled
- * while no session is active. Kept in sync with src-tauri/src/main.rs and the
- * App.tsx dispatcher by src/__tests__/nativeMenuContract.test.ts.
+ * The native menu's commands (US-01M6Q159): each native id of the registry's native projection, with
+ * whether it needs a session and the rule that enables it. The vector presets (`action-vec:`) all
+ * work without a session and carry no rule, so one prefix covers them.
  */
-export const NATIVE_MENU_SESSION_INDEPENDENT_PREFIXES = ['app:', 'help:', 'new-session:', 'action-vec:'];
-export const NATIVE_MENU_SESSION_INDEPENDENT_IDS = [
-  'edit:undo',
-  'edit:redo',
-  'enzymes:suppliers',
-  'file:close-session',
-  'file:convert-genbank',
-  'file:export-preferences',
-  'file:import-clipboard',
-  'file:import-files',
-  'file:import-folder',
-  'file:import-ncbi-db',
-  'file:import-ngs',
-  'file:import-preferences',
-  'file:import-samples',
-  'file:import-sanger',
-  'file:import-twist-vector',
-  'file:import-vector-catalog',
-  'file:open-session',
-  'file:restore-autosave',
-  'file:restore-backup',
-  'prefs:gels',
-  'primers:preferences',
-  'tools:blast-setup',
-  'tools:databases-explorer',
-  'tools:enzyme-database',
-  'tools:local-blast-dbs',
-  'tools:preferences',
-  'tools:primer-database',
-  'view:search-tools',
-  'view:toggle-sidebar',
-];
+const NATIVE_TARGETS = nativeTargets([]);
 
-/** Native ids whose availability follows a specific command rule (not just "session active"). */
-export const NATIVE_MENU_COMMAND_RULES: Record<string, CommandId | WorkbenchCommandId | ViewCommandId> = {
-  'edit:undo': 'undo',
-  'edit:redo': 'redo',
-  'sequence:reverse-complement': 'strand-transform',
-  'sequence:complement-only': 'strand-transform',
-  'sequence:reverse-only': 'strand-transform',
-  'sequence:convert-dna-rna': 'convert-dna-rna',
-  'view:set-origin': 'set-origin',
-  // US-01M7DVNS: the native View > Zoom items run the in-app View items' handler, under its rule.
-  'view:rotate-map': 'rotate-map',
-  // US-01M7DV10: View > Zoom's three items, on the focused pane.
-  'view:zoom-in': 'zoom-map',
-  'view:zoom-out': 'zoom-map',
-  'view:zoom-reset': 'zoom-map',
-  'view:reset-rotation': 'rotate-map',
-  // US-01M7DVEN: Fit and Reset View, on the focused pane, under Fit's rule; Map Layout's circle items.
-  'view:fit': 'fit-view',
-  'view:reset-view': 'fit-view',
-  'view:layout-split': 'map-layout-circle',
-  'view:layout-circular': 'map-layout-circle',
-  // US-01M7DV8W: View > Tracks, each under its track's rule.
-  'view:track-features': 'track-features',
-  'view:track-primers': 'track-primers',
-  'view:track-restriction-sites': 'track-restriction-sites',
-  'view:track-orfs': 'track-orfs',
-  'view:track-translation': 'track-translation',
-  'view:track-gc-graph': 'track-gc-graph',
-  'view:track-hydropathy-graph': 'track-hydropathy-graph',
-  'file:save-gb': 'export-active-document',
-  'file:save-fasta': 'export-sequence',
-  'file:export-embl': 'export-active-document',
-  'file:export-gff3': 'export-active-document',
-  'edit:copy-sequence': 'export-sequence',
-  'align:structures-dialog': 'align-structures',
-  // US-01M7NNGQ: View > Map Gallery and View > Compare Table, under the in-app items' rule over the checked rows.
-  'view:map-gallery': 'multi-record-view',
-  'view:compare-table': 'multi-record-view',
-};
+/** Native ids that work without an active session; every other native id is off with no session. */
+export const NATIVE_MENU_SESSION_INDEPENDENT_PREFIXES = ['action-vec:'];
+export const NATIVE_MENU_SESSION_INDEPENDENT_IDS: string[] = [...NATIVE_TARGETS].filter(([, t]) => t.noSession).map(([id]) => id);
+
+/** Native ids whose availability follows a specific command rule (not just "session active"): the registry's. */
+export const NATIVE_MENU_COMMAND_RULES: Record<string, CommandId | WorkbenchCommandId | ViewCommandId> = Object.fromEntries(
+  [...NATIVE_TARGETS].flatMap(([id, t]) => (t.rule ? [[id, t.rule as CommandId | WorkbenchCommandId | ViewCommandId]] : []))
+);
 
 export interface NativeMenuStatePayload {
   sessionActive: boolean;
@@ -463,10 +412,9 @@ export function buildNativeMenuState(ctx: CommandContext): NativeMenuStatePayloa
   for (const [id, rule] of Object.entries(NATIVE_MENU_COMMAND_RULES)) {
     overrides[id] = commandAvailability(rule, ctx).enabled;
   }
-  // Undo/Redo stay enabled inside text fields (the dispatcher routes them to
-  // text undo), so they are only disabled when there is no session at all.
-  overrides['edit:undo'] = true;
-  overrides['edit:redo'] = true;
+  // D0262: Undo/Redo stay enabled natively in every context, so AppKit can undo inside text fields
+  // (the dispatcher routes them to text undo there).
+  for (const id of NATIVE_ENABLED_ALWAYS) overrides[id] = true;
   // Toggle Inspector is greyed on a tab with nothing to set. Without a session it is greyed with
   // every session command already, so that state carries the command rules alone.
   if (ctx.sessionActive && ctx.inspectorAvailable !== undefined) {

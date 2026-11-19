@@ -12,9 +12,29 @@ import registrySrc from '../core/commandRegistry.ts?raw';
 /** The menu text: App.tsx's menu nodes and the command registry they read their labels from (US-01M6Q1N2). */
 const menuSrc = `${appSrc}\n${registrySrc}`;
 import spaceGroteskFontUrl from '../assets/fonts/space-grotesk/SpaceGrotesk-VariableFont_wght.ttf?url';
-import macMainMm from '../../packaging/macos/main.mm?raw';
 import tauriCapDefaultJson from '../../src-tauri/capabilities/default.json?raw';
 import tauriMainRs from '../../src-tauri/src/main.rs?raw';
+import tauriNativeMenuRs from '../../src-tauri/src/native_menu.rs?raw';
+import nativeMenuJson from '../../src-tauri/native-menu.json?raw';
+import { nativeTargets } from '../core/commandRegistry';
+
+/** The native macOS menu (US-01M6Q159): the spec generated from the registry, which native_menu.rs builds. */
+type NativeSpecNode = { type: string; id?: string; label?: string; items?: NativeSpecNode[] };
+const NATIVE_SPEC = JSON.parse(nativeMenuJson) as { menus: { label: string; items: NativeSpecNode[] }[] };
+const nativeSpecIds = (): string[] => {
+  const out: string[] = [];
+  const walk = (items: NativeSpecNode[]) => items.forEach((n) => { if (n.type === 'item' && n.id) out.push(n.id); if (n.items) walk(n.items); });
+  NATIVE_SPEC.menus.forEach((m) => walk(m.items));
+  return out;
+};
+const nativeSpecLabels = (kind: 'item' | 'submenu'): string[] => {
+  const out: string[] = [];
+  const walk = (items: NativeSpecNode[]) => items.forEach((n) => { if (n.type === kind && n.label) out.push(n.label); if (n.items) walk(n.items); });
+  NATIVE_SPEC.menus.forEach((m) => walk(m.items));
+  return out;
+};
+/** The native ids the App's dispatcher runs: each runs its registry command (US-01M6Q159). */
+const NATIVE_DISPATCH = nativeTargets(CLONING_ACTION_VECTOR_PRESETS);
 import {
   CascadingMenuPopup,
   MenuNode,
@@ -653,23 +673,20 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(webMenubarTriggers.length).toBe(8);
     expect(webMenubarTriggers.length).toBeLessThanOrEqual(10);
 
-    const cocoaTopLevelAdds = macMainMm.match(/\[menubar addItem:/g) ?? [];
-    expect(cocoaTopLevelAdds.length).toBe(9);
-    expect(cocoaTopLevelAdds.length).toBeLessThanOrEqual(10);
+    // The native top level (US-01M6Q159, D0259): the app menu, the in-window bar's menus after its
+    // logo menu in the same order, then Window - derived from the in-window bar, not counted by hand.
+    const nativeTop = NATIVE_SPEC.menus.map((m) => m.label);
+    expect(nativeTop.length).toBe(webMenubarTriggers.length + 1);
+    expect(nativeTop.length).toBeLessThanOrEqual(10);
+    expect(nativeTop[0]).toBe('MolBioCraft');
+    expect(nativeTop.at(-1)).toBe('Window');
+    const webTop = [...appHtml.matchAll(/>(File|Edit|View|Sequence|Cloning|Tools|Help|Window|Enzymes|Features|Primers|Alignment|Phylogenetics|Actions)<\/button>/g)].map((m) => m[1]);
+    expect(nativeTop.slice(1, -1)).toEqual(webTop);
 
-    const tauriRootBlock = tauriMainRs.match(/Menu::with_items\(\s*app,\s*&\[([\s\S]*?)\],\s*\)/);
-    expect(tauriRootBlock).not.toBeNull();
-    const tauriTopLevelMenus = tauriRootBlock![1].match(/&[a-z_]+_menu/g) ?? [];
-    expect(tauriTopLevelMenus.length).toBe(9);
-    expect(tauriTopLevelMenus.length).toBeLessThanOrEqual(10);
-
-    expect(macMainMm).toContain('initWithTitle:@"Cloning"');
-    expect(macMainMm).toContain('initWithTitle:@"Alignment"');
-    expect(macMainMm).toContain('initWithTitle:@"Phylogenetics"');
-    expect(tauriMainRs).toContain('"Cloning"');
-    expect(tauriMainRs).toContain('"Alignment"');
-    expect(tauriMainRs).toContain('"Phylogenetics"');
-    expect(tauriMainRs).toContain('label.replace(\'&\', "&&")');
+    expect(nativeTop).toContain('Cloning');
+    expect(nativeSpecLabels('submenu')).toContain('Alignment');
+    expect(nativeSpecLabels('submenu')).toContain('Phylogenetics');
+    expect(tauriNativeMenuRs).toContain('label.replace(\'&\', "&&")');
 
     const extractIds = (src: string, pattern: RegExp): string[] => {
       const ids = new Set<string>();
@@ -679,13 +696,13 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
       return Array.from(ids).sort();
     };
 
-    const macMenuIds = extractIds(macMainMm, /@"((?:align|phylo):[a-z0-9-]+)"/g);
-    const tauriMenuIds = extractIds(tauriMainRs, /"((?:align|phylo):[a-z0-9-]+)"/g);
-    const appDispatchedIds = extractIds(appSrc, /case '((?:align|phylo):[a-z0-9-]+)':/g);
-
-    expect(macMenuIds.length).toBe(55);
-    expect(tauriMenuIds).toEqual(macMenuIds);
-    expect(appDispatchedIds).toEqual(macMenuIds);
+    // The native align:/phylo: ids are the registry's, and each runs a registry command (D0214: the
+    // unbuilt Cocoa shell is gone, so the spec and the registry are the two legs).
+    const nativeAlignIds = extractIds(nativeSpecIds().join('\n'), /^((?:align|phylo):[a-z0-9-]+)$/gm);
+    const registryAlignIds = extractIds([...NATIVE_DISPATCH.keys()].join('\n'), /^((?:align|phylo):[a-z0-9-]+)$/gm);
+    expect(nativeAlignIds.length).toBeGreaterThan(50);
+    expect(nativeAlignIds).toEqual(registryAlignIds);
+    expect(nativeAlignIds.filter((id) => !NATIVE_DISPATCH.get(id)?.runs)).toEqual([]);
 
     // Verify .mbc round-trip for 'phylogenetics' and legacy migration of 'align-phylo' -> 'sequence-alignment'
     const serialized = serializeMbcWorkbench({
@@ -771,10 +788,9 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(footerHtml).toContain('statusbar-engine-pill');
     expect(footerHtml).toContain('Navigator</button>');
 
-    // Verify File -> Import Data parity across Web/Windows/Linux, macOS Cocoa, and Tauri v2
+    // Verify File -> Import Data parity across the in-window menu and the native spec (US-01M6Q159)
     expect(menuSrc).toContain("label: 'Import Data'");
-    expect(macMainMm).toContain('@"Import Data"');
-    expect(tauriMainRs).toContain('"Import Data"');
+    expect(nativeSpecLabels('submenu')).toContain('Import Data');
 
     const expectedFileImportActions = [
       'file:import-files',
@@ -786,9 +802,8 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
       'file:import-ncbi-db',
     ];
     for (const actionId of expectedFileImportActions) {
-      expect(macMainMm).toContain(`@"${actionId}"`);
-      expect(tauriMainRs).toContain(`"${actionId}"`);
-      expect(appSrc).toContain(`case '${actionId}':`);
+      expect(nativeSpecIds()).toContain(actionId);
+      expect(NATIVE_DISPATCH.get(actionId)?.runs, actionId).toBeTruthy();
     }
   });
 
@@ -898,23 +913,12 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
   });
 
   it('supports cross-platform window dragging, draggable modal dialogs, and native/Tauri file drag-and-drop', async () => {
-    // 1. Verify Tauri v2 capabilities & macOS Cocoa MolBioCraftWebView window drag + file drop registration
+    // 1. Verify Tauri v2 capabilities, window drag and file drop registration
     expect(tauriCapDefaultJson).toContain('"core:window:allow-start-dragging"');
     expect(tauriCapDefaultJson).toContain('"core:window:allow-toggle-maximize"');
     expect(tauriMainRs).toContain('cmd_window_start_dragging');
     expect(tauriMainRs).toContain('cmd_window_toggle_maximize');
     expect(tauriMainRs).toContain('cmd_read_dropped_file_bytes');
-    expect(macMainMm).toContain('@interface MolBioCraftWebView : WKWebView');
-    expect(macMainMm).toContain('lastLeftMouseDownEvent');
-    expect(macMainMm).toContain('windowDragArmed');
-    expect(macMainMm).toContain('translateArmedWindowToMouseScreenLocation:');
-    expect(macMainMm).toContain('constrainFrameRect:proposedFrame toScreen:targetScreen');
-    expect(macMainMm).toContain('[self.window setFrameOrigin:proposedFrame.origin]');
-    expect(macMainMm).toContain('addLocalMonitorForEventsMatchingMask:');
-    expect(macMainMm).toContain('acceptsFirstMouse:');
-    expect(macMainMm).not.toContain('performWindowDragWithEvent:');
-    expect(macMainMm).toContain('registerForDraggedTypes:@[NSPasteboardTypeFileURL]');
-    expect(macMainMm).toContain('mbc:native-file-drag');
 
     // 2. Verify interactive vs empty window chrome hit-testing
     expect(isInteractiveWindowChromeTarget(null)).toBe(false);
@@ -1147,8 +1151,6 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(appSrc).toContain('mbc-visually-hidden-file-input');
     expect(appSrc).toContain('target instanceof Element');
     expect(cascadingMenuSrc).toContain('onPointerDown');
-    expect(macMainMm).toContain('file:import-preferences');
-    expect(macMainMm).toContain('dispatch_async(dispatch_get_main_queue()');
 
     const initialAppHtml = renderToStaticMarkup(React.createElement(App));
     expect(initialAppHtml).not.toContain('status-banner-pill');
@@ -1302,8 +1304,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     ];
     for (const oldLabel of verboseRemovedStrings) {
       expect(appSrc).not.toContain(oldLabel);
-      expect(tauriMainRs).not.toContain(oldLabel);
-      expect(macMainMm).not.toContain(oldLabel);
+      expect(nativeMenuJson).not.toContain(oldLabel);
     }
 
     const separatedSubmenus = [
@@ -1326,8 +1327,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     ];
     for (const submenuTitle of separatedSubmenus) {
       expect(appSrc).toContain(`label: '${submenuTitle}'`);
-      expect(tauriMainRs).toContain(`"${submenuTitle}"`);
-      expect(macMainMm).toContain(`@"${submenuTitle}"`);
+      expect(nativeSpecLabels('submenu'), submenuTitle).toContain(submenuTitle);
     }
 
     expect(cascadingMenuSrc).toContain('submenu-stacked-below');
@@ -1599,12 +1599,8 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(tauriMainRs).toContain('RunEvent::ExitRequested');
     expect(tauriMainRs).toContain('cmd_set_confirm_before_quit');
     expect(tauriMainRs).toContain('cmd_app_exit');
-    expect(macMainMm).toContain('@"app:request-quit"');
-    expect(macMainMm).toContain('windowShouldClose:');
-    expect(macMainMm).toContain('applicationShouldTerminate:');
-    expect(macMainMm).toContain('@"setConfirmBeforeQuit"');
-    expect(macMainMm).toContain('@"confirmQuitNow"');
-    expect(appSrc).toContain("case 'app:request-quit':");
+    expect(appSrc).toContain("if (actionId === 'app:request-quit' || actionId === 'file:quit') {");
+    expect(NATIVE_DISPATCH.get('app:request-quit')?.runs).toBe('app-quit-cmd');
     expect(appSrc).toContain('<ConfirmQuitModal');
 
     // Verify ConfirmQuitModal centers in the app window without top-anchored 64px specificity collision
@@ -1763,8 +1759,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     // 1. Zero trailing '...' in any menu label across Web/React, Tauri Rust, and macOS Cocoa
     expect(menuSrc).not.toMatch(/label:\s*['"`][^'"`]*\.\.\.['"`]/);
     expect(homeTsxText).not.toMatch(/label:\s*['"`][^'"`]*\.\.\.['"`]/);
-    expect(tauriMainRs).not.toMatch(/"[^"\n]*\.\.\."/);
-    expect(macMainMm).not.toMatch(/@"[^"\n]*\.\.\."/);
+    expect(nativeMenuJson).not.toMatch(/"[^"\n]*\.\.\."/);
 
     // Ensure CSS never truncates complete menu labels with ellipsis
     const menuLabelRule = appCssText.match(/\.desktop-menu-label\s*\{([\s\S]*?)\}/);

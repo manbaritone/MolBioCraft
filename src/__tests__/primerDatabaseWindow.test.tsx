@@ -176,10 +176,13 @@ describe('Databases > Primers opens from every menu (US-01M7DQFS AC1)', () => {
   });
 
   it('US-01M7DQFS AC1 the native menu item opens the window through the dispatcher and is enabled with no session', async () => {
-    const mainRs = readFileSync(new URL('../../src-tauri/src/main.rs', import.meta.url), 'utf8');
-    const dbs = mainRs.slice(mainRs.indexOf('let tools_dbs_sub'), mainRs.indexOf('let tools_batch_sub'));
+    // The native Tools › Databases submenu, from the spec generated from the registry (US-01M6Q159, D0260).
+    type NativeNode = { type: string; id?: string; label?: string; items?: NativeNode[] };
+    const spec = JSON.parse(readFileSync(new URL('../../src-tauri/native-menu.json', import.meta.url), 'utf8')) as { menus: { label: string; items: NativeNode[] }[] };
+    const tools = spec.menus.find((m) => m.label === 'Tools')?.items ?? [];
+    const dbs = tools.find((n) => n.type === 'submenu' && n.label === 'Databases')?.items ?? [];
     // The native Databases submenu gains Primers and keeps every item it had, in order.
-    expect([...dbs.matchAll(/item\("([^"]+)", "([^"]+)"/g)].map((m) => `${m[1]} ${m[2]}`)).toEqual([
+    expect(dbs.filter((n) => n.type === 'item').map((n) => `${n.id} ${n.label}`)).toEqual([
       'tools:databases-explorer NCBI & UniProt',
       'tools:primer-database Primers',
       'tools:enzyme-database Restriction Enzymes',

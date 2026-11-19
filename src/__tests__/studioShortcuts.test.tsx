@@ -26,7 +26,8 @@ vi.setConfig({ testTimeout: 120_000 });
 
 const nodeFsSpec = 'node:fs';
 const { readFileSync } = (await import(/* @vite-ignore */ nodeFsSpec)) as { readFileSync: (path: URL, encoding: 'utf8') => string };
-const MAIN_RS = readFileSync(new URL('../../src-tauri/src/main.rs', import.meta.url), 'utf8');
+/** The native menu spec generated from the registry, which the macOS builder reads (US-01M6Q159, D0260). */
+const NATIVE_MENU = readFileSync(new URL('../../src-tauri/native-menu.json', import.meta.url), 'utf8');
 const CHANGELOG = readFileSync(new URL('../../CHANGELOG.md', import.meta.url), 'utf8');
 
 const words = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
@@ -236,9 +237,14 @@ describe('US-01M6Q1CF AC5: a studio key on a document it does not fit does nothi
 
 describe('US-01M6Q1CF AC6: the remapped commands carry one label on both menus', () => {
   const nativeLabel = (id: string) => {
-    const m = MAIN_RS.match(new RegExp(`item\\(\\s*"${id}",\\s*"([^"]+)"`));
-    if (!m) throw new Error(`main.rs has no item ${id}`);
-    return m[1];
+    type NativeNode = { type: string; id?: string; label?: string; items?: NativeNode[] };
+    const find = (items: NativeNode[]): NativeNode | undefined => {
+      for (const n of items) { const hit = n.type === 'item' && n.id === id ? n : n.items ? find(n.items) : undefined; if (hit) return hit; }
+      return undefined;
+    };
+    const m = find((JSON.parse(NATIVE_MENU) as { menus: { items: NativeNode[] }[] }).menus.flatMap((t) => t.items));
+    if (!m?.label) throw new Error(`native-menu.json has no item ${id}`);
+    return m.label;
   };
   it('US-01M6Q1CF AC6 native and in-window labels agree for the layouts, Save Session, Export GenBank, History and each studio', async () => {
     await withApp({}, one(PLASMID, 'sequence-view'), async (app) => {

@@ -442,7 +442,10 @@ const topSub = (top: string, label: string) => {
   return sub[0];
 };
 const labelsOf = (nodes: readonly Node[] | undefined) => (nodes ?? []).filter((n) => n.kind !== 'separator').map((n) => n.label);
-const nativeItems = (src: string) => [...src.matchAll(/item\(\s*"([^"]+)",\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]);
+type NativeNode = { type: string; id?: string; label?: string; items?: NativeNode[] };
+/** A native submenu's commands, as [id, label], from the generated spec (US-01M6Q159, D0260). */
+const nativeItems = (items: NativeNode[]) => items.filter((n) => n.type === 'item').map((n) => [n.id, n.label]);
+const nativeSub = (items: NativeNode[], label: string) => items.find((n) => n.type === 'submenu' && n.label === label)?.items ?? [];
 const EXAMPLES = ['Evolution Examples…', '500 kbp Annotated Genome', '10,000 aa Protein'];
 const LOADED: Record<string, RegExp> = {
   '500 kbp Annotated Genome': /^Loaded ".+" \(500,000 bp, \d+ annotations; [\d,]+ KiB held in memory\)$/,
@@ -452,15 +455,16 @@ const LOADED: Record<string, RegExp> = {
 describe('US-01M7QCN2 AC1: Help › Load Example Data offers the two benchmark documents', () => {
   it('US-01M7QCN2 AC1 Help Load Example Data offers the two benchmark documents', async () => {
     // The native Help menu: the same three items in their own submenu, out of Guides, none needing a session.
-    const mainRs = readFileSync('src-tauri/src/main.rs', 'utf8');
-    const native = mainRs.slice(mainRs.indexOf('let help_examples_sub'), mainRs.indexOf('let help_about_sub'));
+    const spec = JSON.parse(readFileSync('src-tauri/native-menu.json', 'utf8')) as { menus: { label: string; items: NativeNode[] }[] };
+    const help = spec.menus.find((m) => m.label === 'Help')?.items ?? [];
+    const native = nativeSub(help, 'Load Example Data');
     expect(nativeItems(native), 'the native Help › Load Example Data').toEqual([
       ['help:examples', 'Evolution Examples…'], ['help:bench-genome', '500 kbp Annotated Genome'], ['help:bench-protein', '10,000 aa Protein'],
     ]);
-    expect(native).toContain('"Load Example Data"');
-    const guides = mainRs.slice(mainRs.indexOf('let help_guides_sub'), mainRs.indexOf('let help_examples_sub'));
+    expect(native.length, 'the native Help menu has a Load Example Data submenu').toBeGreaterThan(0);
+    const guides = nativeSub(help, 'Guides');
     expect(nativeItems(guides).map((i) => i[0]), 'Guides no longer holds it').not.toContain('help:examples');
-    expect(mainRs.slice(mainRs.indexOf('let help_menu'), mainRs.indexOf('let help_menu') + 300)).toMatch(/&help_guides_sub,\s*&help_examples_sub,\s*&help_about_sub/);
+    expect(help.filter((n) => n.type === 'submenu').map((n) => n.label)).toEqual(['Guides', 'Load Example Data', 'About']);
 
     // Each benchmark from the in-window menu, without a session and with one; and from the native id.
     for (const withSession of [false, true]) {
@@ -561,7 +565,7 @@ describe('US-01M7QCN2 AC2: the header search opens the command palette', () => {
       expect(open().map((i) => i.value), 'the menu item opens ⌘K').toEqual(['']);
       await shut();
       await app.menu('view:search-tools');
-      expect(open().map((i) => i.value), 'the native Search Tools & Files opens ⌘K').toEqual(['']);
+      expect(open().map((i) => i.value), 'the native Command Palette opens ⌘K').toEqual(['']);
     });
   }, 60_000);
 });

@@ -24,6 +24,7 @@
     "wasm:build": "node scripts/build_rust_wasm.mjs",
     "rust:test": "cargo test --workspace",
     "rpc:capture": "node scripts/capture_rpc_payloads.mjs",
+    "menu:native": "vite-node scripts/gen_native_menu.mjs",
     "package:installers": "./scripts/build_installers.sh"
   },
   "dependencies": {
