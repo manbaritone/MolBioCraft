@@ -89,10 +89,10 @@ describe('Multi-Task Guided Bioinformatics Pipeline Engine (100% Local Desktop)'
 
 const PIPELINE_IDS = BIO_PIPELINE_CATALOG.map((d) => d.id);
 const STATUSES = ['PASS', 'WARN', 'ACTION_REQUIRED'];
-/** The eight TargetWorkbenchStudio ids (bioPipelineEngine.ts). */
+/** The eight TargetWorkbenchStudio ids (bioPipelineEngine.ts): the Protein studio in History's place (US-01M6Q164). */
 const TARGET_STUDIOS = [
   'sequence-view', 'vector-library', 'cloning-gel', 'primers-pcr',
-  'sequence-alignment', 'phylogenetics', 'sanger-contig', 'history-hybrid',
+  'sequence-alignment', 'phylogenetics', 'sanger-contig', 'protein-3d',
 ];
 
 const docOf = (

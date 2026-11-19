@@ -63,14 +63,14 @@ export const STUDIOS: readonly StudioEntry[] = [
   studio('alignment', 'Alignment', { glyph: 'align-msa' }, 7, { tab: 'sequence-alignment' }, 'a sequence or a set of sequences'),
   studio('phylogenetics', 'Phylogenetics', { glyph: 'tree-cladogram' }, 8, { tab: 'phylogenetics' }, 'a sequence or a tree'),
   studio('sanger-contig', 'Sanger & Contig', { docKind: 'trace', visual: 'sanger-trace' }, 9, { tab: 'sanger-contig' }, 'a Sanger trace'),
-  // Interim (US-01M6Q164 gives Protein & 3D a tab of its own): genomics-ngs is shared by sub-view.
+  // Its own tab (US-01M6Q164): the genomics tab belongs to Pipelines & NGS in every view.
   studio('protein-3d', 'Protein & 3D', { docKind: 'protein', visual: 'structure-3d' }, undefined,
-    { tab: 'genomics-ngs', view: 'protein-3d' }, 'a protein, DNA or RNA sequence'),
+    { tab: 'protein-3d' }, 'a protein, DNA or RNA sequence'),
   studio('pipelines-ngs', 'Pipelines & NGS', { glyph: 'workflow-pipeline' }, undefined, { tab: 'guided-pipelines' }, 'a sequence',
     [{ tab: 'guided-pipelines' }, ...NGS_VIEWS.map((view) => ({ tab: 'genomics-ngs' as const, view }))]),
 ];
 
-/** The two document panels: History and Info (13 tabs = 11 studios + 2 panels). */
+/** The two document panels: History and Info (14 viewer tabs: the 11 studios' 12, as Pipelines & NGS has two, and the 2 panels). */
 export const DOCUMENT_PANELS: readonly StudioEntry[] = [
   { id: 'history', kind: 'panel', name: 'History', icon: { docKind: 'protein', visual: 'protein-seq' }, opens: { tab: 'history-hybrid' },
     views: [{ tab: 'history-hybrid' }], needs: 'a sequence, a tree or an enzyme set' },
@@ -91,15 +91,9 @@ export function studioForView(tab: ViewerTab, view?: GenomicsSubTabId): StudioEn
   return STUDIO_ENTRIES.find((e) => e.views.some((v) => v.tab === tab && v.view === view));
 }
 
-/** The genomics-ngs sub-view a record shows its tab as: a protein or a structure is Protein & 3D, anything else Pipelines & NGS. */
-export function genomicsViewForDocument(doc?: SequenceDocument): GenomicsSubTabId {
-  if (!doc) return 'protein-3d';
-  return doc.moleculeType === 'Protein' || doc.docMetadata?.PDBText || doc.docMetadata?.['PDB name'] ? 'protein-3d' : 'ngs-assembly';
-}
-
-/** The studio or panel a tab belongs to for `doc` (genomics-ngs by `view`, or else by the record). */
+/** The studio or panel a tab belongs to (genomics-ngs, in any of its views, is Pipelines & NGS). */
 export function studioForTab(tab: ViewerTab, doc?: SequenceDocument, view?: GenomicsSubTabId): StudioEntry {
-  const entry = studioForView(tab, tab === 'genomics-ngs' ? view ?? genomicsViewForDocument(doc) : undefined);
+  const entry = studioForView(tab, tab === 'genomics-ngs' ? view ?? NGS_VIEWS[0] : undefined);
   if (!entry) throw new Error(`the studio registry has no studio for the ${tab} tab`);
   return entry;
 }

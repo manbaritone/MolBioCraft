@@ -152,7 +152,7 @@ describe('US-01M6Q16Q AC1: the registry lists the eleven studios and two documen
 
   it('US-01M6Q16Q AC1 VIEWER_TAB_ORDER lists the studios\' tabs in rail order, then History, then Info', () => {
     expect(VIEWER_TAB_ORDER).toEqual(['sequence-view', 'annotations-table', 'text-view', 'cloning-gel', 'vector-library', 'primers-pcr',
-      'sequence-alignment', 'phylogenetics', 'sanger-contig', 'genomics-ngs', 'guided-pipelines', 'history-hybrid', 'document-info']);
+      'sequence-alignment', 'phylogenetics', 'sanger-contig', 'protein-3d', 'guided-pipelines', 'genomics-ngs', 'history-hybrid', 'document-info']);
     // Each tab sits where its owner sits on the rail.
     const rank = (tab: ViewerTab) => STUDIO_ENTRIES.findIndex((e) => e.views.some((v) => v.tab === tab));
     const ranks = VIEWER_TAB_ORDER.map(rank);
@@ -169,7 +169,7 @@ describe('US-01M6Q16Q AC2: every viewer tab and sub-view belongs to exactly one 
       ['sequence-view', undefined, 'Sequence Map'], ['annotations-table', undefined, 'Annotations'], ['text-view', undefined, 'Flatfile'],
       ['cloning-gel', undefined, 'Cloning & Gel'], ['vector-library', undefined, 'Vectors & Architect'], ['primers-pcr', undefined, 'Primers & CRISPR'],
       ['sequence-alignment', undefined, 'Alignment'], ['phylogenetics', undefined, 'Phylogenetics'], ['sanger-contig', undefined, 'Sanger & Contig'],
-      ['genomics-ngs', 'protein-3d', 'Protein & 3D'], ['genomics-ngs', 'ngs-assembly', 'Pipelines & NGS'], ['genomics-ngs', 'genome-variants', 'Pipelines & NGS'],
+      ['protein-3d', undefined, 'Protein & 3D'], ['genomics-ngs', 'ngs-assembly', 'Pipelines & NGS'], ['genomics-ngs', 'genome-variants', 'Pipelines & NGS'],
       ['genomics-ngs', 'genes-cpg-repeats', 'Pipelines & NGS'], ['genomics-ngs', 'transform-submit', 'Pipelines & NGS'],
       ['guided-pipelines', undefined, 'Pipelines & NGS'], ['history-hybrid', undefined, 'History'], ['document-info', undefined, 'Info'],
     ];
@@ -177,11 +177,14 @@ describe('US-01M6Q16Q AC2: every viewer tab and sub-view belongs to exactly one 
       expect(owners(tab, view), `${tab}${view ? ` › ${view}` : ''}`).toEqual([name]);
       expect(studioForView(tab, view as never)?.name, `${tab}${view ? ` › ${view}` : ''}`).toBe(name);
     }
-    expect(new Set(expected.map(([t]) => t)).size, 'every one of the 13 tabs is covered').toBe(13);
-    // The shared tab resolves by record: a protein's genomics-ngs is Protein & 3D, a DNA's is Pipelines & NGS.
-    expect(studioForTab('genomics-ngs', PROTEIN).name).toBe('Protein & 3D');
+    // 14 tabs since US-01M6Q164 gave Protein & 3D its own (F01's 14 names); genomics-ngs has four views.
+    expect(new Set(expected.map(([t]) => t)).size, 'every one of the 14 tabs is covered').toBe(14);
+    expect(new Set(expected.map(([t]) => t)), 'and they are the registry\'s tabs').toEqual(new Set(VIEWER_TAB_ORDER));
+    // Protein & 3D is its own tab; genomics-ngs is Pipelines & NGS whatever the record.
+    expect(studioForTab('protein-3d', PROTEIN).name).toBe('Protein & 3D');
+    expect(studioForTab('protein-3d', DNA).name).toBe('Protein & 3D');
+    expect(studioForTab('genomics-ngs', PROTEIN).name).toBe('Pipelines & NGS');
     expect(studioForTab('genomics-ngs', DNA).name).toBe('Pipelines & NGS');
-    expect(studioForTab('genomics-ngs', DNA, 'protein-3d').name).toBe('Protein & 3D');
   });
 
   it('US-01M6Q16Q AC2 a studio applies to a DNA, a protein, a tree, a text note and a blank session as supportedViewerTabs says', () => {
@@ -199,7 +202,7 @@ describe('US-01M6Q16Q AC2: every viewer tab and sub-view belongs to exactly one 
 
   it('US-01M6Q16Q AC2 the label takes the view: genomics-ngs reads Protein & 3D in its protein-3d view and Pipelines & NGS in every other (D0239)', () => {
     for (const doc of [DNA, PROTEIN, undefined]) {
-      expect(viewerTabLabel('genomics-ngs', doc, 'protein-3d'), `${doc?.name ?? 'no record'} in protein-3d`).toBe('Protein & 3D');
+      expect(viewerTabLabel('protein-3d', doc), `${doc?.name ?? 'no record'} on the protein-3d tab`).toBe('Protein & 3D');
       for (const view of ['ngs-assembly', 'genome-variants', 'genes-cpg-repeats', 'transform-submit'] as const) {
         expect(viewerTabLabel('genomics-ngs', doc, view), `${doc?.name ?? 'no record'} in ${view}`).toBe('Pipelines & NGS');
       }
@@ -219,13 +222,14 @@ describe('US-01M6Q16Q AC2: every viewer tab and sub-view belongs to exactly one 
       const choose = async (name: string) => app.click((await palette(app)).find((i) => i.label === name)!.el);
       const studio = (name: string) => byName(name).id;
 
-      // A plain DNA record: ⌘K's Protein & 3D opens the genomics tab in its 3D view, which has no settings.
+      // A plain DNA record: ⌘K's Protein & 3D opens the Protein studio's tab (US-01M6Q164), whose
+      // protein analysis of the CDS has its settings.
       await openOn(app, DNA, 'sequence-view');
       await helpOpen();
       expect(app.all('.mbc-help-panel'), 'F1 opens the Help panel').toHaveLength(1);
       await choose('Protein & 3D');
-      expect(app.activeTab(), '⌘K Protein & 3D opens the genomics tab').toBe('genomics-ngs');
-      expect(shown(), 'Protein & 3D on a DNA record').toEqual({ tab: [['Protein & 3D', studio('Protein & 3D')]], inspector: null, help: ['Protein & 3D'] });
+      expect(app.activeTab(), '⌘K Protein & 3D opens the genomics tab').toBe('protein-3d');
+      expect(shown(), 'Protein & 3D on a DNA record').toEqual({ tab: [['Protein & 3D', studio('Protein & 3D')]], inspector: 'Protein & 3D Controls', help: ['Protein & 3D'] });
       await choose('Pipelines & NGS');
       // It opens on the guided pipelines, which have no settings either.
       expect(shown(), 'Pipelines & NGS on a DNA record')
@@ -235,7 +239,7 @@ describe('US-01M6Q16Q AC2: every viewer tab and sub-view belongs to exactly one 
       await app.restoreSession({ documents: [...LIBRARY, DNA_COMPLEX], activeDocId: DNA_COMPLEX.id, viewerTab: 'sequence-view' });
       await helpOpen();
       await choose('Protein & 3D');
-      expect(app.activeTab()).toBe('genomics-ngs');
+      expect(app.activeTab()).toBe('protein-3d');
       expect(shown(), 'Protein & 3D on a DNA chain of a structure')
         .toEqual({ tab: [['Protein & 3D', studio('Protein & 3D')]], inspector: 'Protein & 3D Controls', help: ['Protein & 3D'] });
       // The same record's genomics tab in an NGS view (Tools > NGS suite) is Pipelines & NGS on all three.
@@ -251,9 +255,8 @@ describe('US-01M6Q16Q AC2: every viewer tab and sub-view belongs to exactly one 
         await app.click(hit[0]);
         expect(app.canvas().querySelectorAll('button[role="tab"][aria-selected="true"]').map((b) => words(b.textContent)), `${label} is selected`).toContain(label);
       };
-      await subTab('Coiled-Coils, Transmembrane & 3D PDB');
-      expect(shown(), 'the studio\'s own 3D sub-tab')
-        .toEqual({ tab: [['Protein & 3D', studio('Protein & 3D')]], inspector: 'Protein & 3D Controls', help: ['Protein & 3D'] });
+      // The genomics studio has no 3D sub-tab since US-01M6Q164: every sub-tab is Pipelines & NGS.
+      expect(app.canvas().querySelectorAll('button[role="tab"]').filter((b) => words(b.textContent) === 'Coiled-Coils, Transmembrane & 3D PDB'), 'no 3D sub-tab').toHaveLength(0);
       await subTab('Glimmer Genes, CpG & Repeats');
       expect(shown(), 'back to an NGS sub-tab')
         .toEqual({ tab: [['Pipelines & NGS', studio('Pipelines & NGS')]], inspector: 'Pipelines & NGS Controls', help: ['Pipelines & NGS'] });
@@ -270,7 +273,7 @@ describe('US-01M6Q16Q AC3: each studio tab shows its registry name', () => {
     const app = await mountApp();
     try {
       const cases: [SequenceDocument, ViewerTab, string][] = [
-        [TRACE, 'sanger-contig', 'Sanger & Contig'], [PROTEIN, 'genomics-ngs', 'Protein & 3D'], [TREE, 'phylogenetics', 'Phylogenetics'],
+        [TRACE, 'sanger-contig', 'Sanger & Contig'], [PROTEIN, 'protein-3d', 'Protein & 3D'], [TREE, 'phylogenetics', 'Phylogenetics'],
         [ALIGNMENT, 'sequence-alignment', 'Alignment'], [NOTE, 'text-view', 'Flatfile'],
         // The per-record names are gone: an unaligned list and an enzyme set read Alignment and History.
         [UNALIGNED, 'sequence-alignment', 'Alignment'], [ENZYMES, 'history-hybrid', 'History'],
@@ -380,7 +383,7 @@ describe('US-01M6Q16Q AC5: an unavailable studio explains itself with the regist
     // It names the view as the tab does: by the genomics sub-view shown (D0239).
     expect(boundaries).toEqual(['viewerTabLabel(viewerTab, activeDoc, genomicsShownView)']);
     expect(viewerTabLabel('sanger-contig', TRACE)).toBe('Sanger & Contig');
-    expect(viewerTabLabel('genomics-ngs', PROTEIN)).toBe('Protein & 3D');
+    expect(viewerTabLabel('protein-3d', PROTEIN)).toBe('Protein & 3D');
   });
 });
 
@@ -392,7 +395,7 @@ describe('US-01M6Q16Q AC7: each studio is drawn with its registry icon from the 
     const app = await mountApp();
     const drawn: [string, string][] = [];
     try {
-      for (const [doc, tab] of [[DNA, 'sequence-view'], [TRACE, 'sanger-contig'], [PROTEIN, 'genomics-ngs'], [TREE, 'phylogenetics'], [ALIGNMENT, 'sequence-alignment']] as const) {
+      for (const [doc, tab] of [[DNA, 'sequence-view'], [TRACE, 'sanger-contig'], [PROTEIN, 'protein-3d'], [TREE, 'phylogenetics'], [ALIGNMENT, 'sequence-alignment']] as const) {
         await openOn(app, doc, tab);
         for (const t of studioTabs(app)) {
           const svg = t.el.querySelectorAll('svg')[0];

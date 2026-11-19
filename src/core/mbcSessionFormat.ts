@@ -44,6 +44,7 @@ export type MbcViewerTabId =
   | 'sequence-alignment'
   | 'phylogenetics'
   | 'sanger-contig'
+  | 'protein-3d'
   | 'genomics-ngs'
   | 'history-hybrid'
   | 'guided-pipelines'

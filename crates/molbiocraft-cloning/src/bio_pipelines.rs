@@ -831,7 +831,7 @@ pub fn execute_bio_pipeline_rust(
             } else {
                 vec!["Adjust 5' linker or 3' fusion junction by 1–2 bp to restore reading-frame continuity.".into()]
             },
-            target_studio: "history-hybrid".into(),
+            target_studio: "protein-3d".into(),
             target_studio_label: "Open Protein Analysis".into(),
             warnings: Vec::new(),
             highlight_range: Some(PipelineHighlightRange {
@@ -1636,7 +1636,7 @@ pub fn execute_bio_pipeline_rust(
                 if prot.isoelectric_point_pi > 7.2 { "6.5 (MES/Bis-Tris)" } else { "8.0 (Tris/HEPES)" },
                 prot.isoelectric_point_pi
             )],
-            target_studio: "history-hybrid".into(),
+            target_studio: "protein-3d".into(),
             target_studio_label: "Open Protein Biophysics Studio".into(),
             warnings: Vec::new(),
             highlight_range: None,
@@ -1725,7 +1725,7 @@ pub fn execute_bio_pipeline_rust(
             recommendations: vec![
                 "Pair mammalian expression with a strong Kozak consensus (5'-GCCACCATGG-3') or bacterial pET expression with a 7–9 nt Shine-Dalgarno spacer.".into(),
             ],
-            target_studio: "history-hybrid".into(),
+            target_studio: "protein-3d".into(),
             target_studio_label: "Open Codon Optimizer".into(),
             warnings: Vec::new(),
             highlight_range: None,
@@ -1755,7 +1755,7 @@ pub fn execute_bio_pipeline_rust(
             strand: None,
             color: if strong_hairpin { "#d97706" } else { "#0d9488" }.into(),
             status: s3_status.into(),
-            target_studio: "history-hybrid".into(),
+            target_studio: "primers-pcr".into(),
         });
 
         steps.push(BioPipelineStepResult {
@@ -1803,7 +1803,7 @@ pub fn execute_bio_pipeline_rust(
             } else {
                 vec!["5' mRNA leader is thermodynamically open for efficient ribosomal scanning.".into()]
             },
-            target_studio: "history-hybrid".into(),
+            target_studio: "primers-pcr".into(),
             target_studio_label: "Open RNA/DNA Folding".into(),
             warnings: Vec::new(),
             highlight_range: Some(PipelineHighlightRange {
@@ -1858,7 +1858,7 @@ pub fn execute_bio_pipeline_rust(
             recommendations: vec![
                 "Place flexible (GGGGS)₃ linkers or TEV protease cleavage sites inside predicted coil regions rather than core α-helices.".into(),
             ],
-            target_studio: "history-hybrid".into(),
+            target_studio: "protein-3d".into(),
             target_studio_label: "Inspect Hydropathy & GOR Plots".into(),
             warnings: Vec::new(),
             highlight_range: None,

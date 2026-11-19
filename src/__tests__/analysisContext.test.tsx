@@ -9,6 +9,7 @@ import * as genomics from '../core/genomicsAndStructureSuite';
 import * as bio from '../core/bioEngine';
 import { GenomicsNgsAndPredictionStudio } from '../components/GenomicsNgsAndPredictionStudio';
 import { HybridToolsAndHistoryStudio } from '../components/HybridToolsAndHistoryStudio';
+import { ProteinStudio } from '../components/ProteinStudio';
 import type { SequenceDocument } from '../types/bio';
 
 const dna: SequenceDocument = {
@@ -22,11 +23,13 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('analysis context and deferred panels', () => {
   it('keeps DNA tools off proteins and RNA, and opens history for DNA', () => {
-    expect(genomicsTabsForDocument(protein)).toEqual(['protein-3d']);
+    expect(genomicsTabsForDocument(protein)).toEqual([]);
+    expect(hybridTabsForDocument(protein)).not.toContain('protein' as never);
+    expect(hybridTabsForDocument(dna)).not.toContain('protein' as never);
     expect(hybridTabsForDocument(protein)).not.toContain('enzymes-view');
     expect(hybridTabsForDocument({ ...dna, moleculeType: 'RNA' })).not.toContain('enzymes-view');
     expect(defaultHybridSubTab(dna)).toBe('lineage');
-    expect(defaultHybridSubTab(protein)).toBe('protein');
+    expect(defaultHybridSubTab(protein)).toBe('lineage');
     expect(defaultHybridSubTab({ ...dna, docMetadata: { 'Document Type': 'Enzyme Set' } })).toBe('enzymes-view');
   });
 
@@ -35,10 +38,7 @@ describe('analysis context and deferred panels', () => {
     const assembly = vi.spyOn(genomics, 'runDeNovoAssembly');
     const variants = vi.spyOn(genomics, 'callFreeBayesVariants');
     const topology = vi.spyOn(genomics, 'predictCoiledCoilsAndTransmembrane');
-    const html = renderToStaticMarkup(<GenomicsNgsAndPredictionStudio
-      activeDoc={protein} documents={[dna, protein]} initialSubTab="ngs-assembly"
-      onCreateDocument={() => {}} onUpdateActiveSequence={() => {}} onAppendFeatures={() => {}}
-    />);
+    const html = renderToStaticMarkup(<ProteinStudio activeDoc={protein} />);
     expect(trim).not.toHaveBeenCalled();
     expect(assembly).not.toHaveBeenCalled();
     expect(variants).not.toHaveBeenCalled();
@@ -71,7 +71,7 @@ describe('analysis context and deferred panels', () => {
   });
 
   it('does not offer codon optimization for a protein substrate', () => {
-    const html = renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={protein} />);
+    const html = renderToStaticMarkup(<ProteinStudio activeDoc={protein} />);
     expect(html).not.toContain('Back-Translate &amp; Multi-Host Codon Optimizer');
     expect(html).toContain('Molecular Weight');
   });

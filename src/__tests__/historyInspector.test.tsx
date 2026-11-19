@@ -4,6 +4,8 @@
 /**
  * US-01M6TANN: the History window's protein, folding and lineage settings in App's shared
  * inspector, and no inspector on its Enzymes and Workflows sub-tabs, which have nothing to set.
+ * The protein settings moved with History's protein sub-tab to the Protein studio (US-01M6Q164,
+ * D0247 (2)): they are checked there, on the same DNA construct, under the Protein studio's title.
  *
  * Every check runs in the real App over the live DOM (the US-01M6TB6G harness): a session built
  * here is restored on the History tab, and the checks read App's own header button, its inspector
@@ -121,7 +123,6 @@ function selectedSubTab(app: AppHarness, root?: LiveElement): string | null {
   return selected[0]?.textContent.trim() ?? null;
 }
 const SUB_TABS = {
-  protein: 'Protein Analysis & Codon Opt',
   // US-01M6Q1CF AC9: the sub-tabs name no ⌘-digit.
   fold: 'Secondary Structure',
   enzymes: 'Enzymes View (123 / ||||)',
@@ -129,6 +130,20 @@ const SUB_TABS = {
   workflows: 'Workflows & Genetic Code Tables',
 } as const;
 type SubTab = keyof typeof SUB_TABS;
+/** History's former protein sub-tab, now the Protein studio (US-01M6Q164). */
+const FORMER_PROTEIN_SUB_TAB = 'Protein Analysis & Codon Opt';
+/** The Protein studio's inspector on a DNA construct: the protein analysis's section alone (no structure to set). */
+const PROTEIN_OPEN = { button: `Hide ${studioName('protein-3d')} Controls Inspector`, title: `${studioName('protein-3d')} Controls`, sections: ['Protein Analysis'] };
+/** Opens the Protein studio on the active record from the rail, as a user does. */
+async function openProtein(app: AppHarness) {
+  await app.clickStudio('protein-3d');
+  expect(app.activeTab(), 'the Protein studio').toBe('protein-3d');
+}
+/** Back to History from the rail. */
+async function backToHistory(app: AppHarness) {
+  await app.clickTab('history-hybrid');
+  expect(app.activeTab(), 'History').toBe('history-hybrid');
+}
 /** Clicks the studio's own sub-tab button, as a user does. */
 async function openSubTab(app: AppHarness, tab: SubTab, root?: LiveElement) {
   const hit = subTabButtons(app, root).filter((b) => b.textContent.trim() === SUB_TABS[tab] && !b.hasAttribute('hidden'));
@@ -263,15 +278,18 @@ describe("History's settings in App's inspector (AC1)", () => {
       await onHistory(app);
       expect(app.railTabs().filter((b) => b.getAttribute('data-studio') === 'history')[0]?.textContent.trim(), 'the rail entry reads History').toBe('History');
 
+      // History has no protein sub-tab: the protein settings are the Protein studio's, on the same construct.
+      expect(subTabButtons(app).map((b) => b.textContent.trim()), 'no protein sub-tab in History').not.toContain(FORMER_PROTEIN_SUB_TAB);
       // Protein: the hydropathy window and the protease; the MS2 peptide picker stays with its spectrum.
-      await openSubTab(app, 'protein');
-      expect(shown(app)).toEqual({ button: 'Hide History Controls Inspector', title: 'History Controls', sections: ['Protein Analysis'] });
+      await openProtein(app);
+      expect(shown(app)).toEqual(PROTEIN_OPEN);
       proteinControls(app);
       const peptidePickers = (root: LiveElement) => root.querySelectorAll('select').filter((s) => labelText(s).startsWith('b/y Fragment Ions'));
       expect(peptidePickers(app.canvas()), 'the MS2 peptide picker stays in the canvas').toHaveLength(1);
       expect(peptidePickers(app.inspectorAside()!), 'and is not in the inspector').toHaveLength(0);
 
       // Secondary structure: fold as, region, temperature, dangles and topology; the hairpin picker stays with its drawing.
+      await backToHistory(app);
       await openSubTab(app, 'fold');
       expect(shown(app)).toEqual({ button: 'Hide History Controls Inspector', title: 'History Controls', sections: ['Folding'] });
       foldControls(app);
@@ -289,12 +307,12 @@ describe("History's settings in App's inspector (AC1)", () => {
       expect(shown(app)).toEqual({ button: 'Show History Controls Inspector', title: null, sections: [] });
       expect(historyColors(app.doc.body), 'Show History Colors is nowhere while hidden').toHaveLength(0);
       expect(selectsOffering(app.doc.body, STRAINS), 'the strain is nowhere while hidden').toHaveLength(0);
-      await openSubTab(app, 'protein');
-      expect(shown(app), 'a sub-tab switch keeps it hidden').toEqual({ button: 'Show History Controls Inspector', title: null, sections: [] });
+      await openProtein(app);
+      expect(shown(app), 'a switch to the Protein studio keeps it hidden').toEqual({ button: `Show ${studioName('protein-3d')} Controls Inspector`, title: null, sections: [] });
       expect(ranges(app.canvas()), 'the hydropathy window is not drawn in the canvas while hidden').toHaveLength(0);
       expect(selectsOffering(app.doc.body, PROTEASES), 'the protease is nowhere while hidden').toHaveLength(0);
       await app.click(app.inspectorButton()!);
-      expect(shown(app)).toEqual({ button: 'Hide History Controls Inspector', title: 'History Controls', sections: ['Protein Analysis'] });
+      expect(shown(app)).toEqual(PROTEIN_OPEN);
       proteinControls(app);
     });
   });
@@ -343,7 +361,7 @@ describe('the settings drive their results (AC3)', () => {
       const e = await engine();
 
       // A new window redraws the hydropathy plot: the line is the engine's profile at that window.
-      await openSubTab(app, 'protein');
+      await openProtein(app);
       const at9 = expectedHydropathyLine(e, 9);
       const at13 = expectedHydropathyLine(e, 13);
       expect(at13, 'the fixture tells window 9 from 13').not.toBe(at9);
@@ -353,8 +371,16 @@ describe('the settings drive their results (AC3)', () => {
       expect(hydropathyHeading(app)).toEqual(['Kyte-Doolittle Hydropathy Plot (Window = 13 aa)']);
       expect(labelText(proteinControls(app).window)).toBe('Hydropathy window: 13 aa');
       await app.change(proteinControls(app).protease, 'Glu-C');
+      // The protein values are the panel's, not the section's: kept across hiding and showing the inspector.
+      await app.click(app.inspectorButton()!);
+      expect(shown(app).button).toBe(`Show ${studioName('protein-3d')} Controls Inspector`);
+      await app.click(app.inspectorButton()!);
+      const p = proteinControls(app);
+      expect([p.window.value, p.protease.value], 'after hiding and showing the inspector: protein').toEqual(['13', 'Glu-C']);
+      expect(hydropathyLine(app), 'after hiding and showing the inspector: the plot at window 13').toBe(at13);
 
       // A new temperature refolds: the MFE shown is the engine's at that temperature.
+      await backToHistory(app);
       await openSubTab(app, 'fold');
       const mfe = (t: number) => e.bio.predictSecondaryStructure(CONSTRUCT_SEQ, 'DNA', { temperatureC: t, danglingEnds: true, circular: false }).minimumFreeEnergyKcalMol;
       expect(mfe(60), 'the fixture folds differently at 37 and 60 °C').not.toBe(mfe(37));
@@ -376,10 +402,7 @@ describe('the settings drive their results (AC3)', () => {
 
       // Each value is kept across the sub-tab switches, and across hiding and showing the inspector.
       const kept = async (where: string) => {
-        await openSubTab(app, 'protein');
-        const p = proteinControls(app);
-        expect([p.window.value, p.protease.value], `${where}: protein`).toEqual(['13', 'Glu-C']);
-        expect(hydropathyLine(app), `${where}: the plot at window 13`).toBe(at13);
+        await openSubTab(app, 'workflows');
         await openSubTab(app, 'fold');
         expect(foldControls(app).temperature.value, `${where}: temperature`).toBe('60');
         expect(kpi(app, 'Minimum Free Energy'), `${where}: folded at 60 °C`).toBe(`${mfe(60)} kcal/mol`);
@@ -433,15 +456,19 @@ describe('the commands that open a History sub-tab (AC5)', () => {
         { name: 'Tools > Pipelines > Lineage Manager', run: () => choose(app, 'Tools', ['Pipelines'], 'Lineage Manager'), tab: 'lineage', section: 'Lineage' },
       ];
       for (const route of routes) {
-        // From History on its Protein sub-tab, then from another tab (Sequence).
-        for (const from of ['History > Protein', 'Sequence'] as const) {
+        // From History on its Enzymes sub-tab, from the Protein studio on the same construct (History's
+        // former protein sub-tab, US-01M6Q164), then from another tab (Sequence).
+        for (const from of ['History > Enzymes', 'Protein & 3D', 'Sequence'] as const) {
           if (from === 'Sequence') {
             await app.clickTab('sequence-view');
             expect(shown(app).title, 'on the Sequence tab').toBe(`${studioName('sequence-map')} Controls`);
+          } else if (from === 'Protein & 3D') {
+            await openProtein(app);
+            expect(shown(app)).toEqual(PROTEIN_OPEN);
           } else {
             if (app.activeTab() !== 'history-hybrid') await app.clickTab('history-hybrid');
-            await openSubTab(app, 'protein');
-            expect(shown(app).sections).toEqual(['Protein Analysis']);
+            await openSubTab(app, 'enzymes');
+            expect(shown(app)).toEqual(NONE);
           }
           await route.run();
           const where = `${route.name}, from ${from}`;
@@ -482,25 +509,34 @@ describe('the studio drawn on its own (AC6)', () => {
       const React = await import('react');
       const { createRoot } = await import('react-dom/client');
       const { HybridToolsAndHistoryStudio } = await import('../components/HybridToolsAndHistoryStudio');
+      // History's former protein sub-tab is the Protein studio's panel (US-01M6Q164): drawn on its own too.
+      const { ProteinStudio } = await import('../components/ProteinStudio');
       const probe = app.doc.createElement('div');
       app.doc.body.appendChild(probe);
-      const root = createRoot(probe as unknown as Element);
+      let root = createRoot(probe as unknown as Element);
       try {
         await React.act(async () => {
-          root.render(React.createElement(HybridToolsAndHistoryStudio, { doc: CONSTRUCT, allDocuments: [CONSTRUCT, PARENT], initialSubTab: 'protein' }));
+          root.render(React.createElement(ProteinStudio, { activeDoc: CONSTRUCT }));
         });
         await app.settle();
         const noSections = (where: string) =>
           expect(probe.querySelectorAll('.mbc-accordion-section, .mbc-inspector-sections'), `${where}: no inspector section`).toHaveLength(0);
 
         // Protein: the window in the hydropathy plot's header, the protease in the digest's header.
-        expect(selectedSubTab(app, probe)).toBe(SUB_TABS.protein);
         noSections('Protein');
         const window = once(probe, 'the hydropathy window', ranges);
         expect([window.getAttribute('min'), window.getAttribute('max'), window.getAttribute('step'), window.value], 'the hydropathy window').toEqual(['5', '21', '2', '9']);
         expect(headerOf(window), 'the window sits in the hydropathy plot\'s header').toBe('Kyte-Doolittle Hydropathy Plot (Window = 9 aa)');
         const protease = once(probe, 'the protease', (r) => selectsOffering(r, PROTEASES));
         expect(headerOf(protease), 'the protease sits in the digest\'s header').toBe('Proteomics LC-MS/MS Digest, b/y-Ion MS2 & PTM / Disulfide Prediction');
+
+        // History, drawn on its own in the same place.
+        await React.act(async () => { root.unmount(); });
+        root = createRoot(probe as unknown as Element);
+        await React.act(async () => {
+          root.render(React.createElement(HybridToolsAndHistoryStudio, { doc: CONSTRUCT, allDocuments: [CONSTRUCT, PARENT], initialSubTab: 'lineage' }));
+        });
+        await app.settle();
 
         // Secondary structure: the five fold settings in one grid of the fold's card.
         await openSubTab(app, 'fold', probe);

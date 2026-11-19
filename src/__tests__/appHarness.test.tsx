@@ -86,10 +86,10 @@ function studioDrawn(app: AppHarness, tab: string, landmark: string) {
 
 describe('mounts the real App over the live DOM (AC1)', () => {
   it('mounts the App and opens a lazy studio tab', async () => {
-    // The chunks the harness imports first are App.tsx's React.lazy imports, all of them: the ten
-    // studios (from eight modules) and the database explorer.
+    // The chunks the harness imports first are App.tsx's React.lazy imports, all of them: the eleven
+    // studios (from nine modules, the Protein studio its own since US-01M6Q164) and the database explorer.
     const lazy = [...appTsxSource().matchAll(/React\.lazy\(\(\) =>\s*import\('([^']+)'\)/g)].map((m) => m[1]);
-    expect(lazy, 'App.tsx declares ten lazy studios and the database explorer').toHaveLength(11);
+    expect(lazy, 'App.tsx declares eleven lazy studios and the database explorer').toHaveLength(12);
     expect(Object.keys(LAZY_CHUNKS).sort()).toEqual([...new Set(lazy)].sort());
 
     await withApp({}, async (app) => {

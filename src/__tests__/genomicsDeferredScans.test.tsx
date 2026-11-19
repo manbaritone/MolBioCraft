@@ -516,12 +516,11 @@ const TAB_NAMES: Record<GenomicsSuiteSubTab, string> = {
   'ngs-assembly': 'NGS Trim, Map',
   'genome-variants': 'Whole-Genome, Variants',
   'genes-cpg-repeats': 'Glimmer Genes, CpG',
-  'protein-3d': 'Coiled-Coils, Transmembrane',
   'transform-submit': 'Transform, Mutate',
 };
 /** The scans each sub-view shows. */
 const SCANS_ON: Record<GenomicsSuiteSubTab, ScanName[]> = {
-  'ngs-assembly': [], 'genome-variants': ['synteny'], 'genes-cpg-repeats': ['genes', 'cpg'], 'protein-3d': [], 'transform-submit': [],
+  'ngs-assembly': [], 'genome-variants': ['synteny'], 'genes-cpg-repeats': ['genes', 'cpg'], 'transform-submit': [],
 };
 
 describe('Genomics genome-scale scans', () => {
@@ -547,7 +546,7 @@ describe('Genomics genome-scale scans', () => {
       // opening the tab, every sub-view in turn and back, and a keystroke or a pick in every field of
       // each: no step runs a scan while it renders, commits or runs its effects; a scan runs only in
       // a task of its own, once its panel reads 'Scanning…' in what has been committed
-      const visits: GenomicsSuiteSubTab[] = ['ngs-assembly', 'genome-variants', 'genes-cpg-repeats', 'protein-3d', 'transform-submit', 'genome-variants', 'genes-cpg-repeats'];
+      const visits: GenomicsSuiteSubTab[] = ['ngs-assembly', 'genome-variants', 'genes-cpg-repeats', 'transform-submit', 'genome-variants', 'genes-cpg-repeats'];
       for (const [i, view] of visits.entries()) {
         const firstVisit = visits.indexOf(view) === i;
         if (i > 0) {
@@ -814,7 +813,7 @@ describe('Genomics genome-scale scans', () => {
       const landed = { genes: computedFor(studio, 'genes'), cpg: computedFor(studio, 'cpg') };
       expect([landed.genes, landed.cpg].every(Boolean), 'fixture: both have landed').toBe(true);
       const was = runs();
-      for (const view of ['ngs-assembly', 'protein-3d', 'transform-submit'] as const) {
+      for (const view of ['ngs-assembly', 'transform-submit'] as const) {
         studio.tab(TAB_NAMES[view]);
         studio.settle();
         for (const { label } of studio.fields()) {

@@ -9,7 +9,7 @@ import type { GenomicsSubTabId } from './analysisContext';
 export type ViewerTab =
   | 'sequence-view' | 'annotations-table' | 'text-view' | 'vector-library'
   | 'cloning-gel' | 'primers-pcr' | 'sequence-alignment' | 'phylogenetics'
-  | 'sanger-contig' | 'genomics-ngs' | 'history-hybrid' | 'guided-pipelines'
+  | 'sanger-contig' | 'protein-3d' | 'genomics-ngs' | 'history-hybrid' | 'guided-pipelines'
   | 'document-info';
 
 // The viewer tabs in rail order, and the names they show, come from the studio registry
@@ -21,9 +21,8 @@ export { VIEWER_TAB_ORDER };
 /**
  * The viewer header's label for a tab, which also names a studio tab's inspector (D0208): the name
  * of the studio or panel the tab belongs to, from the studio registry - one name per studio,
- * whatever the record (D0237). The view the tab shows decides which studio genomics-ngs belongs to:
- * Protein & 3D in its protein-3d view, Pipelines & NGS in any other (D0239); with no view given,
- * the record's own (Protein & 3D for a protein or a structure, Pipelines & NGS otherwise).
+ * whatever the record (D0237). The Protein studio has its own tab, protein-3d, and genomics-ngs
+ * belongs to Pipelines & NGS in every view (US-01M6Q164).
  */
 export function viewerTabLabel(tab: ViewerTab, doc?: SequenceDocument, view?: GenomicsSubTabId): string {
   return studioForTab(tab, doc, view).name;
@@ -49,8 +48,11 @@ export function supportedViewerTabs(doc: SequenceDocument): ViewerTab[] {
   // header (a summary has no ORIGIN block), the provenance trail and record info.
   if (isContigSummaryRecord(doc)) return ['sequence-view', 'annotations-table', 'text-view', 'history-hybrid', 'document-info'];
   if (!hasBiologicalSequence(doc)) return ['document-info'];
+  // The Protein studio takes every biological sequence (a DNA or RNA one through its CDS); the
+  // genomics tab's NGS and genome views are not offered for a protein (US-01M6Q164).
   const tabs: ViewerTab[] = ['sequence-view', 'annotations-table', 'text-view',
-    'sequence-alignment', 'phylogenetics', 'genomics-ngs', 'history-hybrid', 'guided-pipelines', 'document-info'];
+    'sequence-alignment', 'phylogenetics', 'protein-3d', 'history-hybrid', 'guided-pipelines', 'document-info'];
+  if (doc.moleculeType !== 'Protein') tabs.push('genomics-ngs');
   if (doc.moleculeType === 'DNA') {
     tabs.push('vector-library', 'cloning-gel', 'primers-pcr');
     if (doc.chromatogram || doc.documentKind === 'trace') tabs.push('sanger-contig');
@@ -72,7 +74,7 @@ export function relevantViewerTabs(doc: SequenceDocument, selectedDocuments: rea
     if (doc.documentKind === 'alignment' && doc.alignmentMeta?.isAligned !== false) tabs.add('phylogenetics');
   }
   if (doc.chromatogram || doc.documentKind === 'trace') tabs.add('sanger-contig');
-  if (doc.docMetadata?.PDBText || doc.docMetadata?.['PDB name']) tabs.add('genomics-ngs');
+  if (doc.docMetadata?.PDBText || doc.docMetadata?.['PDB name']) tabs.add('protein-3d');
   return VIEWER_TAB_ORDER.filter((tab) => tabs.has(tab) && supported.includes(tab));
 }
 
@@ -85,7 +87,7 @@ export function preferredViewerTab(doc: SequenceDocument): ViewerTab {
   if (doc.moleculeType === 'DNA' && (doc.chromatogram || doc.documentKind === 'trace')) return 'sanger-contig';
   if (doc.documentKind === 'alignment' || doc.documentKind === 'contig' ||
       (doc.alignmentMeta?.sequences?.length ?? 0) > 1) return 'sequence-alignment';
-  if (doc.docMetadata?.PDBText) return 'genomics-ngs';
+  if (doc.docMetadata?.PDBText) return 'protein-3d';
   return 'sequence-view';
 }
 

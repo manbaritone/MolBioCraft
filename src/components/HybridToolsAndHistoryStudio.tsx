@@ -3,10 +3,9 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { saveWorkbenchFile } from '../platform/macosMenuBridge';
-import { ArrowRight, ChevronRight } from 'lucide-react';
-import { SequenceDocument, SequenceFeature, type ProteinAnalysisReport, type RestrictionEnzyme } from '../types/bio';
+import { ArrowRight } from 'lucide-react';
+import { SequenceDocument, SequenceFeature, type RestrictionEnzyme } from '../types/bio';
 import {
-  analyzeProteinSequence,
   auditSequenceAlerts,
   complement,
   detectCommonFeatures,
@@ -15,9 +14,7 @@ import {
   isCustomEnzyme,
   predictSecondaryStructure,
   restrictionSiteCountsByName,
-  reverseComplement,
   scanRestrictionSites,
-  translateSequence,
 } from '../core/bioEngine';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import {
@@ -28,29 +25,21 @@ import {
 } from '../plugins/pluginEngine';
 import {
   buildConstructLineageDagRust,
-  CodonOptimizationResult,
-  optimizeCodonsRust,
-  scanPostTranslationalModificationsRust,
-  simulatePeptideMs2SpectrumRust,
-  simulateProteolyticDigestMsRust,
 } from '../lib/rustBioEngine';
 import { WorkbenchSmartTable } from './WorkbenchSmartTable';
 import { documentDates } from './DocumentInfoPanel';
 import { ScrollableMenuStrip } from './ScrollableMenuStrip';
-import {
-  ProteinStructure3DViewer,
-} from './ProteinStructure3DViewer';
 
 import { FigureExportButton } from './FigureExportButton';
 import { ResultWarnings } from './ResultWarnings';
 import { InspectorSection, useInWorkbench } from './WorkbenchInspector';
 import type { FigureTable } from '../core/figureExport';
-import { defaultHybridSubTab, hybridTabsForDocument, type HybridSubTabId } from '../core/analysisContext';
+import { defaultHybridSubTab, hybridTabsForDocument, proteinAnalysisTarget, type HybridSubTabId } from '../core/analysisContext';
+// The protein KPIs' n/a strings, which the protein analysis (now the Protein studio's) reads.
+export { NO_RESIDUE_TRANSLATED, NO_STANDARD_RESIDUE } from '../core/analysisContext';
 import { cutSiteDisplayPosition, enzymeKey } from '../core/restrictionDisplay';
 import { openEnzymeCollections } from '../core/enzymeDatabase';
-import { PK_SCALE_LABEL } from '../core/alignmentViewModel';
 import { chosenRestrictionScope, CORE_CATALOG_LEN, restrictionScanEnzymes, restrictionScopeWords, type ChosenScanCollection } from './CircularPlasmidMap';
-import { hasStructure, structureAtomsOf } from '../core/structureModels';
 import {
   arcDiagram,
   FOLD_CAP_NT,
@@ -61,122 +50,15 @@ import {
 } from '../core/nucleicFold';
 import { CHART_FULL, chartMaxWidth, plotFrame, ticks } from '../core/chartLayout';
 
-/**
- * The most residues of a protein document the protein tab analyses: more than titin (UniProt
- * Q8WZ42, 34,350 aa), the longest known protein, so a real protein is analysed whole. The PTM
- * scan's time grows about with the square of the length (in the WASM engine under Node, 41 ms at
- * 34,350 aa and 0.39 s at 100,000 aa), and the scan stopped with an engine error at 200,000 aa
- * (BG-01M6S13D).
- */
-const PROTEIN_ANALYSIS_CAP_AA = 40_000;
-/**
- * With no CDS feature, the protein tab passes the engine this many bases from the start, of which
- * it analyses the protein of one ORF or frame (`TranslatedSpan`).
- */
-const NO_CDS_ANALYSIS_BP = 1_200;
-
-/** A residue as the engine counts one in a protein (biophysics_3d.rs): an ASCII letter, never `*` or `-`. */
-const RESIDUE = /[A-Za-z]/;
-
-/**
- * The shortest start of a protein sequence holding its first `cap` residues, how many residues
- * that is, and how many the whole sequence holds (BG-01M6S13D).
- */
-function leadingResidues(seq: string, cap: number): { prefix: string; residues: number; total: number } {
-  let total = 0;
-  let cut = seq.length;
-  for (let i = 0; i < seq.length; i++) {
-    if (!RESIDUE.test(seq[i])) continue;
-    total += 1;
-    if (total === cap) cut = i + 1;
-  }
-  return { prefix: seq.slice(0, cut), residues: Math.min(total, cap), total };
-}
-
-/**
- * Which bases of a DNA or RNA input the engine translated into the protein it analysed: the
- * `translatedSpan` of its protein analysis (biophysics_3d.rs `TranslatedSpan`), null when it
- * translated no residue. src/types/bio.ts does not declare it.
- */
-interface TranslatedSpan {
-  rule: 'longestForwardOrf' | 'fewestStopFrame';
-  /** 1-based first and last base of the analysed slice; an ORF's span ends with its stop codon. */
-  start: number;
-  end: number;
-  stopsRemoved: number;
-}
-
-const groupDigits = (v: number) => v.toLocaleString('en-US');
-
-/**
- * What a protein KPI reads, in place of its value, when the engine translated no residue
- * (BG-01M6SQXX): its reply for no residue holds zeros for the mass, the extinction and the
- * absorbance, and null for the pI and the charge, none of them a measurement. Each KPI with no
- * residue to describe reads this one string; a count of what was found stays a number.
- */
-export const NO_RESIDUE_TRANSLATED = 'n/a: no residue translated';
-
-/**
- * What the GRAVY and aliphatic index read for a chain with no standard residue (all U, O, B, Z, J or
- * X): the engine gives them no value (null), since those letters have none on either scale.
- */
-export const NO_STANDARD_RESIDUE = 'n/a: no standard residue';
-
-/** A peptide m/z to `digits` places, or 'n/a' when the engine gives none (null: a peptide holding B, Z or X). */
-const mzText = (mz: number | null, digits: number) => (typeof mz === 'number' && Number.isFinite(mz) ? mz.toFixed(digits) : 'n/a');
-
-/**
- * What the protein tab says of the bases it analysed from a DNA or RNA document, or null when it
- * analysed, as one ORF, exactly what its heading names: the whole CDS, or with no CDS feature the
- * whole molecule (BG-01M6S13D). `span` counts bases of the slice the engine was given (the CDS,
- * read along its own strand, or the first 1,200 bp); the sentence names them in the document's.
- */
-function translatedCoverage(
-  span: TranslatedSpan | null | undefined,
-  aa: number,
-  slice: { length: number; docLength: number; cds: { name: string; start: number; end: number; minus: boolean } | null }
-): string | null {
-  const n = groupDigits;
-  const { cds } = slice;
-  // An empty document had nothing to translate, rather than none of its 0 bases covered (BG-01M6SQXX).
-  if (slice.docLength === 0) return 'The document holds no bases; nothing was translated.';
-  if (span === undefined) {
-    const [from, to] = cds ? [cds.start, cds.end] : [1, slice.length];
-    return `Protein analysis did not report which of bases ${n(from)}–${n(to)} of ${n(slice.docLength)} it translated.`;
-  }
-  if (span === null) {
-    return `Protein analysis covered no bases of ${n(slice.docLength)}: no residue was translated from ${cds ? `the CDS ${cds.name}` : 'the molecule'}.`;
-  }
-  const whole = span.rule === 'longestForwardOrf' && span.start === 1 && span.end === slice.length;
-  if (whole && (cds || slice.length === slice.docLength)) return null;
-  const [from, to] = !cds
-    ? [span.start, span.end]
-    : cds.minus
-      ? [cds.end - span.end + 1, cds.end - span.start + 1]
-      : [cds.start + span.start - 1, cds.start + span.end - 1];
-  const bases = `${cds?.minus ? 'the minus-strand bases' : 'bases'} ${n(from)}–${n(to)} of ${n(slice.docLength)}${cds ? `, not the whole CDS ${cds.name}` : ''}`;
-  const where = cds ? 'read along the CDS' : `on the forward strand of bases 1–${n(slice.length)}`;
-  if (span.rule === 'longestForwardOrf') {
-    return `Protein analysis covered ${bases}: ${cds ? '' : 'with no CDS feature, '}it analyses the longest ORF (ATG to the first in-frame stop, at least 30 aa) ${where}, a ${n(aa)}-aa protein.`;
-  }
-  const frame = ((span.start - 1) % 3) + 1;
-  const stops = `${n(span.stopsRemoved)} stop codon${span.stopsRemoved === 1 ? '' : 's'}`;
-  return `Protein analysis covered ${bases}: ${cds ? 'with' : 'with no CDS feature and'} no ORF of at least 30 aa ${where}, it analyses ${cds ? "the CDS's " : ''}reading frame ${frame}, the frame with the fewest stop codons, as ${n(aa)} aa with its ${stops} left out.`;
-}
-
-/** Kyte-Doolittle hydropathy, and the b/y fragment-ion spectrum, both fill a studio card. */
-const HYDRO_PLOT = plotFrame(CHART_FULL);
-/** Whether a row key is a custom definition's (its `custom:` id): a built-in's key is its name. */
+/** The Enzymes view's count for an enzyme the restriction scan did not read (BG-01M6S1K2). */
+const NOT_SCANNED = 'not scanned';
+/** An enzyme table CSV cell, RFC 4180-quoted only when it holds a comma, a double quote or a line break (D0155). */
+const csvCell = (text: string) => (/[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text);
 const isCustomEnzymeKey = (key: string) => key.startsWith('custom:');
 /** The words an Enzyme Set action adds when it left custom rows out (US-01M7DV52). */
 const customRowsLeftOut = (n: number) =>
   n > 0 ? ` (${n} custom enzyme row(s) left out: an Enzyme Set holds built-in enzymes only)` : '';
 
-/** The Enzymes view's count for an enzyme the restriction scan did not read (BG-01M6S1K2). */
-const NOT_SCANNED = 'not scanned';
-/** An enzyme table CSV cell, RFC 4180-quoted only when it holds a comma, a double quote or a line break (D0155). */
-const csvCell = (text: string) => (/[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text);
-const MS2_PLOT = plotFrame({ ...CHART_FULL, h: 280, padL: 52 });
 export type { HybridSubTabId } from '../core/analysisContext';
 
 interface HybridToolsAndHistoryStudioProps {
@@ -296,8 +178,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   }, [doc.id, doc.docMetadata]);
   const [historyColorsEnabled, setHistoryColorsEnabled] = useState<boolean>(true);
   const [selectedStrain, setSelectedStrain] = useState<string>('DH5α (dam+ dcm+)');
-  const [proteaseEnzyme, setProteaseEnzyme] = useState<string>('Trypsin');
-  const [selectedMs2PeptideIdx, setSelectedMs2PeptideIdx] = useState<number>(0);
 
   useEffect(() => {
     if (initialSubTab) setSubTab(initialSubTab);
@@ -325,11 +205,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     }
   }, [initialPluginId, commandNonce, doc]);
 
-  const [targetHost, setTargetHost] = useState<
-    'ecoli_k12' | 'human_hek293' | 'yeast_scerevisiae'
-  >('ecoli_k12');
-  const [codonResult, setCodonResult] = useState<CodonOptimizationResult | null>(null);
-  const [hydroWindow, setHydroWindow] = useState<number>(9);
 
   // Folding: a DNA document folds with the DNA nearest-neighbour parameters by default, and an RNA
   // one with Turner 2004, but either can be forced to see how the same strand behaves as the other.
@@ -349,86 +224,9 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     setSelectedHairpinId(null);
   }, [doc.id, doc.moleculeType]);
 
-  // Extract main CDS or full sequence for Protein Analysis (supporting both DNA/RNA and direct Protein documents).
-  // A protein is cut at its 40,000th residue, counted as the engine counts residues (BG-01M6S13D).
+  // What the protein of a document is read as; folding's CDS region is its CDS (proteinAnalysisTarget).
   const isProteinDoc = doc.moleculeType === 'Protein';
-  const targetCdsSlice = useMemo(() => {
-    if (isProteinDoc) {
-      const { prefix: sliceAa, residues, total } = leadingResidues(doc.sequence, PROTEIN_ANALYSIS_CAP_AA);
-      return {
-        dna: sliceAa,
-        proteinSeq: sliceAa,
-        startOffset: 1,
-        endOffset: sliceAa.length,
-        minusStrand: false,
-        label: `${doc.name} (1..${residues} aa)`,
-        totalResidues: total,
-        cds: null,
-      };
-    }
-    const cdsFeat = doc.features.find((f) => f.type === 'CDS');
-    const forwardSlice = cdsFeat
-      ? doc.sequence.slice(cdsFeat.start - 1, cdsFeat.end)
-      : doc.sequence.slice(0, NO_CDS_ANALYSIS_BP);
-    // A minus-strand CDS is read on the reverse complement (it was translated
-    // from the wrong strand).
-    const minusStrand = Boolean(cdsFeat && cdsFeat.strand < 0);
-    const dnaSlice = minusStrand
-      ? reverseComplement(forwardSlice, doc.moleculeType === 'RNA')
-      : forwardSlice;
-    return {
-      dna: dnaSlice,
-      proteinSeq: translateSequence(dnaSlice, 0).replace(/\*/g, ''),
-      startOffset: cdsFeat ? cdsFeat.start : 1,
-      endOffset: cdsFeat ? cdsFeat.end : dnaSlice.length,
-      minusStrand,
-      label: cdsFeat
-        ? `${cdsFeat.name} (${minusStrand ? `complement(${cdsFeat.start}..${cdsFeat.end})` : `${cdsFeat.start}..${cdsFeat.end}`})`
-        : `${doc.name} (1..${dnaSlice.length})`,
-      totalResidues: 0,
-      cds: cdsFeat ? { name: cdsFeat.name, start: cdsFeat.start, end: cdsFeat.end, minus: minusStrand } : null,
-    };
-  }, [doc, isProteinDoc]);
-
-  const proteinReport = useMemo(
-    () =>
-      subTab === 'protein'
-        ? (analyzeProteinSequence(targetCdsSlice.dna, !isProteinDoc, hydroWindow) as ProteinAnalysisReport & {
-            translatedSpan?: TranslatedSpan | null;
-            /** What the analysis read other than the 20 standard residues (D0005). */
-            warnings?: string[];
-          })
-        : null,
-    [subTab, targetCdsSlice.dna, isProteinDoc, hydroWindow]
-  );
-  // The engine translated no residue (a lone stop, part of a codon, an empty document): each
-  // protein KPI with no answer reads NO_RESIDUE_TRANSLATED, and the digest and the PTM scan read
-  // no residue rather than the stand-in protein they fall back to (BG-01M6SQXX).
-  const noResidue = proteinReport !== null && proteinReport.lengthAa === 0;
-
-  // What protein analysis covered, said beside the result whenever it is not all the tab reads
-  // from: a protein past the cap, or an ORF or frame short of the whole CDS (with no CDS, of the
-  // whole molecule).
-  const analysisCoverage = useMemo(() => {
-    if (!proteinReport) return null;
-    if (isProteinDoc) {
-      const n = groupDigits;
-      return proteinReport.lengthAa < targetCdsSlice.totalResidues
-        ? `Protein analysis covered residues 1–${n(proteinReport.lengthAa)} of ${n(targetCdsSlice.totalResidues)}: it reads at most ${n(PROTEIN_ANALYSIS_CAP_AA)} aa.`
-        : null;
-    }
-    return translatedCoverage(proteinReport.translatedSpan, proteinReport.lengthAa, {
-      length: targetCdsSlice.dna.length,
-      docLength: doc.sequence.length,
-      cds: targetCdsSlice.cds,
-    });
-  }, [proteinReport, isProteinDoc, targetCdsSlice, doc.sequence.length]);
-
-  // Measured coordinates only (an imported .pdb / .cif); a sequence alone gets no 3D model.
-  const measured3DAtoms = useMemo(
-    () => (subTab === 'protein' && hasStructure(doc) ? structureAtomsOf(doc) : []),
-    [subTab, doc]
-  );
+  const targetCdsSlice = useMemo(() => proteinAnalysisTarget(doc), [doc]);
 
   // What is actually folded, and whether the engine's 600 nt cap cut it short.
   const foldInput = useMemo(() => {
@@ -506,30 +304,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   // The lineage table's Created / Modified are the Info tab's own, from the one derivation (BG-01M7N68F).
   const lineageDates = documentDates(doc);
   const autoDetectedFeatures = useMemo(() => subTab === 'lineage' && doc.moleculeType === 'DNA' ? detectCommonFeatures(doc) : [], [subTab, doc]);
-
-  const digestMsReport = useMemo(() => {
-    if (subTab !== 'protein') return null;
-    const cleanProt = noResidue ? '' : targetCdsSlice.proteinSeq || 'MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLK';
-    return simulateProteolyticDigestMsRust(cleanProt, proteaseEnzyme, 1, 400.0, 4500.0, true);
-  }, [subTab, noResidue, targetCdsSlice.proteinSeq, proteaseEnzyme]);
-
-  const activeMs2Peptide = useMemo(() => {
-    const list = digestMsReport?.peptides ?? [];
-    if (list.length === 0) return 'MSKGEELFTGVVPILVELDGDVNGHK';
-    const clamped = Math.min(selectedMs2PeptideIdx, list.length - 1);
-    return list[Math.max(0, clamped)].sequence;
-  }, [digestMsReport?.peptides, selectedMs2PeptideIdx]);
-
-  const ms2SpectrumReport = useMemo(
-    () => subTab === 'protein' ? simulatePeptideMs2SpectrumRust(activeMs2Peptide, true) : null,
-    [subTab, activeMs2Peptide]
-  );
-
-  const ptmDisulfideReport = useMemo(() => {
-    if (subTab !== 'protein') return null;
-    const cleanProt = noResidue ? '' : targetCdsSlice.proteinSeq || 'MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLK';
-    return scanPostTranslationalModificationsRust(cleanProt);
-  }, [subTab, noResidue, targetCdsSlice.proteinSeq]);
 
   /** The DAG's own canvas, so its Export control does not pick up a chart elsewhere on the tab. */
   const lineageDagRef = useRef<HTMLDivElement | null>(null);
@@ -755,12 +529,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     }
   }, [doc, subTab, selectedPluginId]);
 
-  useEffect(() => {
-    if (subTab === 'protein' && !isProteinDoc) {
-      setCodonResult(optimizeCodonsRust(targetCdsSlice.dna, 'ecoli_k12'));
-    }
-  }, [doc, targetCdsSlice.dna, subTab, isProteinDoc]);
-
   const handleSelectPlugin = (id: string) => {
     setSelectedPluginId(id);
     const found = BUILTIN_JS_PLUGINS.find((p) => p.id === id);
@@ -786,94 +554,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     });
   };
 
-  const handleRunCodonOpt = (
-    host: 'ecoli_k12' | 'human_hek293' | 'yeast_scerevisiae'
-  ) => {
-    setTargetHost(host);
-    setCodonResult(optimizeCodonsRust(targetCdsSlice.dna, host));
-  };
-
-  const handleAnnotateEpitopes = () => {
-    if (!onUpdateDocument || !proteinReport) return;
-    const newFeatures: SequenceFeature[] = proteinReport.antigenicDeterminants.map(
-      (ep, idx) => {
-        // Codon span of the epitope in CDS coordinates, mapped back to the
-        // construct (mirrored for a minus-strand CDS).
-        const cdsFrom = (ep.startAa - 1) * 3 + 1;
-        const cdsTo = ep.endAa * 3;
-        const { startOffset, endOffset, minusStrand } = targetCdsSlice;
-        const start = isProteinDoc ? ep.startAa : minusStrand ? endOffset - cdsTo + 1 : startOffset + cdsFrom - 1;
-        const end = isProteinDoc ? ep.endAa : minusStrand ? endOffset - cdsFrom + 1 : startOffset + cdsTo - 1;
-        return {
-        id: `feat-epitope-${Date.now()}-${idx}`,
-        name: `Antigenic_Epitope_${ep.startAa}_${ep.endAa}`,
-        type: 'antigenic_epitope',
-        start: Math.max(1, start),
-        end: Math.min(doc.sequence.length, end),
-        strand: (minusStrand ? -1 : 1) as 1 | -1,
-        color: '#d97706',
-        notes: `EMBOSS Kolaskar-Tongaonkar antigenic determinant (${ep.peptide}, score=${ep.maxScore})`,
-        };
-      }
-    );
-    onUpdateDocument({
-      ...doc,
-      features: [...doc.features, ...newFeatures],
-      updatedAt: new Date().toISOString(),
-    });
-  };
-
-  // Build SVG path for Kyte-Doolittle Hydrophobicity Plot
-  const hydroSvgPath = useMemo(() => {
-    const prof = proteinReport?.hydrophobicityProfile ?? [];
-    if (!prof.length) return '';
-    return prof
-      .map((pt, idx) => {
-        const x = HYDRO_PLOT.xOfIndex(idx, prof.length);
-        const y = HYDRO_PLOT.yOf(pt.score, -4.5, 4.5);
-        return `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
-      })
-      .join(' ');
-  }, [proteinReport?.hydrophobicityProfile]);
-
-  /** The plotted profile as values, so the chart and the numbers behind it export together. */
-  const hydroTable = useMemo((): FigureTable | null => {
-    const prof = proteinReport?.hydrophobicityProfile ?? [];
-    if (!prof.length) return null;
-    return {
-      headers: ['Residue position (aa)', `Kyte-Doolittle score (window ${hydroWindow} aa)`],
-      rows: prof.map((pt) => [String(pt.position), pt.score.toFixed(3)]),
-      caption: `${doc.name} — Kyte-Doolittle hydropathy, ${hydroWindow} aa window`,
-    };
-  }, [doc.name, hydroWindow, proteinReport?.hydrophobicityProfile]);
-
-  // The Protein and Lineage settings sit in two places of their result. In the workbench each
-  // sub-tab's pair is drawn in one inspector section and nowhere in the result; drawn on its own,
-  // the studio draws each where it sat.
-  const hydroWindowSlider = (
-    <input
-      type="range"
-      min={5}
-      max={21}
-      step={2}
-      value={hydroWindow}
-      onChange={(e) => setHydroWindow(Number(e.target.value))}
-    />
-  );
-  const proteaseSelect = (
-    <select
-      value={proteaseEnzyme}
-      onChange={(e) => {
-        setProteaseEnzyme(e.target.value);
-        setSelectedMs2PeptideIdx(0);
-      }}
-    >
-      <option value="Trypsin">Trypsin (K/R | not P)</option>
-      <option value="Chymotrypsin">Chymotrypsin (F/Y/W/L)</option>
-      <option value="Lys-C">Endoproteinase Lys-C (K)</option>
-      <option value="Glu-C">Staph. V8 Glu-C (E/D)</option>
-    </select>
-  );
   const historyColorsToggle = (
     <label className="mbc-check-row">
       <input
@@ -914,17 +594,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
           prevAriaLabel="Slide protein modules left"
           nextAriaLabel="Slide protein modules right"
         >
-          <button
-            type="button"
-            role="tab"
-            hidden={!availableTabs.includes('protein')}
-            tabIndex={subTab === 'protein' ? 0 : -1}
-            aria-selected={subTab === 'protein'}
-            className={`method-tab-btn ${subTab === 'protein' ? 'active' : ''}`}
-            onClick={() => setSubTab('protein')}
-          >
-            {doc.moleculeType === 'Protein' ? 'Protein Analysis' : 'Protein Analysis & Codon Opt'}
-          </button>
           <button
             type="button"
             role="tab"
@@ -970,524 +639,8 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
             Workflows &amp; Genetic Code Tables
           </button>
         </ScrollableMenuStrip>
-        <span className="badge-accent">{isProteinDoc ? 'Protein analysis and history' : 'Sequence tools and history'}</span>
+        <span className="badge-accent">{isProteinDoc ? 'Provenance' : 'Sequence tools and history'}</span>
       </div>
-
-      {subTab === 'protein' && analysisCoverage && (
-        <ResultWarnings warnings={[analysisCoverage]} label="Protein analysis coverage" />
-      )}
-      {subTab === 'protein' && proteinReport && digestMsReport && ms2SpectrumReport && ptmDisulfideReport && (
-        <div className="studio-split-grid">
-          {inWorkbench && (
-            <InspectorSection title="Protein Analysis" order={1}>
-              <label className="mbc-control-row">
-                <span>Hydropathy window: {hydroWindow} aa</span>
-                {hydroWindowSlider}
-              </label>
-              <label className="form-field">
-                Protease
-                {proteaseSelect}
-              </label>
-            </InspectorSection>
-          )}
-          {/* Left Card: EMBOSS Protein Analysis, Hydrophobicity, GOR Secondary Structure & Antigenicity */}
-          <div className="studio-card">
-            <div className="studio-card-header">
-              <h3>EMBOSS Protein Analysis — {targetCdsSlice.label}</h3>
-              <span className="badge-accent">Kyte-Doolittle + GOR + Kolaskar</span>
-            </div>
-
-            <ResultWarnings warnings={proteinReport.warnings} label="Protein analysis warnings" />
-            <p className="mbc-summary-note">{PK_SCALE_LABEL}</p>
-            <div className="thermo-kpi-grid">
-              <div className="kpi-box">
-                <span className="kpi-label">Molecular Weight</span>
-                <strong className="kpi-val">
-                  {noResidue ? NO_RESIDUE_TRANSLATED : <>{proteinReport.molecularWeightKda} kDa ({proteinReport.lengthAa} aa)</>}
-                </strong>
-              </div>
-              <div className="kpi-box">
-                <span className="kpi-label">Isoelectric Point (pI)</span>
-                <strong className="kpi-val">{noResidue ? NO_RESIDUE_TRANSLATED : <>pH {proteinReport.isoelectricPointPi}</>}</strong>
-              </div>
-              <div className="kpi-box">
-                <span className="kpi-label" title="Net charge on the same Bjellqvist titration the pI is the root of">
-                  Charge at pH 7
-                </span>
-                <strong className="kpi-val">
-                  {noResidue ? NO_RESIDUE_TRANSLATED : <>
-                    {proteinReport.chargeAtPh7 > 0 ? '+' : ''}
-                    {proteinReport.chargeAtPh7.toFixed(2)}
-                  </>}
-                </strong>
-              </div>
-              <div className="kpi-box">
-                <span className="kpi-label">ε₂₈₀ reduced / cystines (M⁻¹cm⁻¹)</span>
-                <strong className="kpi-val">
-                  {noResidue ? NO_RESIDUE_TRANSLATED : <>
-                    {proteinReport.extinctionCoeff280Reduced.toLocaleString()} /{' '}
-                    {proteinReport.extinctionCoeff280Cystine.toLocaleString()}
-                  </>}
-                </strong>
-              </div>
-              <div className="kpi-box">
-                <span className="kpi-label" title="Absorbance of a 1 mg/ml solution in a 1 cm cell, cysteines paired">
-                  A[280] of 1 mg/ml
-                </span>
-                <strong className="kpi-val">{noResidue ? NO_RESIDUE_TRANSLATED : <>{proteinReport.a280Of1mgPerMl.toFixed(2)} AU</>}</strong>
-              </div>
-              <div className="kpi-box">
-                <span className="kpi-label">GRAVY / Aliphatic</span>
-                <strong className="kpi-val">
-                  {noResidue ? NO_RESIDUE_TRANSLATED : !Number.isFinite(proteinReport.gravyHydropathy) ? NO_STANDARD_RESIDUE : <>{proteinReport.gravyHydropathy} / {proteinReport.aliphaticIndex}</>}
-                </strong>
-              </div>
-            </div>
-
-            {/* Kyte-Doolittle Hydrophobicity Plot */}
-            <div data-mbc-figure>
-            <div className="studio-card-header" style={{ paddingTop: 4 }}>
-              <h4>Kyte-Doolittle Hydropathy Plot (Window = {hydroWindow} aa)</h4>
-              {!inWorkbench && hydroWindowSlider}
-              <FigureExportButton
-                compact
-                baseName={`${doc.name} — Kyte-Doolittle Hydropathy`}
-                title={`${doc.name} — Kyte-Doolittle hydropathy (${hydroWindow} aa window)`}
-                table={hydroTable}
-              />
-            </div>
-
-            <svg
-              viewBox={`0 0 ${HYDRO_PLOT.w} ${HYDRO_PLOT.h}`}
-              className="phylo-tree-svg"
-              style={chartMaxWidth(HYDRO_PLOT.w)}
-              role="img"
-              aria-label={`Kyte-Doolittle hydropathy over ${proteinReport.lengthAa} residues`}
-            >
-              <rect
-                x={HYDRO_PLOT.x}
-                y={HYDRO_PLOT.y}
-                width={HYDRO_PLOT.width}
-                height={HYDRO_PLOT.height}
-                fill="var(--mbc-bg-panel)"
-                stroke="var(--mbc-border)"
-              />
-              {ticks(-4.5, 4.5, 7).map((v) => (
-                <g key={v}>
-                  <line
-                    x1={HYDRO_PLOT.x}
-                    y1={HYDRO_PLOT.yOf(v, -4.5, 4.5)}
-                    x2={HYDRO_PLOT.x + HYDRO_PLOT.width}
-                    y2={HYDRO_PLOT.yOf(v, -4.5, 4.5)}
-                    stroke={v === 0 ? 'var(--mbc-text-muted)' : 'var(--mbc-border-light)'}
-                    strokeDasharray={v === 0 ? '3 3' : undefined}
-                  />
-                  <text
-                    x={HYDRO_PLOT.x - 8}
-                    y={HYDRO_PLOT.yOf(v, -4.5, 4.5) + 3.5}
-                    textAnchor="end"
-                    fill="var(--mbc-text-secondary)"
-                    fontSize="11"
-                  >
-                    {v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1)}
-                  </text>
-                </g>
-              ))}
-              {/* transmembrane threshold */}
-              <line
-                x1={HYDRO_PLOT.x}
-                y1={HYDRO_PLOT.yOf(1.6, -4.5, 4.5)}
-                x2={HYDRO_PLOT.x + HYDRO_PLOT.width}
-                y2={HYDRO_PLOT.yOf(1.6, -4.5, 4.5)}
-                stroke="var(--mbc-red)"
-                strokeDasharray="2 2"
-              />
-              <text
-                x={HYDRO_PLOT.x + HYDRO_PLOT.width - 6}
-                y={HYDRO_PLOT.yOf(1.6, -4.5, 4.5) - 5}
-                textAnchor="end"
-                fill="var(--mbc-red)"
-                fontSize="10.5"
-                fontWeight="600"
-              >
-                +1.6 hydrophobic threshold
-              </text>
-              {ticks(1, proteinReport.lengthAa, 6).map((v, i, all) => (
-                <text
-                  key={v}
-                  x={HYDRO_PLOT.xOfIndex(i, all.length)}
-                  y={HYDRO_PLOT.y + HYDRO_PLOT.height + 16}
-                  textAnchor="middle"
-                  fill="var(--mbc-text-secondary)"
-                  fontSize="10.5"
-                >
-                  {Math.round(v)}
-                </text>
-              ))}
-              <path d={hydroSvgPath} fill="none" stroke="var(--mbc-blue)" strokeWidth="1.5" />
-              <text
-                x={HYDRO_PLOT.x + HYDRO_PLOT.width / 2}
-                y={HYDRO_PLOT.h - 8}
-                textAnchor="middle"
-                fill="var(--mbc-text-secondary)"
-                fontSize="11"
-                fontWeight="600"
-              >
-                Residue position (1..{proteinReport.lengthAa} aa)
-              </text>
-            </svg>
-            </div>
-
-            {/* Garnier-Osguthorpe-Robson (GOR) Secondary Structure & Kolaskar Antigenicity */}
-            <div className="thermo-kpi-grid">
-              <div className="kpi-box">
-                <span className="kpi-label">α-Helix (GOR H)</span>
-                <strong className="kpi-val">
-                  {noResidue ? NO_RESIDUE_TRANSLATED : <>{proteinReport.secondaryStructureSummary.helixPercent}%</>}
-                </strong>
-              </div>
-              <div className="kpi-box">
-                <span className="kpi-label">β-Sheet (GOR E)</span>
-                <strong className="kpi-val">
-                  {noResidue ? NO_RESIDUE_TRANSLATED : <>{proteinReport.secondaryStructureSummary.sheetPercent}%</>}
-                </strong>
-              </div>
-              <div className="kpi-box">
-                <span className="kpi-label">Random Coil (C)</span>
-                <strong className="kpi-val">
-                  {noResidue ? NO_RESIDUE_TRANSLATED : <>{proteinReport.secondaryStructureSummary.coilPercent}%</>}
-                </strong>
-              </div>
-              <div className="kpi-box">
-                <span className="kpi-label">Antigenic Epitopes</span>
-                <strong className="kpi-val">
-                  {proteinReport.antigenicDeterminants.length} regions
-                </strong>
-              </div>
-            </div>
-
-            {onUpdateDocument && proteinReport.antigenicDeterminants.length > 0 && (
-              <button className="btn-success" onClick={handleAnnotateEpitopes}>
-                + Annotate {proteinReport.antigenicDeterminants.length} Predicted Antigenic Epitopes onto{' '}
-                {doc.name}
-              </button>
-            )}
-
-            {measured3DAtoms.length > 0 && (
-              <div style={{ marginTop: 10 }}>
-                <ProteinStructure3DViewer
-                  primaryAtoms={measured3DAtoms}
-                  structureText={String(doc.docMetadata?.PDBText ?? doc.docMetadata?.['PDB Text'] ?? '') || undefined}
-                  activeChainId={String(doc.docMetadata?.Chain ?? '').trim() || undefined}
-                  title={`${doc.name} — measured structure`}
-                  heightPx={250}
-                  offscreenDeferred
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Right Card: Back-Translation & Multi-Host Codon Optimization + Antigenic Table */}
-          <div className="studio-card">
-            {!isProteinDoc && (<>
-            <div className="studio-card-header">
-              <h3>
-                Sequence{' '}
-                <ChevronRight
-                  size={15}
-                  strokeWidth={2.4}
-                  className="mbc-inline-chevron"
-                  aria-hidden="true"
-                />{' '}
-                Back-Translate &amp; Multi-Host Codon Optimizer
-              </h3>
-              <span className="badge-accent">{codonResult?.engine || 'Python Sidecar'}</span>
-            </div>
-
-            <div className="cloning-method-tabs">
-              {(
-                [
-                  ['ecoli_k12', 'E. coli K12'],
-                  ['human_hek293', 'Human (HEK293)'],
-                  ['yeast_scerevisiae', 'Yeast (S. cerevisiae)'],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  className={`method-tab-btn ${targetHost === id ? 'active' : ''}`}
-                  onClick={() => handleRunCodonOpt(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {codonResult && (
-              <div className="codon-result-panel">
-                <div className="thermo-kpi-grid">
-                  <div className="kpi-box">
-                    <span className="kpi-label">Codon Adaptation (CAI)</span>
-                    <strong className="kpi-val">{codonResult.caiScore}</strong>
-                  </div>
-                  <div className="kpi-box">
-                    <span className="kpi-label">Optimized GC%</span>
-                    <strong className="kpi-val">{codonResult.gcPercent}%</strong>
-                  </div>
-                  <div className="kpi-box">
-                    <span className="kpi-label">CDS Length</span>
-                    <strong className="kpi-val">{codonResult.lengthBp} bp</strong>
-                  </div>
-                  <div className="kpi-box">
-                    <span className="kpi-label">Host Table</span>
-                    <strong className="kpi-val">{codonResult.host}</strong>
-                  </div>
-                </div>
-                <div className="newick-box" style={{ marginTop: 6 }}>
-                  <span>Back-Translated / Codon-Optimized DNA (5&apos;→3&apos;):</span>
-                  <code>{codonResult.optimizedDna.slice(0, 210)}...</code>
-                </div>
-              </div>
-            )}
-
-            </>)}
-
-            <h4 className="sub-heading">
-              EMBOSS Kolaskar-Tongaonkar Predicted Antigenic Regions
-            </h4>
-            <WorkbenchSmartTable
-              tableId="hybrid-protein-antigenic-regions"
-              tableLabel="Predicted Antigenic Regions"
-              regionMaxHeight={195}
-              className="bio-table"
-            >
-              <thead>
-                <tr>
-                  <th>AA Coordinates</th>
-                  <th>Peptide Sequence</th>
-                  <th>Length</th>
-                  <th>Antigenicity Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {proteinReport.antigenicDeterminants.map((ep, idx) => (
-                  <tr key={idx}>
-                    <td>
-                      <strong>
-                        aa {ep.startAa}..{ep.endAa}
-                      </strong>
-                    </td>
-                    <td className="mono-cell">{ep.peptide}</td>
-                    <td>{ep.peptide.length} aa</td>
-                    <td>{ep.maxScore}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </WorkbenchSmartTable>
-
-            {/* Proteomics LC-MS/MS In-Silico Digest, CID/HCD b/y-Ion MS2 Spectrum & PTM / petgraph Disulfide Scanner */}
-            <div className="mbc-studio-isolated-region" style={{ marginTop: 12 }}>
-              <div className="studio-card-header" style={{ paddingTop: 4 }}>
-                <h4>Proteomics LC-MS/MS Digest, b/y-Ion MS2 &amp; PTM / Disulfide Prediction</h4>
-                {!inWorkbench && proteaseSelect}
-              </div>
-
-              <ResultWarnings warnings={digestMsReport.warnings} label="Digest warnings" />
-
-              <div className="thermo-kpi-grid">
-                <div className="kpi-box">
-                  <span className="kpi-label">Intact Mass (Mono)</span>
-                  <strong className="kpi-val">
-                    {noResidue ? NO_RESIDUE_TRANSLATED : Number.isFinite(digestMsReport.intactMonoisotopicDa) ? <>{(digestMsReport.intactMonoisotopicDa / 1000).toFixed(2)} kDa</> : 'n/a'}
-                  </strong>
-                </div>
-                <div className="kpi-box">
-                  <span className="kpi-label">Observable MS1 Peptides</span>
-                  <strong className="kpi-val">
-                    {digestMsReport.observablePeptideCount} (
-                    {noResidue ? NO_RESIDUE_TRANSLATED : <>{digestMsReport.sequenceCoveragePct.toFixed(1)}% cov</>})
-                  </strong>
-                </div>
-                <div className="kpi-box">
-                  <span className="kpi-label">PTMs / PEST Degrons</span>
-                  <strong className="kpi-val">
-                    {ptmDisulfideReport.ptmSites.length} / {ptmDisulfideReport.pestDegrons.length}
-                  </strong>
-                </div>
-                <div className="kpi-box">
-                  <span className="kpi-label">Predicted Disulfides</span>
-                  <strong className="kpi-val">
-                    {ptmDisulfideReport.disulfideBonds.length} ({ptmDisulfideReport.totalCysteines} Cys)
-                  </strong>
-                </div>
-              </div>
-
-              {digestMsReport.peptides.length > 0 && (
-                <div style={{ marginTop: 6 }} data-mbc-figure>
-                  <div className="studio-card-header" style={{ paddingTop: 0 }}>
-                    <h4>b/y-Ion MS2 Spectrum</h4>
-                    <FigureExportButton
-                      compact
-                      baseName={`${doc.name} — MS2 Spectrum`}
-                      title={`${doc.name} — b/y fragment-ion spectrum`}
-                      table={{
-                        headers: ['m/z', 'Relative intensity (%)', 'Ion series', 'Label'],
-                        rows: ms2SpectrumReport.peaks.map((pk) => [
-                          pk.mz.toFixed(4),
-                          pk.relativeIntensity.toFixed(1),
-                          pk.ionSeries,
-                          pk.label,
-                        ]),
-                        caption: `${doc.name} — b/y fragment ions, precursor [M+2H]2+ = ${mzText(ms2SpectrumReport.precursorMz2plus, 3)} m/z`,
-                      }}
-                    />
-                  </div>
-                  <label className="form-field" style={{ marginBottom: 6 }}>
-                    <span>
-                      b/y Fragment Ions (exact m/z; bar heights are a qualitative guide, not predicted
-                      intensities) — Precursor [M+2H]²⁺ ={' '}
-                      {mzText(ms2SpectrumReport.precursorMz2plus, 3)} m/z:
-                    </span>
-                    <select
-                      value={Math.min(selectedMs2PeptideIdx, digestMsReport.peptides.length - 1)}
-                      onChange={(e) => setSelectedMs2PeptideIdx(Number(e.target.value))}
-                    >
-                      {digestMsReport.peptides.slice(0, 18).map((pep, idx) => (
-                        <option key={pep.peptideIndex} value={idx}>
-                          #{pep.peptideIndex} ({pep.startAa}..{pep.endAa} aa) {pep.sequence} — {mzText(pep.mzCharge2, 2)} m/z (RT {pep.hplcRetentionMin.toFixed(1)} min)
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <svg
-                    viewBox={`0 0 ${MS2_PLOT.w} ${MS2_PLOT.h}`}
-                    className="phylo-tree-svg"
-                    style={chartMaxWidth(MS2_PLOT.w)}
-                    role="img"
-                    aria-label={`b and y fragment-ion spectrum, ${ms2SpectrumReport.peaks.length} peaks`}
-                  >
-                    <rect
-                      x={MS2_PLOT.x}
-                      y={MS2_PLOT.y}
-                      width={MS2_PLOT.width}
-                      height={MS2_PLOT.height}
-                      fill="var(--mbc-bg-panel)"
-                      stroke="var(--mbc-border)"
-                    />
-                    {(() => {
-                      const peaks = ms2SpectrumReport.peaks;
-                      const maxMz = Math.max(400, ...peaks.map((p) => p.mz)) * 1.06;
-                      const baseY = MS2_PLOT.y + MS2_PLOT.height;
-                      return (
-                        <>
-                          {ticks(0, 100, 5).map((v) => (
-                            <g key={`i${v}`}>
-                              <line
-                                x1={MS2_PLOT.x}
-                                y1={MS2_PLOT.yOf(v, 0, 100)}
-                                x2={MS2_PLOT.x + MS2_PLOT.width}
-                                y2={MS2_PLOT.yOf(v, 0, 100)}
-                                stroke="var(--mbc-border-light)"
-                              />
-                              <text
-                                x={MS2_PLOT.x - 8}
-                                y={MS2_PLOT.yOf(v, 0, 100) + 3.5}
-                                textAnchor="end"
-                                fill="var(--mbc-text-secondary)"
-                                fontSize="10.5"
-                              >
-                                {v}
-                              </text>
-                            </g>
-                          ))}
-                          {ticks(0, maxMz, 7).map((v) => (
-                            <text
-                              key={`m${v}`}
-                              x={MS2_PLOT.xOf(v, 0, maxMz)}
-                              y={baseY + 16}
-                              textAnchor="middle"
-                              fill="var(--mbc-text-secondary)"
-                              fontSize="10.5"
-                            >
-                              {Math.round(v)}
-                            </text>
-                          ))}
-                          {peaks.map((pk, idx) => {
-                            const x = MS2_PLOT.xOf(pk.mz, 0, maxMz);
-                            const y = MS2_PLOT.yOf(pk.relativeIntensity, 0, 100);
-                            const isY = pk.ionSeries.startsWith('y');
-                            const col = isY ? 'var(--mbc-red)' : 'var(--mbc-blue)';
-                            return (
-                              <g key={`${pk.label}-${idx}`}>
-                                <line x1={x} y1={baseY} x2={x} y2={y} stroke={col} strokeWidth="1.4" />
-                                {pk.relativeIntensity >= 42 && (
-                                  <text x={x} y={y - 5} textAnchor="middle" fill={col} fontSize="10" fontWeight="700">
-                                    {pk.label}
-                                  </text>
-                                )}
-                              </g>
-                            );
-                          })}
-                        </>
-                      );
-                    })()}
-                    <text
-                      x={MS2_PLOT.x - 8}
-                      y={MS2_PLOT.y - 6}
-                      textAnchor="end"
-                      fill="var(--mbc-text-secondary)"
-                      fontSize="10"
-                    >
-                      rel %
-                    </text>
-                    <text
-                      x={MS2_PLOT.x + MS2_PLOT.width / 2}
-                      y={MS2_PLOT.h - 8}
-                      textAnchor="middle"
-                      fill="var(--mbc-text-secondary)"
-                      fontSize="11"
-                      fontWeight="600"
-                    >
-                      m/z — blue: N-terminal b-ions · red: C-terminal y-ions (
-                      {ptmDisulfideReport.predictedSubcellularCompartment})
-                    </text>
-                  </svg>
-                </div>
-              )}
-
-              <WorkbenchSmartTable
-                tableId="hybrid-proteomics-peptides"
-                tableLabel="Proteolytic LC-MS Peptides"
-                regionMaxHeight={165}
-                className="bio-table"
-              >
-                <thead>
-                  <tr>
-                    <th>Span</th>
-                    <th>Peptide</th>
-                    <th>Formula</th>
-                    <th>[M+2H]²⁺ m/z</th>
-                    <th>RT (min)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {digestMsReport.peptides.slice(0, 24).map((pep) => (
-                    <tr key={pep.peptideIndex}>
-                      <td>
-                        aa {pep.startAa}..{pep.endAa}
-                      </td>
-                      <td className="mono-cell">{pep.sequence}</td>
-                      <td className="mono-cell">{pep.chemicalFormula}</td>
-                      <td>{mzText(pep.mzCharge2, 3)}</td>
-                      <td>{pep.hplcRetentionMin.toFixed(1)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </WorkbenchSmartTable>
-            </div>
-          </div>
-        </div>
-      )}
 
       {subTab === 'secondary-structure' && secondaryStructReport && (
         <div className="studio-split-grid">
@@ -2215,7 +1368,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
           {inWorkbench && (
             <InspectorSection title="Lineage" order={1}>
               {historyColorsToggle}
-              {strainField}
+              {doc.moleculeType === 'DNA' && strainField}
             </InspectorSection>
           )}
           <div className="studio-card">
@@ -2295,9 +1448,14 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                   const NODE_H = 62;
                   const cx = node.x + NODE_W / 2;
                   const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+                  // The engine's subtitle reads "<accession> · <n> bp (<topology>)"; a protein's reads its length in aa, with no topology (US-01M6Q164).
+                  const nodeDoc = node.docId ? (node.docId === doc.id ? doc : allDocuments?.find((d) => d.id === node.docId)) : undefined;
+                  const subtitle = nodeDoc?.moleculeType === 'Protein'
+                    ? `${nodeDoc.accession} · ${nodeDoc.sequence.length.toLocaleString()} aa`
+                    : node.subtitle;
                   return (
                     <g key={node.nodeId}>
-                      <title>{`${node.title}\n${node.subtitle}${node.timestamp ? `\n${node.timestamp}` : ''}`}</title>
+                      <title>{`${node.title}\n${subtitle}${node.timestamp ? `\n${node.timestamp}` : ''}`}</title>
                       <rect
                         x={node.x}
                         y={node.y - NODE_H / 2}
@@ -2334,7 +1492,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                         fontSize="10.5"
                         fontWeight="600"
                       >
-                        {clip(node.subtitle, 28)}
+                        {clip(subtitle, 28)}
                       </text>
                       <text
                         x={cx}
@@ -2385,7 +1543,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                     </div>
                     <p>{h.description}</p>
                     <span className="history-meta-pill">
-                      {h.lengthBp.toLocaleString()} bp • {h.topology}
+                      {isProteinDoc ? `${h.lengthBp.toLocaleString()} aa` : `${h.lengthBp.toLocaleString()} ${doc.moleculeType === 'RNA' ? 'nt' : 'bp'} • ${h.topology}`}
                     </span>
                   </div>
                 </div>
@@ -2400,7 +1558,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
             </div>
 
             <div className="form-grid-2col">
-              {!inWorkbench && strainField}
+              {!inWorkbench && doc.moleculeType === 'DNA' && strainField}
               <div className="form-field" style={{ justifyContent: 'flex-end' }}>
                 {onUpdateDocument && autoDetectedFeatures.length > 0 && (
                   <button
@@ -2465,14 +1623,14 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                   <td className="mono-cell">{doc.accession}</td>
                 </tr>
                 <tr>
-                  <th>Molecule Type &amp; Topology</th>
+                  <th>{isProteinDoc ? 'Molecule Type' : <>Molecule Type &amp; Topology</>}</th>
                   <td>
-                    {doc.moleculeType} ({doc.topology.toUpperCase()})
+                    {isProteinDoc ? doc.moleculeType : `${doc.moleculeType} (${doc.topology.toUpperCase()})`}
                   </td>
                 </tr>
                 <tr>
                   <th>Sequence Length</th>
-                  <td>{doc.sequence.length.toLocaleString()} bp</td>
+                  <td>{doc.sequence.length.toLocaleString()} {isProteinDoc ? 'aa' : doc.moleculeType === 'RNA' ? 'nt' : 'bp'}</td>
                 </tr>
                 <tr>
                   <th>Folder Location</th>

@@ -603,6 +603,11 @@ const VectorLibraryAndDesignStudio = React.lazy(() =>
     default: m.VectorLibraryAndDesignStudio,
   }))
 );
+const ProteinStudio = React.lazy(() =>
+  import('./components/ProteinStudio').then((m) => ({
+    default: m.ProteinStudio,
+  }))
+);
 const GenomicsNgsAndPredictionStudio = React.lazy(() =>
   import('./components/GenomicsNgsAndPredictionStudio').then((m) => ({
     default: m.GenomicsNgsAndPredictionStudio,
@@ -1858,8 +1863,10 @@ export const App: React.FC = () => {
     useState<CloningMethodType>('Restriction Ligation');
   const [cloningInitialSubTool, setCloningInitialSubTool] =
     useState<CloningSubToolType>('gel');
+  // None until a command or a record picks one, so History opens on the record's own default
+  // (an Enzyme Set on its Enzymes view, every other record on its lineage).
   const [hybridInitialSubTab, setHybridInitialSubTab] =
-    useState<HybridSubTabId>('protein');
+    useState<HybridSubTabId | undefined>(undefined);
   const [hybridInitialPluginId, setHybridInitialPluginId] =
     useState<string | undefined>(undefined);
   const [genomicsInitialSubTab, setGenomicsInitialSubTab] =
@@ -3286,6 +3293,11 @@ export const App: React.FC = () => {
     setGenomicsInitialSubTab(subTab);
     setViewerTab('genomics-ngs');
   };
+  /** The Protein studio (US-01M6Q164): every route to protein tools - ProtParam, hydropathy, the 3D viewer, coils and TM - opens it. */
+  const openProteinStudio = () => {
+    setStudioCommandNonce((n) => n + 1);
+    setViewerTab('protein-3d');
+  };
 
   const handleExtractSelectedRegion = () => {
     const extracted = extractSelectedRegionDocument(activeDoc, selectedRange, new Date().toISOString());
@@ -3415,7 +3427,7 @@ export const App: React.FC = () => {
   /** Motif / domain search: PSSM motif scanning exists for nucleotide sequences only. */
   const handleOpenMotifSearch = (label: string) => {
     if (activeDoc.moleculeType === 'Protein') {
-      openHybridSubTab('protein');
+      openProteinStudio();
       setStatusBanner(`${label}: motif and domain scanning is available for DNA/RNA (JASPAR PSSM); showing protein analysis.`);
       return;
     }
@@ -4781,7 +4793,7 @@ export const App: React.FC = () => {
       }
       setHomeViewActive(false);
       if (entry.id === 'vectors') openVectorStudio('catalog');
-      else if (entry.id === 'protein-3d') openGenomicsSuite('protein-3d');
+      else if (entry.id === 'protein-3d') openProteinStudio();
       else setViewerTab(entry.opens.tab);
     },
   });
@@ -5968,8 +5980,9 @@ export const App: React.FC = () => {
       });
       activateImportedDocumentsInWorkspace(chainDocs);
       setHomeViewActive(false);
-      // The 3D view draws C-alpha atoms only, so a file whose first chain is DNA or RNA opens the Sequence view.
-      if (chainDocs[0].moleculeType === 'Protein') openGenomicsSuite('protein-3d');
+      // The 3D view draws C-alpha atoms only, so a file whose first chain is DNA or RNA opens the Sequence view;
+      // a protein chain opens the Protein studio's 3D view (US-01M6Q164).
+      if (chainDocs[0].moleculeType === 'Protein') openProteinStudio();
       else setViewerTab('sequence-view');
       setStatusBanner([
         `Opened 3D structure "${file.name}" (${chainDocs.length} ${chainDocs.length === 1 ? 'chain' : 'chains'}: ${read.chains.map((c) => `${c.chainId} ${c.molecule} ${c.sequence.length} ${unitOf[c.molecule]}`).join(', ')}).`,
@@ -8404,7 +8417,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           requireActiveSession(() => openGenomicsSuite('genes-cpg-repeats'));
           break;
         case 'annotate:coils-tm-pdb':
-          requireActiveSession(() => openGenomicsSuite('protein-3d'));
+          requireActiveSession(() => openProteinStudio());
           break;
         case 'tools:pipelines':
           requireActiveSession(() => setViewerTab('guided-pipelines'));
@@ -8468,7 +8481,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           });
           break;
         case 'sequence:back-translate':
-          requireActiveSession(() => openHybridSubTab('protein'));
+          requireActiveSession(() => openProteinStudio());
           break;
         case 'annotate:find-motifs':
           requireActiveSession(() => handleOpenMotifSearch('Find Motifs'));
@@ -11766,7 +11779,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'seq-back-trans',
             label: 'Back Translate',
-            onSelect: () => requireActiveSession(() => openHybridSubTab('protein')),
+            onSelect: () => requireActiveSession(() => openProteinStudio()),
           },
           {
             kind: 'command',
@@ -11974,7 +11987,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'ann-pdb',
             label: '3D Structure & Coils',
-            onSelect: () => requireActiveSession(() => openGenomicsSuite('protein-3d')),
+            onSelect: () => requireActiveSession(() => openProteinStudio()),
           },
         ],
       },
@@ -13264,7 +13277,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'tb-cl-codons',
             label: 'Optimize Codons',
-            onSelect: () => requireActiveSession(() => openHybridSubTab('protein')),
+            onSelect: () => requireActiveSession(() => openProteinStudio()),
           },
         ],
       },
@@ -16512,8 +16525,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                         ? 'Loading Phylogenetics Studio…'
                         : viewerTab === 'sanger-contig'
                         ? 'Loading Chromatogram & Contig Studio…'
+                        : viewerTab === 'protein-3d'
+                        ? 'Loading Protein & 3D Studio…'
                         : viewerTab === 'genomics-ngs'
-                        ? 'Loading Genomics & 3D Structure Studio…'
+                        ? 'Loading Pipelines & NGS Studio…'
                         : viewerTab === 'vector-library'
                         ? 'Loading Vector Library & Architect…'
                         : viewerTab === 'guided-pipelines'
@@ -16730,6 +16745,17 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           `Added "${newDoc.name}" (${newDoc.sequence.length.toLocaleString()} bp) to workspace`
                         );
                       }}
+                    />
+                  )}
+
+                  {viewerTab === 'protein-3d' && (
+                    <ProteinStudio
+                      activeDoc={activeDoc}
+                      proteinDocuments={genomicsProteinDocs}
+                      selectedDocuments={selectedAnalysisDocuments}
+                      selectedRange={selectedRange}
+                      onUpdateDocument={handleUpdateDocument}
+                      onStatusBanner={(msg) => setStatusBanner(msg)}
                     />
                   )}
 

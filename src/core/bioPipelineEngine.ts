@@ -39,7 +39,7 @@ export type TargetWorkbenchStudio =
   | 'sequence-alignment'
   | 'phylogenetics'
   | 'sanger-contig'
-  | 'history-hybrid';
+  | 'protein-3d';
 
 export interface PipelineDefinition {
   id: BioPipelineId;

@@ -36,7 +36,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ResultWarnings } from '../components/ResultWarnings';
 import { SequenceAlignmentStudio } from '../components/AlignmentAndPhyloStudio';
-import { HybridToolsAndHistoryStudio } from '../components/HybridToolsAndHistoryStudio';
+import { ProteinStudio } from '../components/ProteinStudio';
 import { runBuildTree, runComputeTimetree, runMultipleAlignment, withWarningNotes } from '../core/operationRunners';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import type { ExternalTreeResult } from '../core/externalTreePrograms';
@@ -474,7 +474,7 @@ describe('studios', () => {
     expect(unknown.protease).toBe('Trypsin');
     expect(unknown.warnings).toEqual(["Unknown protease 'Pepsin A': digested with Trypsin."]);
     const fallback = unknown.warnings![0];
-    const render = () => renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={protein} allDocuments={[protein]} initialSubTab="protein" />);
+    const render = () => renderToStaticMarkup(<ProteinStudio activeDoc={protein} />);
 
     // the studio asks for Trypsin, its default; the engine is asked for Pepsin A in its place
     digestAsked.protease = 'Pepsin A';

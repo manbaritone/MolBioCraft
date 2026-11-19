@@ -167,7 +167,8 @@ const VIEW_SUMMARIES: Record<ViewerTab, Omit<HelpTopic, 'title'>> = {
   'sequence-alignment': { summary: 'Alignments and contigs: consensus, identity, colouring, annotations per row, and tools such as dotplot, distances and translation.' },
   phylogenetics: { summary: 'Tree documents: phylogram, cladogram, circular and radial layouts; support cutoff, branch lengths, time axis for timetrees; click a branch to root, flip, compress, colour or rename; save edits and export Newick / SVG / PNG.' },
   'sanger-contig': { summary: 'Chromatograms with base calls and quality, trimming and contig assembly.' },
-  'genomics-ngs': { summary: 'The Mol* 3D structure viewer for proteins and structures, with coiled-coil and transmembrane prediction.' },
+  'protein-3d': { summary: 'Everything about one protein: ProtParam (mass, pI, extinction coefficient, GRAVY, aliphatic index), Kyte-Doolittle hydropathy, GOR, the MS digest, the Mol* 3D structure viewer with superposition and the Ramachandran plot, and coiled-coil and transmembrane prediction; a DNA record is read through its CDS and keeps the codon optimiser.' },
+  'genomics-ngs': { summary: 'The NGS and genome tools for a DNA or RNA record: read trimming, mapping and assembly, synteny and variants, gene, CpG and repeat scans, and GenBank submission.' },
   'guided-pipelines': { summary: 'The guided multi-step QC pipelines, which run a record through each check in turn and report its overall status, and the NGS and genome tools a DNA or RNA record shows on its genomics tab: read mapping, variant calling and genome-scale tools.' },
   'history-hybrid': { summary: 'Every operation that made or changed this document, with links to parent documents.' },
   'document-info': { summary: 'Document properties and metadata, custom fields (Manage fields… to define your own) and notes.' },
@@ -175,8 +176,8 @@ const VIEW_SUMMARIES: Record<ViewerTab, Omit<HelpTopic, 'title'>> = {
 
 /**
  * One topic per studio and document panel, keyed by the tab it opens on and titled by its registry name.
- * The Help panel is given the tab of the studio the open view belongs to, so the genomics tab in an
- * NGS view shows the Pipelines & NGS topic and in its 3D view the Protein & 3D one (D0239).
+ * The Help panel is given the tab of the studio the open view belongs to, so the genomics tab shows
+ * the Pipelines & NGS topic and the protein-3d tab the Protein & 3D one (D0239, US-01M6Q164).
  */
 export const VIEW_HELP: Record<string, HelpTopic> = Object.fromEntries(
   STUDIO_ENTRIES.map((entry) => [entry.opens.tab, { title: entry.name, ...VIEW_SUMMARIES[entry.opens.tab] }]),

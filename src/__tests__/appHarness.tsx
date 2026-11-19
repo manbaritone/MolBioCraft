@@ -78,6 +78,7 @@ export const LAZY_CHUNKS: Readonly<Record<string, () => Promise<unknown>>> = {
   './components/HybridToolsAndHistoryStudio': () => import('../components/HybridToolsAndHistoryStudio'),
   './components/VectorLibraryAndDesignStudio': () => import('../components/VectorLibraryAndDesignStudio'),
   './components/GenomicsNgsAndPredictionStudio': () => import('../components/GenomicsNgsAndPredictionStudio'),
+  './components/ProteinStudio': () => import('../components/ProteinStudio'),
   './components/DatabaseExplorerModal': () => import('../components/DatabaseExplorerModal'),
 };
 

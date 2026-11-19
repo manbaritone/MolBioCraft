@@ -465,6 +465,7 @@ const VALID_VIEWER_TABS: &[&str] = &[
     "sequence-alignment",
     "phylogenetics",
     "sanger-contig",
+    "protein-3d",
     "genomics-ngs",
     "history-hybrid",
     "guided-pipelines",
@@ -1299,6 +1300,46 @@ mod tests {
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::Write;
+
+    /// US-01M6Q164: the Protein studio's viewer tab is a persisted id; a tab this build does not
+    /// know still opens on the Sequence view.
+    #[test]
+    fn mbc_session_codec_keeps_the_protein_studio_tab() {
+        let at = "2026-11-19T08:00:00.000Z";
+        let doc = build_ncbi_reference_preset_document("spike", at);
+        let reopened = |tab: &str| {
+            let snap = MbcWorkbenchSnapshotInput {
+                session_name: "Q164.mbc".to_string(),
+                documents: vec![doc.clone()],
+                workspace: MbcWorkspaceUiStateRust {
+                    project_explorer: None,
+                    active_doc_id: doc.id.clone(),
+                    selected_folder: "Cloning Inserts & PCR".to_string(),
+                    nav_history: vec![doc.id.clone()],
+                    nav_index: 0,
+                    viewer_tab: tab.to_string(),
+                    map_layout_mode: "split".to_string(),
+                    zoom_level: 100.0,
+                    text_format: "genbank".to_string(),
+                    color_scheme: "standard".to_string(),
+                    dark_mode: false,
+                    sidebar_open: true,
+                    doc_table_collapsed: false,
+                    selected_range: None,
+                    display_settings: MbcDisplaySettingsRust::default(),
+                    pane_split: None,
+                    site_visibility: None,
+                    map_rotation: None,
+                    document_split: None,
+                },
+            };
+            let json = serialize_mbc_workbench_rust(&snap, "1.0.0", at);
+            parse_mbc_workbench_bytes_rust(json.as_bytes(), "Fallback", at).unwrap().envelope.workspace.viewer_tab
+        };
+        assert_eq!(reopened("protein-3d"), "protein-3d", "the Protein studio's tab round-trips");
+        assert_eq!(reopened("genomics-ngs"), "genomics-ngs", "a legacy genomics tab is kept for the app to resolve");
+        assert_eq!(reopened("protein-4d"), "sequence-view", "an unknown tab falls back to the Sequence view");
+    }
 
     #[test]
     fn mbc_session_codec_verifies_fnv1a_crc32_and_gzip_roundtrip() {

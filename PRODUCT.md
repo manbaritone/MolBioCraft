@@ -30,7 +30,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 
 ## Capabilities and Constraints
 
-- 11 scientific studios and 2 document panels (13 viewer tabs). Studios: Sequence Map, Annotations, Flatfile, Cloning & Gel, Vectors & Architect, Primers & CRISPR, Alignment, Phylogenetics, Sanger & Contig, Protein & 3D, Pipelines & NGS. Panels: History, Info.
+- 11 scientific studios and 2 document panels (14 viewer tabs: Pipelines & NGS has two, its guided pipelines and its NGS and genome tools). Studios: Sequence Map, Annotations, Flatfile, Cloning & Gel, Vectors & Architect, Primers & CRISPR, Alignment, Phylogenetics, Sanger & Contig, Protein & 3D, Pipelines & NGS. Panels: History, Info.
 - 10 cloning simulators (Restriction-Ligation, Gibson, In-Fusion, NEBuilder HiFi, MoClo, Golden Gate, TA/GC, TOPO, Gateway, SOE-PCR)
 - REBASE enzyme database, 69-vector backbone catalog, 98-part modular vector architect, 9-rule custom vector onboarding QC
 - SantaLucia (1998) nearest-neighbour, von Ahsen (2001) Mg2+ equivalence (Primer3 default) Tm calculation, Zuker/Nussinov MFE folding, SpCas9/LbCas12a CRISPR guide design with HDR ssODN

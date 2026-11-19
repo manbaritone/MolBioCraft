@@ -1408,7 +1408,10 @@ fn reader_visible_snapshot(report: &BioPipelineExecutionReport) -> String {
 /// Y, N or R, so it becomes a unique cutter there. No other record holds a letter other than A, C, G
 /// or T, so no other number moves.
 const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
-    ("cloning-expression-qc", "4d07376a9b25b0c7"),
+    // US-01M6Q164 AC9 (D0246) then moved it, and only it of the two History-free pipelines, from
+    // 4d07376a9b25b0c7: its step 2 (Open Protein Analysis) targets the Protein studio, protein-3d,
+    // in place of History, which no longer hosts protein analysis; no verdict or number moved.
+    ("cloning-expression-qc", "2a1058a785d6deb7"),
     ("crispr-hdr-knockout", "48ee426c46530b6e"),
     // US-01M6VF33 (D0198) moved multihost-protein-mrna, and only it, from b86e224078c60f5f, by
     // delta (d) alone: codon optimisation writes an X as NNN with a warning where it dropped it.
@@ -1433,7 +1436,12 @@ const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
     // J, and the four sample DNA records with ambiguity codes report as before.
     // US-01M6Q1CF AC9 (D0245) then moved it, and only it, from 1a560bade11b770f: the folding step's
     // target_studio_label lost "(⌘7)", since ⌘7 now opens a studio; no verdict or number moved.
-    ("multihost-protein-mrna", "5e521b331e7470ff"),
+    // US-01M6Q164 AC9 (D0246) then moved it from 5e521b331e7470ff: Open Protein Biophysics Studio,
+    // Open Codon Optimizer and Inspect Hydropathy & GOR Plots target the Protein studio (protein-3d),
+    // and Open RNA/DNA Folding and the 5' mRNA leader fold zone target Primers & CRISPR (primers-pcr),
+    // in place of History, which no longer hosts them (the pipelines run on DNA constructs); no
+    // verdict, number or label moved.
+    ("multihost-protein-mrna", "15125162d055d9d5"),
     ("viral-twist-onboarding", "b355cabe03450c44"),
 ];
 

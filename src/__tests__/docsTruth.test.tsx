@@ -284,7 +284,8 @@ describe('US-01M6P23W AC2: README names the registry\'s 11 studios and 2 panels,
     expect(viewerTabLabel('text-view', { ...dna, docMetadata: { 'Document Type': 'Text Document' } } as SequenceDocument)).toBe('Flatfile');
     expect(viewerTabLabel('sequence-alignment', { ...dna, documentKind: 'contig' } as SequenceDocument)).toBe('Alignment');
     expect(viewerTabLabel('sequence-alignment', { ...dna, alignmentMeta: { isAligned: false } } as unknown as SequenceDocument)).toBe('Alignment');
-    expect(viewerTabLabel('genomics-ngs', { ...dna, moleculeType: 'Protein' } as SequenceDocument)).toBe('Protein & 3D');
+    expect(viewerTabLabel('protein-3d', { ...dna, moleculeType: 'Protein' } as SequenceDocument)).toBe('Protein & 3D');
+    expect(viewerTabLabel('genomics-ngs', { ...dna, moleculeType: 'Protein' } as SequenceDocument)).toBe('Pipelines & NGS');
     expect(viewerTabLabel('genomics-ngs', dna)).toBe('Pipelines & NGS');
     expect(viewerTabLabel('history-hybrid', { ...dna, docMetadata: { 'Document Type': 'Enzyme Set' } } as SequenceDocument)).toBe('History');
     for (const tab of ['sequence-view', 'cloning-gel', 'vector-library', 'primers-pcr', 'phylogenetics', 'sanger-contig', 'guided-pipelines', 'document-info'] as const) {

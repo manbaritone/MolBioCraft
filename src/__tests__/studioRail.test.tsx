@@ -183,13 +183,14 @@ describe('US-01M6Q1BD AC4: the rail marks the studio the current view belongs to
         expect(hit, `the studio's ${label} sub-tab`).toHaveLength(1);
         await app.click(hit[0]);
       };
-      await subTab('Coiled-Coils, Transmembrane & 3D PDB');
-      expect(current(app), 'the studio\'s own 3D sub-tab').toEqual(['protein-3d']);
+      // The genomics studio has no 3D sub-tab: Protein & 3D is its own tab (US-01M6Q164), so every
+      // genomics sub-tab keeps Pipelines & NGS current.
+      expect(app.canvas().querySelectorAll('button[role="tab"]').filter((b) => words(b.textContent) === 'Coiled-Coils, Transmembrane & 3D PDB'), 'no 3D sub-tab').toHaveLength(0);
       await subTab('Glimmer Genes, CpG & Repeats');
       expect(current(app), 'back to an NGS sub-tab').toEqual(['pipelines-ngs']);
-      // The rail's own Protein & 3D entry opens the genomics tab in its 3D view, from an NGS view.
+      // The rail's own Protein & 3D entry opens the Protein studio's tab, from an NGS view.
       await app.clickStudio('protein-3d');
-      expect(app.activeTab()).toBe('genomics-ngs');
+      expect(app.activeTab()).toBe('protein-3d');
       expect(current(app), 'the rail\'s Protein & 3D').toEqual(['protein-3d']);
 
       await app.press('k', { mod: true });
@@ -200,7 +201,7 @@ describe('US-01M6Q1BD AC4: the rail marks the studio the current view belongs to
       expect(current(app), '⌘K Cloning & Gel').toEqual(['cloning-gel']);
 
       // The structure's 3D viewer sub-view.
-      await openOn(app, PROTEIN, 'genomics-ngs');
+      await openOn(app, PROTEIN, 'protein-3d');
       expect(current(app), 'the 3D viewer of a structure').toEqual(['protein-3d']);
       expect(app.one('.mbc-studio-rail-list').getAttribute('data-current-studio')).toBe('protein-3d');
 

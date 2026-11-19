@@ -57,7 +57,8 @@ vi.mock('../core/menuShortcuts', async () => {
 });
 
 const { App } = await import('../App');
-const { GenomicsNgsAndPredictionStudio } = await import('../components/GenomicsNgsAndPredictionStudio');
+// The 3D card and its wiring are the Protein studio's since US-01M6Q164.
+const { ProteinStudio } = await import('../components/ProteinStudio');
 const structureView = await import('../core/structureView');
 const { alignPdbStructuresKabsch, parsePdbCaCoordinates } = await import('../core/genomicsAndStructureSuite');
 const { caAtomsToPdb, structureAtomsOf } = await import('../core/structureModels');
@@ -172,14 +173,8 @@ function chainDoc(text: string, chain: ChainSpec, format: 'mmCIF' | 'PDB', name 
   };
 }
 
-const studio = (props: Partial<React.ComponentProps<typeof GenomicsNgsAndPredictionStudio>> & { activeDoc: SequenceDocument }) =>
-  renderToStaticMarkup(
-    <GenomicsNgsAndPredictionStudio
-      documents={[]} initialSubTab="protein-3d"
-      onCreateDocument={() => {}} onUpdateActiveSequence={() => {}} onAppendFeatures={() => {}}
-      {...props}
-    />,
-  );
+const studio = (props: Partial<React.ComponentProps<typeof ProteinStudio>> & { activeDoc: SequenceDocument }) =>
+  renderToStaticMarkup(<ProteinStudio {...props} />);
 
 /** The words a stretch of markup shows: tags dropped, the entities React writes decoded. */
 const wordsOf = (markup: string): string => markup.replace(/<[^>]+>/g, ' ')
@@ -218,6 +213,7 @@ function ramachandranFigure(html: string): { label: string; residues: string[]; 
 // ─── AC1 ───
 
 describe('the structure studio (GenomicsNgsAndPredictionStudio, 3D tab)', () => {
+  // (The describe keeps its name so BG-01M6PXRX's Verify lines resolve; it renders ProteinStudio, US-01M6Q164.)
   const cif = entryCif(1);
   const docB = chainDoc(cif, CHAIN_B, 'mmCIF');
   const docA = chainDoc(cif, CHAIN_A, 'mmCIF');
@@ -440,10 +436,10 @@ async function driveAppToStudio(steps: readonly AppStep[]): Promise<string> {
   for (let attempt = 0; attempt < 100; attempt++) {
     const { html, ran } = driveApp(steps);
     expect(ran, 'every step ran').toBe(steps.length);
-    if (!html.includes('Loading Genomics &amp; 3D Structure Studio')) return html;
+    if (!html.includes('Loading Protein &amp; 3D Studio')) return html;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error('the Genomics & 3D Structure Studio chunk never loaded');
+  throw new Error('the Protein & 3D Studio chunk never loaded');
 }
 
 /** localStorage for one test (the App's autosave lives there), removed after it. */

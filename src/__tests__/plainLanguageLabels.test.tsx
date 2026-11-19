@@ -203,6 +203,7 @@ const { PhylogeneticsStudio, SequenceAlignmentStudio, treeMethodHeading } = awai
 const { ChromatogramAndContigStudio } = await import('../components/ChromatogramAndContigStudio');
 const { CloningAndGelStudio } = await import('../components/CloningAndGelStudio');
 const { GenomicsNgsAndPredictionStudio } = await import('../components/GenomicsNgsAndPredictionStudio');
+const { ProteinStudio } = await import('../components/ProteinStudio');
 const { HybridToolsAndHistoryStudio } = await import('../components/HybridToolsAndHistoryStudio');
 const { PrimerAndPCRStudio } = await import('../components/PrimerAndPCRStudio');
 const { VectorLibraryAndDesignStudio } = await import('../components/VectorLibraryAndDesignStudio');
@@ -671,7 +672,7 @@ describe('library and storage names', () => {
         onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop} />),
       'genes and motifs': renderToStaticMarkup(<GenomicsNgsAndPredictionStudio activeDoc={plasmid} documents={[plasmid]} initialSubTab="genes-cpg-repeats"
         onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop} />),
-      'proteomics': renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={plasmid} allDocuments={SAMPLE_LIBRARY} initialSubTab="protein" />),
+      'proteomics': renderToStaticMarkup(<ProteinStudio activeDoc={plasmid} />),
       'history': renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={plasmid} allDocuments={SAMPLE_LIBRARY} initialSubTab="lineage" />),
       // The command palette opens from the status bar's Navigator pill.
       'command palette': renderApp({ session: 'sample-library', clicks: [/Navigator$/] }),
@@ -738,10 +739,11 @@ describe('studio badges', () => {
   it('drops decorative badges and keeps the ones that carry a value', () => {
     const structA = byId('doc-prot-1d66-gal4-dna');
     const structB = byId('doc-prot-1a4y-rnase-angiogenin');
-    const genomics = (doc: SequenceDocument, tab?: 'protein-3d') => renderToStaticMarkup(
-      <GenomicsNgsAndPredictionStudio activeDoc={doc} documents={[doc, structB]} proteinDocuments={[structA, structB]}
-        selectedDocuments={tab ? [structA, structB] : []} {...(tab ? { initialSubTab: tab } : {})}
-        onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop} />);
+    // The structure's 3D card is the Protein studio's since US-01M6Q164.
+    const genomics = (doc: SequenceDocument, tab?: 'protein-3d') => renderToStaticMarkup(tab
+      ? <ProteinStudio activeDoc={doc} proteinDocuments={[structA, structB]} selectedDocuments={[structA, structB]} />
+      : <GenomicsNgsAndPredictionStudio activeDoc={doc} documents={[doc, structB]} proteinDocuments={[structA, structB]}
+        selectedDocuments={[]} onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop} />);
     const vectors = (tab: 'architect' | 'parts' | 'twist-onboarding') => renderToStaticMarkup(
       <VectorLibraryAndDesignStudio activeDoc={plasmid} documents={SAMPLE_LIBRARY} initialSubTab={tab}
         onAddDocument={noop} onInsertPartIntoActiveDoc={noop} />);

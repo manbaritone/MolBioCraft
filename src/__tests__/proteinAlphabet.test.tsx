@@ -42,12 +42,10 @@ const protein = (id: string, sequence: string): SequenceDocument => ({ ...BLANK,
 // ─── The Protein tab ───
 
 async function onProteinTab(app: AppHarness, doc: SequenceDocument): Promise<LiveElement> {
-  await app.restoreSession({ documents: [doc], activeDocId: doc.id, viewerTab: 'history-hybrid' });
+  // The protein analysis is the Protein studio's since US-01M6Q164 (it left History).
+  await app.restoreSession({ documents: [doc], activeDocId: doc.id, viewerTab: 'protein-3d' });
   await app.settle();
-  const tab = app.canvas().querySelectorAll('button[role="tab"]').filter((b) => b.textContent.trim() === 'Protein Analysis');
-  expect(tab, `one Protein sub-tab among ${JSON.stringify(app.all('button[role="tab"]').map((b) => words(b.textContent)))} on ${app.activeTab()}`).toHaveLength(1);
-  await app.click(tab[0]);
-  await app.settle();
+  expect(app.activeTab(), 'the Protein studio').toBe('protein-3d');
   const cards = app.canvas().querySelectorAll('.studio-card')
     .filter((c) => words(c.querySelectorAll('h3')[0]?.textContent).startsWith('EMBOSS Protein Analysis'));
   expect(cards, 'one protein analysis card').toHaveLength(1);

@@ -39,7 +39,7 @@ vi.mock('../core/pipelineReportFreshness', async () => {
   return { ...actual, selectCurrentPipelineReport: select };
 });
 
-const { GenomicsNgsAndPredictionStudio, coordinateSourceBadge } = await import('../components/GenomicsNgsAndPredictionStudio');
+const { ProteinStudio, coordinateSourceBadge } = await import('../components/ProteinStudio');
 const pipelineModule = await import('../components/WorkflowPipelineStudio');
 const { WorkflowPipelineStudio } = pipelineModule;
 const { BIO_PIPELINE_CATALOG, executeBioPipelineAsync } = await import('../core/bioPipelineEngine');
@@ -85,13 +85,9 @@ const egfpEmptyFile: SequenceDocument = {
   docMetadata: { ...egfp.docMetadata, PDBText: 'HEADER    NO ATOM RECORDS\nEND\n' },
 };
 
-const proteinTab = (activeDoc: SequenceDocument, extra: Partial<React.ComponentProps<typeof GenomicsNgsAndPredictionStudio>> = {}) =>
+const proteinTab = (activeDoc: SequenceDocument, extra: Partial<React.ComponentProps<typeof ProteinStudio>> = {}) =>
   renderToStaticMarkup(
-    <GenomicsNgsAndPredictionStudio
-      activeDoc={activeDoc} documents={[activeDoc]} initialSubTab="protein-3d"
-      onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop}
-      {...extra}
-    />,
+    <ProteinStudio activeDoc={activeDoc} {...extra} />,
   );
 
 const CARD = '<div class="studio-card">';

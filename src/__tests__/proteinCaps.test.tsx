@@ -34,7 +34,8 @@ import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { HybridToolsAndHistoryStudio, NO_RESIDUE_TRANSLATED } from '../components/HybridToolsAndHistoryStudio';
+import { NO_RESIDUE_TRANSLATED } from '../components/HybridToolsAndHistoryStudio';
+import { ProteinStudio } from '../components/ProteinStudio';
 import { CONTACT_DRAW_LIMIT, ProteinStructure3DViewer, contactOverlay } from '../components/ProteinStructure3DViewer';
 import * as bio from '../core/bioEngine';
 import { analyzeProteinSequence } from '../core/bioEngine';
@@ -70,7 +71,7 @@ function regions(html: string): { label: string; at: number; sentences: string[]
   }));
 }
 const proteinTab = (d: SequenceDocument) =>
-  renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={d} allDocuments={[d]} initialSubTab="protein" />);
+  renderToStaticMarkup(<ProteinStudio activeDoc={d} />);
 /** The protein tab's own coverage region, if it shows one. */
 const coverage = (html: string) => regions(html).filter((r) => r.label === 'Protein analysis coverage');
 /** The sentences of the tab's coverage region, which it must show exactly once. */
@@ -357,7 +358,7 @@ describe('protein analysis coverage', () => {
     const d = doc('ep', 'Epitopes', seq, 'Protein');
     // with a document to annotate, as the app opens the tab, so the Annotate button is shown
     const html = renderToStaticMarkup(
-      <HybridToolsAndHistoryStudio doc={d} allDocuments={[d]} initialSubTab="protein" onUpdateDocument={() => {}} />
+      <ProteinStudio activeDoc={d} onUpdateDocument={() => {}} />
     );
     expect(text(html)).toContain(`Antigenic Epitopes${all.length} regions`);
     expect(text(html)).toContain(`+ Annotate ${all.length} Predicted Antigenic Epitopes onto Epitopes`);
@@ -385,7 +386,7 @@ const UNTRANSLATED = [['TAA', 3], ['AC', 2], ['', 0]] as const;
 /** The boxes that have no answer when no residue was translated, by their labels on the tab. */
 const NO_ANSWER = [
   'Molecular Weight', 'Isoelectric Point (pI)', 'Charge at pH 7', 'ε₂₈₀ reduced / cystines (M⁻¹cm⁻¹)', 'A[280] of 1 mg/ml',
-  'GRAVY / Aliphatic', 'α-Helix (GOR H)', 'β-Sheet (GOR E)', 'Random Coil (C)', 'Intact Mass (Mono)',
+  'GRAVY / Aliphatic', 'Instability Index', 'α-Helix (GOR H)', 'β-Sheet (GOR E)', 'Random Coil (C)', 'Intact Mass (Mono)',
 ];
 
 describe('a document that translates to nothing', () => {

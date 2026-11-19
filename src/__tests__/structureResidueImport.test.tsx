@@ -256,10 +256,11 @@ describe('structure import, one document per polymer chain (US-01M7NMQK)', () =>
   it('US-01M7NMQK AC4 opens the 3D view for a protein chain and the Sequence view for an RNA-only file', async () => {
     const app = await mountApp();
     try {
-      const subTab3d = () => app.all('button[role="tab"]').filter((b) => words(b.textContent) === 'Coiled-Coils, Transmembrane & 3D PDB');
+      // The 3D view is the Protein studio's (US-01M6Q164): its 3D card is shown.
+      const card3d = () => app.canvas().querySelectorAll('h3').filter((h) => words(h.textContent) === '3D Structure & Superposition');
       await drop(app, 'semet.pdb', semetPdb());
-      expect(app.activeTab(), 'semet.pdb opens Protein & 3D').toBe('genomics-ngs');
-      expect(subTab3d().map((b) => b.getAttribute('aria-selected')), 'on its 3D sub-tab').toEqual(['true']);
+      expect(app.activeTab(), 'semet.pdb opens Protein & 3D').toBe('protein-3d');
+      expect(card3d(), 'on its 3D view').toHaveLength(1);
 
       const rna = await opened(app, 'complex_b.cif', complexCif(['B']), true);
       expect(rna.map((d) => [d.name, d.moleculeType, d.sequence])).toEqual([['complex_b', 'RNA', 'GUAC']]);

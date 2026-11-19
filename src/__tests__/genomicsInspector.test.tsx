@@ -3,16 +3,16 @@
 
 /**
  * US-01M6TAKR: each Genomics sub-tab's parameters in App's shared inspector, titled "Genomics
- * Controls" ("3D Structure Controls" for a protein record), with the documents compared and the
- * GenBank submission fields left in the cards:
+ * Controls" (the Protein studio's own title for a structure, which US-01M6Q164 moved there), with the
+ * documents compared and the GenBank submission fields left in the cards:
  * - NGS: Read Trimming (BBDuk k, min end Q), Read Mapping (the mapper) and De Novo Assembly (the
  *   engine and min overlap); the reference and read pickers stay in the mapper's card;
  * - Genome & variants: Genome Alignment (the engine) and STR Genotyping (min repeats); the genome
  *   compared against stays in the alignment card;
  * - Genes, CpG & repeats: Gene Prediction, CpG Islands, Genomic Repeats and TF Motif Scan, one
  *   minimum each;
- * - 3D: a Structure section with Show all chains, only for the record's own multi-chain structure
- *   with no file loaded over it, and no section (and no button) otherwise;
+ * - 3D (the Protein studio since US-01M6Q164): a Structure section with Show all chains, only for the
+ *   record's own multi-chain structure with no file loaded over it, and no Structure section otherwise;
  * - Transform & submit: Benchmark Generator (mode, mutation rate, PRNG seed).
  *
  * Every check but the last five mounts the real App over the live DOM with the US-01M6TB6G harness,
@@ -25,8 +25,8 @@
  *
  * Wrong implementations, and the check that fails for each: a setting left in the canvas, drawn
  * twice, in another section or drawn in the inspector with its standalone inline look; a picker or
- * a GenBank field moved into the inspector; sections out of order; a button offered on the 3D
- * sub-tab of a DNA record, a single-chain structure or a file loaded over the record (AC2), or the
+ * a GenBank field moved into the inspector; sections out of order; a Structure section offered on the
+ * Protein studio of a DNA record, a single-chain structure or a file loaded over the record (AC2), or the
  * 3D viewer's own style and colour moved off the figure; a moved control wired to nothing, a result
  * left on the old value, or a value kept in the section rather than the studio, so a sub-tab switch
  * or a close loses it (AC3, AC4); a repeat scan per keystroke, or the draft or its settle timer kept
@@ -174,7 +174,7 @@ const PROTEIN_1: SequenceDocument = {
 const onGenomics = (app: AppHarness, viewerTab: 'genomics-ngs' | 'sequence-view' = 'genomics-ngs') =>
   app.restoreSession({ documents: DNA_DOCS, activeDocId: GENOME.id, viewerTab });
 const onStructure = (app: AppHarness, active: SequenceDocument) =>
-  app.restoreSession({ documents: [PROTEIN_2, PROTEIN_1, GENOME], activeDocId: active.id, viewerTab: 'genomics-ngs' });
+  app.restoreSession({ documents: [PROTEIN_2, PROTEIN_1, GENOME], activeDocId: active.id, viewerTab: 'protein-3d' });
 
 /** This launch's engine, loaded after the App (one module at a time). */
 async function engine() {
@@ -232,11 +232,13 @@ function shown(app: AppHarness) {
 }
 /** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
 const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
-// A DNA record's genomics tab belongs to Pipelines & NGS, a protein's to Protein & 3D (the registry's interim mapping).
+// The genomics tab belongs to Pipelines & NGS; the 3D tools and their Structure section are the Protein studio's (US-01M6Q164).
 const OPEN = { button: `Hide ${studioName('pipelines-ngs')} Controls Inspector`, title: `${studioName('pipelines-ngs')} Controls` };
 const CLOSED = { button: `Show ${studioName('pipelines-ngs')} Controls Inspector`, title: null, sections: [] };
 const OPEN_3D = { button: `Hide ${studioName('protein-3d')} Controls Inspector`, title: `${studioName('protein-3d')} Controls` };
-const NONE = { button: null, title: null, sections: [] };
+/** The Protein studio's inspector: the protein analysis's section always (D0247 (2)), the Structure section only for a multi-chain structure. */
+const PROTEIN_ONLY = { ...OPEN_3D, sections: ['Protein Analysis'] };
+const WITH_STRUCTURE = { ...OPEN_3D, sections: ['Structure', 'Protein Analysis'] };
 
 /** The body of the column's section titled `title`. */
 function sectionBody(app: AppHarness, title: string): LiveElement {
@@ -258,14 +260,15 @@ function inSection(app: AppHarness, title: string, name: string): LiveElement {
 
 // ─── The studio's sub-tabs, sections and settings ───
 
-type SubTab = 'ngs' | 'genome' | 'genes' | '3d' | 'transform';
+type SubTab = 'ngs' | 'genome' | 'genes' | 'transform';
 const SUB_TAB_LABELS: Record<SubTab, string> = {
   ngs: 'NGS Trim, Map & Assemble',
   genome: 'Whole-Genome, Variants, STR & 16S',
   genes: 'Glimmer Genes, CpG & Repeats',
-  '3d': 'Coiled-Coils, Transmembrane & 3D PDB',
   transform: 'Transform, Mutate/Shuffle & GenBank Submit',
 };
+/** The genomics studio's former 3D sub-tab, now the Protein studio (US-01M6Q164). */
+const FORMER_3D_SUB_TAB = 'Coiled-Coils, Transmembrane & 3D PDB';
 const subTabButtons = (scope: LiveElement) =>
   scope.querySelectorAll('[role="tablist"][aria-label="Genomics and Structure Modules"] button[role="tab"]');
 function selectedSubTab(app: AppHarness): string {
@@ -303,7 +306,6 @@ const SECTIONS: Record<SubTab, [string, string[]][]> = {
   ngs: [['Read Trimming', [K, MIN_Q]], ['Read Mapping', [MAPPER]], ['De Novo Assembly', [ASSEMBLER, OVERLAP]]],
   genome: [['Genome Alignment', [SYNTENY_ENGINE]], ['STR Genotyping', [MIN_STR]]],
   genes: [['Gene Prediction', [MIN_AA]], ['CpG Islands', [MIN_CPG]], ['Genomic Repeats', [MIN_ARM]], ['TF Motif Scan', [MIN_SCORE]]],
-  '3d': [],
   transform: [['Benchmark Generator', [MODE, RATE, SEED]]],
 };
 const EVERY_SETTING = Object.values(SECTIONS).flatMap((s) => s.flatMap(([, names]) => names));
@@ -312,7 +314,6 @@ const KEPT_IN_CARDS: Record<SubTab, string[]> = {
   ngs: ['Reference Sequence:', 'Query Read / Amplicon:'],
   genome: [`Compare ${GENOME.name} Against:`],
   genes: [],
-  '3d': [],
   transform: ['Source Organism:', 'Strain / Isolate:', 'Molecule Type ([moltype]):', 'NCBI Genetic Code ([gcode]):'],
 };
 /** The words a control's label gives it (the span a labelled field opens with). */
@@ -464,11 +465,19 @@ describe("each sub-tab's parameters in App's inspector (AC1)", () => {
       const genbank = card(app, GENBANK_CARD);
       for (const name of KEPT_IN_CARDS.transform) expect(genbank.contains(field(app.canvas(), name)), `${name} in the GenBank card`).toBe(true);
 
-      // The 3D sub-tab of a DNA record has nothing to set: no button, no column.
-      await openSubTab(app, '3d');
-      expect(shown(app), '3D on a DNA record').toEqual(NONE);
-      expect(app.inspectorAside(), 'no column').toBeNull();
+      // The studio has no 3D sub-tab, and the Protein studio of a DNA record has no structure to set:
+      // its inspector holds the protein analysis alone, and no genomics setting or chain toggle.
+      expect(subTabButtons(app.canvas()).filter((b) => !b.hasAttribute('hidden')).map((b) => words(b.textContent)), 'no 3D sub-tab')
+        .toEqual(Object.values(SUB_TAB_LABELS));
+      expect(subTabButtons(app.canvas()).map((b) => words(b.textContent))).not.toContain(FORMER_3D_SUB_TAB);
+      await app.clickStudio('protein-3d');
+      await landScans(app);
+      expect(app.activeTab()).toBe('protein-3d');
+      expect(shown(app), '3D on a DNA record').toEqual(PROTEIN_ONLY);
       for (const name of [...EVERY_SETTING, ALL_CHAINS]) expect(fields(app.doc.body, name), `3D: no ${name}`).toHaveLength(0);
+      await app.menu('tools:ngs-suite');
+      await landScans(app);
+      expect(app.activeTab()).toBe('genomics-ngs');
 
       // Closed, the settings are drawn nowhere and the button stays; the cards keep their results.
       await openSubTab(app, 'genes');
@@ -490,12 +499,12 @@ describe("each sub-tab's parameters in App's inspector (AC1)", () => {
 describe('the chain toggle (AC2)', () => {
   it('offers the chain toggle only for a multi-chain structure', async () => {
     await withApp(async (app) => {
-      // A chain of a two-chain structure: the record's own tab is the Protein & 3D tab, with one sub-tab.
+      // A chain of a two-chain structure: the record's own tab is the Protein studio, with no genomics sub-tab.
       await onStructure(app, PROTEIN_2);
       await landScans(app);
-      expect(subTabButtons(app.canvas()).filter((b) => !b.hasAttribute('hidden')).map((b) => words(b.textContent)), 'a protein record has the 3D sub-tab alone')
-        .toEqual([SUB_TAB_LABELS['3d']]);
-      expect(shown(app), 'a two-chain structure').toEqual({ ...OPEN_3D, sections: ['Structure'] });
+      expect(app.activeTab()).toBe('protein-3d');
+      expect(subTabButtons(app.canvas()), 'a protein record has no genomics sub-tab').toHaveLength(0);
+      expect(shown(app), 'a two-chain structure').toEqual(WITH_STRUCTURE);
       const toggle = inSection(app, 'Structure', ALL_CHAINS);
       expect([toggle.getAttribute('type'), toggle.checked]).toEqual(['checkbox', false]);
       expect(sectionBody(app, 'Structure').querySelectorAll('input, select').map(controlName), 'the toggle alone').toEqual([ALL_CHAINS]);
@@ -529,26 +538,28 @@ describe('the chain toggle (AC2)', () => {
       await React.act(async () => { dispatchLiveEvent(replace[0], 'change'); });
       await app.settle();
       expect(figure.querySelectorAll('strong').map((s) => words(s.textContent)), 'the loaded file is drawn').toContain('takr_loaded.pdb');
-      expect(shown(app), 'a file loaded over the record').toEqual(NONE);
+      expect(shown(app), 'a file loaded over the record').toEqual(PROTEIN_ONLY);
       expect(fields(app.doc.body, ALL_CHAINS), 'no toggle anywhere').toHaveLength(0);
       // Back to the record's own structure: the toggle is offered again.
       const back = figure.querySelectorAll('button').filter((b) => words(b.textContent) === `Back to ${PROTEIN_2.name}`);
       expect(back).toHaveLength(1);
       await app.click(back[0]);
-      expect(shown(app), 'back to the record').toEqual({ ...OPEN_3D, sections: ['Structure'] });
+      expect(shown(app), 'back to the record').toEqual(WITH_STRUCTURE);
       inSection(app, 'Structure', ALL_CHAINS);
 
       // A one-chain structure: nothing to set.
       await onStructure(app, PROTEIN_1);
       await landScans(app);
       card(app, '3D Structure & Superposition');
-      expect(shown(app), 'a one-chain structure').toEqual(NONE);
+      expect(shown(app), 'a one-chain structure').toEqual(PROTEIN_ONLY);
       expect(app.doc.body.querySelectorAll('input[type="checkbox"]').filter((c) => /^Show all \d+ chains/.test(controlName(c) ?? '')), 'no chain toggle').toHaveLength(0);
 
-      // The 3D sub-tab of a DNA record: nothing to set.
-      await app.restoreSession({ documents: [PROTEIN_2, GENOME], activeDocId: GENOME.id, viewerTab: 'genomics-ngs' });
-      await openSubTab(app, '3d');
-      expect(shown(app), '3D on a DNA record').toEqual(NONE);
+      // The Protein studio of a DNA record: no structure to set.
+      await app.restoreSession({ documents: [PROTEIN_2, GENOME], activeDocId: GENOME.id, viewerTab: 'protein-3d' });
+      await landScans(app);
+      expect(app.activeTab()).toBe('protein-3d');
+      expect(shown(app), '3D on a DNA record').toEqual(PROTEIN_ONLY);
+      expect(fields(app.doc.body, ALL_CHAINS), 'no toggle on a DNA record').toHaveLength(0);
     });
   });
 });
@@ -665,10 +676,7 @@ describe('a scan re-run from the inspector (AC3)', () => {
       await app.change(inSection(app, 'Benchmark Generator', SEED), '7');
       expect(pick(kpis(card(app, GENERATOR_CARD)), genKeys), 'seed 7').toEqual(gen.seed7);
 
-      // Every value is kept across sub-tab switches (the 3D sub-tab, with no sections, among them),
-      // and so is the result each card shows for it.
-      await openSubTab(app, '3d');
-      expect(shown(app)).toEqual(NONE);
+      // Every value is kept across sub-tab switches, and so is the result each card shows for it.
       await openSubTab(app, 'ngs');
       expect([K, MIN_Q].map((name) => inSection(app, 'Read Trimming', name).value)).toEqual(['15', '15']);
       expect([inSection(app, 'Read Mapping', MAPPER).value, inSection(app, 'De Novo Assembly', ASSEMBLER).value, inSection(app, 'De Novo Assembly', OVERLAP).value])
@@ -789,15 +797,13 @@ describe('a menu command that opens a sub-tab (AC7)', () => {
         ['tools:ngs-suite', 'ngs'],
         ['tools:genome-variants', 'genome'],
         ['annotate:cpg-repeats', 'genes'],
-        ['annotate:coils-tm-pdb', '3d'],
         ['sequence:mutate-shuffle', 'transform'],
       ];
       const expectOn = async (tab: SubTab, where: string) => {
         await landScans(app);
         expect(app.activeTab(), where).toBe('genomics-ngs');
         expect(selectedSubTab(app), where).toBe(SUB_TAB_LABELS[tab]);
-        if (tab === '3d') expect(shown(app), where).toEqual(NONE);
-        else expectSections(app, tab);
+        expectSections(app, tab);
       };
       // From the Sequence tab.
       for (const [command, tab] of routes) {
@@ -817,12 +823,24 @@ describe('a menu command that opens a sub-tab (AC7)', () => {
         await app.menu(command);
         await expectOn(tab, `${command} again, from ${other}`);
       }
+      // The 3D command opens the Protein studio (US-01M6Q164), from the Sequence tab and from inside
+      // this studio, twice: on a DNA record it has no structure to set.
+      for (const from of ['sequence-view', 'genomics-ngs', 'genomics-ngs'] as const) {
+        if (from === 'sequence-view') await app.clickTab(from);
+        else await app.menu('tools:ngs-suite');
+        await landScans(app);
+        expect(app.activeTab()).toBe(from);
+        await app.menu('annotate:coils-tm-pdb');
+        await landScans(app);
+        expect(app.activeTab(), `annotate:coils-tm-pdb, from ${from}`).toBe('protein-3d');
+        expect(shown(app), `annotate:coils-tm-pdb, from ${from}`).toEqual(PROTEIN_ONLY);
+      }
       // A protein record: the 3D command shows its Structure section.
       await app.restoreSession({ documents: [PROTEIN_2, GENOME], activeDocId: PROTEIN_2.id, viewerTab: 'sequence-view' });
       await app.menu('annotate:coils-tm-pdb');
       await landScans(app);
-      expect([app.activeTab(), selectedSubTab(app)]).toEqual(['genomics-ngs', SUB_TAB_LABELS['3d']]);
-      expect(shown(app)).toEqual({ ...OPEN_3D, sections: ['Structure'] });
+      expect(app.activeTab()).toBe('protein-3d');
+      expect(shown(app)).toEqual(WITH_STRUCTURE);
       inSection(app, 'Structure', ALL_CHAINS);
     });
   });
@@ -835,19 +853,23 @@ describe('a menu command that opens a sub-tab (AC7)', () => {
  * WorkbenchInspectorProvider above it, from this launch's module (imported after the launch, which
  * loads React DOM under the live DOM). Its effects run, so its scans land as they do in the app.
  */
-async function drawnOnItsOwn(app: AppHarness, props: { activeDoc: SequenceDocument; documents: SequenceDocument[]; proteinDocuments?: SequenceDocument[]; initialSubTab: string }, check: (probe: LiveElement) => void) {
+async function drawnOnItsOwn(app: AppHarness, props: { activeDoc: SequenceDocument; documents?: SequenceDocument[]; proteinDocuments?: SequenceDocument[]; initialSubTab?: string }, check: (probe: LiveElement) => void) {
   const React = await import('react');
   const { createRoot } = await import('react-dom/client');
   const { GenomicsNgsAndPredictionStudio } = await import('../components/GenomicsNgsAndPredictionStudio');
+  // The 3D panel is the Protein studio's (US-01M6Q164): it is drawn with no sub-tab.
+  const { ProteinStudio } = await import('../components/ProteinStudio');
   const probe = app.doc.createElement('div');
   app.doc.body.appendChild(probe);
   const root = createRoot(probe as unknown as Element);
   const noop = () => {};
   try {
     await React.act(async () => {
-      root.render(React.createElement(GenomicsNgsAndPredictionStudio, {
-        ...props, initialSubTab: props.initialSubTab as never, onCreateDocument: noop, onUpdateActiveSequence: noop, onAppendFeatures: noop,
-      }));
+      root.render(props.initialSubTab === undefined
+        ? React.createElement(ProteinStudio, { activeDoc: props.activeDoc, proteinDocuments: props.proteinDocuments })
+        : React.createElement(GenomicsNgsAndPredictionStudio, {
+          ...props, documents: props.documents ?? [], initialSubTab: props.initialSubTab as never, onCreateDocument: noop, onUpdateActiveSequence: noop, onAppendFeatures: noop,
+        }));
     });
     await landScans(app);
     expect(probe.querySelectorAll('.mbc-inspector-sections, .mbc-accordion-section, .mbc-accordion-header, .mbc-accordion-body'), 'no inspector wrapper, section or header on its own').toHaveLength(0);
@@ -965,7 +987,8 @@ describe('the studio drawn on its own keeps its settings in place (AC8)', () => 
 
   it('keeps its settings in place when rendered on its own, 3D', async () => {
     await withApp(async (app) => {
-      const props = (doc: SequenceDocument) => ({ activeDoc: doc, documents: [GENOME], proteinDocuments: [PROTEIN_2, PROTEIN_1], initialSubTab: 'protein-3d' });
+      // The Protein studio, drawn on its own (US-01M6Q164 moved the 3D panel there).
+      const props = (doc: SequenceDocument) => ({ activeDoc: doc, proteinDocuments: [PROTEIN_2, PROTEIN_1] });
       await drawnOnItsOwn(app, props(PROTEIN_2), (page) => {
         // The toggle beside the Compare with picker, the 3D card's first row, aligned to its end.
         const figure = cardIn(page, '3D Structure & Superposition');
