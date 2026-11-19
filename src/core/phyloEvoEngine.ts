@@ -377,10 +377,14 @@ export function computePopulationDiversity(
   });
 }
 
+/**
+ * A distance tree (NJ, UPGMA, or the NJ tree scored as ME / MP). The engine refuses Maximum
+ * Likelihood (mlTreeSearch builds it) and the external programs' names (runExternalTree runs them).
+ */
 export function constructPhylogeneticTree(
   names: string[],
   alignedSeqs: string[],
-  algorithm: PhyloTreeAlgorithm = 'Maximum Likelihood (ML)',
+  algorithm: PhyloTreeAlgorithm = 'Neighbor-Joining (NJ)',
   model: SubstitutionModelName = 'Tamura-Nei (TN93)',
   bootstrapReplicates = 500,
   /** > 0: delete-d jackknife keeping this % of columns per replicate instead of the bootstrap. */

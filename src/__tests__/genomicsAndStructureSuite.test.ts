@@ -244,10 +244,14 @@ describe('Built-In Genomics, NGS, Gene/Repeat Prediction, Protein Topology & 3D 
       'RAxML (GTR+G Rapid ML)',
       'MrBayes (Bayesian MCMC)',
     ] as const) {
-      const tree = constructPhylogeneticTree(names, seqs, algo, 'Tamura-Nei (TN93)', 500);
-      expect(tree.algorithm).toBe(algo);
-      expect(tree.newick.endsWith(';')).toBe(true);
+      // An external program runs only as the program (runExternalTree); the distance-tree op
+      // refuses its name rather than answer with a Neighbor-Joining tree under it (US-01M6P2HD, D0206).
+      expect(() => constructPhylogeneticTree(names, seqs, algo, 'Tamura-Nei (TN93)', 500), algo)
+        .toThrow(`${algo} runs only as the installed program, through runExternalTree; this operation builds distance trees.`);
     }
+    const nj = constructPhylogeneticTree(names, seqs, 'Neighbor-Joining (NJ)', 'Tamura-Nei (TN93)', 500);
+    expect(nj.algorithm).toBe('Neighbor-Joining (NJ)');
+    expect(nj.newick.endsWith(';')).toBe(true);
   });
 });
 

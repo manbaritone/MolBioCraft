@@ -1043,7 +1043,8 @@ describe('Phylogenetics puts the tree first (US-01M6Q1Z0 AC4)', () => {
     expect(disclosure?.tag, 'a disclosure follows the metrics').toBe('details');
     expect('open' in (disclosure?.attrs ?? {}), 'the disclosure starts closed').toBe(false);
     const note = find(disclosure!, (e) => hasClass(e, 'info-callout'));
-    expect(note && words(note), 'the method note is behind the disclosure').toMatch(/^Maximum Likelihood \(ML\) is not run here: the topology is Neighbor-Joining/);
+    // Maximum Likelihood is chosen and not yet run (D0205): the Neighbor-Joining tree is shown, with its own note.
+    expect(note && words(note), 'the method note is behind the disclosure').toMatch(/^Neighbor-Joining \(Saitou & Nei 1987\) on /);
     const newick = find(disclosure!, (e) => hasClass(e, 'newick-box'));
     expect(newick && words(find(newick, (e) => e.tag === 'code')!), 'the Newick string is behind the disclosure').toMatch(/^\(.+\);$/);
 
@@ -1067,7 +1068,7 @@ describe('Warnings stay in view (US-01M6Q1Z0 AC5)', () => {
     // Two gapped rows that share no site: the engine builds no tree and warns that the distance is
     // undefined. The warning is read from the engine, so the fixture is shown to reach it.
     const noSharedSites = [doc('Taxon A', 'ACGTACGTACGTAC--------------'), doc('Taxon B', '--------------ACGTACGTACGTAC')];
-    const engine = constructPhylogeneticTree(noSharedSites.map((d) => d.name), noSharedSites.map((d) => d.sequence), 'Maximum Likelihood (ML)', 'Tamura-Nei (TN93)', 500);
+    const engine = constructPhylogeneticTree(noSharedSites.map((d) => d.name), noSharedSites.map((d) => d.sequence), 'Neighbor-Joining (NJ)', 'Tamura-Nei (TN93)', 500);
     expect(engine.warnings.length, 'the engine warns on this input').toBeGreaterThan(0);
     // A nucleotide and a protein sequence cannot be aligned, so no tree is built at all.
     const unalignable = [doc('Nucleotide', 'ATGGCTAGCAAAGGAGAAGAACTTTTCACTGGAGTTGTCCC'), doc('Protein', 'MASKGEELFTGVVPILVELDGDVNGHKF', 'Protein')];

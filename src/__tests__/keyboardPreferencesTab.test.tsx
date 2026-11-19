@@ -122,16 +122,11 @@ const EXPLICIT_HANDLER_COMBOS: Combo[] = [
   { key: 'f', mods: { alt: true } },
   { key: 'f', mods: { shift: true } },
   { key: 'a', mods: { alt: true } },
+  // No longer consumed here since US-01M6P2HD deleted its branch (the menu's own dispatcher runs
+  // its item); kept so the key press is still checked against its row like every other combination.
   { key: 't', mods: { alt: true } },
   { key: 'q', mods: {} },
 ];
-
-/**
- * The one known exception: ⌥⌘T's handler opens the Phylogenetics studio, while its row (Tools >
- * Phylogenetics > Maximum Likelihood) opens the Build Tree dialog. US-01M6P2HD deletes that handler
- * branch; it then deletes this entry, and the check below fails until it does.
- */
-const KNOWN_HANDLER_MISMATCH = 'Ctrl+Alt+T';
 
 /** Ctrl+Y is the primary handler's second Redo key; no menu item shows it, so its row is Redo's (Ctrl+Shift+Z). */
 const ROW_OF: Record<string, string> = { 'Ctrl+Y': 'Ctrl+Shift+Z' };
@@ -214,17 +209,16 @@ async function runMenuPath(app: AppHarness, path: string) {
 }
 
 describe('US-01M6P2G2 AC3: a combination an explicit handler consumes is listed under the item it runs', () => {
-  it('US-01M6P2G2 AC3 the combinations are the two handlers\' own, and only Ctrl+Alt+T is the known exception', () => {
+  it('US-01M6P2G2 AC3 the combinations are the two handlers\' own, with no exception (US-01M6P2HD has landed)', () => {
     const labels = EXPLICIT_HANDLER_COMBOS.map(labelOf);
     expect(new Set(labels).size, 'each combination once').toBe(labels.length);
-    expect(labels).toContain(KNOWN_HANDLER_MISMATCH);
+    expect(labels, 'Ctrl+Alt+T is checked like every other combination').toContain('Ctrl+Alt+T');
   });
 
   for (const combo of EXPLICIT_HANDLER_COMBOS) {
     const label = labelOf(combo);
     const rowLabel = ROW_OF[label] ?? label;
-    const exception = label === KNOWN_HANDLER_MISMATCH;
-    it(`US-01M6P2G2 AC3 ${label}: the key press and the listed item (${rowLabel}) ${exception ? 'differ until US-01M6P2HD lands' : 'leave the same state'}`, async () => {
+    it(`US-01M6P2G2 AC3 ${label}: the key press and the listed item (${rowLabel}) leave the same state`, async () => {
       const mods: PressModifiers = { mod: true, ...combo.mods };
       const pressed = await launch(combo, rowLabel, (app) => app.press(combo.key, mods));
       expect(pressed.rows, `one Keyboard row for ${rowLabel}`).toHaveLength(1);
@@ -233,11 +227,7 @@ describe('US-01M6P2G2 AC3: a combination an explicit handler consumes is listed 
       const chosen = await launch(combo, rowLabel, (app) => runMenuPath(app, path));
       expect(chosen.rows).toEqual(pressed.rows);
       expect(chosen.before, 'both launches start from the same state').toEqual(pressed.before);
-      if (exception) {
-        expect(chosen.after, `${label} runs something other than ${path} (US-01M6P2HD removes this exception)`).not.toEqual(pressed.after);
-      } else {
-        expect(chosen.after, `${label} runs ${path}`).toEqual(pressed.after);
-      }
+      expect(chosen.after, `${label} runs ${path}`).toEqual(pressed.after);
     });
   }
 });

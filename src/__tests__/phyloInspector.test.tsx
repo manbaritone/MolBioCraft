@@ -345,7 +345,7 @@ describe("each module's parameters in App's inspector (AC1)", () => {
       expect(shown(app)).toEqual(OPEN('Tree Building'));
       let tb = treeBuilding(app);
       expect([tb.method.value, tb.model.value, tb.bootstrap.value, tb.topology.value, tb.support.checked], 'the defaults')
-        .toEqual(['Maximum Likelihood (ML)', 'Tamura-Nei (TN93)', '500', 'phylogram', true]);
+        .toEqual(['Neighbor-Joining (NJ)', 'Tamura-Nei (TN93)', '500', 'phylogram', true]);
       expect([headingCard(app).heading, headingCard(app).badge, figureHeading(app)]).toEqual(['Neighbor-Joining tree', '500 bootstrap replicates', 'Tree (phylogram)']);
       expect(figureBadge(app)).toMatch(/^6 Tips • \d+ Clades • Tamura-Nei \(TN93\)$/);
       expect(supportLabels(app).length, 'support drawn on the nodes').toBeGreaterThan(0);
@@ -524,7 +524,10 @@ describe('a menu command that preselects (AC4)', () => {
     await withApp(async (app) => {
       await onTree(app);
       const method = () => treeBuilding(app).method;
-      expect(method().value).toBe('Maximum Likelihood (ML)');
+      // The studio opens on Neighbor-Joining (US-01M6P2HD, D0205); UPGMA first, so the NJ command moves it.
+      expect(method().value).toBe('Neighbor-Joining (NJ)');
+      await app.change(method(), 'UPGMA');
+      expect(method().value).toBe('UPGMA');
 
       // Phylogeny > Neighbor-Joining and > UPGMA, on the tree.
       await app.menu('phylo:tree-nj');

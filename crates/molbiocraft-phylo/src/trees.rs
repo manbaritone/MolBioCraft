@@ -710,12 +710,34 @@ fn short_clade_label(names: &[String], split: &[u64], n: usize) -> String {
 /// Approximate work of one distance-matrix + tree build, used to cap interactive bootstrap runs.
 const BOOTSTRAP_WORK_BUDGET: f64 = 1.5e8;
 
+/// The external programs' tree names, which run only as the installed program (`runExternalTree`
+/// in the interface, sending the desktop command `cmd_run_external_tree`, which calls
+/// [`crate::external::run_external_tree_program`]), never as a distance tree.
+pub const EXTERNAL_TREE_ALGORITHMS: [&str; 4] =
+    ["FastTree (Approx-ML)", "PhyML (ML + SH-aLRT)", "RAxML (GTR+G Rapid ML)", "MrBayes (Bayesian MCMC)"];
+
+/// Refuses a tree method the distance-tree builder does not run (D0003, D0206): Maximum Likelihood
+/// is built by `ml_tree_search`, and FastTree, PhyML, RAxML and MrBayes run only as the external
+/// program. Every other name is built from distances.
+pub fn check_distance_tree_algorithm(algorithm: &str) -> Result<(), String> {
+    if algorithm == "Maximum Likelihood (ML)" {
+        return Err("Maximum Likelihood is built by ml_tree_search; this operation builds distance trees.".into());
+    }
+    if EXTERNAL_TREE_ALGORITHMS.contains(&algorithm) {
+        return Err(format!(
+            "{algorithm} runs only as the installed program, through runExternalTree; this operation builds distance trees."
+        ));
+    }
+    Ok(())
+}
+
 /// Distance-based phylogeny with a real non-parametric bootstrap (Felsenstein 1985), Fitch (1971)
 /// parsimony length / CI / RI and the JC69 Felsenstein (1981) log-likelihood of the resulting tree.
 ///
-/// Topology comes from NJ (or UPGMA). The ML/Bayesian/parsimony algorithm names select how the
-/// tree is *described*; no ML, Bayesian or parsimony tree search is performed, and `method_note`
-/// says so explicitly.
+/// Topology comes from NJ (or UPGMA). The ME and MP names score that tree and `method_note` says
+/// no ME or parsimony search is performed. Maximum Likelihood and the external programs' names are
+/// refused ([`check_distance_tree_algorithm`]): the report is the empty tree with the refusal as
+/// its only warning.
 pub fn construct_phylogenetic_tree(
     names: &[String],
     aligned_seqs: &[String],
@@ -752,6 +774,10 @@ pub fn construct_phylogenetic_tree_with_resampling(
         method_note: note,
         warnings,
     };
+    // A method this builder does not run gets no tree under its name.
+    if let Err(e) = check_distance_tree_algorithm(algorithm) {
+        return empty(format!("No tree: {algorithm} is not a distance tree method."), vec![e]);
+    }
     // A model with no distance under its name (HKY, GTR) is refused before any other check, as the
     // only warning, so the tree runner throws it rather than building on another model's distance.
     if let Err(e) = crate::distances::check_distance_model(model) {

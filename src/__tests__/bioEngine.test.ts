@@ -417,9 +417,11 @@ describe('MolBioCraft Core Bioinformatics Engine & Hybrid Modules', () => {
     expect(computePopulationDiversity(taxaNames, alignedSeqs, 'Tamura-Nei (TN93)').withinSubpopulationPiS).toBeNull();
     expect(div.haplotypeDiversityHd).toBe(1);
 
-    // 5. Construct Phylogenetic Trees (ML, NJ, ME, UPGMA, MP)
+    // 5. Construct Phylogenetic Trees (NJ, ME, UPGMA, MP). The distance-tree op refuses Maximum
+    // Likelihood, which ml_tree_search builds (US-01M6P2HD, D0206).
+    expect(() => constructPhylogeneticTree(taxaNames, alignedSeqs, 'Maximum Likelihood (ML)', 'Tamura-Nei (TN93)', 500))
+      .toThrow(/Maximum Likelihood is built by ml_tree_search/);
     for (const method of [
-      'Maximum Likelihood (ML)',
       'Neighbor-Joining (NJ)',
       'Minimum-Evolution (ME)',
       'UPGMA',
@@ -440,18 +442,18 @@ describe('MolBioCraft Core Bioinformatics Engine & Hybrid Modules', () => {
     }
 
     // 6. User Tree Analysis & Gene Duplication Detection
-    const mlTree = constructPhylogeneticTree(
+    const njTree = constructPhylogeneticTree(
       taxaNames,
       alignedSeqs,
-      'Maximum Likelihood (ML)',
+      'Neighbor-Joining (NJ)',
       'Tamura-Nei (TN93)',
       500
     );
-    expect(mlTree.methodNote).toContain('Neighbor-Joining'); // no ML search is claimed
-    const userTreeRes = analyzeUserTree(mlTree.newick, taxaNames, alignedSeqs);
+    expect(njTree.methodNote).toMatch(/^Neighbor-Joining \(Saitou & Nei 1987\)/);
+    const userTreeRes = analyzeUserTree(njTree.newick, taxaNames, alignedSeqs);
     expect(userTreeRes.duplicationNodes).toEqual([]); // needs a species tree; none invented
     expect(userTreeRes.olsRSquared!).toBeGreaterThan(0.8);
-    expect(userTreeRes.parsimonyLengthSteps).toBe(mlTree.parsimonySteps);
+    expect(userTreeRes.parsimonyLengthSteps).toBe(njTree.parsimonySteps);
 
     // 7. Ancestral Sequence Reconstruction (ML / MP)
     const anc = inferAncestralSequences(

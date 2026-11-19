@@ -450,13 +450,14 @@ const bytesOf = async (file: string | URL): Promise<ArrayBuffer> => {
 
 describe('the phylogeny card (PhylogeneticsStudio, phylogeny module)', () => {
   it('names the tree method that ran in the tree card heading', () => {
-    // The studio opens on 'Maximum Likelihood (ML)', which scores the Neighbor-Joining tree; MP
-    // also scores that tree and ME stops at its start tree. The heading names what the method note
+    // 'Maximum Likelihood (ML)' runs the ML search only on Run ML search (D0205), so until then it
+    // shows the Neighbor-Joining tree under that tree's own note; MP scores that tree and ME stops at
+    // its start tree. The heading names what the method note
     // says was computed, so a heading that shows the dropdown, or one fixed to Neighbor-Joining,
     // fails one of these. (Here each choice draws one tree; a later test covers the cases where the
     // dropdown and the report disagree.)
     const expected: Record<string, { note: RegExp; heading: string }> = {
-      'Maximum Likelihood (ML)': { note: /^Maximum Likelihood \(ML\) is not run here: the topology is Neighbor-Joining/, heading: 'Neighbor-Joining tree' },
+      'Maximum Likelihood (ML)': { note: /^Neighbor-Joining \(Saitou & Nei 1987\) on /, heading: 'Neighbor-Joining tree' },
       'Maximum Parsimony (MP)': { note: /of the Neighbor-Joining tree .*no parsimony tree search is performed/, heading: 'Neighbor-Joining tree' },
       'Neighbor-Joining (NJ)': { note: /^Neighbor-Joining \(Saitou & Nei 1987\)/, heading: 'Neighbor-Joining tree' },
       'Minimum-Evolution (ME)': { note: /^Neighbor-Joining tree on .*\(the starting tree of an ME search\)/, heading: 'Neighbor-Joining start tree (no ME search)' },
@@ -476,8 +477,13 @@ describe('the phylogeny card (PhylogeneticsStudio, phylogeny module)', () => {
       // The heading spells the method as the note under it and the dropdown do.
       expect(heading).not.toMatch(/Neighbour/);
     }
-    // The selected option still says what the ML choice does, so the dropdown keeps its words.
-    expect(wordsOf(treeCard(phylo('phylogeny', 'Maximum Likelihood (ML)')))).toContain('Maximum Likelihood — lnL of the NJ tree (no ML search)');
+    // The selected option says what the ML choice does, and the card offers the run.
+    const mlCard = wordsOf(treeCard(phylo('phylogeny', 'Maximum Likelihood (ML)')));
+    expect(mlCard).toContain('Maximum Likelihood — built-in ML search (GTR+G), on Run ML search');
+    expect(mlCard).toContain('The maximum-likelihood search (GTR+G) runs when you press Run ML search; the Neighbor-Joining tree is shown until then.');
+    // After Run, the studio's note heads the card with the search it ran (the mounted run: mlBuildTree.test.ts).
+    expect(treeMethodHeading('Maximum-likelihood tree (built-in, GTR+G): NNI search from the Neighbor-Joining tree, 3 swaps accepted in 2 rounds (40 rearrangements scored), branch lengths and model parameters optimised; midpoint-rooted. lnL (GTR+G): -1234.5678.'))
+      .toBe('Maximum-likelihood tree (built-in, GTR+G)');
   });
 
   it('names the tree method that ran in the tree card heading, for every note the report can carry', () => {
@@ -561,17 +567,17 @@ describe('the phylogeny card (PhylogeneticsStudio, phylogeny module)', () => {
     }[] = [
       { where: 'browser', algorithm: 'PhyML (ML + SH-aLRT)', programs: null,
         callout: /^PhyML can only be run from the MolBioCraft desktop app\. Showing the built-in Neighbor-Joining tree instead\.$/,
-        note: /^PhyML \(ML \+ SH-aLRT\) is not run here: the topology is Neighbor-Joining/, heading: NJ, draws: 'built-in' },
+        note: /^Neighbor-Joining \(Saitou & Nei 1987\) on /, heading: NJ, draws: 'built-in' },
       { where: 'desktop, PhyML not installed', algorithm: 'PhyML (ML + SH-aLRT)', programs: found('RAxML (GTR+G Rapid ML)'),
         callout: /^PhyML was not found on this computer, so the built-in Neighbor-Joining tree is shown\./,
-        note: /^PhyML \(ML \+ SH-aLRT\) is not run here: the topology is Neighbor-Joining/, heading: NJ, draws: 'built-in' },
+        note: /^Neighbor-Joining \(Saitou & Nei 1987\) on /, heading: NJ, draws: 'built-in' },
       { where: 'desktop, PhyML running', algorithm: 'PhyML (ML + SH-aLRT)', programs: found('PhyML (ML + SH-aLRT)'), outcome: 'pending',
         callout: /^Running PhyML on 8 sequences × [\d,]+ sites… 0 s\. The Neighbor-Joining tree is shown until it finishes\./,
-        note: /^PhyML \(ML \+ SH-aLRT\) is not run here: the topology is Neighbor-Joining/, heading: NJ, draws: 'built-in' },
+        note: /^Neighbor-Joining \(Saitou & Nei 1987\) on /, heading: NJ, draws: 'built-in' },
       { where: 'desktop, PhyML failed', algorithm: 'PhyML (ML + SH-aLRT)', programs: found('PhyML (ML + SH-aLRT)'),
         outcome: { error: new Error('PhyML wrote no tree. Last output: ERROR: the alignment has too few sites') },
         callout: /^PhyML did not produce a tree: PhyML wrote no tree\. .* The Neighbor-Joining tree is shown instead\./,
-        note: /^PhyML \(ML \+ SH-aLRT\) is not run here: the topology is Neighbor-Joining/, heading: NJ, draws: 'built-in' },
+        note: /^Neighbor-Joining \(Saitou & Nei 1987\) on /, heading: NJ, draws: 'built-in' },
       { where: 'desktop, PhyML ran', algorithm: 'PhyML (ML + SH-aLRT)', programs: found('PhyML (ML + SH-aLRT)'), outcome: { value: phyml },
         callout: /^Tree from \/opt\/homebrew\/bin\/phyml\.$/,
         note: /^PhyML \(PhyML 3\.3\.20260528\) ran on this computer in 12\.3 s: GTR\+Γ4 maximum-likelihood tree \(NNI \+ SPR search\)\. Node labels: SH-like aLRT \(%\)\./,

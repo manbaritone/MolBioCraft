@@ -1829,7 +1829,7 @@ export const App: React.FC = () => {
   const [phyloInitialTab, setPhyloInitialTab] =
     useState<PhyloModuleTab>('phylogeny');
   const [phyloInitialTreeAlgo, setPhyloInitialTreeAlgo] =
-    useState<PhyloTreeAlgorithm>('Maximum Likelihood (ML)');
+    useState<PhyloTreeAlgorithm>('Neighbor-Joining (NJ)');
   const [phyloInitialModelsView, setPhyloInitialModelsView] =
     useState<ModelsSubViewId>('best-models');
   const [phyloInitialAncestralMethod, setPhyloInitialAncestralMethod] =
@@ -8725,13 +8725,6 @@ requireActiveSession(() => handleCopySequenceToClipboard());
       requireActiveSession(() =>
         openSequenceAlignment('msa', {
           msaAlgo: 'consistency-nj',
-        })
-      );
-    } else if (key === 't' && ev.altKey && !ev.shiftKey) {
-      ev.preventDefault();
-      requireActiveSession(() =>
-        openPhylogeneticsModule('phylogeny', {
-          treeAlgo: 'Maximum Likelihood (ML)',
         })
       );
     } else if (key === 'q' && !ev.shiftKey && !ev.altKey) {

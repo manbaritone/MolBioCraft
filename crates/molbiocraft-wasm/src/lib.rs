@@ -864,7 +864,10 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "construct_phylogenetic_tree" => {
             let names: Vec<String> = parse_field(&payload, "names")?;
             let aligned_seqs: Vec<String> = parse_field(&payload, "alignedSeqs")?;
-            let algorithm = str_arg(&payload, "algorithm", "Maximum Likelihood (ML)");
+            // Distance trees only (D0206): Maximum Likelihood is ml_tree_search's, the external
+            // programs' names run through runExternalTree; with no name, Neighbor-Joining.
+            let algorithm = str_arg(&payload, "algorithm", "Neighbor-Joining (NJ)");
+            molbiocraft_phylo::check_distance_tree_algorithm(algorithm)?;
             let model = str_arg(&payload, "model", "Tamura-Nei (TN93)");
             let bootstrap_replicates = usize_arg(&payload, "bootstrapReplicates", 500);
             // "jackknifePct" > 0 switches the resampling from bootstrap to delete-d jackknife.

@@ -63,12 +63,14 @@ import {
   fmtP,
   fmtStat,
   inferAncestralSequences,
+  mlTreeSearch,
   ModelSelectionRankingRow,
   PhyloTreeAlgorithm,
   runMolecularClockAndTimetree,
   runSelectionAndNeutralityTests,
   SubstitutionModelName,
   type DistanceAnalysisReport,
+  type MlSearchReport,
   type PhyloTreeInferenceReport,
 } from '../core/phyloEvoEngine';
 import {
@@ -132,8 +134,8 @@ import { PairwiseAlignmentView } from './PairwiseAlignmentView';
 import { ResultWarnings } from './ResultWarnings';
 import { exportToGenBank } from '../core/fileParsers';
 import { groupOf, normalizeMsaPresetId, sanitizeNewickLabel } from '../core/operationRunners';
-import { parseNewick } from '../core/treeConsensus';
-import { tipNames } from '../core/treeLayout';
+import { parseNewick, toNewick } from '../core/treeConsensus';
+import { midpointRoot, tipNames } from '../core/treeLayout';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 
 export type AlignmentSubMode = 'msa' | 'pairwise' | 'dotplot';
@@ -210,8 +212,10 @@ export function formatAnnotationTypeLabel(type: string): string {
 
 /**
  * The tree card heading: the topology method the report's method note says was computed. It is
- * never the dropdown label, because the ML and MP options score the Neighbor-Joining tree and the
- * ME option stops at its start tree. A note that opens with an external program's run, "<program>
+ * never the dropdown label, because the MP option scores the Neighbor-Joining tree, the ME option
+ * stops at its start tree, and the ML option shows the Neighbor-Joining tree until its search has
+ * run. The built-in search's note opens "Maximum-likelihood tree (built-in, <model>):", which is
+ * the heading. A note that opens with an external program's run, "<program>
  * (<version>) ran on this computer in <t> s: <model> <what>.", names the program and the model it
  * ran. That is read from the whole note, because the version is the program's own banner, which
  * can hold full stops ("RAxML-NG v. 2.0.4 …") and one level of parentheses ("Double precision
@@ -232,6 +236,8 @@ export function treeMethodHeading(methodNote: string): string {
       : null;
     return kind ? `${kind} (${program}, ${model})` : 'Phylogenetic tree';
   }
+  const builtInMl = /^(Maximum-likelihood tree \(built-in, [^()]+\)):/.exec(methodNote);
+  if (builtInMl) return builtInMl[1];
   if (/\bthe topology is Neighbor-Joining\b/.test(first)) return 'Neighbor-Joining tree';
   if (/^UPGMA\b/.test(first)) return 'UPGMA tree';
   if (/\(the starting tree of an ME search\)/.test(first)) return 'Neighbor-Joining start tree (no ME search)';
@@ -6226,11 +6232,14 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
   );
 };
 
+/** The model the studio's Run ML search fits: Build Tree's default (GTR with gamma rates, D0205). */
+const ML_SEARCH_MODEL = 'GTR+G';
+
 export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
   documents,
   activeDoc: _activeDoc,
   initialPhyloTab = 'phylogeny',
-  initialTreeAlgorithm = 'Maximum Likelihood (ML)',
+  initialTreeAlgorithm = 'Neighbor-Joining (NJ)',
   initialModelsSubView = 'best-models',
   initialAncestralMethod = 'Maximum Likelihood (Empirical Bayes)',
   commandNonce = 0,
@@ -6524,18 +6533,51 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
   };
   const extResult = extRunNow?.status === 'done' ? extRunNow.result : undefined;
 
+  // The engine builds distance trees only (D0206): Maximum Likelihood runs from Run ML search, and an
+  // external program's name runs only as the program. Until either has run, the tree shown is the
+  // Neighbor-Joining tree, and its report says so.
+  const builtInAlgorithm: PhyloTreeAlgorithm =
+    treeAlgorithm === 'Maximum Likelihood (ML)' || extAlgo ? 'Neighbor-Joining (NJ)' : treeAlgorithm;
   const builtInPhyloRep = useMemo(
     () =>
       constructPhylogeneticTree(
         taxaNames,
         alignedSeqs,
-        treeAlgorithm,
+        builtInAlgorithm,
         treeModel,
         // An installed external program supplies its own support values.
         tabIs('phylogeny') && !extCanRun ? bootstrapReps : 0
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [taxaNames, alignedSeqs, treeAlgorithm, treeModel, bootstrapReps, evoTab === 'phylogeny', extCanRun]
+    [taxaNames, alignedSeqs, builtInAlgorithm, treeModel, bootstrapReps, evoTab === 'phylogeny', extCanRun]
+  );
+  // The built-in maximum-likelihood search (D0205): run only from Run ML search, with Build Tree's
+  // default model, and kept for the rows it ran on. It runs on the interface thread, so the press
+  // first draws the running state and the search starts on the next task.
+  const mlAlgo = treeAlgorithm === 'Maximum Likelihood (ML)';
+  const mlKey = externalTreeCacheKey(`ML ${ML_SEARCH_MODEL}`, taxaNames, alignedSeqs);
+  const [mlRun, setMlRun] = useState<{ key: string; status: 'running' | 'done' | 'error'; result?: MlSearchReport; error?: string } | null>(null);
+  const mlRunNow = mlRun && mlRun.key === mlKey ? mlRun : null;
+  useEffect(() => {
+    if (mlRun?.status !== 'running') return;
+    const { key } = mlRun;
+    const id = setTimeout(() => {
+      try {
+        setMlRun({ key, status: 'done', result: mlTreeSearch(taxaNames, alignedSeqs, ML_SEARCH_MODEL) });
+      } catch (err) {
+        const message = (err instanceof Error ? err.message : String(err)).replace(/^\[MolBioCraft Rust Engine :: [^\]]+\]\s*/, '');
+        setMlRun({ key, status: 'error', error: message });
+      }
+    }, 0);
+    return () => clearTimeout(id);
+    // taxaNames/alignedSeqs are captured by the run's key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mlRun]);
+  const mlResult = mlAlgo && mlRunNow?.status === 'done' ? mlRunNow.result : undefined;
+  const mlTreeEval = useMemo(
+    () => (mlResult ? analyzeUserTree(mlResult.newick, taxaNames, alignedSeqs) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mlResult]
   );
   const extTreeEval = useMemo(
     () => (extResult ? analyzeUserTree(extResult.newick, taxaNames, alignedSeqs) : null),
@@ -6543,6 +6585,29 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
     [extResult]
   );
   const phyloRep: PhyloTreeInferenceReport = useMemo(() => {
+    if (mlResult && mlTreeEval) {
+      // Midpoint-rooted as Build Tree roots its ML tree (operationRunners.ts runBuildTree).
+      return {
+        ...builtInPhyloRep,
+        algorithm: 'Maximum Likelihood (ML)',
+        model: mlResult.model as SubstitutionModelName,
+        bootstrapReplicates: 0,
+        newick: toNewick(midpointRoot(parseNewick(mlResult.newick))),
+        logLikelihood: mlResult.logLikelihood,
+        totalTreeLengthS: Number(mlResult.treeLength.toFixed(4)),
+        parsimonySteps: mlTreeEval.parsimonyLengthSteps,
+        consistencyIndexCI: mlTreeEval.consistencyIndex,
+        retentionIndexRI: mlTreeEval.retentionIndex,
+        cladeBootstraps: [],
+        methodNote: [
+          `Maximum-likelihood tree (built-in, ${mlResult.model}): NNI search from the Neighbor-Joining tree, ${mlResult.nniSwaps} swaps accepted in ${mlResult.nniRounds} rounds (${mlResult.nniEvaluated.toLocaleString()} rearrangements scored), branch lengths and model parameters optimised; midpoint-rooted.`,
+          `lnL (${mlResult.model}): ${mlResult.logLikelihood.toFixed(4)}, from ${mlResult.startLogLikelihood.toFixed(4)} on the Neighbor-Joining start tree.`,
+          mlResult.parameters ? `Model parameters: ${mlResult.parameters}.` : '',
+          'No branch support was computed.',
+        ].filter(Boolean).join(' '),
+        warnings: [],
+      };
+    }
     if (!extResult || !extTreeEval) return builtInPhyloRep;
     const what: Record<string, string> = {
       FastTree: 'approximately-maximum-likelihood tree (NNI + SPR moves)',
@@ -6577,7 +6642,7 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
       methodNote: parts.filter(Boolean).join(' '),
       warnings: extResult.warnings,
     };
-  }, [builtInPhyloRep, extResult, extTreeEval, treeAlgorithm]);
+  }, [builtInPhyloRep, extResult, extTreeEval, treeAlgorithm, mlResult, mlTreeEval]);
   const treeHeading = treeMethodHeading(phyloRep.methodNote);
   // Measure the tree card so the layout is computed at its real pixel width and
   // rendered 1:1 — otherwise the SVG is stretched and 11px labels become ~16px.
@@ -7721,7 +7786,7 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
                       Maximum Parsimony — score the NJ tree (no parsimony search)
                     </option>
                     <option value="Maximum Likelihood (ML)">
-                      Maximum Likelihood — lnL of the NJ tree (no ML search)
+                      Maximum Likelihood — built-in ML search ({ML_SEARCH_MODEL}), on Run ML search
                     </option>
                     <optgroup label="External programs (run on this computer if installed)">
                       {EXTERNAL_TREE_ALGORITHMS.map((algo) => {
@@ -7863,6 +7928,35 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
                   {body}
                 </div>
               ) : null;
+            })()}
+
+            {mlAlgo && !phyloAlignment.error && (() => {
+              const runBtn = (
+                <button type="button" className="btn-secondary-sm" style={{ marginLeft: 10 }} onClick={() => setMlRun({ key: mlKey, status: 'running' })}>
+                  Run ML search
+                </button>
+              );
+              let body: React.ReactNode;
+              let alert = false;
+              if (mlRunNow?.status === 'running') {
+                body = `Running the maximum-likelihood search (${ML_SEARCH_MODEL}) on ${taxaNames.length} sequences × ${(alignedSeqs[0]?.length ?? 0).toLocaleString()} sites… The Neighbor-Joining tree is shown until it finishes.`;
+              } else if (mlRunNow?.status === 'error') {
+                alert = true;
+                body = <>{mlRunNow.error} The Neighbor-Joining tree is shown instead.{runBtn}</>;
+              } else if (mlResult) {
+                body = `Tree from the built-in maximum-likelihood search (${mlResult.model}).`;
+              } else {
+                body = <>The maximum-likelihood search ({ML_SEARCH_MODEL}) runs when you press Run ML search; the Neighbor-Joining tree is shown until then.{runBtn}</>;
+              }
+              return (
+                <div
+                  className="info-callout"
+                  role={alert ? 'alert' : 'status'}
+                  style={{ marginBottom: 8, ...(alert ? { color: 'var(--mbc-red)' } : {}) }}
+                >
+                  {body}
+                </div>
+              );
             })()}
 
           </div>
@@ -8028,8 +8122,8 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
 
             <div className="thermo-kpi-grid">
               <div className="kpi-box">
-                <span className="kpi-label">lnL (JC69, this tree)</span>
-                <strong className="kpi-val">{fmtStat(phyloRep.logLikelihood, 2)}</strong>
+                <span className="kpi-label">{mlResult ? `lnL (${mlResult.model}, ML search)` : 'lnL (JC69, this tree)'}</span>
+                <strong className="kpi-val" title={String(phyloRep.logLikelihood)}>{fmtStat(phyloRep.logLikelihood, 2)}</strong>
               </div>
               <div className="kpi-box">
                 <span className="kpi-label">Sum of Branch Lengths (S)</span>

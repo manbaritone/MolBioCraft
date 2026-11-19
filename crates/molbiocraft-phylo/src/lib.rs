@@ -43,7 +43,7 @@ pub use models_selection::{
     ZTestOutcome,
 };
 pub use trees::{
-    analyze_user_tree, construct_phylogenetic_tree, construct_phylogenetic_tree_with_resampling, CladeBootstrapRow, DuplicationNodeRecord,
+    analyze_user_tree, check_distance_tree_algorithm, construct_phylogenetic_tree, construct_phylogenetic_tree_with_resampling, CladeBootstrapRow, DuplicationNodeRecord,
     PhyloTreeInferenceReport, SiteCoverageBin, UserTreeAnalysisReport,
 };
 
@@ -81,7 +81,7 @@ mod tests {
         let tree = construct_phylogenetic_tree(
             &names,
             &seqs,
-            "Maximum Likelihood (ML)",
+            "Neighbor-Joining (NJ)",
             "Tamura-Nei (TN93)",
             200,
         );
