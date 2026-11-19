@@ -2569,8 +2569,9 @@ fn revcomp(s: &str) -> String {
 #[test]
 fn genbank_locus_date_is_the_export_date() {
     let mut doc = mcs_doc("MCS60");
-    // The parser's own placeholder, so a date taken from the document would show here.
-    assert_eq!(doc.updated_at, "2026-10-31");
+    // An undated parse leaves updated_at blank (D0203, D0232); a blank date would still show here
+    // if the export took its date from the document rather than from the date it is passed.
+    assert_eq!(doc.updated_at, "");
     let gb = export_genbank_flatfile_dated(&doc, "2027-03-04T10:00:00Z");
     let locus = gb.lines().next().unwrap();
     assert!(locus.ends_with(" SYN 04-MAR-2027"), "LOCUS line: {locus:?}");
@@ -2736,4 +2737,61 @@ fn genbank_round_trip_keeps_a_primer_across_the_origin() {
         "{gb}"
     );
     assert!(!back.features.iter().any(|f| f.feature_type == "primer_bind"), "{gb}");
+}
+
+/// US-01M7Q97X (D0203): each importer's dated variant stamps the caller's time into createdAt and
+/// updatedAt and that minute into the import history entry; the undated one leaves all three blank.
+#[test]
+fn imported_documents_carry_the_caller_time_or_none() {
+    use molbiocraft_formats::flatfiles::{
+        parse_binary_sequence_packet, parse_binary_sequence_packet_at, parse_embl_flatfile,
+        parse_embl_flatfile_at, parse_genbank_flatfile_at,
+    };
+    use molbiocraft_formats::noodles_io::{parse_fasta_noodles, parse_fasta_noodles_at};
+    const NOW: &str = "2027-03-04T10:05:06.789Z";
+    fn stamps(d: &molbiocraft_core::SequenceDocument) -> (String, String, String) {
+        let h = d.history.last().map(|h| h.timestamp.clone()).unwrap_or_else(|| "<none>".into());
+        (d.created_at.clone(), d.updated_at.clone(), h)
+    }
+    let at = (NOW.to_string(), NOW.to_string(), "2027-03-04 10:05".to_string());
+    let blank = (String::new(), String::new(), String::new());
+
+    let gb_text = format!(
+        "LOCUS       MCS60                     60 bp    DNA     linear   SYN 01-JAN-2000\n\
+         ORIGIN\n\
+         \x20       1 {}\n//\n",
+        MCS_60.to_ascii_lowercase()
+    );
+    assert_eq!(stamps(&parse_genbank_flatfile_at(&gb_text, "MCS60", NOW)), at);
+    assert_eq!(stamps(&parse_genbank_flatfile(&gb_text, "MCS60")), blank);
+
+    let embl = format!(
+        "ID   MCS60; SV 1; linear; genomic DNA; STD; SYN; 60 BP.\nSQ   Sequence 60 BP;\n     {}\n//\n",
+        MCS_60.to_ascii_lowercase()
+    );
+    assert_eq!(stamps(&parse_embl_flatfile_at(&embl, "MCS60", NOW)), at);
+    assert_eq!(stamps(&parse_embl_flatfile(&embl, "MCS60")), blank);
+
+    let fasta = format!(">one\n{MCS_60}\n>two\nACGTACGT\n");
+    let docs = parse_fasta_noodles_at(&fasta, "x", NOW);
+    assert_eq!(docs.len(), 2);
+    for d in &docs {
+        assert_eq!(stamps(d), at);
+    }
+    for d in &parse_fasta_noodles(&fasta, "x") {
+        assert_eq!(stamps(d), blank);
+    }
+
+    use molbiocraft_formats::noodles_io::{parse_gff3_sequences_noodles, parse_gff3_sequences_noodles_at};
+    let gff = format!("##gff-version 3\nMCS60\tfixture\tmisc_feature\t7\t12\t.\t+\t.\tID=s\n##FASTA\n>MCS60\n{MCS_60}\n");
+    let dated = parse_gff3_sequences_noodles_at(&gff, NOW).documents;
+    assert_eq!(dated.len(), 1);
+    assert_eq!(stamps(&dated[0]), at);
+    assert_eq!(stamps(&parse_gff3_sequences_noodles(&gff).documents[0]), blank);
+
+    let trace = format!("{MCS_60}\n");
+    let doc = parse_binary_sequence_packet_at(trace.as_bytes(), "read.ab1", NOW);
+    assert_eq!(doc.sequence, MCS_60);
+    assert_eq!(stamps(&doc), at);
+    assert_eq!(stamps(&parse_binary_sequence_packet(trace.as_bytes(), "read.ab1")), blank);
 }

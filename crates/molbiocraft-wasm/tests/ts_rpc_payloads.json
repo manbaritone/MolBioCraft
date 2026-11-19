@@ -519,14 +519,17 @@
  ],
  "parse_binary_packet": [
   "bytes",
-  "fileName"
+  "fileName",
+  "nowIso"
  ],
  "parse_embl": [
   "fallbackName",
+  "nowIso",
   "text"
  ],
  "parse_fasta": [
   "defaultName",
+  "nowIso",
   "text"
  ],
  "parse_fastq": [
@@ -535,12 +538,14 @@
  ],
  "parse_genbank": [
   "fallbackName",
+  "nowIso",
   "text"
  ],
  "parse_gff3": [
   "text"
  ],
  "parse_gff3_sequences": [
+  "nowIso",
   "text"
  ],
  "parse_mbc_workbench_bytes_rust": [

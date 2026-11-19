@@ -435,7 +435,6 @@ import {
   type WorkbenchCommandId,
 } from './core/commandAvailability';
 import { assignUniqueDocumentIds } from './core/documentIds';
-import { stampEngineTimestamps } from './core/engineTimestamps';
 import {
   collectMenuShortcutBindings,
   findMenuShortcut,
@@ -2932,8 +2931,6 @@ export const App: React.FC = () => {
     }
     const prevDoc =
       documents.find((d) => d.id === updated.id) ?? sampleLibraryById.get(updated.id);
-    // Engine edits carry a placeholder date (no clock in WASM): stamp real time.
-    updated = stampEngineTimestamps(updated, new Date().toISOString(), prevDoc);
     if (prevDoc && prevDoc !== updated) {
       setUndoStack((prev) => [
         ...prev.slice(-(MAX_UNDO_STEPS - 1)),
@@ -2958,10 +2955,9 @@ export const App: React.FC = () => {
    * undo and redo restore or reapply every one of them together.
    */
   const handleUpdateDocuments = (updatedDocs: SequenceDocument[], actionLabel: string) => {
-    const stamp = new Date().toISOString();
     const steps = updatedDocs.flatMap((u) => {
       const prevDoc = documents.find((d) => d.id === u.id);
-      return prevDoc ? [{ docId: u.id, prevDoc, nextDoc: stampEngineTimestamps(u, stamp, prevDoc) }] : [];
+      return prevDoc ? [{ docId: u.id, prevDoc, nextDoc: u }] : [];
     });
     if (!steps.length) {
       setStatusBanner(`${actionLabel}: the documents are no longer in the project.`);
@@ -3048,8 +3044,6 @@ export const App: React.FC = () => {
     const takenIds = new Set<string>(wasActive ? documentsRef.current.map((d) => d.id) : []);
     for (const id of allocatedDocIdsRef.current) takenIds.add(id);
     incomingDocs = assignUniqueDocumentIds(incomingDocs, takenIds);
-    const importedAt = new Date().toISOString();
-    incomingDocs = incomingDocs.map((d) => stampEngineTimestamps(d, importedAt));
     for (const d of incomingDocs) {
       allocatedDocIdsRef.current.add(d.id);
       if (importBatchActiveRef.current) importBatchDocsRef.current.set(d.id, d);

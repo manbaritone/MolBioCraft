@@ -741,17 +741,20 @@ export function buildCuratedDatabaseDocumentRust(
   );
 }
 
+/** A fetched database record as documents made at `nowIso` (default: now; US-01M7Q97X, D0203). */
 export function parseRemoteDatabasePayloadRust(
   rawText: string,
   accession: string,
   isProteinHint: boolean,
-  targetFolder: string
+  targetFolder: string,
+  nowIso = new Date().toISOString()
 ): SequenceDocument[] {
   return invokeRustBioSync<SequenceDocument[]>('parse_remote_database_payload', {
     rawText,
     accession,
     isProteinHint,
     targetFolder,
+    nowIso,
   });
 }
 

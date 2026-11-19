@@ -560,8 +560,23 @@ fn segments_from_intervals(name: &str, color: &str, intervals: &[(usize, usize)]
 ///
 /// D0202: "the parser takes the record name from that line when present", the line being
 /// `COMMENT     MolBioCraft name: <name>`; the document id is still made from the LOCUS name.
+///
+/// The document carries no date: [`parse_genbank_flatfile_at`] with a blank time (D0203).
 pub fn parse_genbank_flatfile(text: &str, fallback_name: &str) -> SequenceDocument {
-    parse_insdc_record(text, fallback_name, InsdcSource::GenBank)
+    parse_genbank_flatfile_at(text, fallback_name, "")
+}
+
+/// [`parse_genbank_flatfile`] made at `now_iso`, the caller's ISO-8601 time: it is the document's
+/// createdAt and updatedAt, and its import history entry is that minute ("YYYY-MM-DD HH:MM"). Each is
+/// blank when `now_iso` is blank (D0203: a parse never fabricates a date).
+pub fn parse_genbank_flatfile_at(text: &str, fallback_name: &str, now_iso: &str) -> SequenceDocument {
+    parse_insdc_record(text, fallback_name, InsdcSource::GenBank, now_iso)
+}
+
+/// A history entry's minute, "YYYY-MM-DD HH:MM", from the caller's ISO-8601 `now_iso`; blank when
+/// the caller sent none (D0203).
+pub(crate) fn history_minute(now_iso: &str) -> String {
+    now_iso.trim().chars().take(16).collect::<String>().replace('T', " ")
 }
 
 /// Which flatfile a record came from, so its length sentence names that file's own lines: EMBL
@@ -572,7 +587,12 @@ enum InsdcSource {
     Embl,
 }
 
-fn parse_insdc_record(text: &str, fallback_name: &str, source: InsdcSource) -> SequenceDocument {
+fn parse_insdc_record(
+    text: &str,
+    fallback_name: &str,
+    source: InsdcSource,
+    now_iso: &str,
+) -> SequenceDocument {
     let lines: Vec<&str> = text.lines().collect();
     let mut name = fallback_name.to_string();
     let mut accession = "GB_IMPORT_001".to_string();
@@ -915,7 +935,7 @@ fn parse_insdc_record(text: &str, fallback_name: &str, source: InsdcSource) -> S
     if let Some(n) = comment_name {
         name = n;
     }
-    let now = "2026-10-31".to_string();
+    let now = now_iso.trim().to_string();
     let folder = if molecule_type == MoleculeType::Protein {
         "Protein Documents"
     } else if len >= 25_000 {
@@ -938,7 +958,7 @@ fn parse_insdc_record(text: &str, fallback_name: &str, source: InsdcSource) -> S
         primers,
         history: vec![HistoryTreeNode {
             id: "hist-gb-1".into(),
-            timestamp: now.clone(),
+            timestamp: history_minute(&now),
             operation: "Imported GenBank Flatfile (Rust)".into(),
             description: format!("Parsed GenBank record ({} residues)", len),
             parent_ids: Vec::new(),
@@ -1221,7 +1241,15 @@ fn genbank_flatfile(doc: &SequenceDocument, date: &str) -> String {
 /// reads as its first record alone, with that record's own ID, DE and features. Inside SQ it also
 /// ends at an indented "//", as Biopython 1.88's EMBL reader does, which strips a sequence line on
 /// both sides before it compares it with "//".
+///
+/// The document carries no date: [`parse_embl_flatfile_at`] with a blank time (D0203).
 pub fn parse_embl_flatfile(text: &str, fallback_name: &str) -> SequenceDocument {
+    parse_embl_flatfile_at(text, fallback_name, "")
+}
+
+/// [`parse_embl_flatfile`] made at `now_iso`: createdAt and updatedAt are that time and the import
+/// history entry its minute, each blank when `now_iso` is blank (D0203).
+pub fn parse_embl_flatfile_at(text: &str, fallback_name: &str, now_iso: &str) -> SequenceDocument {
     let mut name = String::new();
     let mut accession = String::new();
     let mut description: Vec<String> = Vec::new();
@@ -1325,7 +1353,7 @@ pub fn parse_embl_flatfile(text: &str, fallback_name: &str) -> SequenceDocument 
         gb.push('\n');
     }
     gb.push_str("//\n");
-    let mut doc = parse_insdc_record(&gb, fallback_name, InsdcSource::Embl);
+    let mut doc = parse_insdc_record(&gb, fallback_name, InsdcSource::Embl, now_iso);
     if accession.is_empty() {
         doc.accession = String::new();
     }
@@ -1678,10 +1706,18 @@ fn file_stem(file_name: &str) -> String {
 /// saved under a binary extension is also accepted.
 /// Unrecognised data yields a document with an empty sequence and an explanatory description;
 /// bases, traces and qualities are never synthesized.
+///
+/// The document carries no date: [`parse_binary_sequence_packet_at`] with a blank time (D0203).
 pub fn parse_binary_sequence_packet(bytes: &[u8], file_name: &str) -> SequenceDocument {
+    parse_binary_sequence_packet_at(bytes, file_name, "")
+}
+
+/// [`parse_binary_sequence_packet`] made at `now_iso`: createdAt and updatedAt are that time and the
+/// import history entry its minute, each blank when `now_iso` is blank (D0203).
+pub fn parse_binary_sequence_packet_at(bytes: &[u8], file_name: &str, now_iso: &str) -> SequenceDocument {
     use crate::scf::parse_scf_chromatogram;
     let stem = file_stem(file_name);
-    let now = "2026-10-31".to_string();
+    let now = now_iso.trim().to_string();
     let mut meta: HashMap<String, serde_json::Value> = HashMap::new();
     let molecule = MoleculeType::DNA;
     let topology = Topology::Linear;
@@ -1776,7 +1812,7 @@ pub fn parse_binary_sequence_packet(bytes: &[u8], file_name: &str) -> SequenceDo
         primers: Vec::new(),
         history: vec![HistoryTreeNode {
             id: "hist-bin-1".into(),
-            timestamp: now.clone(),
+            timestamp: history_minute(&now),
             operation: op_title,
             description,
             parent_ids: Vec::new(),

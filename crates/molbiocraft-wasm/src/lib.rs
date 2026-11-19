@@ -80,14 +80,15 @@ use molbiocraft_formats::{
     annotate_vcf_coding_consequences_noodles, build_curated_database_document,
     build_ncbi_reference_preset_document, compute_chromatogram_viewport,
     compute_mbc_payload_checksum, compute_sam_pileup_and_coverage_noodles, export_embl_flatfile,
-    parse_embl_flatfile,
+    flatfiles::{parse_binary_sequence_packet_at, parse_embl_flatfile_at, parse_genbank_flatfile_at},
+    noodles_io::parse_fasta_noodles_at,
     export_fasta_noodles, export_genbank_flatfile_dated, export_gff3_noodles, genbank_locus_date,
     get_curated_database_records, get_reference_database_categories,
     intersect_genomic_intervals_noodles, is_mbc_file_or_payload_rust, parse_bed_noodles,
-    parse_binary_sequence_packet, parse_fasta_noodles, parse_fastq_noodles, parse_genbank_flatfile,
+    parse_fastq_noodles,
     parse_gff3_noodles, parse_mbc_workbench_bytes_rust, parse_mbc_workbench_rust,
     pdb_mmcif::{parse_mmcif_structure, structure_chain_sequences, try_parse_pdb_or_mmcif_ca_coordinates},
-    parse_remote_database_payload, parse_sam_noodles, parse_vcf_noodles,
+    parse_sam_noodles, parse_vcf_noodles,
     prepare_genbank_submission_package, query_curated_database_records,
     serialize_mbc_workbench_rust, synthesize_folded_pdb_from_protein,
     synthesize_sanger_chromatogram, trim_sanger_trace_mott_phred, GenBankSubmissionMeta,
@@ -522,7 +523,8 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "parse_fasta" => {
             let text = str_arg(&payload, "text", "");
             let default_name = str_arg(&payload, "defaultName", "Imported_FASTA");
-            to_val(parse_fasta_noodles(text, default_name))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(parse_fasta_noodles_at(text, default_name, now_iso))
         }
         "export_fasta" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
@@ -539,7 +541,8 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         }
         "parse_gff3_sequences" => {
             let text = str_arg(&payload, "text", "");
-            to_val(molbiocraft_formats::noodles_io::parse_gff3_sequences_noodles(text))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(molbiocraft_formats::noodles_io::parse_gff3_sequences_noodles_at(text, now_iso))
         }
         "export_gff3" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
@@ -565,7 +568,8 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "parse_genbank" => {
             let text = str_arg(&payload, "text", "");
             let fallback_name = str_arg(&payload, "fallbackName", "Imported_GenBank");
-            to_val(parse_genbank_flatfile(text, fallback_name))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(parse_genbank_flatfile_at(text, fallback_name, now_iso))
         }
         "export_genbank" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
@@ -580,7 +584,8 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "parse_embl" => {
             let text = str_arg(&payload, "text", "");
             let fallback_name = str_arg(&payload, "fallbackName", "Imported_EMBL");
-            to_val(parse_embl_flatfile(text, fallback_name))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(parse_embl_flatfile_at(text, fallback_name, now_iso))
         }
         "export_embl" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
@@ -589,7 +594,8 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "parse_binary_packet" => {
             let bytes: Vec<u8> = parse_field(&payload, "bytes")?;
             let file_name = str_arg(&payload, "fileName", "Imported_Binary.ab1");
-            to_val(parse_binary_sequence_packet(&bytes, file_name))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(parse_binary_sequence_packet_at(&bytes, file_name, now_iso))
         }
         "synthesize_chromatogram" => {
             let seq = str_arg(&payload, "seq", "");
@@ -1505,11 +1511,13 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let accession = str_arg(&payload, "accession", "REF_001");
             let is_protein_hint = bool_arg(&payload, "isProteinHint", false);
             let target_folder = str_arg(&payload, "targetFolder", "Sample Documents");
-            to_val(parse_remote_database_payload(
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(molbiocraft_formats::reference_databases::parse_remote_database_payload_at(
                 raw_text,
                 accession,
                 is_protein_hint,
                 target_folder,
+                now_iso,
             ))
         }
         "compute_mbc_payload_checksum" => {
@@ -1543,7 +1551,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             let pipeline_id = str_arg(&payload, "pipelineId", "cloning-expression-qc");
             let host_os = str_arg(&payload, "hostOS", "macos");
-            let completed_at = str_arg(&payload, "completedAtIso", "2026-10-31T00:00:00Z");
+            let completed_at = str_arg(&payload, "completedAtIso", "");
             let report = execute_bio_pipeline_rust(&doc, pipeline_id, host_os, completed_at)
                 .map_err(|e| e.to_string())?;
             to_val(report)
@@ -1768,7 +1776,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "serialize_mbc_workbench_rust" => {
             let snapshot: MbcWorkbenchSnapshotInput = parse_field(&payload, "snapshot")?;
             let app_version = str_arg(&payload, "appVersion", "1.0.0");
-            let saved_at = str_arg(&payload, "savedAtIso", "2026-10-31T08:00:00.000Z");
+            let saved_at = str_arg(&payload, "savedAtIso", "");
             Ok(Value::String(serialize_mbc_workbench_rust(
                 &snapshot,
                 app_version,
@@ -1778,7 +1786,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "parse_mbc_workbench_rust" => {
             let raw_text = str_arg(&payload, "rawText", "");
             let fallback = str_arg(&payload, "fallbackSessionName", "Imported_Session");
-            let now_iso = str_arg(&payload, "nowIso", "2026-10-31T08:00:00.000Z");
+            let now_iso = str_arg(&payload, "nowIso", "");
             let res = parse_mbc_workbench_rust(raw_text, fallback, now_iso)?;
             to_val(res)
         }
@@ -1787,7 +1795,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "parse_mbc_workbench_bytes_rust" => {
             let bytes: Vec<u8> = parse_field(&payload, "bytes")?;
             let fallback = str_arg(&payload, "fallbackSessionName", "Imported_Session");
-            let now_iso = str_arg(&payload, "nowIso", "2026-10-31T08:00:00.000Z");
+            let now_iso = str_arg(&payload, "nowIso", "");
             to_val(parse_mbc_workbench_bytes_rust(&bytes, fallback, now_iso)?)
         }
         "trim_sanger_trace_mott_phred" => {
@@ -1797,7 +1805,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         }
         "build_ncbi_reference_preset_document" => {
             let preset = str_arg(&payload, "preset", "spike");
-            let now_iso = str_arg(&payload, "nowIso", "2026-10-31T08:00:00.000Z");
+            let now_iso = str_arg(&payload, "nowIso", "");
             to_val(build_ncbi_reference_preset_document(preset, now_iso))
         }
         "assemble_sanger_contig_poa" => {
@@ -1855,14 +1863,14 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             let start = usize_arg(&payload, "start1Based", 1);
             let end = usize_arg(&payload, "end1Based", doc.sequence.len().max(1));
-            let now_iso = str_arg(&payload, "nowIso", "2026-10-31T08:00:00.000Z");
+            let now_iso = str_arg(&payload, "nowIso", "");
             to_val(extract_region_with_annotations_rust(&doc, start, end, now_iso))
         }
         "splice_modular_part_into_document_rust" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             let part: ModularVectorPart = parse_field(&payload, "part")?;
             let pos = usize_arg(&payload, "positionBp", 1);
-            let now_iso = str_arg(&payload, "nowIso", "2026-10-31T08:00:00.000Z");
+            let now_iso = str_arg(&payload, "nowIso", "");
             to_val(splice_modular_part_into_document_rust(&doc, &part, pos, now_iso))
         }
         "build_construct_lineage_dag_rust" => {

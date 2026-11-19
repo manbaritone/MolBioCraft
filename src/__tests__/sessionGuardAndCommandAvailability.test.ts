@@ -480,34 +480,6 @@ describe('contig statistics exclude quality-trimmed read ends', () => {
   });
 });
 
-describe('engine placeholder timestamps', () => {
-  it('replaces the WASM placeholder date on new and edited documents only', async () => {
-    const { stampEngineTimestamps, isEnginePlaceholderTimestamp } = await import('../core/engineTimestamps');
-    const now = '2026-11-04T10:20:30.000Z';
-    const base = {
-      id: 'd', name: 'd', accession: '', description: '', moleculeType: 'DNA', topology: 'linear',
-      sequence: 'ACGT', features: [], primers: [], folder: 'Local',
-      createdAt: '2026-10-31T00:00:00.000Z', updatedAt: '2026-10-31T00:00:00Z',
-      history: [{ id: 'h1', timestamp: '2026-10-31 00:00', operation: 'x', description: '', parentIds: [], lengthBp: 4, topology: 'linear' }],
-    } as unknown as import('../types/bio').SequenceDocument;
-    expect(isEnginePlaceholderTimestamp('2026-10-31')).toBe(true);
-    expect(isEnginePlaceholderTimestamp('2025-01-02T00:00:00Z')).toBe(false);
-    const fresh = stampEngineTimestamps(base, now);
-    expect([fresh.createdAt, fresh.updatedAt, fresh.history[0].timestamp]).toEqual([now, now, '2026-11-04 10:20']);
-    // Edit: original creation time and existing history are kept; the new entry is stamped.
-    const prev = { ...fresh };
-    const edited = stampEngineTimestamps(
-      { ...fresh, createdAt: '2026-10-31T00:00:00Z', updatedAt: '2026-10-31T00:00:00Z',
-        history: [...fresh.history, { ...base.history[0], id: 'h2' }] },
-      '2026-11-05T00:00:00.000Z',
-      prev
-    );
-    expect(edited.createdAt).toBe(now);
-    expect(edited.updatedAt).toBe('2026-11-05T00:00:00.000Z');
-    expect(edited.history.map((h) => h.timestamp)).toEqual(['2026-11-04 10:20', '2026-11-05 00:00']);
-  });
-});
-
 describe("BG-01M6XPSR: session restore checks the sequence view's colour scheme", () => {
   // Each check launches the App afresh.
   vi.setConfig({ testTimeout: 60_000 });

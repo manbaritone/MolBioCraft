@@ -114,9 +114,13 @@ export interface Gff3Sequences {
   warnings: string[];
 }
 
-/** Open the sequences a GFF3 file carries under `##FASTA`; documents [] when it carries none. */
-export function parseGff3Sequences(text: string): Gff3Sequences {
-  return invokeRustBioSync<Gff3Sequences>('parse_gff3_sequences', { text });
+/**
+ * Open the sequences a GFF3 file carries under `##FASTA`; documents [] when it carries none. Each
+ * document is made at `nowIso` (default: now), its createdAt, updatedAt and import history minute
+ * (US-01M7Q97X, D0203).
+ */
+export function parseGff3Sequences(text: string, nowIso = new Date().toISOString()): Gff3Sequences {
+  return invokeRustBioSync<Gff3Sequences>('parse_gff3_sequences', { text, nowIso });
 }
 
 /** A modified residue of a structure chain, read as its parent's code (`MSE` 1 as `M`). */

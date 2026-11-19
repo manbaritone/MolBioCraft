@@ -40,7 +40,15 @@ pub fn color_for_feature_type(ft: &str) -> &'static str {
 
 /// Parse single or multi-record FASTA text via `noodles_fasta::io::Reader`.
 /// Gracefully handles raw headerless sequence paste by wrapping it into a valid FASTA definition.
+///
+/// The documents carry no date: [`parse_fasta_noodles_at`] with a blank time (D0203).
 pub fn parse_fasta_noodles(text: &str, default_name: &str) -> Vec<SequenceDocument> {
+    parse_fasta_noodles_at(text, default_name, "")
+}
+
+/// [`parse_fasta_noodles`] made at `now_iso`: each document's createdAt and updatedAt are that time
+/// and its import history entry that minute, each blank when `now_iso` is blank (D0203).
+pub fn parse_fasta_noodles_at(text: &str, default_name: &str, now_iso: &str) -> Vec<SequenceDocument> {
     // Classic FASTA / PIR ';' comment lines carry no sequence; left in place
     // their words would be read as residues.
     let without_comments: String = text
@@ -68,7 +76,7 @@ pub fn parse_fasta_noodles(text: &str, default_name: &str) -> Vec<SequenceDocume
     // parseAlignedFasta (src/core/alignmentFormats.ts) measures them.
     let mut written_lengths: Vec<usize> = Vec::new();
     let mut any_gapped = false;
-    let now = "2026-10-31".to_string();
+    let now = now_iso.trim().to_string();
 
     for (idx, res) in reader.records().enumerate() {
         let Ok(record) = res else {
@@ -134,7 +142,7 @@ pub fn parse_fasta_noodles(text: &str, default_name: &str) -> Vec<SequenceDocume
             primers: Vec::new(),
             history: vec![HistoryTreeNode {
                 id: format!("hist-fasta-{}", idx + 1),
-                timestamp: now.clone(),
+                timestamp: crate::flatfiles::history_minute(&now),
                 operation: "Imported FASTA (Noodles)".into(),
                 description: format!("Parsed FASTA record '{}' ({} residues)", name, len),
                 parent_ids: Vec::new(),
@@ -485,7 +493,15 @@ pub struct Gff3Sequences {
 /// per seqid: first one sentence per seqid with no record, in the order the features name them,
 /// then one per record they fall outside, in record order. Text with no `##FASTA` line gives no
 /// documents and no warnings.
+///
+/// The documents carry no date: [`parse_gff3_sequences_noodles_at`] with a blank time (D0203).
 pub fn parse_gff3_sequences_noodles(text: &str) -> Gff3Sequences {
+    parse_gff3_sequences_noodles_at(text, "")
+}
+
+/// [`parse_gff3_sequences_noodles`] made at `now_iso`: each document's createdAt and updatedAt are
+/// that time and its import history entry that minute, each blank when `now_iso` is blank (D0203).
+pub fn parse_gff3_sequences_noodles_at(text: &str, now_iso: &str) -> Gff3Sequences {
     let mut documents = Vec::new();
     let mut warnings = Vec::new();
     let Some(start) = text
@@ -500,7 +516,7 @@ pub fn parse_gff3_sequences_noodles(text: &str) -> Gff3Sequences {
     else {
         return Gff3Sequences { documents, warnings };
     };
-    documents = parse_fasta_noodles(text.get(start..).unwrap_or(""), "GFF3_FASTA");
+    documents = parse_fasta_noodles_at(text.get(start..).unwrap_or(""), "GFF3_FASTA", now_iso);
     let mut missing: Vec<(String, usize)> = Vec::new();
     let mut outside = vec![0usize; documents.len()];
     for feature in parse_gff3_noodles(text) {

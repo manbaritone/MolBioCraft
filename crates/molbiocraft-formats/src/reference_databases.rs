@@ -9,8 +9,8 @@ use aho_corasick::AhoCorasickBuilder;
 use molbiocraft_core::{HistoryTreeNode, MoleculeType, SequenceDocument, SequenceFeature, Topology};
 use serde::{Deserialize, Serialize};
 
-use crate::flatfiles::parse_genbank_flatfile;
-use crate::noodles_io::{color_for_feature_type, parse_fasta_noodles};
+use crate::flatfiles::parse_genbank_flatfile_at;
+use crate::noodles_io::{color_for_feature_type, parse_fasta_noodles_at};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -461,11 +461,8 @@ pub fn build_curated_database_document(
         rec.accession.replace(':', "_")
     );
     let len = rec.sequence.len();
-    let now = if timestamp_iso.is_empty() {
-        "2026-10-31T00:00:00Z".to_string()
-    } else {
-        timestamp_iso.to_string()
-    };
+    // The caller's time, blank when it sent none (D0203: never a fabricated date).
+    let now = timestamp_iso.trim().to_string();
 
     let mut meta = std::collections::HashMap::new();
     meta.insert(
@@ -529,20 +526,34 @@ pub fn build_curated_database_document(
 }
 
 /// Parses an external NCBI Entrez / UniProt FASTA or GenBank payload via `noodles-fasta` / flatfile parser.
+///
+/// The documents carry no date: [`parse_remote_database_payload_at`] with a blank time (D0203).
 pub fn parse_remote_database_payload(
     raw_text: &str,
     accession: &str,
     is_protein_hint: bool,
     target_folder: &str,
 ) -> Vec<SequenceDocument> {
+    parse_remote_database_payload_at(raw_text, accession, is_protein_hint, target_folder, "")
+}
+
+/// [`parse_remote_database_payload`] made at `now_iso`: each document's createdAt and updatedAt are
+/// that time and its import history entry that minute, each blank when `now_iso` is blank (D0203).
+pub fn parse_remote_database_payload_at(
+    raw_text: &str,
+    accession: &str,
+    is_protein_hint: bool,
+    target_folder: &str,
+    now_iso: &str,
+) -> Vec<SequenceDocument> {
     let trimmed = raw_text.trim();
     if trimmed.is_empty() {
         return Vec::new();
     }
     let mut docs = if trimmed.starts_with("LOCUS") {
-        vec![parse_genbank_flatfile(trimmed, accession)]
+        vec![parse_genbank_flatfile_at(trimmed, accession, now_iso)]
     } else {
-        parse_fasta_noodles(trimmed, accession)
+        parse_fasta_noodles_at(trimmed, accession, now_iso)
     };
     for d in &mut docs {
         if is_protein_hint {

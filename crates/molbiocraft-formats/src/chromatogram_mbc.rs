@@ -338,11 +338,8 @@ pub fn serialize_mbc_workbench_rust(
             app_version.to_string()
         },
         license: "CC-BY-NC-4.0".to_string(),
-        saved_at: if saved_at_iso.trim().is_empty() {
-            "2026-10-31T00:00:00.000Z".to_string()
-        } else {
-            saved_at_iso.to_string()
-        },
+        // A blank save time stays blank (D0203): the engine has no clock to fill it.
+        saved_at: saved_at_iso.trim().to_string(),
         session_name: clean_name,
         document_count: snapshot.documents.len(),
         total_base_pairs,
@@ -522,11 +519,8 @@ pub fn parse_mbc_workbench_rust(
             "Invalid .mbc file: workbench documents must be an array.".to_string()
         })?;
 
-    let now = if now_iso.trim().is_empty() {
-        "2026-10-31T00:00:00.000Z"
-    } else {
-        now_iso
-    };
+    // The caller's time, blank when it sent none (D0203: never a fabricated date).
+    let now = now_iso.trim();
 
     let mut sanitized_docs = Vec::with_capacity(docs_arr.len());
     // The documents as the file stores them, before blanks are filled: the writer hashed these
@@ -1224,11 +1218,8 @@ pub fn trim_sanger_trace_mott_phred(
 /// (`"spike"`, `"cas9"`, `"egfp"`, `"lacz"`), eliminating hardcoded DNA string literals from UI code.
 pub fn build_ncbi_reference_preset_document(preset: &str, now_iso: &str) -> SequenceDocument {
     let key = preset.trim().to_ascii_lowercase();
-    let now = if now_iso.trim().is_empty() {
-        "2026-10-31T00:00:00.000Z"
-    } else {
-        now_iso
-    };
+    // The caller's time, blank when it sent none (D0203: never a fabricated date).
+    let now = now_iso.trim();
     let short_ts = now.chars().take(16).collect::<String>().replace('T', " ");
 
     let (id_slug, name, accession, desc, feat_name, raw_seq) = match key.as_str() {
@@ -1957,5 +1948,56 @@ mod tests {
         assert!(!mixed.checksum_verified, "digests from two forms must not verify");
         assert_eq!(mixed.warnings.len(), 1, "{:?}", mixed.warnings);
         assert!(mixed.warnings[0].starts_with("Checksum mismatch (expected "), "{:?}", mixed.warnings);
+    }
+
+    /// US-01M7Q97X (D0203): a reference preset, a session save and a session restore made without
+    /// the caller's time carry blank dates, never a fixed one; with it, they carry that time.
+    #[test]
+    fn caller_time_or_blank_never_a_fixed_date() {
+        let now = "2027-03-04T10:05:06.789Z";
+        let dated = build_ncbi_reference_preset_document("cas9", now);
+        assert_eq!((dated.created_at.as_str(), dated.updated_at.as_str()), (now, now));
+        assert_eq!(dated.history.last().unwrap().timestamp, "2027-03-04 10:05");
+        let bare = build_ncbi_reference_preset_document("cas9", "");
+        assert_eq!((bare.created_at.as_str(), bare.updated_at.as_str()), ("", ""));
+        assert_eq!(bare.history.last().unwrap().timestamp, "");
+
+        let snap = MbcWorkbenchSnapshotInput {
+            session_name: "Clock.mbc".to_string(),
+            documents: vec![dated],
+            workspace: MbcWorkspaceUiStateRust {
+                project_explorer: None,
+                active_doc_id: String::new(),
+                selected_folder: "Sample Documents".to_string(),
+                nav_history: Vec::new(),
+                nav_index: 0,
+                viewer_tab: "sequence-view".to_string(),
+                map_layout_mode: "split".to_string(),
+                zoom_level: 100.0,
+                text_format: "genbank".to_string(),
+                color_scheme: "standard".to_string(),
+                dark_mode: false,
+                sidebar_open: true,
+                doc_table_collapsed: false,
+                selected_range: None,
+                display_settings: MbcDisplaySettingsRust::default(),
+                pane_split: None,
+                site_visibility: None,
+                map_rotation: None,
+                document_split: None,
+            },
+        };
+        let unsaved: serde_json::Value =
+            serde_json::from_str(&serialize_mbc_workbench_rust(&snap, "1.0.0", "")).unwrap();
+        assert_eq!(unsaved["savedAt"], serde_json::json!(""));
+        let saved: serde_json::Value =
+            serde_json::from_str(&serialize_mbc_workbench_rust(&snap, "1.0.0", now)).unwrap();
+        assert_eq!(saved["savedAt"], serde_json::json!(now));
+
+        // A file with no savedAt, restored without the caller's time, keeps it blank.
+        let mut raw = unsaved.clone();
+        raw.as_object_mut().unwrap().remove("savedAt");
+        let restored = parse_mbc_workbench_rust(&raw.to_string(), "Fallback", "").unwrap();
+        assert_eq!(restored.envelope.saved_at, "");
     }
 }

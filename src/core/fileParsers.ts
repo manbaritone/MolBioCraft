@@ -22,8 +22,16 @@ import {
 import type { MoleculeType, PrimerRecord, SequenceDocument, SequenceFeature } from '../types/bio';
 import { calculatePrimerMetrics, checkSequenceAlphabet, classifySequenceAlphabet, isNucleotideByAlphabet } from './bioEngine';
 
-export function parseFasta(text: string, defaultName = 'Imported_FASTA'): SequenceDocument[] {
-  return invokeRustBioSync<SequenceDocument[]>('parse_fasta', { text, defaultName });
+/**
+ * FASTA text as documents, each made at `nowIso` (default: now): the engine has no clock, so the
+ * caller's time is its createdAt, updatedAt and import history minute (D0203: blank without one).
+ */
+export function parseFasta(
+  text: string,
+  defaultName = 'Imported_FASTA',
+  nowIso = new Date().toISOString()
+): SequenceDocument[] {
+  return invokeRustBioSync<SequenceDocument[]>('parse_fasta', { text, defaultName, nowIso });
 }
 
 /**
@@ -40,9 +48,16 @@ export function parseFasta(text: string, defaultName = 'Imported_FASTA'): Sequen
  * `calculatePrimerMetrics`, as a Primer Database primer does: the Tm, 3' GC clamp and Tm reason of
  * its anneal sequence, and the full-sequence Tm, GC %, ΔG, hairpin and self-dimer ΔG. A primer
  * holding N keeps the reason its Tm has no answer (BG-01M6SHQ0).
+ *
+ * The document is made at `nowIso` (default: now), its createdAt, updatedAt and import history
+ * minute (US-01M7Q97X, D0203).
  */
-export function parseGenBank(text: string, fallbackName = 'Imported_GenBank'): SequenceDocument {
-  const doc = invokeRustBioSync<SequenceDocument>('parse_genbank', { text, fallbackName });
+export function parseGenBank(
+  text: string,
+  fallbackName = 'Imported_GenBank',
+  nowIso = new Date().toISOString()
+): SequenceDocument {
+  const doc = invokeRustBioSync<SequenceDocument>('parse_genbank', { text, fallbackName, nowIso });
   return doc.primers.length ? { ...doc, primers: doc.primers.map(withPrimerMetrics) } : doc;
 }
 
@@ -164,8 +179,13 @@ export function bamToSam(buffer: ArrayBuffer, maxRecords = 0): string {
   return invokeRustBioSync<string>('bam_to_sam', { bytes: Array.from(new Uint8Array(buffer)), maxRecords });
 }
 
-export function parseEMBL(text: string, fallbackName = 'Imported_EMBL'): SequenceDocument {
-  return invokeRustBioSync<SequenceDocument>('parse_embl', { text, fallbackName });
+/** An EMBL record as a document made at `nowIso` (default: now), as parseGenBank dates one. */
+export function parseEMBL(
+  text: string,
+  fallbackName = 'Imported_EMBL',
+  nowIso = new Date().toISOString()
+): SequenceDocument {
+  return invokeRustBioSync<SequenceDocument>('parse_embl', { text, fallbackName, nowIso });
 }
 
 /** True when the text is an EMBL record (first non-blank line is an `ID   ` line). */
@@ -177,11 +197,17 @@ export function looksLikeEmblRecord(text: string): boolean {
 /**
  * A binary trace file (ABIF or SCF, told apart by signature) as a document. Plain-text bases under a
  * trace extension are read as a sequence; any other bytes give an empty sequence, never invented bases.
+ * The document is made at `nowIso` (default: now), as parseGenBank dates one.
  */
-export function parseDnaBinaryPacket(buffer: ArrayBuffer, fileName: string): SequenceDocument {
+export function parseDnaBinaryPacket(
+  buffer: ArrayBuffer,
+  fileName: string,
+  nowIso = new Date().toISOString()
+): SequenceDocument {
   return invokeRustBioSync<SequenceDocument>('parse_binary_packet', {
     bytes: Array.from(new Uint8Array(buffer)),
     fileName,
+    nowIso,
   });
 }
 
@@ -194,7 +220,7 @@ function localIsoDate(now = new Date()): string {
 /**
  * The document as a GenBank flat file, dated the day it is exported. D0200: "The export_genbank RPC
  * op and the TS wrapper exportToGenBank always pass the export date." The date is the local
- * calendar day, since the engine has no clock (engineTimestamps.ts).
+ * calendar day, since the engine has no clock.
  */
 export function exportToGenBank(doc: SequenceDocument): string {
   return invokeRustBioSync<string>('export_genbank', { doc, exportDate: localIsoDate() });
