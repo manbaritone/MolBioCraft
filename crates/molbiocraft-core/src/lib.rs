@@ -419,7 +419,8 @@ pub fn sanitize_workspace_path(raw_path: &str) -> Result<PathBuf, BioEngineError
 
 /// The temp file an atomic write fills before renaming it over `path` (US-01M6P2S4): a hidden
 /// sibling named after the whole file name, the process id and a process-wide counter, so x.gb and
-/// x.fasta in one folder, or two writes of one file, never share a temp file.
+/// x.fasta in one folder, or two writes of one file, never share a temp file. The name is shortened
+/// to fit the 255-byte file-name limit when the whole file name would push it past (BG-01M7RHN4).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn atomic_temp_path(path: &std::path::Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -432,7 +433,33 @@ pub fn atomic_temp_path(path: &std::path::Path) -> PathBuf {
         .unwrap_or_default();
     let pid = std::process::id();
     let counter = ATOMIC_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!(".{file_name}.{pid}-{counter}.mbc_tmp"))
+    parent.join(atomic_temp_name(&file_name, pid, counter))
+}
+
+/// The temp file's name (BG-01M7RHN4 R1): `.{file_name}.{pid}-{counter}.mbc_tmp` while that fits in
+/// 255 bytes; otherwise the file-name part is a prefix of the name, cut on a UTF-8 character
+/// boundary, then `~` and a 16-hex-digit FNV-1a hash of the full name, so the whole name fits.
+#[cfg(not(target_arch = "wasm32"))]
+fn atomic_temp_name(file_name: &str, pid: u32, counter: u64) -> String {
+    const MAX_FILE_NAME_BYTES: usize = 255;
+    let suffix = format!(".{pid}-{counter}.mbc_tmp");
+    let whole = format!(".{file_name}{suffix}");
+    if whole.len() <= MAX_FILE_NAME_BYTES {
+        return whole;
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in file_name.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let tag = format!("~{hash:016x}");
+    // At most 1 + 17 + 40 bytes go to the dot, the tag and the widest suffix, so this never
+    // underflows; and the name is longer than the cut, since the whole name did not fit.
+    let mut cut = MAX_FILE_NAME_BYTES - 1 - tag.len() - suffix.len();
+    while !file_name.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!(".{}{tag}{suffix}", &file_name[..cut])
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -628,6 +655,100 @@ mod tests {
         let folder = dir.join("x.gb.d");
         std::fs::create_dir_all(folder.join("inner")).unwrap();
         assert!(atomic_write_with_lock_retry(&folder, b"ACGT").is_err());
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".mbc_tmp"))
+            .collect();
+        assert!(left.is_empty(), "temp files left behind: {left:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// BG-01M7RHN4 R1: the temp name keeps today's form while it fits in 255 bytes; past that the
+    /// file-name part becomes a UTF-8-boundary prefix plus a stable hash of the whole name.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn atomic_temp_name_fits_255_bytes_and_keeps_todays_form_while_it_fits() {
+        assert_eq!(atomic_temp_name("x.gb", 7, 3), ".x.gb.7-3.mbc_tmp");
+        // ".7-3.mbc_tmp" is 12 bytes, so a 242-byte name makes a temp name of exactly 255 bytes.
+        let fits = "f".repeat(242);
+        assert_eq!(
+            atomic_temp_name(&fits, 7, 3),
+            format!(".{fits}.7-3.mbc_tmp")
+        );
+        let over = "f".repeat(243);
+        let shortened = atomic_temp_name(&over, 7, 3);
+        assert!(shortened.len() <= 255, "{}", shortened.len());
+        assert_ne!(shortened, format!(".{over}.7-3.mbc_tmp"));
+        assert!(shortened.ends_with(".7-3.mbc_tmp"), "{shortened}");
+
+        // The widest pid and counter still fit, and the cut lands on a character boundary.
+        let names = [
+            format!("{}.gb", "a".repeat(247)),
+            format!("{}.gb", "ก".repeat(84)),
+            format!("{}.fasta", "🧬".repeat(61)),
+            "ก".repeat(85),
+        ];
+        for name in &names {
+            for (pid, counter) in [(1, 0), (u32::MAX, u64::MAX)] {
+                let tmp = atomic_temp_name(name, pid, counter);
+                assert!(tmp.len() <= 255, "{} bytes: {tmp}", tmp.len());
+                assert!(tmp.ends_with(&format!(".{pid}-{counter}.mbc_tmp")), "{tmp}");
+                assert!(!tmp.contains('\u{FFFD}'), "{tmp}");
+                let kept: String = name.chars().take(40).collect();
+                assert!(tmp.starts_with(&format!(".{kept}")), "{tmp}");
+                // Stable: the same name, pid and counter give the same temp name.
+                assert_eq!(tmp, atomic_temp_name(name, pid, counter));
+            }
+        }
+
+        // Two long names that share a 200-byte prefix (and differ only in byte 246, past where the
+        // prefix is cut) get distinct temp names even at the same pid and counter.
+        let common = "p".repeat(200);
+        let a = format!("{common}{}1.gb", "q".repeat(46));
+        let b = format!("{common}{}2.gb", "q".repeat(46));
+        assert_eq!((a.len(), b.len()), (250, 250));
+        assert_ne!(atomic_temp_name(&a, 7, 3), atomic_temp_name(&b, 7, 3));
+        assert_ne!(
+            atomic_temp_name(&a, u32::MAX, u64::MAX),
+            atomic_temp_name(&b, u32::MAX, u64::MAX)
+        );
+    }
+
+    /// BG-01M7RHN4: a file whose name is near the 255-byte limit still saves, because its temp
+    /// name is shortened to fit rather than pushed past the limit.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn atomic_write_saves_a_file_whose_name_is_near_the_255_byte_limit() {
+        let dir = std::env::temp_dir().join(format!(
+            "mbc-atomic-long-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 247 ASCII bytes + ".gb" = 250 bytes; 84 Thai letters (3 bytes each) + ".gb" = 255 bytes;
+        // 61 emoji (4 bytes each) + ".fasta" = 250 bytes.
+        let ascii = format!("{}.gb", "a".repeat(247));
+        let thai = format!("{}.gb", "ก".repeat(84));
+        let emoji = format!("{}.fasta", "🧬".repeat(61));
+        assert_eq!(ascii.len(), 250);
+        assert_eq!(thai.len(), 255);
+        assert_eq!(emoji.len(), 250);
+        for name in [&ascii, &thai, &emoji] {
+            let path = dir.join(name);
+            let bytes = format!("LOCUS {name}\n").repeat(32).into_bytes();
+            atomic_write_with_lock_retry(&path, &bytes)
+                .unwrap_or_else(|e| panic!("{}-byte name not written: {e:?}", name.len()));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            let tmp = atomic_temp_path(&path);
+            let tmp_name = tmp.file_name().unwrap().to_str().unwrap().to_owned();
+            assert!(tmp_name.len() <= 255, "{} bytes: {tmp_name}", tmp_name.len());
+            assert_eq!(tmp.parent(), Some(dir.as_path()));
+            assert!(tmp_name.starts_with('.') && tmp_name.ends_with(".mbc_tmp"), "{tmp_name}");
+        }
         let left: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
