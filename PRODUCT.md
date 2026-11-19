@@ -24,7 +24,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 - Air-gapped and offline environments common in institutional research
 - File formats: GenBank (.gb), FASTA (.fasta), EMBL (.embl), GFF3 (.gff3), ABI Sanger (.ab1), PDB/mmCIF, VCF/FASTQ/SAM/BED (via noodles), custom .mbc session files
 - Drag-and-drop binary file ingestion, native OS file dialogs (rfd), native macOS 9-menu AppKit menu bar (muda)
-- Keyboard-driven navigation: ⌘1–⌘8 map layouts and studio views, ⌘K command palette, ⌘N new sequence, ⌘O open session, ⌥⌘S save session
+- Keyboard-driven navigation: ⌘1–⌘9 open the first nine studios in rail order, ⌥⌘1–⌥⌘3 switch the map layout, ⌘K command palette, ⌘N new sequence, ⌘O open session, ⌘S save session, ⇧⌘E export GenBank
 - Guided 4-step pipelines for recombinant construct QC, CRISPR knockout/HDR design, viral vector packaging, protein expression QC
 - Publication workflow: every visualization renders as crisp multi-tone SVG suitable for direct figure assembly
 
@@ -76,7 +76,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 
 ## Accessibility & Inclusion
 
-- Keyboard-first navigation: the common commands have menu shortcuts (⌘K, ⌘F, ⇧⌘F, ⌘N, ⌘O, ⌥⌘S, ⌘S, ⌘I, ⇧⌘R, ⌥⌘I, ⌘1–⌘8, ⌘,, F1), all listed in Preferences › Keyboard
+- Keyboard-first navigation: the common commands have menu shortcuts (⌘K, ⌘F, ⇧⌘F, ⌘N, ⌘O, ⌘S, ⇧⌘E, ⌘I, ⇧⌘R, ⌥⌘I, ⌘1–⌘9, ⌥⌘1–⌥⌘3, ⌘,, F1), all listed in Preferences › Keyboard
 - High-contrast multi-tone SVG palettes (Standard and Okabe-Ito colorblind-safe)
 - Scalable vector output maintains legibility at any zoom level
 - Screen-reader accessible React components with semantic HTML structure

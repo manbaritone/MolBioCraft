@@ -1804,7 +1804,7 @@ pub fn execute_bio_pipeline_rust(
                 vec!["5' mRNA leader is thermodynamically open for efficient ribosomal scanning.".into()]
             },
             target_studio: "history-hybrid".into(),
-            target_studio_label: "Open RNA/DNA Folding (⌘7)".into(),
+            target_studio_label: "Open RNA/DNA Folding".into(),
             warnings: Vec::new(),
             highlight_range: Some(PipelineHighlightRange {
                 start: 1,

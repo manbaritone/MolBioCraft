@@ -78,6 +78,43 @@ const ALIGNMENT_MENU_WINDOWS: &[NativeMenuCommand] = &[
     menu_item("align:consensus-dialog", "Generate Consensus…", None),
 ];
 
+/// View › Studios (US-01M6Q1CF, D0015): the studio registry's eleven studios in rail order
+/// (src/core/studioRegistry.ts, under the registry's names), each opening its studio through
+/// `view:studio-<id>`, with CmdOrCtrl+1 to CmdOrCtrl+9 on the first nine and no key on Protein & 3D
+/// or Pipelines & NGS (D0017). [`build_macos_menu`] builds one item from each.
+#[cfg(any(target_os = "macos", test))]
+const VIEW_STUDIO_ITEMS: &[NativeMenuCommand] = &[
+    menu_item("view:studio-sequence-map", "Sequence Map", Some("CmdOrCtrl+1")),
+    menu_item("view:studio-annotations", "Annotations", Some("CmdOrCtrl+2")),
+    menu_item("view:studio-flatfile", "Flatfile", Some("CmdOrCtrl+3")),
+    menu_item("view:studio-cloning-gel", "Cloning & Gel", Some("CmdOrCtrl+4")),
+    menu_item("view:studio-vectors", "Vectors & Architect", Some("CmdOrCtrl+5")),
+    menu_item("view:studio-primers-crispr", "Primers & CRISPR", Some("CmdOrCtrl+6")),
+    menu_item("view:studio-alignment", "Alignment", Some("CmdOrCtrl+7")),
+    menu_item("view:studio-phylogenetics", "Phylogenetics", Some("CmdOrCtrl+8")),
+    menu_item("view:studio-sanger-contig", "Sanger & Contig", Some("CmdOrCtrl+9")),
+    menu_item("view:studio-protein-3d", "Protein & 3D", None),
+    menu_item("view:studio-pipelines-ngs", "Pipelines & NGS", None),
+];
+
+/// View › Map Layout (US-01M6Q1CF, D0015): the three layouts on CmdOrCtrl+Alt+1 to +3, under the
+/// in-window menu's labels. [`build_macos_menu`] builds one item from each.
+#[cfg(any(target_os = "macos", test))]
+const MAP_LAYOUT_ITEMS: &[NativeMenuCommand] = &[
+    menu_item("view:layout-split", "Split Map & Sequence", Some("CmdOrCtrl+Alt+1")),
+    menu_item("view:layout-circular", "Circular Map", Some("CmdOrCtrl+Alt+2")),
+    menu_item("view:layout-linear", "Linear Sequence", Some("CmdOrCtrl+Alt+3")),
+];
+
+/// File › Save Session › Save Session on CmdOrCtrl+S (D0015); CmdOrCtrl+Alt+S is the in-window second
+/// key the frontend listens for (D0017), on no menu item.
+#[cfg(any(target_os = "macos", test))]
+const SAVE_SESSION_ITEM: NativeMenuCommand = menu_item("file:save-session", "Save Session", Some("CmdOrCtrl+S"));
+
+/// File › Export Sequences › Export GenBank on CmdOrCtrl+Shift+E (D0015).
+#[cfg(any(target_os = "macos", test))]
+const EXPORT_GENBANK_ITEM: NativeMenuCommand = menu_item("file:save-gb", "Export GenBank", Some("CmdOrCtrl+Shift+E"));
+
 /// The operation-window items of the native Alignment menu, in menu order, each made by `make`
 /// from its [`NativeMenuCommand`]. [`build_macos_menu`] makes its menu items with this, and the
 /// test makes the commands themselves with it, so what the test checks is the list the menu is
@@ -95,6 +132,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         MenuItem::with_id(app, id, label.replace('&', "&&"), true, accel)
     };
     let sep = || PredefinedMenuItem::separator(app);
+    let command_item = |c: &NativeMenuCommand| item(c.id, c.label, c.accel);
 
     let app_menu = submenu_escaped(
         app,
@@ -211,7 +249,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "Save Session",
         true,
         &[
-            &item("file:save-session", "Save Session", Some("CmdOrCtrl+Alt+S"))?,
+            &command_item(&SAVE_SESSION_ITEM)?,
             &item(
                 "file:save-session-as",
                 "Save Session As",
@@ -343,7 +381,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "Export Sequences",
         true,
         &[
-            &item("file:save-gb", "Export GenBank", Some("CmdOrCtrl+S"))?,
+            &command_item(&EXPORT_GENBANK_ITEM)?,
             &item(
                 "file:save-fasta",
                 "Export FASTA",
@@ -538,31 +576,30 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
-    let view_layout_sub = submenu_escaped(
-        app,
-        "Map Layout",
-        true,
-        &[
-            &item("view:layout-split", "Split Map & Linear", Some("CmdOrCtrl+1"))?,
-            &item("view:layout-circular", "Circular Map", Some("CmdOrCtrl+2"))?,
-            &item("view:layout-linear", "Linear Sequence", Some("CmdOrCtrl+4"))?,
-        ],
-    )?;
+    let view_studio_items = VIEW_STUDIO_ITEMS.iter().map(command_item).collect::<tauri::Result<Vec<_>>>()?;
+    let view_studio_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = view_studio_items
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<R>)
+        .collect();
+    let view_studios_sub = submenu_escaped(app, "Studios", true, &view_studio_refs)?;
+
+    let view_layout_items = MAP_LAYOUT_ITEMS.iter().map(command_item).collect::<tauri::Result<Vec<_>>>()?;
+    let view_layout_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = view_layout_items
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<R>)
+        .collect();
+    let view_layout_sub = submenu_escaped(app, "Map Layout", true, &view_layout_refs)?;
 
     let view_spec_sub = submenu_escaped(
         app,
         "Studio Views",
         true,
         &[
-            &item("view:enzymes", "Enzymes View", Some("CmdOrCtrl+3"))?,
-            &item("view:annotations", "Annotations Table", Some("CmdOrCtrl+5"))?,
-            &item("view:text", "Flatfile View", Some("CmdOrCtrl+6"))?,
-            &item(
-                "view:secondary-structure",
-                "Secondary Structure",
-                Some("CmdOrCtrl+7"),
-            )?,
-            &item("view:lineage", "History & Lineage", Some("CmdOrCtrl+8"))?,
+            &item("view:enzymes", "Enzymes View", None)?,
+            &item("view:annotations", "Annotations Table", None)?,
+            &item("view:text", "Flatfile View", None)?,
+            &item("view:secondary-structure", "Secondary Structure", None)?,
+            &item("view:lineage", "History", None)?,
         ],
     )?;
 
@@ -618,6 +655,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &view_cols_sub,
             &item("view:restore-default-layout", "Restore Default Layout", None)?,
             &sep()?,
+            &view_studios_sub,
             &view_layout_sub,
             &view_tracks_sub,
             &view_spec_sub,
@@ -633,7 +671,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[
             &item("enzymes:choose", "Choose Enzymes", Some("CmdOrCtrl+E"))?,
             &item("enzymes:digest-dialog", "Digest into Fragments…", None)?,
-            &item("enzymes:table", "Enzymes Table", Some("CmdOrCtrl+3"))?,
+            &item("enzymes:table", "Enzymes Table", None)?,
         ],
     )?;
 
@@ -1596,5 +1634,62 @@ mod tests {
         assert_eq!(unique.len(), ids.len(), "{ids:?}");
         // Every item is an Alignment-menu window command (`align:…-dialog`).
         assert!(ids.iter().all(|id| id.starts_with("align:") && id.ends_with("-dialog")), "{ids:?}");
+    }
+
+    /// US-01M6Q1CF AC4 (D0015): View › Studios, Map Layout, Save Session and Export GenBank carry the
+    /// remapped keys in the tables `build_macos_menu` builds them from, and across every accelerator
+    /// this file gives the menu no other item takes CmdOrCtrl+<digit 1-9> and no two share one.
+    #[test]
+    fn native_menu_binds_studio_and_session_shortcuts() {
+        const STUDIO_IDS: [&str; 11] = [
+            "sequence-map", "annotations", "flatfile", "cloning-gel", "vectors", "primers-crispr",
+            "alignment", "phylogenetics", "sanger-contig", "protein-3d", "pipelines-ngs",
+        ];
+        let ids: Vec<String> = VIEW_STUDIO_ITEMS.iter().map(|c| c.id.to_string()).collect();
+        let want: Vec<String> = STUDIO_IDS.iter().map(|s| format!("view:studio-{s}")).collect();
+        assert_eq!(ids, want);
+        let accels: Vec<Option<String>> = VIEW_STUDIO_ITEMS.iter().map(|c| c.accel.map(str::to_string)).collect();
+        let want_accels: Vec<Option<String>> =
+            (1..=11).map(|d| if d <= 9 { Some(format!("CmdOrCtrl+{d}")) } else { None }).collect();
+        assert_eq!(accels, want_accels);
+        assert_eq!(
+            MAP_LAYOUT_ITEMS,
+            &[
+                NativeMenuCommand { id: "view:layout-split", label: "Split Map & Sequence", accel: Some("CmdOrCtrl+Alt+1") },
+                NativeMenuCommand { id: "view:layout-circular", label: "Circular Map", accel: Some("CmdOrCtrl+Alt+2") },
+                NativeMenuCommand { id: "view:layout-linear", label: "Linear Sequence", accel: Some("CmdOrCtrl+Alt+3") },
+            ]
+        );
+        assert_eq!(SAVE_SESSION_ITEM, NativeMenuCommand { id: "file:save-session", label: "Save Session", accel: Some("CmdOrCtrl+S") });
+        assert_eq!(EXPORT_GENBANK_ITEM, NativeMenuCommand { id: "file:save-gb", label: "Export GenBank", accel: Some("CmdOrCtrl+Shift+E") });
+
+        // The builder makes its items from these tables, not from copies of them.
+        let src = include_str!("main.rs");
+        let builder = &src[src.find("fn build_macos_menu").unwrap()..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        for table in ["VIEW_STUDIO_ITEMS.iter().map(command_item)", "MAP_LAYOUT_ITEMS.iter().map(command_item)",
+            "command_item(&SAVE_SESSION_ITEM)", "command_item(&EXPORT_GENBANK_ITEM)", "&view_studios_sub,"] {
+            assert!(builder.contains(table), "build_macos_menu uses {table}");
+        }
+
+        // Every accelerator literal outside this test module: the tables and the builder's own items.
+        let menu_src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let mut all: Vec<&str> = menu_src
+            .split("Some(\"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .filter(|a| a.starts_with("CmdOrCtrl+"))
+            .collect();
+        let digit_keys: Vec<&str> = all
+            .iter()
+            .copied()
+            .filter(|a| a.len() == "CmdOrCtrl+1".len() && matches!(a.as_bytes()[10], b'1'..=b'9'))
+            .collect();
+        assert_eq!(digit_keys, (1..=9).map(|d| format!("CmdOrCtrl+{d}")).collect::<Vec<_>>(), "only the studios take CmdOrCtrl+<digit>");
+        let n = all.len();
+        assert!(n > 40, "read {n} accelerators");
+        all.sort_unstable();
+        let mut dups: Vec<&str> = all.windows(2).filter(|w| w[0] == w[1]).map(|w| w[0]).collect();
+        dups.dedup();
+        assert!(dups.is_empty(), "accelerators on two items: {dups:?}");
     }
 }

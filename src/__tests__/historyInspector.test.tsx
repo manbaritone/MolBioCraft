@@ -122,9 +122,10 @@ function selectedSubTab(app: AppHarness, root?: LiveElement): string | null {
 }
 const SUB_TABS = {
   protein: 'Protein Analysis & Codon Opt',
-  fold: 'Secondary Structure (⌘7)',
-  enzymes: 'Enzymes View (123 / |||| — ⌘3)',
-  lineage: 'History Tree, Alerts & Info (⌘8)',
+  // US-01M6Q1CF AC9: the sub-tabs name no ⌘-digit.
+  fold: 'Secondary Structure',
+  enzymes: 'Enzymes View (123 / ||||)',
+  lineage: 'History Tree, Alerts & Info',
   workflows: 'Workflows & Genetic Code Tables',
 } as const;
 type SubTab = keyof typeof SUB_TABS;
@@ -410,7 +411,9 @@ const menubar = (app: AppHarness, name: string) => {
 async function choose(app: AppHarness, menu: string, submenus: string[], leaf: string) {
   await app.click(menubar(app, menu));
   for (const name of [...submenus, leaf]) {
-    const rows = menuRows(app, name);
+    // Each level in the popup it opened: View's own History submenu and Studio Views > History share a label (US-01M6Q1CF AC6).
+    const popups = app.all('.desktop-menu-popup');
+    const rows = menuRows(app, name).filter((b) => popups.length === 0 || popups[popups.length - 1].contains(b));
     expect(rows, `one "${name}" row`).toHaveLength(1);
     await app.click(rows[0]);
   }
@@ -426,7 +429,7 @@ describe('the commands that open a History sub-tab (AC5)', () => {
         { name: 'View > Studio Views > Secondary Structure', run: () => choose(app, 'View', ['Studio Views'], 'Secondary Structure'), tab: 'fold', section: 'Folding' },
         { name: 'the native View > Lineage (view:lineage)', run: () => app.menu('view:lineage'), tab: 'lineage', section: 'Lineage' },
         { name: 'the native Tools > Workflows (tools:workflows)', run: () => app.menu('tools:workflows'), tab: 'lineage', section: 'Lineage' },
-        { name: 'View > Studio Views > Lineage & History', run: () => choose(app, 'View', ['Studio Views'], 'Lineage & History'), tab: 'lineage', section: 'Lineage' },
+        { name: 'View > Studio Views > History', run: () => choose(app, 'View', ['Studio Views'], 'History'), tab: 'lineage', section: 'Lineage' },
         { name: 'Tools > Pipelines > Lineage Manager', run: () => choose(app, 'Tools', ['Pipelines'], 'Lineage Manager'), tab: 'lineage', section: 'Lineage' },
       ];
       for (const route of routes) {
@@ -515,7 +518,7 @@ describe('the studio drawn on its own (AC6)', () => {
         await openSubTab(app, 'lineage', probe);
         noSections('Lineage');
         const colors = once(probe, 'Show History Colors', historyColors).closest('label')!;
-        expect(headerOf(colors), 'Show History Colors sits in the history tree\'s header').toBe('Construct History Tree & History Colors (⌘8)');
+        expect(headerOf(colors), 'Show History Colors sits in the history tree\'s header').toBe('Construct History Tree & History Colors');
         const strain = once(probe, 'the transformation strain', (r) => selectsOffering(r, STRAINS)).closest('label')!;
         expect(labelText(strain).startsWith('Bacterial Transformation Strain'), 'the strain is labelled').toBe(true);
         expect(cardOf(strain), 'the strain sits in the info panel').toBe('Document Info Panel, Enhanced Alerts & Auto-Annotation');

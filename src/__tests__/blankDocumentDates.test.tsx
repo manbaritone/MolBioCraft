@@ -177,7 +177,7 @@ describe('BG-01M7N68F AC1: the history studio says the Info tab\'s Created / Mod
     try {
       for (const [doc, expected] of cases) {
         await app.restoreSession({ documents: [doc], activeDocId: doc.id, viewerTab: 'history-hybrid' });
-        const subTab = app.all('button[role="tab"]').filter((b) => (b.textContent ?? '') === 'History Tree, Alerts & Info (⌘8)');
+        const subTab = app.all('button[role="tab"]').filter((b) => (b.textContent ?? '') === 'History Tree, Alerts & Info');
         expect(subTab.length, doc.id).toBe(1);
         await app.click(subTab[0]);
         const rows = app.all('[aria-label="Document Lineage and Properties"] tr')

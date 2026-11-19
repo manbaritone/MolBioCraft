@@ -6,7 +6,8 @@
  * with Preferences opened by its own command and the Keyboard tab chosen:
  *
  * - AC2: the rows are the menus' own paths and labels, in the host's format (⌘S on macOS, Ctrl+S on
- *   Linux), not the old hand-kept table's "Map View" and "Save GenBank".
+ *   Linux), not the old hand-kept table's "Map View" and "Save GenBank". The keys are US-01M6Q1CF's
+ *   remap (D0015, D0244): ⇧⌘E Export GenBank, ⌘S Save Session, ⌥⌘1 Split.
  * - AC3: a combination an explicit key handler consumes before the menu dispatcher sees it (App.tsx's
  *   primaryShortcutHandlerRef and workspaceShortcutHandlerRef) is listed under the menu item whose
  *   command the handler runs. Each is checked by driving both, in two fresh launches from the same
@@ -55,32 +56,32 @@ async function closePreferences(app: AppHarness) {
 
 describe('US-01M6P2G2 AC2: the Keyboard tab lists the menus\' own shortcuts', () => {
   const expected = (os: 'macos' | 'linux') => [
-    ['File > Export Sequences > Export GenBank', formatPlatformShortcut('S', os)],
+    ['File > Export Sequences > Export GenBank', formatPlatformShortcut('E', os, { shift: true })],
     ['File > Export Sequences > Export FASTA', formatPlatformShortcut('S', os, { shift: true })],
-    ['File > Save Session > Save Session', formatPlatformShortcut('S', os, { alt: true })],
-    ['View > Map Layout > Split Map & Sequence', formatPlatformShortcut('1', os)],
+    ['File > Save Session > Save Session', formatPlatformShortcut('S', os)],
+    ['View > Map Layout > Split Map & Sequence', formatPlatformShortcut('1', os, { alt: true })],
   ];
 
-  it('US-01M6P2G2 AC2 on a macOS host the rows read ⌘S, ⇧⌘S, ⌥⌘S and ⌘1, and no row reads Map View or Save GenBank', async () => {
+  it('US-01M6P2G2 AC2 on a macOS host the rows read ⇧⌘E, ⇧⌘S, ⌘S and ⌥⌘1, and no row reads Map View or Save GenBank', async () => {
     await withApp(macHost(), async (app) => {
       const rows = await keyboardTabRows(app);
       const want = expected('macos');
-      expect(want.map((w) => w[1])).toEqual(['⌘S', '⇧⌘S', '⌥⌘S', '⌘1']);
+      expect(want.map((w) => w[1])).toEqual(['⇧⌘E', '⇧⌘S', '⌘S', '⌥⌘1']);
       for (const [path, label] of want) expect(rows.filter((r) => r[0] === path), path).toEqual([[path, label]]);
       expect(rows.filter((r) => /Map View|Save GenBank/.test(r[0]))).toEqual([]);
       // The read-only field beside the table shows the selected row's shortcut; a click selects a row.
       const split = app.all('tr.mbc-menu-shortcut-row').find((r) => words(r.querySelectorAll('td')[0].textContent) === want[3][0])!;
       await app.click(split);
       const field = app.all('[aria-labelledby="prefs-tab-keyboard"] input[readonly]');
-      expect(field.map((f) => (f as unknown as { value: string }).value)).toEqual(['⌘1']);
+      expect(field.map((f) => (f as unknown as { value: string }).value)).toEqual(['⌥⌘1']);
     });
   });
 
-  it('US-01M6P2G2 AC2 on the default Linux host the same rows read Ctrl+S, Ctrl+Shift+S, Ctrl+Alt+S and Ctrl+1', async () => {
+  it('US-01M6P2G2 AC2 on the default Linux host the same rows read Ctrl+Shift+E, Ctrl+Shift+S, Ctrl+S and Ctrl+Alt+1', async () => {
     await withApp({}, async (app) => {
       const rows = await keyboardTabRows(app);
       const want = expected('linux');
-      expect(want.map((w) => w[1])).toEqual(['Ctrl+S', 'Ctrl+Shift+S', 'Ctrl+Alt+S', 'Ctrl+1']);
+      expect(want.map((w) => w[1])).toEqual(['Ctrl+Shift+E', 'Ctrl+Shift+S', 'Ctrl+S', 'Ctrl+Alt+1']);
       for (const [path, label] of want) expect(rows.filter((r) => r[0] === path), path).toEqual([[path, label]]);
       expect(rows.filter((r) => /Map View|Save GenBank/.test(r[0]))).toEqual([]);
     });
@@ -117,6 +118,7 @@ const EXPLICIT_HANDLER_COMBOS: Combo[] = [
   { key: 'i', mods: { shift: true } },
   { key: 'i', mods: { alt: true } },
   { key: 'o', mods: { shift: true } },
+  // App.tsx's Save Session second-key listener (D0017 (3), D0244), apart from both handlers but checked the same way.
   { key: 's', mods: { alt: true } },
   { key: 's', mods: { alt: true, shift: true } },
   { key: 'f', mods: { alt: true } },
@@ -128,8 +130,11 @@ const EXPLICIT_HANDLER_COMBOS: Combo[] = [
   { key: 'q', mods: {} },
 ];
 
-/** Ctrl+Y is the primary handler's second Redo key; no menu item shows it, so its row is Redo's (Ctrl+Shift+Z). */
-const ROW_OF: Record<string, string> = { 'Ctrl+Y': 'Ctrl+Shift+Z' };
+/**
+ * Ctrl+Y is the primary handler's second Redo key; no menu item shows it, so its row is Redo's (Ctrl+Shift+Z).
+ * Ctrl+Alt+S is Save Session's second key for one release (D0017 (3), D0244), shown in no menu: its row is Ctrl+S.
+ */
+const ROW_OF: Record<string, string> = { 'Ctrl+Y': 'Ctrl+Shift+Z', 'Ctrl+Alt+S': 'Ctrl+S' };
 
 const labelOf = (c: Combo) => formatPlatformShortcut(c.key.toUpperCase(), 'linux', c.mods);
 

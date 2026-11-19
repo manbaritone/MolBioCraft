@@ -216,12 +216,13 @@ describe('US-01M6P2G2 AC1: Keyboard rows come from the menu trees the shortcuts 
 
 /**
  * The first definition of each combination App.tsx binds twice, in menu-bar order (Linux host), as the
- * walk the dispatcher uses finds it. The later definitions (Enzymes Table for ⌘3, In-Silico PCR for
+ * walk the dispatcher uses finds it. ⌘3 is bound once since US-01M6Q1CF (D0015): Flatfile's studio key, the
+ * Studio Views and Enzymes Table digits gone. The later definitions (In-Silico PCR for
  * ⌘D, a second Site Mutagenesis for ⌘J, File's direct Import Files and Import From Clipboard for ⌘I and
  * ⇧⌘I, and File's own Quit MolBioCraft for ⌘Q) are not listed.
  */
 const FIRST_DEFINITIONS: Record<string, string[]> = {
-  'Ctrl+3': ['View > Studio Views > Enzymes View'],
+  'Ctrl+3': ['View > Studios > Flatfile'],
   'Ctrl+D': ['Cloning > PCR Cloning > PCR Amplification'],
   'Ctrl+J': ['Cloning > Mutagenesis > Site Mutagenesis'],
   'Ctrl+I': ['File > New Session > Starter & Import > Import Files'],

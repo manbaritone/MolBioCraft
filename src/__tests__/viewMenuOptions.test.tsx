@@ -14,7 +14,7 @@
  *   CIRCULAR_ONLY_HINT in the menu, the native state, the header and the shortcuts' status; Fit and
  *   Reset View are off only where the focused pane draws no sequence map, with their two sentences.
  * - AC3: View › Map Layout's circle items are off, with circularMapUnavailableReason's sentence, for a
- *   document that cannot draw a circle; ⌘1 / ⌘2 leave the stored layout and the autosave alone.
+ *   document that cannot draw a circle; ⌥⌘1 / ⌥⌘2 (US-01M6Q1CF's map-layout keys) leave the stored layout and the autosave alone.
  */
 
 import React from 'react';
@@ -573,7 +573,7 @@ describe("US-01M7DVEN AC3: Map Layout's circle items are off, with the sentence,
     });
   });
 
-  it('US-01M7DVEN AC3 ⌘1 and ⌘2 leave the stored layout and the autosave unchanged for such a document and say why', async () => {
+  it('US-01M7DVEN AC3 ⌥⌘1 and ⌥⌘2 leave the stored layout and the autosave unchanged for such a document and say why', async () => {
     const storage = memoryStorage();
     await withApp(async (app) => {
       for (const d of [LIN, RNA, PROT, CONTIG]) {
@@ -584,22 +584,22 @@ describe("US-01M7DVEN AC3: Map Layout's circle items are off, with the sentence,
         const before = autosaved(storage);
         expect(before.workspace.mapLayoutMode).toBe('linear');
         for (const [key, label] of [['1', 'Split Map & Sequence'], ['2', 'Circular Map']] as const) {
-          await app.press(key, { mod: true });
-          expect(statusSegments(app), `${d.name}: ⌘${key} says why`).toContain(`${label}: ${sentence}`);
+          await app.press(key, { mod: true, alt: true });
+          expect(statusSegments(app), `${d.name}: ⌥⌘${key} says why`).toContain(`${label}: ${sentence}`);
           await autosaveRunsOut(app);
           const after = autosaved(storage);
-          expect(after.workspace.mapLayoutMode, `${d.name}: ⌘${key} leaves the stored layout`).toBe('linear');
-          expect(after.raw, `${d.name}: ⌘${key} leaves the autosave`).toBe(before.raw);
+          expect(after.workspace.mapLayoutMode, `${d.name}: ⌥⌘${key} leaves the stored layout`).toBe('linear');
+          expect(after.raw, `${d.name}: ⌥⌘${key} leaves the autosave`).toBe(before.raw);
         }
       }
       // A circular document: the shortcuts change the layout, as before.
       await restore(app, [CA], CA.id, 'linear');
-      await app.press('2', { mod: true });
+      await app.press('2', { mod: true, alt: true });
       await autosaveRunsOut(app);
-      expect(autosaved(storage).workspace.mapLayoutMode, 'circular DNA: ⌘2').toBe('circular');
-      await app.press('1', { mod: true });
+      expect(autosaved(storage).workspace.mapLayoutMode, 'circular DNA: ⌥⌘2').toBe('circular');
+      await app.press('1', { mod: true, alt: true });
       await autosaveRunsOut(app);
-      expect(autosaved(storage).workspace.mapLayoutMode, 'circular DNA: ⌘1').toBe('split');
+      expect(autosaved(storage).workspace.mapLayoutMode, 'circular DNA: ⌥⌘1').toBe('split');
     }, { storage });
   });
 

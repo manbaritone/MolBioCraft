@@ -345,7 +345,7 @@ describe('AC2: no sub-view repeats a document tab', () => {
     const isHistoryStudio = (p: Record<string, unknown>) => 'allDocuments' in p && 'initialSubTab' in p && 'doc' in p;
     /** Opens the History studio's lineage graph (a restored session opens the studio on its first module). */
     const openLineage = (type: unknown, p: Record<string, unknown>) => {
-      if (type === 'button' && p.role === 'tab' && p['aria-selected'] === false && p.children === 'History Tree, Alerts & Info (⌘8)') (p.onClick as () => void)();
+      if (type === 'button' && p.role === 'tab' && p['aria-selected'] === false && p.children === 'History Tree, Alerts & Info') (p.onClick as () => void)();
     };
 
     // The child's History tab lists its parent and its descendant, each with a Go to; Go to on the

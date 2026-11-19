@@ -87,8 +87,13 @@ export const RESERVED_SHORTCUTS = new Set([
   'Mod+6',
   'Mod+7',
   'Mod+8',
+  'Mod+9',
   'Mod+=',
   'Mod+A',
+  // US-01M6Q1CF: View › Map Layout's Split, Circular and Linear.
+  'Mod+Alt+1',
+  'Mod+Alt+2',
+  'Mod+Alt+3',
   'Mod+Alt+A',
   'Mod+Alt+F',
   'Mod+Alt+I',
@@ -204,6 +209,21 @@ export function setOperationShortcut(op: OperationId, shortcut: string | null): 
   }
   write(store);
   return null;
+}
+
+/**
+ * Releases every saved operation shortcut the workbench now uses itself (a key that became an app key,
+ * such as ⌘9 or ⌥⌘1 for US-01M6Q1CF), saving the store without them, and returns what it released.
+ */
+export function releaseReservedOperationShortcuts(): { op: OperationId; shortcut: string }[] {
+  const store = readOperationShortcuts();
+  const released = (Object.entries(store.shortcuts) as [OperationId, string][])
+    .filter(([, shortcut]) => RESERVED_SHORTCUTS.has(shortcut))
+    .map(([op, shortcut]) => ({ op, shortcut }));
+  if (released.length === 0) return [];
+  for (const { op } of released) delete store.shortcuts[op];
+  write(store);
+  return released;
 }
 
 export function setOperationInToolbar(op: OperationId, shown: boolean): void {

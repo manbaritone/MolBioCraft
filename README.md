@@ -172,9 +172,9 @@ The builds are not yet signed by Apple or Microsoft (the macOS app carries only 
 | **File > New Session > Sequences & Vectors > New Sequence** | `⌘N` | `Ctrl+N` |
 | **File > New Session > Blank Session** | `⌥⌘N` | `Ctrl+Alt+N` |
 | **File > Open Session > Open Session** | `⌘O` | `Ctrl+O` |
-| **File > Save Session > Save Session** | `⌥⌘S` | `Ctrl+Alt+S` |
+| **File > Save Session > Save Session** | `⌘S` | `Ctrl+S` |
 | **File > Save Session > Save Session As** | `⌥⇧⌘S` | `Ctrl+Alt+Shift+S` |
-| **File > Export Sequences > Export GenBank** | `⌘S` | `Ctrl+S` |
+| **File > Export Sequences > Export GenBank** | `⇧⌘E` | `Ctrl+Shift+E` |
 | **File > Export Sequences > Export FASTA** | `⇧⌘S` | `Ctrl+Shift+S` |
 | **File > New Session > Starter & Import > Import Files** | `⌘I` | `Ctrl+I` |
 | **File > New Session > Starter & Import > From Clipboard** | `⇧⌘I` | `Ctrl+Shift+I` |
@@ -182,12 +182,18 @@ The builds are not yet signed by Apple or Microsoft (the macOS app carries only 
 | **Edit > Redo** | `⇧⌘Z` | `Ctrl+Shift+Z` |
 | **Sequence > Strand > Reverse Complement** | `⇧⌘R` | `Ctrl+Shift+R` |
 | **View > Panels > Inspector** | `⌥⌘I` | `Ctrl+Alt+I` |
-| **View > Map Layout > Split Map & Sequence** | `⌘1` | `Ctrl+1` |
-| **View > Map Layout > Circular Map** | `⌘2` | `Ctrl+2` |
-| **View > Map Layout > Linear Sequence** | `⌘4` | `Ctrl+4` |
-| **View > Studio Views > Enzymes View** | `⌘3` | `Ctrl+3` |
-| **View > Studio Views > Annotations Table** | `⌘5` | `Ctrl+5` |
-| **View > Studio Views > Flatfile View** | `⌘6` | `Ctrl+6` |
+| **View > Studios > Sequence Map** | `⌘1` | `Ctrl+1` |
+| **View > Studios > Annotations** | `⌘2` | `Ctrl+2` |
+| **View > Studios > Flatfile** | `⌘3` | `Ctrl+3` |
+| **View > Studios > Cloning & Gel** | `⌘4` | `Ctrl+4` |
+| **View > Studios > Vectors & Architect** | `⌘5` | `Ctrl+5` |
+| **View > Studios > Primers & CRISPR** | `⌘6` | `Ctrl+6` |
+| **View > Studios > Alignment** | `⌘7` | `Ctrl+7` |
+| **View > Studios > Phylogenetics** | `⌘8` | `Ctrl+8` |
+| **View > Studios > Sanger & Contig** | `⌘9` | `Ctrl+9` |
+| **View > Map Layout > Split Map & Sequence** | `⌥⌘1` | `Ctrl+Alt+1` |
+| **View > Map Layout > Circular Map** | `⌥⌘2` | `Ctrl+Alt+2` |
+| **View > Map Layout > Linear Sequence** | `⌥⌘3` | `Ctrl+Alt+3` |
 | **Tools > BLAST & Vectors > BLAST Search** | `⇧⌘B` | `Ctrl+Shift+B` |
 | **Tools > Phylogenetics > Tree Reconstruction > Maximum Likelihood** | `⌥⌘T` | `Ctrl+Alt+T` |
 | **MolBioCraft > Settings > Preferences** | `⌘,` | `Ctrl+,` |

@@ -58,6 +58,11 @@ export interface CommandContext {
   /** Whether the circular map is collapsed in Split; left out, it is not. */
   circleCollapsed?: boolean;
   /**
+   * Which studios apply to the active document, by studio id (the studio registry's studioAvailability,
+   * US-01M6Q1CF). The native View › Studios items follow it; a caller that does not know leaves it out.
+   */
+  studiosApplying?: Readonly<Record<string, boolean>>;
+  /**
    * The split view's second pane, given only while it is the focused pane (US-01M7DV10): whether it
    * shows a circular map, and whether it shows a sequence map at all (US-01M7DVEN). The map commands
    * (`zoom-map`, `rotate-map`, `fit-view`) then answer for that pane; left out, the main view is
@@ -466,6 +471,10 @@ export function buildNativeMenuState(ctx: CommandContext): NativeMenuStatePayloa
   // every session command already, so that state carries the command rules alone.
   if (ctx.sessionActive && ctx.inspectorAvailable !== undefined) {
     overrides['view:toggle-inspector'] = ctx.inspectorAvailable;
+  }
+  // US-01M6Q1CF AC5: a studio the active document does not fit is greyed on the native View › Studios.
+  if (ctx.sessionActive && ctx.studiosApplying) {
+    for (const [id, applies] of Object.entries(ctx.studiosApplying)) overrides[`view:studio-${id}`] = applies;
   }
   return {
     sessionActive: ctx.sessionActive,

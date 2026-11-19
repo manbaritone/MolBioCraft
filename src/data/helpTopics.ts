@@ -183,10 +183,20 @@ export const VIEW_HELP: Record<string, HelpTopic> = Object.fromEntries(
 );
 
 
+/** Topics that belong to no options window or view. */
+export const GENERAL_HELP: Record<string, HelpTopic> = {
+  // US-01M6Q1CF (D0015, D0017).
+  'keyboard-shortcuts': {
+    title: 'Keyboard Shortcuts', where: 'Help → Keyboard Shortcuts (Preferences › Keyboard)',
+    summary: 'This release changed four shortcuts: ⌘1 to ⌘9 (Ctrl+1 to Ctrl+9) open the first nine studios in the order the rail lists them; ⌥⌘1 to ⌥⌘3 (Ctrl+Alt+1 to Ctrl+Alt+3) switch the map layout to Split, Circular or Linear; ⌘S (Ctrl+S) is Save Session; ⇧⌘E (Ctrl+Shift+E) is Export GenBank.',
+    options: opt('⌥⌘S (Ctrl+Alt+S) still saves the session until the next release.', 'Protein & 3D and Pipelines & NGS have no number key: open them from the rail, View › Studios or ⌘K.', 'Preferences › Keyboard lists every shortcut the menus bind.'),
+  },
+};
+
 /** Topics matching a query (title, summary, method, options). */
 export function searchHelp(query: string): { id: string; topic: HelpTopic }[] {
   const q = query.trim().toLowerCase();
-  const all = [...Object.entries(OPERATION_HELP), ...Object.entries(VIEW_HELP)].map(([id, topic]) => ({ id, topic }));
+  const all = [...Object.entries(OPERATION_HELP), ...Object.entries(VIEW_HELP), ...Object.entries(GENERAL_HELP)].map(([id, topic]) => ({ id, topic }));
   if (!q) return all;
   return all.filter(({ topic }) => [topic.title, topic.summary, topic.method ?? '', ...(topic.options ?? []), topic.where ?? ''].join(' ').toLowerCase().includes(q));
 }

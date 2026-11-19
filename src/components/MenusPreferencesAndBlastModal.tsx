@@ -23,7 +23,7 @@ import { loadLastUsed, saveLastUsed } from '../core/optionProfiles';
 import { OptionProfilesMenu } from './OperationDialog';
 import { OperationShortcutsEditor } from './OperationShortcutsEditor';
 import { menuShortcutRows, type ShortcutMenuNode } from '../core/menuShortcuts';
-import { detectHostOS, type SupportedOS } from '../platform/osPlatform';
+import { detectHostOS, formatPlatformShortcut, type SupportedOS } from '../platform/osPlatform';
 import {
   MENU_FUNCTION_INFO_EVENT,
   readStoredShowMenuFunctionInfo,
@@ -2288,6 +2288,19 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
           {/* 11. KEYBOARD */}
           {activeTab === 'Keyboard' && (
             <div className="prefs-section-stack">
+              {(() => {
+                // US-01M6Q1CF (D0015, D0017): the keys this release moved, in the display OS's form.
+                const os = shortcutOs ?? detectHostOS();
+                const f = (key: string, mods?: { alt?: boolean; shift?: boolean }) => formatPlatformShortcut(key, os, mods);
+                return (
+                  <p className="mbc-keyboard-remap-note" role="note" style={{ margin: 0, fontSize: 12 }}>
+                    These keys changed in this release: {f('1')} to {f('9')} open the studios in the order the rail
+                    lists them, {f('1', { alt: true })} to {f('3', { alt: true })} switch the map layout (Split,
+                    Circular, Linear), {f('S')} saves the session and {f('E', { shift: true })} exports GenBank.{' '}
+                    {f('S', { alt: true })} still saves the session until the next release.
+                  </p>
+                );
+              })()}
               <div className="prefs-row" style={{ justifyContent: 'space-between' }}>
                 <input
                   type="text"

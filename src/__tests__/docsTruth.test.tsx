@@ -135,9 +135,9 @@ describe('US-01M6P23W AC1: README\'s Keyboard Shortcuts and PRODUCT.md\'s shortc
   it('US-01M6P23W AC1 every README Keyboard Shortcuts row is a Keyboard-tab row on a macOS and a Linux host', async () => {
     const mac = await rowsOn('macos');
     const linux = await rowsOn('linux');
-    // The hosts really differ: the same Export GenBank row reads ⌘S on one and Ctrl+S on the other.
-    expect(mac.find((r) => r[0] === 'File > Export Sequences > Export GenBank')?.[1]).toBe('⌘S');
-    expect(linux.find((r) => r[0] === 'File > Export Sequences > Export GenBank')?.[1]).toBe('Ctrl+S');
+    // The hosts really differ: the same Export GenBank row reads ⇧⌘E on one and Ctrl+Shift+E on the other (US-01M6Q1CF, D0244).
+    expect(mac.find((r) => r[0] === 'File > Export Sequences > Export GenBank')?.[1]).toBe('⇧⌘E');
+    expect(linux.find((r) => r[0] === 'File > Export Sequences > Export GenBank')?.[1]).toBe('Ctrl+Shift+E');
     expect(readmeShortcutRows(README).length).toBeGreaterThanOrEqual(10);
     expect(shortcutTableMismatches(README, mac, linux)).toEqual([]);
   });

@@ -1431,7 +1431,9 @@ const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
     //   so the homopolymer guard picks differently).
     // Delta (a) moved nothing here: no codon of any sample CDS the pipeline reads resolves to B, Z or
     // J, and the four sample DNA records with ambiguity codes report as before.
-    ("multihost-protein-mrna", "1a560bade11b770f"),
+    // US-01M6Q1CF AC9 (D0245) then moved it, and only it, from 1a560bade11b770f: the folding step's
+    // target_studio_label lost "(⌘7)", since ⌘7 now opens a studio; no verdict or number moved.
+    ("multihost-protein-mrna", "5e521b331e7470ff"),
     ("viral-twist-onboarding", "b355cabe03450c44"),
 ];
 

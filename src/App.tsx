@@ -164,6 +164,7 @@ import {
   OPERATION_SHORTCUTS_EVENT,
   operationForShortcut,
   readOperationShortcuts,
+  releaseReservedOperationShortcuts,
   shortcutFromEvent,
   type OperationId,
 } from './core/operationShortcuts';
@@ -445,6 +446,7 @@ import { assignUniqueDocumentIds } from './core/documentIds';
 import {
   collectMenuShortcutBindings,
   findMenuShortcut,
+  normalisedEventKey,
   MenuShortcutBinding,
   shortcutLabelToAriaKeyshortcuts,
   ShortcutMenuNode,
@@ -1114,7 +1116,9 @@ const FLATFILE_FORMAT_NAMES = { genbank: 'GenBank', fasta: 'FASTA', embl: 'EMBL-
  * refuses with the rule's reason (US-01M7DVEN): View › Zoom's Zoom In, Zoom Out and Actual Size, and
  * View › Map Layout's Split Map & Sequence and Circular Map.
  */
-const RULE_REFUSED_SHORTCUT_IDS: ReadonlySet<string> = new Set(['view-zoom-in', 'view-zoom-out', 'view-zoom-100', 'view-lay-split', 'view-lay-circ']);
+const RULE_REFUSED_SHORTCUT_IDS: ReadonlySet<string> = new Set(['view-zoom-in', 'view-zoom-out', 'view-zoom-100', 'view-lay-split', 'view-lay-circ',
+  // US-01M6Q1CF: a studio key on a document the studio does not fit says the registry's reason (AC5).
+  ...STUDIOS.map((e) => `view-studio-${e.id}`)]);
 
 export const App: React.FC = () => {
   const [sessionActive, setSessionActive] = useState<boolean>(false);
@@ -1234,6 +1238,13 @@ export const App: React.FC = () => {
       : { kind: 'primers' as const };
   // User-assigned operation shortcuts and toolbar buttons (set from each options window).
   const [opShortcuts, setOpShortcuts] = useState(() => readOperationShortcuts());
+  // US-01M6Q1CF AC10: a saved operation shortcut on a key the app now uses (⌘9, ⌥⌘1-⌥⌘3) is released, and said.
+  useEffect(() => {
+    const released = releaseReservedOperationShortcuts();
+    if (released.length === 0) return;
+    setOpShortcuts(readOperationShortcuts());
+    setStatusBanner(`${released.map((r) => `${OPERATION_LABELS[r.op]} (${formatShortcut(r.shortcut, IS_MAC_PLATFORM)})`).join(', ')}: MolBioCraft now uses that shortcut, so the operation's was released. Assign another in its options window.`);
+  }, []);
   useEffect(() => {
     const sync = () => setOpShortcuts(readOperationShortcuts());
     window.addEventListener(OPERATION_SHORTCUTS_EVENT, sync);
@@ -3732,6 +3743,7 @@ export const App: React.FC = () => {
       ? { circularMapShown: splitPaneCircleShown, sequenceMapShown: splitPaneShowsSequenceMap(splitDoc, splitView) }
       : undefined,
     checkedRecordCount: selectedInFilteredDocs.length,
+    studiosApplying: Object.fromEntries(STUDIOS.map((e) => [e.id, studioAvailability(e, doc).ok])),
   });
   const isCommandEnabled = (id: CommandId | WorkbenchCommandId | ViewCommandId, doc?: SequenceDocument): boolean =>
     commandAvailability(id, buildCommandContext(doc)).enabled;
@@ -7687,6 +7699,19 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         case 'view:toggle-inspector':
           requireActiveSession(() => handleToggleInspector());
           break;
+        case 'view:studio-sequence-map':
+        case 'view:studio-annotations':
+        case 'view:studio-flatfile':
+        case 'view:studio-cloning-gel':
+        case 'view:studio-vectors':
+        case 'view:studio-primers-crispr':
+        case 'view:studio-alignment':
+        case 'view:studio-phylogenetics':
+        case 'view:studio-sanger-contig':
+        case 'view:studio-protein-3d':
+        case 'view:studio-pipelines-ngs':
+          requireActiveSession(() => openStudioByKey(STUDIOS.find((e) => `view:studio-${e.id}` === actionId)!));
+          break;
         case 'view:layout-split':
           requireActiveSession(() => chooseMapLayout('split'));
           break;
@@ -8572,7 +8597,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
     });
   }, []);
 
-  // Global keyboard shortcuts for Open Workbench (.mbc) [⌘O / Ctrl+O], Save Workbench (.mbc) [⌥⌘S / Ctrl+Alt+S],
+  // Global keyboard shortcuts for Open Workbench (.mbc) [⌘O / Ctrl+O], Save Workbench As (.mbc) [⌥⇧⌘S / Ctrl+Alt+Shift+S],
   // Expand Document View [⇧⌘O], Filter Current Folder [⌥⌘F], and Search Tools or Files [⇧⌘F]
   const workspaceShortcutHandlerRef = useRef<(ev: KeyboardEvent) => void>(() => {});
   workspaceShortcutHandlerRef.current = (ev: KeyboardEvent) => {
@@ -8606,9 +8631,9 @@ requireActiveSession(() => handleCopySequenceToClipboard());
     } else if (key === 'o' && ev.shiftKey && !ev.altKey) {
       ev.preventDefault();
       requireActiveSession(() => handleToggleExpandDocumentView());
-    } else if (key === 's' && ev.altKey) {
+    } else if (key === 's' && ev.altKey && ev.shiftKey) {
       ev.preventDefault();
-      requireActiveSession(() => handleSaveMbcWorkbench(ev.shiftKey));
+      requireActiveSession(() => handleSaveMbcWorkbench(true));
     } else if (key === 'f' && ev.altKey && !ev.shiftKey) {
       ev.preventDefault();
       requireActiveSession(() => handleFocusFolderFilter());
@@ -8629,6 +8654,26 @@ requireActiveSession(() => handleCopySequenceToClipboard());
       handleRequestAppQuit();
     }
   };
+
+  // D0017 (3), D0244: ⌥⌘S (Ctrl+Alt+S) is a second key for Save Session, shown in no menu, for one
+  // release (⌘S is the menus' key, US-01M6Q1CF). It is listened for here, apart from
+  // workspaceShortcutHandlerRef, so it works with the native macOS menu bar as well as the in-window one.
+  const saveSessionSecondKeyRef = useRef<(ev: KeyboardEvent) => void>(() => {});
+  saveSessionSecondKeyRef.current = (ev: KeyboardEvent) => {
+    const primary = hostOs === 'macos' ? ev.metaKey : ev.ctrlKey;
+    if (!primary || !ev.altKey || ev.shiftKey || ev.defaultPrevented || ev.repeat) return;
+    if (normalisedEventKey(ev) !== 'S') return;
+    const target = ev.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) return;
+    if (typeof document !== 'undefined' && document.querySelector('dialog[open], .mbc-modal-backdrop')) return;
+    ev.preventDefault();
+    requireActiveSession(() => handleSaveMbcWorkbench(false));
+  };
+  useEffect(() => {
+    const onKeyDown = (ev: KeyboardEvent) => saveSessionSecondKeyRef.current(ev);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   useEffect(() => {
     if (useNativeMacMenuBar) return;
@@ -8670,6 +8715,24 @@ requireActiveSession(() => handleCopySequenceToClipboard());
     if (entry.id === 'history') openHybridSubTab(activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'enzymes-view' : 'lineage');
     else if (entry.opens.tab === 'genomics-ngs' && entry.opens.view) openGenomicsSuite(entry.opens.view as GenomicsSuiteSubTab);
     else setViewerTab(entry.opens.tab);
+  };
+  /**
+   * A studio key (⌘1-⌘9, View › Studios, the native view:studio-<id>; US-01M6Q1CF): with a session it
+   * opens the studio as the rail does, or, when the studio does not fit the record, leaves the view
+   * where it is and says the registry's reason; without one it starts the studio's task session as ⌘K does.
+   */
+  const openStudioByKey = (entry: StudioEntry) => {
+    if (!sessionActive) {
+      studioCommandItem(entry).run();
+      return;
+    }
+    const availability = studioAvailability(entry, activeDoc);
+    if (!availability.ok) {
+      setStatusBanner(availability.reason);
+      return;
+    }
+    setHomeViewActive(false);
+    openStudioFromRail(entry);
   };
   /** The inspector's pane title, which its button and resizer name too: its studio's registry name (D0237, D0239). */
   const inspectorTitle = `${viewerStudio.name} Controls`;
@@ -9813,7 +9876,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
             kind: 'command',
             id: 'file-save-mbc',
             label: 'Save Session',
-            shortcut: sc('S', { alt: true }),
+            shortcut: sc('S'),
             disabled: !sessionActive,
             onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(false)),
           },
@@ -9958,7 +10021,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
             kind: 'command',
             id: 'file-exp-gb',
             label: 'Export GenBank',
-            shortcut: sc('S'),
+            shortcut: sc('E', { shift: true }),
             disabled: !isCommandEnabled('export-active-document'),
             onSelect: () =>
               requireActiveSession(() =>
@@ -10418,6 +10481,25 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
               ],
       },
       {
+        // US-01M6Q1CF (D0015): the studios in rail order, from the registry, with its digits on the first nine.
+        kind: 'submenu',
+        id: 'view-studios-sub',
+        label: 'Studios',
+        minWidth: 220,
+        children: STUDIOS.map((entry): MenuNode => {
+          const availability = sessionActive ? studioAvailability(entry, activeDoc) : ({ ok: true } as const);
+          return {
+            kind: 'command',
+            id: `view-studio-${entry.id}`,
+            label: entry.name,
+            shortcut: entry.digit ? sc(String(entry.digit)) : undefined,
+            disabled: !availability.ok,
+            description: availability.ok ? undefined : availability.reason,
+            onSelect: () => openStudioByKey(entry),
+          };
+        }),
+      },
+      {
         kind: 'submenu',
         id: 'view-layout-sub',
         label: 'Map Layout',
@@ -10429,7 +10511,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'view-lay-split',
             label: 'Split Map & Sequence',
             checked: sessionActive && effectiveMapLayoutMode === 'split',
-            shortcut: sc('1'),
+            shortcut: sc('1', { alt: true }),
             disabled: !isCommandEnabled('map-layout-circle'),
             description: commandDisabledReason('map-layout-circle'),
             onToggle: () => requireActiveSession(() => chooseMapLayout('split')),
@@ -10439,7 +10521,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'view-lay-circ',
             label: 'Circular Map',
             checked: sessionActive && effectiveMapLayoutMode === 'circular',
-            shortcut: sc('2'),
+            shortcut: sc('2', { alt: true }),
             disabled: !isCommandEnabled('map-layout-circle'),
             description: commandDisabledReason('map-layout-circle'),
             onToggle: () => requireActiveSession(() => chooseMapLayout('circular')),
@@ -10449,7 +10531,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'view-lay-lin',
             label: 'Linear Sequence',
             checked: sessionActive && effectiveMapLayoutMode === 'linear',
-            shortcut: sc('4'),
+            shortcut: sc('3', { alt: true }),
             onToggle: () => requireActiveSession(() => chooseMapLayout('linear')),
           },
           { kind: 'separator', id: 'view-lay-sep' },
@@ -10564,36 +10646,31 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'view-enz',
             label: 'Enzymes View',
-            shortcut: sc('3'),
             onSelect: () => requireActiveSession(() => openHybridSubTab('enzymes-view')),
           },
           {
             kind: 'command',
             id: 'view-annot',
             label: 'Annotations Table',
-            shortcut: sc('5'),
             onSelect: () => requireActiveSession(() => setViewerTab('annotations-table')),
           },
           {
             kind: 'command',
             id: 'view-text',
             label: 'Flatfile View',
-            shortcut: sc('6'),
             onSelect: () => requireActiveSession(() => setViewerTab('text-view')),
           },
           {
             kind: 'command',
             id: 'view-mfe',
             label: 'Secondary Structure',
-            shortcut: sc('7'),
             onSelect: () =>
               requireActiveSession(() => openHybridSubTab('secondary-structure')),
           },
           {
             kind: 'command',
             id: 'view-lineage',
-            label: 'Lineage & History',
-            shortcut: sc('8'),
+            label: 'History',
             onSelect: () => requireActiveSession(() => openHybridSubTab('lineage')),
           },
         ],
@@ -10687,7 +10764,6 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'enz-table',
             label: 'Enzymes Table',
-            shortcut: sc('3'),
             onSelect: () => requireActiveSession(() => openHybridSubTab('enzymes-view')),
           },
         ],
@@ -12283,7 +12359,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'tb-exp-save-mbc',
             label: 'Save Session',
-            shortcut: sc('S', { alt: true }),
+            shortcut: sc('S'),
             onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(false)),
           },
           {
@@ -12454,7 +12530,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'tb-sess-save-mbc',
             label: 'Save Session',
-            shortcut: sc('S', { alt: true }),
+            shortcut: sc('S'),
             onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(false)),
           },
           {

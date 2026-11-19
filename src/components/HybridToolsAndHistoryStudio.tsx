@@ -934,7 +934,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
             className={`method-tab-btn ${subTab === 'secondary-structure' ? 'active' : ''}`}
             onClick={() => setSubTab('secondary-structure')}
           >
-            Secondary Structure (⌘7)
+            Secondary Structure
           </button>
           <button
             type="button"
@@ -945,7 +945,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
             className={`method-tab-btn ${subTab === 'enzymes-view' ? 'active' : ''}`}
             onClick={() => setSubTab('enzymes-view')}
           >
-            Enzymes View (123 / |||| — ⌘3)
+            Enzymes View (123 / ||||)
           </button>
           <button
             type="button"
@@ -956,7 +956,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
             className={`method-tab-btn ${subTab === 'lineage' ? 'active' : ''}`}
             onClick={() => setSubTab('lineage')}
           >
-            History Tree, Alerts &amp; Info (⌘8)
+            History Tree, Alerts &amp; Info
           </button>
           <button
             type="button"
@@ -1839,7 +1839,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
           <div className="studio-card">
             <div className="studio-card-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <h3>Enzymes View — Restriction Sets &amp; Overhang Cleavage Diagrams (⌘3)</h3>
+                <h3>Enzymes View — Restriction Sets &amp; Overhang Cleavage Diagrams</h3>
                 <div className="cloning-method-tabs" style={{ marginBottom: 0 }}>
                   {(['Enzymes', 'Lineage', 'Info'] as const).map((tabName) => (
                     <button
@@ -2220,7 +2220,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
           )}
           <div className="studio-card">
             <div className="studio-card-header">
-              <h3>Construct History Tree &amp; History Colors (⌘8)</h3>
+              <h3>Construct History Tree &amp; History Colors</h3>
               {!inWorkbench && historyColorsToggle}
             </div>
 
