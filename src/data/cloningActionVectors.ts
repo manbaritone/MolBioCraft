@@ -32,7 +32,8 @@ export const CLONING_ACTION_VECTOR_PRESETS: CloningActionVectorPreset[] =
   invokeRustBioSync<CloningActionVectorPreset[]>('get_cloning_action_vector_presets');
 
 export function buildCloningActionVectorDocument(
-  preset: CloningActionVectorPreset
+  preset: CloningActionVectorPreset,
+  nowIso = new Date().toISOString()
 ): SequenceDocument {
-  return invokeRustBioSync<SequenceDocument>('build_cloning_action_vector_document', { preset });
+  return invokeRustBioSync<SequenceDocument>('build_cloning_action_vector_document', { preset, nowIso });
 }

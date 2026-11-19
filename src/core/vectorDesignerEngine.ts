@@ -62,12 +62,18 @@ export function buildMcsPolylinker(enzymeNames: string[]): string {
   return invokeRustBioSync<string>('build_mcs_polylinker', { enzymeNames });
 }
 
-export function buildCatalogVectorDocument(entry: CatalogVectorEntry): SequenceDocument {
-  return invokeRustBioSync<SequenceDocument>('build_catalog_vector_document', { entry });
+export function buildCatalogVectorDocument(
+  entry: CatalogVectorEntry,
+  nowIso = new Date().toISOString()
+): SequenceDocument {
+  return invokeRustBioSync<SequenceDocument>('build_catalog_vector_document', { entry, nowIso });
 }
 
-export function assembleModularCustomVector(spec: ModularAssemblySpec): ModularAssemblyResult {
-  return invokeRustBioSync<ModularAssemblyResult>('assemble_modular_custom_vector', { spec });
+export function assembleModularCustomVector(
+  spec: ModularAssemblySpec,
+  nowIso = new Date().toISOString()
+): ModularAssemblyResult {
+  return invokeRustBioSync<ModularAssemblyResult>('assemble_modular_custom_vector', { spec, nowIso });
 }
 
 export function auditTwistCustomVectorOnboarding(
@@ -89,7 +95,8 @@ export function simulateTwistClonalGeneInsertion(
   insertionSiteBp: number,
   insertName: string,
   insertSeqRaw: string,
-  framingMode: 'standard-scarless' | 'entr-kozak' | 'igg-variable-inframe' = 'standard-scarless'
+  framingMode: 'standard-scarless' | 'entr-kozak' | 'igg-variable-inframe' = 'standard-scarless',
+  nowIso = new Date().toISOString()
 ): SequenceDocument {
   return invokeRustBioSync<SequenceDocument>('simulate_twist_clonal_insertion', {
     vectorDoc,
@@ -97,6 +104,7 @@ export function simulateTwistClonalGeneInsertion(
     insertName,
     insertSeqRaw,
     framingMode,
+    nowIso,
   });
 }
 

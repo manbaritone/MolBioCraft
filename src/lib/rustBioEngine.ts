@@ -462,21 +462,23 @@ export function computeAgaroseGelPhysicsRust(
 
 export function generateLargeGenomeBenchmarkRust(
   lengthBp = 500_000,
-  organismPreset = 'Escherichia coli K-12'
+  organismPreset = 'Escherichia coli K-12',
+  nowIso = new Date().toISOString()
 ): SequenceDocument {
   return invokeRustBioSync<SequenceDocument>(
     'generate_large_genome_benchmark',
-    { lengthBp, organismPreset }
+    { lengthBp, organismPreset, nowIso }
   );
 }
 
 export function generateLargeProteinBenchmarkRust(
   lengthAa = 10_000,
-  proteinPreset = 'Titin_Ig_Polyprotein'
+  proteinPreset = 'Titin_Ig_Polyprotein',
+  nowIso = new Date().toISOString()
 ): SequenceDocument {
   return invokeRustBioSync<SequenceDocument>(
     'generate_large_protein_benchmark',
-    { lengthAa, proteinPreset }
+    { lengthAa, proteinPreset, nowIso }
   );
 }
 
@@ -1612,12 +1614,14 @@ export interface PoaContigAssemblyReport {
 export function assembleSangerContigPoaRust(
   reads: PoaReadInput[],
   contigName = 'POA_Consensus_Contig',
-  trimLowQuality = true
+  trimLowQuality = true,
+  nowIso = new Date().toISOString()
 ): PoaContigAssemblyReport {
   return invokeRustBioSync<PoaContigAssemblyReport>('assemble_sanger_contig_poa', {
     reads,
     contigName,
     trimLowQuality,
+    nowIso,
   });
 }
 

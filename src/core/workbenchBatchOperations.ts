@@ -1020,12 +1020,13 @@ export function sortDocumentsByColumn(
  */
 export function concatenateSequenceDocuments(
   docs: SequenceDocument[],
-  spacer = ''
+  spacer = '',
+  nowIso = new Date().toISOString()
 ): SequenceDocument {
   if (docs.length === 0) {
     throw new Error('At least one sequence document is required to concatenate.');
   }
-  return invokeRustBioSync<SequenceDocument>('concatenate_documents', { docs, spacer });
+  return invokeRustBioSync<SequenceDocument>('concatenate_documents', { docs, spacer, nowIso });
 }
 
 /**
@@ -1033,7 +1034,8 @@ export function concatenateSequenceDocuments(
  */
 export function generateConsensusDocument(
   docs: SequenceDocument[],
-  thresholdPct = 60
+  thresholdPct = 60,
+  nowIso = new Date().toISOString()
 ): SequenceDocument {
   if (docs.length === 0) {
     throw new Error('Select at least one sequence document to generate a consensus.');
@@ -1041,6 +1043,7 @@ export function generateConsensusDocument(
   return invokeRustBioSync<SequenceDocument>('generate_consensus_document', {
     docs,
     thresholdPct,
+    nowIso,
   });
 }
 
@@ -1050,12 +1053,14 @@ export function generateConsensusDocument(
 export function maskSequenceRegions(
   doc: SequenceDocument,
   mode: 'selection' | 'low-complexity',
-  range?: { start: number; end: number } | null
+  range?: { start: number; end: number } | null,
+  nowIso = new Date().toISOString()
 ): { updated: SequenceDocument; maskedBases: number; maskedRuns: number; annotationsOmitted: boolean } {
   return invokeRustBioSync('mask_sequence_regions', {
     doc,
     mode,
     range: range ?? null,
+    nowIso,
   });
 }
 
@@ -1064,11 +1069,13 @@ export function maskSequenceRegions(
  */
 export function extractAnnotatedFeaturesToDocuments(
   doc: SequenceDocument,
-  filterType: 'CDS' | 'all' = 'CDS'
+  filterType: 'CDS' | 'all' = 'CDS',
+  nowIso = new Date().toISOString()
 ): SequenceDocument[] {
   return invokeRustBioSync<SequenceDocument[]>('extract_annotated_features', {
     doc,
     filterType,
+    nowIso,
   });
 }
 
@@ -1078,23 +1085,25 @@ export function extractAnnotatedFeaturesToDocuments(
 export function convertSelectionToOligoPrimer(
   doc: SequenceDocument,
   range: { start: number; end: number } | null,
-  strand: 1 | -1 = 1
+  strand: 1 | -1 = 1,
+  nowIso = new Date().toISOString()
 ): { updatedDoc: SequenceDocument; primer: PrimerRecord } {
   return invokeRustBioSync('convert_selection_to_oligo', {
     doc,
     range: range ?? null,
     strand,
+    nowIso,
   });
 }
 
 /**
  * Scan a SequenceDocument for Gateway attB / attP / attL / attR recombination sites in Rust.
  */
-export function annotateGatewayAttSites(doc: SequenceDocument): {
+export function annotateGatewayAttSites(doc: SequenceDocument, nowIso = new Date().toISOString()): {
   updatedDoc: SequenceDocument;
   addedCount: number;
 } {
-  return invokeRustBioSync('annotate_gateway_att_sites', { doc });
+  return invokeRustBioSync('annotate_gateway_att_sites', { doc, nowIso });
 }
 
 /**
@@ -1102,11 +1111,13 @@ export function annotateGatewayAttSites(doc: SequenceDocument): {
  */
 export function addAttBSitesToSequence(
   doc: SequenceDocument,
-  range?: { start: number; end: number } | null
+  range?: { start: number; end: number } | null,
+  nowIso = new Date().toISOString()
 ): SequenceDocument {
   return invokeRustBioSync<SequenceDocument>('add_attb_sites', {
     doc,
     range: range ?? null,
+    nowIso,
   });
 }
 
@@ -1115,11 +1126,14 @@ export function addAttBSitesToSequence(
  */
 export function exportLineageBundleGenBank(
   targetDoc: SequenceDocument,
-  allDocs: SequenceDocument[]
+  allDocs: SequenceDocument[],
+  nowIso = new Date().toISOString()
 ): { content: string; includedNames: string[] } {
+  // Every record's LOCUS date is the export date (D0200).
   return invokeRustBioSync('export_lineage_bundle_genbank', {
     targetDoc,
     allDocs,
+    nowIso,
   });
 }
 
@@ -1129,20 +1143,25 @@ export function exportLineageBundleGenBank(
 export function batchModifyAnnotationIntervals(
   doc: SequenceDocument,
   deltaStartBp: number,
-  deltaEndBp: number
+  deltaEndBp: number,
+  nowIso = new Date().toISOString()
 ): SequenceDocument {
   return invokeRustBioSync<SequenceDocument>('batch_modify_annotation_intervals', {
     doc,
     deltaStartBp,
     deltaEndBp,
+    nowIso,
   });
 }
 
 /**
  * Set CDS Translation qualifiers on all CDS features in a SequenceDocument in Rust.
  */
-export function batchSetCdsTranslationProperty(doc: SequenceDocument): SequenceDocument {
-  return invokeRustBioSync<SequenceDocument>('batch_set_cds_translation', { doc });
+export function batchSetCdsTranslationProperty(
+  doc: SequenceDocument,
+  nowIso = new Date().toISOString()
+): SequenceDocument {
+  return invokeRustBioSync<SequenceDocument>('batch_set_cds_translation', { doc, nowIso });
 }
 
 /**

@@ -621,7 +621,8 @@ export function simulateMolecularCloning(
   enzyme5Prime = 'EcoRI',
   enzyme3Prime = 'XhoI',
   goldenGateEnzyme = 'BsaI-HFv2',
-  customEnzymes: readonly RestrictionEnzyme[] = []
+  customEnzymes: readonly RestrictionEnzyme[] = [],
+  nowIso = new Date().toISOString()
 ): CloningOutcome {
   return invokeRustBioSync<CloningOutcome>('simulate_molecular_cloning', {
     vectorDoc,
@@ -631,6 +632,7 @@ export function simulateMolecularCloning(
     enzyme3Prime,
     goldenGateEnzyme,
     customEnzymes: customEnzymes.length > 0 ? customEnzymes : null,
+    nowIso,
   });
 }
 
@@ -1182,7 +1184,8 @@ export function simulateSiteDirectedMutagenesis(
   mode: 'Substitution' | 'Insertion' | 'Deletion',
   positionBp: number,
   replacementBases: string,
-  deletionLengthBp = 3
+  deletionLengthBp = 3,
+  nowIso = new Date().toISOString()
 ): MutagenesisSimulationResult {
   return invokeRustBioSync<MutagenesisSimulationResult>('simulate_mutagenesis', {
     doc,
@@ -1190,6 +1193,7 @@ export function simulateSiteDirectedMutagenesis(
     positionBp,
     replacementBases,
     deletionLengthBp,
+    nowIso,
   });
 }
 
@@ -1197,23 +1201,27 @@ export function annealComplementaryOligos(
   duplexName: string,
   topOligo5to3: string,
   bottomOligo5to3: string,
-  phosphorylated5Prime = true
+  phosphorylated5Prime = true,
+  nowIso = new Date().toISOString()
 ): AnnealedOligoResult {
   return invokeRustBioSync<AnnealedOligoResult>('anneal_oligos', {
     duplexName,
     topOligo5to3,
     bottomOligo5to3,
     phosphorylated5Prime,
+    nowIso,
   });
 }
 
 export function setCircularOrigin(
   doc: SequenceDocument,
-  newOrigin1Based: number
+  newOrigin1Based: number,
+  nowIso = new Date().toISOString()
 ): SequenceDocument {
   return invokeRustBioSync<SequenceDocument>('set_circular_origin', {
     doc,
     newOrigin1Based,
+    nowIso,
   });
 }
 

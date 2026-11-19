@@ -27,7 +27,7 @@ use crate::rebase_catalog::{
     RestrictionPositionLimit, RESTRICTION_POSITIONS_PER_ENZYME,
 };
 use crate::thermodynamics::{
-    anneal_complementary_oligos, compute_dna_and_ligation_calculations, design_pcr_primers,
+    anneal_complementary_oligos_at, compute_dna_and_ligation_calculations, design_pcr_primers,
     predict_secondary_structure,
 };
 use crate::vector_architect::audit_twist_custom_vector_onboarding;
@@ -1394,7 +1394,13 @@ pub fn execute_bio_pipeline_rust(
         };
         let top_oligo = format!("CACC{}", g_prefixed);
         let bottom_oligo = format!("AAAC{}", reverse_complement_iupac(&g_prefixed, false));
-        let duplex = anneal_complementary_oligos("BbsI_gRNA_Duplex", &top_oligo, &bottom_oligo, true);
+        let duplex = anneal_complementary_oligos_at(
+            "BbsI_gRNA_Duplex",
+            &top_oligo,
+            &bottom_oligo,
+            true,
+            completed_at_iso,
+        );
 
         steps.push(BioPipelineStepResult {
             step_number: 3,
@@ -2117,11 +2123,8 @@ pub fn execute_bio_pipeline_rust(
         overall_status,
         readiness_score,
         elapsed_ms: 0.42,
-        completed_at_iso: if completed_at_iso.is_empty() {
-            "2026-10-31T00:00:00Z".into()
-        } else {
-            completed_at_iso.to_string()
-        },
+        // The caller's completion time; blank when it sent none (D0203), never a fixed date.
+        completed_at_iso: completed_at_iso.trim().to_string(),
         steps,
         visual_zones,
         markdown_protocol,

@@ -8,11 +8,17 @@ use molbiocraft_core::{
     clean_alpha_sequence, clean_sequence, reverse_complement, DocumentAlignmentMeta,
     HistoryTreeNode, MoleculeType, PrimerRecord, SequenceDocument, SequenceFeature, Topology,
 };
-use molbiocraft_formats::export_genbank_flatfile;
+use molbiocraft_formats::export_genbank_flatfile_dated;
 use molbiocraft_protein::translate_sequence;
 use serde::{Deserialize, Serialize};
 
 use crate::thermodynamics::calculate_primer_metrics;
+
+/// A history entry's minute, "YYYY-MM-DD HH:MM", from the caller's ISO-8601 `now_iso`; blank when
+/// the caller sent none (D0203: an op without `nowIso` never fabricates a date).
+pub fn history_timestamp(now_iso: &str) -> String {
+    now_iso.trim().chars().take(16).collect::<String>().replace('T', " ")
+}
 
 fn format_thousands(n: usize) -> String {
     let s = n.to_string();
@@ -77,16 +83,20 @@ pub struct GroupByPrefixResult {
 
 /// Concatenate 2 or more `SequenceDocument`s end-to-end (with optional nucleotide/peptide spacer),
 /// accurately shifting all `SequenceFeature` and `PrimerRecord` coordinates and recording lineage.
+///
+/// The new document is created at `now_iso`, and its history entry is that minute (each blank
+/// when `now_iso` is blank, D0203).
 pub fn concatenate_sequence_documents(
     docs: &[SequenceDocument],
     spacer: &str,
+    now_iso: &str,
 ) -> Result<SequenceDocument, String> {
     if docs.is_empty() {
         return Err("At least one sequence document is required to concatenate.".to_string());
     }
     let clean_spacer = clean_alpha_sequence(spacer);
     let is_protein = docs.iter().all(|d| d.molecule_type == MoleculeType::Protein);
-    let now = "2026-10-31T00:00:00.000Z".to_string();
+    let now = now_iso.trim().to_string();
 
     let mut combined_seq = String::new();
     let mut combined_features: Vec<SequenceFeature> = Vec::new();
@@ -194,7 +204,7 @@ pub fn concatenate_sequence_documents(
         primers: combined_primers,
         history: vec![HistoryTreeNode {
             id: format!("hist-concat-{}", total_len),
-            timestamp: "2026-10-31 00:00".to_string(),
+            timestamp: history_timestamp(now_iso),
             operation: format!("Concatenate Sequences ({})", docs.len()),
             description: format!(
                 "Joined {} into linear {} bp construct.",
@@ -256,10 +266,21 @@ pub fn generate_consensus_document(
     docs: &[SequenceDocument],
     threshold_pct: f64,
 ) -> Result<SequenceDocument, String> {
+    generate_consensus_document_at(docs, threshold_pct, "")
+}
+
+/// [`generate_consensus_document`] stamped with the caller's `now_iso`: a new document is created
+/// at it, an edit keeps the input's `created_at` and sets `updated_at`, and a new history entry
+/// gets its minute. A blank `now_iso` leaves each of those blank (D0203).
+pub fn generate_consensus_document_at(
+    docs: &[SequenceDocument],
+    threshold_pct: f64,
+    now_iso: &str,
+) -> Result<SequenceDocument, String> {
     if docs.is_empty() {
         return Err("Select at least one sequence document to generate a consensus.".to_string());
     }
-    let now = "2026-10-31T00:00:00.000Z".to_string();
+    let now = now_iso.trim().to_string();
     if docs.len() == 1 {
         let mut single = docs[0].clone();
         single.id = format!("doc-cons-1-{}", single.sequence.len());
@@ -449,7 +470,7 @@ pub fn generate_consensus_document(
         primers: Vec::new(),
         history: vec![HistoryTreeNode {
             id: format!("hist-cons-{}", cons_len),
-            timestamp: "2026-10-31 00:00".to_string(),
+            timestamp: history_timestamp(now_iso),
             operation: format!("Generate Consensus ({}% Threshold)", threshold_pct),
             description: format!(
                 "Computed {} bp consensus from {} sequences ({:.1}% pairwise identity).",
@@ -492,6 +513,18 @@ pub fn mask_sequence_regions(
     doc: &SequenceDocument,
     mode: &str,
     range: Option<SelectionRange1Based>,
+) -> MaskSequenceResult {
+    mask_sequence_regions_at(doc, mode, range, "")
+}
+
+/// [`mask_sequence_regions`] stamped with the caller's `now_iso`: a new document is created at it,
+/// an edit keeps the input's `created_at` and sets `updated_at`, and a new history entry gets its
+/// minute. A blank `now_iso` leaves each of those blank (D0203).
+pub fn mask_sequence_regions_at(
+    doc: &SequenceDocument,
+    mode: &str,
+    range: Option<SelectionRange1Based>,
+    now_iso: &str,
 ) -> MaskSequenceResult {
     let mask_byte = if doc.molecule_type == MoleculeType::Protein {
         b'X'
@@ -544,7 +577,7 @@ pub fn mask_sequence_regions(
         }
     }
 
-    let now = "2026-10-31T00:00:00.000Z".to_string();
+    let now = now_iso.trim().to_string();
     let mut updated = doc.clone();
     updated.sequence = String::from_utf8_lossy(&bytes).into_owned();
     // A multi-Mbp genome has ~3 such runs per kb; one annotation per run would
@@ -601,7 +634,7 @@ pub fn mask_sequence_regions(
     updated.updated_at = now;
     updated.history.push(HistoryTreeNode {
         id: format!("hist-mask-{}", masked_bases),
-        timestamp: "2026-10-31 00:00".to_string(),
+        timestamp: history_timestamp(now_iso),
         operation: format!("Mask Sequence ({})", mode),
         description: format!(
             "Masked {} base(s) with {} in {}.",
@@ -638,6 +671,17 @@ pub fn extract_annotated_features_to_documents(
     doc: &SequenceDocument,
     filter_type: &str,
 ) -> Vec<SequenceDocument> {
+    extract_annotated_features_to_documents_at(doc, filter_type, "")
+}
+
+/// [`extract_annotated_features_to_documents`] stamped with the caller's `now_iso`: a new document
+/// is created at it, an edit keeps the input's `created_at` and sets `updated_at`, and a new
+/// history entry gets its minute. A blank `now_iso` leaves each of those blank (D0203).
+pub fn extract_annotated_features_to_documents_at(
+    doc: &SequenceDocument,
+    filter_type: &str,
+    now_iso: &str,
+) -> Vec<SequenceDocument> {
     let candidates: Vec<&SequenceFeature> = doc
         .features
         .iter()
@@ -654,7 +698,7 @@ pub fn extract_annotated_features_to_documents(
     } else {
         candidates
     };
-    let now = "2026-10-31T00:00:00.000Z".to_string();
+    let now = now_iso.trim().to_string();
     let seq_len = doc.sequence.len();
 
     targets
@@ -714,7 +758,7 @@ pub fn extract_annotated_features_to_documents(
             let mut history = doc.history.clone();
             history.push(HistoryTreeNode {
                 id: format!("hist-extfeat-{}", idx),
-                timestamp: "2026-10-31 00:00".to_string(),
+                timestamp: history_timestamp(now_iso),
                 operation: format!("Extract Annotation ({})", feat.name),
                 description: format!(
                     "Extracted {} bp {} annotation from {}.",
@@ -778,6 +822,18 @@ pub fn convert_selection_to_oligo_primer(
     range: Option<SelectionRange1Based>,
     strand: i8,
 ) -> ConvertOligoResult {
+    convert_selection_to_oligo_primer_at(doc, range, strand, "")
+}
+
+/// [`convert_selection_to_oligo_primer`] stamped with the caller's `now_iso`: a new document is
+/// created at it, an edit keeps the input's `created_at` and sets `updated_at`, and a new history
+/// entry gets its minute. A blank `now_iso` leaves each of those blank (D0203).
+pub fn convert_selection_to_oligo_primer_at(
+    doc: &SequenceDocument,
+    range: Option<SelectionRange1Based>,
+    strand: i8,
+    now_iso: &str,
+) -> ConvertOligoResult {
     let seq_len = doc.sequence.len();
     let raw_start = range
         .map(|r| r.start.clamp(1, seq_len.max(1)))
@@ -837,7 +893,7 @@ pub fn convert_selection_to_oligo_primer(
 
     let mut updated_doc = doc.clone();
     updated_doc.primers.push(primer.clone());
-    updated_doc.updated_at = "2026-10-31T00:00:00.000Z".to_string();
+    updated_doc.updated_at = now_iso.trim().to_string();
 
     ConvertOligoResult {
         updated_doc,
@@ -846,7 +902,8 @@ pub fn convert_selection_to_oligo_primer(
 }
 
 /// Scan a `SequenceDocument` for Gateway `attB` / `attP` / `attL` / `attR` recombination sites and annotate matches.
-pub fn annotate_gateway_att_sites(doc: &SequenceDocument) -> AnnotateAttResult {
+/// An edit: when it adds a site, `updated_at` becomes `now_iso` (blank when blank, D0203).
+pub fn annotate_gateway_att_sites(doc: &SequenceDocument, now_iso: &str) -> AnnotateAttResult {
     let gateway_att_motifs = [
         ("attB1", "ACAAGTTTGTACAAAAAAGCAGGCT", "#7c3aed"),
         ("attB2", "ACCCAGCTTTCTTGTACAAAGTGGT", "#7c3aed"),
@@ -922,7 +979,7 @@ pub fn annotate_gateway_att_sites(doc: &SequenceDocument) -> AnnotateAttResult {
     let mut updated_doc = doc.clone();
     if added_count > 0 {
         updated_doc.features.extend(added);
-        updated_doc.updated_at = "2026-10-31T00:00:00.000Z".to_string();
+        updated_doc.updated_at = now_iso.trim().to_string();
     }
 
     AnnotateAttResult {
@@ -932,9 +989,11 @@ pub fn annotate_gateway_att_sites(doc: &SequenceDocument) -> AnnotateAttResult {
 }
 
 /// Flank a selected region (or full linear sequence) with Gateway `attB1` and `attB2` sites.
+/// The amplicon is a new document created at `now_iso` (blank when blank, D0203).
 pub fn add_attb_sites_to_sequence(
     doc: &SequenceDocument,
     range: Option<SelectionRange1Based>,
+    now_iso: &str,
 ) -> SequenceDocument {
     let att_b1 = "GGGGACAAGTTTGTACAAAAAAGCAGGCTAA";
     let att_b2 = "TTACCCAGCTTTCTTGTACAAAGTGGTCCCC";
@@ -951,14 +1010,14 @@ pub fn add_attb_sites_to_sequence(
     };
     let full_seq = format!("{}{}{}", att_b1, core_insert, att_b2);
     let full_len = full_seq.len();
-    let now = "2026-10-31T00:00:00.000Z".to_string();
+    let now = now_iso.trim().to_string();
     let raw_name = format!("{}_attB1_attB2_Amplicon", doc.name);
     let name: String = raw_name.chars().take(56).collect();
 
     let mut history = doc.history.clone();
     history.push(HistoryTreeNode {
         id: format!("hist-attb-{}", full_len),
-        timestamp: "2026-10-31 00:00".to_string(),
+        timestamp: history_timestamp(now_iso),
         operation: "Add Gateway attB1 / attB2 Sites".to_string(),
         description: format!(
             "Flanked {} bp region of {} with attB1 & attB2 adapters ({} bp).",
@@ -1042,9 +1101,13 @@ pub fn add_attb_sites_to_sequence(
 
 /// Export a multi-record GenBank bundle containing `target_doc` plus all ancestor and descendant
 /// documents linked via `history[].parent_ids`.
+///
+/// Every record's LOCUS date is the export date `now_iso` (D0200); with `now_iso` blank, each
+/// record falls back to the undated export's date (its own `updated_at`, else 01-JAN-1970).
 pub fn export_lineage_bundle_genbank(
     target_doc: &SequenceDocument,
     all_docs: &[SequenceDocument],
+    now_iso: &str,
 ) -> LineageBundleGenBankResult {
     let by_id: HashMap<&str, &SequenceDocument> =
         all_docs.iter().map(|d| (d.id.as_str(), d)).collect();
@@ -1097,7 +1160,7 @@ pub fn export_lineage_bundle_genbank(
 
     let content = final_docs
         .iter()
-        .map(|d| export_genbank_flatfile(d))
+        .map(|d| export_genbank_flatfile_dated(d, now_iso))
         .collect::<Vec<_>>()
         .join("\n\n");
     let included_names = final_docs.iter().map(|d| d.name.clone()).collect();
@@ -1109,10 +1172,12 @@ pub fn export_lineage_bundle_genbank(
 }
 
 /// Batch Workflow: Modify Annotation Intervals by extending/trimming 5' and 3' feature boundaries.
+/// An edit: `updated_at` becomes `now_iso` (blank when blank, D0203).
 pub fn batch_modify_annotation_intervals(
     doc: &SequenceDocument,
     delta_start_bp: isize,
     delta_end_bp: isize,
+    now_iso: &str,
 ) -> SequenceDocument {
     let max_len = doc.sequence.len().max(1) as isize;
     let updated_features = doc
@@ -1131,12 +1196,16 @@ pub fn batch_modify_annotation_intervals(
 
     let mut out = doc.clone();
     out.features = updated_features;
-    out.updated_at = "2026-10-31T00:00:00.000Z".to_string();
+    out.updated_at = now_iso.trim().to_string();
     out
 }
 
 /// Batch Workflow: Set CDS Translation Property on all CDS features in a document.
-pub fn batch_set_cds_translation_property(doc: &SequenceDocument) -> SequenceDocument {
+/// An edit: `updated_at` becomes `now_iso` (blank when blank, D0203).
+pub fn batch_set_cds_translation_property(
+    doc: &SequenceDocument,
+    now_iso: &str,
+) -> SequenceDocument {
     if doc.molecule_type == MoleculeType::Protein {
         return doc.clone();
     }
@@ -1176,7 +1245,7 @@ pub fn batch_set_cds_translation_property(doc: &SequenceDocument) -> SequenceDoc
 
     let mut out = doc.clone();
     out.features = updated_features;
-    out.updated_at = "2026-10-31T00:00:00.000Z".to_string();
+    out.updated_at = now_iso.trim().to_string();
     out
 }
 

@@ -960,6 +960,17 @@ pub fn assemble_sanger_contig_poa(
     contig_name: &str,
     trim_low_quality: bool,
 ) -> PoaContigAssemblyReport {
+    assemble_sanger_contig_poa_at(reads, contig_name, trim_low_quality, "")
+}
+
+/// [`assemble_sanger_contig_poa`] whose contig is created at the caller's `now_iso`, its history
+/// entry that minute ("YYYY-MM-DD HH:MM"); each is blank when `now_iso` is blank (D0203).
+pub fn assemble_sanger_contig_poa_at(
+    reads: &[PoaReadInput],
+    contig_name: &str,
+    trim_low_quality: bool,
+    now_iso: &str,
+) -> PoaContigAssemblyReport {
     let clean_title = if contig_name.trim().is_empty() {
         "POA_Consensus_Contig"
     } else {
@@ -1358,7 +1369,7 @@ pub fn assemble_sanger_contig_poa(
         primers: Vec::new(),
         history: vec![HistoryTreeNode {
             id: "hist-poa-assembly".into(),
-            timestamp: "2026-10-31 08:30".into(),
+            timestamp: now_iso.trim().chars().take(16).collect::<String>().replace('T', " "),
             operation: "Partial-Order Alignment (POA) Contig Assembly".into(),
             description: format!(
                 "Assembled {} reads by partial-order alignment on their overlap layout ({} nodes, {} edges)",
@@ -1391,8 +1402,8 @@ pub fn assemble_sanger_contig_poa(
         }),
         document_kind: Some("contig".into()),
         doc_metadata: Some(doc_meta),
-        created_at: "2026-10-31T08:30:00.000Z".into(),
-        updated_at: "2026-10-31T08:30:00.000Z".into(),
+        created_at: now_iso.trim().to_string(),
+        updated_at: now_iso.trim().to_string(),
         folder: "Contig Assembly".into(),
     };
 

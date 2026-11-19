@@ -305,7 +305,9 @@ pub fn infer_document_icon_kind_rust(doc: &SequenceDocument) -> String {
 
 /// Computes all 19 document table metrics, restriction alert audits, genetic code inference,
 /// and type/icon classification in a single zero-copy Rust call instead of 3 separate WASM round-trips.
-pub fn compute_document_table_metrics_rust(doc: &SequenceDocument) -> ComputedDocumentRowMetricsRust {
+pub fn compute_document_table_metrics_rust(
+    doc: &SequenceDocument,
+) -> ComputedDocumentRowMetricsRust {
     let is_protein = doc.molecule_type == MoleculeType::Protein;
     let comp = analyze_sequence_composition(&doc.sequence);
     let (alerts, checks_state, checks_not_run) = run_record_checks(doc);
@@ -525,12 +527,9 @@ pub fn extract_region_with_annotations_rust(
         })
         .collect();
 
-    let now = if now_iso.trim().is_empty() {
-        "2026-10-31T08:30:00.000Z"
-    } else {
-        now_iso
-    };
-    let short_ts = format_short_iso_timestamp_rust(now);
+    // The caller's time; blank when it sent none (D0203), never a fixed date.
+    let now = now_iso.trim();
+    let short_ts = crate::batch_ops::history_timestamp(now);
 
     let mut history = doc.history.clone();
     history.push(HistoryTreeNode {
@@ -648,11 +647,8 @@ pub fn splice_modular_part_into_document_rust(
         })
         .collect();
 
-    let now = if now_iso.trim().is_empty() {
-        "2026-10-31T08:30:00.000Z"
-    } else {
-        now_iso
-    };
+    // The caller's time; blank when it sent none (D0203), never a fixed date.
+    let now = now_iso.trim();
 
     let mut history = doc.history.clone();
     history.push(HistoryTreeNode {

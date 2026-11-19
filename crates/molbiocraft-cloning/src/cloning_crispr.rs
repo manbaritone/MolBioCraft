@@ -392,9 +392,17 @@ pub struct SequenceAlertItem {
 }
 
 /// Rotate a circular plasmid sequence and all annotated features so `new_origin_1based` becomes coordinate 1.
-pub fn set_circular_origin(
+pub fn set_circular_origin(doc: &SequenceDocument, new_origin_1based: usize) -> SequenceDocument {
+    set_circular_origin_at(doc, new_origin_1based, "")
+}
+
+/// [`set_circular_origin`] stamped with the caller's `now_iso`: a new document is created at it, an
+/// edit keeps the input's `created_at` and sets `updated_at`, and a new history entry gets its
+/// minute. A blank `now_iso` leaves each of those blank (D0203).
+pub fn set_circular_origin_at(
     doc: &SequenceDocument,
     new_origin_1based: usize,
+    now_iso: &str,
 ) -> SequenceDocument {
     let s = &doc.sequence;
     let l = s.len();
@@ -427,10 +435,10 @@ pub fn set_circular_origin(
         primer.bind_start = rotate_pos(primer.bind_start);
         primer.bind_end = rotate_pos(primer.bind_end);
     }
-    updated.updated_at = "2026-10-31T00:00:00Z".to_string();
+    updated.updated_at = now_iso.trim().to_string();
     updated.history.push(HistoryTreeNode {
         id: format!("h-origin-{}", new_origin_1based),
-        timestamp: "2026-10-31 00:00".to_string(),
+        timestamp: crate::batch_ops::history_timestamp(now_iso),
         operation: format!("Set Circular Origin to {} bp", new_origin_1based),
         description: format!(
             "Rotated circular coordinate system of {} so base {} is now position 1",

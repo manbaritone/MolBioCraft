@@ -1,6 +1,7 @@
 {
  "add_attb_sites": [
   "doc",
+  "nowIso",
   "range"
  ],
  "align_large_genomes_minimizer_chain": [
@@ -85,11 +86,13 @@
  "anneal_oligos": [
   "bottomOligo5to3",
   "duplexName",
+  "nowIso",
   "phosphorylated5Prime",
   "topOligo5to3"
  ],
  "annotate_gateway_att_sites": [
-  "doc"
+  "doc",
+  "nowIso"
  ],
  "annotate_vcf_coding_consequences_noodles": [
   "features",
@@ -98,10 +101,12 @@
   "vcfText"
  ],
  "assemble_modular_custom_vector": [
+  "nowIso",
   "spec"
  ],
  "assemble_sanger_contig_poa": [
   "contigName",
+  "nowIso",
   "reads",
   "trimLowQuality"
  ],
@@ -124,15 +129,19 @@
  "batch_modify_annotation_intervals": [
   "deltaEndBp",
   "deltaStartBp",
-  "doc"
+  "doc",
+  "nowIso"
  ],
  "batch_set_cds_translation": [
-  "doc"
+  "doc",
+  "nowIso"
  ],
  "build_catalog_vector_document": [
-  "entry"
+  "entry",
+  "nowIso"
  ],
  "build_cloning_action_vector_document": [
+  "nowIso",
   "preset"
  ],
  "build_construct_lineage_dag_rust": [
@@ -270,6 +279,7 @@
  ],
  "concatenate_documents": [
   "docs",
+  "nowIso",
   "spacer"
  ],
  "construct_phylogenetic_tree": [
@@ -286,6 +296,7 @@
  ],
  "convert_selection_to_oligo": [
   "doc",
+  "nowIso",
   "range",
   "strand"
  ],
@@ -360,6 +371,7 @@
  ],
  "export_lineage_bundle_genbank": [
   "allDocs",
+  "nowIso",
   "targetDoc"
  ],
  "export_table_delimited_csv_rust": [
@@ -372,7 +384,8 @@
  ],
  "extract_annotated_features": [
   "doc",
-  "filterType"
+  "filterType",
+  "nowIso"
  ],
  "extract_region_with_annotations_rust": [
   "doc",
@@ -422,14 +435,17 @@
  ],
  "generate_consensus_document": [
   "docs",
+  "nowIso",
   "thresholdPct"
  ],
  "generate_large_genome_benchmark": [
   "lengthBp",
+  "nowIso",
   "organismPreset"
  ],
  "generate_large_protein_benchmark": [
   "lengthAa",
+  "nowIso",
   "proteinPreset"
  ],
  "get_bio_pipeline_catalog": [],
@@ -482,6 +498,7 @@
  "mask_sequence_regions": [
   "doc",
   "mode",
+  "nowIso",
   "range"
  ],
  "ml_tree_search": [
@@ -693,7 +710,8 @@
  ],
  "set_circular_origin": [
   "doc",
-  "newOrigin1Based"
+  "newOrigin1Based",
+  "nowIso"
  ],
  "simulate_enzyme_digest": [
   "doc",
@@ -706,12 +724,14 @@
   "goldenGateEnzyme",
   "insertDoc",
   "method",
+  "nowIso",
   "vectorDoc"
  ],
  "simulate_mutagenesis": [
   "deletionLengthBp",
   "doc",
   "mode",
+  "nowIso",
   "positionBp",
   "replacementBases"
  ],
@@ -736,6 +756,7 @@
   "insertName",
   "insertSeqRaw",
   "insertionSiteBp",
+  "nowIso",
   "vectorDoc"
  ],
  "slice_resident_viewport": [

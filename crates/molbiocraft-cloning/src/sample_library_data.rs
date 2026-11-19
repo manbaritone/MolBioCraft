@@ -2841,7 +2841,20 @@ pub fn get_sample_library() -> Vec<SequenceDocument> {
 /// Deterministically synthesize a biologically structured multi-hundred-kilobase or multi-megabase
 /// circular bacterial chromosome ('oriC' at 1 bp, 'terC' at L/2, asymmetric leading-strand GC-skew,
 /// rRNA operons, CpG islands, and 120+ realistic annotated genes) for large-genome workbench exploration.
-pub fn generate_large_genome_benchmark(length_bp: usize, organism_preset: &str) -> SequenceDocument {
+pub fn generate_large_genome_benchmark(
+    length_bp: usize,
+    organism_preset: &str,
+) -> SequenceDocument {
+    generate_large_genome_benchmark_at(length_bp, organism_preset, "")
+}
+
+/// [`generate_large_genome_benchmark`] created at the caller's `now_iso`, its history entry that
+/// minute (each blank when `now_iso` is blank, D0203): the sample is created when it is added.
+pub fn generate_large_genome_benchmark_at(
+    length_bp: usize,
+    organism_preset: &str,
+    now_iso: &str,
+) -> SequenceDocument {
     let target_len = length_bp.clamp(50_000, 5_000_000);
     let half = target_len / 2;
     let mut rng = SplitMix64::new(0xEC01_1B10_C2AF_7001 ^ (target_len as u64));
@@ -2998,7 +3011,7 @@ pub fn generate_large_genome_benchmark(length_bp: usize, organism_preset: &str) 
         primers: Vec::new(),
         history: vec![HistoryTreeNode {
             id: format!("h-chr-{}", target_len),
-            timestamp: "2026-10-31 00:00".to_string(),
+            timestamp: crate::batch_ops::history_timestamp(now_iso),
             operation: "Synthesized Large Chromosome Replicon (Rust)".to_string(),
             description: format!("Generated {} bp circular bacterial chromosome with oriC/terC GC-skew", target_len),
             parent_ids: Vec::new(),
@@ -3016,15 +3029,28 @@ pub fn generate_large_genome_benchmark(length_bp: usize, organism_preset: &str) 
             ("chromosome".to_string(), serde_json::json!("Circular Chromosome")),
             ("Sequencing Technology (Genome-Assembly-Data)".to_string(), serde_json::json!("PacBio HiFi + Illumina")),
         ])),
-        created_at: "2026-10-31T00:00:00Z".to_string(),
-        updated_at: "2026-10-31T00:00:00Z".to_string(),
+        created_at: now_iso.trim().to_string(),
+        updated_at: now_iso.trim().to_string(),
         folder: "Genomes/Bacteria".to_string(),
     }
 }
 
 /// Deterministically synthesize a large multi-domain protein document (e.g., 5,000–35,000 aa Titin-like
 /// FnIII/Ig tandem repeat polyprotein) for large-protein viewport & biophysical benchmarking.
-pub fn generate_large_protein_benchmark(length_aa: usize, protein_preset: &str) -> SequenceDocument {
+pub fn generate_large_protein_benchmark(
+    length_aa: usize,
+    protein_preset: &str,
+) -> SequenceDocument {
+    generate_large_protein_benchmark_at(length_aa, protein_preset, "")
+}
+
+/// [`generate_large_protein_benchmark`] created at the caller's `now_iso`, its history entry that
+/// minute (each blank when `now_iso` is blank, D0203): the sample is created when it is added.
+pub fn generate_large_protein_benchmark_at(
+    length_aa: usize,
+    protein_preset: &str,
+    now_iso: &str,
+) -> SequenceDocument {
     let target_aa = length_aa.clamp(500, 40_000);
     let ig_domain = b"LIEVEKPLYGVEVFVGETAHFEIELSEPDVHGQWKLKGQPLAASPDCEIIEDGKKHILILHNCQLGMTGEVSFQAANAKSAANLKVKEL";
     let helix_linker = b"EAAAKALEAEKAAKEAAAKALEAEKAAK";
@@ -3087,7 +3113,7 @@ pub fn generate_large_protein_benchmark(length_aa: usize, protein_preset: &str) 
         primers: Vec::new(),
         history: vec![HistoryTreeNode {
             id: format!("h-prot-{}", target_aa),
-            timestamp: "2026-10-31 00:00".to_string(),
+            timestamp: crate::batch_ops::history_timestamp(now_iso),
             operation: "Synthesized Multi-Domain Giant Protein (Rust)".to_string(),
             description: format!("Generated {} aa polyprotein sequence", target_aa),
             parent_ids: Vec::new(),
@@ -3103,8 +3129,8 @@ pub fn generate_large_protein_benchmark(length_aa: usize, protein_preset: &str) 
             ("Organism".to_string(), serde_json::json!("Homo sapiens")),
             ("PDB name".to_string(), serde_json::json!("1TIT")),
         ])),
-        created_at: "2026-10-31T00:00:00Z".to_string(),
-        updated_at: "2026-10-31T00:00:00Z".to_string(),
+        created_at: now_iso.trim().to_string(),
+        updated_at: now_iso.trim().to_string(),
         folder: "Protein Documents".to_string(),
     }
 }

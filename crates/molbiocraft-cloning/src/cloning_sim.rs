@@ -745,6 +745,31 @@ pub fn simulate_molecular_cloning_with_custom_enzymes(
     golden_gate_enzyme: &str,
     custom_enzymes: &[RestrictionEnzyme],
 ) -> CloningOutcome {
+    simulate_molecular_cloning_with_custom_enzymes_at(
+        vector_doc,
+        insert_doc,
+        method,
+        enzyme5_prime,
+        enzyme3_prime,
+        golden_gate_enzyme,
+        custom_enzymes,
+        "",
+    )
+}
+
+/// [`simulate_molecular_cloning_with_custom_enzymes`] whose construct is created at the caller's
+/// `now_iso`, its new history entry that minute (each blank when `now_iso` is blank, D0203). A
+/// failed simulation returns the vector unchanged.
+pub fn simulate_molecular_cloning_with_custom_enzymes_at(
+    vector_doc: &SequenceDocument,
+    insert_doc: &SequenceDocument,
+    method: &str,
+    enzyme5_prime: &str,
+    enzyme3_prime: &str,
+    golden_gate_enzyme: &str,
+    custom_enzymes: &[RestrictionEnzyme],
+    now_iso: &str,
+) -> CloningOutcome {
     let vs = clean_alpha_sequence(&vector_doc.sequence).replace('U', "T");
     let is = clean_alpha_sequence(&insert_doc.sequence).replace('U', "T");
     if vs.is_empty() || is.is_empty() {
@@ -804,7 +829,7 @@ pub fn simulate_molecular_cloning_with_custom_enzymes(
     let mut history = vector_doc.history.clone();
     history.push(HistoryTreeNode {
         id: format!("h-clone-{}-{}", product_len, s),
-        timestamp: "2026-10-31 00:00".to_string(),
+        timestamp: crate::batch_ops::history_timestamp(now_iso),
         operation: b.operation.clone(),
         description: b.summary.clone(),
         parent_ids: vec![vector_doc.id.clone(), insert_doc.id.clone()],
@@ -828,8 +853,8 @@ pub fn simulate_molecular_cloning_with_custom_enzymes(
         alignment_meta: None,
         document_kind: None,
         doc_metadata: None,
-        created_at: "2026-10-31T00:00:00Z".to_string(),
-        updated_at: "2026-10-31T00:00:00Z".to_string(),
+        created_at: now_iso.trim().to_string(),
+        updated_at: now_iso.trim().to_string(),
         folder: "Plasmids & Vectors".to_string(),
     };
     CloningOutcome {

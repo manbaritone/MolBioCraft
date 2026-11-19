@@ -747,6 +747,27 @@ pub fn simulate_site_directed_mutagenesis(
     replacement_bases: &str,
     deletion_length_bp: usize,
 ) -> MutagenesisSimulationResult {
+    simulate_site_directed_mutagenesis_at(
+        doc,
+        mode,
+        position_bp,
+        replacement_bases,
+        deletion_length_bp,
+        "",
+    )
+}
+
+/// [`simulate_site_directed_mutagenesis`] stamped with the caller's `now_iso`. The mutant is `doc`
+/// under a new id and keeps `doc`'s `created_at`, as before; its `updated_at` is `now_iso` and its
+/// new history entry that minute, each blank when `now_iso` is blank (D0203).
+pub fn simulate_site_directed_mutagenesis_at(
+    doc: &SequenceDocument,
+    mode: &str,
+    position_bp: usize,
+    replacement_bases: &str,
+    deletion_length_bp: usize,
+    now_iso: &str,
+) -> MutagenesisSimulationResult {
     let s = clean_alpha_sequence(&doc.sequence).replace('U', "T");
     let seq_len = s.len();
     let clean_rep = clean_alpha_sequence(replacement_bases).replace('U', "T");
@@ -865,7 +886,7 @@ pub fn simulate_site_directed_mutagenesis(
         codon_change_label, doc.name
     );
     mutant_doc.sequence = new_seq.clone();
-    mutant_doc.updated_at = "2026-10-31T00:00:00Z".to_string();
+    mutant_doc.updated_at = now_iso.trim().to_string();
     mutant_doc.features.push(SequenceFeature {
         id: format!("feat-sdm-{}", pos0 + 1),
         name: format!("SDM: {}", codon_change_label),
@@ -884,7 +905,7 @@ pub fn simulate_site_directed_mutagenesis(
     });
     mutant_doc.history.push(HistoryTreeNode {
         id: format!("h-sdm-{}", pos0 + 1),
-        timestamp: "2026-10-31 00:00".to_string(),
+        timestamp: crate::batch_ops::history_timestamp(now_iso),
         operation: format!("Site-Directed Mutagenesis ({})", codon_change_label),
         description: format!(
             "{} at position {} bp using mutagenic primer pair ({})",
@@ -918,6 +939,25 @@ pub fn anneal_complementary_oligos(
     top_oligo_5to3: &str,
     bottom_oligo_5to3: &str,
     phosphorylated5_prime: bool,
+) -> AnnealedOligoResult {
+    anneal_complementary_oligos_at(
+        duplex_name,
+        top_oligo_5to3,
+        bottom_oligo_5to3,
+        phosphorylated5_prime,
+        "",
+    )
+}
+
+/// [`anneal_complementary_oligos`] stamped with the caller's `now_iso`: a new document is created
+/// at it, an edit keeps the input's `created_at` and sets `updated_at`, and a new history entry
+/// gets its minute. A blank `now_iso` leaves each of those blank (D0203).
+pub fn anneal_complementary_oligos_at(
+    duplex_name: &str,
+    top_oligo_5to3: &str,
+    bottom_oligo_5to3: &str,
+    phosphorylated5_prime: bool,
+    now_iso: &str,
 ) -> AnnealedOligoResult {
     let top = clean_alpha_sequence(top_oligo_5to3).replace('U', "T");
     let bot = clean_alpha_sequence(bottom_oligo_5to3).replace('U', "T");
@@ -1009,7 +1049,7 @@ pub fn anneal_complementary_oligos(
         primers: Vec::new(),
         history: vec![HistoryTreeNode {
             id: format!("h-oligo-{}", duplex_seq.len()),
-            timestamp: "2026-10-31 00:00".to_string(),
+            timestamp: crate::batch_ops::history_timestamp(now_iso),
             operation: "Anneal Complementary Oligonucleotides".to_string(),
             description: format!(
                 "Annealed {} nt top and {} nt bottom oligos: {} bp paired ({})",
@@ -1028,8 +1068,8 @@ pub fn anneal_complementary_oligos(
         alignment_meta: None,
         document_kind: None,
         doc_metadata: Option::<HashMap<String, serde_json::Value>>::None,
-        created_at: "2026-10-31T00:00:00Z".to_string(),
-        updated_at: "2026-10-31T00:00:00Z".to_string(),
+        created_at: now_iso.trim().to_string(),
+        updated_at: now_iso.trim().to_string(),
         folder: "Cloning Inserts & PCR".to_string(),
     };
 

@@ -14,7 +14,7 @@ use molbiocraft_align::pairwise::align_pairwise_named;
 use molbiocraft_align::poa_and_banded::align_pairwise_banded_sparse_with_warnings;
 use molbiocraft_align::{
     align_large_genomes_minimizer_chain,
-    align_pairwise_standard, assemble_sanger_contig_poa, build_neighbor_joining_newick,
+    align_pairwise_standard, build_neighbor_joining_newick,
     build_upgma_newick, call_freebayes_variants, classify_sequence_taxonomy, compute_dotplot_hits,
     compute_mash_minimizer_distance, map_long_read_minimizer_chains, map_read_and_call_variants,
     profile_pangenome_core_accessory, run_bbduk_read_trimming, run_de_novo_assembly,
@@ -26,37 +26,33 @@ use molbiocraft_align::{
 };
 use molbiocraft_cloning::{
     add_attb_sites_to_sequence, analyze_gibson_overlap_junction, analyze_silent_mutations,
-    analyze_silent_mutations_in_cds, CodingRegion1Based,
-    anneal_complementary_oligos, annotate_gateway_att_sites, assemble_modular_custom_vector,
+    analyze_silent_mutations_in_cds, CodingRegion1Based, annotate_gateway_att_sites,
     audit_twist_custom_vector_onboarding, batch_modify_annotation_intervals,
-    batch_set_cds_translation_property, build_catalog_vector_document,
-    build_cloning_action_vector_document, build_construct_lineage_dag_rust, build_mcs_polylinker,
-    calculate_primer_metrics, calculate_primer_thermodynamics_santalucia,
-    check_cotransformation_compatibility, compute_agarose_gel_band_physics,
-    compute_dna_and_ligation_calculations, compute_document_table_metrics_rust,
-    concatenate_sequence_documents, convert_selection_to_oligo_primer, design_pcr_primers_with_slack,
-    detect_common_features, evaluate_golden_gate_overhang_fidelity,
-    evaluate_multi_digest_buffer_plan, execute_bio_pipeline_rust,
-    execute_builtin_rust_workflow_macro, export_lineage_bundle_genbank,
-    export_table_delimited_csv_rust, export_vector_catalog_csv,
-    extract_annotated_features_to_documents, extract_region_with_annotations_rust,
-    find_non_cutting_enzymes_for_topology, find_restriction_cut_sites,
-    generate_catalog_circular_svg, generate_consensus_document, generate_large_genome_benchmark,
-    generate_large_protein_benchmark, generate_safe_backbone_spacer, get_bio_pipeline_catalog,
-    get_builtin_workflow_macros_rust, get_cloning_action_vector_presets,
-    get_common_plasmid_features, get_host_strain_guides, get_modular_vector_parts,
-    get_origin_compatibility_groups, get_rebase_enzymes, get_sample_library,
-    get_twist_antibiotic_standards, get_vector_catalog, get_vector_system_guides,
-    group_documents_by_prefix, mask_sequence_regions, predict_secondary_structure_with,
-    randomly_sample_documents, set_circular_origin,
-    simulate_restriction_digest, simulate_site_directed_mutagenesis,
+    batch_set_cds_translation_property, build_cloning_action_vector_document,
+    build_construct_lineage_dag_rust, build_mcs_polylinker, calculate_primer_metrics,
+    calculate_primer_thermodynamics_santalucia, check_cotransformation_compatibility,
+    compute_agarose_gel_band_physics, compute_dna_and_ligation_calculations,
+    compute_document_table_metrics_rust, concatenate_sequence_documents,
+    design_pcr_primers_with_slack, detect_common_features,
+    evaluate_golden_gate_overhang_fidelity, evaluate_multi_digest_buffer_plan,
+    execute_bio_pipeline_rust, execute_builtin_rust_workflow_macro,
+    export_lineage_bundle_genbank, export_table_delimited_csv_rust, export_vector_catalog_csv,
+    extract_region_with_annotations_rust, find_non_cutting_enzymes_for_topology,
+    find_restriction_cut_sites, generate_catalog_circular_svg, generate_safe_backbone_spacer,
+    get_bio_pipeline_catalog, get_builtin_workflow_macros_rust,
+    get_cloning_action_vector_presets, get_common_plasmid_features, get_host_strain_guides,
+    get_modular_vector_parts, get_origin_compatibility_groups, get_rebase_enzymes,
+    get_sample_library, get_twist_antibiotic_standards, get_vector_catalog,
+    get_vector_system_guides, group_documents_by_prefix, predict_secondary_structure_with,
+    randomly_sample_documents, simulate_restriction_digest,
     simulate_twist_clonal_gene_insertion, splice_modular_part_into_document_rust,
     test_saved_primers_on_sequence, CatalogVectorEntry, CloningActionVectorPreset,
     ModularAssemblySpec, ModularVectorPart, SelectionRange1Based,
 };
 // Cloning that may be asked for a `custom:` enzyme id (US-01M7HRV4); with no definition sent it is
 // `simulate_molecular_cloning` itself.
-use molbiocraft_cloning::cloning_sim::simulate_molecular_cloning_with_custom_enzymes;
+use molbiocraft_cloning::cloning_sim::simulate_molecular_cloning_with_custom_enzymes_at;
+use molbiocraft_cloning::{batch_ops, cloning_crispr, sample_library_data, thermodynamics, vector_architect};
 use molbiocraft_cloning::cloning_crispr::{
     audit_sequence_alerts_for_scan, find_crispr_guides_for_topology, resolve_nuclease_preset,
     scan_crispr_guides, scan_crispr_guides_in_interval, supported_nuclease_presets,
@@ -1122,12 +1118,13 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let position_bp = usize_arg(&payload, "positionBp", 20);
             let replacement = str_arg(&payload, "replacementBases", "CAC");
             let deletion_len = usize_arg(&payload, "deletionLengthBp", 3);
-            to_val(simulate_site_directed_mutagenesis(
+            to_val(thermodynamics::simulate_site_directed_mutagenesis_at(
                 &doc,
                 mode,
                 position_bp,
                 replacement,
                 deletion_len,
+                str_arg(&payload, "nowIso", ""),
             ))
         }
         "anneal_oligos" => {
@@ -1135,7 +1132,8 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let top = str_arg(&payload, "topOligo5to3", "");
             let bottom = str_arg(&payload, "bottomOligo5to3", "");
             let phos = bool_arg(&payload, "phosphorylated5Prime", true);
-            to_val(anneal_complementary_oligos(duplex_name, top, bottom, phos))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(thermodynamics::anneal_complementary_oligos_at(duplex_name, top, bottom, phos, now_iso))
         }
         "compute_dna_ligation_calcs" => {
             let length_bp = usize_arg(&payload, "lengthBp", 3000);
@@ -1172,7 +1170,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             // none sent every field is a catalogue name, read exactly as before.
             let custom_enzymes: Option<Vec<RestrictionEnzyme>> =
                 parse_opt_field(&payload, "customEnzymes")?;
-            to_val(simulate_molecular_cloning_with_custom_enzymes(
+            to_val(simulate_molecular_cloning_with_custom_enzymes_at(
                 &vector_doc,
                 &insert_doc,
                 method,
@@ -1180,12 +1178,14 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
                 enz3,
                 gg_enz,
                 custom_enzymes.as_deref().unwrap_or(&[]),
+                str_arg(&payload, "nowIso", ""),
             ))
         }
         "set_circular_origin" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             let new_origin = usize_arg(&payload, "newOrigin1Based", 1);
-            to_val(set_circular_origin(&doc, new_origin))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(cloning_crispr::set_circular_origin_at(&doc, new_origin, now_iso))
         }
         // The nucleases a scan can be asked for, each with its PAM side, PAM pattern, spacer
         // length, site span and cut convention (US-01M7DV29 AC1): the list a chooser offers, read
@@ -1287,12 +1287,14 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "generate_large_genome_benchmark" => {
             let length_bp = usize_arg(&payload, "lengthBp", 500_000);
             let preset = str_arg(&payload, "organismPreset", "Escherichia coli K-12");
-            to_val(generate_large_genome_benchmark(length_bp, preset))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(sample_library_data::generate_large_genome_benchmark_at(length_bp, preset, now_iso))
         }
         "generate_large_protein_benchmark" => {
             let length_aa = usize_arg(&payload, "lengthAa", 10_000);
             let preset = str_arg(&payload, "proteinPreset", "Titin_Ig_Polyprotein");
-            to_val(generate_large_protein_benchmark(length_aa, preset))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(sample_library_data::generate_large_protein_benchmark_at(length_aa, preset, now_iso))
         }
         "generate_safe_backbone_spacer" => {
             let length_bp = usize_arg(&payload, "lengthBp", 64);
@@ -1307,11 +1309,13 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         }
         "build_catalog_vector_document" => {
             let entry: CatalogVectorEntry = parse_field(&payload, "entry")?;
-            to_val(build_catalog_vector_document(&entry))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(vector_architect::build_catalog_vector_document_at(&entry, now_iso))
         }
         "assemble_modular_custom_vector" => {
+            let now_iso = str_arg(&payload, "nowIso", "");
             let spec: ModularAssemblySpec = parse_field(&payload, "spec")?;
-            to_val(assemble_modular_custom_vector(&spec))
+            to_val(vector_architect::assemble_modular_custom_vector_at(&spec, now_iso))
         }
         "audit_twist_onboarding" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
@@ -1332,6 +1336,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
                 insert_name,
                 insert_seq,
                 framing,
+                str_arg(&payload, "nowIso", ""),
             ))
         }
         "check_cotransformation" => {
@@ -1348,51 +1353,58 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             Ok(Value::String(export_vector_catalog_csv(&entries)))
         }
         "build_cloning_action_vector_document" => {
+            let now_iso = str_arg(&payload, "nowIso", "");
             let preset: CloningActionVectorPreset = parse_field(&payload, "preset")?;
-            to_val(build_cloning_action_vector_document(&preset))
+            to_val(build_cloning_action_vector_document(&preset, now_iso))
         }
         "concatenate_documents" => {
             let docs: Vec<SequenceDocument> = parse_field(&payload, "docs")?;
             let spacer = str_arg(&payload, "spacer", "");
-            let res = concatenate_sequence_documents(&docs, spacer)?;
+            let now_iso = str_arg(&payload, "nowIso", "");
+            let res = concatenate_sequence_documents(&docs, spacer, now_iso)?;
             to_val(res)
         }
         "generate_consensus_document" => {
             let docs: Vec<SequenceDocument> = parse_field(&payload, "docs")?;
             let threshold_pct = f64_arg(&payload, "thresholdPct", 75.0);
-            let res = generate_consensus_document(&docs, threshold_pct)?;
+            let now_iso = str_arg(&payload, "nowIso", "");
+            let res = batch_ops::generate_consensus_document_at(&docs, threshold_pct, now_iso)?;
             to_val(res)
         }
         "mask_sequence_regions" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             let mode = str_arg(&payload, "mode", "selection");
             let range: Option<SelectionRange1Based> = parse_opt_field(&payload, "range")?;
-            to_val(mask_sequence_regions(&doc, mode, range))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(batch_ops::mask_sequence_regions_at(&doc, mode, range, now_iso))
         }
         "extract_annotated_features" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             let filter_type = str_arg(&payload, "filterType", "ALL");
-            to_val(extract_annotated_features_to_documents(&doc, filter_type))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(batch_ops::extract_annotated_features_to_documents_at(&doc, filter_type, now_iso))
         }
         "convert_selection_to_oligo" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             let range: Option<SelectionRange1Based> = parse_opt_field(&payload, "range")?;
             let strand = i32_arg(&payload, "strand", 1) as i8;
-            to_val(convert_selection_to_oligo_primer(&doc, range, strand))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(batch_ops::convert_selection_to_oligo_primer_at(&doc, range, strand, now_iso))
         }
         "annotate_gateway_att_sites" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
-            to_val(annotate_gateway_att_sites(&doc))
+            to_val(annotate_gateway_att_sites(&doc, str_arg(&payload, "nowIso", "")))
         }
         "add_attb_sites" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
             let range: Option<SelectionRange1Based> = parse_opt_field(&payload, "range")?;
-            to_val(add_attb_sites_to_sequence(&doc, range))
+            to_val(add_attb_sites_to_sequence(&doc, range, str_arg(&payload, "nowIso", "")))
         }
         "export_lineage_bundle_genbank" => {
             let target_doc: SequenceDocument = parse_field(&payload, "targetDoc")?;
             let all_docs: Vec<SequenceDocument> = parse_field(&payload, "allDocs")?;
-            to_val(export_lineage_bundle_genbank(&target_doc, &all_docs))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(export_lineage_bundle_genbank(&target_doc, &all_docs, now_iso))
         }
         "batch_modify_annotation_intervals" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
@@ -1402,11 +1414,12 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
                 &doc,
                 delta_start,
                 delta_end,
+                str_arg(&payload, "nowIso", ""),
             ))
         }
         "batch_set_cds_translation" => {
             let doc: SequenceDocument = parse_field(&payload, "doc")?;
-            to_val(batch_set_cds_translation_property(&doc))
+            to_val(batch_set_cds_translation_property(&doc, str_arg(&payload, "nowIso", "")))
         }
         "randomly_sample_documents" => {
             let docs: Vec<SequenceDocument> = parse_field(&payload, "docs")?;
@@ -1791,7 +1804,8 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let reads: Vec<PoaReadInput> = parse_field(&payload, "reads")?;
             let contig_name = str_arg(&payload, "contigName", "POA_Consensus_Contig");
             let trim_hq = bool_arg(&payload, "trimLowQuality", true);
-            to_val(assemble_sanger_contig_poa(&reads, contig_name, trim_hq))
+            let now_iso = str_arg(&payload, "nowIso", "");
+            to_val(molbiocraft_align::poa_and_banded::assemble_sanger_contig_poa_at(&reads, contig_name, trim_hq, now_iso))
         }
         "align_pairwise_banded_sparse" => {
             let seq1 = str_arg(&payload, "seq1", "");

@@ -99,6 +99,15 @@ pub fn mark_schematic_vector(doc: &mut SequenceDocument) {
 /// Synthesizes a complete, restriction-digestible, feature-annotated `SequenceDocument`
 /// from any `CatalogVectorEntry`. The result is a schematic (see [`mark_schematic_vector`]).
 pub fn build_catalog_vector_document(entry: &CatalogVectorEntry) -> SequenceDocument {
+    build_catalog_vector_document_at(entry, "")
+}
+
+/// [`build_catalog_vector_document`] created at the caller's `now_iso`, its history entry that
+/// minute (each blank when `now_iso` is blank, D0203).
+pub fn build_catalog_vector_document_at(
+    entry: &CatalogVectorEntry,
+    now_iso: &str,
+) -> SequenceDocument {
     let parts = get_modular_vector_parts();
     let part_map: HashMap<&str, &ModularVectorPart> =
         parts.iter().map(|p| (p.id.as_str(), p)).collect();
@@ -271,7 +280,7 @@ pub fn build_catalog_vector_document(entry: &CatalogVectorEntry) -> SequenceDocu
         Topology::Circular => "circular",
         Topology::Linear => "linear",
     };
-    let now = "2026-10-31T00:00:00.000Z".to_string();
+    let now = now_iso.trim().to_string();
     let seq_len = seq.len();
 
     let mut doc = SequenceDocument {
@@ -297,7 +306,7 @@ pub fn build_catalog_vector_document(entry: &CatalogVectorEntry) -> SequenceDocu
         primers,
         history: vec![HistoryTreeNode {
             id: format!("hist-{}", entry.id),
-            timestamp: now.clone(),
+            timestamp: crate::batch_ops::history_timestamp(now_iso),
             operation: format!("Loaded from {} Vector Library", entry.source),
             description: format!(
                 "{} ({} bp {}) — {}",
@@ -370,6 +379,15 @@ pub struct ModularAssemblyResult {
 /// Assembles a custom expression/viral/transposon/CRISPR/antibody plasmid from modular parts
 /// and validates cargo packaging limits (e.g. 4.7 kb AAV ITR-to-ITR, 9.2 kb Lentivirus).
 pub fn assemble_modular_custom_vector(spec: &ModularAssemblySpec) -> ModularAssemblyResult {
+    assemble_modular_custom_vector_at(spec, "")
+}
+
+/// [`assemble_modular_custom_vector`] created at the caller's `now_iso`, its history entry that
+/// minute (each blank when `now_iso` is blank, D0203).
+pub fn assemble_modular_custom_vector_at(
+    spec: &ModularAssemblySpec,
+    now_iso: &str,
+) -> ModularAssemblyResult {
     let systems = get_vector_system_guides();
     let sys = systems
         .iter()
@@ -594,7 +612,7 @@ pub fn assemble_modular_custom_vector(spec: &ModularAssemblySpec) -> ModularAsse
     };
     let seq_len = seq.len();
     let feat_len = features.len();
-    let now = "2026-10-31T00:00:00.000Z".to_string();
+    let now = now_iso.trim().to_string();
 
     let document = SequenceDocument {
         id: format!("custom-vec-{}", seq_len),
@@ -616,7 +634,7 @@ pub fn assemble_modular_custom_vector(spec: &ModularAssemblySpec) -> ModularAsse
         primers: Vec::new(),
         history: vec![HistoryTreeNode {
             id: format!("hist-mod-{}", seq_len),
-            timestamp: now.clone(),
+            timestamp: crate::batch_ops::history_timestamp(now_iso),
             operation: "Modular Vector Architect Assembly".to_string(),
             description: format!(
                 "Assembled {} modular genetic parts in {} ({} bp)",
@@ -1013,12 +1031,16 @@ pub fn audit_twist_custom_vector_onboarding(
 
 /// Simulates Twist Bioscience scarless homology-based Clonal Gene Insertion at an exact base coordinate,
 /// including optional Gateway pTwist ENTR Kozak framing or IgG VH/VL variable-domain framing.
+///
+/// An edit of the vector: `updated_at` becomes `now_iso` and the new history entry its minute
+/// (each blank when `now_iso` is blank, D0203); `created_at` stays the vector's.
 pub fn simulate_twist_clonal_gene_insertion(
     vector_doc: &SequenceDocument,
     insertion_site_bp: usize,
     insert_name: &str,
     insert_seq_raw: &str,
     framing_mode: &str,
+    now_iso: &str,
 ) -> SequenceDocument {
     let vec_seq = clean_sequence(&vector_doc.sequence);
     let mut insert_clean = clean_sequence(insert_seq_raw);
@@ -1092,12 +1114,12 @@ pub fn simulate_twist_clonal_gene_insertion(
         cleavage_site: None,
     });
 
-    let now = "2026-10-31T00:00:00.000Z".to_string();
+    let now = now_iso.trim().to_string();
     let mut history = vector_doc.history.clone();
     let new_len = new_seq.len();
     history.push(HistoryTreeNode {
         id: format!("hist-twist-{}", new_len),
-        timestamp: now.clone(),
+        timestamp: crate::batch_ops::history_timestamp(now_iso),
         operation: "Twist Clonal Gene Insertion".to_string(),
         description: format!(
             "Inserted {} ({} bp, {}) at bp {}",
@@ -1333,8 +1355,12 @@ pub fn export_vector_catalog_csv(entries: &[CatalogVectorEntry]) -> String {
 
 /// Synthesizes an authentic, feature-annotated, restriction-digestible `SequenceDocument`
 /// for any Gateway, TA, GC, or TOPO vector preset selected from the Actions menu.
+///
+/// The document is created at `now_iso` and its history entry is that minute (each blank when
+/// `now_iso` is blank, D0203).
 pub fn build_cloning_action_vector_document(
     preset: &CloningActionVectorPreset,
+    now_iso: &str,
 ) -> SequenceDocument {
     let mut features: Vec<SequenceFeature> = Vec::new();
     let mut seq = String::with_capacity(preset.nominal_size_bp.clamp(2000, 10_500));
@@ -1629,7 +1655,7 @@ pub fn build_cloning_action_vector_document(
         Topology::Linear => "linear",
     };
     let seq_len = seq.len();
-    let now = "2026-10-31T00:00:00.000Z".to_string();
+    let now = now_iso.trim().to_string();
 
     SequenceDocument {
         id: format!("actvec-{}-{}", preset.id, seq_len),
@@ -1646,7 +1672,7 @@ pub fn build_cloning_action_vector_document(
         primers,
         history: vec![HistoryTreeNode {
             id: format!("hist-{}", preset.id),
-            timestamp: "2026-10-31 00:00".to_string(),
+            timestamp: crate::batch_ops::history_timestamp(now_iso),
             operation: format!("Loaded Cloning Vector ({})", preset.cloning_method),
             description: format!(
                 "Loaded {} ({} bp, {}) for {}",
