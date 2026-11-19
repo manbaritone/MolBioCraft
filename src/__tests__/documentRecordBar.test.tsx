@@ -624,16 +624,22 @@ describe('the record bar (US-01M6Q10G)', () => {
     expect(features[0].name).not.toBe(SAMPLE_LIBRARY[0].name);
     expectBarFor([started, run('tools:extract-annotations')], features[0].name, 'Tools › Extract Annotations');
 
-    // The sidebar's NCBI RefSeq sample: fetched, and fetched again once the table is shown (the
-    // session then holds it, and the fetch opens that copy).
+    // The sidebar's NCBI RefSeq sample, under Libraries › Databases › NCBI (opened first: Libraries
+    // is collapsed until opened, US-01M6Q1V9): fetched, and fetched again once the table is shown
+    // (the session then holds it, and the fetch opens that copy).
     const spike = /Spike/;
-    expectBarFor([started, sidebarEntry('RefSeq: Spike RBD')], spike, 'the NCBI sample fetch');
-    expectBarFor([started, sidebarEntry('RefSeq: Spike RBD'), toggle, sidebarEntry('RefSeq: Spike RBD')], spike, 'the NCBI sample fetched again');
+    const libraries = press('the sidebar\'s Libraries header', (p) => hasClass(p, 'mbc-sidebar-section-head') && childText(p.children).includes('Libraries'));
+    // Each run is a first launch: Libraries' open state is the viewer's, kept in storage, so clear it.
+    storage.clear();
+    expectBarFor([started, libraries, sidebarEntry('RefSeq: Spike RBD')], spike, 'the NCBI sample fetch');
+    storage.clear();
+    expectBarFor([started, libraries, sidebarEntry('RefSeq: Spike RBD'), toggle, sidebarEntry('RefSeq: Spike RBD')], spike, 'the NCBI sample fetched again');
 
-    // The sidebar's benchmark document: generated, and loaded again (the session's copy).
+    // The benchmark document, from Help › Load Example Data (its home since the sidebar row went,
+    // US-01M7QCN2, US-01M6Q1V9): generated, and loaded again (the session's copy).
     const titin = /^Titin_Ig_Polyprotein/;
-    expectBarFor([started, sidebarEntry('Protein: 10,000 aa Titin')], titin, 'the benchmark load');
-    expectBarFor([started, sidebarEntry('Protein: 10,000 aa Titin'), toggle, sidebarEntry('Protein: 10,000 aa Titin')], titin, 'the benchmark loaded again');
+    expectBarFor([started, run('help:bench-protein')], titin, 'the benchmark load');
+    expectBarFor([started, run('help:bench-protein'), toggle, run('help:bench-protein')], titin, 'the benchmark loaded again');
 
     // A cloning vector preset (Cloning › vector menus): into a new session, into the open one, and
     // again once the session holds it.

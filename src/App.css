@@ -1163,7 +1163,8 @@ fieldset > legend,
   text-overflow: ellipsis;
 }
 
-.folder-count {
+.folder-count,
+.mbc-sidebar-section-count {
   font-size: var(--font-size-caption);
   font-weight: 700;
   padding: 1px 6px;
@@ -1174,7 +1175,8 @@ fieldset > legend,
   flex-shrink: 0;
 }
 
-.mbc-dark-mode .folder-count {
+.mbc-dark-mode .folder-count,
+.mbc-dark-mode .mbc-sidebar-section-count {
   background: rgba(138, 180, 248, 0.16);
   color: var(--mbc-blue);
 }
@@ -1239,6 +1241,101 @@ fieldset > legend,
   min-width: 0;
   min-height: 0;
   background: var(--mbc-bg-canvas);
+}
+
+/* The sidebar's two sections, Project and Libraries (US-01M6Q1V9): each a Label-type header with a
+ * chevron on the sidebar's own Panel Haze, at the rows' height, with no surface of its own. */
+.mbc-sidebar-section + .mbc-sidebar-section {
+  margin-block-start: 8px;
+  padding-block-start: 6px;
+  border-block-start: 1px solid var(--mbc-border);
+}
+
+.mbc-sidebar-section-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5.5px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--mbc-radius-pill);
+  background: transparent;
+  color: var(--mbc-text-main);
+  font-size: var(--font-size-label);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mbc-sidebar-section-head:hover {
+  background: #e4ecf8;
+}
+
+.mbc-dark-mode .mbc-sidebar-section-head:hover {
+  background: rgba(138, 180, 248, 0.12);
+}
+
+.mbc-sidebar-section-label {
+  flex: 1;
+}
+
+.mbc-sidebar-group {
+  margin-block-start: 4px;
+}
+
+.mbc-sidebar-group .mbc-sidebar-group {
+  margin-block-start: 2px;
+}
+
+.mbc-sidebar-subgroup-label {
+  padding-inline-start: 14px;
+}
+
+/* The Database Explorer in the main pane (US-01M6Q1V9): it takes the document table and viewer's
+ * column on Canvas White, with no dialog frame, border or shadow. */
+.mbc-db-explorer-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 16px;
+  overflow: auto;
+  background: var(--mbc-bg-canvas);
+  color: var(--mbc-text-main);
+}
+
+.mbc-db-explorer-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mbc-db-explorer-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mbc-db-explorer-title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: 600;
+}
+
+.mbc-db-explorer-body,
+.mbc-db-explorer-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.mbc-db-explorer-note {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--mbc-text-muted);
 }
 
 .mbc-doc-table-pane {

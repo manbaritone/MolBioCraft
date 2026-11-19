@@ -10,7 +10,7 @@ import {
   layoutCircularCallouts,
 } from '../components/CircularPlasmidMap';
 import {
-  DatabaseExplorerModal,
+  DatabaseExplorerView,
   LocalSequenceDbEntry,
   ReferenceDatabaseCategoryId,
 } from '../components/DatabaseExplorerModal';
@@ -480,6 +480,7 @@ describe('Batch Sequence, Alignment, Gateway, Lineage & Workflow Operations', ()
       'ncbi-taxonomy',
       'uniprot',
       'local-blast-dbs',
+      'rcsb-pdb',
     ];
     const sampleLocalDbs: LocalSequenceDbEntry[] = [
       {
@@ -494,8 +495,9 @@ describe('Batch Sequence, Alignment, Gateway, Lineage & Workflow Operations', ()
 
     for (const cat of categories) {
       const html = renderToStaticMarkup(
-        React.createElement(DatabaseExplorerModal, {
-          initialCategory: cat,
+        // The main-pane explorer (US-01M6Q1V9, D0258): no dialog, no modal size class, no category column.
+        React.createElement(DatabaseExplorerView, {
+          category: cat,
           documents: SAMPLE_LIBRARY,
           localDatabases: sampleLocalDbs,
           onAddLocalDatabase: noop,
@@ -505,9 +507,10 @@ describe('Batch Sequence, Alignment, Gateway, Lineage & Workflow Operations', ()
           onClose: noop,
         })
       );
-      expect(html).toContain('<dialog');
-      expect(html).toContain('closedby="any"');
-      expect(html).toContain('class="prefs-modal-window modal-size-db"');
+      expect(html).not.toContain('<dialog');
+      expect(html).not.toContain('modal-size-db');
+      expect(html).not.toContain('aria-label="Reference Databases"');
+      expect(html).toContain(`data-db-category="${cat}"`);
       expect(html).not.toMatch(EXCLUDED_DB_MODAL_RE);
     }
   });

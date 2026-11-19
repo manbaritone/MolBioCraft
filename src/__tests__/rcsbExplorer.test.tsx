@@ -459,7 +459,7 @@ describe('RCSB PDB in the Database Explorer', () => {
     expect(await files[0].text()).toBe(cif);
     expect(session.getSnapshot()).toMatchObject({ error: null, opening: [], notice: 'Opened 4HHB.cif from RCSB PDB in the workspace.' });
 
-    // Open is live only when the explorer is given the workbench's import, and the modal passes it on.
+    // Open is live only when the explorer is given the workbench's import, and the main-pane explorer passes it on.
     const button = (html: string) => /<button[^>]*>/.exec(rows(html)[0][1])![0];
     expect(button(panel(session, [], importFiles))).not.toContain('disabled');
     expect(button(panel(session))).toContain('disabled=""');
@@ -469,7 +469,7 @@ describe('RCSB PDB in the Database Explorer', () => {
     // structure's documents from the file's name and text alone, so the same file gives the same
     // documents (their ids and timestamps aside, which differ between any two imports of one file).
     expect(appSrc).toMatch(/const handleImportFile = [\s\S]{0,300}?importIncomingFilesBatch\(fileList, 'replace', 'imported'\)/);
-    const element = /<DatabaseExplorerModal\b[\s\S]*?\/>/.exec(appSrc)?.[0] ?? '';
+    const element = /<DatabaseExplorerView\b[\s\S]*?\/>/.exec(appSrc)?.[0] ?? '';
     expect(element, 'App.tsx passes the Database Explorer its file import as onImportFiles')
       .toMatch(/onImportFiles=\{\(files\) => importIncomingFilesBatch\(files, 'replace', 'imported'\)\}/);
     // 'replace' is the mode for .mbc session files only: the route hands it to nothing else, and a
@@ -578,25 +578,25 @@ describe('RCSB PDB in the Database Explorer', () => {
     vi.stubGlobal('fetch', spy);
     vi.resetModules();
 
-    // Import: loading the explorer and the modal afresh sends nothing.
+    // Import: loading the explorer and its main-pane view afresh sends nothing.
     const explorer = await import('../core/rcsbExplorer');
     const modal = await import('../components/DatabaseExplorerModal');
     expect(spy).not.toHaveBeenCalled();
 
-    // Mount: the modal opened on RCSB PDB renders its search form and sends nothing.
+    // Mount: the main-pane explorer opened on RCSB PDB (US-01M6Q1V9) renders its search form and sends nothing.
     const docs = [document('Protein', UBQ, 'ubq')];
     const noop = () => {};
     const html = renderToStaticMarkup(
-      <modal.DatabaseExplorerModal initialCategory="rcsb-pdb" documents={docs} localDatabases={[]} onAddLocalDatabase={noop}
+      <modal.DatabaseExplorerView category="rcsb-pdb" documents={docs} localDatabases={[]} onAddLocalDatabase={noop}
         onRemoveLocalDatabase={noop} onImportDocument={noop} onImportFiles={imports()} onOpenBlastModal={noop} onClose={noop} />,
     );
     expect(html).toContain('aria-label="RCSB PDB keywords"');
     expect(html).toContain('Sequence of ubq');
-    // That render runs no effects and calls no refs, so the modal must have neither: nothing that
+    // That render runs no effects and calls no refs, so the explorer must have neither: nothing that
     // could send a request on mount.
     expect(modalSrc).not.toMatch(/\buse(Layout|Insertion)?Effect\b/);
     expect(modalSrc).not.toMatch(/\bref=|\buseRef\b|\bcreateRef\b|\buseImperativeHandle\b/);
-    // The session the modal keeps is only handed to the panel: the modal calls none of its methods.
+    // The session the explorer keeps is only handed to the panel: the explorer calls none of its methods.
     expect(modalSrc.match(/\brcsbSession\b/g)).toHaveLength(2);
     expect(modalSrc).not.toMatch(/\.(search|open|setQuery|setSequenceDocument)\(/);
     expect(spy).not.toHaveBeenCalled();

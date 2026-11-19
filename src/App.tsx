@@ -535,7 +535,9 @@ import { DocumentRecordBar, DocumentTableToggle, RecordStatusIcon, nextDocTableC
 import {
   MolBioAttributeCellValue,
   MolBioColumnHeaderIcon,
+  MolBioDocTypeIcon,
   MolBioFeatureTypeBadge,
+  MolBioMenuGlyph,
   MolBioSidebarNodeIcon,
   MolBioSortChevron,
   MolBioStarIcon,
@@ -626,9 +628,9 @@ const GenomicsNgsAndPredictionStudio = React.lazy(() =>
     default: m.GenomicsNgsAndPredictionStudio,
   }))
 );
-const DatabaseExplorerModal = React.lazy(() =>
+const DatabaseExplorerView = React.lazy(() =>
   import('./components/DatabaseExplorerModal').then((m) => ({
-    default: m.DatabaseExplorerModal,
+    default: m.DatabaseExplorerView,
   }))
 );
 
@@ -657,6 +659,36 @@ const useIsomorphicLayoutEffect =
   typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
 const WORKSPACE_LAYOUT_STORAGE_KEY = 'molbiocraft.workspace.layout.v1';
+/** Libraries › Samples' files: the three the start screen offers, opened on the tab it opens them on (D0017). */
+const SIDEBAR_SAMPLE_FILES: readonly { id: string; label: string; tab: ViewerTab; icon: string }[] = [
+  { id: 'doc-pet28-egfp', label: 'pET-28a(+)-eGFP.gb', tab: 'sequence-view', icon: 'Plasmids & Vectors' },
+  { id: 'doc-puc19', label: 'pUC19_Standard_Vector.gb', tab: 'sequence-view', icon: 'Plasmids & Vectors' },
+  { id: 'doc-sanger-ab1-fwd', label: 'eGFP_Clone3_Sanger_Fwd.ab1', tab: 'sanger-contig', icon: 'Contig Assembly' },
+];
+/**
+ * The libraries the sidebar's Libraries section lists, its header's count: Vectors (2), Features (1),
+ * Samples (the Sample Project and its 3 files), and Databases (6 NCBI categories, 2 RefSeq fetches,
+ * UniProt, RCSB PDB, Local BLAST Databases, Primer Database and Restriction Enzymes).
+ */
+const SIDEBAR_LIBRARY_ROW_COUNT = 2 + 1 + (1 + SIDEBAR_SAMPLE_FILES.length) + (6 + 2 + 5);
+/** Whether the sidebar's Libraries section is open: this viewer's preference, not session data (US-01M6Q1V9). */
+const LIBRARIES_OPEN_STORAGE_KEY = 'molbiocraft.sidebar.libraries-open.v1';
+
+function loadLibrariesOpen(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(LIBRARIES_OPEN_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function saveLibrariesOpen(open: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LIBRARIES_OPEN_STORAGE_KEY, String(open));
+  } catch {
+    // A sandboxed webview refuses storage; the section still opens for this launch.
+  }
+}
 
 interface PersistedWorkspaceLayout {
   sidebarWidthPx: number;
@@ -1365,6 +1397,11 @@ export const App: React.FC = () => {
   const [expandedDocView, setExpandedDocView] = useState<boolean>(false);
   const [dbExplorerCategory, setDbExplorerCategory] =
     useState<ReferenceDatabaseCategoryId | null>(null);
+  // The document and view the main-pane Database Explorer opened over; Back returns to them (US-01M6Q1V9).
+  const [libraryReturn, setLibraryReturn] = useState<{ docId: string; tab: ViewerTab } | null>(null);
+  // The sidebar's two sections: Project (open unless folded) and Libraries (this viewer's preference).
+  const [projectSectionOpen, setProjectSectionOpen] = useState<boolean>(true);
+  const [librariesOpen, setLibrariesOpen] = useState<boolean>(loadLibrariesOpen);
   // Databases > Primers (US-01M7DQFS): open with the element focus returns to when it closes. A
   // Search Project record hit (US-01M7DVZP) opens it, or brings the open one, to `showRecord`.
   const [primerDbWindow, setPrimerDbWindow] = useState<{ opener: HTMLElement | null; showRecord?: { id: string; nonce: number } } | null>(null);
@@ -2154,7 +2191,38 @@ export const App: React.FC = () => {
     }
   };
 
+  /** Opens the main-pane Database Explorer on `category`, remembering the document it opens over (US-01M6Q1V9). */
+  const openDatabaseExplorer = (category: ReferenceDatabaseCategoryId) => {
+    if (!dbExplorerCategory) {
+      setLibraryReturn(sessionActive && !homeViewActive && activeDoc.id ? { docId: activeDoc.id, tab: viewerTab } : null);
+    }
+    setDbExplorerCategory(category);
+  };
+
+  /** Leaves the explorer; with `restore`, for the document and view it opened over, while that document is still in the project. */
+  const leaveDatabaseExplorer = (restore = true) => {
+    const back = libraryReturn;
+    setDbExplorerCategory(null);
+    setLibraryReturn(null);
+    if (!restore || !back) return;
+    if (back.docId !== activeDoc.id && catalogAllDocs.some((d) => d.id === back.docId) && !deletedDocIds.includes(back.docId)) {
+      selectDocumentWithHistory(back.docId, false, false);
+    }
+    setViewerTab(back.tab);
+  };
+
+  /** Back (⌘[, the toolbar, View › Back): out of the explorer first, else to the previous document. */
+  const goBack = () => {
+    if (dbExplorerCategory) leaveDatabaseExplorer();
+    else requireActiveSession(() => handleGoBack());
+  };
+
   const handleGoBack = () => {
+    // Out of the main-pane Database Explorer first (US-01M6Q1V9).
+    if (dbExplorerCategory) {
+      leaveDatabaseExplorer();
+      return;
+    }
     if (navIndex > 0) {
       const nextIdx = navIndex - 1;
       setNavIndex(nextIdx);
@@ -7522,7 +7590,7 @@ export const App: React.FC = () => {
           handleStartNewSession('twist-onboarding');
           break;
         case 'file:import-ncbi-db':
-          setDbExplorerCategory('ncbi-nucleotide');
+          openDatabaseExplorer('ncbi-nucleotide');
           break;
         case 'new-session:folder':
         case 'file:new-folder':
@@ -7819,7 +7887,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           requireActiveSession(() => setLockColumnOrder((v) => !v));
           break;
         case 'tools:databases-explorer':
-          setDbExplorerCategory('ncbi-nucleotide');
+          openDatabaseExplorer('ncbi-nucleotide');
           break;
         case 'tools:primer-database':
           openPrimerDatabaseWindow();
@@ -7841,7 +7909,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           break;
         case 'tools:local-blast-dbs':
         case 'tools:blast-setup':
-          setDbExplorerCategory('local-blast-dbs');
+          openDatabaseExplorer('local-blast-dbs');
           break;
         case 'tools:mask-selection':
           requireActiveSession(() => handleMaskActiveSequence('selection'));
@@ -8651,11 +8719,15 @@ requireActiveSession(() => handleCopySequenceToClipboard());
   /** The studio or panel the open view belongs to (US-01M6Q16Q). */
   const viewerStudio = studioForTab(viewerTab, activeDoc, genomicsShownView);
   /** The studio rail's entries: every studio and panel, the one showing marked (US-01M6Q1BD, D0242). */
-  const studioRail = studioRailItems(activeDoc, viewerTab, genomicsShownView);
+  // While the main-pane Database Explorer is open the rail marks no studio current (US-01M6Q1V9).
+  const studioRail = studioRailItems(activeDoc, viewerTab, genomicsShownView)
+    .map((item) => (dbExplorerCategory ? { ...item, current: false } : item));
   /** A rail entry opens the view its studio opens (the genomics studios in their own sub-view); History opens on its lineage, an enzyme set on its enzymes, as the header tab did. */
   const openStudioFromRail = (entry: StudioEntry) => {
     // A studio chosen behind the Map Gallery closes it onto that studio (US-01M7DVS2).
     setMapGalleryOpen(false);
+    // A studio chosen over the main-pane Database Explorer leaves it for that studio (US-01M6Q1V9).
+    if (dbExplorerCategory) leaveDatabaseExplorer(false);
     if (entry.id === 'history') openHybridSubTab('lineage');
     else if (entry.opens.tab === 'genomics-ngs' && entry.opens.view) openGenomicsSuite(entry.opens.view as GenomicsSuiteSubTab);
     else setViewerTab(entry.opens.tab);
@@ -8902,7 +8974,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         kind: 'command',
         id: `${idPrefix}-other-new-db-conn`,
         label: registryCommand('file-imp-other-new-db-conn').label,
-        onSelect: () => setDbExplorerCategory('ncbi-nucleotide'),
+        onSelect: () => openDatabaseExplorer('ncbi-nucleotide'),
       },
     ],
   });
@@ -9021,7 +9093,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           kind: 'command',
           id: `${idPrefix}-ncbi-uniprot`,
           label: registryCommand('file-imp-ncbi-uniprot').label,
-          onSelect: () => setDbExplorerCategory('ncbi-nucleotide'),
+          onSelect: () => openDatabaseExplorer('ncbi-nucleotide'),
         },
         {
           kind: 'command',
@@ -10242,7 +10314,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'view-back',
             label: registryCommand('view-back').label,
             shortcut: registryKey('view-back'),
-            onSelect: () => requireActiveSession(() => handleGoBack()),
+            onSelect: goBack,
           },
           {
             kind: 'command',
@@ -11418,7 +11490,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'tools-db-explorer',
             label: registryCommand('tools-db-explorer').label,
-            onSelect: () => setDbExplorerCategory('ncbi-nucleotide'),
+            onSelect: () => openDatabaseExplorer('ncbi-nucleotide'),
           },
           {
             kind: 'command',
@@ -11442,14 +11514,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'tools-local-blast-dbs',
             label: registryCommand('tools-local-blast-dbs').label,
-            onSelect: () => setDbExplorerCategory('local-blast-dbs'),
+            onSelect: () => openDatabaseExplorer('local-blast-dbs'),
           },
           {
             kind: 'command',
             id: 'tools-blast-setup',
             label: registryCommand('tools-blast-setup').label,
             // BLAST is configured through local databases (Preferences had no BLAST settings).
-            onSelect: () => setDbExplorerCategory('local-blast-dbs'),
+            onSelect: () => openDatabaseExplorer('local-blast-dbs'),
           },
         ],
       },
@@ -12855,6 +12927,29 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
     }
   };
 
+  // The Database Explorer fills the main pane while a library is open (US-01M6Q1V9): in a session in
+  // place of the document table and viewer, and over the start screen without one.
+  const databaseExplorerPane = dbExplorerCategory ? (
+    <React.Suspense fallback={null}>
+      <DatabaseExplorerView
+        key={dbExplorerCategory}
+        category={dbExplorerCategory}
+        documents={activeNonDeletedDocs}
+        localDatabases={localBlastDbs}
+        onAddLocalDatabase={(entry) =>
+          setLocalBlastDbs((prev) => [...prev, entry])
+        }
+        onRemoveLocalDatabase={(id) =>
+          setLocalBlastDbs((prev) => prev.filter((db) => db.id !== id))
+        }
+        onImportDocument={(doc) => handleAddConstruct(doc)}
+        onImportFiles={(files) => importIncomingFilesBatch(files, 'replace', 'imported')}
+        onOpenBlastModal={() => setBlastModalOpen(true)}
+        onClose={() => leaveDatabaseExplorer()}
+      />
+    </React.Suspense>
+  ) : null;
+
   return (
     <div
       ref={workbenchRootRef}
@@ -13253,8 +13348,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           <button
             type="button"
             className="nav-cluster-icon-btn"
-            onClick={() => requireActiveSession(() => handleGoBack())}
-            disabled={!sessionActive || navIndex <= 0}
+            onClick={goBack}
+            disabled={!dbExplorerCategory && (!sessionActive || navIndex <= 0)}
             aria-label="Navigate Back"
             aria-keyshortcuts={ariaSc('[')}
             title={`Back (${sc('[')})`}
@@ -13669,7 +13764,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {/* 3. Main Work Window: Project First Page (when !sessionActive or Home toggled) vs Active Split Workspace */}
       {!sessionActive || homeViewActive ? (
         <>
-          <ProjectFirstPageHome
+          {databaseExplorerPane ?? <ProjectFirstPageHome
             sidebarOpen={sidebarOpen}
             sessionActive={sessionActive}
             sessionName={sessionName}
@@ -13690,7 +13785,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             onResumeActiveSession={() => setHomeViewActive(false)}
             onOpenShortcuts={() => setPrefsModalTab('Keyboard')}
             onOpenAbout={() => setAboutModalOpen(true)}
-          />
+          />}
           {openHomeDropdown && (
             <CascadingMenuPopup
               key={openHomeDropdown}
@@ -13760,312 +13855,356 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 }
               }}
             >
-              {/* ★ Favorites */}
-              <button
-                type="button"
-                className={`source-folder-row ${
-                  selectedFolder === 'Favorites' ? 'selected' : ''
-                }`}
-                onClick={() => handleSelectProjectFolder('Favorites')}
-                onContextMenu={(event) => openFolderContextMenu(event, 'Favorites')}
-              >
-                <span style={{ width: 12 }} />
-                <MolBioSidebarNodeIcon nodeKey="Favorites" size={14} />
-                <span className="folder-label">
-                  <strong>Favorites</strong>
-                </span>
-                <span className="folder-count">
-                  {activeNonDeletedDocs.filter((d) => favoriteIdsSet.has(d.id)).length}
-                </span>
-              </button>
-
-              {favoriteFolders.filter((id) => !hiddenFolders.includes(id)).map((id) => (
-                <button type="button" key={id} className={`source-folder-row ${selectedFolder === id ? 'selected' : ''}`}
-                  onClick={() => handleSelectProjectFolder(id)} onContextMenu={(event) => openFolderContextMenu(event, id)}>
-                  <span className="tree-leaf-spacer" aria-hidden="true" />
-                  <Star size={14} /><span className="folder-label">{folderLabel(id)}</span>
-                  <span className="folder-count">{explorerFolderCounts[id] ?? 0}</span>
+              {/* Project: the user's own documents, folders, trash and history (US-01M6Q1V9). */}
+              <section className="mbc-sidebar-section" data-section="project" aria-labelledby="mbc-sidebar-project-head">
+                <button
+                  type="button"
+                  id="mbc-sidebar-project-head"
+                  className="mbc-sidebar-section-head"
+                  aria-expanded={projectSectionOpen}
+                  aria-controls="mbc-sidebar-project-body"
+                  onClick={() => setProjectSectionOpen((open) => !open)}
+                >
+                  {projectSectionOpen ? (
+                    <ChevronDown size={12} className="tree-chevron" />
+                  ) : (
+                    <ChevronRight size={12} className="tree-chevron" />
+                  )}
+                  <span className="mbc-sidebar-section-label">Project</span>
                 </button>
-              ))}
-
-              {/* ▾ Local Project Files */}
-              <button
-                type="button"
-                className={`source-folder-row ${
-                  selectedFolder === 'All Project Files' ? 'selected' : ''
-                }`}
-                onContextMenu={(event) => openFolderContextMenu(event, PROJECT_ROOT)}
-                style={{ marginBlockStart: 2 }}
-                onClick={() => {
-                  toggleTreeNode('projectFiles');
-                  handleSelectProjectFolder('All Project Files');
-                }}
-              >
-                {expandedNodes.projectFiles ? (
-                  <ChevronDown size={12} className="tree-chevron" />
-                ) : (
-                  <ChevronRight size={12} className="tree-chevron" />
-                )}
-                <MolBioSidebarNodeIcon
-                  nodeKey="All Project Files"
-                  isOpen={Boolean(expandedNodes.projectFiles)}
-                  size={14}
-                />
-                <span className="folder-label">
-                  <strong>All Project Files</strong>
-                </span>
-                <span className="folder-count">{activeNonDeletedDocs.length}</span>
-              </button>
-
-              {expandedNodes.projectFiles && (
-                <div className="tree-indent-1">
-                  <ProjectFolderTree
-                    folders={visibleExplorerFolders}
-                    selected={selectedFolder}
-                    expanded={expandedNodes}
-                    colors={folderColors}
-                    counts={explorerFolderCounts}
-                    onSelect={handleSelectProjectFolder}
-                    onToggle={(id) => setExpandedNodes((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }))}
-                    onContextMenu={openFolderContextMenu}
-                  />
-
-                  {/* Reference Features: Standard Plasmid Features */}
-                  <button
-                    type="button"
-                    className="source-folder-row"
-                    onClick={() => setViewerTab('annotations-table')}
-                    title="Inspect and apply standard plasmid promoter, resistance, origin, and tag features"
-                  >
-                    <span className="tree-leaf-spacer" aria-hidden="true" />
-                    <MolBioSidebarNodeIcon nodeKey="standard-features" size={13} />
-                    <span className="folder-label">Standard Plasmid Features</span>
-                    <span className="folder-count">{COMMON_PLASMID_FEATURES.length}</span>
-                  </button>
-
-                  {/* 🗑 Deleted Items (Soft-Delete Recycle Bin) */}
+                {projectSectionOpen && (
+                  <div className="mbc-sidebar-section-body" id="mbc-sidebar-project-body">
+                  {/* ★ Favorites */}
                   <button
                     type="button"
                     className={`source-folder-row ${
-                      selectedFolder === 'Deleted Items' ? 'selected' : ''
+                      selectedFolder === 'Favorites' ? 'selected' : ''
                     }`}
-                    onClick={() => handleSelectProjectFolder('Deleted Items')}
-                    onContextMenu={(event) => openFolderContextMenu(event, 'Deleted Items')}
-                    title="Non-destructive recycle bin (use Put Back to restore or Erase All to remove)"
+                    onClick={() => handleSelectProjectFolder('Favorites')}
+                    onContextMenu={(event) => openFolderContextMenu(event, 'Favorites')}
                   >
                     <span style={{ width: 12 }} />
-                    <MolBioSidebarNodeIcon nodeKey="Deleted Items" size={13} />
-                    <span className="folder-label">Deleted Items</span>
-                    <span className="folder-count">{deletedDocIds.length}</span>
+                    <MolBioSidebarNodeIcon nodeKey="Favorites" size={14} />
+                    <span className="folder-label">
+                      <strong>Favorites</strong>
+                    </span>
+                    <span className="folder-count">
+                      {activeNonDeletedDocs.filter((d) => favoriteIdsSet.has(d.id)).length}
+                    </span>
                   </button>
-                </div>
-              )}
 
-              {/* ⟳ Operations & Lineage */}
-              <button
-                type="button"
-                className="source-folder-row"
-                style={{ marginBlockStart: 6 }}
-                onClick={() => openHybridSubTab('lineage')}
-                title="View construct genealogy, operation history, and workflow runs"
-              >
-                <span style={{ width: 12 }} />
-                <MolBioSidebarNodeIcon nodeKey="Operations" size={14} />
-                <span className="folder-label">
-                  <strong>Operations</strong>
-                </span>
-                <span className="folder-count">
-                  {activeNonDeletedDocs.reduce((sum, d) => sum + (d.history?.length ?? 0), 0)}
-                </span>
-              </button>
-
-              {/* ▾ NCBI, UniProt & Local BLAST Databases */}
-              <button
-                type="button"
-                className="source-folder-row"
-                style={{ marginBlockStart: 4 }}
-                onClick={() => toggleTreeNode('ncbiDbs')}
-              >
-                {expandedNodes.ncbiDbs ? (
-                  <ChevronDown size={12} className="tree-chevron" />
-                ) : (
-                  <ChevronRight size={12} className="tree-chevron" />
-                )}
-                <MolBioSidebarNodeIcon nodeKey="NCBI" size={14} />
-                <span className="folder-label">
-                  <strong>NCBI</strong>
-                </span>
-                <span className="folder-count">
-                  {queryCuratedDatabaseRecordsRust('ncbi-gene', '').length +
-                    queryCuratedDatabaseRecordsRust('ncbi-nucleotide', '').length +
-                    queryCuratedDatabaseRecordsRust('ncbi-protein', '').length +
-                    queryCuratedDatabaseRecordsRust('ncbi-pubmed', '').length +
-                    queryCuratedDatabaseRecordsRust('ncbi-structure', '').length +
-                    queryCuratedDatabaseRecordsRust('ncbi-taxonomy', '').length}
-                </span>
-              </button>
-
-              {expandedNodes.ncbiDbs && (
-                <div className="tree-indent-1">
-                  {(
-                    [
-                      ['ncbi-gene', 'Gene'],
-                      ['ncbi-nucleotide', 'Nucleotide'],
-                      ['ncbi-protein', 'Protein'],
-                      ['ncbi-pubmed', 'PubMed'],
-                      ['ncbi-structure', 'Structure'],
-                      ['ncbi-taxonomy', 'Taxonomy'],
-                    ] as [ReferenceDatabaseCategoryId, string][]
-                  ).map(([catId, label]) => (
-                    <button
-                      type="button"
-                      key={catId}
-                      className={`source-folder-row ${
-                        dbExplorerCategory === catId ? 'selected' : ''
-                      }`}
-                      onClick={() => setDbExplorerCategory(catId)}
-                    >
-                      <span style={{ width: 12 }} />
-                      <MolBioSidebarNodeIcon nodeKey={catId} size={13} />
-                      <span className="folder-label">{label}</span>
-                      <span className="folder-count">
-                        {queryCuratedDatabaseRecordsRust(catId, '').length}
-                      </span>
+                  {favoriteFolders.filter((id) => !hiddenFolders.includes(id)).map((id) => (
+                    <button type="button" key={id} className={`source-folder-row ${selectedFolder === id ? 'selected' : ''}`}
+                      onClick={() => handleSelectProjectFolder(id)} onContextMenu={(event) => openFolderContextMenu(event, id)}>
+                      <span className="tree-leaf-spacer" aria-hidden="true" />
+                      <Star size={14} /><span className="folder-label">{folderLabel(id)}</span>
+                      <span className="folder-count">{explorerFolderCounts[id] ?? 0}</span>
                     </button>
                   ))}
-                </div>
-              )}
 
-              <button
-                type="button"
-                className={`source-folder-row ${
-                  dbExplorerCategory === 'uniprot' ? 'selected' : ''
-                }`}
-                onClick={() => setDbExplorerCategory('uniprot')}
-              >
-                <span style={{ width: 12 }} />
-                <MolBioSidebarNodeIcon nodeKey="uniprot" size={14} />
-                <span className="folder-label">
-                  <strong>UniProt</strong>
-                </span>
-                <span className="folder-count">
-                  {queryCuratedDatabaseRecordsRust('uniprot', '').length}
-                </span>
-              </button>
+                  {/* ▾ Local Project Files */}
+                  <button
+                    type="button"
+                    className={`source-folder-row ${
+                      selectedFolder === 'All Project Files' ? 'selected' : ''
+                    }`}
+                    onContextMenu={(event) => openFolderContextMenu(event, PROJECT_ROOT)}
+                    style={{ marginBlockStart: 2 }}
+                    onClick={() => {
+                      toggleTreeNode('projectFiles');
+                      handleSelectProjectFolder('All Project Files');
+                    }}
+                  >
+                    {expandedNodes.projectFiles ? (
+                      <ChevronDown size={12} className="tree-chevron" />
+                    ) : (
+                      <ChevronRight size={12} className="tree-chevron" />
+                    )}
+                    <MolBioSidebarNodeIcon
+                      nodeKey="All Project Files"
+                      isOpen={Boolean(expandedNodes.projectFiles)}
+                      size={14}
+                    />
+                    <span className="folder-label">
+                      <strong>All Project Files</strong>
+                    </span>
+                    <span className="folder-count">{activeNonDeletedDocs.length}</span>
+                  </button>
 
-              <button
-                type="button"
-                className={`source-folder-row ${
-                  dbExplorerCategory === 'local-blast-dbs' ? 'selected' : ''
-                }`}
-                onClick={() => setDbExplorerCategory('local-blast-dbs')}
-              >
-                <span style={{ width: 12 }} />
-                <MolBioSidebarNodeIcon nodeKey="local-blast-dbs" size={13} />
-                <span className="folder-label">Local BLAST Databases</span>
-                <span className="folder-count">{localBlastDbs.length}</span>
-              </button>
+                  {expandedNodes.projectFiles && (
+                    <div className="tree-indent-1">
+                      <ProjectFolderTree
+                        folders={visibleExplorerFolders}
+                        selected={selectedFolder}
+                        expanded={expandedNodes}
+                        colors={folderColors}
+                        counts={explorerFolderCounts}
+                        onSelect={handleSelectProjectFolder}
+                        onToggle={(id) => setExpandedNodes((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }))}
+                        onContextMenu={openFolderContextMenu}
+                      />
 
-              {/* ▾ Built-In Vector & Reference Libraries */}
-              <button
-                type="button"
-                className="source-folder-row"
-                style={{ marginBlockStart: 6 }}
-                onClick={() => toggleTreeNode('libraries')}
-              >
-                {expandedNodes.libraries ? (
-                  <ChevronDown size={12} className="tree-chevron" />
-                ) : (
-                  <ChevronRight size={12} className="tree-chevron" />
+                      {/* 🗑 Deleted Items (Soft-Delete Recycle Bin) */}
+                      <button
+                        type="button"
+                        className={`source-folder-row ${
+                          selectedFolder === 'Deleted Items' ? 'selected' : ''
+                        }`}
+                        onClick={() => handleSelectProjectFolder('Deleted Items')}
+                        onContextMenu={(event) => openFolderContextMenu(event, 'Deleted Items')}
+                        title="Non-destructive recycle bin (use Put Back to restore or Erase All to remove)"
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioSidebarNodeIcon nodeKey="Deleted Items" size={13} />
+                        <span className="folder-label">Deleted Items</span>
+                        <span className="folder-count">{deletedDocIds.length}</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* ⟳ Operations & Lineage */}
+                  <button
+                    type="button"
+                    className="source-folder-row"
+                    style={{ marginBlockStart: 6 }}
+                    onClick={() => openHybridSubTab('lineage')}
+                    title="View construct genealogy, operation history, and workflow runs"
+                  >
+                    <span style={{ width: 12 }} />
+                    <MolBioSidebarNodeIcon nodeKey="Operations" size={14} />
+                    <span className="folder-label">
+                      <strong>History</strong>
+                    </span>
+                    <span className="folder-count">
+                      {activeNonDeletedDocs.reduce((sum, d) => sum + (d.history?.length ?? 0), 0)}
+                    </span>
+                  </button>
+                  </div>
                 )}
-                <MolBioSidebarNodeIcon nodeKey="vector-catalog" size={14} />
-                <span className="folder-label">
-                  <strong>Vector &amp; Reference Banks</strong>
-                </span>
-                <span className="folder-count">
-                  {VECTOR_CATALOG.length +
-                    MODULAR_VECTOR_PARTS.length +
-                    COMMON_PLASMID_FEATURES.length +
-                    4}
-                </span>
-              </button>
+              </section>
 
-              {expandedNodes.libraries && (
-                <div className="tree-indent-1">
-                  <button
-                    type="button"
-                    className="source-folder-row"
-                    onClick={() => openVectorStudio('catalog')}
-                  >
-                    <span style={{ width: 12 }} />
-                    <MolBioSidebarNodeIcon nodeKey="vector-catalog" size={13} />
-                    <span className="folder-label">Vector Catalog</span>
-                    <span className="folder-count">{VECTOR_CATALOG.length}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="source-folder-row"
-                    onClick={() => openVectorStudio('architect')}
-                  >
-                    <span style={{ width: 12 }} />
-                    <MolBioSidebarNodeIcon nodeKey="modular-parts" size={13} />
-                    <span className="folder-label">Modular Vector Parts</span>
-                    <span className="folder-count">{MODULAR_VECTOR_PARTS.length}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="source-folder-row"
-                    onClick={() => handleAutoDetectCommonFeatures()}
-                  >
-                    <span style={{ width: 12 }} />
-                    <MolBioSidebarNodeIcon nodeKey="auto-annotate" size={13} />
-                    <span className="folder-label">Auto-Annotate Features</span>
-                    <span className="folder-count">{COMMON_PLASMID_FEATURES.length}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="source-folder-row"
-                    onClick={() => handleFetchNcbiSample('cas9')}
-                  >
-                    <span style={{ width: 12 }} />
-                    <MolBioSidebarNodeIcon nodeKey="ncbi-nucleotide" size={13} />
-                    <span className="folder-label">RefSeq: SpCas9 CDS</span>
-                    <span className="folder-count">1</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="source-folder-row"
-                    onClick={() => handleFetchNcbiSample('spike')}
-                  >
-                    <span style={{ width: 12 }} />
-                    <MolBioSidebarNodeIcon nodeKey="ncbi-nucleotide" size={13} />
-                    <span className="folder-label">RefSeq: Spike RBD</span>
-                    <span className="folder-count">1</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="source-folder-row"
-                    onClick={() => handleLoadBenchmarkDocument('genome-500k')}
-                    title="Generate & load a 500,000 bp annotated chromosome in the Resident Rust Sequence Store"
-                  >
-                    <span style={{ width: 12 }} />
-                    <MolBioSidebarNodeIcon nodeKey="Genomes" size={13} />
-                    <span className="folder-label">Genome: 500 kbp E. coli</span>
-                    <span className="folder-count">1</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="source-folder-row"
-                    onClick={() => handleLoadBenchmarkDocument('protein-10k')}
-                    title="Generate & load a 10,000 aa multi-domain polyprotein in the Resident Rust Sequence Store"
-                  >
-                    <span style={{ width: 12 }} />
-                    <MolBioSidebarNodeIcon nodeKey="Protein Documents" size={13} />
-                    <span className="folder-label">Protein: 10,000 aa Titin</span>
-                    <span className="folder-count">1</span>
-                  </button>
-                </div>
-              )}
+              {/* Libraries: vectors, features, samples and databases, collapsed until opened (US-01M6Q1V9). */}
+              <section className="mbc-sidebar-section" data-section="libraries" aria-labelledby="mbc-sidebar-libraries-head">
+                <button
+                  type="button"
+                  id="mbc-sidebar-libraries-head"
+                  className="mbc-sidebar-section-head"
+                  aria-expanded={librariesOpen}
+                  aria-controls="mbc-sidebar-libraries-body"
+                  onClick={() => {
+                    const open = !librariesOpen;
+                    setLibrariesOpen(open);
+                    saveLibrariesOpen(open);
+                  }}
+                >
+                  {librariesOpen ? (
+                    <ChevronDown size={12} className="tree-chevron" />
+                  ) : (
+                    <ChevronRight size={12} className="tree-chevron" />
+                  )}
+                  <span className="mbc-sidebar-section-label">Libraries</span>
+                  {/* The number of libraries the section lists. */}
+                  <span className="mbc-sidebar-section-count">{SIDEBAR_LIBRARY_ROW_COUNT}</span>
+                </button>
+                {librariesOpen && (
+                  <div className="mbc-sidebar-section-body" id="mbc-sidebar-libraries-body">
+                    <div className="mbc-sidebar-group" data-group="vectors">
+                      <div className="sources-group-label">Vectors</div>
+                      <button
+                        type="button"
+                        className="source-folder-row"
+                        onClick={() => {
+                          leaveDatabaseExplorer(false);
+                          openVectorStudio('catalog');
+                        }}
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioSidebarNodeIcon nodeKey="vector-catalog" size={13} />
+                        <span className="folder-label">Vector Catalog</span>
+                        <span className="folder-count">{VECTOR_CATALOG.length}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="source-folder-row"
+                        onClick={() => {
+                          leaveDatabaseExplorer(false);
+                          openVectorStudio('architect');
+                        }}
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioSidebarNodeIcon nodeKey="modular-parts" size={13} />
+                        <span className="folder-label">Modular Vector Parts</span>
+                        <span className="folder-count">{MODULAR_VECTOR_PARTS.length}</span>
+                      </button>
+                    </div>
+
+                    <div className="mbc-sidebar-group" data-group="features">
+                      <div className="sources-group-label">Features</div>
+                      {/* The feature library, as Sequence › Features › Feature Library opens it. */}
+                      <button
+                        type="button"
+                        className="source-folder-row"
+                        onClick={() => {
+                          leaveDatabaseExplorer(false);
+                          requireActiveSession(() => setViewerTab('annotations-table'));
+                        }}
+                        title="Inspect and apply standard plasmid promoter, resistance, origin, and tag features"
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioSidebarNodeIcon nodeKey="standard-features" size={13} />
+                        <span className="folder-label">Standard Plasmid Features</span>
+                        <span className="folder-count">{COMMON_PLASMID_FEATURES.length}</span>
+                      </button>
+                    </div>
+
+                    <div className="mbc-sidebar-group" data-group="samples">
+                      <div className="sources-group-label">Samples</div>
+                      <button
+                        type="button"
+                        className="source-folder-row"
+                        onClick={() => {
+                          leaveDatabaseExplorer(false);
+                          handleImportSampleDocuments();
+                        }}
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioSidebarNodeIcon nodeKey="Sample Documents" size={13} />
+                        <span className="folder-label">Sample Project</span>
+                        <span className="folder-count">{SAMPLE_LIBRARY.length}</span>
+                      </button>
+                      {SIDEBAR_SAMPLE_FILES.map((file) => (
+                        <button
+                          type="button"
+                          key={file.id}
+                          className="source-folder-row"
+                          onClick={() => {
+                            leaveDatabaseExplorer(false);
+                            handleOpenSampleDocumentFromHome(file.id, file.tab);
+                          }}
+                        >
+                          <span style={{ width: 12 }} />
+                          <MolBioSidebarNodeIcon nodeKey={file.icon} size={13} />
+                          <span className="folder-label">{file.label}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="mbc-sidebar-group" data-group="databases">
+                      <div className="sources-group-label">Databases</div>
+                      <div className="mbc-sidebar-group" data-group="ncbi">
+                        <div className="sources-group-label mbc-sidebar-subgroup-label">NCBI</div>
+                        {(
+                          [
+                            ['ncbi-gene', 'Gene'],
+                            ['ncbi-nucleotide', 'Nucleotide'],
+                            ['ncbi-protein', 'Protein'],
+                            ['ncbi-pubmed', 'PubMed'],
+                            ['ncbi-structure', 'Structure'],
+                            ['ncbi-taxonomy', 'Taxonomy'],
+                          ] as [ReferenceDatabaseCategoryId, string][]
+                        ).map(([catId, label]) => (
+                          <button
+                            type="button"
+                            key={catId}
+                            className={`source-folder-row ${
+                              dbExplorerCategory === catId ? 'selected' : ''
+                            }`}
+                            onClick={() => openDatabaseExplorer(catId)}
+                          >
+                            <span style={{ width: 12 }} />
+                            <MolBioSidebarNodeIcon nodeKey={catId} size={13} />
+                            <span className="folder-label">{label}</span>
+                            <span className="folder-count">
+                              {queryCuratedDatabaseRecordsRust(catId, '').length}
+                            </span>
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="source-folder-row"
+                          onClick={() => handleFetchNcbiSample('cas9')}
+                        >
+                          <span style={{ width: 12 }} />
+                          <MolBioSidebarNodeIcon nodeKey="ncbi-nucleotide" size={13} />
+                          <span className="folder-label">RefSeq: SpCas9 CDS</span>
+                          <span className="folder-count">1</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="source-folder-row"
+                          onClick={() => handleFetchNcbiSample('spike')}
+                        >
+                          <span style={{ width: 12 }} />
+                          <MolBioSidebarNodeIcon nodeKey="ncbi-nucleotide" size={13} />
+                          <span className="folder-label">RefSeq: Spike RBD</span>
+                          <span className="folder-count">1</span>
+                        </button>
+                      </div>
+
+                      <button
+                        type="button"
+                        className={`source-folder-row ${
+                          dbExplorerCategory === 'uniprot' ? 'selected' : ''
+                        }`}
+                        onClick={() => openDatabaseExplorer('uniprot')}
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioSidebarNodeIcon nodeKey="uniprot" size={13} />
+                        <span className="folder-label">UniProt</span>
+                        <span className="folder-count">
+                          {queryCuratedDatabaseRecordsRust('uniprot', '').length}
+                        </span>
+                      </button>
+
+                      {/* Online only, searched when the user asks (D0008): no record count. */}
+                      <button
+                        type="button"
+                        className={`source-folder-row ${
+                          dbExplorerCategory === 'rcsb-pdb' ? 'selected' : ''
+                        }`}
+                        onClick={() => openDatabaseExplorer('rcsb-pdb')}
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioDocTypeIcon kind="protein" visualOverride="structure-3d" size={13} />
+                        <span className="folder-label">RCSB PDB</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`source-folder-row ${
+                          dbExplorerCategory === 'local-blast-dbs' ? 'selected' : ''
+                        }`}
+                        onClick={() => openDatabaseExplorer('local-blast-dbs')}
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioSidebarNodeIcon nodeKey="local-blast-dbs" size={13} />
+                        <span className="folder-label">Local BLAST Databases</span>
+                        <span className="folder-count">{localBlastDbs.length}</span>
+                      </button>
+
+                      {/* Separate windows, not explorer categories (D0221). */}
+                      <button
+                        type="button"
+                        className="source-folder-row"
+                        onClick={() => openPrimerDatabaseWindow()}
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioSidebarNodeIcon nodeKey="Primers" size={13} />
+                        <span className="folder-label">Primer Database</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="source-folder-row"
+                        onClick={() => openEnzymeDatabaseWindow()}
+                      >
+                        <span style={{ width: 12 }} />
+                        <MolBioMenuGlyph glyph="digest-scissors" size={13} />
+                        <span className="folder-label">Restriction Enzymes</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
             </div>
           </aside>
         )}
@@ -14108,7 +14247,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           />
         )}
 
-        {/* Center Area: Multifile Project Info Table + Sequence Viewer (Top/Bottom or Left/Right Split) */}
+        {/* Center Area: Multifile Project Info Table + Sequence Viewer (Top/Bottom or Left/Right Split), or the Database Explorer (US-01M6Q1V9) */}
+        {databaseExplorerPane ?? (
         <div
           className={`mbc-center-stack ${
             workspaceSplitMode === 'left-right' && !docTableCollapsed
@@ -16356,6 +16496,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           );
           })()}
         </div>
+        )}
       </div>
       )}
 
@@ -17341,29 +17482,6 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             setPrimerDbRefresh((n) => n + 1);
           }}
         />
-      )}
-
-      {dbExplorerCategory && (
-        <React.Suspense fallback={null}>
-          <DatabaseExplorerModal
-            initialCategory={dbExplorerCategory}
-            documents={activeNonDeletedDocs}
-            localDatabases={localBlastDbs}
-            onAddLocalDatabase={(entry) =>
-              setLocalBlastDbs((prev) => [...prev, entry])
-            }
-            onRemoveLocalDatabase={(id) =>
-              setLocalBlastDbs((prev) => prev.filter((db) => db.id !== id))
-            }
-            onImportDocument={(doc) => handleAddConstruct(doc)}
-            onImportFiles={(files) => importIncomingFilesBatch(files, 'replace', 'imported')}
-            onOpenBlastModal={() => {
-              setDbExplorerCategory(null);
-              setBlastModalOpen(true);
-            }}
-            onClose={() => setDbExplorerCategory(null)}
-          />
-        </React.Suspense>
       )}
 
       {newSeqModalOpen && (

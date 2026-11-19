@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 import React, { useMemo, useState, useSyncExternalStore } from 'react';
-import { Download, FolderPlus, Search, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowLeft, Download, FolderPlus, Search, Trash2, TriangleAlert } from 'lucide-react';
 import { MoleculeType, SequenceDocument, Topology } from '../types/bio';
 import {
   buildCuratedDatabaseDocumentRust,
@@ -10,7 +10,6 @@ import {
   parseRemoteDatabasePayloadRust,
   queryCuratedDatabaseRecordsRust,
 } from '../lib/rustBioEngine';
-import { StaticModalDialog } from './MenusPreferencesAndBlastModal';
 import { localBlastDbDocuments, LocalSequenceDbEntry } from '../core/localBlastDb';
 import {
   errorHeading, formatResolution, RCSB_MAX_IN_FLIGHT, RCSB_MAX_STARTS_PER_SECOND, rcsbPanelActions, RcsbExplorerSession,
@@ -78,8 +77,9 @@ const CategoryIcon: React.FC<{ id: ReferenceDatabaseCategoryId; size: number }> 
     : <MolBioSidebarNodeIcon nodeKey={id} size={size} />;
 
 
-interface DatabaseExplorerModalProps {
-  initialCategory: ReferenceDatabaseCategoryId;
+interface DatabaseExplorerViewProps {
+  /** The category the sidebar, a menu or a command chose; the view has no category list of its own. */
+  category: ReferenceDatabaseCategoryId;
   documents: SequenceDocument[];
   localDatabases: LocalSequenceDbEntry[];
   onAddLocalDatabase: (entry: LocalSequenceDbEntry) => void;
@@ -88,11 +88,18 @@ interface DatabaseExplorerModalProps {
   /** The workbench's file import; an opened RCSB entry is handed to it as its mmCIF file. */
   onImportFiles?: ImportFiles;
   onOpenBlastModal: () => void;
+  /** Back: leaves the explorer for the document it opened over. */
   onClose: () => void;
 }
 
-export const DatabaseExplorerModal: React.FC<DatabaseExplorerModalProps> = ({
-  initialCategory,
+/**
+ * The Database Explorer as a main-pane view (US-01M6Q1V9): the records, queries, fetch and RCSB
+ * panel of one category, filling the main pane in place of the document table and viewer. The
+ * sidebar's Libraries › Databases lists the categories, so the view has no category column, and
+ * it is no dialog: Back (or a studio chosen in the rail) returns to the document.
+ */
+export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
+  category: activeCategory,
   documents,
   localDatabases,
   onAddLocalDatabase,
@@ -102,8 +109,6 @@ export const DatabaseExplorerModal: React.FC<DatabaseExplorerModalProps> = ({
   onOpenBlastModal,
   onClose,
 }) => {
-  const [activeCategory, setActiveCategory] =
-    useState<ReferenceDatabaseCategoryId>(initialCategory);
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [liveAccession, setLiveAccession] = useState<string>('');
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
@@ -210,42 +215,25 @@ export const DatabaseExplorerModal: React.FC<DatabaseExplorerModalProps> = ({
     DB_CATEGORIES.find((c) => c.id === activeCategory) ?? DB_CATEGORIES[0];
 
   return (
-    <StaticModalDialog
-      titleId="mbc-db-explorer-title"
-      title="NCBI, UniProt, RCSB PDB & Local Sequence Databases"
-      sizeClass="modal-size-db"
-      onClose={onClose}
+    <section
+      className="mbc-db-explorer-pane"
+      data-db-category={activeCategory}
+      aria-labelledby="mbc-db-explorer-title"
     >
-      <div className="prefs-split-layout" style={{ minBlockSize: 470 }}>
-        {/* Left Navigation Categories */}
-        <nav className="prefs-category-sidebar" aria-label="Reference Databases">
-          {DB_CATEGORIES.map((cat) => {
-            const count =
-              cat.id === 'rcsb-pdb'
-                ? null
-                : cat.id === 'local-blast-dbs'
-                ? localDatabases.length
-                : queryCuratedDatabaseRecordsRust(cat.id, '').length;
-            return (
-              <button
-                key={cat.id}
-                type="button"
-                className={`prefs-category-item ${activeCategory === cat.id ? 'active' : ''}`}
-                onClick={() => {
-                  setActiveCategory(cat.id);
-                  setLiveStatus(null);
-                }}
-              >
-                <CategoryIcon id={cat.id} size={15} />
-                <span style={{ flex: 1, textAlign: 'left' }}>{cat.label}</span>
-                {count !== null && <span className="folder-count">{count}</span>}
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* Right Detail Pane */}
-        <div className="prefs-detail-pane" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="mbc-db-explorer-bar">
+        <button
+          type="button"
+          className="btn-secondary-sm mbc-db-explorer-back"
+          onClick={onClose}
+          title="Back to the document"
+        >
+          <ArrowLeft size={13} aria-hidden="true" />
+          <span>Back</span>
+        </button>
+        <h2 id="mbc-db-explorer-title" className="mbc-db-explorer-title">Databases</h2>
+      </div>
+      <div className="mbc-db-explorer-body">
+        <div className="mbc-db-explorer-detail">
           <div className="studio-card-header" style={{ marginBottom: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
               <CategoryIcon id={activeCategory} size={18} />
@@ -462,7 +450,6 @@ export const DatabaseExplorerModal: React.FC<DatabaseExplorerModalProps> = ({
                   display: 'flex',
                   flexDirection: 'column',
                   gap: 8,
-                  maxBlockSize: 330,
                   overflowY: 'auto',
                   paddingInlineEnd: 4,
                 }}
@@ -553,17 +540,10 @@ export const DatabaseExplorerModal: React.FC<DatabaseExplorerModalProps> = ({
         </div>
       </div>
 
-      <div className="prefs-modal-footer">
-        <span style={{ fontSize: 11.5, opacity: 0.75 }}>
-          Built-in curated reference bank works 100% offline • Optional direct Entrez / UniProt accession fetch and RCSB PDB search
-        </span>
-        <div className="prefs-footer-actions">
-          <button type="button" className="btn-primary-sm" onClick={onClose}>
-            Done
-          </button>
-        </div>
-      </div>
-    </StaticModalDialog>
+      <p className="mbc-db-explorer-note">
+        Built-in curated reference bank works 100% offline • Optional direct Entrez / UniProt accession fetch and RCSB PDB search
+      </p>
+    </section>
   );
 };
 
