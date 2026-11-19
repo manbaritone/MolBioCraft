@@ -189,8 +189,11 @@ describe('contig-summary genome records', () => {
   });
 
   /**
-   * Genomes/Bacteria and Genomes/Eukaryotes, pinned to the reference sample export's records
-   * (collection="Sample Documents/Genomes/...") and its bacteria and eukaryote document tables.
+   * Genomes/Bacteria and Genomes/Eukaryotes, pinned to the public NCBI records each sample cites:
+   * the length, accession, GI and topology written here are the ones 'genome samples match their
+   * NCBI record summaries' checks against the fetched esummary records (US-01M6TDFV), and Drosophila
+   * ChrM, whose bases are its whole record, is checked base for base against the fetched FASTA
+   * (US-01M6TGZ8), as scripts/outside-data/fetch.sh fetches them.
    */
   describe('Genome summary samples', () => {
     const genome = (name: string) => {
@@ -469,10 +472,13 @@ describe('contig-summary genome records', () => {
 });
 
 /**
- * Genomes/Human, Genomes/Plants, Genomes/Viruses and Primers, pinned to the reference sample
- * export's records and its human, plant, virus and primer document tables; the Tree Documents are
- * MolBioCraft's own trees of the rebuilt alignments (US-01M6TDSV). The samples carry no document
- * dates of their own from that export: no Created or Modified field (US-01M6TDFV, US-01M6TDSV).
+ * Genomes/Human, Genomes/Plants, Genomes/Viruses and Primers, pinned to the public NCBI records each
+ * sample cites: the genome figures written here are checked against the fetched esummary records
+ * (US-01M6TDFV), the viral and chrM sequences base for base against the fetched FASTA (US-01M6TGZ8),
+ * and the primers against their fetched source records, in 'samples checked against the public
+ * records they cite' below. The Tree Documents are MolBioCraft's own trees of the rebuilt alignments
+ * (US-01M6TDSV). No sample carries a document date copied from another program: no Created or
+ * Modified field (US-01M6TDFV, US-01M6TDSV).
  */
 describe('Human, plant and virus reference records', () => {
   const sample = (name: string) => {
