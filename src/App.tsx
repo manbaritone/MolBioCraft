@@ -116,7 +116,7 @@ import { deleteTableSearch, isSearchField, loadSavedSearches, saveTableSearch, S
 import { ExpressionDialog, ExpressionResultsView } from './components/ExpressionViews';
 import { HelpPanel } from './components/HelpPanel';
 import { FragmentTraceView, MicrosatelliteDialog } from './components/FragmentViews';
-import { contigDocument, fragmentDocumentFromFsa, mapOptionsOf, runQueryCentricAlignment } from './core/operationRunners';
+import { contigDocument, fragmentDocumentFromFsa, mapOptionsOf, runQueryCentricAlignment, withWarningNotes } from './core/operationRunners';
 import { exportReadsToFastq, fastqToReadDocuments, samToContigs, vcfToFeatures } from './core/importFormats';
 import { parseAlignedFasta, parseTextAlignment, splitFlatfileRecords, textAlignmentToDocument } from './core/alignmentFormats';
 import { DocumentSplitDivider, SplitDocumentPane, splitPaneShowsCircularMap, splitPaneShowsSequenceMap } from './components/SplitDocumentPane';
@@ -288,6 +288,7 @@ import {
   tmNoAnswerSentence,
   joinedWithAnd,
   parseGff3Sequences,
+  structureChainSequences,
 } from './core/bioEngine';
 import {
   exportToEMBL,
@@ -384,7 +385,6 @@ import type { VectorStudioTab } from './components/VectorLibraryAndDesignStudio'
 import type { GenomicsSuiteSubTab } from './components/GenomicsNgsAndPredictionStudio';
 import {
   complementOnlySequence,
-  parsePdbCaCoordinates,
   reverseOnlySequence,
 } from './core/genomicsAndStructureSuite';
 import { MODULAR_VECTOR_PARTS, ModularVectorPart } from './data/modularVectorParts';
@@ -6004,57 +6004,63 @@ export const App: React.FC = () => {
       return;
     }
 
-    // 4. 3D Macromolecular Structure (.pdb / .cif / .mmcif)
+    // 4. 3D Macromolecular Structure (.pdb / .cif / .mmcif): one document per polymer chain the
+    // engine reads (structure_chain_sequences, D0211), as Protein, DNA or RNA, its modified residues
+    // read as their parents and named in its Notes, and its residues read as X (or N) in a Warnings
+    // block. An ion or a water is never a chain; a polymer chain the engine skipped is named.
     if (
       lowerName.endsWith('.pdb') ||
       lowerName.endsWith('.cif') ||
       lowerName.endsWith('.mmcif')
     ) {
-      const caAtoms = parsePdbCaCoordinates(text);
-      if (caAtoms.length === 0) {
-        throw new Error(`"${file.name}" has no protein Cα coordinates; this structure cannot be opened in the protein viewer`);
+      const read = structureChainSequences(text);
+      const skippedSentences = read.skipped.map((s) => `${stem} chain ${s.chainId} was not opened: ${s.reason}.`);
+      if (read.chains.length === 0) {
+        throw new Error([`"${file.name}" has no protein or nucleic-acid chain to open`, ...skippedSentences].join('. '));
       }
-      const threeToOne: Record<string, string> = {
-        ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C',
-        GLN: 'Q', GLU: 'E', GLY: 'G', HIS: 'H', ILE: 'I',
-        LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P',
-        SER: 'S', THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V',
-      };
-      // Each polypeptide chain is its own sequence: concatenating chains would invent a protein.
-      const chainIds = [...new Set(caAtoms.map((a) => a.chainId || 'A'))];
+      // A file of more than one polymer chain names each document by its chain.
+      const chainIds = read.chains.map((c) => c.chainId);
+      const named = read.chains.length + read.skipped.length > 1;
+      const unitOf = { Protein: 'aa', DNA: 'bp', RNA: 'nt' } as const;
       const nowIso = new Date().toISOString();
-      const chainDocs: SequenceDocument[] = chainIds.map((chainId, chainIdx) => {
-        const atoms = caAtoms.filter((a) => (a.chainId || 'A') === chainId);
-        const aaSeq = atoms.map((a) => threeToOne[a.resName.toUpperCase()] ?? 'X').join('');
-        const chainName = chainIds.length > 1 ? `${stem} chain ${chainId}` : stem;
+      const chainDocs: SequenceDocument[] = read.chains.map((chain, chainIdx) => {
+        const { chainId, molecule, sequence, firstResidueNumber, modified } = chain;
+        const unit = unitOf[molecule];
+        const chainName = named ? `${stem} chain ${chainId}` : stem;
         const stamp = `${Date.now().toString(36)}-${chainIdx}`;
-        return {
+        const modifiedNote = modified.length === 0 ? '' :
+          `${modified.length} modified ${modified.length === 1 ? 'residue read as its parent' : 'residues read as their parents'}: ` +
+          `${modified.map((m) => `${m.resName}${m.number}→${m.code}`).join(', ')}.`;
+        // The engine's warnings each name their chain ("Residue XYZ7 in chain A ...").
+        const chainWarnings = read.warnings.filter((w) => w.includes(` in chain ${chainId} `));
+        const doc: SequenceDocument = {
           id: `pdb-${stem.toLowerCase()}-${chainId.toLowerCase()}-${stamp}`,
           name: chainName,
-          accession: `PDB_${stem.toUpperCase().slice(0, 8)}${chainIds.length > 1 ? `_${chainId}` : ''}`,
-          description: `Chain ${chainId} of ${file.name} (${atoms.length} Cα residues${chainIds.length > 1 ? `; structure has chains ${chainIds.join(', ')}` : ''})`,
-          moleculeType: 'Protein',
+          accession: `PDB_${stem.toUpperCase().slice(0, 8)}${named ? `_${chainId}` : ''}`,
+          description: `Chain ${chainId} of ${file.name} (${molecule}, ${sequence.length} residues${chainIds.length > 1 ? `; structure has chains ${chainIds.join(', ')}` : ''})`,
+          moleculeType: molecule,
           topology: 'linear',
-          sequence: aaSeq,
-          folder: 'Protein Documents',
+          sequence,
+          folder: molecule === 'Protein' ? 'Protein Documents' : 'Local',
           docMetadata: {
             'Source Format': lowerName.endsWith('.pdb') ? 'PDB' : 'mmCIF',
             PDBText: text,
             Chain: chainId,
-            'First Residue Number': atoms[0]?.resSeq ?? '',
+            'First Residue Number': firstResidueNumber,
+            ...(modifiedNote ? { Notes: modifiedNote } : {}),
           },
           createdAt: nowIso,
           updatedAt: nowIso,
           features: [
             {
               id: `feat-pdb-${stamp}`,
-              name: `Chain ${chainId} (modelled residues ${atoms[0]?.resSeq}–${atoms[atoms.length - 1]?.resSeq})`,
+              name: `Chain ${chainId} (residues from ${firstResidueNumber})`,
               type: 'misc_feature',
               start: 1,
-              end: aaSeq.length,
+              end: sequence.length,
               strand: 1,
               color: '#0d9488',
-              notes: `Parsed ${atoms.length} C-alpha coordinates`,
+              notes: `Read ${sequence.length} polymer residues by the residue table`,
             },
           ],
           primers: [],
@@ -6063,20 +6069,24 @@ export const App: React.FC = () => {
               id: `hist-pdb-${stamp}`,
               timestamp: nowIso.slice(0, 16).replace('T', ' '),
               operation: 'Imported 3D Structure',
-              description: `Extracted ${aaSeq.length} aa chain ${chainId} from ${file.name}`,
+              description: `Extracted ${sequence.length} ${unit} ${molecule} chain ${chainId} from ${file.name}`,
               parentIds: [],
-              lengthBp: aaSeq.length,
+              lengthBp: sequence.length,
               topology: 'linear',
             },
           ],
         };
+        return withWarningNotes(doc, chainWarnings);
       });
       activateImportedDocumentsInWorkspace(chainDocs);
       setHomeViewActive(false);
-      openGenomicsSuite('protein-3d');
-      setStatusBanner(
-        `Opened 3D structure "${file.name}" (${chainDocs.length} protein ${chainDocs.length === 1 ? 'chain' : 'chains'}: ${chainDocs.map((d) => `${d.docMetadata?.Chain} ${d.sequence.length} aa`).join(', ')})`
-      );
+      // The 3D view draws C-alpha atoms only, so a file whose first chain is DNA or RNA opens the Sequence view.
+      if (chainDocs[0].moleculeType === 'Protein') openGenomicsSuite('protein-3d');
+      else setViewerTab('sequence-view');
+      setStatusBanner([
+        `Opened 3D structure "${file.name}" (${chainDocs.length} ${chainDocs.length === 1 ? 'chain' : 'chains'}: ${read.chains.map((c) => `${c.chainId} ${c.molecule} ${c.sequence.length} ${unitOf[c.molecule]}`).join(', ')}).`,
+        ...skippedSentences,
+      ].join(' '));
       return;
     }
 

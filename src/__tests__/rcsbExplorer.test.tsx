@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import appSrc from '../App.tsx?raw';
 import modalSrc from '../components/DatabaseExplorerModal.tsx?raw';
 import { RcsbExplorerPanel, RcsbExplorerView } from '../components/DatabaseExplorerModal';
-import { parsePdbCaCoordinates } from '../core/genomicsAndStructureSuite';
+import { structureChainSequences } from '../core/bioEngine';
 import { RCSB_SEARCH_URL } from '../core/rcsbClient';
 import {
   RCSB_MAX_IN_FLIGHT, RCSB_MAX_STARTS_PER_SECOND, RcsbExplorerSession, createLimiter, createStartGate, errorHeading,
@@ -475,10 +475,15 @@ describe('RCSB PDB in the Database Explorer', () => {
     // 'replace' is the mode for .mbc session files only: the route hands it to nothing else, and a
     // structure's chains go to the workspace activation that adds them to the open session.
     const route = appSrc.slice(appSrc.indexOf('const processIncomingFile = async ('), appSrc.indexOf('const importIncomingFilesBatch = async ('));
-    expect(route.match(/\bmbcMode\b/g)).toHaveLength(3);
-    // The zipped-session open also hands the restore its first parse's warnings (US-01M7DV8W), so a
-    // call may carry an options object after mbcMode.
-    expect(route.match(/applyParsedMbcSession\(.*\bmbcMode(?:, \{[^}]*\})?\);/g)).toHaveLength(2);
+    // The route names mbcMode in its parameter and in the session opens that hand it on, named by
+    // what each restores: the PKZIP archive (parsedZip), the gzip session (parsedGz, US-01M6P2S4) and
+    // the JSON text. The archive and gzip opens also hand the restore their first parse's warnings
+    // (US-01M7DV8W), so a call may carry an options object after mbcMode. A new branch that passes
+    // mbcMode, or one that passes it any other way, breaks the count.
+    expect(route).toMatch(/const processIncomingFile = async \(\s*file: File,\s*mbcMode: 'replace' \| 'merge' = 'replace'\s*\)/);
+    const sessionOpens = [...route.matchAll(/applyParsedMbcSession\((JSON\.stringify\(\w+\.envelope\)|\w+), file\.name, mbcMode(?:, \{[^}]*\})?\);/g)].map((m) => m[1]);
+    expect(sessionOpens).toEqual(['JSON.stringify(parsedZip.envelope)', 'JSON.stringify(parsedGz.envelope)', 'text']);
+    expect(route.match(/\bmbcMode\b/g), 'the parameter and the session opens alone').toHaveLength(1 + sessionOpens.length);
     expect(route).toMatch(/lowerName\.endsWith\('\.cif'\)[\s\S]*?activateImportedDocumentsInWorkspace\(chainDocs\);/);
   });
 
@@ -936,13 +941,14 @@ describe('RCSB PDB in the Database Explorer', () => {
     }
     expect([...models.values()]).toEqual(Array(10).fill(103));
 
-    // Opening an entry hands its .cif to the route that reads C-alpha atoms with this engine call and
-    // makes one document per chain id; for an NMR ensemble that is the first model's chain alone.
+    // Opening an entry hands its .cif to the route that reads its polymer chains with this engine
+    // call (structure_chain_sequences, which reads the first model) and makes one document per chain
+    // (US-01M7NMQK, D0236); for an NMR ensemble that is the first model's chain alone.
     const route = appSrc.slice(appSrc.indexOf('const processIncomingFile = async ('), appSrc.indexOf('const importIncomingFilesBatch = async ('));
-    expect(route).toMatch(/lowerName\.endsWith\('\.cif'\)[\s\S]{0,80}?\) \{\s*const caAtoms = parsePdbCaCoordinates\(text\);/);
-    expect(route).toMatch(/const chainIds = \[\.\.\.new Set\(caAtoms\.map\(\(a\) => a\.chainId \|\| 'A'\)\)\];/);
-    const chains = new Map<string, number>();
-    for (const atom of parsePdbCaCoordinates(cif)) chains.set(atom.chainId || 'A', (chains.get(atom.chainId || 'A') ?? 0) + 1);
-    expect([...chains]).toEqual([['A', 103]]);
+    expect(route).toMatch(/lowerName\.endsWith\('\.cif'\)[\s\S]{0,80}?\) \{\s*const read = structureChainSequences\(text\);/);
+    expect(route).toMatch(/const chainDocs: SequenceDocument\[\] = read\.chains\.map\(/);
+    const firstModel = structureChainSequences(cif);
+    expect(firstModel.chains.map((c) => [c.chainId, c.molecule, c.sequence.length])).toEqual([['A', 'Protein', 103]]);
+    expect(firstModel.skipped).toEqual([]);
   });
 });

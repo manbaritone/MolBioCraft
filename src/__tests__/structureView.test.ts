@@ -32,11 +32,21 @@ let serial = 0;
 const atom = (name: string, record: 'ATOM' | 'HETATM' = 'ATOM', at = 0): StructureAtom => ({
   serial: ++serial, name, element: name.slice(0, 1), altLoc: null, x: at, y: at / 2, z: -at, occupancy: 1, bFactor: 20, record,
 });
+/** The 20 standard residues' codes, as the engine's residue table gives them (synthetic models only). */
+const THREE_TO_ONE: Record<string, string> = {
+  ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C', GLN: 'Q', GLU: 'E', GLY: 'G', HIS: 'H', ILE: 'I',
+  LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P', SER: 'S', THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V',
+};
+/**
+ * A polymer residue as the engine gives it: `code` is its one-letter code by the engine's residue
+ * table (MSE read as its parent, M; a residue the table lacks, X), as parse_structure writes it.
+ */
 const aa = (resName: string, labelSeqId: number, authSeqId: number, insCode: string | null = null, record: 'ATOM' | 'HETATM' = 'ATOM'): StructureResidue => ({
   resName, labelSeqId, authSeqId, insCode, atoms: ['N', 'CA', 'C', 'O'].map((n) => atom(n, record, labelSeqId * 3.8)),
+  code: resName === 'MSE' ? 'M' : THREE_TO_ONE[resName] ?? 'X', modified: resName === 'MSE',
 });
 const het = (resName: string, authSeqId: number, atomNames = ['C1', 'O1']): StructureResidue => ({
-  resName, labelSeqId: null, authSeqId, insCode: null, atoms: atomNames.map((n) => atom(n, 'HETATM')),
+  resName, labelSeqId: null, authSeqId, insCode: null, atoms: atomNames.map((n) => atom(n, 'HETATM')), code: null, modified: false,
 });
 const chainOfResidues = (labelAsymId: string, authAsymId: string, residues: StructureResidue[]): StructureChain => ({ labelAsymId, authAsymId, residues });
 const model = (chains: StructureChain[], helices: SecondaryStructureSegment[] = [], strands: SecondaryStructureSegment[] = []): Structure => ({
@@ -67,12 +77,7 @@ const offsetChain = (): StructureChain => chainOfResidues('B', 'H', [
 /** A chain listed before the offset chain, so array positions and residue numbers disagree. */
 const leadingChain = (): StructureChain => chainOfResidues('A', 'L', [aa('MET', 1, 1), aa('LYS', 2, 2), aa('THR', 3, 3), aa('ALA', 4, 4), aa('TYR', 5, 5)]);
 const labels = (rs: { authSeqId: number | null; insCode: string | null }[]) => rs.map(residueNumberLabel);
-
 /** The sequence a structure import gives a chain document: one letter per C-alpha atom of the chain. */
-const THREE_TO_ONE: Record<string, string> = {
-  ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C', GLN: 'Q', GLU: 'E', GLY: 'G', HIS: 'H', ILE: 'I',
-  LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P', SER: 'S', THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V',
-};
 const importedChainSequence = (atoms: PdbCaAtom[], chainId: string): string =>
   atoms.filter((a) => a.chainId === chainId).map((a) => THREE_TO_ONE[a.resName] ?? 'X').join('');
 
@@ -305,8 +310,8 @@ describe('structure view: sequence features in 3D', () => {
     expect(featureResidues(partial, 'MKV', { start: 2, end: 2 }).residues.map((r) => r.resName)).toEqual(['LYS']);
     const onPartial = featureResidues(partial, 'MV', { start: 2, end: 2 });
     expect([onPartial.numbering, onPartial.residues.map((r) => r.resName)]).toEqual(['modelled-residues', ['VAL']]);
-    // An unknown residue type, or X in the sequence, matches any letter.
-    const odd = chainOfResidues('N', 'N', [aa('MSE', 1, 1), aa('ALA', 2, 2), aa('GLY', 3, 3)]);
+    // A residue the residue table lacks (code X), or X in the sequence, matches any letter.
+    const odd = chainOfResidues('N', 'N', [aa('XYZ', 1, 1), aa('ALA', 2, 2), aa('GLY', 3, 3)]);
     expect(labels(featureResidues(odd, 'MXG', { start: 1, end: 3 }).residues)).toEqual(['1', '2', '3']);
   });
 
@@ -363,5 +368,43 @@ describe('structure view: sequence features in 3D', () => {
     expect(appCss).toContain('container-type: normal !important;');
     expect(appCss).not.toContain('molstar-exit-expanded-btn');
     expect(viewerSrc).not.toContain('molstar-exit-expanded-btn');
+  });
+});
+
+// ─── US-01M7NMQK AC3: a residue fits the letter of its engine code ───
+
+/**
+ * US-01M6VFMX's mmCIF fixture (crates/molbiocraft-wasm/tests/structure_residues.rs): label_asym A
+ * is MSE, LYS, SEP, VAL (label_seq_id 1-4); label_asym B is a calcium ion ('.'). Wrong
+ * implementations: a 20-entry map, where MSE and SEP fit any letter ('KKSV' and 'MKKV' place);
+ * a residue fitting any letter but its own code's.
+ */
+const SEP_CIF = [
+  'data_T', 'loop_', '_atom_site.group_PDB', '_atom_site.id', '_atom_site.type_symbol', '_atom_site.label_atom_id',
+  '_atom_site.label_comp_id', '_atom_site.label_asym_id', '_atom_site.label_seq_id', '_atom_site.auth_asym_id',
+  '_atom_site.auth_seq_id', '_atom_site.Cartn_x', '_atom_site.Cartn_y', '_atom_site.Cartn_z',
+  'HETATM 1 C CA MSE A 1 A 1 0.000 1.000 2.000',
+  'HETATM 2 SE SE MSE A 1 A 1 1.000 1.000 2.000',
+  'ATOM 3 C CA LYS A 2 A 2 2.000 1.000 2.000',
+  'HETATM 4 C CA SEP A 3 A 3 3.000 1.000 2.000',
+  'ATOM 5 C CA VAL A 4 A 4 4.000 1.000 2.000',
+  'HETATM 6 CA CA CA B . B 101 5.000 1.000 2.000',
+  '',
+].join('\n');
+
+describe("a residue fits a sequence letter by the engine's code (US-01M7NMQK)", () => {
+  it('US-01M7NMQK AC3 letter M fits MSE1 and K does not', () => {
+    const s = parseStructure(SEP_CIF);
+    const chain = chainOf(s, 'A')!;
+    expect(chain.residues.map((r) => [r.resName, r.code, r.modified])).toEqual([
+      ['MSE', 'M', true], ['LYS', 'K', false], ['SEP', 'S', true], ['VAL', 'V', false],
+    ]);
+    expect(chainOf(s, 'B')!.residues.map((r) => [r.resName, r.code])).toEqual([['CA', null]]);
+    const onM = featureResidues(chain, 'MKSV', { start: 1, end: 1 });
+    expect([onM.numbering, labels(onM.residues), onM.residues.map((r) => r.resName)]).toEqual(['chain-sequence', ['1'], ['MSE']]);
+    expect(() => featureResidues(chain, 'KKSV', { start: 1, end: 1 }), 'K does not fit MSE1').toThrow(
+      "The 4-residue sequence is neither chain A's sequence nor its 4 modelled residues, so its positions cannot be placed on the structure.");
+    expect(() => featureResidues(chain, 'MKKV', { start: 1, end: 1 }), 'K does not fit SEP3').toThrow(/^The 4-residue sequence is neither chain A's/);
+    expect(featureResidues(chain, 'MKXV', { start: 3, end: 3 }).residues.map((r) => r.resName), 'X fits SEP3').toEqual(['SEP']);
   });
 });

@@ -40,6 +40,13 @@ export interface StructureResidue {
   authSeqId: number | null;
   insCode: string | null;
   atoms: StructureAtom[];
+  /**
+   * The one-letter code of a polymer residue by the engine's residue table: its own, a modified
+   * residue's parent's (MSE as M), or X for one the table lacks; null outside a polymer.
+   */
+  code: string | null;
+  /** Whether `code` is a modified residue's parent's. */
+  modified: boolean;
 }
 
 export interface StructureChain {
@@ -201,16 +208,14 @@ export function withFileSecondaryStructure(
 
 // ─── Sequence features in 3D ───
 
-const ONE_LETTER: Record<string, string> = {
-  ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C', GLN: 'Q', GLU: 'E', GLY: 'G', HIS: 'H', ILE: 'I',
-  LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P', SER: 'S', THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V',
-};
-
-/** Whether a sequence letter can be this residue (`X`, and any non-standard residue, match anything). */
+/**
+ * Whether a sequence letter can be this residue, by the engine's `code` (MSE fits M only). `X` in
+ * the sequence, and a residue with no code or the code X (one the residue table lacks), match anything.
+ */
 const letterFits = (r: StructureResidue, letter: string | undefined): boolean => {
   if (letter === undefined) return false;
-  const code = ONE_LETTER[r.resName.toUpperCase()];
-  return !code || letter === 'X' || letter === code;
+  const { code } = r;
+  return !code || code === 'X' || letter === 'X' || letter === code;
 };
 
 /**
