@@ -119,6 +119,8 @@ const sameScanInput = (a: ScanInput, b: ScanInput) =>
   Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => Object.is(a[k], b[k]));
 
 const syntenyScan = (i: SyntenyInput) => runWholeGenomeSynteny(i.seqA, i.seqB, i.engine);
+/** The seed length each synteny engine value runs with (D0204), as the card's badge names it. */
+const SYNTENY_SEED_MER: Readonly<Record<SyntenyEngine, string>> = { 'seed-13': '13-mer', 'seed-11': '11-mer' };
 const geneScan = (i: GenomeScanInput) => predictGlimmerMicrobialGenes(i.seq, i.min);
 const cpgScan = (i: GenomeScanInput) => findCpGIslands(i.seq, i.min);
 
@@ -850,7 +852,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
           <div className="studio-card">
             <div className="studio-card-header">
               <h3>Whole-Genome Alignment ({SYNTENY_ENGINE_METHODS[syntenyEngine]}) &amp; 16S/ITS Classifier</h3>
-              <span className="badge-accent">Collinear Blocks • Seed-and-Extend • 16S/ITS Taxonomy</span>
+              <span className="badge-accent">Collinear Blocks • {SYNTENY_SEED_MER[syntenyEngine]} Seed-and-Extend • 16S/ITS Taxonomy</span>
             </div>
 
             <div className="form-grid-2col">

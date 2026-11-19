@@ -1024,3 +1024,58 @@ describe('the studio drawn on its own keeps its settings in place (AC8)', () => 
     });
   });
 });
+
+describe('the synteny method named where it shows (BG-01M6T6SR AC2)', () => {
+  /**
+   * The engine seeds with 13-mers or 11-mers (D0204) and runs no external aligner, so each place the
+   * card names the method says which seed length ran, in these words, and names no tool. The words are
+   * written here, never read from the engine's own labels, so a label map renamed to a tool (the bug as
+   * filed) fails here even though the heading and note would still agree with the engine.
+   */
+  const METHOD = {
+    'seed-13': 'Built-in seed-and-extend synteny (13-mer seeds)',
+    'seed-11': 'Built-in seed-and-extend synteny (11-mer seeds)',
+  } as const;
+  const BADGE = {
+    'seed-13': 'Collinear Blocks • 13-mer Seed-and-Extend • 16S/ITS Taxonomy',
+    'seed-11': 'Collinear Blocks • 11-mer Seed-and-Extend • 16S/ITS Taxonomy',
+  } as const;
+  const TOOL = /mauve|lastz|minimap|bowtie|bbmap|blast/i;
+
+  it('names the synteny method that runs in the heading, badge, options and note', async () => {
+    await withApp(async (app) => {
+      await onGenomics(app);
+      await landScans(app);
+      await openSubTab(app, 'genome');
+      const picker = () => inSection(app, 'Genome Alignment', SYNTENY_ENGINE);
+      const seen = () => {
+        const c = card(app, ALIGNMENT_CARD);
+        const badges = c.querySelectorAll('.studio-card-header .badge-accent');
+        expect(badges, 'one badge on the alignment card').toHaveLength(1);
+        return {
+          heading: textOf(c, 'h3', ALIGNMENT_CARD),
+          badge: words(badges[0].textContent),
+          options: picker().querySelectorAll('option').map((o) => [o.getAttribute('value'), words(o.textContent)]),
+          note: textOf(app.canvas(), '.studio-panel-note', 'Computed for'),
+        };
+      };
+      const expected = (v: 'seed-13' | 'seed-11') => ({
+        heading: `Whole-Genome Alignment (${METHOD[v]}) & 16S/ITS Classifier`,
+        badge: BADGE[v],
+        options: [['seed-13', METHOD['seed-13']], ['seed-11', METHOD['seed-11']]],
+        note: `Computed for ${GENOME.name} (6,000 bp) against ${PARTNER.name} (6,000 bp) with ${METHOD[v]}`,
+      });
+
+      expect(picker().value, 'the studio opens on 13-mer seeds').toBe('seed-13');
+      const opened = seen();
+      expect(opened, 'opened on 13-mer seeds').toEqual(expected('seed-13'));
+      expect(JSON.stringify(opened), 'no tool named').not.toMatch(TOOL);
+
+      await app.change(picker(), 'seed-11');
+      await landScans(app);
+      const eleven = seen();
+      expect(eleven, 'after choosing 11-mer seeds').toEqual(expected('seed-11'));
+      expect(JSON.stringify(eleven), 'no tool named').not.toMatch(TOOL);
+    });
+  });
+});
