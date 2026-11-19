@@ -33,6 +33,31 @@ export const VIEWER_TAB_LABELS: Record<ViewerTab, string> = {
   'document-info': 'Document info',
 };
 
+/**
+ * The viewer header's label for a tab, which also names a studio tab's inspector (D0208). Given the
+ * open record it is the label that record's tab strip shows: the annotations count, and 'Text',
+ * 'Sequences' or 'Contig', '3D Structure' or 'Enzymes' where the record makes the tab one of those.
+ * Without a record it is the tab's default label, the one README's studio list names.
+ */
+export function viewerTabLabel(tab: ViewerTab, doc?: SequenceDocument): string {
+  switch (tab) {
+    case 'sequence-view': return 'Sequence';
+    case 'annotations-table': return doc ? `Annotations (${doc.features.length + doc.primers.length})` : 'Annotations';
+    case 'text-view': return doc && originalDocumentText(doc) ? 'Text' : 'Flatfile';
+    case 'vector-library': return 'Vectors';
+    case 'cloning-gel': return 'Cloning';
+    case 'primers-pcr': return 'Primers';
+    case 'sequence-alignment':
+      return doc?.alignmentMeta?.isAligned === false ? 'Sequences' : doc?.documentKind === 'contig' ? 'Contig' : 'Alignment';
+    case 'phylogenetics': return 'Tree';
+    case 'sanger-contig': return 'Chromatogram';
+    case 'genomics-ngs': return doc?.moleculeType === 'Protein' ? '3D Structure' : 'Genomics';
+    case 'history-hybrid': return doc?.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'Enzymes' : 'History';
+    case 'guided-pipelines': return 'Pipelines';
+    case 'document-info': return 'Info';
+  }
+}
+
 export function isTreeDocument(doc: SequenceDocument): boolean {
   return doc.documentKind === 'tree' || Boolean(doc.docMetadata?.Newick);
 }

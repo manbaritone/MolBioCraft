@@ -238,6 +238,7 @@ import {
   visibleDocumentTabs,
   hasBiologicalSequence,
   originalDocumentText,
+  viewerTabLabel,
   type ViewerTab,
 } from './core/documentViews';
 import { ConstructCockpitBar, basicTmHasNoAnswer } from './components/ConstructCockpitBar';
@@ -8754,25 +8755,13 @@ requireActiveSession(() => handleCopySequenceToClipboard());
 
   const originalText = originalDocumentText(activeDoc);
 
-  /** The viewer header's tab labels; they also name a studio tab's inspector. */
-  const viewerTabLabels: Record<ViewerTab, string> = {
-    'sequence-view': 'Sequence',
-    'annotations-table': `Annotations (${activeDoc.features.length + activeDoc.primers.length})`,
-    'text-view': originalText ? 'Text' : 'Flatfile',
-    'vector-library': 'Vectors', 'cloning-gel': 'Cloning', 'primers-pcr': 'Primers',
-    'sequence-alignment': activeDoc.alignmentMeta?.isAligned === false ? 'Sequences' : activeDoc.documentKind === 'contig' ? 'Contig' : 'Alignment',
-    'phylogenetics': 'Tree', 'sanger-contig': 'Chromatogram',
-    'genomics-ngs': activeDoc.moleculeType === 'Protein' ? '3D Structure' : 'Genomics',
-    'history-hybrid': activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'Enzymes' : 'History',
-    'guided-pipelines': 'Pipelines', 'document-info': 'Info',
-  };
   /** The inspector's pane title, which its button and resizer name too: it follows the open tab. */
   const inspectorTitle =
     viewerTab === 'sequence-view'
       ? 'Sequence View Controls'
       : viewerTab === 'sanger-contig'
       ? 'Chromatogram View Controls'
-      : `${viewerTabLabels[viewerTab]} Controls`;
+      : `${viewerTabLabel(viewerTab, activeDoc)} Controls`;
 
   const buildActionVectorGroupNodes = (
     group: ActionVectorGroup,
@@ -16027,7 +16016,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           else setViewerTab(tab);
                         }}>
                         {tab === 'document-info' ? <FileSpreadsheet size={13} /> : <MolBioViewerTabIcon tabId={tab} />}
-                        <span>{viewerTabLabels[tab]}</span>
+                        <span>{viewerTabLabel(tab, activeDoc)}</span>
                       </button>
                     </React.Fragment>
                   );

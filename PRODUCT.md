@@ -24,16 +24,16 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 - Air-gapped and offline environments common in institutional research
 - File formats: GenBank (.gb), FASTA (.fasta), EMBL (.embl), GFF3 (.gff3), ABI Sanger (.ab1), PDB/mmCIF, VCF/FASTQ/SAM/BED (via noodles), custom .mbc session files
 - Drag-and-drop binary file ingestion, native OS file dialogs (rfd), native macOS 9-menu AppKit menu bar (muda)
-- Keyboard-driven navigation: ⌘1–⌘9 studio switching, ⌘K command palette, ⌘N new sequence, ⌘O/⌘S session management
+- Keyboard-driven navigation: ⌘1–⌘8 map layouts and studio views, ⌘K command palette, ⌘N new sequence, ⌘O open session, ⌥⌘S save session
 - Guided 4-step pipelines for recombinant construct QC, CRISPR knockout/HDR design, viral vector packaging, protein expression QC
 - Publication workflow: every visualization renders as crisp multi-tone SVG suitable for direct figure assembly
 
 ## Capabilities and Constraints
 
-- 11 scientific studios: Sequence Map, Annotations, Flatfile, Cloning & Gel, Vectors & Architect, Primers & CRISPR, Alignment, Phylogenetics, Sanger & Contig, Protein & 3D, Pipelines & NGS
+- 13 scientific studios (viewer tabs): Sequence, Annotations, Flatfile, Vectors, Cloning, Primers, Alignment, Tree, Chromatogram, Genomics, History, Pipelines, Info
 - 10 cloning simulators (Restriction-Ligation, Gibson, In-Fusion, NEBuilder HiFi, MoClo, Golden Gate, TA/GC, TOPO, Gateway, SOE-PCR)
 - REBASE enzyme database, 69-vector backbone catalog, 98-part modular vector architect, 9-rule custom vector onboarding QC
-- SantaLucia/Owczarzy Tm calculation, Zuker/Nussinov MFE folding, SpCas9/LbCas12a CRISPR guide design with HDR ssODN
+- SantaLucia (1998) nearest-neighbour, von Ahsen (2001) Mg2+ equivalence (Primer3 default) Tm calculation, Zuker/Nussinov MFE folding, SpCas9/LbCas12a CRISPR guide design with HDR ssODN
 - Pairwise Gotoh affine (DNA/BLOSUM62), 2D k-mer synteny dotplot, MSA (MAFFT, Clustal-Omega, POA, MUSCLE), ClustalX conservation
 - ML/NJ/UPGMA trees, JC69/K80/HKY85/GTR+G model selection (BIC/AICc), dN/dS (Nei-Gojobori), Tajima's D, RSCU
 - 4-dye ABI chromatogram viewer with Phred quality, Mott trimming, heterozygote peak calling, POA consensus assembly
@@ -41,7 +41,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 - Mol* 3D structure viewer for PDB/mmCIF (presets, colour schemes, ligands, sequence panel, Model B superposition), with its floating toolbar docked at the bottom of the view and full-window expand that stays inside the app window
 - 13 built-in Bioinformatics Plugins (eukaryotic and microbial gene prediction, CRISPR arrays, tandem repeats, haplotypes, taxonomic classification, species delimitation, protein domains/epitopes, TM topology, read trimming, synteny blocks, HPC phylogeny jobs, external CLI tools), reachable from the native and in-window Tools menus, the Workflows toolbar menu and search
 - Identical menu structure on the native macOS menu bar and the in-window (Windows, Linux, web) menu bar
-- Persisted, exportable Preferences (default folder, default Author, default export formats per molecule type, per-studio defaults, custom shortcuts)
+- Persisted, exportable Preferences (default folder, default Author, default export formats per molecule type, per-studio defaults, operation-window shortcuts; menu shortcuts are fixed)
 - No network port: the interface reaches the engine only through Tauri IPC and WebAssembly
 - Non-commercial Creative Commons license (CC BY-NC 4.0, SPDX: CC-BY-NC-4.0) — no commercial use permitted
 
@@ -57,7 +57,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 
 - 7 pure-Rust crates with Cargo workspace (`crates/`) — compiled, tested, WASM-targeted
 - Tauri v2 native runtime (`src-tauri/`) with 9-menu OS bar and rfd dialogs
-- React 18 + TypeScript + Vite frontend (`src/`) with 11 studio implementations and a shared right-hand inspector
+- React 18 + TypeScript + Vite frontend (`src/`) with 13 studio implementations and a shared right-hand inspector
 - Custom multi-tone SVG component library for all visualization types
 - Embedded font assets (subset WOFF2 in `src/assets/fonts`): Google Sans, Space Grotesk, and Google Sans Code
 - Packaging metadata for all 3 platforms (`packaging/`)
@@ -76,7 +76,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 
 ## Accessibility & Inclusion
 
-- Keyboard-first navigation with full shortcut coverage (⌘1–⌘9, ⌘K, ⌘F, ⌘N, ⌘O, ⌘S, ⌘I, ⇧⌘R, ⌘B, ⌥⌘I, ⌘,)
+- Keyboard-first navigation: the common commands have menu shortcuts (⌘K, ⌘F, ⇧⌘F, ⌘N, ⌘O, ⌥⌘S, ⌘S, ⌘I, ⇧⌘R, ⌥⌘I, ⌘1–⌘8, ⌘,, F1), all listed in Preferences › Keyboard
 - High-contrast multi-tone SVG palettes (Standard and Okabe-Ito colorblind-safe)
 - Scalable vector output maintains legibility at any zoom level
 - Screen-reader accessible React components with semantic HTML structure

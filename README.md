@@ -46,7 +46,7 @@
 | **Plan a restriction digest** | REBASE enzyme sets (unique, dual, commercial or custom cutters), non-cutter lists, Dam/Dcm/CpG methylation blocking, fragment tables and a virtual agarose gel with standard ladders. |
 | **Simulate cloning** | Restriction-ligation, Gibson, NEBuilder-style HiFi, In-Fusion, Golden Gate / MoClo parts, LIC, SLIC, SLiCE, yeast homologous recombination, TA/GC, TOPO (blunt and directional), Gateway BP/LR, annealed oligos and SOE-PCR — then validate the clone. |
 | **Design vectors** | 69-backbone vector catalog, 98-part modular vector architect and a 9-rule onboarding QC check for custom vectors. |
-| **Design primers and mutations** | SantaLucia + Owczarzy salt-corrected Tm, hairpin and dimer folding, flanking PCR primer design, multiplex and diagnostic primer sets, a primer library, point and site-directed mutagenesis. |
+| **Design primers and mutations** | SantaLucia (1998) nearest-neighbour, von Ahsen (2001) Mg2+ equivalence (Primer3 default) Tm, hairpin and dimer folding, flanking PCR primer design, multiplex and diagnostic primer sets, a primer library, point and site-directed mutagenesis. |
 | **Design CRISPR edits** | SpCas9 and LbCas12a guide finding and ranking, cloning oligos, silent-PAM HDR ssODN donors and genotyping primers. |
 | **Align sequences** | Pairwise global/local alignment (DNA scoring or BLOSUM62/PAM250) with editable scores, dotplots, multiple sequence alignment with conservation colouring, consensus building and BLAST-style search. |
 | **Build and test phylogenies** | Neighbor-Joining, UPGMA and maximum-likelihood trees, JC69/K80/HKY85/GTR+Γ model ranking by BIC/AICc, dN/dS, Tajima's D, RSCU, molecular clock tools; rectangular, cladogram and radial tree views. |
@@ -59,19 +59,21 @@
 
 ## Scientific Studios
 
-Each studio is a tab in the main window; the right-hand **Inspector** (`⌥⌘I` / `Ctrl+Alt+I`) holds the settings for whichever studio is open.
+Each studio is a tab in the main window, named here by its default label; a tab shows only for the records it applies to. The right-hand **Inspector** (`⌥⌘I` / `Ctrl+Alt+I`) holds the settings for whichever studio is open.
 
-1. **Sequence Map (`⌘1`)** — Circular plasmid map and linear sequence view side by side under one zoom, with restriction sites, ORFs, primers, translation, GC and hydropathy tracks, and a construct summary bar (length, GC, Tm, ORF status).
-2. **Annotations (`⌘2`)** — Sortable, filterable feature and primer table with one-click selection and GFF3 export.
-3. **Flatfile (`⌘3`)** — Live GenBank, FASTA, EMBL and GFF3 text of the open record.
-4. **Cloning & Gel (`⌘4`)** — All cloning simulators, a co-digest buffer planner and a darkroom-style virtual agarose gel that stays beside its controls.
-5. **Vectors & Architect (`⌘5`)** — Vector catalog, modular part assembly and custom-vector QC.
-6. **Primers & CRISPR (`⌘6`)** — Oligo analysis, PCR design, mutagenesis and CRISPR guide/donor design.
-7. **Alignment (`⌘7`)** — Pairwise, dotplot and multiple alignment, with distance matrices, length graphs, virtual gels and alignment-image export.
-8. **Phylogenetics (`⌘8`)** — Tree building, model selection and molecular-evolution statistics, with the tree kept in view.
-9. **Sanger & Contig (`⌘9`)** — Chromatogram review, trimming and contig assembly.
-10. **Genomics & 3D Structure** — NGS assembly, genome variants, gene/CpG/repeat prediction, coiled-coils, transmembrane topology and the Mol* 3D structure viewer.
-11. **Protein, Plugins & History** — Protein biophysics and codon tools, the Bioinformatics Plugins runner, and an undoable history/lineage of every operation.
+1. **Sequence** — Circular plasmid map and linear sequence view side by side under one zoom, with restriction sites, ORFs, primers, translation, GC and hydropathy tracks, and a construct summary bar (length, GC, Tm, ORF status).
+2. **Annotations** — Sortable, filterable feature and primer table with one-click selection and GFF3 export; the tab shows the record's feature and primer count.
+3. **Flatfile** — Read-only GenBank, FASTA, EMBL and GFF3 text of the open record. For a text document, tree or structure the tab is **Text** and shows the source it was read from.
+4. **Vectors** — Vector catalog, modular part assembly and custom-vector QC.
+5. **Cloning** — All cloning simulators, a co-digest buffer planner and a darkroom-style virtual agarose gel that stays beside its controls.
+6. **Primers** — Oligo analysis, PCR design, mutagenesis and CRISPR guide/donor design.
+7. **Alignment** — Pairwise, dotplot and multiple alignment, with distance matrices, length graphs, virtual gels and alignment-image export. The tab is **Sequences** for an unaligned set and **Contig** for an assembled contig.
+8. **Tree** — Tree building (opening on Neighbor-Joining, with UPGMA and a maximum-likelihood search), model selection and molecular-evolution statistics, with the tree kept in view.
+9. **Chromatogram** — Sanger chromatogram review, trimming and contig assembly, for trace records.
+10. **Genomics** — NGS assembly, genome variants, gene/CpG/repeat prediction, the Mol* 3D structure viewer and submission prep. For a protein the tab is **3D Structure**.
+11. **History** — Protein biophysics and codon tools, secondary structure, the enzymes view, the Bioinformatics Plugins runner, and an undoable history/lineage of every operation. For an enzyme set the tab is **Enzymes**.
+12. **Pipelines** — The guided multi-step QC pipelines below.
+13. **Info** — The record's name, dates and other details.
 
 ### 3D Structure Viewer (Mol*)
 
@@ -118,7 +120,7 @@ Open **Preferences** with `⌘,` / `Ctrl+,`. Every setting is saved, applied str
 - **Files & Tabs** — default folder for opening and saving files, default **Author** written into new files, tab restore, history depth and file-extension display.
 - **Export** — default export format for DNA, RNA, protein and alignments, LOCUS naming rules and feature qualifiers.
 - **DNA, RNA, Proteins, Agarose Gels, Traces & Alignment, Enzymes, Primers** — display and analysis defaults for each studio.
-- **Keyboard** — assign your own shortcuts to menu commands.
+- **Keyboard** — lists every menu shortcut by its menu path (menu shortcuts are fixed), and sets the shortcuts of operation windows.
 
 
 ## Downloads &amp; Installation
@@ -162,20 +164,36 @@ The builds are not yet signed by Apple or Microsoft (the macOS app carries only 
 
 ## Keyboard Shortcuts
 
-| Action | macOS | Windows &amp; Linux |
+| Menu path | macOS | Windows &amp; Linux |
 | :--- | :--- | :--- |
 | **Quick Command Navigator** | `⌘K` | `Ctrl+K` |
-| **Find in Sequence / Search Tools** | `⌘F` / `⇧⌘F` | `Ctrl+F` / `Ctrl+Shift+F` |
-| **New DNA / RNA / Protein Sequence** | `⌘N` | `Ctrl+N` |
-| **Open `.mbc` Workbench Session** | `⌘O` | `Ctrl+O` |
-| **Save / Save As `.mbc` Session** | `⌘S` / `⇧⌘S` | `Ctrl+S` / `Ctrl+Shift+S` |
-| **Import Sequence Files / Raw Clipboard** | `⌘I` / `⇧⌘I` | `Ctrl+I` / `Ctrl+Shift+I` |
-| **Clone Insert into Vector** | `⇧⌘C` | `Ctrl+Shift+C` |
-| **Reverse Complement Active Construct** | `⇧⌘R` | `Ctrl+Shift+R` |
-| **Toggle Left Project Explorer** | `⌘B` | `Ctrl+B` |
-| **Toggle Right Inspector Panel** | `⌥⌘I` | `Ctrl+Alt+I` |
-| **Switch Scientific Studios (`1`–`9`)** | `⌘1` … `⌘9` | `Ctrl+1` … `Ctrl+9` |
-| **Open Preferences** | `⌘,` | `Ctrl+,` |
+| **Edit > Find & Navigate > Find in Sequence** | `⌘F` | `Ctrl+F` |
+| **View > Search & Filter > Search Workspace** | `⇧⌘F` | `Ctrl+Shift+F` |
+| **File > New Session > Sequences & Vectors > New Sequence** | `⌘N` | `Ctrl+N` |
+| **File > New Session > Blank Session** | `⌥⌘N` | `Ctrl+Alt+N` |
+| **File > Open Session > Open Session** | `⌘O` | `Ctrl+O` |
+| **File > Save Session > Save Session** | `⌥⌘S` | `Ctrl+Alt+S` |
+| **File > Save Session > Save Session As** | `⌥⇧⌘S` | `Ctrl+Alt+Shift+S` |
+| **File > Export Sequences > Export GenBank** | `⌘S` | `Ctrl+S` |
+| **File > Export Sequences > Export FASTA** | `⇧⌘S` | `Ctrl+Shift+S` |
+| **File > New Session > Starter & Import > Import Files** | `⌘I` | `Ctrl+I` |
+| **File > New Session > Starter & Import > From Clipboard** | `⇧⌘I` | `Ctrl+Shift+I` |
+| **Edit > Undo** | `⌘Z` | `Ctrl+Z` |
+| **Edit > Redo** | `⇧⌘Z` | `Ctrl+Shift+Z` |
+| **Sequence > Strand > Reverse Complement** | `⇧⌘R` | `Ctrl+Shift+R` |
+| **View > Panels > Inspector** | `⌥⌘I` | `Ctrl+Alt+I` |
+| **View > Map Layout > Split Map & Sequence** | `⌘1` | `Ctrl+1` |
+| **View > Map Layout > Circular Map** | `⌘2` | `Ctrl+2` |
+| **View > Map Layout > Linear Sequence** | `⌘4` | `Ctrl+4` |
+| **View > Studio Views > Enzymes View** | `⌘3` | `Ctrl+3` |
+| **View > Studio Views > Annotations Table** | `⌘5` | `Ctrl+5` |
+| **View > Studio Views > Flatfile View** | `⌘6` | `Ctrl+6` |
+| **Tools > BLAST & Vectors > BLAST Search** | `⇧⌘B` | `Ctrl+Shift+B` |
+| **Tools > Phylogenetics > Tree Reconstruction > Maximum Likelihood** | `⌥⌘T` | `Ctrl+Alt+T` |
+| **MolBioCraft > Settings > Preferences** | `⌘,` | `Ctrl+,` |
+| **Help > Guides > Show or Hide Help Panel** | `F1` | `F1` |
+
+Each row is a row of **Preferences › Keyboard**, which lists the app's shortcuts, each under the menu path of the item it runs. Menu shortcuts are fixed; the shortcuts of operation windows are set on the same tab.
 
 On macOS the commands live in the native menu bar; on Windows, Linux and the web build the same menus appear inside the window, with identical names and structure.
 
