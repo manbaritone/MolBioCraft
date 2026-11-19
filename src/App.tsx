@@ -6016,7 +6016,8 @@ export const App: React.FC = () => {
       const read = structureChainSequences(text);
       const skippedSentences = read.skipped.map((s) => `${stem} chain ${s.chainId} was not opened: ${s.reason}.`);
       if (read.chains.length === 0) {
-        throw new Error([`"${file.name}" has no protein or nucleic-acid chain to open`, ...skippedSentences].join('. '));
+        const refusal = `"${file.name}" has no protein or nucleic-acid chain to open`;
+        throw new Error(skippedSentences.length ? `${refusal}. ${skippedSentences.join(' ')}` : refusal);
       }
       // A file of more than one polymer chain names each document by its chain.
       const chainIds = read.chains.map((c) => c.chainId);

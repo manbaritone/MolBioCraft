@@ -21,6 +21,8 @@
  * - a skipped chain dropped without a word: the banner names complex chain D;
  * - 'First Residue Number' from the C-alpha list's label number: chain A is 5, not 1;
  * - a structure file with no chain opened empty or silently: ligand.pdb is refused by name;
+ * - the skipped chains left out of that refusal, or joined with a doubled period: sugar.cif's two
+ *   NAG-only chains are named in the exact refusal text;
  * - the 3D view opened for any structure, or the view left as it was: an RNA-only file after
  *   semet.pdb opens the Sequence view.
  */
@@ -228,6 +230,24 @@ describe('structure import, one document per polymer chain (US-01M7NMQK)', () =>
       const nag = await opened(app, 'complex.cif', nagCif(), true);
       expect(nag.map((d) => [d.name, d.moleculeType, d.sequence])).toEqual([['complex chain A', 'Protein', 'MAGSTKX']]);
       expect(banner.split('complex chain D was not opened: no amino-acid or nucleotide residues.'), banner).toHaveLength(2);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('US-01M7NMQK AC2 refuses a file whose only chains were skipped, one period after each sentence', async () => {
+    // Two NAG-only chains: both are skipped, so the refusal names each, after its own first sentence.
+    const app = await mountApp();
+    try {
+      await opened(app, 'semet.pdb', semetPdb(), false); // a session to export
+      const sugar = await opened(app, 'sugar.cif', cif([
+        ['HETATM', 'C', 'C1', 'NAG', 'D', '1', 1],
+        ['HETATM', 'C', 'C1', 'NAG', 'E', '1', 1],
+      ]), true);
+      expect(sugar, 'the sugar file opens nothing').toEqual([]);
+      expect(banner).toBe('Drop import error: "sugar.cif" has no protein or nucleic-acid chain to open. '
+        + 'sugar chain D was not opened: no amino-acid or nucleotide residues. '
+        + 'sugar chain E was not opened: no amino-acid or nucleotide residues.');
     } finally {
       app.unmount();
     }
