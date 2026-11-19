@@ -73,7 +73,7 @@ Each studio is a tab in the main window, named here by its one name in the studi
 10. **Protein & 3D** — The Mol* 3D structure viewer, for proteins and structures.
 11. **Pipelines & NGS** — The guided multi-step QC pipelines below and, for a DNA record, NGS assembly, genome variants, gene/CpG/repeat prediction and submission prep.
 
-Two document panels sit beside the studios: **History** (protein biophysics and codon tools, secondary structure, the enzymes view, the Bioinformatics Plugins runner, and an undoable history/lineage of every operation) and **Info** (the record's name, dates and other details).
+Two document panels sit beside the studios: **History** (provenance only: the history tree and lineage graph of every operation, which you can export) and **Info** (the record's name, dates and other details, and for a DNA sequence its sequence alerts and host strain). The panels History once held have their own hosts: protein tools in Protein & 3D, the Enzymes view in Sequence Map and Cloning & Gel (an Enzyme Set opens Cloning & Gel on it), folding in Sequence Map for an RNA and in Primers & CRISPR for a DNA, the workflow plugin runner in Pipelines & NGS, and the genetic-code tables in the Sequence Map inspector.
 
 ### 3D Structure Viewer (Mol*)
 

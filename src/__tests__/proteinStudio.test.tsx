@@ -400,3 +400,235 @@ describe('US-01M6Q164 AC9: no guided-pipeline step sends the user to History', (
     for (const tool of ['EMBOSS Protein Analysis', 'Molecular Weight', 'Kyte-Doolittle', 'α-Helix (GOR H)', CODON_OPTIMISER]) expect(shown, tool).toContain(tool);
   });
 });
+
+// ─── US-01M7QC8Q: History is provenance only; its other panels have their own hosts ───
+
+const Q8Q_RNA: SequenceDocument = {
+  ...BASE, id: 'q8q-rna', name: 'Q8Q_Hairpin_RNA', accession: 'Q8Q_R', moleculeType: 'RNA',
+  sequence: 'GGGAAACCCAUAUGGGCGCAAGCCCAUAUGGGUUUCCC',
+};
+const Q8Q_SET: SequenceDocument = {
+  ...BASE, id: 'q8q-set', name: 'Q8Q_Enzyme_Set', accession: 'Q8Q_SET', folder: 'Enzyme Sets',
+  description: '2 enzymes', docMetadata: { 'Document Type': 'Enzyme Set', '# Enzymes': 2, 'Enzyme Names': 'EcoRI, BamHI' },
+};
+const Q8Q_TREE: SequenceDocument = {
+  ...BASE, id: 'q8q-tree', name: 'Q8Q_Tree', accession: 'Q8Q_T', documentKind: 'tree', docMetadata: { Newick: '((A:1,B:1):1,C:2);' },
+};
+const Q8Q_LIBRARY = [DNA, Q8Q_RNA, CHAIN, Q8Q_SET, Q8Q_TREE];
+const FOLD_HEADING = 'Nucleic-Acid Fold';
+const ENZYMES_HEADING = 'Enzymes View — Restriction Sets & Overhang Cleavage Diagrams';
+const RUNNER_HEADING = 'Workflow Automation & Bioinformatics Plugin Runner';
+/** What History must never show again, each in the words its panel draws. */
+const NOT_PROVENANCE = ['Protein Analysis', 'Molecular Weight', 'Secondary Structure', FOLD_HEADING, 'Enzymes View', 'Sequence Alerts',
+  'Bacterial Transformation Strain', '[Reading Frame]', 'Document Info Panel', 'Created / Modified', 'Workflow', 'Genetic Code', 'protein-3d-viewer'];
+const canvasText = (app: AppHarness) => text(app.canvas().innerHTML);
+const enzymeTableNames = (app: AppHarness) => app.canvas().querySelectorAll('[aria-label="Restriction Enzymes Cleavage Sites Table"] tbody tr')
+  .map((tr) => words(tr.querySelectorAll('td')[0]?.querySelectorAll('strong')[0]?.textContent));
+
+describe('US-01M7QC8Q AC1: History shows only provenance', () => {
+  it('US-01M7QC8Q AC1 History shows only provenance for every molecule type, with no sub-tab strip', async () => {
+    // In the App (mounted first: React DOM loads after the live DOM), each kind opens History on its provenance alone.
+    const app = await mountApp();
+    try {
+      for (const doc of Q8Q_LIBRARY) {
+        await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: doc.id, viewerTab: 'history-hybrid' });
+        expect(app.activeTab(), doc.name).toBe('history-hybrid');
+        const shown = canvasText(app);
+        expect(shown, doc.name).toContain('Construct History Tree & History Colors');
+        for (const absent of NOT_PROVENANCE) expect(shown.includes(absent), `${doc.name} in the App: no "${absent}"`).toBe(false);
+        expect(app.canvas().querySelectorAll('[role="tab"]'), `${doc.name}: no sub-tab in History`).toHaveLength(0);
+      }
+    } finally {
+      app.unmount();
+    }
+    const { renderToStaticMarkup, HybridToolsAndHistoryStudio } = await load();
+    const { hybridTabsForDocument, defaultHybridSubTab } = await import('../core/analysisContext');
+    for (const doc of Q8Q_LIBRARY) {
+      expect(hybridTabsForDocument(doc), doc.name).toEqual(['lineage']);
+      expect(defaultHybridSubTab(doc), doc.name).toBe('lineage');
+      const html = renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={doc} allDocuments={Q8Q_LIBRARY} />);
+      const shown = text(html);
+      expect(shown, `${doc.name}: the history tree`).toContain('Construct History Tree & History Colors');
+      expect(html, `${doc.name}: the lineage graph`).toContain('aria-label="Construct history provenance graph"');
+      for (const absent of NOT_PROVENANCE) expect(shown.includes(absent) || html.includes(absent), `${doc.name}: no "${absent}"`).toBe(false);
+      expect(html, `${doc.name}: no sub-tab strip`).not.toContain('role="tablist"');
+      expect(html, `${doc.name}: no sub-tab`).not.toContain('role="tab"');
+    }
+  }, 120_000);
+});
+
+describe('US-01M7QC8Q AC2: the Enzymes view opens in Sequence Map and Cloning & Gel', () => {
+  it('US-01M7QC8Q AC2 Choose Enzymes and view:enzymes open the Enzymes view in Sequence Map or Cloning & Gel, and an Enzyme Set opens Cloning & Gel on it', async () => {
+    const { preferredViewerTab, supportedViewerTabs } = await import('../core/documentViews');
+    expect(preferredViewerTab(Q8Q_SET), 'D0220: an Enzyme Set prefers Cloning & Gel').toBe('cloning-gel');
+    expect(supportedViewerTabs(Q8Q_SET)).toEqual(['cloning-gel', 'history-hybrid', 'document-info']);
+    const app = await mountApp();
+    try {
+      const routes: [string, () => Promise<void>][] = [
+        ['Cloning > Enzymes > Enzyme Views > Choose Enzymes', () => inWindowMenu(app, 'Cloning', ['Enzymes', 'Enzyme Views', 'Choose Enzymes'])],
+        ['view:enzymes', () => app.menu('view:enzymes')],
+      ];
+      for (const [name, run] of routes) {
+        for (const host of ['sequence-view', 'cloning-gel'] as const) {
+          await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: DNA.id, viewerTab: host });
+          expect(canvasText(app).includes(ENZYMES_HEADING), `${name} from ${host}: not shown before`).toBe(false);
+          await run();
+          await app.settle();
+          expect(app.activeTab(), `${name} from ${host}: the view opens in its host, never History`).toBe(host);
+          expect(canvasText(app), `${name} from ${host}`).toContain(ENZYMES_HEADING);
+          expect(app.canvas().querySelectorAll('section[aria-label="Enzymes view"]'), `${name} from ${host}: one hosted view`).toHaveLength(1);
+        }
+      }
+      // The Enzyme Set opens Cloning & Gel, from its own preferred tab, on the view, with its enzymes listed.
+      await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: Q8Q_SET.id, viewerTab: preferredViewerTab(Q8Q_SET) });
+      expect(app.activeTab()).toBe('cloning-gel');
+      expect(canvasText(app)).toContain(ENZYMES_HEADING);
+      expect(enzymeTableNames(app).sort(), 'the set\'s enzymes').toEqual(['BamHI', 'EcoRI']);
+      await app.menu('view:enzymes');
+      expect(app.activeTab(), 'view:enzymes on an Enzyme Set').toBe('cloning-gel');
+    } finally {
+      app.unmount();
+    }
+  }, 120_000);
+});
+
+describe('US-01M7QC8Q AC3: folding opens in Sequence Map for RNA and Primers & CRISPR for DNA', () => {
+  it('US-01M7QC8Q AC3 Secondary Structure and view:secondary-structure fold an RNA in Sequence Map and a DNA in Primers & CRISPR, only once shown', async () => {
+    const app = await mountApp();
+    try {
+      const routes: [string, () => Promise<void>][] = [
+        ['View > Studio Views > Secondary Structure', () => inWindowMenu(app, 'View', ['Studio Views', 'Secondary Structure'])],
+        ['view:secondary-structure', () => app.menu('view:secondary-structure')],
+      ];
+      for (const [name, run] of routes) {
+        for (const [doc, host] of [[Q8Q_RNA, 'sequence-view'], [DNA, 'primers-pcr']] as const) {
+          await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: doc.id, viewerTab: 'sequence-view' });
+          // Not computed until shown: no fold or ΔG anywhere in the page.
+          expect(text(app.doc.body.innerHTML).includes('MFE ΔG'), `${name} on ${doc.name}: no fold before`).toBe(false);
+          await run();
+          await app.settle();
+          expect(app.activeTab(), `${name} on ${doc.name}`).toBe(host);
+          const shown = canvasText(app);
+          expect(shown, `${name} on ${doc.name}: the fold`).toContain(`${FOLD_HEADING} — ${doc.name}`);
+          expect(shown, `${name} on ${doc.name}: its ΔG`).toMatch(/MFE ΔG = -?\d+(\.\d+)? kcal\/mol/);
+        }
+      }
+    } finally {
+      app.unmount();
+    }
+  }, 120_000);
+
+  it('US-01M7QC8Q AC3 a guided-pipeline folding step aimed at Primers & CRISPR opens it on the folding panel, and a primer step opens it without', async () => {
+    // US-01M6Q164 aimed the folding step at primers-pcr: following it must land on the fold, not on primer design.
+    const { BIO_PIPELINE_CATALOG, executeBioPipelineAsync } = await load();
+    const cases: { def: (typeof BIO_PIPELINE_CATALOG)[number]; idx: number; label: string; folds: boolean }[] = [];
+    for (const def of BIO_PIPELINE_CATALOG) {
+      const report = await executeBioPipelineAsync(DNA, def.id);
+      report.steps.forEach((s, idx) => {
+        if (s.targetStudio !== 'primers-pcr') return;
+        const folds = FOLD_LABEL.test(s.targetStudioLabel);
+        if (!cases.some((c) => c.folds === folds)) cases.push({ def, idx, label: s.targetStudioLabel, folds });
+      });
+    }
+    expect(cases.map((c) => c.folds).sort(), 'a folding step and a primer step, both aimed at Primers & CRISPR').toEqual([false, true]);
+    const app = await mountApp();
+    try {
+      for (const c of cases) {
+        const where = `${c.def.id} step ${c.idx + 1} (${c.label})`;
+        await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: DNA.id, viewerTab: 'sequence-view' });
+        await app.clickStudio('pipelines-ngs');
+        expect(app.activeTab()).toBe('guided-pipelines');
+        const picks = app.canvas().querySelectorAll('button.mbc-pipeline-card, button.method-tab-btn')
+          .filter((b) => b.getAttribute('title') === c.def.title || words(b.querySelectorAll('.mbc-pipeline-card-name')[0]?.textContent) === c.def.title);
+        expect(picks, `${where}: one pick for the pipeline`).toHaveLength(1);
+        await app.click(picks[0]);
+        const steps = () => app.canvas().querySelectorAll('[aria-label="Pipeline Steps"] button[role="tab"], [role="tablist"][aria-label="Pipeline Steps"] button[role="tab"]');
+        for (let i = 0; i < 40 && steps().length <= c.idx; i++) await app.settle();
+        expect(steps().length, `${where}: the report's steps`).toBeGreaterThan(c.idx);
+        await app.click(steps()[c.idx]);
+        const cta = app.canvas().querySelectorAll('button.mbc-pipe-btn.primary').filter((b) => words(b.textContent) === c.label);
+        expect(cta, `${where}: the step's button`).toHaveLength(1);
+        expect(text(app.doc.body.innerHTML).includes(`${FOLD_HEADING} — ${DNA.name}`), `${where}: no fold before`).toBe(false);
+        await app.click(cta[0]);
+        await app.settle();
+        expect(app.activeTab(), where).toBe('primers-pcr');
+        const fold = app.canvas().querySelectorAll('section[aria-label="Folding"]');
+        if (c.folds) {
+          expect(fold, `${where}: the folding panel`).toHaveLength(1);
+          expect(canvasText(app), `${where}: the fold`).toContain(`${FOLD_HEADING} — ${DNA.name}`);
+          expect(canvasText(app), `${where}: its ΔG`).toMatch(/MFE ΔG = -?\d+(\.\d+)? kcal\/mol/);
+        } else {
+          expect(fold, `${where}: primer design, not the fold`).toHaveLength(0);
+          expect(canvasText(app).includes(FOLD_HEADING), `${where}: no fold`).toBe(false);
+        }
+      }
+    } finally {
+      app.unmount();
+    }
+  }, 120_000);
+});
+
+describe('US-01M7QC8Q AC4: sequence alerts and the host strain show in Info, for DNA only', () => {
+  it('US-01M7QC8Q AC4 a plasmid with Dam sites shows the strain picker and alerts that change with the strain; a protein shows neither', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: DNA.id, viewerTab: 'document-info' });
+      const info = () => app.one('section[aria-label="Document information"]', 'the Info panel');
+      const strain = () => info().querySelectorAll('select').filter((s) => s.querySelectorAll('option').some((o) => o.getAttribute('value') === 'DH5α (dam+ dcm+)'));
+      const alerts = () => info().querySelectorAll('.info-callout strong').map((s) => words(s.textContent));
+      expect(strain(), 'one strain picker in Info').toHaveLength(1);
+      expect(strain()[0].value, 'the default strain').toBe('DH5α (dam+ dcm+)');
+      const dh5a = alerts();
+      expect(dh5a.length, 'alerts for the plasmid').toBeGreaterThan(0);
+      await app.change(strain()[0], 'JM110 / SCS110 (dam- dcm-)');
+      const jm110 = alerts();
+      expect(jm110, 'the alerts change with the strain').not.toEqual(dh5a);
+      await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: CHAIN.id, viewerTab: 'document-info' });
+      expect(strain(), 'no strain picker for a protein').toHaveLength(0);
+      expect(text(info().innerHTML)).not.toContain('Sequence Alerts');
+      expect(info().querySelectorAll('.info-callout'), 'no alerts for a protein').toHaveLength(0);
+    } finally {
+      app.unmount();
+    }
+    const { renderToStaticMarkup, DocumentInfoPanel } = await load();
+    const html = renderToStaticMarkup(<DocumentInfoPanel doc={CHAIN} onUpdateDocument={() => {}} alerts={<p>ALERTS SLOT</p>} />);
+    expect(html, 'Info draws the alerts for DNA only').not.toContain('ALERTS SLOT');
+  }, 120_000);
+});
+
+describe('US-01M7QC8Q AC5: workflows in Pipelines & NGS, genetic-code tables in the Sequence Map inspector', () => {
+  it('US-01M7QC8Q AC5 the plugin runner runs on the active document in Pipelines & NGS and the genetic-code tables sit beside translation', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: DNA.id, viewerTab: 'sequence-view' });
+      await app.clickStudio('pipelines-ngs');
+      expect(app.activeTab()).toBe('guided-pipelines');
+      const tab = app.canvas().querySelectorAll('button[role="tab"]').filter((b) => words(b.textContent) === 'Workflow Plugins');
+      expect(tab, 'the Workflow Plugins view').toHaveLength(1);
+      await app.click(tab[0]);
+      const shown = canvasText(app);
+      expect(shown).toContain(RUNNER_HEADING);
+      expect(shown, 'the built-in plugin ran').toContain('Status: SUCCESS');
+      expect(shown, 'on the active document').toContain(`Run Tool on ${DNA.name}`);
+
+      await app.clickTab('sequence-view');
+      const aside = app.inspectorAside();
+      expect(aside, 'the Sequence Map inspector').not.toBeNull();
+      const header = aside!.querySelectorAll('button.mbc-accordion-header').find((b) => words(b.textContent) === 'Display & Color Scheme')!;
+      if (header.getAttribute('aria-expanded') !== 'true') await app.click(header);
+      const tables = app.inspectorAside()!.querySelectorAll('[aria-label="Genetic code tables"]');
+      expect(tables, 'the genetic-code tables in the inspector').toHaveLength(1);
+      expect(tables[0].querySelectorAll('li').map((li) => words(li.textContent))).toContain('Standard (1)');
+      const body = tables[0].closest('.mbc-accordion-body')!;
+      expect(words(body.textContent), 'beside translation').toContain('Show 3-Frame Translation');
+
+      await app.menu('tools:workflows');
+      expect(app.activeTab(), 'Tools > Pipelines > Workflows & Lineage opens History').toBe('history-hybrid');
+      const history = canvasText(app);
+      expect(history).toContain('Construct History Tree & History Colors');
+      expect(history.includes(RUNNER_HEADING) || history.includes('Genetic Code'), 'History shows neither').toBe(false);
+    } finally {
+      app.unmount();
+    }
+  }, 120_000);
+});

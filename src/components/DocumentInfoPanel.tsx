@@ -146,8 +146,10 @@ export function documentDates(doc: SequenceDocument): { created: string; modifie
   };
 }
 
-export function DocumentInfoPanel({ doc, onUpdateDocument, searchMatch = null }: {
+export function DocumentInfoPanel({ doc, onUpdateDocument, searchMatch = null, alerts = null }: {
   doc: SequenceDocument; onUpdateDocument: (doc: SequenceDocument) => void;
+  /** The sequence alerts and host strain (US-01M7QC8Q), drawn for a DNA document only. */
+  alerts?: React.ReactNode;
   /** A Search Project hit in one of this document's fields, named above the fields. */
   searchMatch?: TextHit | null;
 }) {
@@ -175,5 +177,6 @@ export function DocumentInfoPanel({ doc, onUpdateDocument, searchMatch = null }:
     </div>)}</dl>
     <CustomFieldsEditor doc={doc} onUpdateDocument={onUpdateDocument} />
     <DocumentNotesEditor doc={doc} onUpdateDocument={onUpdateDocument} />
+    {doc.moleculeType === 'DNA' && hasSequence && alerts}
   </section>;
 }

@@ -1710,11 +1710,10 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
       new URL('../components/PrimerAndPCRStudio.tsx', import.meta.url),
       'utf8'
     );
-    // History's text and the Protein studio's, which holds the panels that left History (US-01M6Q164).
-    const hybridStudioText = readFileSync(
-      new URL('../components/HybridToolsAndHistoryStudio.tsx', import.meta.url),
-      'utf8'
-    ) + readFileSync(new URL('../components/ProteinStudio.tsx', import.meta.url), 'utf8');
+    // History's text (with the panels extracted from it, US-01M7QC8Q), the Protein studio's, which holds
+    // the panels that left History (US-01M6Q164), and the hosts that now mount the extracted panels.
+    const hybridStudioText = ['HybridToolsAndHistoryStudio', 'ProteinStudio', 'CloningAndGelStudio', 'DocumentInfoPanel']
+      .map((f) => readFileSync(new URL(`../components/${f}.tsx`, import.meta.url), 'utf8')).join('\n');
     const pipelineStudioText = readFileSync(
       new URL('../components/WorkflowPipelineStudio.tsx', import.meta.url),
       'utf8'

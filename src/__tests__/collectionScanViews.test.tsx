@@ -176,9 +176,14 @@ const tableRows = (app: AppHarness) =>
     return { name: words(cells[0].querySelectorAll('strong')[0]?.textContent), text: words(tr.textContent), last: words(cells[cells.length - 1].textContent) };
   });
 const tableNames = (app: AppHarness) => tableRows(app).map((r) => r.name);
-const viewNotes = (app: AppHarness) => app.canvas().querySelectorAll('p.mbc-summary-note').map((p) => words(p.textContent));
+/**
+ * The Enzymes view's own panel. It is hosted in Sequence Map (US-01M7QC8Q, D0251), whose own notes (its scan-limit
+ * note among them) share the canvas, so the view's words are read from its panel alone.
+ */
+const enzymesPanel = (app: AppHarness) => app.one('section[aria-label="Enzymes view"]', 'the Enzymes view');
+const viewNotes = (app: AppHarness) => enzymesPanel(app).querySelectorAll('p.mbc-summary-note').map((p) => words(p.textContent));
 const setStatus = (app: AppHarness) => app.one('.enzyme-set-action-bar', 'the Enzyme Set toolbar').querySelectorAll('span').map((s) => words(s.textContent));
-const viewText = (app: AppHarness) => words(app.canvas().textContent);
+const viewText = (app: AppHarness) => words(enzymesPanel(app).textContent);
 /** Markup with React's generated ids (useId) made equal, which differ only by mount order. */
 const markup = (el: LiveElement) => el.innerHTML.replace(/:r[0-9a-z]+:/g, ':id:');
 
@@ -376,9 +381,10 @@ describe('US-01M7JX1J AC2: the Enzymes view lists and names only the chosen coll
     const alerts = async (choice?: string) => {
       let seen: string[] = [];
       await withDocs(seeded(choice === undefined ? {} : { choice }), [doc], async (app) => {
-        await app.menu('view:lineage');
+        // The alerts moved from History's Lineage tab to Info, for a DNA document (US-01M7QC8Q, D0251).
+        await app.clickTab('document-info');
         await app.settle();
-        seen = app.canvas().querySelectorAll('.info-callout').map((c) => words(c.textContent));
+        seen = app.canvas().querySelectorAll('[aria-label="Sequence alerts and host strain"] .info-callout').map((c) => words(c.textContent));
       });
       return seen;
     };

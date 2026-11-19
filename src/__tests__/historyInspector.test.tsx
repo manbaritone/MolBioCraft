@@ -6,6 +6,10 @@
  * inspector, and no inspector on its Enzymes and Workflows sub-tabs, which have nothing to set.
  * The protein settings moved with History's protein sub-tab to the Protein studio (US-01M6Q164,
  * D0247 (2)): they are checked there, on the same DNA construct, under the Protein studio's title.
+ * History is provenance only (US-01M7QC8Q, D0250): it has no sub-tab strip, and each former sub-tab's
+ * check follows its panel to its new home - folding to Primers & CRISPR (the DNA construct), the
+ * Enzymes view to Sequence Map and Cloning & Gel, the workflow runner to Pipelines & NGS, and the
+ * strain to Info's Sequence Alerts & Host Strain card. History's Lineage section keeps Show History Colors.
  *
  * Every check runs in the real App over the live DOM (the US-01M6TB6G harness): a session built
  * here is restored on the History tab, and the checks read App's own header button, its inspector
@@ -116,20 +120,29 @@ const NONE = { button: null, title: null, sections: [] };
 
 /** The studio's sub-tab buttons (its own tab strip, in the canvas unless the studio is drawn under `root`). */
 const subTabButtons = (app: AppHarness, root: LiveElement = app.canvas()) => root.querySelectorAll('button[role="tab"]');
-/** The studio's selected sub-tab, by its label. */
-function selectedSubTab(app: AppHarness, root?: LiveElement): string | null {
-  const selected = subTabButtons(app, root).filter((b) => b.getAttribute('aria-selected') === 'true');
-  expect(selected.length, 'at most one selected sub-tab').toBeLessThanOrEqual(1);
-  return selected[0]?.textContent.trim() ?? null;
+/** History's former sub-tabs, each now a panel in its own host (US-01M7QC8Q): none is drawn in History. */
+const FORMER_SUB_TABS = ['Secondary Structure', 'Enzymes View (123 / ||||)', 'History Tree, Alerts & Info', 'Workflows & Genetic Code Tables'];
+/** History has no sub-tab strip (US-01M7QC8Q AC1): no tab button at all in its canvas. */
+function expectNoSubTabs(app: AppHarness, where: string, root?: LiveElement) {
+  const tabs = subTabButtons(app, root).map((b) => b.textContent.trim());
+  expect(tabs, `${where}: History has no sub-tab strip`).toEqual([]);
+  for (const former of FORMER_SUB_TABS) expect(tabs, `${where}: no "${former}"`).not.toContain(former);
 }
-const SUB_TABS = {
-  // US-01M6Q1CF AC9: the sub-tabs name no ⌘-digit.
-  fold: 'Secondary Structure',
-  enzymes: 'Enzymes View (123 / ||||)',
-  lineage: 'History Tree, Alerts & Info',
-  workflows: 'Workflows & Genetic Code Tables',
-} as const;
-type SubTab = keyof typeof SUB_TABS;
+/** The inspector a studio shows with its own settings section(s). */
+const OPEN = (studio: string, sections: string[]) =>
+  ({ button: `Hide ${studioName(studio)} Controls Inspector`, title: `${studioName(studio)} Controls`, sections });
+/** Primers & CRISPR hosting the folding panel for the DNA construct: the Folding section alone. */
+const FOLD_OPEN = OPEN('primers-crispr', ['Folding']);
+/** History's inspector: the Lineage section alone. */
+const LINEAGE_OPEN = OPEN('history', ['Lineage']);
+/** The panel a host draws for the Enzymes view or folding (App's hostedPanelNode). */
+const hosted = (app: AppHarness, name: 'Enzymes view' | 'Folding') => app.canvas().querySelectorAll(`section[aria-label="${name}"]`);
+/** Opens the folding panel with the native View > Secondary Structure, as a user does; the DNA construct folds in Primers & CRISPR. */
+async function openFolding(app: AppHarness) {
+  await app.menu('view:secondary-structure');
+  expect(app.activeTab(), 'folding a DNA opens Primers & CRISPR').toBe('primers-pcr');
+  expect(hosted(app, 'Folding'), 'the folding panel is shown').toHaveLength(1);
+}
 /** History's former protein sub-tab, now the Protein studio (US-01M6Q164). */
 const FORMER_PROTEIN_SUB_TAB = 'Protein Analysis & Codon Opt';
 /** The Protein studio's inspector on a DNA construct: the protein analysis's section alone (no structure to set). */
@@ -143,13 +156,6 @@ async function openProtein(app: AppHarness) {
 async function backToHistory(app: AppHarness) {
   await app.clickTab('history-hybrid');
   expect(app.activeTab(), 'History').toBe('history-hybrid');
-}
-/** Clicks the studio's own sub-tab button, as a user does. */
-async function openSubTab(app: AppHarness, tab: SubTab, root?: LiveElement) {
-  const hit = subTabButtons(app, root).filter((b) => b.textContent.trim() === SUB_TABS[tab] && !b.hasAttribute('hidden'));
-  expect(hit, `one visible "${SUB_TABS[tab]}" sub-tab`).toHaveLength(1);
-  await app.click(hit[0]);
-  expect(selectedSubTab(app, root)).toBe(SUB_TABS[tab]);
 }
 
 /** The body of the column's section headed `title`. */
@@ -219,14 +225,25 @@ function foldControls(app: AppHarness): FoldControls {
     topology: pick('the topology', FOLD_TOPOLOGY, 'Topology'),
   };
 }
-interface LineageControls { colors: LiveElement; strain: LiveElement }
-/** The Lineage section's controls: Show History Colors and the transformation strain, in the column only. */
+interface LineageControls { colors: LiveElement }
+/**
+ * The Lineage section's one control, Show History Colors, in the column only. The transformation
+ * strain left with the alerts for Info (US-01M7QC8Q AC4): it is nowhere in History.
+ */
 function lineageControls(app: AppHarness): LineageControls {
   const body = sectionBody(app, 'Lineage');
   const colors = onlyIn(app, body, 'Show History Colors', historyColors);
-  const strain = onlyIn(app, body, 'the transformation strain', (r) => selectsOffering(r, STRAINS));
+  expect(body.querySelectorAll('input, select, textarea'), 'Show History Colors is the section\'s only control').toHaveLength(1);
+  expect(selectsOffering(app.doc.body, STRAINS), 'no strain picker anywhere on History').toHaveLength(0);
+  return { colors };
+}
+/** The strain picker in Info (US-01M7QC8Q AC4), opened from the rail on the same document. */
+async function strainInInfo(app: AppHarness): Promise<LiveElement> {
+  await app.clickTab('document-info');
+  const strain = once(app.canvas(), 'the transformation strain in Info', (r) => selectsOffering(r, STRAINS));
   expect(labelText(strain).startsWith('Bacterial Transformation Strain'), 'the strain is labelled').toBe(true);
-  return { colors, strain };
+  expect(cardOf(strain), 'the strain sits in Info\'s alerts card').toBe('Sequence Alerts & Host Strain');
+  return strain;
 }
 
 // The results the settings drive, read from the canvas.
@@ -278,7 +295,8 @@ describe("History's settings in App's inspector (AC1)", () => {
       await onHistory(app);
       expect(app.railTabs().filter((b) => b.getAttribute('data-studio') === 'history')[0]?.textContent.trim(), 'the rail entry reads History').toBe('History');
 
-      // History has no protein sub-tab: the protein settings are the Protein studio's, on the same construct.
+      // History has no sub-tab strip (US-01M7QC8Q): the protein settings are the Protein studio's, on the same construct.
+      expectNoSubTabs(app, 'History');
       expect(subTabButtons(app).map((b) => b.textContent.trim()), 'no protein sub-tab in History').not.toContain(FORMER_PROTEIN_SUB_TAB);
       // Protein: the hydropathy window and the protease; the MS2 peptide picker stays with its spectrum.
       await openProtein(app);
@@ -288,19 +306,21 @@ describe("History's settings in App's inspector (AC1)", () => {
       expect(peptidePickers(app.canvas()), 'the MS2 peptide picker stays in the canvas').toHaveLength(1);
       expect(peptidePickers(app.inspectorAside()!), 'and is not in the inspector').toHaveLength(0);
 
-      // Secondary structure: fold as, region, temperature, dangles and topology; the hairpin picker stays with its drawing.
-      await backToHistory(app);
-      await openSubTab(app, 'fold');
-      expect(shown(app)).toEqual({ button: 'Hide History Controls Inspector', title: 'History Controls', sections: ['Folding'] });
+      // Secondary structure, in Primers & CRISPR for the DNA construct: fold as, region, temperature,
+      // dangles and topology; the hairpin picker stays with its drawing.
+      await openFolding(app);
+      expect(shown(app)).toEqual(FOLD_OPEN);
       foldControls(app);
       const hairpinPickers = (root: LiveElement) => root.querySelectorAll('select').filter((s) => labelText(s).startsWith('Hairpin shown below'));
       expect(hairpinPickers(app.canvas()), 'the hairpin picker stays in the canvas').toHaveLength(1);
       expect(hairpinPickers(app.inspectorAside()!), 'and is not in the inspector').toHaveLength(0);
 
-      // Lineage: Show History Colors and the transformation strain.
-      await openSubTab(app, 'lineage');
-      expect(shown(app)).toEqual({ button: 'Hide History Controls Inspector', title: 'History Controls', sections: ['Lineage'] });
+      // Lineage: Show History Colors alone; the transformation strain is in Info.
+      await backToHistory(app);
+      expect(shown(app)).toEqual(LINEAGE_OPEN);
       lineageControls(app);
+      await strainInInfo(app);
+      await backToHistory(app);
 
       // Hidden, the inspector draws no column and its settings are nowhere, not back in the canvas; the button stays.
       await app.click(app.inspectorButton()!);
@@ -324,30 +344,56 @@ describe('no inspector where there is nothing to set (AC2)', () => {
   it('offers no inspector on the Enzymes and Workflows sub-tabs', async () => {
     await withApp(async (app) => {
       await onHistory(app);
-      await openSubTab(app, 'lineage');
-      expect(shown(app).button, 'a sub-tab with settings shows the button').toBe('Hide History Controls Inspector');
-      for (const tab of ['enzymes', 'workflows'] as const) {
-        await openSubTab(app, tab);
-        expect(shown(app), tab).toEqual(NONE);
-        expect(app.all('[aria-label$=" Inspector"]'), `${tab}: no inspector control anywhere, disabled or not`).toHaveLength(0);
-        expect(app.bodySplit().classList.contains('inspector-hidden'), `${tab}: the body split draws no column`).toBe(true);
-        await openSubTab(app, 'fold');
-        expect(shown(app).sections, `back from ${tab}, the settings return`).toEqual(['Folding']);
-      }
+      expect(shown(app).button, 'History, whose lineage has settings, shows the button').toBe('Hide History Controls Inspector');
+      const nothingToSet = (where: string) => {
+        expect(shown(app), where).toEqual(NONE);
+        expect(app.all('[aria-label$=" Inspector"]'), `${where}: no inspector control anywhere, disabled or not`).toHaveLength(0);
+        expect(app.bodySplit().classList.contains('inspector-hidden'), `${where}: the body split draws no column`).toBe(true);
+      };
+
+      // The Enzymes view in Cloning & Gel: the hosted view has nothing to set.
+      await app.clickTab('cloning-gel');
+      await app.menu('view:enzymes');
+      expect(app.activeTab(), 'the Enzymes view, asked from Cloning & Gel').toBe('cloning-gel');
+      expect(hosted(app, 'Enzymes view'), 'Cloning & Gel hosts the Enzymes view').toHaveLength(1);
+      nothingToSet('enzymes in Cloning & Gel');
+      await backToHistory(app);
+      expect(shown(app).sections, 'back from the Enzymes view, the settings return').toEqual(['Lineage']);
+
+      // The Enzymes view in Sequence Map adds no section: the column is Sequence Map's own.
+      await app.clickTab('sequence-view');
+      const mapSections = shown(app).sections;
+      await app.menu('view:enzymes');
+      expect(app.activeTab(), 'the Enzymes view, asked from Sequence Map').toBe('sequence-view');
+      expect(hosted(app, 'Enzymes view'), 'Sequence Map hosts the Enzymes view').toHaveLength(1);
+      expect(shown(app), 'Sequence Map keeps its own column, with no section from the Enzymes view').toEqual(OPEN('sequence-map', mapSections));
+
+      // The workflow plugin runner, on Pipelines & NGS's Workflow Plugins view.
+      await app.clickStudio('pipelines-ngs');
+      const view = app.canvas().querySelectorAll('button[role="tab"]').filter((b) => b.textContent.trim() === 'Workflow Plugins');
+      expect(view, 'the Workflow Plugins view').toHaveLength(1);
+      await app.click(view[0]);
+      expect(app.canvas().textContent, 'the plugin runner is shown').toContain('Workflow Automation & Bioinformatics Plugin Runner');
+      nothingToSet('workflows in Pipelines & NGS');
+      await backToHistory(app);
+      expect(shown(app).sections, 'back from workflows, the settings return').toEqual(['Lineage']);
     });
 
     // An Enzyme Set: its History tab reads History, the panel's registry name, not a per-record
-    // "Enzymes" (US-01M6Q16Q, D0237), and that name titles the inspector of its Lineage sub-tab.
+    // "Enzymes" (US-01M6Q16Q, D0237), and that name titles the inspector of its Lineage section.
+    // Its Enzymes view is in Cloning & Gel (D0220), with nothing to set.
     await withApp(async (app) => {
       await onHistory(app, ENZYME_SET);
       expect(app.railTabs().filter((b) => b.getAttribute('data-studio') === 'history')[0]?.textContent.trim(), 'the rail entry reads the panel name').toBe(studioName('history'));
-      expect(selectedSubTab(app), 'an Enzyme Set opens on its Enzymes view').toBe(SUB_TABS.enzymes);
-      expect(shown(app), 'the Enzymes view').toEqual(NONE);
-      await openSubTab(app, 'lineage');
-      expect(shown(app)).toEqual({ button: `Hide ${studioName('history')} Controls Inspector`, title: `${studioName('history')} Controls`, sections: ['Lineage'] });
+      expectNoSubTabs(app, 'an Enzyme Set on History');
+      expect(hosted(app, 'Enzymes view'), 'no Enzymes view in History').toHaveLength(0);
+      expect(shown(app)).toEqual(LINEAGE_OPEN);
       lineageControls(app);
-      await openSubTab(app, 'enzymes');
-      expect(shown(app), 'back on the Enzymes view').toEqual(NONE);
+      await app.clickTab('cloning-gel');
+      expect(hosted(app, 'Enzymes view'), 'an Enzyme Set opens Cloning & Gel on its Enzymes view').toHaveLength(1);
+      expect(shown(app), 'the Enzymes view').toEqual(NONE);
+      await backToHistory(app);
+      expect(shown(app), 'back on History').toEqual(LINEAGE_OPEN);
     });
   });
 });
@@ -379,17 +425,27 @@ describe('the settings drive their results (AC3)', () => {
       expect([p.window.value, p.protease.value], 'after hiding and showing the inspector: protein').toEqual(['13', 'Glu-C']);
       expect(hydropathyLine(app), 'after hiding and showing the inspector: the plot at window 13').toBe(at13);
 
-      // A new temperature refolds: the MFE shown is the engine's at that temperature.
-      await backToHistory(app);
-      await openSubTab(app, 'fold');
+      // A new temperature refolds, in Primers & CRISPR: the MFE shown is the engine's at that temperature.
+      await openFolding(app);
       const mfe = (t: number) => e.bio.predictSecondaryStructure(CONSTRUCT_SEQ, 'DNA', { temperatureC: t, danglingEnds: true, circular: false }).minimumFreeEnergyKcalMol;
       expect(mfe(60), 'the fixture folds differently at 37 and 60 °C').not.toBe(mfe(37));
       expect(kpi(app, 'Minimum Free Energy'), 'folded at 37 °C').toBe(`${mfe(37)} kcal/mol`);
       await app.change(foldControls(app).temperature, '60');
       expect(kpi(app, 'Minimum Free Energy'), 'refolded at 60 °C').toBe(`${mfe(60)} kcal/mol`);
+      // The fold's values are kept across asking for folding again and across hiding and showing the inspector.
+      const foldKept = async (where: string) => {
+        expect(foldControls(app).temperature.value, `${where}: temperature`).toBe('60');
+        expect(kpi(app, 'Minimum Free Energy'), `${where}: folded at 60 °C`).toBe(`${mfe(60)} kcal/mol`);
+      };
+      await openFolding(app);
+      await foldKept('after View > Secondary Structure again');
+      await app.click(app.inspectorButton()!);
+      expect(shown(app).button).toBe(`Show ${studioName('primers-crispr')} Controls Inspector`);
+      await app.click(app.inspectorButton()!);
+      await foldKept('after hiding and showing the inspector');
 
       // History Colors recolours the lineage graph.
-      await openSubTab(app, 'lineage');
+      await backToHistory(app);
       const coloured = lineageStrokes(app);
       expect(coloured.edges.length, 'the graph has edges').toBeGreaterThan(0);
       expect(new Set(coloured.edges), 'edges in history colour').toEqual(new Set(['var(--mbc-blue)']));
@@ -398,24 +454,13 @@ describe('the settings drive their results (AC3)', () => {
       const plain = lineageStrokes(app);
       expect(new Set(plain.edges), 'edges plain').toEqual(new Set(['var(--mbc-text-muted)']));
       expect(new Set(plain.nodes), 'nodes plain').toEqual(new Set(['var(--mbc-green)']));
-      await app.change(lineageControls(app).strain, 'BL21(DE3) (dam+ dcm-)');
 
-      // Each value is kept across the sub-tab switches, and across hiding and showing the inspector.
-      const kept = async (where: string) => {
-        await openSubTab(app, 'workflows');
-        await openSubTab(app, 'fold');
-        expect(foldControls(app).temperature.value, `${where}: temperature`).toBe('60');
-        expect(kpi(app, 'Minimum Free Energy'), `${where}: folded at 60 °C`).toBe(`${mfe(60)} kcal/mol`);
-        await openSubTab(app, 'lineage');
-        const l = lineageControls(app);
-        expect([l.colors.checked, l.strain.value], `${where}: lineage`).toEqual([false, 'BL21(DE3) (dam+ dcm-)']);
-        expect(new Set(lineageStrokes(app).edges), `${where}: edges plain`).toEqual(new Set(['var(--mbc-text-muted)']));
-      };
-      await kept('after the sub-tab switches');
+      // History has no sub-tabs to switch: the lineage value is kept across hiding and showing the inspector.
       await app.click(app.inspectorButton()!);
       expect(shown(app).button).toBe('Show History Controls Inspector');
       await app.click(app.inspectorButton()!);
-      await kept('after hiding and showing the inspector');
+      expect(lineageControls(app).colors.checked, 'after hiding and showing the inspector: lineage').toBe(false);
+      expect(new Set(lineageStrokes(app).edges), 'after hiding and showing the inspector: edges plain').toEqual(new Set(['var(--mbc-text-muted)']));
     });
   });
 });
@@ -447,35 +492,47 @@ describe('the commands that open a History sub-tab (AC5)', () => {
   it('shows the sub-tab a menu command opens, with its sections', async () => {
     await withApp(async (app) => {
       await onHistory(app);
-      const routes: { name: string; run: () => Promise<void>; tab: SubTab; section: string }[] = [
-        { name: 'the native View > Secondary Structure (view:secondary-structure)', run: () => app.menu('view:secondary-structure'), tab: 'fold', section: 'Folding' },
-        { name: 'View > Studio Views > Secondary Structure', run: () => choose(app, 'View', ['Studio Views'], 'Secondary Structure'), tab: 'fold', section: 'Folding' },
-        { name: 'the native View > Lineage (view:lineage)', run: () => app.menu('view:lineage'), tab: 'lineage', section: 'Lineage' },
-        { name: 'the native Tools > Workflows (tools:workflows)', run: () => app.menu('tools:workflows'), tab: 'lineage', section: 'Lineage' },
-        { name: 'View > Studio Views > History', run: () => choose(app, 'View', ['Studio Views'], 'History'), tab: 'lineage', section: 'Lineage' },
-        { name: 'Tools > Pipelines > Lineage Manager', run: () => choose(app, 'Tools', ['Pipelines'], 'Lineage Manager'), tab: 'lineage', section: 'Lineage' },
+      // Folding opens in Primers & CRISPR for the DNA construct; the lineage routes stay on History (US-01M7QC8Q).
+      type Home = 'fold' | 'lineage';
+      const routes: { name: string; run: () => Promise<void>; home: Home }[] = [
+        { name: 'the native View > Secondary Structure (view:secondary-structure)', run: () => app.menu('view:secondary-structure'), home: 'fold' },
+        { name: 'View > Studio Views > Secondary Structure', run: () => choose(app, 'View', ['Studio Views'], 'Secondary Structure'), home: 'fold' },
+        { name: 'the native View > Lineage (view:lineage)', run: () => app.menu('view:lineage'), home: 'lineage' },
+        { name: 'the native Tools > Workflows (tools:workflows)', run: () => app.menu('tools:workflows'), home: 'lineage' },
+        { name: 'View > Studio Views > History', run: () => choose(app, 'View', ['Studio Views'], 'History'), home: 'lineage' },
+        { name: 'Tools > Pipelines > Lineage Manager', run: () => choose(app, 'Tools', ['Pipelines'], 'Lineage Manager'), home: 'lineage' },
       ];
       for (const route of routes) {
-        // From History on its Enzymes sub-tab, from the Protein studio on the same construct (History's
-        // former protein sub-tab, US-01M6Q164), then from another tab (Sequence).
-        for (const from of ['History > Enzymes', 'Protein & 3D', 'Sequence'] as const) {
+        // From Sequence Map with the Enzymes view open (History's former Enzymes sub-tab), from the
+        // Protein studio on the same construct (History's former protein sub-tab, US-01M6Q164), then
+        // from Sequence Map alone.
+        for (const from of ['Sequence Map > Enzymes', 'Protein & 3D', 'Sequence'] as const) {
           if (from === 'Sequence') {
             await app.clickTab('sequence-view');
             expect(shown(app).title, 'on the Sequence tab').toBe(`${studioName('sequence-map')} Controls`);
+            expect(hosted(app, 'Enzymes view'), 'Sequence Map alone').toHaveLength(0);
           } else if (from === 'Protein & 3D') {
             await openProtein(app);
             expect(shown(app)).toEqual(PROTEIN_OPEN);
           } else {
-            if (app.activeTab() !== 'history-hybrid') await app.clickTab('history-hybrid');
-            await openSubTab(app, 'enzymes');
-            expect(shown(app)).toEqual(NONE);
+            if (app.activeTab() !== 'sequence-view') await app.clickTab('sequence-view');
+            await app.menu('view:enzymes');
+            expect(app.activeTab(), 'the Enzymes view in Sequence Map').toBe('sequence-view');
+            expect(hosted(app, 'Enzymes view'), 'the Enzymes view is open').toHaveLength(1);
           }
           await route.run();
           const where = `${route.name}, from ${from}`;
-          expect(app.activeTab(), where).toBe('history-hybrid');
-          expect(selectedSubTab(app), where).toBe(SUB_TABS[route.tab]);
-          expect(shown(app), where).toEqual({ button: 'Hide History Controls Inspector', title: 'History Controls', sections: [route.section] });
-          if (route.tab === 'fold') foldControls(app); else lineageControls(app);
+          if (route.home === 'fold') {
+            expect(app.activeTab(), where).toBe('primers-pcr');
+            expect(hosted(app, 'Folding'), `${where}: the folding panel`).toHaveLength(1);
+            expect(shown(app), where).toEqual(FOLD_OPEN);
+            foldControls(app);
+          } else {
+            expect(app.activeTab(), where).toBe('history-hybrid');
+            expectNoSubTabs(app, where);
+            expect(shown(app), where).toEqual(LINEAGE_OPEN);
+            lineageControls(app);
+          }
         }
       }
     });
@@ -508,12 +565,19 @@ describe('the studio drawn on its own (AC6)', () => {
       // this story moved it into the inspector (878396b^), and no inspector section is drawn.
       const React = await import('react');
       const { createRoot } = await import('react-dom/client');
-      const { HybridToolsAndHistoryStudio } = await import('../components/HybridToolsAndHistoryStudio');
+      const { HybridToolsAndHistoryStudio, FoldingPanel, SequenceAlertsPanel } = await import('../components/HybridToolsAndHistoryStudio');
       // History's former protein sub-tab is the Protein studio's panel (US-01M6Q164): drawn on its own too.
       const { ProteinStudio } = await import('../components/ProteinStudio');
       const probe = app.doc.createElement('div');
       app.doc.body.appendChild(probe);
       let root = createRoot(probe as unknown as Element);
+      /** Draws `el` alone in the probe, in place of what it held. */
+      const drawAlone = async (el: React.ReactElement) => {
+        await React.act(async () => { root.unmount(); });
+        root = createRoot(probe as unknown as Element);
+        await React.act(async () => { root.render(el); });
+        await app.settle();
+      };
       try {
         await React.act(async () => {
           root.render(React.createElement(ProteinStudio, { activeDoc: CONSTRUCT }));
@@ -530,16 +594,9 @@ describe('the studio drawn on its own (AC6)', () => {
         const protease = once(probe, 'the protease', (r) => selectsOffering(r, PROTEASES));
         expect(headerOf(protease), 'the protease sits in the digest\'s header').toBe('Proteomics LC-MS/MS Digest, b/y-Ion MS2 & PTM / Disulfide Prediction');
 
-        // History, drawn on its own in the same place.
-        await React.act(async () => { root.unmount(); });
-        root = createRoot(probe as unknown as Element);
-        await React.act(async () => {
-          root.render(React.createElement(HybridToolsAndHistoryStudio, { doc: CONSTRUCT, allDocuments: [CONSTRUCT, PARENT], initialSubTab: 'lineage' }));
-        });
-        await app.settle();
-
-        // Secondary structure: the five fold settings in one grid of the fold's card.
-        await openSubTab(app, 'fold', probe);
+        // Secondary structure, History's former sub-tab, drawn on its own as the folding panel (US-01M7QC8Q):
+        // the five fold settings in one grid of the fold's card.
+        await drawAlone(React.createElement(FoldingPanel, { doc: CONSTRUCT, allDocuments: [CONSTRUCT, PARENT] }));
         noSections('Secondary structure');
         const grids = new Set<LiveElement>();
         const fold = [['fold as', FOLD_AS], ['the region', FOLD_REGION], ['the temperature', FOLD_TEMPS], ['the dangling ends', FOLD_DANGLES], ['the topology', FOLD_TOPOLOGY]] as const;
@@ -550,16 +607,22 @@ describe('the studio drawn on its own (AC6)', () => {
         }
         expect([...grids].map((g) => g.getAttribute('class')), 'the five share one grid').toEqual(['form-grid-2col']);
 
-        // Lineage: Show History Colors in the history tree's header, the strain first in the info panel's grid.
-        await openSubTab(app, 'lineage', probe);
+        // Lineage: History drawn on its own, with no sub-tab strip; Show History Colors in the history tree's header.
+        await drawAlone(React.createElement(HybridToolsAndHistoryStudio, { doc: CONSTRUCT, allDocuments: [CONSTRUCT, PARENT], initialSubTab: 'lineage' }));
         noSections('Lineage');
+        expectNoSubTabs(app, 'History drawn on its own', probe);
         const colors = once(probe, 'Show History Colors', historyColors).closest('label')!;
         expect(headerOf(colors), 'Show History Colors sits in the history tree\'s header').toBe('Construct History Tree & History Colors');
+        expect(selectsOffering(probe, STRAINS), 'no strain in History').toHaveLength(0);
+
+        // The strain, drawn on its own with the alerts it drives (Info's slot): first in the alerts card's grid.
+        await drawAlone(React.createElement(SequenceAlertsPanel, { doc: CONSTRUCT, allDocuments: [CONSTRUCT, PARENT] }));
+        noSections('Sequence alerts');
         const strain = once(probe, 'the transformation strain', (r) => selectsOffering(r, STRAINS)).closest('label')!;
         expect(labelText(strain).startsWith('Bacterial Transformation Strain'), 'the strain is labelled').toBe(true);
-        expect(cardOf(strain), 'the strain sits in the info panel').toBe('Document Info Panel, Enhanced Alerts & Auto-Annotation');
+        expect(cardOf(strain), 'the strain sits in the alerts card').toBe('Sequence Alerts & Host Strain');
         const grid = strain.parentElement!;
-        expect([grid.getAttribute('class'), grid.children[0] === strain], 'the strain is the first field of the panel\'s grid').toEqual(['form-grid-2col', true]);
+        expect([grid.getAttribute('class'), grid.children[0] === strain], 'the strain is the first field of the card\'s grid').toEqual(['form-grid-2col', true]);
       } finally {
         await React.act(async () => { root.unmount(); });
         probe.remove();

@@ -27,14 +27,12 @@ import {
   buildConstructLineageDagRust,
 } from '../lib/rustBioEngine';
 import { WorkbenchSmartTable } from './WorkbenchSmartTable';
-import { documentDates } from './DocumentInfoPanel';
-import { ScrollableMenuStrip } from './ScrollableMenuStrip';
 
 import { FigureExportButton } from './FigureExportButton';
 import { ResultWarnings } from './ResultWarnings';
 import { InspectorSection, useInWorkbench } from './WorkbenchInspector';
 import type { FigureTable } from '../core/figureExport';
-import { defaultHybridSubTab, hybridTabsForDocument, proteinAnalysisTarget, type HybridSubTabId } from '../core/analysisContext';
+import { proteinAnalysisTarget, type HybridSubTabId } from '../core/analysisContext';
 // The protein KPIs' n/a strings, which the protein analysis (now the Protein studio's) reads.
 export { NO_RESIDUE_TRANSLATED, NO_STANDARD_RESIDUE } from '../core/analysisContext';
 import { cutSiteDisplayPosition, enzymeKey } from '../core/restrictionDisplay';
@@ -71,6 +69,8 @@ interface HybridToolsAndHistoryStudioProps {
   commandNonce?: number;
   /** Opens another project document: a lineage graph's parent or descendant. */
   onSelectDocument?: (docId: string) => void;
+  /** Opens History's lineage, from the Enzymes view's Lineage button. */
+  onOpenLineage?: () => void;
   /**
    * The active enzyme list (US-01M7DV52): the catalogue and the stored custom definitions, which
    * the Enzymes view scans and tabulates; the catalogue alone unless given.
@@ -116,11 +116,21 @@ const COMMERCIAL_SUPPLIERS = [
   'Stratagene (3)',
 ];
 
-export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioProps> = ({
+/**
+ * The panels History once held as sub-tabs, each now mounted by its own host (US-01M7QC8Q): the
+ * lineage (History), the Enzymes view (Sequence Map, Cloning & Gel), folding (Sequence Map for RNA,
+ * Primers & CRISPR for DNA), the workflow plugin runner (Pipelines & NGS) and the sequence alerts
+ * with the host strain (Info, DNA only). A panel computes only its own module, so a hidden analysis
+ * does not run.
+ */
+type HistoryModuleId = 'secondary-structure' | 'enzymes-view' | 'lineage' | 'workflows' | 'alerts';
+
+const HistoryModule: React.FC<HybridToolsAndHistoryStudioProps & { module: HistoryModuleId }> = ({
+  module,
+  onOpenLineage,
   doc,
   allDocuments,
   onUpdateDocument,
-  initialSubTab,
   initialPluginId,
   commandNonce,
   onSelectDocument,
@@ -132,9 +142,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   // In the workbench the Protein, Secondary structure and Lineage settings sit in App's inspector;
   // drawn on its own, the studio keeps each where it sits in its result (US-01M6TANN).
   const inWorkbench = useInWorkbench();
-  const availableTabs = hybridTabsForDocument(doc);
-  const [selectedSubTab, setSubTab] = useState<HybridSubTabId>(initialSubTab ?? defaultHybridSubTab(doc));
-  const subTab = availableTabs.includes(selectedSubTab) ? selectedSubTab : defaultHybridSubTab(doc);
+  const subTab: HistoryModuleId = module;
   const [enzymesDisplayTab, setEnzymesDisplayTab] = useState<'numbers' | 'lines'>('numbers');
   const [enzymeSetFilter, setEnzymeSetFilter] = useState<
     'unique' | 'unique_dual' | 'six_plus' | 'type2s' | 'all' | 'custom_set'
@@ -179,9 +187,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   const [historyColorsEnabled, setHistoryColorsEnabled] = useState<boolean>(true);
   const [selectedStrain, setSelectedStrain] = useState<string>('DH5α (dam+ dcm+)');
 
-  useEffect(() => {
-    if (initialSubTab) setSubTab(initialSubTab);
-  }, [initialSubTab, commandNonce]);
 
   const [selectedPluginId, setSelectedPluginId] = useState<string>(
     initialPluginId && BUILTIN_JS_PLUGINS.some((p) => p.id === initialPluginId)
@@ -280,8 +285,8 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
   const enzymesViewCollection = subTab === 'enzymes-view' ? scanCollection : null;
   const enzymesViewList = enzymesViewCollection ? enzymesViewCollection.members : enzymes;
   const restrictionScan = useMemo(() => {
-    if (doc.moleculeType !== 'DNA' || (subTab !== 'enzymes-view' && subTab !== 'lineage')) return EMPTY_RESTRICTION_SCAN;
-    const list = restrictionScanEnzymes(subTab === 'lineage' ? enzymes : enzymesViewList, doc.sequence.length);
+    if (doc.moleculeType !== 'DNA' || (subTab !== 'enzymes-view' && subTab !== 'alerts')) return EMPTY_RESTRICTION_SCAN;
+    const list = restrictionScanEnzymes(subTab === 'alerts' ? enzymes : enzymesViewList, doc.sequence.length);
     return list.length === 0 ? EMPTY_RESTRICTION_SCAN : scanRestrictionSites(doc.sequence, doc.topology, list);
   }, [subTab, doc.moleculeType, doc.sequence, doc.topology, enzymes, enzymesViewList]);
   const allCutSites = restrictionScan.sites;
@@ -297,13 +302,12 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
       : null;
 
   const sequenceAlerts = useMemo(
-    () => subTab === 'lineage' ? auditSequenceAlerts(doc, allCutSites, selectedStrain, restrictionScan.stoppedEarly) : [],
+    () => subTab === 'alerts' ? auditSequenceAlerts(doc, allCutSites, selectedStrain, restrictionScan.stoppedEarly) : [],
     [subTab, doc, allCutSites, selectedStrain, restrictionScan.stoppedEarly]
   );
 
   // The lineage table's Created / Modified are the Info tab's own, from the one derivation (BG-01M7N68F).
-  const lineageDates = documentDates(doc);
-  const autoDetectedFeatures = useMemo(() => subTab === 'lineage' && doc.moleculeType === 'DNA' ? detectCommonFeatures(doc) : [], [subTab, doc]);
+  const autoDetectedFeatures = useMemo(() => subTab === 'alerts' && doc.moleculeType === 'DNA' ? detectCommonFeatures(doc) : [], [subTab, doc]);
 
   /** The DAG's own canvas, so its Export control does not pick up a chart elsewhere on the tab. */
   const lineageDagRef = useRef<HTMLDivElement | null>(null);
@@ -581,66 +585,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
 
   return (
     <div className="alignment-studio-wrapper">
-      <div className="studio-card-header" style={{ marginBottom: 8 }}>
-        <ScrollableMenuStrip
-          className="mbc-scroll-strip--pills"
-          trackClassName="cloning-method-tabs"
-          role="tablist"
-          ariaLabel="Protein and Lineage Modules"
-          alwaysShowArrows={availableTabs.length > 1}
-          activeKey={subTab}
-          enableSpatialArrowNav
-          activateOnSpatialFocus
-          prevAriaLabel="Slide protein modules left"
-          nextAriaLabel="Slide protein modules right"
-        >
-          <button
-            type="button"
-            role="tab"
-            hidden={!availableTabs.includes('secondary-structure')}
-            tabIndex={subTab === 'secondary-structure' ? 0 : -1}
-            aria-selected={subTab === 'secondary-structure'}
-            className={`method-tab-btn ${subTab === 'secondary-structure' ? 'active' : ''}`}
-            onClick={() => setSubTab('secondary-structure')}
-          >
-            Secondary Structure
-          </button>
-          <button
-            type="button"
-            role="tab"
-            hidden={!availableTabs.includes('enzymes-view')}
-            tabIndex={subTab === 'enzymes-view' ? 0 : -1}
-            aria-selected={subTab === 'enzymes-view'}
-            className={`method-tab-btn ${subTab === 'enzymes-view' ? 'active' : ''}`}
-            onClick={() => setSubTab('enzymes-view')}
-          >
-            Enzymes View (123 / ||||)
-          </button>
-          <button
-            type="button"
-            role="tab"
-            hidden={!availableTabs.includes('lineage')}
-            tabIndex={subTab === 'lineage' ? 0 : -1}
-            aria-selected={subTab === 'lineage'}
-            className={`method-tab-btn ${subTab === 'lineage' ? 'active' : ''}`}
-            onClick={() => setSubTab('lineage')}
-          >
-            History Tree, Alerts &amp; Info
-          </button>
-          <button
-            type="button"
-            role="tab"
-            hidden={!availableTabs.includes('workflows')}
-            tabIndex={subTab === 'workflows' ? 0 : -1}
-            aria-selected={subTab === 'workflows'}
-            className={`method-tab-btn ${subTab === 'workflows' ? 'active' : ''}`}
-            onClick={() => setSubTab('workflows')}
-          >
-            Workflows &amp; Genetic Code Tables
-          </button>
-        </ScrollableMenuStrip>
-        <span className="badge-accent">{isProteinDoc ? 'Provenance' : 'Sequence tools and history'}</span>
-      </div>
 
       {subTab === 'secondary-structure' && secondaryStructReport && (
         <div className="studio-split-grid">
@@ -1001,7 +945,7 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                       className={`method-tab-btn ${enzymeSetSubView === tabName ? 'active' : ''}`}
                       onClick={() => {
                         if (tabName === 'Lineage') {
-                          setSubTab('lineage');
+                          onOpenLineage?.();
                         } else {
                           setEnzymeSetSubView(tabName);
                         }
@@ -1368,7 +1312,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
           {inWorkbench && (
             <InspectorSection title="Lineage" order={1}>
               {historyColorsToggle}
-              {doc.moleculeType === 'DNA' && strainField}
             </InspectorSection>
           )}
           <div className="studio-card">
@@ -1551,26 +1494,24 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
             </div>
           </div>
 
-          <div className="studio-card">
-            <div className="studio-card-header">
-              <h3>Document Info Panel, Enhanced Alerts &amp; Auto-Annotation</h3>
-              <span className="badge-accent">{doc.accession}</span>
-            </div>
+        </div>
+      )}
 
-            <div className="form-grid-2col">
-              {!inWorkbench && doc.moleculeType === 'DNA' && strainField}
-              <div className="form-field" style={{ justifyContent: 'flex-end' }}>
-                {onUpdateDocument && autoDetectedFeatures.length > 0 && (
-                  <button
-                    className="btn-success"
-                    onClick={handleAutoAnnotateCommonFeatures}
-                  >
-                    + Auto-Detect {autoDetectedFeatures.length} Common Features
-                  </button>
-                )}
-              </div>
+      {subTab === 'alerts' && doc.moleculeType === 'DNA' && (
+        <div className="studio-card" aria-label="Sequence alerts and host strain">
+          <div className="studio-card-header">
+            <h3>Sequence Alerts &amp; Host Strain</h3>
+          </div>
+          <div className="form-grid-2col">
+            {strainField}
+            <div className="form-field" style={{ justifyContent: 'flex-end' }}>
+              {onUpdateDocument && autoDetectedFeatures.length > 0 && (
+                <button className="btn-success" onClick={handleAutoAnnotateCommonFeatures}>
+                  + Auto-Detect {autoDetectedFeatures.length} Common Features
+                </button>
+              )}
             </div>
-
+          </div>
             {/* Enhanced Sequence Alerts Card */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {sequenceAlerts.map((al) => (
@@ -1600,61 +1541,6 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
                 </div>
               ))}
             </div>
-            <WorkbenchSmartTable
-              tableId="hybrid-lineage-document-metadata"
-              tableLabel="Document Lineage and Properties"
-              className="bio-table"
-            >
-              <thead>
-                <tr>
-                  <th>Property</th>
-                  <th>Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th>Document Name</th>
-                  <td>
-                    <strong>{doc.name}</strong>
-                  </td>
-                </tr>
-                <tr>
-                  <th>NCBI / Local Accession</th>
-                  <td className="mono-cell">{doc.accession}</td>
-                </tr>
-                <tr>
-                  <th>{isProteinDoc ? 'Molecule Type' : <>Molecule Type &amp; Topology</>}</th>
-                  <td>
-                    {isProteinDoc ? doc.moleculeType : `${doc.moleculeType} (${doc.topology.toUpperCase()})`}
-                  </td>
-                </tr>
-                <tr>
-                  <th>Sequence Length</th>
-                  <td>{doc.sequence.length.toLocaleString()} {isProteinDoc ? 'aa' : doc.moleculeType === 'RNA' ? 'nt' : 'bp'}</td>
-                </tr>
-                <tr>
-                  <th>Folder Location</th>
-                  <td>Local Database / {doc.folder}</td>
-                </tr>
-                <tr>
-                  <th>Created / Modified</th>
-                  <td>
-                    {lineageDates.created} / {lineageDates.modified}
-                  </td>
-                </tr>
-                <tr>
-                  <th>Annotations &amp; Primers</th>
-                  <td>
-                    {doc.features.length} Features, {doc.primers.length} Primers
-                  </td>
-                </tr>
-                <tr>
-                  <th>Description</th>
-                  <td>{doc.description}</td>
-                </tr>
-              </tbody>
-            </WorkbenchSmartTable>
-          </div>
         </div>
       )}
 
@@ -1765,3 +1651,14 @@ export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioPr
     </div>
   );
 };
+
+/** History: the document's provenance alone - its history tree, lineage graph and Export Lineage, for every kind of document (US-01M7QC8Q). */
+export const HybridToolsAndHistoryStudio: React.FC<HybridToolsAndHistoryStudioProps> = (props) => <HistoryModule {...props} module="lineage" />;
+/** The Enzymes view (restriction sets and overhang diagrams), hosted by Sequence Map and Cloning & Gel. */
+export const EnzymesViewPanel: React.FC<HybridToolsAndHistoryStudioProps> = (props) => <HistoryModule {...props} module="enzymes-view" />;
+/** The nucleic-acid fold (MFE structure and its ΔG), hosted by Sequence Map for RNA and Primers & CRISPR for DNA. */
+export const FoldingPanel: React.FC<HybridToolsAndHistoryStudioProps> = (props) => <HistoryModule {...props} module="secondary-structure" />;
+/** The workflow plugin runner and the external CLI tools, hosted by Pipelines & NGS. */
+export const WorkflowsPanel: React.FC<HybridToolsAndHistoryStudioProps> = (props) => <HistoryModule {...props} module="workflows" />;
+/** The sequence alerts, the host strain (default DH5α dam+ dcm+) and auto-detect, hosted by Info for a DNA document. */
+export const SequenceAlertsPanel: React.FC<HybridToolsAndHistoryStudioProps> = (props) => <HistoryModule {...props} module="alerts" />;

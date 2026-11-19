@@ -103,7 +103,7 @@ describe('mounts the real App over the live DOM (AC1)', () => {
 
       // Clicks on the studio tabs a record shows: History on the first record...
       await app.clickTab('history-hybrid');
-      studioDrawn(app, 'history-hybrid', '[aria-label="Protein and Lineage Modules"]');
+      studioDrawn(app, 'history-hybrid', '[aria-label="Construct history provenance graph"]');
       // ...the Alignment it opens on, then Tree, Text and Alignment again on an alignment record...
       await app.click(row(app, named('doc-aln-coxii-cds')));
       studioDrawn(app, 'sequence-alignment', '[aria-label="Sequence Alignment Modes"]');

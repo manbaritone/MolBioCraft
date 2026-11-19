@@ -7,8 +7,8 @@ import { reverseComplement, translateSequence } from './bioEngine';
 export type GenomicsSubTabId =
   | 'ngs-assembly' | 'genome-variants' | 'genes-cpg-repeats'
   | 'transform-submit';
-export type HybridSubTabId =
-  | 'secondary-structure' | 'enzymes-view' | 'lineage' | 'workflows';
+/** History's one view, the lineage: its other panels have their own hosts (US-01M7QC8Q). */
+export type HybridSubTabId = 'lineage';
 
 /** The NGS and genome views of genomics-ngs (Pipelines & NGS): none for a protein, which has the Protein studio (US-01M6Q164). */
 export function genomicsTabsForDocument(doc: SequenceDocument): GenomicsSubTabId[] {
@@ -16,16 +16,12 @@ export function genomicsTabsForDocument(doc: SequenceDocument): GenomicsSubTabId
   return ['ngs-assembly', 'genome-variants', 'genes-cpg-repeats', 'transform-submit'];
 }
 
-export function hybridTabsForDocument(doc: SequenceDocument): HybridSubTabId[] {
-  if (doc.docMetadata?.['Document Type'] === 'Enzyme Set') return ['enzymes-view', 'lineage'];
-  if (doc.documentKind === 'tree') return ['lineage', 'workflows'];
-  if (doc.moleculeType === 'Protein') return ['lineage', 'workflows'];
-  if (doc.moleculeType === 'RNA') return ['secondary-structure', 'lineage', 'workflows'];
-  return ['secondary-structure', 'enzymes-view', 'lineage', 'workflows'];
+/** History is provenance only, for every kind of document: the lineage alone (US-01M7QC8Q). */
+export function hybridTabsForDocument(_doc: SequenceDocument): HybridSubTabId[] {
+  return ['lineage'];
 }
 
-export function defaultHybridSubTab(doc: SequenceDocument): HybridSubTabId {
-  if (doc.docMetadata?.['Document Type'] === 'Enzyme Set') return 'enzymes-view';
+export function defaultHybridSubTab(_doc: SequenceDocument): HybridSubTabId {
   return 'lineage';
 }
 

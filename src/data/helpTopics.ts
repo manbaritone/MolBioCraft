@@ -158,20 +158,20 @@ export const OPERATION_HELP: Record<string, HelpTopic> = {
 
 /** What each studio's and panel's view is for; its title is the studio registry's name (US-01M6Q16Q). */
 const VIEW_SUMMARIES: Record<ViewerTab, Omit<HelpTopic, 'title'>> = {
-  'sequence-view': { summary: 'The sequence with annotations, translation, ORFs, primers and restriction sites. Select a region to copy, annotate, extract or design primers on it.' },
+  'sequence-view': { summary: 'The sequence with annotations, translation, ORFs, primers and restriction sites. Select a region to copy, annotate, extract or design primers on it. Choose Enzymes opens the Enzymes view here, an RNA folds here, and the genetic-code tables sit in the inspector beside translation.' },
   'annotations-table': { summary: 'Every annotation with its type, position and strand. Sort, filter and edit annotations here.' },
   'text-view': { summary: 'Text documents and reports, the flatfile (GenBank / FASTA / EMBL / GFF3) of sequences, or the source text of imported files. Analysis results such as expression comparisons show their plots here.' },
-  'cloning-gel': { summary: 'Restriction digests, virtual gels and cloning simulations.' },
+  'cloning-gel': { summary: 'Restriction digests, virtual gels and cloning simulations, and the Enzymes view, which an Enzyme Set opens on.' },
   'vector-library': { summary: 'The vector catalog, modular part assembly and custom-vector QC, for DNA records.' },
-  'primers-pcr': { summary: 'Primer design, in-silico PCR, primer properties and saved primers for the sequence, and CRISPR guide and donor design.' },
+  'primers-pcr': { summary: 'Primer design, in-silico PCR, primer properties and saved primers for the sequence, CRISPR guide and donor design, and the folding (secondary structure) of a DNA sequence.' },
   'sequence-alignment': { summary: 'Alignments and contigs: consensus, identity, colouring, annotations per row, and tools such as dotplot, distances and translation.' },
   phylogenetics: { summary: 'Tree documents: phylogram, cladogram, circular and radial layouts; support cutoff, branch lengths, time axis for timetrees; click a branch to root, flip, compress, colour or rename; save edits and export Newick / SVG / PNG.' },
   'sanger-contig': { summary: 'Chromatograms with base calls and quality, trimming and contig assembly.' },
   'protein-3d': { summary: 'Everything about one protein: ProtParam (mass, pI, extinction coefficient, GRAVY, aliphatic index), Kyte-Doolittle hydropathy, GOR, the MS digest, the Mol* 3D structure viewer with superposition and the Ramachandran plot, and coiled-coil and transmembrane prediction; a DNA record is read through its CDS and keeps the codon optimiser.' },
   'genomics-ngs': { summary: 'The NGS and genome tools for a DNA or RNA record: read trimming, mapping and assembly, synteny and variants, gene, CpG and repeat scans, and GenBank submission.' },
-  'guided-pipelines': { summary: 'The guided multi-step QC pipelines, which run a record through each check in turn and report its overall status, and the NGS and genome tools a DNA or RNA record shows on its genomics tab: read mapping, variant calling and genome-scale tools.' },
+  'guided-pipelines': { summary: 'The guided multi-step QC pipelines, which run a record through each check in turn and report its overall status, and the NGS and genome tools a DNA or RNA record shows on its genomics tab: read mapping, variant calling and genome-scale tools. Its Workflow Plugins view runs the workflow plugins on the active document.' },
   'history-hybrid': { summary: 'Every operation that made or changed this document, with links to parent documents.' },
-  'document-info': { summary: 'Document properties and metadata, custom fields (Manage fields… to define your own) and notes.' },
+  'document-info': { summary: 'Document properties and metadata, custom fields (Manage fields… to define your own) and notes, and for a DNA sequence its sequence alerts and host strain.' },
 };
 
 /**

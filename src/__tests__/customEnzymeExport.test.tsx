@@ -26,12 +26,12 @@ vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
 /** The engine's core set over 100,000 bp scanned (read from the map's module once React DOM is loaded). */
 let CORE_CATALOG_LEN = 0;
-let HybridToolsAndHistoryStudio: typeof import('../components/HybridToolsAndHistoryStudio').HybridToolsAndHistoryStudio;
+let EnzymesViewPanel: typeof import('../components/HybridToolsAndHistoryStudio').EnzymesViewPanel;
 beforeAll(async () => {
   const app = await mountApp();
   app.unmount();
   CORE_CATALOG_LEN = (await import('../components/CircularPlasmidMap')).CORE_CATALOG_LEN;
-  HybridToolsAndHistoryStudio = (await import('../components/HybridToolsAndHistoryStudio')).HybridToolsAndHistoryStudio;
+  EnzymesViewPanel = (await import('../components/HybridToolsAndHistoryStudio')).EnzymesViewPanel;
 });
 
 // ─── The fixture (customEnzymeEverywhere.test.tsx's construct: A/C filler with planted sites) ───
@@ -271,7 +271,7 @@ describe('US-01M7GRYW AC3: an enzyme the scan did not read exports as not scanne
       const root = createRoot(host as unknown as Element);
       try {
         await act(async () => {
-          root.render(<HybridToolsAndHistoryStudio doc={doc} allDocuments={[doc]} initialSubTab="enzymes-view" enzymes={[...REBASE_ENZYMES, noneEnzyme, unreadable]} />);
+          root.render(<EnzymesViewPanel doc={doc} allDocuments={[doc]} enzymes={[...REBASE_ENZYMES, noneEnzyme, unreadable]} />);
         });
         await enzymesTab(app, () => host, ALL);
         const out = await exportTable(app, () => host);

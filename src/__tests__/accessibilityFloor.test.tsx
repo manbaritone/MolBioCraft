@@ -103,7 +103,7 @@ const { SequenceAlignmentStudio } = await import('../components/AlignmentAndPhyl
 const { CloningAndGelStudio } = await import('../components/CloningAndGelStudio');
 const { BlastSearchModal } = await import('../components/MenusPreferencesAndBlastModal');
 const { CascadingMenuPopup } = await import('../components/CascadingMenu');
-const { HybridToolsAndHistoryStudio } = await import('../components/HybridToolsAndHistoryStudio');
+const { HybridToolsAndHistoryStudio, EnzymesViewPanel } = await import('../components/HybridToolsAndHistoryStudio');
 // Read through the module objects, so a missing export fails only the criterion that needs it.
 const circularMap = await import('../components/CircularPlasmidMap');
 const { CircularPlasmidMap } = circularMap;
@@ -1846,7 +1846,7 @@ describe('accessibility floor (US-01M6Q193)', () => {
       // "Unique Cutters"); one at 100,000 bp itself; and a label with no note of what was left out.
       const { mid } = fixtures();
       const view = (doc: SequenceDocument) => {
-        const root = parseMarkup(renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={doc} allDocuments={[doc]} initialSubTab="enzymes-view" />), el('div'));
+        const root = parseMarkup(renderToStaticMarkup(<EnzymesViewPanel doc={doc} allDocuments={[doc]} />), el('div'));
         const tabs = findAll(root, (e) => e.tag === 'button' && e.classes.has('method-tab-btn')).map((b) => textOf(b));
         expect(tabs, `${doc.name}: the enzyme set tabs are drawn`).toContain('6+ Cutters');
         return { tabs, notes: findAll(root, (e) => e.tag === 'p' && e.classes.has('mbc-summary-note')).map((p) => textOf(p)) };

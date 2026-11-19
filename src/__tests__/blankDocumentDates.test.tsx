@@ -177,13 +177,14 @@ describe('BG-01M7N68F AC1: the history studio says the Info tab\'s Created / Mod
     try {
       for (const [doc, expected] of cases) {
         await app.restoreSession({ documents: [doc], activeDocId: doc.id, viewerTab: 'history-hybrid' });
-        const subTab = app.all('button[role="tab"]').filter((b) => (b.textContent ?? '') === 'History Tree, Alerts & Info');
-        expect(subTab.length, doc.id).toBe(1);
-        await app.click(subTab[0]);
-        const rows = app.all('[aria-label="Document Lineage and Properties"] tr')
-          .filter((row) => (row.querySelector('th')?.textContent ?? '').trim() === 'Created / Modified');
-        expect(rows.length, doc.id).toBe(1);
-        const cell = (rows[0].querySelector('td')?.textContent ?? '').trim();
+        // US-01M7QC8Q: History is provenance only; its duplicate document-info table, with its
+        // Created / Modified row, is gone, and the dates are read where they now live, in Info.
+        expect(app.all('[aria-label="Document Lineage and Properties"]'), doc.id).toHaveLength(0);
+        await app.clickTab('document-info');
+        const dated = Object.fromEntries(app.all('.mbc-document-info dl div').map((row) => [
+          (row.querySelector('dt')?.textContent ?? '').trim(), (row.querySelector('dd')?.textContent ?? '').trim(),
+        ]));
+        const cell = `${dated.Created} / ${dated.Modified}`;
         expect(cell, doc.id).toBe(expected);
         expect(cell, doc.id).not.toBe('/');
         expect(cell, doc.id).not.toMatch(ISO);

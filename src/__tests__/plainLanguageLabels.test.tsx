@@ -204,7 +204,7 @@ const { ChromatogramAndContigStudio } = await import('../components/Chromatogram
 const { CloningAndGelStudio } = await import('../components/CloningAndGelStudio');
 const { GenomicsNgsAndPredictionStudio } = await import('../components/GenomicsNgsAndPredictionStudio');
 const { ProteinStudio } = await import('../components/ProteinStudio');
-const { HybridToolsAndHistoryStudio } = await import('../components/HybridToolsAndHistoryStudio');
+const { HybridToolsAndHistoryStudio, WorkflowsPanel } = await import('../components/HybridToolsAndHistoryStudio');
 const { PrimerAndPCRStudio } = await import('../components/PrimerAndPCRStudio');
 const { VectorLibraryAndDesignStudio } = await import('../components/VectorLibraryAndDesignStudio');
 const { OperationDialog } = await import('../components/OperationDialog');
@@ -759,7 +759,7 @@ describe('studio badges', () => {
       'vector architect': vectors('architect'),
       'vector parts': vectors('parts'),
       'vector clonal insertion': vectors('twist-onboarding'),
-      workflows: renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={plasmid} allDocuments={SAMPLE_LIBRARY} initialSubTab="workflows" />),
+      workflows: renderToStaticMarkup(<WorkflowsPanel doc={plasmid} allDocuments={SAMPLE_LIBRARY} />),
       phylogeny: phylo('phylogeny'),
     };
     // Before this story the views above drew all 12; each is checked in the view that drew it.

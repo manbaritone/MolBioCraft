@@ -41,7 +41,7 @@ export function hasBiologicalSequence(doc: SequenceDocument): boolean {
 export function supportedViewerTabs(doc: SequenceDocument): ViewerTab[] {
   if (!doc.id) return [];
   if (doc.docMetadata?.['Document Type'] === 'Text Document') return ['text-view', 'document-info'];
-  if (doc.docMetadata?.['Document Type'] === 'Enzyme Set') return ['history-hybrid', 'document-info'];
+  if (doc.docMetadata?.['Document Type'] === 'Enzyme Set') return ['cloning-gel', 'history-hybrid', 'document-info'];
   if (isTreeDocument(doc)) return ['phylogenetics', 'text-view', 'history-hybrid', 'document-info',
     ...((doc.alignmentMeta?.sequences?.length ?? 0) > 1 ? ['sequence-alignment' as const] : [])];
   // Annotation-only genome summaries: a genome-scale map, the annotation table, the flat-file
@@ -80,7 +80,8 @@ export function relevantViewerTabs(doc: SequenceDocument, selectedDocuments: rea
 
 export function preferredViewerTab(doc: SequenceDocument): ViewerTab {
   if (doc.docMetadata?.['Document Type'] === 'Text Document') return 'text-view';
-  if (doc.docMetadata?.['Document Type'] === 'Enzyme Set') return 'history-hybrid';
+  // D0220: an Enzyme Set opens Cloning & Gel on its Enzymes view (US-01M7QC8Q).
+  if (doc.docMetadata?.['Document Type'] === 'Enzyme Set') return 'cloning-gel';
   if (isTreeDocument(doc)) return 'phylogenetics';
   if (isContigSummaryRecord(doc)) return 'sequence-view';
   if (!hasBiologicalSequence(doc)) return 'document-info';

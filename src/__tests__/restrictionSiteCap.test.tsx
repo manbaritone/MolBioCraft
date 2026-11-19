@@ -89,7 +89,7 @@ const storage = new MemoryStorage();
 
 const { App } = await import('../App');
 const { CloningAndGelStudio } = await import('../components/CloningAndGelStudio');
-const { HybridToolsAndHistoryStudio } = await import('../components/HybridToolsAndHistoryStudio');
+const { EnzymesViewPanel, SequenceAlertsPanel } = await import('../components/HybridToolsAndHistoryStudio');
 const { CORE_CATALOG_LEN } = await import('../components/CircularPlasmidMap');
 const { REBASE_ENZYMES } = await import('../data/rebaseEnzymes');
 const { SAMPLE_LIBRARY } = await import('../data/sampleLibrary');
@@ -293,7 +293,7 @@ function enzymesView(doc: SequenceDocument, tab: string): El {
       (props.onClick as () => void)();
     }
   };
-  const root = parse(renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={doc} allDocuments={[doc]} initialSubTab="enzymes-view" />));
+  const root = parse(renderToStaticMarkup(<EnzymesViewPanel doc={doc} allDocuments={[doc]} />));
   probe.onElement = null;
   expect(clicked, `the "${tab}" tab was chosen`).toBe(true);
   return root;
@@ -435,10 +435,10 @@ describe('the restriction surfaces read complete site counts (BG-01M6S1K2)', () 
     expect(ids(stoppedDoc, stopped, true), 'a stopped scan: no all-clear line').toEqual([]);
     expect(ids(stoppedDoc, stopped, false), 'the same sites read as every site').toEqual(['alert-clean']);
 
-    // The lineage view's audit passes the stop report on.
+    // Info's sequence alerts (US-01M7QC8Q: they left History's lineage) pass the stop report on.
     const ALL_CLEAR = '[Reading Frame] All Reading Frames, Restriction Sites & Primer Duplexes Verified';
     const lineageLines = (doc: SequenceDocument) =>
-      findAll(parse(renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={doc} allDocuments={[doc]} initialSubTab="lineage" />)), (e) => e.tag === 'strong')
+      findAll(parse(renderToStaticMarkup(<SequenceAlertsPanel doc={doc} allDocuments={[doc]} />)), (e) => e.tag === 'strong')
         .map((e) => textOf(e).trim())
         .filter((t) => t.startsWith('[Reading Frame] All '));
     expect(lineageLines(stoppedDoc), 'the record whose scan stopped').toEqual([]);

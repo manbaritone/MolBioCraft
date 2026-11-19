@@ -30,7 +30,7 @@ let CORE_CATALOG_LEN = 0;
 let ui: {
   renderToStaticMarkup: typeof import('react-dom/server').renderToStaticMarkup;
   CloningAndGelStudio: typeof import('../components/CloningAndGelStudio').CloningAndGelStudio;
-  HybridToolsAndHistoryStudio: typeof import('../components/HybridToolsAndHistoryStudio').HybridToolsAndHistoryStudio;
+  EnzymesViewPanel: typeof import('../components/HybridToolsAndHistoryStudio').EnzymesViewPanel;
   SplitDocumentPane: typeof import('../components/SplitDocumentPane').SplitDocumentPane;
 };
 beforeAll(async () => {
@@ -40,7 +40,7 @@ beforeAll(async () => {
   ui = {
     renderToStaticMarkup: (await import('react-dom/server')).renderToStaticMarkup,
     CloningAndGelStudio: (await import('../components/CloningAndGelStudio')).CloningAndGelStudio,
-    HybridToolsAndHistoryStudio: (await import('../components/HybridToolsAndHistoryStudio')).HybridToolsAndHistoryStudio,
+    EnzymesViewPanel: (await import('../components/HybridToolsAndHistoryStudio')).EnzymesViewPanel,
     SplitDocumentPane: (await import('../components/SplitDocumentPane')).SplitDocumentPane,
   };
 });
@@ -357,7 +357,7 @@ describe('US-01M7DV52 AC3: a custom noncutter is a noncutter only when it was sc
       const root = createRoot(host as unknown as Element);
       try {
         await act(async () => {
-          root.render(<ui.HybridToolsAndHistoryStudio doc={doc} allDocuments={[doc]} initialSubTab="enzymes-view" enzymes={[...REBASE_ENZYMES, noneEnzyme, unreadable]} />);
+          root.render(<ui.EnzymesViewPanel doc={doc} allDocuments={[doc]} enzymes={[...REBASE_ENZYMES, noneEnzyme, unreadable]} />);
         });
         const allTab = host.querySelectorAll('button.method-tab-btn').find((b) => words(b.textContent) === 'All REBASE Commercial');
         if (!allTab) throw new Error('no All tab');

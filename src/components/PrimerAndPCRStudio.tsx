@@ -296,6 +296,8 @@ const nextCrisprAnnotationSerial = () => {
 
 interface PrimerAndPCRStudioProps {
   doc: SequenceDocument;
+  /** A panel the studio hosts in place of its tools while shown: folding for a DNA document (US-01M7QC8Q). */
+  hostedPanel?: React.ReactNode;
   allDocuments?: SequenceDocument[];
   onUpdateDocument: (updated: SequenceDocument) => void;
   onAddConstruct: (ampliconDoc: SequenceDocument) => void;
@@ -335,6 +337,7 @@ interface PrimerAndPCRStudioProps {
 }
 
 export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
+  hostedPanel,
   doc,
   allDocuments = [],
   onUpdateDocument,
@@ -1540,6 +1543,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     </>
   );
 
+  if (hostedPanel) return <div className="alignment-studio-wrapper">{hostedPanel}</div>;
   return (
     <div className="alignment-studio-wrapper">
       <div className="studio-card-header" style={{ marginBottom: 8 }}>

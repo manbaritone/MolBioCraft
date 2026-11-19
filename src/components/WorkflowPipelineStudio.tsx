@@ -25,6 +25,7 @@ import {
   BIO_PIPELINE_CATALOG,
   BioPipelineExecutionReport,
   BioPipelineId,
+  BioPipelineStepResult,
   executeBioPipelineAsync,
   PipelineStepStatus,
   PipelineVisualZone,
@@ -47,6 +48,8 @@ import {
   selectCurrentPipelineReport,
 } from '../core/pipelineReportFreshness';
 
+export type PipelinesView = 'pipelines' | 'workflows';
+
 export interface WorkflowPipelineStudioProps {
   activeDoc: SequenceDocument;
   allDocuments: ReadonlyArray<SequenceDocument>;
@@ -54,8 +57,14 @@ export interface WorkflowPipelineStudioProps {
   onChangePreviewOs?: (os: SupportedOS) => void;
   onSelectDocument: (docId: string) => void;
   onSelectRange: (range: { start: number; end: number; label?: string }) => void;
-  onNavigateStudio: (studio: TargetWorkbenchStudio) => void;
+  /** Opens a step's target studio; `step` is the step followed, so its host can open the step's own tool there. */
+  onNavigateStudio: (studio: TargetWorkbenchStudio, step?: BioPipelineStepResult) => void;
   onStatusMessage?: (msg: string) => void;
+  /** The studio's view: its guided pipelines or the workflow plugin runner (US-01M7QC8Q). */
+  view?: PipelinesView;
+  onChangeView?: (view: PipelinesView) => void;
+  /** The workflow plugin runner, drawn on the Workflow Plugins view. */
+  workflowsPanel?: React.ReactNode;
 }
 
 const TRACK_ORDER: PipelineVisualZone['track'][] = [
@@ -275,7 +284,7 @@ export const GuidedPipelineLayout: React.FC<GuidedPipelineLayoutProps> = ({
                   <button
                     type="button"
                     className="mbc-pipe-btn primary"
-                    onClick={() => onNavigateStudio(focusedStep.targetStudio)}
+                    onClick={() => onNavigateStudio(focusedStep.targetStudio, focusedStep)}
                   >
                     {focusedStep.targetStudioLabel}{' '}
                     <ChevronRight size={13} strokeWidth={2.4} aria-hidden="true" />
@@ -502,6 +511,9 @@ export const WorkflowPipelineStudio: React.FC<WorkflowPipelineStudioProps> = ({
   onSelectRange,
   onNavigateStudio,
   onStatusMessage,
+  view = 'pipelines',
+  onChangeView,
+  workflowsPanel,
 }) => {
   const batchTableCaptionId = useId();
   const tauriBackend = useTauriBackend();
@@ -725,8 +737,20 @@ export const WorkflowPipelineStudio: React.FC<WorkflowPipelineStudioProps> = ({
     singleRunId !== null
   );
 
+  const viewSwitch = workflowsPanel ? (
+    <div className="cloning-method-tabs" role="tablist" aria-label="Pipelines and NGS views">
+      {(['pipelines', 'workflows'] as const).map((v) => (
+        <button key={v} type="button" role="tab" aria-selected={view === v}
+          className={`method-tab-btn ${view === v ? 'active' : ''}`} onClick={() => onChangeView?.(v)}>
+          {v === 'pipelines' ? 'Guided Pipelines' : 'Workflow Plugins'}
+        </button>
+      ))}
+    </div>
+  ) : null;
+  if (workflowsPanel && view === 'workflows') return <div className="mbc-pipeline-studio">{viewSwitch}{workflowsPanel}</div>;
   return (
     <div className="mbc-pipeline-studio">
+      {viewSwitch}
       {/* 1. Header */}
       <div className="mbc-pipeline-header">
         <div>

@@ -35,7 +35,7 @@ vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 const seen = vi.hoisted(() => ({ doc: null as SequenceDocument | null, updates: 0 }));
 vi.mock('../components/HybridToolsAndHistoryStudio', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../components/HybridToolsAndHistoryStudio')>();
-  const Studio = actual.HybridToolsAndHistoryStudio;
+  const Studio = actual.EnzymesViewPanel;
   const Watched = (props: React.ComponentProps<typeof Studio>) => {
     seen.doc = props.doc;
     const update = props.onUpdateDocument;
@@ -49,7 +49,7 @@ vi.mock('../components/HybridToolsAndHistoryStudio', async (importOriginal) => {
         : undefined,
     });
   };
-  return { ...actual, HybridToolsAndHistoryStudio: Watched };
+  return { ...actual, EnzymesViewPanel: Watched };
 });
 vi.mock('../lib/tauriIpc', async (importOriginal) => (await import('./appHarness')).tauriIpcMock(await importOriginal<object>()));
 
@@ -596,10 +596,10 @@ describe('BG-01M7JSCN: the Enzyme Set offer and the scan chooser follow the coll
       expect(collectionsIn(storage).map((c) => [c.name, c.enzymeIds])).toEqual([['pDemo', ['EcoRI', 'custom:seed-1']]]);
       expect(buttonsNamed(app.canvas(), IMPORT)).toHaveLength(0);
 
-      // The window opens over the Enzymes view; the History tab stays the active one.
+      // The window opens over the Enzymes view; Sequence Map, its host for a plasmid (US-01M7QC8Q), stays the active tab.
       await app.menu('tools:enzyme-database');
       await app.settle();
-      expect(app.activeTab()).toBe('history-hybrid');
+      expect(app.activeTab()).toBe('sequence-view');
       await app.click(button(win(app), 'Delete pDemo'));
       await app.settle();
       expect(collectionsIn(storage)).toEqual([]);
@@ -607,7 +607,7 @@ describe('BG-01M7JSCN: the Enzyme Set offer and the scan chooser follow the coll
       await app.settle();
       expect(app.all('[role="dialog"][aria-labelledby="enzyme-db-title"]')).toHaveLength(0);
 
-      expect(app.activeTab()).toBe('history-hybrid');
+      expect(app.activeTab()).toBe('sequence-view');
       expect(buttonsNamed(app.canvas(), IMPORT)).toHaveLength(1);
       // Not remounted: the view still shows the status line its own import set.
       expect(statusLine(app)).toBe(IMPORTED);

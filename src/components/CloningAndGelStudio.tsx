@@ -50,6 +50,8 @@ export type CloningSubToolType =
 interface CloningAndGelStudioProps {
   documents: SequenceDocument[];
   activeDoc: SequenceDocument;
+  /** A panel the studio hosts in place of its tools while shown: the Enzymes view (US-01M7QC8Q). */
+  hostedPanel?: React.ReactNode;
   onAddConstruct: (newDoc: SequenceDocument) => void;
   initialMethod?: CloningMethodType;
   initialSubTool?: CloningSubToolType;
@@ -116,6 +118,7 @@ const NOT_IN_ACTIVE_LIST =
   'it is no longer in the active enzyme list (the enzyme database could not be read, or no longer holds it), so the digest did not use it';
 
 export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
+  hostedPanel,
   documents,
   activeDoc,
   onAddConstruct,
@@ -857,6 +860,7 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
     </div>
   );
 
+  if (hostedPanel) return <div className="studio-stack">{hostedPanel}</div>;
   return (
     // Figure first: the controls column (the cloning simulator, then the gel and enzyme tools)
     // sits beside the result column, whose gel stays in view while the controls scroll. Below

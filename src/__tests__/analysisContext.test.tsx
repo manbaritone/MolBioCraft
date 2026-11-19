@@ -26,11 +26,12 @@ describe('analysis context and deferred panels', () => {
     expect(genomicsTabsForDocument(protein)).toEqual([]);
     expect(hybridTabsForDocument(protein)).not.toContain('protein' as never);
     expect(hybridTabsForDocument(dna)).not.toContain('protein' as never);
-    expect(hybridTabsForDocument(protein)).not.toContain('enzymes-view');
-    expect(hybridTabsForDocument({ ...dna, moleculeType: 'RNA' })).not.toContain('enzymes-view');
-    expect(defaultHybridSubTab(dna)).toBe('lineage');
-    expect(defaultHybridSubTab(protein)).toBe('lineage');
-    expect(defaultHybridSubTab({ ...dna, docMetadata: { 'Document Type': 'Enzyme Set' } })).toBe('enzymes-view');
+    // US-01M7QC8Q: History is provenance only, its lineage alone, for every document, an Enzyme Set included.
+    const enzymeSet = { ...dna, docMetadata: { 'Document Type': 'Enzyme Set' } };
+    for (const doc of [dna, protein, { ...dna, moleculeType: 'RNA' as const }, enzymeSet]) {
+      expect(hybridTabsForDocument(doc)).toEqual(['lineage']);
+      expect(defaultHybridSubTab(doc)).toBe('lineage');
+    }
   });
 
   it('opens a compatible protein panel without running hidden nucleotide analyses', () => {

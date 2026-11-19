@@ -57,7 +57,7 @@ export const STUDIOS: readonly StudioEntry[] = [
   studio('sequence-map', 'Sequence Map', { docKind: 'circular-dna', visual: 'circular-plasmid' }, 1, { tab: 'sequence-view' }, 'a sequence'),
   studio('annotations', 'Annotations', { glyph: 'detect-features' }, 2, { tab: 'annotations-table' }, 'a sequence'),
   studio('flatfile', 'Flatfile', { glyph: 'print-pdf' }, 3, { tab: 'text-view' }, 'a sequence, a tree or a text note'),
-  studio('cloning-gel', 'Cloning & Gel', { glyph: 'clone-restriction' }, 4, { tab: 'cloning-gel' }, 'a DNA sequence'),
+  studio('cloning-gel', 'Cloning & Gel', { glyph: 'clone-restriction' }, 4, { tab: 'cloning-gel' }, 'a DNA sequence or an Enzyme Set'),
   studio('vectors', 'Vectors & Architect', { glyph: 'clone-parts' }, 5, { tab: 'vector-library' }, 'a DNA sequence'),
   studio('primers-crispr', 'Primers & CRISPR', { glyph: 'primer-design' }, 6, { tab: 'primers-pcr' }, 'a DNA sequence'),
   studio('alignment', 'Alignment', { glyph: 'align-msa' }, 7, { tab: 'sequence-alignment' }, 'a sequence or a set of sequences'),

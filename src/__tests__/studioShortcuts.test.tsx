@@ -320,16 +320,18 @@ describe('US-01M6Q1CF AC9: no label still names a ⌘-digit the remap gave to a 
   it('US-01M6Q1CF AC9 the History studio sub-tabs and headings name no ⌘-digit, for DNA and RNA', async () => {
     for (const doc of [PLASMID, RNA]) {
       await withApp({}, one(doc, 'history-hybrid'), async (app) => {
-        const tabs = app.canvas().querySelectorAll('button[role="tab"]');
-        expect(tabs.length, doc.name).toBeGreaterThan(2);
-        const seen: string[] = [];
-        for (const label of tabs.map((t) => words(t.textContent))) {
-          seen.push(label);
-          const tab = app.canvas().querySelectorAll('button[role="tab"]').find((t) => words(t.textContent) === label)!;
-          await app.click(tab);
-          seen.push(...app.canvas().querySelectorAll('h2, h3, h4').map((h) => words(h.textContent)));
+        // US-01M7QC8Q: History has no sub-tabs; its former panels are read in the hosts that mount them.
+        expect(app.canvas().querySelectorAll('button[role="tab"]'), `${doc.name}: no sub-tab in History`).toHaveLength(0);
+        const headings = () => app.canvas().querySelectorAll('h2, h3, h4, button.method-tab-btn').map((h) => words(h.textContent));
+        const seen: string[] = [...headings()];
+        expect(seen.some((s) => s.startsWith('Construct History Tree')), doc.name).toBe(true);
+        const moved = doc === PLASMID ? ['view:secondary-structure', 'view:enzymes'] : ['view:secondary-structure'];
+        for (const id of moved) {
+          await app.menu(id);
+          seen.push(...headings());
         }
-        expect(seen.some((s) => s.startsWith('History Tree, Alerts & Info')), doc.name).toBe(true);
+        expect(seen.some((s) => s.startsWith('Nucleic-Acid Fold')), `${doc.name}: the folding panel was read`).toBe(true);
+        if (doc === PLASMID) expect(seen.some((s) => s.startsWith('Enzymes View')), 'the Enzymes view was read').toBe(true);
         expect(seen.filter((s) => /⌘\s*\d/.test(s)), doc.name).toEqual([]);
       });
     }

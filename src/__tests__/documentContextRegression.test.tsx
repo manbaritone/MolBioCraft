@@ -28,7 +28,7 @@ describe('document context follows actual input data', () => {
     // The studio rail (US-01M6Q1BD) lists Cloning & Gel for every record: enabled for DNA, and for a protein disabled with its reason.
     const cloning = (doc: SequenceDocument) => studioRailItems(doc, resolveViewerTab(doc, 'cloning-gel')).filter((item) => item.entry.id === 'cloning-gel');
     expect(cloning(dna).map((item) => item.availability)).toEqual([{ ok: true }]);
-    expect(cloning(protein).map((item) => item.availability)).toEqual([{ ok: false, reason: 'Cloning & Gel needs a DNA sequence: "Protein" is a Protein sequence.' }]);
+    expect(cloning(protein).map((item) => item.availability)).toEqual([{ ok: false, reason: 'Cloning & Gel needs a DNA sequence or an Enzyme Set: "Protein" is a Protein sequence.' }]);
     expect(supportedViewerTabs(EMPTY_WORKSPACE_DOCUMENT)).toEqual([]);
     // Regression: New Session › Vector Catalog in a blank session used to fall
     // back to Document Info, so the catalog never opened.

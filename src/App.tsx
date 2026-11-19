@@ -343,7 +343,9 @@ import {
 } from './components/CircularPlasmidMap';
 import { AppStartupSplash } from './components/AppStartupSplash';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { InspectorSection, NO_INSPECTOR_CLAIMS, WorkbenchInspectorProvider, type InspectorClaims } from './components/WorkbenchInspector';
+import { InspectorSection, NO_INSPECTOR_CLAIMS, WorkbenchInspectorContext, WorkbenchInspectorProvider, type InspectorClaims } from './components/WorkbenchInspector';
+import { GENETIC_CODE_NAMES } from './core/alignmentViewModel';
+import type { PipelinesView } from './components/WorkflowPipelineStudio';
 import { ResultWarnings } from './components/ResultWarnings';
 import { MolBioCraftLogo } from './components/MolBioCraftLogo';
 import {
@@ -598,6 +600,16 @@ const HybridToolsAndHistoryStudio = React.lazy(() =>
     default: m.HybridToolsAndHistoryStudio,
   }))
 );
+/** The guided-pipeline steps whose tool is the folding panel (the engine's step ids), opened by openFoldingPanel. */
+const PIPELINE_FOLDING_STEP_IDS: ReadonlySet<string> = new Set(['mrna-5prime-folding']);
+/** History's former panels, each mounted by its own host (US-01M7QC8Q); they load with History's chunk. */
+const loadHistoryChunk = () => import('./components/HybridToolsAndHistoryStudio');
+const historyPanel = (name: 'EnzymesViewPanel' | 'FoldingPanel' | 'WorkflowsPanel' | 'SequenceAlertsPanel') =>
+  React.lazy(() => loadHistoryChunk().then((m) => ({ default: m[name] })));
+const EnzymesViewPanel = historyPanel('EnzymesViewPanel');
+const FoldingPanel = historyPanel('FoldingPanel');
+const WorkflowsPanel = historyPanel('WorkflowsPanel');
+const SequenceAlertsPanel = historyPanel('SequenceAlertsPanel');
 const VectorLibraryAndDesignStudio = React.lazy(() =>
   import('./components/VectorLibraryAndDesignStudio').then((m) => ({
     default: m.VectorLibraryAndDesignStudio,
@@ -2121,7 +2133,7 @@ export const App: React.FC = () => {
     setSearchMatchShown(null);
     const targetDoc = catalogAllDocs.find((d) => d.id === docId);
     if (targetDoc) {
-      setHybridInitialSubTab(targetDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'enzymes-view' : 'lineage');
+      setHybridInitialSubTab('lineage');
       const preferred = preferredViewerTab(targetDoc);
       const relevant = relevantViewerTabs(targetDoc, preserveMultiSelection
         ? documents.filter((d) => checkedDocIds.includes(d.id) || d.id === docId)
@@ -3444,17 +3456,85 @@ export const App: React.FC = () => {
     setViewerTab('cloning-gel');
   };
 
+  /** A panel a studio hosts while shown (US-01M7QC8Q): the Enzymes view or folding, and the tab hosting it. */
+  const [hostedPanel, setHostedPanel] = useState<{ kind: 'enzymes' | 'folding'; tab: ViewerTab } | null>(null);
+  useEffect(() => {
+    if (hostedPanel && hostedPanel.tab !== viewerTab) setHostedPanel(null);
+  }, [viewerTab, hostedPanel]);
+  useEffect(() => {
+    setHostedPanel(null);
+  }, [activeDoc.id]);
+  const [pipelinesView, setPipelinesView] = useState<PipelinesView>('pipelines');
+
   const openHybridSubTab = (subTab: HybridSubTabId) => {
     setStudioCommandNonce((n) => n + 1);
     setHybridInitialSubTab(subTab);
     setViewerTab('history-hybrid');
   };
 
+  /**
+   * The Enzymes view: in Cloning & Gel for an Enzyme Set (D0220) or when asked from Cloning & Gel,
+   * else in Sequence Map, for a DNA document (US-01M7QC8Q). Never in History.
+   */
+  const openEnzymesView = (forceTab?: 'cloning-gel') => {
+    const enzymeSet = activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set';
+    if (!forceTab && !enzymeSet && activeDoc.moleculeType !== 'DNA') {
+      setStatusBanner(`The Enzymes view needs a DNA sequence: "${activeDoc.name}" is a ${activeDoc.moleculeType} sequence.`);
+      return;
+    }
+    const tab: ViewerTab = forceTab ?? (enzymeSet || viewerTab === 'cloning-gel' ? 'cloning-gel' : 'sequence-view');
+    setStudioCommandNonce((n) => n + 1);
+    setHostedPanel({ kind: 'enzymes', tab });
+    setViewerTab(tab);
+  };
+
+  /** Folding: in Sequence Map for an RNA, in Primers & CRISPR for a DNA (US-01M7QC8Q); computed once shown. */
+  const openFoldingPanel = () => {
+    if (activeDoc.moleculeType !== 'RNA' && activeDoc.moleculeType !== 'DNA') {
+      setStatusBanner(`Folding needs a DNA or RNA sequence: "${activeDoc.name}" is a ${activeDoc.moleculeType} sequence.`);
+      return;
+    }
+    const tab: ViewerTab = activeDoc.moleculeType === 'RNA' ? 'sequence-view' : 'primers-pcr';
+    setStudioCommandNonce((n) => n + 1);
+    setHostedPanel({ kind: 'folding', tab });
+    setViewerTab(tab);
+  };
+
+  /** The hosted panel, with a Close button back to its host's own tools (none for an Enzyme Set, whose only view it is). */
+  const hostedPanelNode = (kind: 'enzymes' | 'folding', closable = true) => (
+    <section className="mbc-hosted-panel" aria-label={kind === 'enzymes' ? 'Enzymes view' : 'Folding'}>
+      {closable && (
+        <div className="cloning-action-row">
+          <button type="button" className="btn-secondary" onClick={() => setHostedPanel(null)}>
+            Close {kind === 'enzymes' ? 'Enzymes View' : 'Folding'}
+          </button>
+        </div>
+      )}
+      <React.Suspense fallback={null}>
+        {kind === 'enzymes' ? (
+          <EnzymesViewPanel
+            doc={activeDoc}
+            enzymes={activeEnzymes}
+            scanCollection={scanCollectionChoice.collection}
+            collectionsRevision={enzymeCollectionsRevision}
+            onCollectionsChange={() => setEnzymeCollectionsRevision((n) => n + 1)}
+            allDocuments={documents}
+            onUpdateDocument={handleUpdateDocument}
+            commandNonce={studioCommandNonce}
+            onOpenLineage={() => openHybridSubTab('lineage')}
+          />
+        ) : (
+          <FoldingPanel doc={activeDoc} allDocuments={documents} onUpdateDocument={handleUpdateDocument} commandNonce={studioCommandNonce} />
+        )}
+      </React.Suspense>
+    </section>
+  );
+
   const openPluginTool = (pluginId: string) => {
     setStudioCommandNonce((n) => n + 1);
-    setHybridInitialSubTab('workflows');
     setHybridInitialPluginId(pluginId);
-    setViewerTab('history-hybrid');
+    setPipelinesView('workflows');
+    setViewerTab('guided-pipelines');
   };
 
   const openVectorStudio = (tab: VectorStudioTab = 'catalog') => {
@@ -4266,7 +4346,7 @@ export const App: React.FC = () => {
       ],
     };
     activateImportedDocumentsInWorkspace([newEnzDoc], 'Enzyme_Set_Session');
-    openHybridSubTab('enzymes-view');
+    setViewerTab('cloning-gel');
     setStatusBanner('Created new Enzyme Set (0 enzymes)');
   };
 
@@ -7758,7 +7838,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         case 'view:enzymes':
         case 'enzymes:choose':
         case 'enzymes:table':
-          requireActiveSession(() => openHybridSubTab('enzymes-view'));
+          requireActiveSession(() => openEnzymesView());
           break;
         case 'view:annotations':
           requireActiveSession(() => setViewerTab('annotations-table'));
@@ -7956,7 +8036,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           requireActiveSession(() => setViewerTab('text-view'));
           break;
         case 'view:secondary-structure':
-          requireActiveSession(() => openHybridSubTab('secondary-structure'));
+          requireActiveSession(() => openFoldingPanel());
           break;
         case 'view:lineage':
         case 'tools:workflows':
@@ -8725,7 +8805,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
   const openStudioFromRail = (entry: StudioEntry) => {
     // A studio chosen behind the Map Gallery closes it onto that studio (US-01M7DVS2).
     setMapGalleryOpen(false);
-    if (entry.id === 'history') openHybridSubTab(activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'enzymes-view' : 'lineage');
+    if (entry.id === 'history') openHybridSubTab('lineage');
     else if (entry.opens.tab === 'genomics-ngs' && entry.opens.view) openGenomicsSuite(entry.opens.view as GenomicsSuiteSubTab);
     else setViewerTab(entry.opens.tab);
   };
@@ -10659,7 +10739,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'view-enz',
             label: 'Enzymes View',
-            onSelect: () => requireActiveSession(() => openHybridSubTab('enzymes-view')),
+            onSelect: () => requireActiveSession(() => openEnzymesView()),
           },
           {
             kind: 'command',
@@ -10678,7 +10758,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'view-mfe',
             label: 'Secondary Structure',
             onSelect: () =>
-              requireActiveSession(() => openHybridSubTab('secondary-structure')),
+              requireActiveSession(() => openFoldingPanel()),
           },
           {
             kind: 'command',
@@ -10765,7 +10845,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'enz-choose',
             label: 'Choose Enzymes',
             shortcut: sc('E'),
-            onSelect: () => requireActiveSession(() => openHybridSubTab('enzymes-view')),
+            onSelect: () => requireActiveSession(() => openEnzymesView()),
           },
           {
             kind: 'command',
@@ -10777,7 +10857,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'enz-table',
             label: 'Enzymes Table',
-            onSelect: () => requireActiveSession(() => openHybridSubTab('enzymes-view')),
+            onSelect: () => requireActiveSession(() => openEnzymesView()),
           },
         ],
       },
@@ -16118,6 +16198,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 )}
                 {viewerTab === 'sequence-view' && !isContigSummaryRecord(activeDoc) && (
                   <>
+                    {hostedPanel?.tab === 'sequence-view' && (
+                      // Sequence Map's inspector is its own column, so the hosted panel draws its settings in place.
+                      <WorkbenchInspectorContext.Provider value={null}>{hostedPanelNode(hostedPanel.kind)}</WorkbenchInspectorContext.Provider>
+                    )}
                     <ConstructCockpitBar
                       doc={activeDoc}
                       cutSites={cockpitCutSites}
@@ -16433,6 +16517,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 )}
 
                 {viewerTab === 'document-info' && <DocumentInfoPanel key={activeDoc.id} doc={activeDoc} onUpdateDocument={handleUpdateDocument}
+                  alerts={<React.Suspense fallback={null}><SequenceAlertsPanel doc={activeDoc} allDocuments={documents} enzymes={activeEnzymes}
+                    scanCollection={scanCollectionChoice.collection} onUpdateDocument={handleUpdateDocument} /></React.Suspense>}
                   searchMatch={searchMatchShown?.docId === activeDoc.id ? searchMatchShown.hit : null} />}
 
                 {viewerTab === 'text-view' && (
@@ -16541,6 +16627,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     <CloningAndGelStudio
                       documents={documents}
                       activeDoc={activeDoc}
+                      hostedPanel={activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set'
+                        ? hostedPanelNode('enzymes', false)
+                        : hostedPanel?.kind === 'enzymes' && hostedPanel.tab === 'cloning-gel' ? hostedPanelNode('enzymes') : undefined}
                       enzymes={activeEnzymes}
                       onAddConstruct={handleAddConstruct}
                       initialMethod={cloningInitialMethod}
@@ -16560,6 +16649,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   {viewerTab === 'primers-pcr' && (
                     <PrimerAndPCRStudio
                       doc={activeDoc}
+                      hostedPanel={hostedPanel?.kind === 'folding' && hostedPanel.tab === 'primers-pcr' ? hostedPanelNode('folding') : undefined}
                       initialSubTab={primersInitialSubTab}
                       commandNonce={studioCommandNonce}
                       /* The one active interval (PRD F03): the bases on screen, which Find CRISPR
@@ -16878,11 +16968,20 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     <WorkflowPipelineStudio
                       activeDoc={activeDoc}
                       allDocuments={documents}
+                      view={pipelinesView}
+                      onChangeView={setPipelinesView}
+                      workflowsPanel={
+                        <React.Suspense fallback={null}>
+                          <WorkflowsPanel doc={activeDoc} allDocuments={documents} onUpdateDocument={handleUpdateDocument}
+                            initialPluginId={hybridInitialPluginId} commandNonce={studioCommandNonce} />
+                        </React.Suspense>
+                      }
                       hostOs={displayOs}
                       onChangePreviewOs={(os) => setPreviewOsOverride(os)}
                       onSelectDocument={(docId) => selectDocumentWithHistory(docId)}
                       onSelectRange={setSelectedRange}
-                      onNavigateStudio={(studio) => setViewerTab(studio)}
+                      /* A folding step opens its studio on the folding panel (US-01M7QC8Q): folding is a panel there, not a tab. */
+                      onNavigateStudio={(studio, step) => step && PIPELINE_FOLDING_STEP_IDS.has(step.id) ? openFoldingPanel() : setViewerTab(studio)}
                       onStatusMessage={(msg) => setStatusBanner(msg)}
                     />
                   )}
@@ -17090,6 +17189,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             />
                             <span>Show 3-Frame Translation</span>
                           </label>
+                          {/* The genetic-code tables sit beside translation (D0017, US-01M7QC8Q). */}
+                          <div className="mbc-control-row" role="group" aria-label="Genetic code tables">
+                            <span>Genetic Code Tables:</span>
+                            <ul className="mbc-genetic-code-tables">
+                              {GENETIC_CODE_NAMES.map((name) => <li key={name}>{name}</li>)}
+                            </ul>
+                          </div>
                         </div>
                       )}
                     </div>
