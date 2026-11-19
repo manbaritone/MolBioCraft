@@ -260,7 +260,7 @@ describe("History's settings in App's inspector (AC1)", () => {
   it("puts the protein, folding and lineage settings in App's inspector", async () => {
     await withApp(async (app) => {
       await onHistory(app);
-      expect(app.header().querySelectorAll('button[role="tab"][data-view="history-hybrid"]')[0]?.textContent.trim(), 'the tab reads History').toBe('History');
+      expect(app.railTabs().filter((b) => b.getAttribute('data-studio') === 'history')[0]?.textContent.trim(), 'the rail entry reads History').toBe('History');
 
       // Protein: the hydropathy window and the protease; the MS2 peptide picker stays with its spectrum.
       await openSubTab(app, 'protein');
@@ -321,7 +321,7 @@ describe('no inspector where there is nothing to set (AC2)', () => {
     // "Enzymes" (US-01M6Q16Q, D0237), and that name titles the inspector of its Lineage sub-tab.
     await withApp(async (app) => {
       await onHistory(app, ENZYME_SET);
-      expect(app.header().querySelectorAll('button[role="tab"][data-view="history-hybrid"]')[0]?.textContent.trim(), 'the tab reads the panel name').toBe(studioName('history'));
+      expect(app.railTabs().filter((b) => b.getAttribute('data-studio') === 'history')[0]?.textContent.trim(), 'the rail entry reads the panel name').toBe(studioName('history'));
       expect(selectedSubTab(app), 'an Enzyme Set opens on its Enzymes view').toBe(SUB_TABS.enzymes);
       expect(shown(app), 'the Enzymes view').toEqual(NONE);
       await openSubTab(app, 'lineage');

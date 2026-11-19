@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { relevantViewerTabs, preferredViewerTab, supportedViewerTabs, resolveViewerTab, visibleDocumentTabs, phylogenySourceDocuments, originalDocumentText } from '../core/documentViews';
+import { relevantViewerTabs, preferredViewerTab, supportedViewerTabs, resolveViewerTab, studioRailItems, phylogenySourceDocuments, originalDocumentText } from '../core/documentViews';
 import { DocumentInfoPanel } from '../components/DocumentInfoPanel';
 import { ChromatogramAndContigStudio } from '../components/ChromatogramAndContigStudio';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
@@ -25,8 +25,10 @@ describe('document context follows actual input data', () => {
 
   it('keeps tools available on request without adding them to every DNA record', () => {
     expect(relevantViewerTabs(dna)).not.toContain('cloning-gel');
-    expect(visibleDocumentTabs(dna, [dna], 'cloning-gel')).toContain('cloning-gel');
-    expect(visibleDocumentTabs(protein, [protein], 'cloning-gel')).not.toContain('cloning-gel');
+    // The studio rail (US-01M6Q1BD) lists Cloning & Gel for every record: enabled for DNA, and for a protein disabled with its reason.
+    const cloning = (doc: SequenceDocument) => studioRailItems(doc, resolveViewerTab(doc, 'cloning-gel')).filter((item) => item.entry.id === 'cloning-gel');
+    expect(cloning(dna).map((item) => item.availability)).toEqual([{ ok: true }]);
+    expect(cloning(protein).map((item) => item.availability)).toEqual([{ ok: false, reason: 'Cloning & Gel needs a DNA sequence: "Protein" is a Protein sequence.' }]);
     expect(supportedViewerTabs(EMPTY_WORKSPACE_DOCUMENT)).toEqual([]);
     // Regression: New Session › Vector Catalog in a blank session used to fall
     // back to Document Info, so the catalog never opened.
@@ -42,7 +44,7 @@ describe('document context follows actual input data', () => {
       { id: 'member1', name: 'First', sequence: 'ACGT' }, { id: 'member2', name: 'Second', sequence: 'ACGA' },
     ] } };
     expect(phylogenySourceDocuments(alignment, [protein], [protein]).map((doc) => doc.id)).toEqual(['member1', 'member2']);
-    expect(visibleDocumentTabs(alignment, [], 'sequence-alignment')[0]).toBe('sequence-alignment');
+    expect(studioRailItems(alignment, resolveViewerTab(alignment, 'sequence-alignment')).filter((item) => item.current).map((item) => item.entry.id)).toEqual(['alignment']);
   });
 
   it('keeps tree topology and notes as source text rather than synthesizing biological flatfiles', () => {

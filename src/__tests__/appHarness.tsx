@@ -185,8 +185,12 @@ export interface AppHarness {
   readonly host: Host;
   /** Runs a menu command through the App's dispatcher, as the native menu sends it. */
   menu(id: string): Promise<void>;
-  /** Clicks the viewer header's tab for `tab`. */
+  /** Clicks the studio rail's entry that opens `tab`; throws when none, or more than one, opens it, or it is disabled. */
   clickTab(tab: MbcViewerTabId): Promise<void>;
+  /** Clicks the studio rail's entry for the studio or panel `id` (its registry id, D0242); throws when it is missing or disabled. */
+  clickStudio(id: string): Promise<void>;
+  /** The studio rail's entries (button[role="tab"][data-studio]), in rail order; none off a session. */
+  railTabs(): LiveElement[];
   /** A pointer click (pointer and mouse down and up, the click and its activation). */
   click(el: LiveElement, init?: Record<string, unknown>): Promise<void>;
   /** A committed edit of a field: text, a select's option, or a checkbox ticked or cleared. */
@@ -201,7 +205,7 @@ export interface AppHarness {
   all(selector: string): LiveElement[];
   /** The one element in the page that matches `selector`; any other count throws, naming it. */
   one(selector: string, what?: string): LiveElement;
-  /** The viewer header (the studio tabs and the view controls). */
+  /** The viewer header (the split toggle and the view controls; the studio tabs live in the rail, D0242). */
   header(): LiveElement;
   /** The header's inspector toggle (its label says Show or Hide ... Inspector), or null when the tab shows none. */
   inspectorButton(): LiveElement | null;
@@ -211,7 +215,7 @@ export interface AppHarness {
   canvas(): LiveElement;
   /** The viewer body split: the canvas, the resize handle and the inspector column. */
   bodySplit(): LiveElement;
-  /** The tab the viewer header shows selected. */
+  /** The viewer tab actually showing, as the studio rail states it (its data-current-view); null off a session. */
   activeTab(): string | null;
   /** Every file the App has handed to the browser to save, in order. */
   downloads(): SavedFile[];
@@ -411,9 +415,23 @@ export async function mountApp(opts: MountOptions = {}): Promise<AppHarness> {
     };
     const header = () => exactlyOne(all('.mbc-viewer-header'), 'viewer header');
     const bodySplit = () => exactlyOne(all('.mbc-viewer-body-split'), 'viewer body split');
-    const activeTab = () => {
-      const selected = header().querySelectorAll('button[role="tab"][aria-selected="true"]').filter((b) => b.hasAttribute('data-view'));
-      return atMostOne(selected, 'selected viewer tab')?.getAttribute('data-view') ?? null;
+    // The studio rail is the one place studio tabs live (D0242): its entries are keyed by studio id,
+    // and its tablist states the studio and the viewer tab actually showing.
+    const railList = () => atMostOne(all('.mbc-studio-rail-list'), 'studio rail');
+    const railTabs = () => railList()?.querySelectorAll('button[role="tab"][data-studio]') ?? [];
+    const activeTab = () => railList()?.getAttribute('data-current-view') ?? null;
+    const clickRailEntry = async (hit: LiveElement[], what: string) => {
+      // A disabled entry is listed, but it is not a tab the rail can open: refused by name, with its reason.
+      const open = railTabs().filter((b) => b.getAttribute('aria-disabled') !== 'true');
+      const shows = `it shows ${open.map((b) => `${b.getAttribute('data-studio')}(${b.getAttribute('data-view')})`).join(', ') || 'none'}`;
+      if (hit.length > 1) throw new Error(`the studio rail has ${hit.length} entries for ${what}, so it names no one entry; address it by studio id`);
+      if (!hit.length) throw new Error(`the studio rail has no ${what}; ${shows}`);
+      if (hit[0].getAttribute('aria-disabled') === 'true') {
+        const reason = hit[0].getAttribute('aria-describedby');
+        throw new Error(`the studio rail has no ${what}; ${shows} (its entry is disabled: ${reason ? doc.body.querySelectorAll(`#${reason}`).map((d) => d.textContent).join(' ') : 'no reason given'})`);
+      }
+      userClick(hit[0], {}, step);
+      await settle();
     };
     let restores = 0;
     const menu = async (id: string) => {
@@ -425,13 +443,9 @@ export async function mountApp(opts: MountOptions = {}): Promise<AppHarness> {
     const harness: AppHarness = {
       doc, win, container, host,
       menu,
-      clickTab: async (tab) => {
-        const tabs = header().querySelectorAll('button[role="tab"][data-view]');
-        const hit = tabs.filter((b) => b.getAttribute('data-view') === tab);
-        if (hit.length !== 1) throw new Error(`the viewer header has ${hit.length ? `${hit.length}` : 'no'} ${tab} tab; it shows ${tabs.map((b) => b.getAttribute('data-view')).join(', ') || 'none'}`);
-        userClick(hit[0], {}, step);
-        await settle();
-      },
+      clickTab: (tab) => clickRailEntry(railTabs().filter((b) => b.getAttribute('data-view') === tab), `${tab} tab`),
+      clickStudio: (id) => clickRailEntry(railTabs().filter((b) => b.getAttribute('data-studio') === id), `${id} studio`),
+      railTabs,
       click: async (el, init = {}) => { inPage(el, 'click'); userClick(el, init, step); await settle(); },
       change: async (el, value) => { inPage(el, 'change'); userChange(el, value, step); await settle(); },
       input: async (el, value) => { inPage(el, 'input'); userInput(el, value, step); await settle(); },

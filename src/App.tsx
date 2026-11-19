@@ -234,7 +234,7 @@ import {
   isTreeDocument,
   relevantViewerTabs,
   resolveViewerTab,
-  visibleDocumentTabs,
+  studioRailItems,
   hasBiologicalSequence,
   originalDocumentText,
   viewerTabLabel,
@@ -349,6 +349,7 @@ import {
   LinearSequenceView,
 } from './components/LinearSequenceView';
 import { ScrollableMenuStrip } from './components/ScrollableMenuStrip';
+import { StudioRail } from './components/StudioRail';
 import type { CloningSubToolType } from './components/CloningAndGelStudio';
 import type {
   AlignmentSubMode,
@@ -2520,10 +2521,6 @@ export const App: React.FC = () => {
   const selectedAnalysisDocuments = useMemo(
     () => docsInSelectedFolder.filter((doc) => checkedIdsSet.has(doc.id)),
     [docsInSelectedFolder, checkedIdsSet]
-  );
-  const visibleViewerTabs = useMemo(
-    () => visibleDocumentTabs(activeDoc, selectedAnalysisDocuments, viewerTab),
-    [activeDoc, selectedAnalysisDocuments, viewerTab]
   );
   // Genomics studio pickers / assembly: live (not trashed) nucleotide records only.
   const genomicsCandidateDocs = useMemo(
@@ -8658,6 +8655,16 @@ requireActiveSession(() => handleCopySequenceToClipboard());
   const genomicsShownView = genomicsTabs.includes(genomicsInitialSubTab) ? genomicsInitialSubTab : genomicsTabs[0];
   /** The studio or panel the open view belongs to (US-01M6Q16Q). */
   const viewerStudio = studioForTab(viewerTab, activeDoc, genomicsShownView);
+  /** The studio rail's entries: every studio and panel, the one showing marked (US-01M6Q1BD, D0242). */
+  const studioRail = studioRailItems(activeDoc, viewerTab, genomicsShownView);
+  /** A rail entry opens the view its studio opens (the genomics studios in their own sub-view); History opens on its lineage, an enzyme set on its enzymes, as the header tab did. */
+  const openStudioFromRail = (entry: StudioEntry) => {
+    // A studio chosen behind the Map Gallery closes it onto that studio (US-01M7DVS2).
+    setMapGalleryOpen(false);
+    if (entry.id === 'history') openHybridSubTab(activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'enzymes-view' : 'lineage');
+    else if (entry.opens.tab === 'genomics-ngs' && entry.opens.view) openGenomicsSuite(entry.opens.view as GenomicsSuiteSubTab);
+    else setViewerTab(entry.opens.tab);
+  };
   /** The inspector's pane title, which its button and resizer name too: its studio's registry name (D0237, D0239). */
   const inspectorTitle = `${viewerStudio.name} Controls`;
 
@@ -14222,7 +14229,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         <div
           className={`toolbar-left-nav-cluster ${
             sidebarOpen ? 'sidebar-aligned' : 'collapsed'
-          }`}
+          }${sessionActive && !homeViewActive ? ' with-studio-rail' : ''}`}
           data-tauri-drag-region
           style={sidebarOpen ? sidebarWidthVarStyle : undefined}
         >
@@ -14432,8 +14439,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             aria-haspopup="menu"
             aria-expanded={openToolbarDropdown === 'workflows'}
             className={`mbc-tool-btn ${
-              (sessionActive &&
-                (viewerTab === 'history-hybrid' || viewerTab === 'guided-pipelines')) ||
+              // Lit for its open dropdown, or for Pipelines & NGS; the rail alone shows History and Info (D0219).
+              (sessionActive && !homeViewActive && viewerStudio.id === 'pipelines-ngs') ||
               openToolbarDropdown === 'workflows'
                 ? 'active'
                 : ''
@@ -14469,7 +14476,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             aria-haspopup="menu"
             aria-expanded={openToolbarDropdown === 'align'}
             className={`mbc-tool-btn ${
-              (sessionActive && viewerTab === 'sequence-alignment') ||
+              // Lit only while its own dropdown is open: the rail shows the studio (D0219).
               openToolbarDropdown === 'align'
                 ? 'active'
                 : ''
@@ -14505,7 +14512,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             aria-haspopup="menu"
             aria-expanded={openToolbarDropdown === 'tree'}
             className={`mbc-tool-btn ${
-              (sessionActive && viewerTab === 'phylogenetics') ||
+              // Lit only while its own dropdown is open: the rail shows the studio (D0219).
               openToolbarDropdown === 'tree'
                 ? 'active'
                 : ''
@@ -14543,7 +14550,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             disabled={!isDnaSequence}
             title={isDnaSequence ? 'Primer, PCR and CRISPR tools' : 'Select a DNA sequence to use primers tools'}
             className={`mbc-tool-btn ${
-              (sessionActive && viewerTab === 'primers-pcr') ||
+              // Lit only while its own dropdown is open: the rail shows the studio (D0219).
               openToolbarDropdown === 'primers'
                 ? 'active'
                 : ''
@@ -14580,7 +14587,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             disabled={!isDnaSequence}
             title={isDnaSequence ? 'Cloning and assembly tools' : 'Select a DNA sequence to use cloning tools'}
             className={`mbc-tool-btn ${
-              (sessionActive && viewerTab === 'cloning-gel') ||
+              // Lit only while its own dropdown is open: the rail shows the studio (D0219).
               openToolbarDropdown === 'cloning'
                 ? 'active'
                 : ''
@@ -14611,9 +14618,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         {/* 11. Dedicated Vector Library & Design Studio Toolbar Action */}
         <button
           type="button"
-          className={`mbc-tool-btn ${
-            sessionActive && viewerTab === 'vector-library' ? 'active' : ''
-          }`}
+          // No dropdown, so it never lights: the rail shows the Vectors & Architect studio (D0219).
+          className="mbc-tool-btn"
           onClick={() => requireActiveSession(() => openVectorStudio('catalog'))}
           title={`Browse ${VECTOR_CATALOG.length} Twist, Modular Systems & ConductScience Vectors, Modular Vector Architect & Twist Onboarding`}
         >
@@ -14689,6 +14695,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             : undefined
         }
       >
+        {/* The studio rail: every studio and panel, always present in a session, left of the sidebar (US-01M6Q1BD). */}
+        <StudioRail
+          items={studioRail}
+          currentView={viewerTab}
+          annotationCount={activeDoc.features.length + activeDoc.primers.length}
+          onOpen={openStudioFromRail}
+          onRefuse={(reason) => setStatusBanner(reason)}
+        />
         {/* Left Pane: MolBioCraft Project Folder & Database Explorer */}
         {sidebarOpen && (
           <aside
@@ -15853,81 +15867,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 Your custom restriction enzymes are not used: {enzymeDbNotice} Open Databases &gt; Restriction Enzymes to recover or discard it.
               </p>
             )}
-            {/* Viewer Top Control Bar (View Tabs + Zoom + Layout Switcher) */}
+            {/* Viewer Top Control Bar (Split + Zoom + Inspector) */}
             <div className="mbc-viewer-header">
-              <ScrollableMenuStrip
-                className="mbc-scroll-strip--header-tabs"
-                trackClassName="mbc-viewer-tabs"
-                role="tablist"
-                ariaLabel="Analysis and Visualization Views"
-                activeKey={viewerTab}
-                enableSpatialArrowNav
-                activateOnSpatialFocus
-                canStepPrev={visibleViewerTabs.indexOf(viewerTab) > 0}
-                canStepNext={
-                  visibleViewerTabs.indexOf(viewerTab) < visibleViewerTabs.length - 1
-                }
-                onStepPrev={() => {
-                  const curIdx = visibleViewerTabs.indexOf(viewerTab);
-                  if (curIdx > 0) {
-                    setViewerTab(visibleViewerTabs[curIdx - 1]);
-                  }
-                }}
-                onStepNext={() => {
-                  const curIdx = visibleViewerTabs.indexOf(viewerTab);
-                  if (curIdx >= 0 && curIdx < visibleViewerTabs.length - 1) {
-                    setViewerTab(visibleViewerTabs[curIdx + 1]);
-                  }
-                }}
-                prevAriaLabel="Slide studio menus left"
-                nextAriaLabel="Slide studio menus right"
-              >
-                {visibleViewerTabs.map((tab, idx) => {
-                  const tabGroups: Record<ViewerTab, string> = {
-                    'sequence-view': 'construct',
-                    'annotations-table': 'construct',
-                    'text-view': 'construct',
-                    'vector-library': 'wetlab',
-                    'cloning-gel': 'wetlab',
-                    'primers-pcr': 'wetlab',
-                    'sequence-alignment': 'comparative',
-                    'phylogenetics': 'comparative',
-                    'sanger-contig': 'comparative',
-                    'genomics-ngs': 'comparative',
-                    'history-hybrid': 'audit',
-                    'guided-pipelines': 'audit',
-                    'document-info': 'audit',
-                  };
-                  const prevGroup = idx > 0 ? tabGroups[visibleViewerTabs[idx - 1]] : tabGroups[tab];
-                  const showGroupDivider = idx > 0 && prevGroup !== tabGroups[tab];
-                  // The studio or panel the tab belongs to names it and draws its icon (US-01M6Q16Q).
-                  const tabStudio = studioForTab(tab, activeDoc, genomicsShownView);
-                  return (
-                    <React.Fragment key={tab}>
-                      {showGroupDivider && (
-                        <span className="mbc-vtab-group-divider" aria-hidden="true" />
-                      )}
-                      <button type="button" role="tab" data-view={tab} data-studio={tabStudio.id}
-                        tabIndex={viewerTab === tab ? 0 : -1} aria-selected={viewerTab === tab}
-                        className={`mbc-vtab ${viewerTab === tab ? 'active' : ''}`}
-                        onClick={() => {
-                          // A tab clicked behind the Map Gallery, the one behind it included, closes it onto that tab (US-01M7DVS2).
-                          setMapGalleryOpen(false);
-                          if (tab === 'history-hybrid') openHybridSubTab(activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'enzymes-view' : 'lineage');
-                          else setViewerTab(tab);
-                        }}>
-                        {studioIconElement(tabStudio.icon)}
-                        <span className="mbc-vtab-name">{viewerTabLabel(tab, activeDoc, genomicsShownView)}</span>
-                        {tab === 'annotations-table' && (
-                          <span className="mbc-vtab-count" aria-label={`${activeDoc.features.length + activeDoc.primers.length} annotations`}>
-                            {activeDoc.features.length + activeDoc.primers.length}
-                          </span>
-                        )}
-                      </button>
-                    </React.Fragment>
-                  );
-                })}
-              </ScrollableMenuStrip>
+              {/* The studio tabs live in the studio rail (US-01M6Q1BD, D0242); the header keeps the split and view controls. */}
 
               <button
                 type="button"

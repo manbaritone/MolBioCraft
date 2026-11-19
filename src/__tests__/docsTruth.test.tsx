@@ -20,6 +20,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { viewerTabLabel, type ViewerTab } from '../core/documentViews';
 import { DOCUMENT_PANELS, STUDIOS, studioForTab } from '../core/studioRegistry';
 import type { SequenceDocument } from '../types/bio';
+import type { GenomicsSubTabId } from '../core/analysisContext';
 import { macHost, mountApp, type AppHarness, type MountOptions } from './appHarness';
 
 // A macOS host's Tauri runtime (AC1's mac host); the other mounts are Linux hosts.
@@ -297,24 +298,30 @@ describe('US-01M6P23W AC2: README names the registry\'s 11 studios and 2 panels,
     const app = await mountApp();
     try {
       await app.restoreSession({ documents: [dna], activeDocId: dna.id, viewerTab: 'annotations-table' });
-      const tabs = app.all('button[role="tab"][data-view]').map((b) => [b.getAttribute('data-view') as ViewerTab, words(b.querySelector('.mbc-vtab-name')?.textContent ?? '')] as const);
+      // The studio rail's entries (US-01M6Q1BD, D0242): each by the tab and genomics view it opens. Only an
+      // enabled entry is visited below, since a disabled one does not switch (AC2).
+      const rail = app.railTabs().map((b) => ({
+        tab: b.getAttribute('data-view') as ViewerTab, view: (b.getAttribute('data-genomics-view') ?? undefined) as GenomicsSubTabId | undefined,
+        studio: b.getAttribute('data-studio')!, label: words(b.querySelector('.mbc-studio-rail-name')?.textContent ?? ''), enabled: b.getAttribute('aria-disabled') !== 'true',
+      }));
+      const tabs = rail.filter((t) => t.enabled);
       expect(tabs.length).toBeGreaterThanOrEqual(4);
-      expect(tabs.map(([tab]) => tab)).toContain('annotations-table');
-      for (const [tab, label] of tabs) expect(label, tab).toBe(viewerTabLabel(tab, dna));
+      expect(tabs.map(({ tab }) => tab)).toContain('annotations-table');
+      for (const { tab, view, label } of rail) expect(label, tab).toBe(viewerTabLabel(tab, dna, view));
       // The annotation count is its own element beside the name.
-      expect(app.all('button[role="tab"][data-view="annotations-table"] .mbc-vtab-count').map((c) => words(c.textContent))).toEqual(['3']);
+      expect(app.all('button[role="tab"][data-studio="annotations"] .mbc-studio-rail-count').map((c) => words(c.textContent))).toEqual(['3']);
       // A studio's inspector button is named by its pane title, which the open tab's label gives,
       // the Sequence tab's included (D0239: no tab keeps a title of its own).
       const checked: string[] = [];
-      for (const [tab] of tabs) {
-        await app.clickTab(tab);
+      for (const { tab, view, studio } of tabs) {
+        await app.clickStudio(studio);
         const button = app.inspectorButton();
         if (!button) continue;
         expect(button.getAttribute('aria-label'), tab).toMatch(/^(Show|Hide) /);
-        expect(button.getAttribute('aria-label')!.replace(/^(Show|Hide) /, ''), tab).toBe(`${viewerTabLabel(tab, dna)} Controls Inspector`);
+        expect(button.getAttribute('aria-label')!.replace(/^(Show|Hide) /, ''), tab).toBe(`${viewerTabLabel(tab, dna, view)} Controls Inspector`);
         checked.push(tab);
       }
-      expect(checked.length, `an inspector title was checked (tabs: ${tabs.map(([t]) => t).join(', ')})`).toBeGreaterThanOrEqual(1);
+      expect(checked.length, `an inspector title was checked (tabs: ${tabs.map(({ tab }) => tab).join(', ')})`).toBeGreaterThanOrEqual(1);
 
       // An unaligned set: its tab and its inspector read Alignment, the registry name, not "Sequences".
       const reads = ['ATGGCCATTGTAATGGGCCGC', 'ATGGCCATTGTTATGGGCCGC', 'ATGGCGATTGTAATGGGCCGC'];
@@ -323,8 +330,8 @@ describe('US-01M6P23W AC2: README names the registry\'s 11 studios and 2 panels,
         alignmentMeta: { isAligned: false, sequences: reads.map((seq, i) => ({ id: `dt-r${i}`, name: `read ${i + 1}`, sequence: seq })) },
       } as unknown as SequenceDocument;
       await app.restoreSession({ documents: [unaligned], activeDocId: unaligned.id, viewerTab: 'sequence-alignment' });
-      const alignmentTab = app.all('button[role="tab"][data-view="sequence-alignment"]');
-      expect(alignmentTab.map((b) => words(b.querySelector('.mbc-vtab-name')?.textContent ?? ''))).toEqual(['Alignment']);
+      const alignmentTab = app.railTabs().filter((b) => b.getAttribute('data-studio') === 'alignment');
+      expect(alignmentTab.map((b) => words(b.querySelector('.mbc-studio-rail-name')?.textContent ?? ''))).toEqual(['Alignment']);
       expect(app.inspectorButton()?.getAttribute('aria-label')?.replace(/^(Show|Hide) /, '')).toBe('Alignment Controls Inspector');
     } finally {
       app.unmount();

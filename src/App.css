@@ -976,14 +976,109 @@ fieldset > legend,
 /* 3. Main Split Workspace (Resizable Project Explorer + Interactive Splitter + Center Stack) */
 .mbc-main-split {
   display: grid;
-  grid-template-columns: var(--mbc-sidebar-width, 245px) 5px minmax(0, 1fr);
+  grid-template-columns: var(--mbc-rail-w) var(--mbc-sidebar-width, 245px) 5px minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   min-width: 0;
 }
 
 .mbc-main-split.sidebar-collapsed {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--mbc-rail-w) minmax(0, 1fr);
+}
+
+/* The studio rail (US-01M6Q1BD, D0015): every studio and both panels, left of the sidebar, on the
+ * chrome band with a 1px Slate Rule and no shadow. The current studio takes Signal Blue as the
+ * active document tab does; a disabled one stays legible in Secondary Ink. Names wrap, never clip. */
+.mbc-studio-rail {
+  width: var(--mbc-rail-w);
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--mbc-bg-toolbar);
+  border-right: 1px solid var(--mbc-border);
+}
+
+.mbc-studio-rail-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mbc-space-1);
+  padding: var(--mbc-space-2) var(--mbc-space-1);
+}
+
+.mbc-studio-rail-tab {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--mbc-space-1);
+  min-height: 24px;
+  width: 100%;
+  padding: var(--mbc-space-2) 0;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: var(--mbc-radius-xs);
+  background: transparent;
+  color: var(--mbc-text-secondary);
+  font: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+
+.mbc-studio-rail-tab:hover {
+  background: var(--mbc-surface-hover);
+  color: var(--mbc-text-main);
+}
+
+.mbc-studio-rail-tab:focus-visible {
+  outline: 2px solid var(--mbc-blue);
+  outline-offset: -2px;
+}
+
+.mbc-studio-rail-tab.current {
+  background: var(--mbc-bg-canvas);
+  border-left-color: var(--mbc-blue);
+  color: var(--mbc-blue-text);
+  font-weight: 600;
+}
+
+.mbc-dark-mode .mbc-studio-rail-tab.current {
+  color: var(--mbc-blue);
+}
+
+.mbc-studio-rail-tab.unavailable {
+  cursor: default;
+  color: var(--mbc-text-secondary);
+}
+
+.mbc-studio-rail-tab.unavailable .mbc-studio-rail-icon {
+  opacity: 0.55;
+}
+
+.mbc-studio-rail-tab.unavailable:hover {
+  background: transparent;
+}
+
+.mbc-studio-rail-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.mbc-studio-rail-name {
+  font-size: var(--font-size-caption);
+  line-height: var(--mbc-leading-tight);
+  overflow-wrap: break-word;
+}
+
+.mbc-studio-rail-count {
+  font-size: var(--font-size-caption);
+  color: var(--mbc-text-muted);
+}
+
+.mbc-studio-rail-divider {
+  display: block;
+  height: 1px;
+  margin: var(--mbc-space-1) var(--mbc-space-2);
+  background: var(--mbc-border);
 }
 
 /* Left Sources Panel (Google Workspace Navigation Rail) */
@@ -5949,6 +6044,11 @@ hr.desktop-menu-sep,
   width: var(--mbc-sidebar-width, 245px);
 }
 
+/* In a session the column beneath is the studio rail plus the sidebar (US-01M6Q1BD). */
+.toolbar-left-nav-cluster.sidebar-aligned.with-studio-rail {
+  width: calc(var(--mbc-rail-w) + var(--mbc-sidebar-width, 245px));
+}
+
 .toolbar-left-nav-cluster.collapsed {
   width: 148px;
 }
@@ -9578,6 +9678,8 @@ dialog.prefs-modal-window:focus-visible,
   --mbc-tabbar-h: 38px;
   --mbc-toolbar-h: 40px;
   --mbc-statusbar-h: 27px;
+  /* The studio rail's width (US-01M6Q1BD): room for "Phylogenetics" whole at Caption size. */
+  --mbc-rail-w: 96px;
 
   /* Radius scale: xs tiny chips and tags, sm buttons and inputs, md menus and popovers,
    * lg cards and dialogs, pill the search field and badges. */

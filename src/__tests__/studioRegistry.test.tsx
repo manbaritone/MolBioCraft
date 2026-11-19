@@ -19,6 +19,7 @@ import { VIEWER_TAB_ORDER, supportedViewerTabs, viewerTabLabel, type ViewerTab }
 import { VIEW_HELP } from '../data/helpTopics';
 import { appTsxSource, mountApp, type AppHarness } from './appHarness';
 import type { LiveElement } from './liveDom';
+import type { GenomicsSubTabId } from '../core/analysisContext';
 import { seededChromatogram } from './traceFixtures';
 
 const RAIL = ['Sequence Map', 'Annotations', 'Flatfile', 'Cloning & Gel', 'Vectors & Architect', 'Primers & CRISPR',
@@ -90,13 +91,19 @@ const DNA_COMPLEX: SequenceDocument = {
   docMetadata: { PDBText: caPdb([{ id: 'A', seq: 'MKVLSAGLKVAMLS', dx: 0 }, { id: 'B', seq: 'GSLLKAVMGASLKV', dx: 15 }]), Chain: 'D' },
 } as SequenceDocument;
 
-/** Each studio tab of the header: its studio id, its name element's text, its count element's text. */
-function studioTabs(app: AppHarness): { view: string; studio: string; name: string; count: string | null; el: LiveElement }[] {
-  return app.header().querySelectorAll('button[role="tab"][data-view]').map((el) => ({
+/**
+ * Each studio entry of the studio rail (US-01M6Q1BD, D0242): the tab and genomics view it opens, its
+ * studio id, its name element's text, its count element's text, whether it is the current one.
+ */
+function studioTabs(app: AppHarness): { view: string; genomicsView?: string; studio: string; name: string; count: string | null; current: boolean; disabled: boolean; el: LiveElement }[] {
+  return app.railTabs().map((el) => ({
     view: el.getAttribute('data-view') ?? '',
+    genomicsView: el.getAttribute('data-genomics-view') ?? undefined,
     studio: el.getAttribute('data-studio') ?? '',
-    name: words(el.querySelectorAll('.mbc-vtab-name')[0]?.textContent ?? el.textContent),
-    count: el.querySelectorAll('.mbc-vtab-count')[0]?.textContent ?? null,
+    name: words(el.querySelectorAll('.mbc-studio-rail-name')[0]?.textContent ?? el.textContent),
+    count: el.querySelectorAll('.mbc-studio-rail-count')[0]?.textContent ?? null,
+    current: el.getAttribute('aria-selected') === 'true',
+    disabled: el.getAttribute('aria-disabled') === 'true',
     el,
   }));
 }
@@ -204,7 +211,7 @@ describe('US-01M6Q16Q AC2: every viewer tab and sub-view belongs to exactly one 
     try {
       // The name the tab, the inspector and Help give the open view: one studio, three places.
       const shown = () => ({
-        tab: studioTabs(app).filter((t) => t.view === app.activeTab()).map((t) => [t.name, t.studio]),
+        tab: studioTabs(app).filter((t) => t.current).map((t) => [t.name, t.studio]),
         inspector: app.inspectorButton()?.getAttribute('aria-label')?.replace(/^(Show|Hide) /, '').replace(/ Inspector$/, '') ?? null,
         help: app.all('.mbc-help-panel h4').map((h) => words(h.textContent)),
       });
@@ -272,9 +279,9 @@ describe('US-01M6Q16Q AC3: each studio tab shows its registry name', () => {
         await openOn(app, doc, tab);
         const tabs = studioTabs(app);
         expect(tabs.length, `${doc.name}: the header shows studio tabs`).toBeGreaterThanOrEqual(2);
-        expect(tabs.filter((t) => t.view === tab).map((t) => t.name), `${doc.name}'s ${tab} tab`).toEqual([name]);
+        expect(tabs.filter((t) => t.current).map((t) => t.name), `${doc.name}'s ${tab} tab`).toEqual([name]);
         for (const t of tabs) {
-          expect(t.studio, `${doc.name}'s ${t.view} tab names its studio`).toBe(studioForTab(t.view as ViewerTab, doc).id);
+          expect(t.studio, `${doc.name}'s ${t.view} tab names its studio`).toBe(studioForTab(t.view as ViewerTab, doc, t.genomicsView as GenomicsSubTabId | undefined).id);
           expect(t.name, `${doc.name}'s ${t.view} tab`).toBe(byName(t.name).name);
           expect(STUDIO_ENTRIES.find((e) => e.id === t.studio)?.name, `${doc.name}'s ${t.view} tab reads its studio's name`).toBe(t.name);
           expect(OLD_TAB_NAMES, `${doc.name}'s ${t.view} tab`).not.toContain(words(t.el.textContent));

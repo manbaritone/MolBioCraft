@@ -3,7 +3,7 @@
 
 import type { SequenceDocument } from '../types/bio';
 import { isContigSummaryRecord } from './contigSummary';
-import { VIEWER_TAB_ORDER, studioForTab } from './studioRegistry';
+import { STUDIO_ENTRIES, VIEWER_TAB_ORDER, studioAvailability, studioForTab, type StudioAvailability, type StudioEntry } from './studioRegistry';
 import type { GenomicsSubTabId } from './analysisContext';
 
 export type ViewerTab =
@@ -97,12 +97,25 @@ export function resolveViewerTab(doc: SequenceDocument, requested: ViewerTab): V
   return supportedViewerTabs(doc).includes(requested) ? requested : preferredViewerTab(doc);
 }
 
-export function visibleDocumentTabs(doc: SequenceDocument, selected: readonly SequenceDocument[], requested: ViewerTab): ViewerTab[] {
-  const relevant = relevantViewerTabs(doc, selected);
-  const supported = supportedViewerTabs(doc);
-  const visible = VIEWER_TAB_ORDER.filter((tab) => supported.includes(tab) && (relevant.includes(tab) || tab === requested));
-  const primary = preferredViewerTab(doc);
-  return visible.includes(primary) ? [primary, ...visible.filter((tab) => tab !== primary)] : visible;
+/** One entry of the studio rail: a studio or panel, whether it applies to the document, and whether it is the one showing. */
+export interface StudioRailItem { readonly entry: StudioEntry; readonly availability: StudioAvailability; readonly current: boolean }
+
+/**
+ * The studio rail's entries (US-01M6Q1BD, D0015): every studio, then History and Info, in registry
+ * order, whatever the document - a studio is never dropped, only disabled with its registry reason.
+ * The current entry is the one studio resolved from (tab, doc, view) (D0239, D0241). A blank session
+ * shows Info and offers the vector catalogue (resolveViewerTab opens it with no document); every
+ * other entry says to open or add a document first.
+ */
+export function studioRailItems(doc: SequenceDocument, tab: ViewerTab, view?: GenomicsSubTabId): StudioRailItem[] {
+  const shown = studioForTab(tab, doc, view).id;
+  return STUDIO_ENTRIES.map((entry) => {
+    const current = entry.id === shown;
+    const availability: StudioAvailability = current || (!doc.id && entry.opens.tab === 'vector-library') ? { ok: true }
+      : !doc.id ? { ok: false, reason: `Open or add a document first: ${entry.name} needs ${entry.needs}.` }
+      : studioAvailability(entry, doc);
+    return { entry, availability, current };
+  });
 }
 
 /** Refuse a mixed selection rather than silently dropping incompatible records. */

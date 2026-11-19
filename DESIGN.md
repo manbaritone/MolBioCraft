@@ -285,7 +285,7 @@ A fixed desktop chrome stack around one flexible canvas:
 
 The start screen's New / Open / Import strip is the one place icons stack over their labels.
 
-A collapsible left sidebar holds the project tree, and an optional right inspector holds properties. Chrome heights do not change per studio. The bars read them from `--mbc-menubar-h`, `--mbc-tabbar-h`, `--mbc-toolbar-h` (a minimum height) and `--mbc-statusbar-h`, which hold the heights above.
+In a session a fixed **studio rail** sits at the far left, left of the sidebar, and lists every studio and then the History and Info panels. It is `--mbc-rail-w` wide (96px, so "Phylogenetics" fits whole at Caption size) and spans the work area's height. It stays when the sidebar is hidden and in Expand Viewer, and it scrolls on its own when the window is too short. The start screen has no rail. A collapsible left sidebar holds the project tree, and an optional right inspector holds properties. With the sidebar open, the action toolbar's left cluster is as wide as the rail plus the sidebar. Chrome heights do not change per studio. The bars read them from `--mbc-menubar-h`, `--mbc-tabbar-h`, `--mbc-toolbar-h` (a minimum height) and `--mbc-statusbar-h`, which hold the heights above.
 
 Controls come in three heights: 24px (sm), 28px (md, the default) and 32px (lg). Spacing follows a compact six-step scale (4, 6, 10, 14, 20, 28px). Use 4–6px inside controls, 10–14px between related controls and card padding, and 20–28px between sections.
 
@@ -347,6 +347,7 @@ Crisp, compact and unmistakable. One primary per region.
 ### Navigation
 - **Menubar:** 30px, Google Sans 12px, Ink on Canvas White, with the spectrum hairline beneath it. On macOS the native AppKit menu replaces it.
 - **Document tabs:** 38px tall, top-rounded (6px). Inactive tabs are transparent with Secondary Ink text. The active tab takes Canvas White with a 2px Signal Blue top rule and joins the canvas below.
+- **Studio rail:** Bench Mist, the chrome band, with a 1px Slate Rule on its right and no shadow. It is a vertical tab list: each entry is its registry multi-tone icon above its full name in Caption type, which wraps to two lines and never truncates, on a target at least 24px tall. A 1px Slate Rule divides the eleven studios from History and Info. The current studio takes Canvas White with a 2px Signal Blue rule on its left and Signal Blue text, as the active document tab does (Night Sky Blue in the night theme). It is the only entry in Signal Blue. A studio the document cannot show stays listed in Secondary Ink with its icon faded, and its reason is its tooltip and its accessible description. Keyboard focus shows the 2px Signal Blue ring. The rail is the one place that shows the current studio, so no toolbar button lights for it.
 - **Sidebar:** Panel Haze, with a header row, a primary action and text-button links in Signal Ink.
 - **Status bar:** 27px, Bench Mist, Caption type in Muted Ink. It shows session state at the left and shortcut hints and chips at the right.
 

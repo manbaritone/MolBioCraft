@@ -309,7 +309,7 @@ describe("Pairwise Alignment's settings in App's inspector (AC1)", () => {
       // An unaligned list: its tab, the button and the pane read the Alignment studio's registry name,
       // not a per-record "Sequences" (US-01M6Q16Q, D0237: one name per studio, whatever the record).
       await onAlignment(app, LIST);
-      expect(app.header().querySelectorAll('button[role="tab"][data-view="sequence-alignment"]')[0]?.textContent.trim(), 'the tab reads the studio name').toBe(studioName('alignment'));
+      expect(app.railTabs().filter((b) => b.getAttribute('data-studio') === 'alignment')[0]?.textContent.trim(), 'the rail entry reads the studio name').toBe(studioName('alignment'));
       await chooseMode(app, 'pairwise');
       expect(shown(app)).toEqual(OPEN(studioName('alignment'), PAIRWISE));
       pairwiseControls(app);

@@ -876,25 +876,18 @@ describe('the status bar and the view tabs', () => {
     expect(formatPlatformShortcut('O', 'macos')).not.toBe(formatPlatformShortcut('O', 'windows'));
   });
 
-  it('shows view tab arrows only when the tabs overflow', () => {
+  it('lists the studios in the studio rail, not in a header view tab strip', () => {
+    // The studio tabs left the viewer header for the studio rail (US-01M6Q1BD, D0242): the header
+    // draws no view tab strip and the rail lists all eleven studios and both panels, by studio id.
     const html = renderApp({ session: 'sample-library' });
-    const at = html.search(/<div class="mbc-scroll-strip [^"]*mbc-scroll-strip--header-tabs[^"]*"/);
-    expect(at, 'the view tab strip is drawn').toBeGreaterThan(-1);
-    const cls = /class="([^"]*)"/.exec(html.slice(at))![1].split(/\s+/);
-    expect(cls).toContain('auto-arrows');
-    expect(cls).not.toContain('always-arrows');
-    // The strip's own markup: up to the </div> that closes the strip's <div>.
-    let depth = 0;
-    let end = at;
-    for (const m of html.slice(at).matchAll(/<div\b|<\/div>/g)) {
-      depth += m[0] === '</div>' ? -1 : 1;
-      if (depth === 0) { end = at + m.index! + m[0].length; break; }
-    }
-    const strip = html.slice(at, end);
-    expect(strip).toMatch(/^<div[\s\S]*<\/div>$/);
-    expect(strip).toContain('mbc-scroll-sentinel-end');
-    expect(strip).toContain('role="tablist"');
-    expect(strip).not.toContain('mbc-menu-slide-btn');
+    expect(html, 'no header view tab strip').not.toMatch(/mbc-scroll-strip--header-tabs/);
+    const at = html.search(/<div class="mbc-studio-rail-list"[^>]*role="tablist"/);
+    expect(at, 'the studio rail is drawn').toBeGreaterThan(-1);
+    const rail = html.slice(at, html.indexOf('</nav>', at));
+    expect([...rail.matchAll(/<button[^>]*role="tab"[^>]*data-studio="([^"]+)"/g)].map((m) => m[1]))
+      .toEqual(['sequence-map', 'annotations', 'flatfile', 'cloning-gel', 'vectors', 'primers-crispr', 'alignment', 'phylogenetics',
+        'sanger-contig', 'protein-3d', 'pipelines-ngs', 'history', 'info']);
+    expect(rail, 'the rail scrolls on its own, with no slide arrows').not.toContain('mbc-menu-slide-btn');
     // The document tab strip is unchanged by this.
     expect(html).toMatch(/<div class="mbc-scroll-strip [^"]*mbc-scroll-strip--doc-tabs/);
   });

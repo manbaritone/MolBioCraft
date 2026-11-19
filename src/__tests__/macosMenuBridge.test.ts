@@ -1409,7 +1409,9 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(cloningHtml).toContain('aria-label="Slide gel and enzyme tools left"');
     expect(cloningHtml).toContain('aria-label="Slide gel and enzyme tools right"');
 
-    expect(appSrc).toContain('mbc-scroll-strip--header-tabs');
+    // The studio tabs left the viewer header for the studio rail (US-01M6Q1BD, D0242).
+    expect(appSrc).not.toContain('mbc-scroll-strip--header-tabs');
+    expect(appSrc).toMatch(/<StudioRail\s+items=\{studioRail\}/);
     expect(appSrc).toContain('mbc-scroll-strip--doc-tabs');
     expect(appSrc).toContain('mbc-scroll-strip--toolbar');
     expect(scrollableStripSrc).toContain("CSS.supports('container-type', 'scroll-state')");
@@ -1989,6 +1991,9 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     // 6. Verify toolbar-left-nav-cluster aligns with left sidebar width (Back, Forward, Undo, Redo only) and Add menu aligns with the project tab strip
     expect(appCssText).toContain('.toolbar-left-nav-cluster.sidebar-aligned');
     expect(appCssText).toContain('width: var(--mbc-sidebar-width, 245px);');
+    // In a session the column beneath the cluster is the studio rail plus the sidebar (US-01M6Q1BD).
+    expect(appCssText).toContain('.toolbar-left-nav-cluster.sidebar-aligned.with-studio-rail {\n  width: calc(var(--mbc-rail-w) + var(--mbc-sidebar-width, 245px));');
+    expect(appSrc).toContain("}${sessionActive && !homeViewActive ? ' with-studio-rail' : ''}`}");
     expect(appSrc).toContain("toolbar-left-nav-cluster ${\n            sidebarOpen ? 'sidebar-aligned' : 'collapsed'");
     const leftNavMatch = appSrc.match(
       /toolbar-left-nav-cluster[\s\S]*?<ScrollableMenuStrip\s+className="mbc-scroll-strip--toolbar"/
