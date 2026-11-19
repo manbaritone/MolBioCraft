@@ -382,3 +382,97 @@ describe('US-01M6P2EZ AC5: a tree built in the app', () => {
     });
   });
 });
+
+// ─── BG-01M7RNMJ ───
+
+const REFUSAL = 'Pair this tree with an alignment of the same taxa first.';
+const STARTED = 'Started Phylogenetic Analysis session';
+const ALIGN_BUILD_OPENED = 'Opened the Align DNA then build tree tools — set the inputs there to run it.';
+const goneSentence = (name: string) => `The paired alignment ${name} is no longer in the session; choose another.`;
+const fewRowsSentence = (name: string) => `The paired alignment ${name} has fewer than two rows; choose another.`;
+/** The toolbar's Workflows > Alignment & Trees > Align & Build Tree, clicked as a user does. */
+async function alignAndBuildTree(app: AppHarness): Promise<void> {
+  const rowNamed = (text: string, where: string) => {
+    const found = app.all('button').filter((b) => words(b.textContent) === text);
+    expect(found, where).toHaveLength(1);
+    return found[0];
+  };
+  await app.click(rowNamed('Workflows', 'the toolbar\'s Workflows button'));
+  await app.click(rowNamed('Alignment & Trees', 'the Alignment & Trees row'));
+  await app.click(rowNamed('Align & Build Tree', 'the Align & Build Tree row'));
+}
+
+describe('BG-01M7RNMJ R1: the welcome task and Align & Build Tree on an imported tree', () => {
+  const entries: { name: string; run: (app: AppHarness) => Promise<void>; success: string }[] = [
+    { name: 'the welcome Phylogenetics task (new-session:phylo-task)', run: (app) => app.menu('new-session:phylo-task'), success: STARTED },
+    { name: 'the toolbar\'s Align & Build Tree', run: alignAndBuildTree, success: ALIGN_BUILD_OPENED },
+  ];
+  for (const entry of entries) {
+    it(`${entry.name}: shows the refusal on an unpaired tree and its own status only when the studio opens`, async () => {
+      await withApp(async (app) => {
+        await restore(app, [TREE, ALN4], TREE.id);
+        await entry.run(app);
+        expect(modulePicker(app), 'no module opens').toHaveLength(0);
+        expect(viewerShown(app), 'the tree viewer stays').toBe(true);
+        expect(statusText(app), 'the refusal is the status shown').toEqual([REFUSAL]);
+
+        // Paired, the same entry opens the studio and says so.
+        const paired = importedTree('ez-tree-r1', 'EZ tree r1', CROSSED, [pairing(ALN4)]);
+        await restore(app, [paired, ALN4], paired.id);
+        await entry.run(app);
+        expect(moduleShown(app), 'the studio opens on the paired rows').toBe('phylogeny');
+        expect(statusText(app)).toEqual([entry.success]);
+      });
+    });
+  }
+});
+
+describe('BG-01M7RNMJ R2: a paired alignment still in the session with fewer than two rows', () => {
+  it('says the alignment has fewer than two rows, not that it is gone, and runs nothing on it', async () => {
+    await withApp(async (app) => {
+      // Live, one row, and the latest pairing: an earlier pairing with four rows is not used.
+      const oneRow = importedTree('ez-tree-one', 'EZ tree one', CROSSED, [pairing(ALN4), pairing({ id: ALN1.id, name: 'EZ Earlier Name' })]);
+      await restore(app, [oneRow, ALN1, ALN4], oneRow.id);
+      expect(onePairedPicker(app).value, 'none chosen').toBe('');
+      expect(notices(app), 'named by its current name').toContain(fewRowsSentence('EZ One Row'));
+      expect(notices(app).filter((n) => n.includes('no longer in the session')), 'it is not gone').toEqual([]);
+      await app.menu('phylo:usertree');
+      expect(modulePicker(app), 'no module runs').toHaveLength(0);
+      expect(statusText(app)).toContain(REFUSAL);
+
+      // The same one-row alignment in the trash is gone.
+      await restore(app, [oneRow, ALN1, ALN4], oneRow.id, [ALN1.id]);
+      expect(notices(app)).toContain(goneSentence('EZ One Row'));
+      expect(notices(app).filter((n) => n.includes('fewer than two rows'))).toEqual([]);
+    });
+  });
+});
+
+describe('BG-01M7RNMJ R3: the name a gone alignment is given', () => {
+  it('reads a trashed alignment\'s current name, and an erased one\'s from the pairing the picker wrote', async () => {
+    const storage = memoryStorage();
+    let saved = '';
+    await withApp(async (app) => {
+      // Renamed after the pairing, then trashed: the current name.
+      const renamed = importedTree('ez-tree-renamed', 'EZ tree renamed', CROSSED, [pairing({ id: ALN4.id, name: 'EZ Name At Pairing' })]);
+      await restore(app, [renamed, ALN4, ALN2], renamed.id, [ALN4.id]);
+      expect(notices(app)).toContain(goneSentence('EZ Four Taxa'));
+
+      // Paired through the picker, then saved by the App's own autosave.
+      await restore(app, [TREE, ALN2, ALN4], TREE.id);
+      await app.change(onePairedPicker(app), ALN2.id);
+      vi.advanceTimersByTime(1_000);
+      await app.settle();
+      saved = storage.getItem('molbiocraft.workbench.autosave.v1') ?? '';
+    }, { storage });
+    expect(saved, 'the App wrote an autosave').not.toBe('');
+    const docs = parseMbcWorkbench(saved, 'EZ').envelope.documents;
+    const tree = docs.find((d) => d.id === TREE.id)!;
+    expect(tree.history.filter((h) => h.operation === 'Pair Alignment').map((h) => h.parentIds), 'the picker\'s pairing').toEqual([[ALN2.id]]);
+    // Erased from the session: no document carries its id, so the name is the picker's record of it.
+    await withApp(async (app) => {
+      await restore(app, docs.filter((d) => d.id !== ALN2.id), TREE.id);
+      expect(notices(app)).toContain(goneSentence('EZ Two Taxa'));
+    });
+  });
+});

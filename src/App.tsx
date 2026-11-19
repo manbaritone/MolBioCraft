@@ -2550,7 +2550,7 @@ export const App: React.FC = () => {
   // entry; the picker offers the session's live alignments of at least two rows (US-01M6P2EZ).
   const treePairing = useMemo(() => {
     if (!activeDoc.docMetadata?.Newick || (activeDoc.alignmentMeta?.sequences?.length ?? 0) > 1) return null;
-    const { doc, missingId } = treeSourceAlignment(activeDoc, catalogNonDeletedDocs);
+    const { doc, missingId, fewRows } = treeSourceAlignment(activeDoc, catalogNonDeletedDocs);
     const missingName = missingId === null ? null
       : catalogAllDocs.find((d) => d.id === missingId)?.name
         ?? [...activeDoc.history].reverse().find((h) => h.operation === PAIR_ALIGNMENT_OPERATION && h.parentIds[0] === missingId)
@@ -2559,6 +2559,7 @@ export const App: React.FC = () => {
     return {
       chosenId: doc?.id ?? '',
       missingName,
+      fewRowsName: fewRows?.name ?? null,
       choices: activeNonDeletedDocs.filter((d) => !isTreeDocument(d) && (d.alignmentMeta?.sequences?.length ?? 0) > 1),
     };
   }, [activeDoc, catalogNonDeletedDocs, catalogAllDocs, activeNonDeletedDocs]);
@@ -3524,13 +3525,14 @@ export const App: React.FC = () => {
       modelsView?: ModelsSubViewId;
       ancestralMethod?: AncestralInferenceMethod;
     }
-  ) => {
+  ): boolean => {
     // A tree opens the studio only on at least two source rows (phylogenySourceDocuments: its own,
-    // its paired alignment's, or a same-type selection).
+    // its paired alignment's, or a same-type selection). Returns whether the studio opened, so a
+    // caller sets its own status only then and the refusal stays the one shown (BG-01M7RNMJ).
     if (activeDoc.docMetadata?.Newick) {
       if (phylogenyInputs.length < 2) {
         setStatusBanner('Pair this tree with an alignment of the same taxa first.');
-        return;
+        return false;
       }
       setTreeStudioFor(activeDoc.id);
     }
@@ -3540,6 +3542,7 @@ export const App: React.FC = () => {
     if (opts?.ancestralMethod) setPhyloInitialAncestralMethod(opts.ancestralMethod);
     setPhyloCommandNonce((n) => n + 1);
     setViewerTab('phylogenetics');
+    return true;
   };
 
   const handleFetchNcbiSample = (preset: 'spike' | 'cas9') => {
@@ -4429,10 +4432,9 @@ export const App: React.FC = () => {
           initializeFreshSampleState('Phylogenetics_Session');
           setSessionActive(true);
         }
-        openPhylogeneticsModule('phylogeny', {
+        if (openPhylogeneticsModule('phylogeny', {
           treeAlgo: 'Maximum Likelihood (ML)',
-        });
-        setStatusBanner('Started Phylogenetic Analysis session');
+        })) setStatusBanner('Started Phylogenetic Analysis session');
         break;
       }
       case 'sanger-task': {
@@ -12627,10 +12629,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             label: 'Align & Build Tree',
             onSelect: () =>
               requireActiveSession(() => {
-                openPhylogeneticsModule('phylogeny', {
+                if (openPhylogeneticsModule('phylogeny', {
                   treeAlgo: 'Maximum Likelihood (ML)',
-                });
-                setStatusBanner('Opened the Align DNA then build tree tools — set the inputs there to run it.');
+                })) setStatusBanner('Opened the Align DNA then build tree tools — set the inputs there to run it.');
               }),
           },
           {
@@ -16736,6 +16737,11 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                             {treePairing.missingName !== null && (
                               <span role="status">
                                 {`The paired alignment ${treePairing.missingName} is no longer in the session; choose another.`}
+                              </span>
+                            )}
+                            {treePairing.fewRowsName !== null && (
+                              <span role="status">
+                                {`The paired alignment ${treePairing.fewRowsName} has fewer than two rows; choose another.`}
                               </span>
                             )}
                           </div>

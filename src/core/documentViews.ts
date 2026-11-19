@@ -143,18 +143,23 @@ export const PAIR_ALIGNMENT_OPERATION = 'Pair Alignment';
  * The document a tree's rows come from, read from its history from the latest entry back: the
  * first entry whose parentIds name one of `liveDocuments` with at least two alignment rows decides,
  * so a later pairing wins over an earlier one and an 'Edit Tree' entry (which names the tree
- * itself) is passed over. A 'Pair Alignment' entry whose alignment is not among `liveDocuments`
- * (in the trash or erased) ends the walk: the tree has no rows, and `missingId` names the
- * alignment, so an older pairing is not used in its place.
+ * itself) is passed over. A 'Pair Alignment' entry whose alignment does not give two rows ends the
+ * walk, so an older pairing is not used in its place: the tree has no rows, and either `fewRows`
+ * is the alignment (among `liveDocuments`, with fewer than two rows; BG-01M7RNMJ) or `missingId`
+ * names it (in the trash or erased).
  */
-export function treeSourceAlignment(tree: SequenceDocument, liveDocuments: readonly SequenceDocument[]): { doc: SequenceDocument | null; missingId: string | null } {
+export function treeSourceAlignment(tree: SequenceDocument, liveDocuments: readonly SequenceDocument[]): { doc: SequenceDocument | null; missingId: string | null; fewRows: SequenceDocument | null } {
   for (let i = tree.history.length - 1; i >= 0; i--) {
     const entry = tree.history[i];
     const doc = liveDocuments.find((candidate) => entry.parentIds.includes(candidate.id) && (candidate.alignmentMeta?.sequences?.length ?? 0) > 1);
-    if (doc) return { doc, missingId: null };
-    if (entry.operation === PAIR_ALIGNMENT_OPERATION) return { doc: null, missingId: entry.parentIds[0] ?? null };
+    if (doc) return { doc, missingId: null, fewRows: null };
+    if (entry.operation === PAIR_ALIGNMENT_OPERATION) {
+      const pairedId = entry.parentIds[0] ?? null;
+      const fewRows = liveDocuments.find((candidate) => candidate.id === pairedId) ?? null;
+      return { doc: null, missingId: fewRows ? null : pairedId, fewRows };
+    }
   }
-  return { doc: null, missingId: null };
+  return { doc: null, missingId: null, fewRows: null };
 }
 
 export function phylogenySourceDocuments(activeDoc: SequenceDocument, selectedDocuments: readonly SequenceDocument[], projectDocuments: readonly SequenceDocument[]): SequenceDocument[] {
