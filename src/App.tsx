@@ -10001,8 +10001,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'prm-add',
             label: registryCommand('prm-add').label,
-            // Add Primer opens the primer import dialog, as the native item did before it ran this one (US-01M6Q159).
-            onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'import-primers' })),
+            // Add Primer opens Primers & CRISPR, on the Mac too; the import is Import Primers from Spreadsheet… (D0263).
+            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
           },
           {
             kind: 'command',

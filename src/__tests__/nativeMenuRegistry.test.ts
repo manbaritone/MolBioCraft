@@ -8,6 +8,7 @@
  * of that id (AC4); and each id's native enabled state is that node's availability (AC5).
  */
 import { readFileSync } from 'node:fs';
+import { act } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import { macHost, mountApp, menuCommandIds, type AppHarness } from './appHarness';
@@ -92,6 +93,25 @@ const shared = (rows: Row[], labels: Set<string>): string[] => {
   const kept = rows.filter((r) => r.kind === 'sep' || labels.has(r.label)).map((r) => (r.kind === 'sep' ? '—' : r.label));
   return kept.filter((r, i) => r !== '—' || (i > 0 && kept[i - 1] !== '—')).join('|').replace(/^—\|?|\|?—$/g, '').split('|');
 };
+
+/** Runs the in-window menubar item `id` as choosing it does: its own onSelect, in the tree the App last drew. */
+async function runInWindow(app: AppHarness, id: string) {
+  const find = (nodes: readonly RegistryMenuNode[]): RegistryMenuNode | undefined => {
+    for (const n of nodes) {
+      if (n.id === id && n.onSelect) return n;
+      const hit = n.children && find(n.children);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  const node = (probe.trees as RegistryMenuNode[][]).map(find).find(Boolean);
+  expect(node, `the in-window menubar has ${id}`).toBeTruthy();
+  await act(async () => { node!.onSelect!(); });
+  await app.settle();
+}
+/** The Primers & CRISPR sub-tab showing, by its label. */
+const primerSubTab = (app: AppHarness) => app.all('button.method-tab-btn[aria-selected="true"]').map((b) => b.textContent ?? '').join(' | ');
+const importPrimersDialog = (app: AppHarness) => app.all('dialog[aria-labelledby="opdlg-import-primers"]');
 
 async function withApp(docs: SequenceDocument[], mac: boolean, body: (app: AppHarness) => Promise<void>) {
   const app = await mountApp(mac ? macHost() : {});
@@ -186,10 +206,11 @@ describe('US-01M6Q159 AC4: every native menu id runs a registry command', () => 
     expect([...menuCommandIds()].sort(), 'the harness dispatches exactly the registry ids').toEqual([...TARGETS.keys()].filter((id) => !id.startsWith('action-vec:')).sort());
     await withApp([PLASMID], false, async (app) => {
       const missed: string[] = [];
+      const ownHandler: string[] = [];
       for (const id of native) {
         const target = TARGETS.get(id);
         if (!target) { missed.push(`${id}: no registry command`); continue; }
-        if (!target.runs) continue; // a native handler (the quit ack, text-field undo, Home); checked below
+        if (!target.runs) { ownHandler.push(id); continue; } // the App's own handler runs it: checked in the next test
         const ran: string[] = [];
         const spy = (nodes: RegistryMenuNode[]) => nodes.forEach((n) => {
           if (n.children) spy(n.children);
@@ -201,6 +222,8 @@ describe('US-01M6Q159 AC4: every native menu id runs a registry command', () => 
         if (ran.join() !== target.runs) missed.push(`${id}: ran [${ran.join()}], not ${target.runs}`);
       }
       expect(missed).toEqual([]);
+      // Each id the App's own handler runs has its behaviour checked below; a new one needs its check.
+      expect(ownHandler.sort(), 'the native ids with their own handler').toEqual(['tools:primers', 'view:home']);
     });
     // Unspied, Export GenBank saves the record as the in-window item does, and Align Structures opens its window.
     await withApp([PLASMID], false, async (app) => {
@@ -211,6 +234,63 @@ describe('US-01M6Q159 AC4: every native menu id runs a registry command', () => 
       expect(structureWindow(), 'closed before the native item').toEqual([]);
       await app.menu('align:structures-dialog');
       expect(structureWindow().map((d) => d.textContent).join(' ')).toMatch(/Align Structures/);
+    });
+  });
+});
+
+describe('US-01M6Q159 AC4: the native ids with their own handler, and what the shared items do', () => {
+  it('US-01M6Q159 AC4 native Primers & CRISPR draws the studio on Design, and native Home leaves for the home view', async () => {
+    await withApp([PLASMID], true, async (app) => {
+      expect(app.activeTab()).toBe('sequence-view');
+      await app.menu('tools:primers');
+      expect(app.activeTab(), 'Tools › BLAST & Vectors › Primers & CRISPR draws the studio').toBe('primers-pcr');
+      expect(primerSubTab(app)).toMatch(/^Design New Primers/);
+      const home = () => app.one('button[aria-label="Project First Page"]', 'the header Home button');
+      expect(home().className, 'not yet on the home view').not.toMatch(/\bactive\b/);
+      expect(app.railTabs().length, 'the session view shows the studio rail').toBeGreaterThan(0);
+      await app.menu('view:home');
+      expect(home().className, 'View › Home shows the home view').toMatch(/\bactive\b/);
+      expect(app.railTabs(), 'the home view has no studio rail').toEqual([]);
+    });
+  });
+
+  it('US-01M6Q159 AC4 D0263: Add Primer opens Primers & CRISPR in the window and on the Mac, not the import; Import Primers from Spreadsheet… opens the import', async () => {
+    expect(TARGETS.get('primers:add')?.runs, 'the native Add Primer runs the in-window item').toBe('prm-add');
+    expect(TARGETS.get('primers:add-list')?.runs).toBe('prm-add-list');
+    for (const surface of ['in-window', 'native'] as const) {
+      await withApp([PLASMID], surface === 'native', async (app) => {
+        if (surface === 'native') await app.menu('primers:add');
+        else await runInWindow(app, 'prm-add');
+        expect(importPrimersDialog(app), `${surface} Add Primer opens no import dialog`).toEqual([]);
+        expect(app.activeTab(), `${surface} Add Primer opens Primers & CRISPR`).toBe('primers-pcr');
+        expect(primerSubTab(app)).toMatch(/^Design New Primers/);
+      });
+      await withApp([PLASMID], surface === 'native', async (app) => {
+        if (surface === 'native') await app.menu('primers:add-list');
+        else await runInWindow(app, 'prm-add-list');
+        expect(importPrimersDialog(app).map((d) => d.textContent).join(' '), `${surface} Import Primers from Spreadsheet… opens the import`).toMatch(/Import Primers from Spreadsheet/);
+        expect(app.activeTab()).toBe('sequence-view');
+      });
+    }
+  });
+
+  it('US-01M6Q159 AC4 D0263: Binding Specificity and Map Saved Primers open Primers & CRISPR on Saved, PCR Amplification and Design Primer Pair on Design', async () => {
+    const items = [['prm-specificity', /^Test with Saved Primers/], ['act-pcr', /^Design New Primers/],
+      ['prm-saved', /^Test with Saved Primers/], ['prm-design-pair', /^Design New Primers/]] as const;
+    await withApp([PLASMID], false, async (app) => {
+      // From the sequence view, each opens the studio on its sub-tab.
+      for (const [id, sub] of items) {
+        await app.clickTab('sequence-view');
+        await runInWindow(app, id);
+        expect(app.activeTab(), `${id} opens Primers & CRISPR`).toBe('primers-pcr');
+        expect(primerSubTab(app), `${id}'s sub-tab, from the sequence view`).toMatch(sub);
+      }
+      // Leaving the studio starts it on Design, so from inside it, on the other sub-tab, each must
+      // switch it: an item that only opened the studio would keep the last one's.
+      for (const [id, sub] of items) {
+        await runInWindow(app, id);
+        expect(primerSubTab(app), `${id}'s sub-tab, from the other one`).toMatch(sub);
+      }
     });
   });
 });
