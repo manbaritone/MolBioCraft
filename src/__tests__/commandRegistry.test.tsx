@@ -187,6 +187,34 @@ describe('US-01M6Q1N2 AC2: ⌘K finds every menubar command by its path', () => 
       expect(doc, '⌘K finds the document').toHaveLength(1);
     });
   }, 600_000);
+
+  it('US-01M6Q1N2 AC2 ⌘K finds a command by its menu path alone: Seamless Assembly lists the five assembly methods under Cloning › Seamless Assembly', async () => {
+    const app = await mountApp();
+    try {
+      await app.menu('new-session:sample-library');
+      const query = 'Seamless Assembly';
+      const named = (i: PaletteItem) => i.label.toLowerCase().includes(query.toLowerCase());
+      const hits = (await palette(app, query)).filter((i) => i.id !== null);
+      // One command is named Seamless Assembly (File › New Session › Cloning & Primers); no other
+      // hit's label holds the query, so ⌘K found each of them by its path and nothing else.
+      expect(hits.filter(named).map((i) => i.id), 'hits found by their label').toEqual(['file-ns-clone-asm']);
+      const byPath = hits.filter((i) => !named(i));
+      expect(byPath.map((i) => [i.id, i.path]), 'hits found only by their path').toEqual([
+        ['act-gibson', 'Cloning › Seamless Assembly › Gibson Assembly'],
+        ['act-goldengate', 'Cloning › Seamless Assembly › Golden Gate'],
+        ['act-hifi', 'Cloning › Seamless Assembly › NEBuilder HiFi'],
+        ['act-infusion', 'Cloning › Seamless Assembly › In-Fusion'],
+        ['act-parts', 'Cloning › Seamless Assembly › Parts Cloning'],
+      ]);
+      // They are every command the menubar holds under that submenu, and the label match ranks first.
+      const under = menubarLeaves().filter((l) => l.path.slice(0, -1).join(' › ') === 'Cloning › Seamless Assembly').map((l) => l.node.id);
+      expect(byPath.map((i) => i.id), 'the menubar\'s Cloning › Seamless Assembly').toEqual(under);
+      expect(hits[0].id, 'the label match ranks above the path matches').toBe('file-ns-clone-asm');
+      await closePalette(app);
+    } finally {
+      app.unmount();
+    }
+  }, 300_000);
 });
 
 /** What the workbench shows: its tab, the canvas text and the Undo item's label. */

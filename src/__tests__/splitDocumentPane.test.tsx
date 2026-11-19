@@ -50,10 +50,41 @@ import { appCssRules, cascaded, gridTracks } from './cssCascade';
 import { dispatchLiveEvent, memoryStorage, type LiveElement, type LiveStorage } from './liveDom';
 import { macHost } from './appHarness';
 import { resolveNativeMenuItemEnabled } from '../core/commandAvailability';
+import { COMMAND_BY_ID } from '../core/commandRegistry';
 
 // A macOS host's Tauri runtime, for the native menu state (US-01M7DV10 AC2); every other mount is a
 // Linux host, which the mock reports as no Tauri runtime, as the real module does under test.
 vi.mock('../lib/tauriIpc', async (importOriginal) => (await import('./appHarness')).tauriIpcMock(await importOriginal<object>()));
+
+// The in-window menubar trees the App mounts: the ones its shortcut dispatcher binds (US-01M6Q1N2).
+const menuProbe = vi.hoisted(() => ({ trees: [] as unknown[] }));
+vi.mock('../core/menuShortcuts', async () => {
+  const actual = await vi.importActual<typeof import('../core/menuShortcuts')>('../core/menuShortcuts');
+  return {
+    ...actual,
+    collectMenuShortcutBindings: (trees: Parameters<typeof actual.collectMenuShortcutBindings>[0]) => {
+      menuProbe.trees = trees as unknown[];
+      return actual.collectMenuShortcutBindings(trees);
+    },
+  };
+});
+interface MountedMenuNode { kind?: string; id?: string; label?: string; children?: MountedMenuNode[] }
+/** The mounted menubar node with `id`, and the submenu labels above it within its top menu. */
+function mountedMenuNode(id: string): { node: MountedMenuNode; within: string[] } | undefined {
+  const find = (nodes: readonly MountedMenuNode[], within: string[]): { node: MountedMenuNode; within: string[] } | undefined => {
+    for (const n of nodes) {
+      if (n.id === id) return { node: n, within };
+      const hit = n.kind === 'submenu' && n.children ? find(n.children, [...within, n.label ?? '']) : undefined;
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  for (const tree of menuProbe.trees as MountedMenuNode[][]) {
+    const hit = find(tree, []);
+    if (hit) return hit;
+  }
+  return undefined;
+}
 
 // Each check launches the App afresh.
 vi.setConfig({ testTimeout: 120_000 });
@@ -393,13 +424,16 @@ describe('US-01M7DVR0 AC1: the document split chooser, the View items and the na
         expect(await docSplitItems(app), NATIVE[orientation]).toEqual(checkedOnly(label));
       }
 
-      // The in-app items carry the ids the story names, under the Document Split submenu.
-      const src = appTsxSource();
-      const sub = src.slice(src.indexOf("id: 'view-docsplit-sub'"), src.indexOf("id: 'view-table-cols-sub'"));
-      expect(sub).toContain("label: 'Document Split'");
-      expect([...sub.matchAll(/kind: 'checkbox',\s*id: '([^']+)',\s*label: '([^']+)'/g)].map((m) => [m[1], m[2]])).toEqual([
-        ['view-docsplit-single', 'Single Pane'], ['view-docsplit-side', 'Side by Side'], ['view-docsplit-stacked', 'Top and Bottom'],
-      ]);
+      // The in-app items carry the ids the story names, under the Document Split submenu: the mounted
+      // menubar node, and the command registry its labels come from (US-01M6Q1N2, D0256).
+      const ids = [['view-docsplit-single', 'Single Pane'], ['view-docsplit-side', 'Side by Side'], ['view-docsplit-stacked', 'Top and Bottom']];
+      const sub = mountedMenuNode('view-docsplit-sub');
+      expect(sub && { label: sub.node.label, within: sub.within }, 'the mounted View › Document Split').toEqual({ label: 'Document Split', within: [] });
+      expect((sub?.node.children ?? []).filter((n) => n.kind === 'checkbox').map((n) => [n.id, n.label])).toEqual(ids);
+      for (const [id, label] of ids) {
+        const spec = COMMAND_BY_ID.get(id);
+        expect(spec && { label: spec.label, path: spec.path }, `the registry's ${id}`).toEqual({ label, path: ['View', 'Document Split'] });
+      }
     });
   });
 });
@@ -647,11 +681,16 @@ describe('US-01M7DVR0 AC4: the document table items are relabelled, and the divi
       expect(center().classList.contains('split-left-right'), 'Below: stacked').toBe(false);
       expect(hostClasses(app)).toBe(SIDE);
       await closeMenus(app);
+      // Each item under its id: the mounted menubar node, and the command registry its label comes
+      // from (US-01M6Q1N2, D0256).
+      for (const [id, label] of [['view-split-tb', 'Document Table Below Viewer'], ['view-split-lr', 'Document Table Beside Viewer']]) {
+        const item = mountedMenuNode(id);
+        expect(item && { label: item.node.label, within: item.within }, `the mounted ${id}`).toEqual({ label, within: ['Split & Expand'] });
+        const spec = COMMAND_BY_ID.get(id);
+        expect(spec && { label: spec.label, path: spec.path }, `the registry's ${id}`).toEqual({ label, path: ['View', 'Split & Expand'] });
+      }
     });
     const src = appTsxSource();
-    for (const [id, label] of [['view-split-tb', 'Document Table Below Viewer'], ['view-split-lr', 'Document Table Beside Viewer']]) {
-      expect(src, id).toMatch(new RegExp(`id: '${id}',\\s*label: '${label}',`));
-    }
     expect(resolveMenuNodeFunctionDescription('view-split-tb', 'Document Table Below Viewer')).toBe('Stack the active sequence viewer canvas on top with the document table below it');
     expect(resolveMenuNodeFunctionDescription('view-split-lr', 'Document Table Beside Viewer')).toBe('Arrange the document table and sequence viewer side by side');
     expect(src).not.toContain("'Split Top / Bottom'");
