@@ -87,7 +87,9 @@ export type CommandId =
 /**
  * Commands that open on the workbench's documents rather than on the active one (their window
  * picks the documents): their rules read the workbench, not `activeDoc`. View › Map Gallery and the
- * table toolbar's Map Gallery button (`multi-record-view`, US-01M7DVS2) read the checked rows.
+ * table toolbar's Map Gallery button (`multi-record-view`, US-01M7DVS2), View › Compare Table and the
+ * toolbar's Compare Table button (US-01M7DVV8), and the native View items for both (US-01M7NNGQ) read
+ * the checked rows.
  */
 export type WorkbenchCommandId = 'align-structures' | 'multi-record-view';
 
@@ -437,6 +439,9 @@ export const NATIVE_MENU_COMMAND_RULES: Record<string, CommandId | WorkbenchComm
   'file:export-gff3': 'export-active-document',
   'edit:copy-sequence': 'export-sequence',
   'align:structures-dialog': 'align-structures',
+  // US-01M7NNGQ: View > Map Gallery and View > Compare Table, under the in-app items' rule over the checked rows.
+  'view:map-gallery': 'multi-record-view',
+  'view:compare-table': 'multi-record-view',
 };
 
 export interface NativeMenuStatePayload {

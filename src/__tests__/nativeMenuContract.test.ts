@@ -302,9 +302,9 @@ describe('native menu ↔ dispatcher contract', () => {
       ['view:document-split-side-by-side', 'Side by Side'],
       ['view:document-split-top-bottom', 'Top and Bottom'],
     ]);
-    // In the View menu, right after Split & Expand.
+    // In the View menu, right after Split & Expand; Map Gallery and Compare Table follow it (US-01M7NNGQ), then Table Columns.
     const view = mainRs.slice(mainRs.indexOf('let view_menu'), mainRs.indexOf('let enz_select_sub'));
-    expect(view).toMatch(/&view_split_expand_sub,\s*&view_docsplit_sub,\s*&view_cols_sub,/);
+    expect(view).toMatch(/&view_split_expand_sub,\s*&view_docsplit_sub,\s*&item\("view:map-gallery", "Map Gallery", None\)\?,\s*&item\("view:compare-table", "Compare Table", None\)\?,\s*&view_cols_sub,/);
     // No native item carries a check mark, so only the in-app items show the current split.
     expect(mainRs).not.toMatch(/CheckMenuItem/);
     // The document-table items keep their ids under their new labels.
@@ -345,9 +345,9 @@ describe('native menu ↔ dispatcher contract', () => {
 
   it('US-01M7DVJ4 AC3 lists View › Restore Default Layout natively right after Table Columns, its case calling the in-app item\'s handler under a session', () => {
     const id = 'view:restore-default-layout';
-    // In the View menu, right after Table Columns; the US-01M7DVR0 AC1 pin still holds.
+    // In the View menu, right after Table Columns; the US-01M7DVR0 AC1 pin still holds, with US-01M7NNGQ's two items before Table Columns.
     const view = mainRs.slice(mainRs.indexOf('let view_menu'), mainRs.indexOf('let enz_select_sub'));
-    expect(view).toMatch(/&view_split_expand_sub,\s*&view_docsplit_sub,\s*&view_cols_sub,/);
+    expect(view).toMatch(/&view_split_expand_sub,\s*&view_docsplit_sub,\s*&item\("view:map-gallery", "Map Gallery", None\)\?,\s*&item\("view:compare-table", "Compare Table", None\)\?,\s*&view_cols_sub,/);
     expect(view).toMatch(/&view_cols_sub,\s*&item\(\s*"view:restore-default-layout",\s*"Restore Default Layout",\s*None\s*\)\?,/);
     expect([...mainRs.matchAll(/item\(\s*"view:restore-default-layout"/g)], 'listed once').toHaveLength(1);
     expect(nativeIds.has(id)).toBe(true);
@@ -431,6 +431,73 @@ describe('US-01M7DV8W AC1: View › Tracks natively', () => {
     expect(on({ ...base, sessionActive: true, activeDoc: protein, mapLayout: 'linear' })).toEqual([true, false, false, false, false, false, true]);
     for (const [native, , , track] of TRACKS) {
       expect(commandAvailability(`track-${track}` as never, { ...base, sessionActive: true, activeDoc: protein, mapLayout: 'linear' }).enabled).toBe(resolveNativeMenuItemEnabled(native, buildNativeMenuState({ ...base, sessionActive: true, activeDoc: protein, mapLayout: 'linear' })));
+    }
+  });
+});
+
+describe('US-01M7NNGQ: View › Map Gallery and View › Compare Table natively', () => {
+  const dispatcher = parseDispatcher();
+  const GALLERY: ReadonlyArray<readonly [string, string, string, string]> = [
+    // native id, label, in-app id, the gallery view it opens on
+    ['view:map-gallery', 'Map Gallery', 'view-map-gallery', 'maps'],
+    ['view:compare-table', 'Compare Table', 'view-compare-table', 'compare-table'],
+  ];
+  const caseBody = (id: string) => {
+    const at = appTsx.indexOf(`case '${id}':`, appTsx.indexOf('    onMenuAction: (actionId: string) => {'));
+    expect(at, `the dispatcher case ${id}`).toBeGreaterThan(0);
+    return appTsx.slice(at, appTsx.indexOf('break;', at));
+  };
+  const itemSelect = (id: string) => {
+    const at = appTsx.indexOf(`id: '${id}',`);
+    expect(at, `the in-app item ${id}`).toBeGreaterThan(0);
+    return /onSelect: \(\) => (.+),\n/.exec(appTsx.slice(at, appTsx.indexOf('},', at)))?.[1] ?? '';
+  };
+
+  it('US-01M7NNGQ AC1 lists Map Gallery then Compare Table in the View menu right after Document Split and before Table Columns', () => {
+    const view = mainRs.slice(mainRs.indexOf('let view_menu'), mainRs.indexOf('let enz_select_sub'));
+    expect(view).toContain('"View"');
+    // The View menu's entries, in order, as the menu bar lists them.
+    const entries = [...view.matchAll(/&(view_[a-z_]+_sub|item\(\s*"([^"]+)",\s*"([^"]+)",\s*None\s*\)\?|sep\(\)\?)/g)].map((m) => m[2] ? `${m[2]}|${m[3]}` : m[1] ?? 'sep');
+    const at = entries.indexOf('view_docsplit_sub');
+    expect(at, 'Document Split is in the View menu').toBeGreaterThan(0);
+    expect(entries.slice(at, at + 4)).toEqual([
+      'view_docsplit_sub',
+      'view:map-gallery|Map Gallery',
+      'view:compare-table|Compare Table',
+      'view_cols_sub',
+    ]);
+    // And the exact item text the story names, directly between the two submenus.
+    expect(view).toMatch(/&view_docsplit_sub,\s*&item\("view:map-gallery", "Map Gallery", None\)\?,\s*&item\("view:compare-table", "Compare Table", None\)\?,\s*&view_cols_sub,/);
+    for (const [id] of GALLERY) {
+      expect([...mainRs.matchAll(new RegExp(`item\\(\\s*"${id}"`, 'g'))], `${id} listed once`).toHaveLength(1);
+      expect(nativeIds.has(id), id).toBe(true);
+    }
+  });
+
+  it("US-01M7NNGQ AC2 each dispatcher case is the in-app item's onSelect, gated on a session", () => {
+    for (const [native, , inApp, view] of GALLERY) {
+      const call = `requireActiveSession(() => openMapGallery('${view}'))`;
+      expect(itemSelect(inApp), inApp).toBe(call);
+      expect(caseBody(native).trim(), native).toBe(`case '${native}':\n          ${call};`);
+      expect(dispatcher.get(native), `${native} is gated on a session`).toBe(true);
+    }
+  });
+
+  it('US-01M7NNGQ AC3 both ids follow the multi-record-view rule: off without a session, off with one checked row, on with two', () => {
+    const base = { activeDoc: null, selection: null, undoDepth: 0, redoDepth: 0 };
+    const contexts: Array<[string, Parameters<typeof buildNativeMenuState>[0], boolean]> = [
+      ['no session', { ...base, sessionActive: false, checkedRecordCount: 2 }, false],
+      ['one checked row', { ...base, sessionActive: true, checkedRecordCount: 1 }, false],
+      ['two checked rows', { ...base, sessionActive: true, checkedRecordCount: 2 }, true],
+      ['three checked rows', { ...base, sessionActive: true, checkedRecordCount: 3 }, true],
+    ];
+    for (const [native] of GALLERY) {
+      expect(NATIVE_MENU_COMMAND_RULES[native], native).toBe('multi-record-view');
+      for (const [what, ctx, enabled] of contexts) {
+        expect(resolveNativeMenuItemEnabled(native, buildNativeMenuState(ctx)), `${native}, ${what}`).toBe(enabled);
+        // The native state is the in-app items' rule, case for case.
+        expect(commandAvailability('multi-record-view', ctx).enabled, `the rule, ${what}`).toBe(enabled);
+      }
     }
   });
 });

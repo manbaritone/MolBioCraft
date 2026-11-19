@@ -7933,6 +7933,12 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         case 'view:document-split-top-bottom':
           requireActiveSession(() => chooseDocumentSplit('top-bottom'));
           break;
+        case 'view:map-gallery':
+          requireActiveSession(() => openMapGallery('maps'));
+          break;
+        case 'view:compare-table':
+          requireActiveSession(() => openMapGallery('compare-table'));
+          break;
         case 'view:expand-doc-view':
           requireActiveSession(() => handleToggleExpandDocumentView());
           break;

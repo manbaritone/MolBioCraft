@@ -612,6 +612,8 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &view_panels_sub,
             &view_split_expand_sub,
             &view_docsplit_sub,
+            &item("view:map-gallery", "Map Gallery", None)?,
+            &item("view:compare-table", "Compare Table", None)?,
             &view_cols_sub,
             &item("view:restore-default-layout", "Restore Default Layout", None)?,
             &sep()?,
