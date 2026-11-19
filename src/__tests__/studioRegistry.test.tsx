@@ -279,7 +279,13 @@ describe('US-01M6Q16Q AC3: each studio tab shows its registry name', () => {
         [UNALIGNED, 'sequence-alignment', 'Alignment'], [ENZYMES, 'history-hybrid', 'History'],
       ];
       for (const [doc, tab, name] of cases) {
-        await openOn(app, doc, tab);
+        if (doc === ENZYMES && tab === 'history-hybrid') {
+          // A set restored on History reopens in Cloning & Gel (D0220, D0253); the user's click opens History.
+          await openOn(app, doc, 'cloning-gel');
+          await app.clickTab('history-hybrid');
+        } else {
+          await openOn(app, doc, tab);
+        }
         const tabs = studioTabs(app);
         expect(tabs.length, `${doc.name}: the header shows studio tabs`).toBeGreaterThanOrEqual(2);
         expect(tabs.filter((t) => t.current).map((t) => t.name), `${doc.name}'s ${tab} tab`).toEqual([name]);

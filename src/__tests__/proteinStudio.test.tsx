@@ -431,7 +431,14 @@ describe('US-01M7QC8Q AC1: History shows only provenance', () => {
     const app = await mountApp();
     try {
       for (const doc of Q8Q_LIBRARY) {
-        await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: doc.id, viewerTab: 'history-hybrid' });
+        if (doc === Q8Q_SET) {
+          // A set restored on History reopens in Cloning & Gel (D0220, AC2); the user's click opens its History.
+          await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: doc.id, viewerTab: 'cloning-gel' });
+          await app.click(app.railTabs().filter((el) => el.getAttribute('data-studio') === 'history')[0]);
+          await app.settle();
+        } else {
+          await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: doc.id, viewerTab: 'history-hybrid' });
+        }
         expect(app.activeTab(), doc.name).toBe('history-hybrid');
         const shown = canvasText(app);
         expect(shown, doc.name).toContain('Construct History Tree & History Colors');
@@ -486,6 +493,33 @@ describe('US-01M7QC8Q AC2: the Enzymes view opens in Sequence Map and Cloning & 
       expect(enzymeTableNames(app).sort(), 'the set\'s enzymes').toEqual(['BamHI', 'EcoRI']);
       await app.menu('view:enzymes');
       expect(app.activeTab(), 'view:enzymes on an Enzyme Set').toBe('cloning-gel');
+    } finally {
+      app.unmount();
+    }
+  }, 120_000);
+
+  it('US-01M7QC8Q AC2 an older session saved with an Enzyme Set on History reopens in Cloning & Gel on its Enzymes view, and History stays one click away', async () => {
+    // Before US-01M7QC8Q an Enzyme Set's preferred tab was history-hybrid, so every older session with a
+    // set active was saved there; History now draws only the lineage (D0220, round-1 LC-002 finding).
+    const app = await mountApp();
+    try {
+      // The harness restores the session, then refuses any tab other than the one saved: here, by design.
+      await expect(app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: Q8Q_SET.id, viewerTab: 'history-hybrid' }),
+        'the App restores the older set session on cloning-gel').rejects.toThrow('the App restored the session on the cloning-gel tab, not history-hybrid');
+      await app.settle();
+      expect(app.activeTab(), 'an Enzyme Set saved on History reopens in Cloning & Gel').toBe('cloning-gel');
+      expect(canvasText(app), 'its Enzymes view').toContain(ENZYMES_HEADING);
+      expect(enzymeTableNames(app).sort(), 'the set\'s enzymes').toEqual(['BamHI', 'EcoRI']);
+      // History stays supported for the set: the user's own click opens its lineage.
+      const history = app.railTabs().filter((el) => el.getAttribute('data-studio') === 'history');
+      expect(history, 'the rail lists History once').toHaveLength(1);
+      await app.click(history[0]);
+      await app.settle();
+      expect(app.activeTab(), 'History on the set, by the user').toBe('history-hybrid');
+      expect(canvasText(app), 'the set\'s lineage').toContain('Construct History Tree & History Colors');
+      // A DNA record restored on History stays there.
+      await app.restoreSession({ documents: Q8Q_LIBRARY, activeDocId: DNA.id, viewerTab: 'history-hybrid' });
+      expect(app.activeTab(), 'a DNA record restored on History stays there').toBe('history-hybrid');
     } finally {
       app.unmount();
     }

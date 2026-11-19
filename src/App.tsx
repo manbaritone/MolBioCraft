@@ -5469,7 +5469,13 @@ export const App: React.FC = () => {
     if (restoredActiveId && !restoredHistory.includes(restoredActiveId)) restoredHistory.push(restoredActiveId);
     setNavHistory(restoredHistory);
     setNavIndex(Math.max(0, restoredHistory.indexOf(restoredActiveId)));
-    setViewerTab(env.workspace.viewerTab);
+    // An Enzyme Set's preferred tab was History before US-01M7QC8Q, so an older session with a set active
+    // was saved on history-hybrid; History now draws only the lineage, so such a session reopens in
+    // Cloning & Gel on its Enzymes view (D0220). Migrated here at restore only: History stays supported
+    // for a set, so resolveViewerTab must not remap it or a user's click on History could never open it.
+    const restoredActiveDoc = restoredDocuments.find((doc) => doc.id === restoredActiveId);
+    setViewerTab(env.workspace.viewerTab === 'history-hybrid' && restoredActiveDoc?.docMetadata?.['Document Type'] === 'Enzyme Set'
+      ? 'cloning-gel' : env.workspace.viewerTab);
     setMapLayoutMode(env.workspace.mapLayoutMode);
     setZoomLevel(clampSequenceZoom(env.workspace.zoomLevel));
     // Checked on the way in: a session saved before the divider, or a malformed value, opens at the default.

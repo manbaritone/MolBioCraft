@@ -383,7 +383,10 @@ describe('no inspector where there is nothing to set (AC2)', () => {
     // "Enzymes" (US-01M6Q16Q, D0237), and that name titles the inspector of its Lineage section.
     // Its Enzymes view is in Cloning & Gel (D0220), with nothing to set.
     await withApp(async (app) => {
-      await onHistory(app, ENZYME_SET);
+      // A set saved on History reopens in Cloning & Gel (D0220, US-01M7QC8Q round 2); the user's click opens History.
+      await app.restoreSession({ documents: [ENZYME_SET], activeDocId: ENZYME_SET.id, viewerTab: 'cloning-gel' });
+      await app.clickTab('history-hybrid');
+      expect(app.activeTab(), 'History on the set, by the user').toBe('history-hybrid');
       expect(app.railTabs().filter((b) => b.getAttribute('data-studio') === 'history')[0]?.textContent.trim(), 'the rail entry reads the panel name').toBe(studioName('history'));
       expectNoSubTabs(app, 'an Enzyme Set on History');
       expect(hosted(app, 'Enzymes view'), 'no Enzymes view in History').toHaveLength(0);
