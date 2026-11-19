@@ -702,3 +702,66 @@ describe('US-01M7DV4Y saved-search stores', () => {
     expect(deleteProjectSearch(id, 'Bench run')).toEqual({ ok: true, searches: [] });
   });
 });
+
+/**
+ * BG-01M7MTBQ: a Save to Primer Database from the Primer & PCR studio while the Primer Database
+ * window is open. The studio tells the App (onPrimerDatabaseChanged), the App bumps its primer store
+ * revision, and the open window takes it as its refreshKey and reads the store again. The window
+ * draws a full-page overlay but traps no focus, so the studio's Save stays reachable from the
+ * keyboard behind it: the test presses Enter on it, as a keyboard user does, through the mounted App.
+ */
+describe('BG-01M7MTBQ: an open Primer Database window lists a primer the studio saves', () => {
+  it('BG open window refresh: a primer saved from the Primer & PCR studio appears in the already-open Primer Database window without reopening it', async () => {
+    const { mountApp } = await import('./appHarness');
+    const { memoryStorage } = await import('./liveDom');
+    const { openPrimerDatabase } = await import('../core/primerDatabase');
+    type LiveElement = import('./liveDom').LiveElement;
+    const words = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
+    const nameOf = (el: LiveElement) => words(el.getAttribute('aria-label') ?? el.textContent);
+    // A linear template with one primer of its own, as US-01M7DQFS AC4 saves it.
+    let seed = 0x6d7b;
+    const template = Array.from({ length: 1200 }, () => 'ACGT'[((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) >>> 30)]).join('');
+    const site = template.slice(300, 322);
+    const doc: SequenceDocument = {
+      id: 'mtbq-template', name: 'pMTBQ_Template', accession: 'MTBQ_0001', description: 'A linear template built in the test',
+      sequence: template, moleculeType: 'DNA', topology: 'linear', folder: 'Local',
+      createdAt: '2026-11-20T00:00:00Z', updatedAt: '2026-11-20T00:00:00Z',
+      features: [{ id: 'f-mtbq-cds', name: 'MtbqCDS', type: 'CDS', start: 101, end: 700, strand: 1, color: '#d93025' }],
+      primers: [{
+        id: 'mtbq-doc-primer', name: 'Mtbq_Fwd', sequence: site, annealSequence: site, tail5Prime: '', bindStart: 301, bindEnd: 322, strand: 1,
+        length: 22, gcPercent: 50, tmAnnealC: 60, tmFullC: 60, deltaG37: -30, hairpinDeltaG: 0, selfDimerDeltaG: 0, gcClamp3Prime: true,
+      }],
+      history: [],
+    };
+    const storage = memoryStorage();
+    const stored = () => {
+      const read = openPrimerDatabase({ storage }).read();
+      if (!read.ok) throw new Error(read.error.message);
+      return read.records.map((r) => r.name);
+    };
+    const app = await mountApp({ storage });
+    try {
+      await app.restoreSession({ documents: [doc], activeDocId: doc.id, viewerTab: 'primers-pcr' });
+      await app.menu('tools:primer-database');
+      const windows = () => app.all('[role="dialog"][aria-labelledby="primer-db-title"]');
+      expect(windows(), 'the Primer Database window is open').toHaveLength(1);
+      const opened = windows()[0];
+      const listed = () => windows()[0].querySelectorAll('tbody tr').map((tr) => words(tr.querySelectorAll('td')[0]?.textContent));
+      expect(stored(), 'the store starts empty').toEqual([]);
+      expect(listed().filter((n) => n === 'Mtbq_Fwd'), 'the window does not list it yet').toEqual([]);
+
+      const save = app.all('button').filter((b) => nameOf(b) === 'Save Mtbq_Fwd to Primer Database' && !opened.contains(b));
+      expect(save, "the studio's Save for the document's primer").toHaveLength(1);
+      save[0].focus();
+      await app.press('Enter');
+      expect(stored(), 'the studio saved it').toEqual(['Mtbq_Fwd']);
+
+      // The same window, never closed or reopened, now lists it.
+      expect(windows(), 'still one window').toHaveLength(1);
+      expect(windows()[0], 'the window that was open').toBe(opened);
+      expect(listed(), 'the open window lists the saved primer').toEqual(['Mtbq_Fwd']);
+    } finally {
+      app.unmount();
+    }
+  });
+});
