@@ -1526,7 +1526,24 @@ fn main() {
     // Windows / Linux file associations launch the app with the document path.
     backend_state.queue_open_files(commands::open_file_args(std::env::args().skip(1)));
 
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // A second launch on Windows or Linux (a double-clicked file, or `molbiocraft-desktop rel/x.gb`)
+    // hands its arguments and working directory to this app and exits, so the file opens here
+    // instead of in a second window (D0213). On Linux this needs a D-Bus session bus; without one
+    // the plugin lets the launch go ahead as a second app. Registered first: the plugin must detect
+    // the second instance before the rest of the setup runs. macOS sends RunEvent::Opened instead.
+    #[cfg(any(windows, target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        let state = app.state::<AppBackendState>();
+        if commands::forward_second_instance(&state, argv, &cwd) > 0 {
+            let _ = app.emit("mbc://open-files-pending", ());
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
+    let builder = builder
         .manage(backend_state)
         .setup(|_app| {
             #[cfg(target_os = "macos")]

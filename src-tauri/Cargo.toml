@@ -30,6 +30,13 @@ molbiocraft-cloning = { path = "../crates/molbiocraft-cloning" }
 molbiocraft-protein = { path = "../crates/molbiocraft-protein" }
 molbiocraft-wasm = { path = "../crates/molbiocraft-wasm" }
 
+# A second launch on Windows or Linux forwards its file arguments to the running app (D0213). macOS
+# needs no plugin: the OS sends the running app RunEvent::Opened. The plugin talks between instances
+# over a named mutex and a WM_COPYDATA window message on Windows and the D-Bus session bus (as a
+# client of the bus daemon) on Linux; it opens no network listener (D0174).
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "=2.5.5"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSEvent"] }
 

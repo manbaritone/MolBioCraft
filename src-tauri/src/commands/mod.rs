@@ -238,6 +238,23 @@ pub fn open_file_args<I: IntoIterator<Item = String>>(args: I) -> Vec<std::path:
         .collect()
 }
 
+/// Queues the files a second launch on Windows or Linux named, which tauri-plugin-single-instance
+/// hands to the running app (D0213). `argv` is the second process's whole command line, so its first
+/// element (the program) is skipped; each relative argument is resolved against that process's
+/// `cwd`, then flags and arguments that are not existing files are dropped as [`open_file_args`]
+/// drops them. Returns the number of files now queued, which counts a file already queued once.
+// macOS forwards a second launch through RunEvent::Opened, so only its test calls this there.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn forward_second_instance(state: &AppBackendState, argv: Vec<String>, cwd: &str) -> usize {
+    let cwd = std::path::Path::new(cwd);
+    let args = argv
+        .into_iter()
+        .skip(1)
+        .filter(|a| !a.starts_with('-'))
+        .map(|a| cwd.join(a).to_string_lossy().into_owned());
+    state.queue_open_files(open_file_args(args))
+}
+
 #[cfg(test)]
 mod tests {
     use super::AppBackendState;
@@ -297,6 +314,32 @@ mod tests {
         ];
         assert_eq!(super::open_file_args(args), vec![file.clone()]);
         let _ = std::fs::remove_file(file);
+    }
+
+    #[test]
+    fn second_instance_forwards_files_to_the_running_app() {
+        let tmp = std::env::temp_dir().join(format!("mbc_second_instance_{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("rel")).unwrap();
+        std::fs::write(tmp.join("rel/x.fasta"), ">x\nACGT\n").unwrap();
+        // A flag stays a flag even when the second process's cwd holds a file of that name.
+        std::fs::write(tmp.join("--flag"), "").unwrap();
+        // A file the test's own cwd does not hold: only joining the second process's cwd finds it.
+        assert!(!std::path::Path::new("rel/x.fasta").exists());
+        let argv = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        let launch = argv(&["molbiocraft-desktop", "--flag", "rel/x.fasta", "/abs/missing.gb", "rel/x.fasta"]);
+        let cwd = tmp.to_string_lossy().into_owned();
+
+        let state = AppBackendState::default();
+        assert_eq!(super::forward_second_instance(&state, launch.clone(), &cwd), 1);
+        assert_eq!(super::forward_second_instance(&state, launch, &cwd), 1, "the same file stays queued once");
+        assert_eq!(state.take_open_files(), vec![tmp.join("rel/x.fasta")]);
+
+        // argv[0] is the program, an existing file, never a document to open.
+        let program = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        let fresh = AppBackendState::default();
+        assert_eq!(super::forward_second_instance(&fresh, vec![program, "rel/x.fasta".into()], &cwd), 1);
+        assert_eq!(fresh.take_open_files(), vec![tmp.join("rel/x.fasta")]);
+        let _ = std::fs::remove_dir_all(tmp);
     }
 
     #[test]

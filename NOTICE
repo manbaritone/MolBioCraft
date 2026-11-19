@@ -48,7 +48,8 @@ License Agreement terms:
 - `petgraph`, `ndarray`, `nalgebra`, `statrs`, `rayon`, `serde`, `serde_json`,
   `csv`, `crc32fast`, `flate2`, `rustc-hash` (MIT OR Apache-2.0)
 - `triple_accel` — Copyright (c) Daniel Liu (MIT)
-- `tauri`, `rfd`, `objc2-app-kit` — Copyright (c) Tauri Programme within The
+- `tauri`, `rfd`, `objc2-app-kit`, `tauri-plugin-single-instance` (`2.5.5`,
+  Windows and Linux builds only) — Copyright (c) Tauri Programme within The
   Commons Conservancy (MIT OR Apache-2.0)
 - `r-efi` (`5.3.0`, `6.0.0`) — Copyright (c) The r-efi Project,
   https://github.com/r-efi/r-efi (MIT OR Apache-2.0 OR LGPL-2.1-or-later;

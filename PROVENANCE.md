@@ -62,7 +62,7 @@ MolBioCraft is licensed under `CC BY-NC 4.0` (`SPDX-License-Identifier: CC-BY-NC
 | `petgraph`, `rayon`, `serde`, `serde_json`, `csv`, `crc32fast`, `flate2`, `rustc-hash` | Workspace | `MIT OR Apache-2.0` | crates.io | Retain notices in `NOTICE`. |
 | `nalgebra`, `ndarray`, `statrs` | `0.33`, `0.16`, `0.18` | `Apache-2.0` / `MIT` | crates.io | Retain notices in `NOTICE`. |
 | `triple_accel` | `0.4` | `MIT` | crates.io | Retain notice in `NOTICE`. |
-| `tauri`, `rfd`, `objc2-app-kit` | `2.0.0`, `0.15`, `0.3` | `MIT OR Apache-2.0` / `MIT` | crates.io | Retain notices in `NOTICE`. |
+| `tauri`, `rfd`, `objc2-app-kit`, `tauri-plugin-single-instance` (Windows and Linux only) | `2.0.0`, `0.15`, `0.3`, `2.5.5` | `MIT OR Apache-2.0` / `MIT` | crates.io | Retain notices in `NOTICE`. |
 | `r-efi` | `5.3.0`, `6.0.0` | `MIT` (`MIT OR Apache-2.0 OR LGPL-2.1-or-later`, taken under `MIT`) | `github.com/r-efi/r-efi` / crates.io | Retain notice in `NOTICE`. |
 | `cssparser`, `cssparser-macros`, `selectors`, `dtoa-short`, `option-ext` | `0.37.0`, `0.7.1`, `0.38.0`, `0.3.5`, `0.2.0` | `MPL-2.0` | `github.com/servo/rust-cssparser`, `github.com/servo/stylo`, `github.com/upsuper/dtoa-short`, `github.com/soc/option-ext` / crates.io | Unmodified transitive desktop-shell crates; source URLs listed in `NOTICE` section 3. |
 | `react`, `react-dom`, `lucide-react` | `18.3.1`, `0.468.0` | `MIT` / `ISC` | npmjs.com | Retain notices in `NOTICE`. |
