@@ -295,6 +295,34 @@ const snapshot = (viewerTab: string, activeDocId: string) => ({
 }) as unknown as import('../core/mbcSessionFormat').MbcWorkbenchSnapshot;
 
 describe('US-01M6Q164 AC3: a session keeps the Protein studio', () => {
+  // First in AC3: the App mounts before any studio or React DOM's server renderer is loaded (see the imports).
+  it('US-01M6Q164 AC3 an older session saved on genomics-ngs with a plain protein reopens in the Protein studio, and a DNA record keeps genomics-ngs', async () => {
+    expect(PLAIN.docMetadata?.PDBText, 'the fixture has no structure').toBeUndefined();
+    const app = await mountApp();
+    try {
+      // The harness restores the session, then refuses any tab other than the one saved: here, by design.
+      await expect(app.restoreSession({ documents: LIBRARY, activeDocId: PLAIN.id, viewerTab: 'genomics-ngs' }),
+        'the App restores the session, on protein-3d').rejects.toThrow('the App restored the session on the protein-3d tab, not genomics-ngs');
+      await app.settle();
+      expect(app.activeTab(), 'the restored plain protein opens the protein-3d tab').toBe('protein-3d');
+      expect(railCurrent(app), 'the rail marks Protein & 3D').toBe('protein-3d');
+      await app.restoreSession({ documents: LIBRARY, activeDocId: DNA.id, viewerTab: 'genomics-ngs' });
+      await app.settle();
+      expect(app.activeTab(), 'a DNA record restored on genomics-ngs stays there').toBe('genomics-ngs');
+      expect(railCurrent(app)).toBe('pipelines-ngs');
+    } finally {
+      app.unmount();
+    }
+
+    const { parseMbcWorkbench, serializeMbcWorkbench, resolveViewerTab } = await load();
+    const legacy = parseMbcWorkbench(serializeMbcWorkbench(snapshot('genomics-ngs', PLAIN.id)));
+    expect(legacy.envelope.workspace.viewerTab, 'the codec keeps a legacy genomics-ngs').toBe('genomics-ngs');
+    expect(resolveViewerTab(PLAIN, legacy.envelope.workspace.viewerTab), 'a plain protein on genomics-ngs opens the Protein studio').toBe('protein-3d');
+    expect(resolveViewerTab(DNA, 'genomics-ngs'), 'a DNA record keeps genomics-ngs').toBe('genomics-ngs');
+    expect(resolveViewerTab({ ...PLAIN, id: 'q164-empty', sequence: '' }, 'genomics-ngs'),
+      'a protein record with no residues, which the Protein studio does not take, falls back to its preferred view').toBe('document-info');
+  });
+
   it('US-01M6Q164 AC3 protein-3d round-trips through the WASM codec and a legacy genomics-ngs protein opens the Protein studio', async () => {
     const { parseMbcWorkbench, serializeMbcWorkbench, resolveViewerTab } = await load();
     const saved = parseMbcWorkbench(serializeMbcWorkbench(snapshot('protein-3d', CHAIN.id)));

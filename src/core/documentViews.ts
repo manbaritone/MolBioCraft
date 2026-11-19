@@ -96,6 +96,8 @@ export function resolveViewerTab(doc: SequenceDocument, requested: ViewerTab): V
   // an explicit request (New Session › Vector Catalog, Vectors toolbar) opens it
   // even though it is not listed as one of the (empty) workspace's own tabs.
   if (!doc.id && requested === 'vector-library') return requested;
+  // A protein's older home was genomics-ngs: a session saved there opens the Protein studio (US-01M6Q164 delta row 7).
+  if (requested === 'genomics-ngs' && doc.moleculeType === 'Protein' && supportedViewerTabs(doc).includes('protein-3d')) return 'protein-3d';
   return supportedViewerTabs(doc).includes(requested) ? requested : preferredViewerTab(doc);
 }
 
