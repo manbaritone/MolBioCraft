@@ -310,6 +310,9 @@ describe('US-01M6Q1CF AC8: the changelog announces the remap', () => {
     for (const k of ['⌘1', '⌘9', 'Ctrl+1', 'Ctrl+9', '⌥⌘1', '⌥⌘3', 'Ctrl+Alt+1', 'Ctrl+Alt+3', '⌘S', 'Ctrl+S', '⇧⌘E', 'Ctrl+Shift+E', '⌥⌘S', 'Save Session', 'Export GenBank', 'next release']) {
       expect(entry[0], k).toContain(k);
     }
+    // No other [Unreleased] entry may still say the ⌘-digit shortcuts are unchanged: the notes become
+    // the release body, and the remap above makes that sentence false (round-1 review of US-01M6Q1CF).
+    expect(unreleased.split(/(?<=\.)\s+/).filter((s) => /shortcuts are unchanged/i.test(s))).toEqual([]);
   });
 });
 

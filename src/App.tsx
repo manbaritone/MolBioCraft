@@ -3846,7 +3846,7 @@ export const App: React.FC = () => {
   };
   /**
    * View › Map Layout's three items (US-01M7DVEN): the one handler of the in-app items, the native ids
-   * and ⌘1 / ⌘2 / ⌘4. Split and Circular are refused, with circularMapUnavailableReason's sentence, for
+   * and ⌥⌘1 / ⌥⌘2 / ⌥⌘3. Split and Circular are refused, with circularMapUnavailableReason's sentence, for
    * a document that cannot draw a circle, so the stored layout and the autosave stay as they are.
    */
   const chooseMapLayout = (mode: 'split' | 'circular' | 'linear') => {
@@ -12141,7 +12141,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       }
       ev.preventDefault();
       // A shortcut whose item a rule disables runs its handler, which refuses it with the rule's own
-      // reason (US-01M7DVEN): ⌘= / ⌘- / ⌘0 and ⌘1 / ⌘2 then say why in the status bar.
+      // reason (US-01M7DVEN): ⌘= / ⌘- / ⌘0 and ⌥⌘1 / ⌥⌘2 then say why in the status bar.
       if (binding.disabled && !RULE_REFUSED_SHORTCUT_IDS.has(binding.id)) {
         setStatusBanner(`${binding.label} is not available right now.`);
         return;
