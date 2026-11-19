@@ -1151,7 +1151,7 @@ export function runLocalBlastSearch(
   querySeqRaw: string,
   allDocs: SequenceDocument[],
   program: 'blastn' | 'blastp' | 'blastx' | 'tblastn' = 'blastn',
-  databaseName = 'nr / nt (Curated Local + NCBI Reference Index)'
+  databaseName = 'All documents in this session'
 ): BlastHitRecord[] {
   const docs = allDocs.map((d) => ({
     id: d.id,

@@ -2454,6 +2454,19 @@ interface BlastModalProps {
   onSaveQueryCentric?: (querySeq: string, hits: BlastHitRecord[]) => void;
 }
 
+/** The one non-local BLAST database: the documents the window is given, the session's undeleted ones (D0002). */
+const BLAST_WORKSPACE_LABEL = 'All documents in this session';
+
+/**
+ * The database a stored last-used value or a loaded option profile opens on: a registered local
+ * database as it is, anything else (a database since removed, or one of the old names the window
+ * once offered, all of which searched the session's documents) as `workspace`.
+ */
+export function blastDatabaseChoice(stored: unknown, localDatabases: readonly LocalSequenceDbEntry[]): string {
+  const db = String(stored);
+  return db.startsWith('local:') && localDatabases.some((d) => `local:${d.id}` === db) ? db : 'workspace';
+}
+
 /** The engine prints lengths bare ("12000 nt"); group each whole number of 4+ digits ("12,000 nt"). */
 const groupLengths = (text: string) =>
   text.replace(/\d+(?:\.\d+)?/g, (n) => (/^\d{4,}$/.test(n) ? Number(n).toLocaleString() : n));
@@ -2513,14 +2526,11 @@ export const BlastSearchModal: React.FC<BlastModalProps> = ({
 }) => {
   // Program and database start from the last search (Preferences-style memory) and can be
   // saved as named option profiles from the settings menu in the footer.
-  const blastDefaults = { program: 'blastn', database: 'nr / nt (Curated Local + NCBI Reference Index)' };
+  const blastDefaults = { program: 'blastn', database: 'workspace' };
   const [blastInitial] = useState(() => loadLastUsed('blast', blastDefaults));
   const [program, setProgram] = useState<'blastn' | 'blastp' | 'blastx' | 'tblastn'>(() =>
     (['blastn', 'blastp', 'blastx', 'tblastn'] as const).find((p) => p === blastInitial.program) ?? 'blastn');
-  const [database, setDatabase] = useState<string>(() =>
-    String(blastInitial.database).startsWith('local:') && !localDatabases.some((db) => `local:${db.id}` === blastInitial.database)
-      ? blastDefaults.database
-      : String(blastInitial.database));
+  const [database, setDatabase] = useState<string>(() => blastDatabaseChoice(blastInitial.database, localDatabases));
   useEffect(() => {
     saveLastUsed('blast', { program, database });
   }, [program, database]);
@@ -2537,8 +2547,8 @@ export const BlastSearchModal: React.FC<BlastModalProps> = ({
     [localDb, allDocs]
   );
   const hits: BlastHitRecord[] = useMemo(
-    () => runLocalBlastSearch(queryText, subjectDocs, program, localDb ? localDb.name : database),
-    [queryText, subjectDocs, program, database, localDb]
+    () => runLocalBlastSearch(queryText, subjectDocs, program, localDb ? localDb.name : BLAST_WORKSPACE_LABEL),
+    [queryText, subjectDocs, program, localDb]
   );
   // D0005: past its program's query cap a query is searched on its first cap letters only, and of a
   // FASTA query only the first record is. The engine puts those warnings on every hit, shown once
@@ -2583,18 +2593,7 @@ export const BlastSearchModal: React.FC<BlastModalProps> = ({
           <label className="form-field">
             <span>Database:</span>
             <select value={database} onChange={(e) => setDatabase(e.target.value)}>
-              <option value="nr / nt (Curated Local + NCBI Reference Index)">
-                nr / nt — Nucleotide Collection &amp; Local Workspace
-              </option>
-              <option value="refseq_rna (NCBI Transcript Reference)">
-                refseq_rna — NCBI Reference Sequences
-              </option>
-              <option value="swissprot (UniProtKB / Swiss-Prot)">
-                swissprot — Curated Protein Sequences
-              </option>
-              <option value="pdb (Protein Data Bank 3D Structures)">
-                pdb — Protein Data Bank Structures
-              </option>
+              <option value="workspace">{BLAST_WORKSPACE_LABEL}</option>
               {localDatabases.map((db) => (
                 <option key={db.id} value={`local:${db.id}`}>
                   Local: {db.name} ({db.moleculeType}, {db.sourceFolder})
@@ -2763,8 +2762,7 @@ export const BlastSearchModal: React.FC<BlastModalProps> = ({
           onLoad={(v) => {
             const p = (['blastn', 'blastp', 'blastx', 'tblastn'] as const).find((x) => x === v.program);
             if (p) setProgram(p);
-            const db = String(v.database);
-            setDatabase(db.startsWith('local:') && !localDatabases.some((d) => `local:${d.id}` === db) ? blastDefaults.database : db);
+            setDatabase(blastDatabaseChoice(v.database, localDatabases));
           }}
         />
         <button type="button" className="btn-primary-sm" onClick={onClose}>

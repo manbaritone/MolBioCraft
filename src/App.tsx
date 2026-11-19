@@ -12691,7 +12691,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             onSelect: () =>
               requireActiveSession(() => {
                 openGenomicsSuite('genome-variants');
-                setStatusBanner('Opened the Map reads then find variations/SNPs (FreeBayes) tools — set the inputs there to run it.');
+                setStatusBanner('Opened the read mapping and variant calling tools — set the inputs there to run them.');
               }),
           },
           {

@@ -19,11 +19,12 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
-import { BlastSearchModal } from '../components/MenusPreferencesAndBlastModal';
+import { BlastSearchModal, blastDatabaseChoice } from '../components/MenusPreferencesAndBlastModal';
 import { HybridToolsAndHistoryStudio } from '../components/HybridToolsAndHistoryStudio';
 import { runLocalBlastSearch } from '../core/bioEngine';
 import { blastQueryCut, blastQueryLetters, blastQueryTextWarnings, runAnnotateByBlast } from '../core/operationRunners';
 import { saveLastUsed } from '../core/optionProfiles';
+import type { LocalSequenceDbEntry } from '../core/localBlastDb';
 import type { BlastHitRecord, SequenceDocument } from '../types/bio';
 
 class MemoryStorage {
@@ -360,5 +361,71 @@ describe('annotate by BLAST', () => {
     const none = runAnnotateByBlast([short], [puc], { maxHits: 3, minHitIdentity: 90, minIdentity: 95 });
     expect(none.summary).toBe(`${shortU.features.length} annotations added to 1 sequence — short-4.7kb: hits ${puc.name}`);
     expect(none.updated[0].history.at(-1)!.description).toBe(`${shortU.features.length} annotations from top hits: ${puc.name}`);
+  });
+});
+
+describe('US-01M6P20Q AC2: the BLAST database is named for what it searches (D0002)', () => {
+  // the four names the window used to offer; each searched the session's documents all the same
+  const OLD = ['nr / nt (Curated Local + NCBI Reference Index)', 'refseq_rna (NCBI Transcript Reference)', 'swissprot (UniProtKB / Swiss-Prot)', 'pdb (Protein Data Bank 3D Structures)'];
+  const subject = doc('subj', 'subject-2kb', randomDna(2_000, 21));
+  const query = doc('qry', 'query-600', subject.sequence.slice(300, 900));
+  const other = doc('oth', 'other-2kb', randomDna(2_000, 23));
+  const dbs: LocalSequenceDbEntry[] = [
+    { id: 'a', name: 'Lab plasmids', moleculeType: 'Nucleotide', sourceFolder: 'All Project Files', sequenceCount: 3, docIds: ['subj'] },
+    { id: 'b', name: 'Kinases', moleculeType: 'Protein', sourceFolder: 'Proteins', sequenceCount: 0 },
+  ];
+  const options = (html: string) => [...html.slice(html.indexOf('<span>Database:</span>')).split('</select>')[0].matchAll(/<option value="([^"]*)"( selected="")?>([\s\S]*?)<\/option>/g)]
+    .map((m) => ({ value: m[1], selected: Boolean(m[2]), label: text(m[3]).trim() }));
+  const descriptions = (html: string) => [...html.matchAll(/<tr[^>]*>[\s\S]*?<\/tr>/g)].map((m) => [...m[0].matchAll(/<td>([\s\S]*?)<\/td>/g)].map((c) => text(c[1]))).filter((cells) => cells.some((c) => c.includes(' — ')));
+  const render = (stored: string, localDatabases: LocalSequenceDbEntry[] = dbs) => {
+    saveLastUsed('blast', { program: 'blastn', database: stored });
+    return renderToStaticMarkup(<BlastSearchModal activeDoc={query} allDocs={[query, subject, other]} localDatabases={localDatabases} onClose={noop} onSelectHitDoc={noop} />);
+  };
+
+  it('US-01M6P20Q AC2 lists exactly "All documents in this session" plus one row per local database', () => {
+    const html = render(OLD[0]);
+    expect(options(html).map((o) => o.label)).toEqual([
+      'All documents in this session',
+      'Local: Lab plasmids (Nucleotide, All Project Files)',
+      'Local: Kinases (Protein, Proteins)',
+    ]);
+    expect(options(html).map((o) => o.value)).toEqual(['workspace', 'local:a', 'local:b']);
+    // with no local database, the one honest row
+    expect(options(render(OLD[0], [])).map((o) => o.label)).toEqual(['All documents in this session']);
+  });
+
+  it('US-01M6P20Q AC2 opens a stored nr / nt (or any other old name) on "All documents in this session"', () => {
+    for (const stored of [...OLD, 'some unknown database']) {
+      const html = render(stored);
+      expect(options(html).filter((o) => o.selected), stored).toEqual([{ value: 'workspace', selected: true, label: 'All documents in this session' }]);
+    }
+    // a registered local database is kept, a stale one maps to the session
+    expect(options(render('local:b')).filter((o) => o.selected).map((o) => o.value)).toEqual(['local:b']);
+    expect(options(render('local:gone')).filter((o) => o.selected).map((o) => o.value)).toEqual(['workspace']);
+    // a loaded option profile maps the same way
+    for (const stored of OLD) expect(blastDatabaseChoice(stored, dbs), stored).toBe('workspace');
+    expect(blastDatabaseChoice('local:a', dbs)).toBe('local:a');
+    expect(blastDatabaseChoice('local:gone', dbs)).toBe('workspace');
+    expect(blastDatabaseChoice('workspace', dbs)).toBe('workspace');
+  });
+
+  it('US-01M6P20Q AC2 names the database in each hit description', () => {
+    const html = render(OLD[0]);
+    const rows = descriptions(html);
+    // the query itself and the subject it was cut from, both from the session's documents
+    expect(rows.length, 'fixture: the session search finds hits').toBeGreaterThanOrEqual(2);
+    for (const cells of rows) {
+      const d = cells.find((c) => c.includes(' — '))!;
+      expect(d).toContain('[All documents in this session]');
+      expect(d).not.toMatch(/nr \/ nt|workspace\]/);
+    }
+    // a local database names itself, and searches only its own documents
+    const local = descriptions(render('local:a'));
+    expect(local.length, 'fixture: the local database finds the subject').toBeGreaterThanOrEqual(1);
+    for (const cells of local) expect(cells.find((c) => c.includes(' — '))).toContain('[Lab plasmids]');
+    // the engine wrapper's own default names the session too
+    const hits = runLocalBlastSearch(query.sequence, [query, subject]);
+    expect(hits.length).toBeGreaterThanOrEqual(2);
+    for (const h of hits) expect(h.description).toContain('[All documents in this session]');
   });
 });
