@@ -2211,6 +2211,15 @@ export const App: React.FC = () => {
     setViewerTab(back.tab);
   };
 
+  /**
+   * A Project row (a folder, Favorites, Deleted Items, All Project Files, History) chosen over the
+   * explorer leaves it, and the row's own choice wins: unlike the explorer's Back, the document and
+   * view it opened over are not restored on top of it, so ⌘[ then does what it does without the
+   * explorer. US-01M6Q1V9 round-1 review: the Project rows never left the explorer, and Back then
+   * brought back pET-28a under Favorites, a document that folder does not hold.
+   */
+  const leaveDatabaseExplorerForProjectRow = () => leaveDatabaseExplorer(false);
+
   /** Back (⌘[, the toolbar, View › Back): out of the explorer first, else to the previous document. */
   const goBack = () => {
     if (dbExplorerCategory) leaveDatabaseExplorer();
@@ -13880,7 +13889,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     className={`source-folder-row ${
                       selectedFolder === 'Favorites' ? 'selected' : ''
                     }`}
-                    onClick={() => handleSelectProjectFolder('Favorites')}
+                    onClick={() => {
+                      leaveDatabaseExplorerForProjectRow();
+                      handleSelectProjectFolder('Favorites');
+                    }}
                     onContextMenu={(event) => openFolderContextMenu(event, 'Favorites')}
                   >
                     <span style={{ width: 12 }} />
@@ -13895,7 +13907,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
 
                   {favoriteFolders.filter((id) => !hiddenFolders.includes(id)).map((id) => (
                     <button type="button" key={id} className={`source-folder-row ${selectedFolder === id ? 'selected' : ''}`}
-                      onClick={() => handleSelectProjectFolder(id)} onContextMenu={(event) => openFolderContextMenu(event, id)}>
+                      onClick={() => { leaveDatabaseExplorerForProjectRow(); handleSelectProjectFolder(id); }} onContextMenu={(event) => openFolderContextMenu(event, id)}>
                       <span className="tree-leaf-spacer" aria-hidden="true" />
                       <Star size={14} /><span className="folder-label">{folderLabel(id)}</span>
                       <span className="folder-count">{explorerFolderCounts[id] ?? 0}</span>
@@ -13911,6 +13923,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     onContextMenu={(event) => openFolderContextMenu(event, PROJECT_ROOT)}
                     style={{ marginBlockStart: 2 }}
                     onClick={() => {
+                      leaveDatabaseExplorerForProjectRow();
                       toggleTreeNode('projectFiles');
                       handleSelectProjectFolder('All Project Files');
                     }}
@@ -13939,7 +13952,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                         expanded={expandedNodes}
                         colors={folderColors}
                         counts={explorerFolderCounts}
-                        onSelect={handleSelectProjectFolder}
+                        onSelect={(id) => { leaveDatabaseExplorerForProjectRow(); handleSelectProjectFolder(id); }}
                         onToggle={(id) => setExpandedNodes((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }))}
                         onContextMenu={openFolderContextMenu}
                       />
@@ -13950,7 +13963,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                         className={`source-folder-row ${
                           selectedFolder === 'Deleted Items' ? 'selected' : ''
                         }`}
-                        onClick={() => handleSelectProjectFolder('Deleted Items')}
+                        onClick={() => {
+                          leaveDatabaseExplorerForProjectRow();
+                          handleSelectProjectFolder('Deleted Items');
+                        }}
                         onContextMenu={(event) => openFolderContextMenu(event, 'Deleted Items')}
                         title="Non-destructive recycle bin (use Put Back to restore or Erase All to remove)"
                       >
@@ -13967,7 +13983,10 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     type="button"
                     className="source-folder-row"
                     style={{ marginBlockStart: 6 }}
-                    onClick={() => openHybridSubTab('lineage')}
+                    onClick={() => {
+                      leaveDatabaseExplorerForProjectRow();
+                      openHybridSubTab('lineage');
+                    }}
                     title="View construct genealogy, operation history, and workflow runs"
                   >
                     <span style={{ width: 12 }} />

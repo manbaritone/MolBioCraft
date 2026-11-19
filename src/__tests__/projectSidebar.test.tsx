@@ -521,3 +521,102 @@ describe('US-01M6Q1V9 AC8: opening an RCSB entry from the main pane goes through
     }
   });
 });
+
+// ─── AC5, round 2: a Project row chosen over the explorer leaves it, and its choice wins ───
+
+describe('US-01M6Q1V9 AC5: a Project row chosen over the main-pane explorer leaves it, and Back then behaves as if it had never been open', () => {
+  const PUC19 = SAMPLE_LIBRARY.find((d) => /pUC19/.test(d.name) && d.id !== PET.id)!;
+  const TRASHED = SAMPLE_LIBRARY.find((d) => d.id !== PET.id && d.id !== PUC19.id)!;
+  // All Project Files last: its click also folds the folder tree that holds the folders and Deleted Items.
+  // 'Cloning ★' is the starred copy of the Cloning folder, listed under Favorites outside the folder tree.
+  const ROWS = ['Favorites', 'Cloning ★', 'Sample Documents', 'Deleted Items', 'History', 'All Project Files'];
+  const projectRow = (app: AppHarness, label: string): LiveElement => {
+    if (label !== 'Cloning ★') return row(rowsIn(section(app, 'project')), label).el;
+    const starred = rowsIn(section(app, 'project')).filter((r) => r.label === 'Cloning' && !r.el.closest('.tree-indent-1'));
+    expect(starred, 'one starred Cloning row').toHaveLength(1);
+    return starred[0].el;
+  };
+  const selectedProjectRow = (app: AppHarness) =>
+    rowsIn(section(app, 'project')).filter((r) => (r.el.getAttribute('class') ?? '').split(/\s+/).includes('selected')).map((r) => r.label);
+  const state = (app: AppHarness) => ({
+    explorer: explorer(app).length, folder: selectedProjectRow(app), doc: activeDocName(app), tab: app.activeTab(),
+  });
+
+  /** For each Project row: optionally open the explorer, click the row, record; press ⌘[, record. */
+  async function walk(overExplorer: boolean) {
+    const app = await mountApp();
+    const seen: Array<{ row: string; after: ReturnType<typeof state>; back: ReturnType<typeof state> }> = [];
+    try {
+      await sampleSession(app, {
+        projectExplorer: {
+          customFolders: [], folderColors: {}, folderNames: {}, folderParents: {}, hiddenFolders: [],
+          favoriteFolders: ['Cloning'], favoriteDocIds: [PUC19.id], deletedDocIds: [TRASHED.id], readDocIds: [],
+        },
+      });
+      expect(activeDocName(app)).toBe(PET.name);
+      for (const label of ROWS) {
+        if (overExplorer) {
+          await app.menu('tools:databases-explorer');
+          expectMainPaneExplorer(app, 'ncbi-nucleotide', `before Project › ${label}`);
+        }
+        await app.click(projectRow(app, label));
+        const after = state(app);
+        await app.press('[', { mod: true });
+        seen.push({ row: label, after, back: state(app) });
+      }
+    } finally {
+      app.unmount();
+    }
+    return seen;
+  }
+
+  it('US-01M6Q1V9 AC5 closes the explorer on Favorites, a starred folder, a folder, Deleted Items, History and All Project Files, keeps the row\'s choice, and ⌘[ then does what it does without the explorer', async () => {
+    expect(PUC19, 'the sample library holds pUC19').toBeTruthy();
+    const plain = await walk(false);
+    const over = await walk(true);
+    const byRow = (seen: typeof plain, label: string) => seen.find((s) => s.row === label)!;
+
+    // The reviewer's probe: Favorites over the explorer.
+    const fav = byRow(over, 'Favorites');
+    expect(fav.after.explorer, 'Project › Favorites leaves the explorer').toBe(0);
+    expect(fav.after.folder).toEqual(['Favorites']);
+    expect(fav.after.doc, 'the active document is the one in Favorites, never pET-28a').toBe(PUC19.name);
+    expect(fav.back.explorer).toBe(0);
+    // ⌘[ is then the document Back it is without the explorer (compared below), not the explorer's restore.
+    // Project › History over the explorer: History is shown, and ⌘[ does not set the view back to Sequence Map.
+    const hist = byRow(over, 'History');
+    expect(hist.after.explorer, 'Project › History leaves the explorer').toBe(0);
+    expect(hist.after.tab, 'History is shown').toBe('history-hybrid');
+    expect(hist.back.explorer).toBe(0);
+
+    // Every row, after the click and after ⌘[, matches the same walk with the explorer never opened.
+    for (const label of ROWS) {
+      expect(byRow(over, label).after, `Project › ${label} over the explorer`).toEqual(byRow(plain, label).after);
+      expect(byRow(over, label).back, `⌘[ after Project › ${label} over the explorer`).toEqual(byRow(plain, label).back);
+    }
+  });
+  it('US-01M6Q1V9 AC5 does not restore the view the explorer opened over when a Project row is chosen after a record is added from it', async () => {
+    const app = await mountApp();
+    try {
+      await sampleSession(app, {
+        projectExplorer: {
+          customFolders: [], folderColors: {}, folderNames: {}, folderParents: {}, hiddenFolders: [],
+          favoriteFolders: [], favoriteDocIds: [PUC19.id], deletedDocIds: [], readDocIds: [],
+        },
+      });
+      await app.clickStudio('annotations');
+      expect(app.activeTab(), 'the explorer opens over the Features table').toBe('annotations-table');
+      await openLibraries(app);
+      await app.click(row(ownRows(group(app, 'databases')), 'UniProt').el);
+      expectMainPaneExplorer(app, 'uniprot', 'UniProt');
+      const card = app.all('.mbc-db-explorer-pane .mbc-db-record-card')[0];
+      await app.click(card.querySelector('button.btn-primary-sm')!);
+      await app.click(row(rowsIn(section(app, 'project')), 'Favorites').el);
+      expect(explorer(app)).toHaveLength(0);
+      expect(activeDocName(app)).toBe(PUC19.name);
+      expect(app.activeTab(), 'pUC19 does not open on the view the explorer opened over').not.toBe('annotations-table');
+    } finally {
+      app.unmount();
+    }
+  });
+});
