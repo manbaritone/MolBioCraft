@@ -18,6 +18,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness } from './appHarness';
 import type { LiveElement } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
 
 // Each check launches the App afresh.
 vi.setConfig({ testTimeout: 60_000 });
@@ -83,6 +84,9 @@ const CONSTRUCT: SequenceDocument = {
     { id: 'h-tann-2', timestamp: '2026-11-03 11:00', operation: 'Annotated CDS', description: 'Marked the ORF', parentIds: [], lengthBp: CONSTRUCT_SEQ.length, topology: 'linear', historyColor: '#d97706' },
   ],
 };
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
+
 /** An Enzyme Set record, shaped as File > New > Enzyme Set makes one (App.tsx handleCreateNewEnzymeSetDocument), holding two enzymes. */
 const ENZYME_SET: SequenceDocument = {
   ...BLANK, id: 'tann-enzymes', name: 'TANN_Enzyme_Set', accession: 'ENZ_4242', description: '2 enzymes',
@@ -313,14 +317,15 @@ describe('no inspector where there is nothing to set (AC2)', () => {
       }
     });
 
-    // An Enzyme Set: its History tab reads Enzymes, which titles the inspector of its Lineage sub-tab.
+    // An Enzyme Set: its History tab reads History, the panel's registry name, not a per-record
+    // "Enzymes" (US-01M6Q16Q, D0237), and that name titles the inspector of its Lineage sub-tab.
     await withApp(async (app) => {
       await onHistory(app, ENZYME_SET);
-      expect(app.header().querySelectorAll('button[role="tab"][data-view="history-hybrid"]')[0]?.textContent.trim(), 'the tab reads Enzymes').toBe('Enzymes');
+      expect(app.header().querySelectorAll('button[role="tab"][data-view="history-hybrid"]')[0]?.textContent.trim(), 'the tab reads the panel name').toBe(studioName('history'));
       expect(selectedSubTab(app), 'an Enzyme Set opens on its Enzymes view').toBe(SUB_TABS.enzymes);
       expect(shown(app), 'the Enzymes view').toEqual(NONE);
       await openSubTab(app, 'lineage');
-      expect(shown(app)).toEqual({ button: 'Hide Enzymes Controls Inspector', title: 'Enzymes Controls', sections: ['Lineage'] });
+      expect(shown(app)).toEqual({ button: `Hide ${studioName('history')} Controls Inspector`, title: `${studioName('history')} Controls`, sections: ['Lineage'] });
       lineageControls(app);
       await openSubTab(app, 'enzymes');
       expect(shown(app), 'back on the Enzymes view').toEqual(NONE);

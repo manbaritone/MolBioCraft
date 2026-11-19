@@ -37,6 +37,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PrimerRecord, SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness } from './appHarness';
 import { LiveDocument, LiveElement, parseMarkup } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
 
 // Each check launches the App afresh.
 vi.setConfig({ testTimeout: 60_000 });
@@ -158,11 +159,13 @@ function shown(app: AppHarness) {
     sections: [...sections].sort((a, b) => Number(declared(a, 'order')) - Number(declared(b, 'order'))).map(sectionTitle),
   };
 }
-const OPEN = { button: 'Hide Primers Controls Inspector', title: 'Primers Controls' };
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
+const OPEN = { button: `Hide ${studioName('primers-crispr')} Controls Inspector`, title: `${studioName('primers-crispr')} Controls` };
 const DESIGN_SHOWN = { ...OPEN, sections: [PRIMER_DESIGN, BUFFER] };
 const SAVED_SHOWN = { ...OPEN, sections: [SCREENING] };
 const CRISPR_SHOWN = { ...OPEN, sections: [GUIDES] };
-const CLOSED = { button: 'Show Primers Controls Inspector', title: null, sections: [] };
+const CLOSED = { button: `Show ${studioName('primers-crispr')} Controls Inspector`, title: null, sections: [] };
 
 /** The body of the column's section titled `title`. */
 function sectionBody(app: AppHarness, title: string): LiveElement {

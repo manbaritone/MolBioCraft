@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness } from './appHarness';
 import type { LiveElement } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
 
 // Each check launches the App afresh.
 vi.setConfig({ testTimeout: 60_000 });
@@ -70,7 +71,7 @@ const PAIR: SequenceDocument = {
   },
 } as SequenceDocument;
 
-/** Two of those members, cut to different lengths, as a list never aligned: its Alignment tab reads Sequences. */
+/** Two of those members, cut to different lengths, as a list never aligned: its tab reads Alignment, the studio's one name (D0237). */
 const LIST: SequenceDocument = {
   ...PAIR, id: 'taa4-list', name: 'TAA4 Unaligned List', accession: 'TAA4_0002',
   alignmentMeta: {
@@ -114,6 +115,8 @@ function shown(app: AppHarness) {
     shell: app.all('.mbc-aln-inspector-shell').length,
   };
 }
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
 const OPEN = (tab: string, sections: string[]) => ({ button: `Hide ${tab} Controls Inspector`, title: `${tab} Controls`, sections, asides: 1, shell: 0 });
 const CLOSED = (tab: string) => ({ button: `Show ${tab} Controls Inspector`, title: null, sections: [], asides: 0, shell: 0 });
 const GRID_OPEN = { button: 'Hide Alignment Controls Inspector', title: null, sections: [], asides: 0, shell: 1 };
@@ -303,11 +306,12 @@ describe("Pairwise Alignment's settings in App's inspector (AC1)", () => {
       expect(shown(app)).toEqual(OPEN('Alignment', PAIRWISE));
       expect(pairwiseControls(app).scores.Match.value, 'reopened, the score is as it was set').toBe('4');
 
-      // An unaligned list: its tab, the button and the pane read Sequences.
+      // An unaligned list: its tab, the button and the pane read the Alignment studio's registry name,
+      // not a per-record "Sequences" (US-01M6Q16Q, D0237: one name per studio, whatever the record).
       await onAlignment(app, LIST);
-      expect(app.header().querySelectorAll('button[role="tab"][data-view="sequence-alignment"]')[0]?.textContent.trim(), 'the tab reads Sequences').toBe('Sequences');
+      expect(app.header().querySelectorAll('button[role="tab"][data-view="sequence-alignment"]')[0]?.textContent.trim(), 'the tab reads the studio name').toBe(studioName('alignment'));
       await chooseMode(app, 'pairwise');
-      expect(shown(app)).toEqual(OPEN('Sequences', PAIRWISE));
+      expect(shown(app)).toEqual(OPEN(studioName('alignment'), PAIRWISE));
       pairwiseControls(app);
       expect([sequencePickers(app).a.value, sequencePickers(app).b.value]).toEqual(['taa4-l1', 'taa4-l2']);
 

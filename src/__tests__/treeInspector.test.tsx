@@ -20,6 +20,12 @@ import { SVG_FILE_PROLOGUE } from '../core/figureExport';
 import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness, type MountOptions } from './appHarness';
 import { LiveElement, parseMarkup } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
+
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
+/** A tree's inspector title: the Phylogenetics studio's registry name, not a per-record "Tree" (D0237). */
+const TREE_CONTROLS = `${studioName('phylogenetics')} Controls`;
 
 // Each check launches the App afresh, two of them twice.
 vi.setConfig({ testTimeout: 60_000 });
@@ -141,8 +147,8 @@ describe('the Tree tab inspector (AC1)', () => {
       expect(app.activeTab()).toBe('phylogenetics');
 
       // App's own header button, its pane title and the section in its aside.
-      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe('Hide Tree Controls Inspector');
-      expect(paneTitle(app)).toBe('Tree Controls');
+      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe(`Hide ${TREE_CONTROLS} Inspector`);
+      expect(paneTitle(app)).toBe(TREE_CONTROLS);
       const section = treeDisplaySection(app);
       const aside = app.inspectorAside()!;
       expect(aside.closest('.mbc-viewer-body-split') === app.bodySplit() && aside.localName === 'aside' && aside.classList.contains('mbc-right-controls'),
@@ -182,15 +188,15 @@ describe('the Tree tab inspector (AC1)', () => {
 
       // Closed, the settings are drawn nowhere, the button stays and the tree keeps its toolbar.
       await app.click(app.inspectorButton()!);
-      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe('Show Tree Controls Inspector');
+      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe(`Show ${TREE_CONTROLS} Inspector`);
       expect(app.inspectorAside(), 'no column while the inspector is closed').toBeNull();
       for (const name of SETTINGS) expect(fields(app.doc.body, name), `${name} not drawn while closed`).toHaveLength(0);
       expect(toolbarOf(field(app.canvas(), 'Find taxa'))).toBe('Tree edits');
       for (const text of ABOVE) button(app.canvas(), text);
       // Opened again, the section is back with the same settings.
       await app.click(app.inspectorButton()!);
-      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe('Hide Tree Controls Inspector');
-      expect(paneTitle(app)).toBe('Tree Controls');
+      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe(`Hide ${TREE_CONTROLS} Inspector`);
+      expect(paneTitle(app)).toBe(TREE_CONTROLS);
       for (const name of SETTINGS) field(treeDisplaySection(app), name);
     });
 

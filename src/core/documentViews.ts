@@ -3,6 +3,7 @@
 
 import type { SequenceDocument } from '../types/bio';
 import { isContigSummaryRecord } from './contigSummary';
+import { VIEWER_TAB_ORDER, studioForTab } from './studioRegistry';
 
 export type ViewerTab =
   | 'sequence-view' | 'annotations-table' | 'text-view' | 'vector-library'
@@ -10,52 +11,20 @@ export type ViewerTab =
   | 'sanger-contig' | 'genomics-ngs' | 'history-hybrid' | 'guided-pipelines'
   | 'document-info';
 
-export const VIEWER_TAB_ORDER: readonly ViewerTab[] = [
-  'sequence-view', 'annotations-table', 'text-view', 'vector-library',
-  'cloning-gel', 'primers-pcr', 'sequence-alignment', 'phylogenetics',
-  'sanger-contig', 'genomics-ngs', 'history-hybrid', 'guided-pipelines', 'document-info',
-];
-
-/** Human-readable view names for status messages. */
-export const VIEWER_TAB_LABELS: Record<ViewerTab, string> = {
-  'sequence-view': 'Sequence view',
-  'annotations-table': 'Annotations table',
-  'text-view': 'Text view',
-  'vector-library': 'Vector Library',
-  'cloning-gel': 'Cloning & Gel studio',
-  'primers-pcr': 'Primers & PCR studio',
-  'sequence-alignment': 'Alignment studio',
-  phylogenetics: 'Phylogenetics studio',
-  'sanger-contig': 'Chromatogram studio',
-  'genomics-ngs': 'Genomics studio',
-  'history-hybrid': 'History & tools',
-  'guided-pipelines': 'Guided pipelines',
-  'document-info': 'Document info',
-};
+// The viewer tabs in rail order, and the names they show, come from the studio registry
+// (US-01M6Q16Q, D0237): each studio's tab, then History, then Info. Re-exported so that nothing
+// here reads the registry while this module loads (the two modules import each other). The
+// status messages, the redirect and the error boundary name a tab by viewerTabLabel.
+export { VIEWER_TAB_ORDER };
 
 /**
- * The viewer header's label for a tab, which also names a studio tab's inspector (D0208). Given the
- * open record it is the label that record's tab strip shows: the annotations count, and 'Text',
- * 'Sequences' or 'Contig', '3D Structure' or 'Enzymes' where the record makes the tab one of those.
- * Without a record it is the tab's default label, the one README's studio list names.
+ * The viewer header's label for a tab, which also names a studio tab's inspector (D0208): the name
+ * of the studio or panel the tab belongs to, from the studio registry - one name per studio,
+ * whatever the record (D0237). The record only decides which studio genomics-ngs belongs to
+ * (Protein & 3D for a protein or a structure, Pipelines & NGS otherwise).
  */
 export function viewerTabLabel(tab: ViewerTab, doc?: SequenceDocument): string {
-  switch (tab) {
-    case 'sequence-view': return 'Sequence';
-    case 'annotations-table': return doc ? `Annotations (${doc.features.length + doc.primers.length})` : 'Annotations';
-    case 'text-view': return doc && originalDocumentText(doc) ? 'Text' : 'Flatfile';
-    case 'vector-library': return 'Vectors';
-    case 'cloning-gel': return 'Cloning';
-    case 'primers-pcr': return 'Primers';
-    case 'sequence-alignment':
-      return doc?.alignmentMeta?.isAligned === false ? 'Sequences' : doc?.documentKind === 'contig' ? 'Contig' : 'Alignment';
-    case 'phylogenetics': return 'Tree';
-    case 'sanger-contig': return 'Chromatogram';
-    case 'genomics-ngs': return doc?.moleculeType === 'Protein' ? '3D Structure' : 'Genomics';
-    case 'history-hybrid': return doc?.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'Enzymes' : 'History';
-    case 'guided-pipelines': return 'Pipelines';
-    case 'document-info': return 'Info';
-  }
+  return studioForTab(tab, doc).name;
 }
 
 export function isTreeDocument(doc: SequenceDocument): boolean {

@@ -45,6 +45,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness } from './appHarness';
 import { dispatchLiveEvent, LiveElement } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
 
 /**
  * The repeat scans the studio runs (BG-01M6SQ9T): the engine's own scan, recorded with its arm.
@@ -229,9 +230,12 @@ function shown(app: AppHarness) {
     sections: [...sections].sort((a, b) => Number(declared(a, 'order')) - Number(declared(b, 'order'))).map(sectionTitle),
   };
 }
-const OPEN = { button: 'Hide Genomics Controls Inspector', title: 'Genomics Controls' };
-const CLOSED = { button: 'Show Genomics Controls Inspector', title: null, sections: [] };
-const OPEN_3D = { button: 'Hide 3D Structure Controls Inspector', title: '3D Structure Controls' };
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
+// A DNA record's genomics tab belongs to Pipelines & NGS, a protein's to Protein & 3D (the registry's interim mapping).
+const OPEN = { button: `Hide ${studioName('pipelines-ngs')} Controls Inspector`, title: `${studioName('pipelines-ngs')} Controls` };
+const CLOSED = { button: `Show ${studioName('pipelines-ngs')} Controls Inspector`, title: null, sections: [] };
+const OPEN_3D = { button: `Hide ${studioName('protein-3d')} Controls Inspector`, title: `${studioName('protein-3d')} Controls` };
 const NONE = { button: null, title: null, sections: [] };
 
 /** The body of the column's section titled `title`. */
@@ -486,7 +490,7 @@ describe("each sub-tab's parameters in App's inspector (AC1)", () => {
 describe('the chain toggle (AC2)', () => {
   it('offers the chain toggle only for a multi-chain structure', async () => {
     await withApp(async (app) => {
-      // A chain of a two-chain structure: the record's own tab is the 3D Structure tab, with one sub-tab.
+      // A chain of a two-chain structure: the record's own tab is the Protein & 3D tab, with one sub-tab.
       await onStructure(app, PROTEIN_2);
       await landScans(app);
       expect(subTabButtons(app.canvas()).filter((b) => !b.hasAttribute('hidden')).map((b) => words(b.textContent)), 'a protein record has the 3D sub-tab alone')

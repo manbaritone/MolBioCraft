@@ -24,6 +24,7 @@ import type { SequenceDocument } from '../types/bio';
 import { macHost, mountApp, type AppHarness, type MountOptions } from './appHarness';
 import { cascaded, gridTracks } from './cssCascade';
 import { dispatchLiveEvent, LiveElement, memoryStorage } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
 
 type Inspector = typeof import('../components/WorkbenchInspector');
 type InspectorClaims = import('../components/WorkbenchInspector').InspectorClaims;
@@ -145,6 +146,10 @@ function shown(app: AppHarness) {
     title: aside?.querySelectorAll('.mbc-pane-title span')[0]?.textContent ?? null,
   };
 }
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
+/** The Pipelines tab's inspector title: Pipelines & NGS, the registry name of the studio guided-pipelines belongs to. */
+const PIPELINES = `${studioName('pipelines-ngs')} Controls`;
 const SEQUENCE_OPEN = { button: 'Hide Sequence View Controls Inspector', aside: true, hidden: false, resizer: 'Resize Sequence View Controls inspector', title: 'Sequence View Controls' };
 const SEQUENCE_CLOSED = { button: 'Show Sequence View Controls Inspector', aside: false, hidden: true, resizer: null, title: null };
 const NONE = { button: null, aside: false, hidden: true, resizer: null, title: null };
@@ -430,21 +435,21 @@ describe('the shortcut and the labels (AC4)', () => {
 
       // A tab with settings other than Sequence: the labels follow it, and one press toggles once.
       await pipelines(app, 'many');
-      const PIPELINES_OPEN = { button: 'Hide Pipelines Controls Inspector', aside: true, hidden: false, resizer: 'Resize Pipelines Controls inspector', title: 'Pipelines Controls' };
+      const PIPELINES_OPEN = { button: `Hide ${PIPELINES} Inspector`, aside: true, hidden: false, resizer: `Resize ${PIPELINES} inspector`, title: PIPELINES };
       expect(shown(app)).toEqual(PIPELINES_OPEN);
-      expect(button().getAttribute('title')).toBe('Hide Pipelines Controls Inspector (Ctrl+Alt+I)');
-      expect(app.header().querySelectorAll('.mbc-viewer-zoom-controls > *').map(label), 'the zoom controls hold only the button off the Sequence tab').toEqual(['Hide Pipelines Controls Inspector']);
+      expect(button().getAttribute('title')).toBe(`Hide ${PIPELINES} Inspector (Ctrl+Alt+I)`);
+      expect(app.header().querySelectorAll('.mbc-viewer-zoom-controls > *').map(label), 'the zoom controls hold only the button off the Sequence tab').toEqual([`Hide ${PIPELINES} Inspector`]);
       await app.press('i', { mod: true, alt: true });
-      expect(shown(app), 'one press hides it').toEqual({ button: 'Show Pipelines Controls Inspector', aside: false, hidden: true, resizer: null, title: null });
+      expect(shown(app), 'one press hides it').toEqual({ button: `Show ${PIPELINES} Inspector`, aside: false, hidden: true, resizer: null, title: null });
       await app.press('i', { mod: true, alt: true });
       expect(shown(app), 'one press shows it').toEqual(PIPELINES_OPEN);
       // A studio that draws its own panel: the button names the tab, and App draws no column.
       await pipelines(app, 'own');
-      expect(shown(app)).toEqual({ button: 'Hide Pipelines Controls Inspector', aside: false, hidden: true, resizer: null, title: null });
+      expect(shown(app)).toEqual({ button: `Hide ${PIPELINES} Inspector`, aside: false, hidden: true, resizer: null, title: null });
       await app.press('i', { mod: true, alt: true });
-      expect(label(app.inspectorButton())).toBe('Show Pipelines Controls Inspector');
+      expect(label(app.inspectorButton())).toBe(`Show ${PIPELINES} Inspector`);
       await app.press('i', { mod: true, alt: true });
-      expect(label(app.inspectorButton())).toBe('Hide Pipelines Controls Inspector');
+      expect(label(app.inspectorButton())).toBe(`Hide ${PIPELINES} Inspector`);
     });
 
     // The macOS host: the native menu's ⌥⌘I accelerator is the shortcut. It sends Toggle Inspector,
@@ -599,9 +604,9 @@ describe('the own-panel and in-workbench contract (AC7)', () => {
       await sequenceOf(app);
       await pipelines(app, 'own');
       const panel = () => app.canvas().querySelectorAll('.probe-own-panel').length;
-      expect([shown(app), panel()]).toEqual([{ button: 'Hide Pipelines Controls Inspector', aside: false, hidden: true, resizer: null, title: null }, 1]);
+      expect([shown(app), panel()]).toEqual([{ button: `Hide ${PIPELINES} Inspector`, aside: false, hidden: true, resizer: null, title: null }, 1]);
       await app.click(app.inspectorButton()!);
-      expect([label(app.inspectorButton()), app.inspectorAside() !== null, panel()]).toEqual(['Show Pipelines Controls Inspector', false, 0]);
+      expect([label(app.inspectorButton()), app.inspectorAside() !== null, panel()]).toEqual([`Show ${PIPELINES} Inspector`, false, 0]);
       await app.click(app.inspectorButton()!);
       expect(panel(), 'opened again').toBe(1);
     });
@@ -741,7 +746,7 @@ describe('the width and its key (AC10)', () => {
 
       // One width for every shared inspector: a studio's column on another tab takes it, and a change there is the Sequence tab's.
       await pipelines(app, 'many');
-      expect([widthNow(app), inline(), label(resizer(app))]).toEqual([336, '336px', 'Resize Pipelines Controls inspector']);
+      expect([widthNow(app), inline(), label(resizer(app))]).toEqual([336, '336px', `Resize ${PIPELINES} inspector`]);
       await press('ArrowRight');
       await app.clickTab('sequence-view');
       expect([widthNow(app), stored()], 'the Sequence tab has the width set on Pipelines').toEqual([320, 320]);

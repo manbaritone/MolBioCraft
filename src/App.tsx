@@ -234,13 +234,13 @@ import {
   isTreeDocument,
   relevantViewerTabs,
   resolveViewerTab,
-  VIEWER_TAB_LABELS,
   visibleDocumentTabs,
   hasBiologicalSequence,
   originalDocumentText,
   viewerTabLabel,
   type ViewerTab,
 } from './core/documentViews';
+import { STUDIOS, studioAvailability, studioForTab, studioIconElement, type StudioEntry, type StudioId } from './core/studioRegistry';
 import { ConstructCockpitBar, basicTmHasNoAnswer } from './components/ConstructCockpitBar';
 import {
   MENU_FUNCTION_INFO_EVENT,
@@ -532,7 +532,6 @@ import {
   MolBioSortChevron,
   MolBioStarIcon,
   MolBioStrandBadge,
-  MolBioViewerTabIcon,
   resolveMenuItemIcon,
 } from './components/MolBioIcons';
 import type {
@@ -2493,13 +2492,12 @@ export const App: React.FC = () => {
     // Sequence view is the default tab of a new (still empty) session; falling
     // back to Document Info there is expected, not a refused request.
     if (!activeDoc.id && requestedViewerTab === 'sequence-view') return;
-    const label = VIEWER_TAB_LABELS[requestedViewerTab] ?? requestedViewerTab;
-    const docLabel = activeDoc.id ? `"${activeDoc.name}" (${activeDoc.moleculeType})` : 'an empty session';
-    setStatusBanner(
-      `${label} is not available for ${docLabel}. Select a ${
-        ['cloning-gel', 'primers-pcr', 'vector-library', 'sanger-contig'].includes(requestedViewerTab) ? 'DNA ' : ''
-      }sequence document that supports it.`
+    // The studio is named, and its reason given, by the studio registry (US-01M6Q16Q).
+    const availability = studioAvailability(
+      studioForTab(requestedViewerTab, activeDoc, requestedViewerTab === 'genomics-ngs' ? genomicsInitialSubTab : undefined),
+      activeDoc
     );
+    if (!availability.ok) setStatusBanner(`${availability.reason} Select a document it applies to.`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedViewerTab, viewerTab]);
   useIsomorphicLayoutEffect(() => {
@@ -4744,6 +4742,38 @@ export const App: React.FC = () => {
     workspacePaneDragging,
   ]);
 
+  /**
+   * A studio as ⌘K and the header search list it: its registry name, once (US-01M6Q16Q). With a
+   * session open it switches to the studio (the redirect explains a studio the record cannot show);
+   * otherwise it starts the studio's task session where a preset exists, or says what it needs.
+   */
+  const STUDIO_SESSION_PRESETS: Partial<Record<StudioId, NewSessionPreset>> = {
+    'sequence-map': 'sample-library', 'cloning-gel': 'cloning-restriction', vectors: 'sample-library',
+    'primers-crispr': 'primers-crispr', alignment: 'align-task', phylogenetics: 'phylo-task', 'sanger-contig': 'sanger-task',
+    'protein-3d': 'ngs-genomics', 'pipelines-ngs': 'sample-library',
+  };
+  const studioCommandItem = (entry: StudioEntry) => ({
+    id: `studio-${entry.id}`,
+    label: entry.name,
+    category: 'Studio',
+    hint: `For ${entry.needs}`,
+    studio: entry.id as StudioId,
+    run: () => {
+      const preset = STUDIO_SESSION_PRESETS[entry.id as StudioId];
+      if (!sessionActive) {
+        if (!preset) {
+          setStatusBanner(`${entry.name} needs ${entry.needs}: open or import one first.`);
+          return;
+        }
+        handleStartNewSession(preset);
+      }
+      setHomeViewActive(false);
+      if (entry.id === 'vectors') openVectorStudio('catalog');
+      else if (entry.id === 'protein-3d') openGenomicsSuite('protein-3d');
+      else setViewerTab(entry.opens.tab);
+    },
+  });
+
   const commandPaletteItems = useMemo(() => {
     const items: {
       id: string;
@@ -4751,6 +4781,7 @@ export const App: React.FC = () => {
       category: string;
       hint: string;
       run: () => void;
+      studio?: StudioId;
     }[] = [
       {
         id: 'edit-undo',
@@ -4786,56 +4817,7 @@ export const App: React.FC = () => {
         hint: '10k aa',
         run: () => handleLoadBenchmarkDocument('protein-10k'),
       },
-      {
-        id: 'nav-seq-view',
-        label: 'Open Sequence View (Circular Map + Resident Linear Viewer)',
-        category: 'Studio',
-        hint: 'View',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('sample-library');
-          else setViewerTab('sequence-view');
-        },
-      },
-      {
-        id: 'nav-protein-3d',
-        label: 'Open Interactive 3D Protein Structure Viewer (Kabsch Superposition)',
-        category: '3D Structure',
-        hint: '3D Canvas',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('ngs-genomics');
-          openGenomicsSuite('protein-3d');
-        },
-      },
-      {
-        id: 'nav-cloning',
-        label: 'Open Cloning & Agarose Gel Physics Studio (10 Methods)',
-        category: 'Studio',
-        hint: 'Cloning',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('cloning-restriction');
-          else setViewerTab('cloning-gel');
-        },
-      },
-      {
-        id: 'nav-align',
-        label: 'Open Sequence Alignment Studio (MSA, Needleman-Wunsch & Smith-Waterman)',
-        category: 'Studio',
-        hint: 'MSA / NW / SW',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('align-task');
-          else setViewerTab('sequence-alignment');
-        },
-      },
-      {
-        id: 'nav-phylo',
-        label: 'Open Phylogenetic Analysis Studio (ML, NJ, Robinson-Foulds)',
-        category: 'Studio',
-        hint: 'Tree',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('phylo-task');
-          else setViewerTab('phylogenetics');
-        },
-      },
+      ...STUDIOS.map((entry) => studioCommandItem(entry)),
       {
         id: 'a11y-colorblind',
         label: 'Switch Nucleotide Palette to Okabe-Ito Colorblind-Safe (Underline Cues)',
@@ -4897,6 +4879,7 @@ export const App: React.FC = () => {
       category: string;
       hint: string;
       run: () => void;
+      studio?: StudioId;
     }[] = [
       {
         id: 'hs-new-seq',
@@ -4912,71 +4895,7 @@ export const App: React.FC = () => {
         hint: `.gb / .fasta / .ab1 • ${sc('I')}`,
         run: () => triggerImportFilesPicker(),
       },
-      {
-        id: 'hs-seq-view',
-        label: 'Sequence View',
-        category: 'Studio',
-        hint: 'Circular Map / Linear',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('sample-library');
-          else {
-            setHomeViewActive(false);
-            setViewerTab('sequence-view');
-          }
-        },
-      },
-      {
-        id: 'hs-cloning',
-        label: 'Cloning & Gel Studio',
-        category: 'Studio',
-        hint: 'Gibson / Golden Gate / Gateway / TOPO',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('cloning-restriction');
-          else {
-            setHomeViewActive(false);
-            setViewerTab('cloning-gel');
-          }
-        },
-      },
-      {
-        id: 'hs-primers',
-        label: 'Primers & CRISPR Studio',
-        category: 'Studio',
-        hint: 'PCR / CRISPR',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('primers-crispr');
-          else {
-            setHomeViewActive(false);
-            setViewerTab('primers-pcr');
-          }
-        },
-      },
-      {
-        id: 'hs-align',
-        label: 'Sequence Alignment Studio',
-        category: 'Studio',
-        hint: 'MAFFT-style / Clustal-style / NW / SW',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('align-task');
-          else {
-            setHomeViewActive(false);
-            setViewerTab('sequence-alignment');
-          }
-        },
-      },
-      {
-        id: 'hs-phylo',
-        label: 'Phylogenetics Studio',
-        category: 'Studio',
-        hint: 'ML / NJ / Bayesian / RSCU',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('phylo-task');
-          else {
-            setHomeViewActive(false);
-            setViewerTab('phylogenetics');
-          }
-        },
-      },
+      ...STUDIOS.map((entry) => studioCommandItem(entry)),
       {
         id: 'hs-blast',
         label: 'BLAST Search',
@@ -4985,50 +4904,6 @@ export const App: React.FC = () => {
         run: () => {
           if (!sessionActive) handleStartNewSession('sample-library');
           setBlastModalOpen(true);
-        },
-      },
-      {
-        id: 'hs-vectors',
-        label: 'Vector Catalog',
-        category: 'Studio',
-        hint: `${VECTOR_CATALOG.length} Vectors & Architect`,
-        run: () => {
-          if (!sessionActive) handleStartNewSession('sample-library');
-          openVectorStudio('catalog');
-        },
-      },
-      {
-        id: 'hs-sanger',
-        label: 'Sanger Chromatogram Studio',
-        category: 'Studio',
-        hint: '.ab1 / .scf Contigs',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('sanger-task');
-          else {
-            setHomeViewActive(false);
-            setViewerTab('sanger-contig');
-          }
-        },
-      },
-      {
-        id: 'hs-protein-3d',
-        label: '3D Protein Viewer',
-        category: '3D Structure',
-        hint: 'PDB / mmCIF / Kabsch',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('ngs-genomics');
-          openGenomicsSuite('protein-3d');
-        },
-      },
-      {
-        id: 'hs-workflows',
-        label: 'Guided Pipelines',
-        category: 'Workflows',
-        hint: 'Pipelines',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('sample-library');
-          setHomeViewActive(false);
-          setViewerTab('guided-pipelines');
         },
       },
       {
@@ -14266,6 +14141,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     <button
                       type="button"
                       key={item.id}
+                      data-studio={item.studio}
                       role="option"
                       aria-selected={idx === headerSearchIdx}
                       className={`mbc-header-search-item ${
@@ -14281,7 +14157,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     >
                       <span className="mbc-header-search-label">
                         <span className="mbc-search-leading-icon" aria-hidden="true">
-                          {resolveMenuItemIcon(item.id, item.label, false, 14)}
+                          {item.studio ? studioIconElement(STUDIOS.find((e) => e.id === item.studio)!.icon, 14) : resolveMenuItemIcon(item.id, item.label, false, 14)}
                         </span>
                         <span>{item.label}</span>
                       </span>
@@ -16018,12 +15894,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   };
                   const prevGroup = idx > 0 ? tabGroups[visibleViewerTabs[idx - 1]] : tabGroups[tab];
                   const showGroupDivider = idx > 0 && prevGroup !== tabGroups[tab];
+                  // The studio or panel the tab belongs to names it and draws its icon (US-01M6Q16Q).
+                  const tabStudio = studioForTab(tab, activeDoc);
                   return (
                     <React.Fragment key={tab}>
                       {showGroupDivider && (
                         <span className="mbc-vtab-group-divider" aria-hidden="true" />
                       )}
-                      <button type="button" role="tab" data-view={tab}
+                      <button type="button" role="tab" data-view={tab} data-studio={tabStudio.id}
                         tabIndex={viewerTab === tab ? 0 : -1} aria-selected={viewerTab === tab}
                         className={`mbc-vtab ${viewerTab === tab ? 'active' : ''}`}
                         onClick={() => {
@@ -16032,8 +15910,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           if (tab === 'history-hybrid') openHybridSubTab(activeDoc.docMetadata?.['Document Type'] === 'Enzyme Set' ? 'enzymes-view' : 'lineage');
                           else setViewerTab(tab);
                         }}>
-                        {tab === 'document-info' ? <FileSpreadsheet size={13} /> : <MolBioViewerTabIcon tabId={tab} />}
-                        <span>{viewerTabLabel(tab, activeDoc)}</span>
+                        {studioIconElement(tabStudio.icon)}
+                        <span className="mbc-vtab-name">{viewerTabLabel(tab, activeDoc)}</span>
+                        {tab === 'annotations-table' && (
+                          <span className="mbc-vtab-count" aria-label={`${activeDoc.features.length + activeDoc.primers.length} annotations`}>
+                            {activeDoc.features.length + activeDoc.primers.length}
+                          </span>
+                        )}
                       </button>
                     </React.Fragment>
                   );
@@ -16168,7 +16051,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   </ErrorBoundary>
                 )}
                 {!mapGalleryOpen && (
-                <ErrorBoundary label={VIEWER_TAB_LABELS[viewerTab] ?? 'This view'} resetKey={`${activeDoc.id}:${viewerTab}`}>
+                <ErrorBoundary label={viewerTabLabel(viewerTab, activeDoc)} resetKey={`${activeDoc.id}:${viewerTab}`}>
                 {/* The main view's studios reach the inspector; the split view's pane and the header stay outside. */}
                 <WorkbenchInspectorProvider open={rightPanelOpen} column={inspectorColumn} onClaimsChange={handleInspectorClaims}>
                 {viewerTab === 'sequence-view' && isContigSummaryRecord(activeDoc) && (
@@ -18209,6 +18092,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   role="option"
                   aria-selected={idx === commandPaletteIdx}
                   key={it.id}
+                  data-studio={it.studio}
                   className={`mbc-cmd-palette-item ${
                     idx === commandPaletteIdx ? 'selected' : ''
                   }`}

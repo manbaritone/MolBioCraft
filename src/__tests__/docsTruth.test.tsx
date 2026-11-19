@@ -8,15 +8,17 @@
  *   label) is a row of the Preferences Keyboard tab of the mounted App, read on a macOS host and on a
  *   Linux host (Windows formats its labels as Linux does, formatPlatformShortcut). Every shortcut
  *   PRODUCT.md names is the label of such a row. A planted row, label or shortcut fails the check.
- * - AC2: README's "Scientific Studios" list names the 13 tabs of VIEWER_TAB_ORDER, in order, by
- *   viewerTabLabel's default label (D0208), and every studio count in PRODUCT.md is 13. The mounted
- *   App's tab strip and inspector title read the same function.
+ * - AC2 (re-pointed by US-01M6Q16Q, D0237): README's "Scientific Studios" list names the studio
+ *   registry's 11 studios, in rail order, by registry name, and names its 2 document panels apart;
+ *   PRODUCT.md counts 11 studios and 2 panels and names the same. The mounted App's tab strip and
+ *   inspector title read viewerTabLabel, which gives the registry name whatever the record.
  * - AC3: every font family README.md or PRODUCT.md names outside a URL has a folder under
  *   src/assets/fonts.
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { VIEWER_TAB_ORDER, viewerTabLabel, type ViewerTab } from '../core/documentViews';
+import { viewerTabLabel, type ViewerTab } from '../core/documentViews';
+import { DOCUMENT_PANELS, STUDIOS, studioForTab } from '../core/studioRegistry';
 import type { SequenceDocument } from '../types/bio';
 import { macHost, mountApp, type AppHarness, type MountOptions } from './appHarness';
 
@@ -197,11 +199,32 @@ function readmeStudioNames(md: string): string[] {
   return names;
 }
 
-/** Every studio count PRODUCT.md states ("13 scientific studios", "13 studio implementations"). */
+/** Every studio count PRODUCT.md states ("11 scientific studios", "11 studio implementations"). */
 function productStudioCounts(md: string): number[] {
   const counts = [...md.matchAll(/\b(\d+) (?:scientific )?studio/gi)].map((m) => Number(m[1]));
   if (counts.length === 0) throw new Error('PRODUCT.md states no studio count');
   return counts;
+}
+
+/** Every document-panel count PRODUCT.md states ("2 document panels"). */
+function productPanelCounts(md: string): number[] {
+  const counts = [...md.matchAll(/\b(\d+) document panels?/gi)].map((m) => Number(m[1]));
+  if (counts.length === 0) throw new Error('PRODUCT.md states no document-panel count');
+  return counts;
+}
+
+/** The names after "Studios:" and "Panels:" in PRODUCT.md's capability line. */
+function productNames(md: string, label: 'Studios' | 'Panels'): string[] {
+  const hit = new RegExp(`\\b${label}: ([^.]+)\\.`).exec(md);
+  if (!hit) throw new Error(`PRODUCT.md names no ${label.toLowerCase()}`);
+  return hit[1].split(',').map(words);
+}
+
+/** The bold names of README's sentence naming the document panels, in order. Throws when there is none. */
+function readmePanelNames(md: string): string[] {
+  const line = sectionLines(md, 'Scientific Studios').find((l) => /document panels/i.test(l));
+  if (!line) throw new Error('README\'s Scientific Studios section names no document panels');
+  return [...line.matchAll(/\*\*([^*]+)\*\*/g)].map((m) => plain(m[1]));
 }
 
 const plainDna = (features: number, primers: number): SequenceDocument => ({
@@ -212,44 +235,60 @@ const plainDna = (features: number, primers: number): SequenceDocument => ({
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', folder: 'Plasmids & Vectors',
 } as unknown as SequenceDocument);
 
-describe('US-01M6P23W AC2: README names the 13 studios by viewerTabLabel and PRODUCT.md counts 13', () => {
-  const defaults = VIEWER_TAB_ORDER.map((tab) => viewerTabLabel(tab));
+describe('US-01M6P23W AC2: README names the registry\'s 11 studios and 2 panels, and PRODUCT.md counts them', () => {
+  // US-01M6Q16Q AC9 (D0237): the check reads the studio registry, not VIEWER_TAB_ORDER's 13 labels.
+  const studios = STUDIOS.map((s) => s.name);
+  const panels = DOCUMENT_PANELS.map((p) => p.name);
 
-  it('US-01M6P23W AC2 README\'s Scientific Studios list is VIEWER_TAB_ORDER\'s 13 default labels, in order', () => {
-    expect(VIEWER_TAB_ORDER).toHaveLength(13);
-    expect(new Set(defaults).size).toBe(13);
-    expect(readmeStudioNames(README)).toEqual(defaults);
+  it('US-01M6P23W AC2 README\'s Scientific Studios list is the registry\'s studios in rail order, by registry name, and its panels apart', () => {
+    expect(studios).toHaveLength(11);
+    expect(new Set(studios).size).toBe(11);
+    expect(readmeStudioNames(README)).toEqual(studios);
+    expect(readmePanelNames(README)).toEqual(panels);
   });
 
   it('US-01M6P23W AC2 a dropped, swapped or renamed studio fails, and so does a missing list', () => {
     const items = README.split('\n').filter((l) => /^\d+\. \*\*/.test(l) && readmeStudioNames(README).includes(plain(/\*\*([^*]+)\*\*/.exec(l)![1])));
-    expect(items).toHaveLength(13);
-    const dropped = README.replace(`${items[12]}\n`, '');
-    expect(readmeStudioNames(dropped)).not.toEqual(defaults);
+    expect(items).toHaveLength(11);
+    const dropped = README.replace(`${items[10]}\n`, '');
+    expect(readmeStudioNames(dropped)).not.toEqual(studios);
     const swapped = README.replace(items[0], '\u0000').replace(items[1], items[0]).replace('\u0000', items[1]);
-    expect(readmeStudioNames(swapped)).not.toEqual(defaults);
-    const renamed = README.replace(items[2], items[2].replace(`**${defaults[2]}**`, '**Text View**'));
-    expect(readmeStudioNames(renamed)).not.toEqual(defaults);
+    expect(readmeStudioNames(swapped)).not.toEqual(studios);
+    const renamed = README.replace(items[2], items[2].replace(`**${studios[2]}**`, '**Text View**'));
+    expect(readmeStudioNames(renamed)).not.toEqual(studios);
+    // A panel listed as a studio, or a studio name still in its old wording, fails too.
+    expect(readmeStudioNames(README.replace(items[10], `${items[10]}\n12. **History** — the history.`))).not.toEqual(studios);
+    expect(readmeStudioNames(README.replace('**Sanger & Contig**', '**Chromatogram**'))).not.toEqual(studios);
+    expect(readmePanelNames(README.replace('**Info**', '**Document info**'))).not.toEqual(panels);
     expect(() => readmeStudioNames('## Scientific Studios\n\nTabs.\n')).toThrow(/lists no studio/);
+    expect(() => readmePanelNames('## Scientific Studios\n\n1. **Sequence Map** — x\n')).toThrow(/names no document panels/);
   });
 
-  it('US-01M6P23W AC2 every studio count PRODUCT.md states is 13', () => {
+  it('US-01M6P23W AC2 every studio count PRODUCT.md states is 11, every panel count 2, and it names the registry\'s studios and panels', () => {
     expect(productStudioCounts(PRODUCT).length).toBeGreaterThanOrEqual(2);
-    expect(productStudioCounts(PRODUCT).filter((n) => n !== 13)).toEqual([]);
-    expect(productStudioCounts(`${PRODUCT}\n- 11 scientific studios`).filter((n) => n !== 13)).toEqual([11]);
+    expect(productStudioCounts(PRODUCT).filter((n) => n !== STUDIOS.length)).toEqual([]);
+    expect(productPanelCounts(PRODUCT).filter((n) => n !== DOCUMENT_PANELS.length)).toEqual([]);
+    expect(productNames(PRODUCT, 'Studios')).toEqual(studios);
+    expect(productNames(PRODUCT, 'Panels')).toEqual(panels);
+    expect(productStudioCounts(`${PRODUCT}\n- 13 scientific studios`).filter((n) => n !== 11)).toEqual([13]);
     expect(() => productStudioCounts('No count.')).toThrow(/no studio count/);
+    expect(() => productNames('No list.', 'Studios')).toThrow(/names no studios/);
   });
 
-  it('US-01M6P23W AC2 viewerTabLabel gives a record its own label, and the default without one', () => {
+  it('US-01M6P23W AC2 viewerTabLabel gives the registry name whatever the record', () => {
     const dna = plainDna(2, 1);
-    expect(viewerTabLabel('annotations-table', dna)).toBe('Annotations (3)');
+    expect(viewerTabLabel('annotations-table', dna)).toBe('Annotations');
     expect(viewerTabLabel('annotations-table')).toBe('Annotations');
     expect(viewerTabLabel('text-view', dna)).toBe('Flatfile');
-    expect(viewerTabLabel('text-view', { ...dna, docMetadata: { 'Document Type': 'Text Document' } } as SequenceDocument)).toBe('Text');
-    expect(viewerTabLabel('sequence-alignment', { ...dna, documentKind: 'contig' } as SequenceDocument)).toBe('Contig');
-    expect(viewerTabLabel('sequence-alignment', { ...dna, alignmentMeta: { isAligned: false } } as unknown as SequenceDocument)).toBe('Sequences');
-    expect(viewerTabLabel('genomics-ngs', { ...dna, moleculeType: 'Protein' } as SequenceDocument)).toBe('3D Structure');
-    expect(viewerTabLabel('history-hybrid', { ...dna, docMetadata: { 'Document Type': 'Enzyme Set' } } as SequenceDocument)).toBe('Enzymes');
+    expect(viewerTabLabel('text-view', { ...dna, docMetadata: { 'Document Type': 'Text Document' } } as SequenceDocument)).toBe('Flatfile');
+    expect(viewerTabLabel('sequence-alignment', { ...dna, documentKind: 'contig' } as SequenceDocument)).toBe('Alignment');
+    expect(viewerTabLabel('sequence-alignment', { ...dna, alignmentMeta: { isAligned: false } } as unknown as SequenceDocument)).toBe('Alignment');
+    expect(viewerTabLabel('genomics-ngs', { ...dna, moleculeType: 'Protein' } as SequenceDocument)).toBe('Protein & 3D');
+    expect(viewerTabLabel('genomics-ngs', dna)).toBe('Pipelines & NGS');
+    expect(viewerTabLabel('history-hybrid', { ...dna, docMetadata: { 'Document Type': 'Enzyme Set' } } as SequenceDocument)).toBe('History');
+    for (const tab of ['sequence-view', 'cloning-gel', 'vector-library', 'primers-pcr', 'phylogenetics', 'sanger-contig', 'guided-pipelines', 'document-info'] as const) {
+      expect(viewerTabLabel(tab, dna), tab).toBe(studioForTab(tab).name);
+    }
   });
 
   it('US-01M6P23W AC2 the mounted App\'s tab strip and inspector title read viewerTabLabel', async () => {
@@ -258,10 +297,12 @@ describe('US-01M6P23W AC2: README names the 13 studios by viewerTabLabel and PRO
     const app = await mountApp();
     try {
       await app.restoreSession({ documents: [dna], activeDocId: dna.id, viewerTab: 'annotations-table' });
-      const tabs = app.all('button[role="tab"][data-view]').map((b) => [b.getAttribute('data-view') as ViewerTab, words(b.querySelector('span')?.textContent ?? '')] as const);
+      const tabs = app.all('button[role="tab"][data-view]').map((b) => [b.getAttribute('data-view') as ViewerTab, words(b.querySelector('.mbc-vtab-name')?.textContent ?? '')] as const);
       expect(tabs.length).toBeGreaterThanOrEqual(4);
       expect(tabs.map(([tab]) => tab)).toContain('annotations-table');
       for (const [tab, label] of tabs) expect(label, tab).toBe(viewerTabLabel(tab, dna));
+      // The annotation count is its own element beside the name.
+      expect(app.all('button[role="tab"][data-view="annotations-table"] .mbc-vtab-count').map((c) => words(c.textContent))).toEqual(['3']);
       // A studio's inspector button is named by its pane title, which the open tab's label gives
       // (the Sequence and Chromatogram tabs keep their own "... View Controls" titles).
       const checked: string[] = [];
@@ -276,17 +317,16 @@ describe('US-01M6P23W AC2: README names the 13 studios by viewerTabLabel and PRO
       }
       expect(checked.length, `an inspector title was checked (tabs: ${tabs.map(([t]) => t).join(', ')})`).toBeGreaterThanOrEqual(1);
 
-      // A record whose label is not the default: an unaligned set's Alignment tab is "Sequences", and so is its inspector.
+      // An unaligned set: its tab and its inspector read Alignment, the registry name, not "Sequences".
       const reads = ['ATGGCCATTGTAATGGGCCGC', 'ATGGCCATTGTTATGGGCCGC', 'ATGGCGATTGTAATGGGCCGC'];
       const unaligned = { ...plainDna(0, 0), id: 'docs-truth-set', name: 'docs-truth-set', sequence: reads[0], folder: 'Alignments',
         documentKind: 'alignment',
         alignmentMeta: { isAligned: false, sequences: reads.map((seq, i) => ({ id: `dt-r${i}`, name: `read ${i + 1}`, sequence: seq })) },
       } as unknown as SequenceDocument;
       await app.restoreSession({ documents: [unaligned], activeDocId: unaligned.id, viewerTab: 'sequence-alignment' });
-      expect(viewerTabLabel('sequence-alignment', unaligned)).toBe('Sequences');
       const alignmentTab = app.all('button[role="tab"][data-view="sequence-alignment"]');
-      expect(alignmentTab.map((b) => words(b.querySelector('span')?.textContent ?? ''))).toEqual(['Sequences']);
-      expect(app.inspectorButton()?.getAttribute('aria-label')?.replace(/^(Show|Hide) /, '')).toBe('Sequences Controls Inspector');
+      expect(alignmentTab.map((b) => words(b.querySelector('.mbc-vtab-name')?.textContent ?? ''))).toEqual(['Alignment']);
+      expect(app.inspectorButton()?.getAttribute('aria-label')?.replace(/^(Show|Hide) /, '')).toBe('Alignment Controls Inspector');
     } finally {
       app.unmount();
     }

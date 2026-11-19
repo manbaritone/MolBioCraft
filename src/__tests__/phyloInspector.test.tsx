@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 /**
- * US-01M6TAZE: a built tree's parameters in App's shared inspector, titled "Tree Controls". The
+ * US-01M6TAZE: a built tree's parameters in App's shared inspector, titled "Phylogenetics Controls" (the registry name, D0237). The
  * phylogeny module's method, distance model, bootstrap replicates, topology style and Show Bootstrap
  * form a Tree Building section; Distances' model, Ancestors' method and Clocks' root age each form
  * their own; the module picker stays in the studio's top bar, and the modules with nothing to set
@@ -28,6 +28,7 @@ import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness } from './appHarness';
 import { cascaded, gridTracks } from './cssCascade';
 import type { LiveElement } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
 
 // Each check launches the App afresh.
 vi.setConfig({ testTimeout: 60_000 });
@@ -154,8 +155,10 @@ function shown(app: AppHarness) {
     inCanvas: app.canvas().querySelectorAll('.mbc-accordion-section').length,
   };
 }
-const OPEN = (...sections: string[]) => ({ button: 'Hide Tree Controls Inspector', title: 'Tree Controls', sections, inCanvas: 0 });
-const CLOSED = { button: 'Show Tree Controls Inspector', title: null, sections: [], inCanvas: 0 };
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
+const OPEN = (...sections: string[]) => ({ button: `Hide ${studioName('phylogenetics')} Controls Inspector`, title: `${studioName('phylogenetics')} Controls`, sections, inCanvas: 0 });
+const CLOSED = { button: `Show ${studioName('phylogenetics')} Controls Inspector`, title: null, sections: [], inCanvas: 0 };
 const NONE = { button: null, title: null, sections: [], inCanvas: 0 };
 
 /** The module picker, in the studio's top bar in the canvas and nowhere in the inspector. */

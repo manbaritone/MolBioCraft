@@ -59,21 +59,21 @@
 
 ## Scientific Studios
 
-Each studio is a tab in the main window, named here by its default label; a tab shows only for the records it applies to. The right-hand **Inspector** (`⌥⌘I` / `Ctrl+Alt+I`) holds the settings for whichever studio is open.
+Each studio is a tab in the main window, named here by its one name in the studio registry (`src/core/studioRegistry.ts`), the name its tab, ⌘K, the search box and the Help panel all show; a tab shows only for the records it applies to. The right-hand **Inspector** (`⌥⌘I` / `Ctrl+Alt+I`) holds the settings for whichever studio is open.
 
-1. **Sequence** — Circular plasmid map and linear sequence view side by side under one zoom, with restriction sites, ORFs, primers, translation, GC and hydropathy tracks, and a construct summary bar (length, GC, Tm, ORF status).
-2. **Annotations** — Sortable, filterable feature and primer table with one-click selection and GFF3 export; the tab shows the record's feature and primer count.
-3. **Flatfile** — Read-only GenBank, FASTA, EMBL and GFF3 text of the open record. For a text document, tree or structure the tab is **Text** and shows the source it was read from.
-4. **Vectors** — Vector catalog, modular part assembly and custom-vector QC.
-5. **Cloning** — All cloning simulators, a co-digest buffer planner and a darkroom-style virtual agarose gel that stays beside its controls.
-6. **Primers** — Oligo analysis, PCR design, mutagenesis and CRISPR guide/donor design.
-7. **Alignment** — Pairwise, dotplot and multiple alignment, with distance matrices, length graphs, virtual gels and alignment-image export. The tab is **Sequences** for an unaligned set and **Contig** for an assembled contig.
-8. **Tree** — Tree building (opening on Neighbor-Joining, with UPGMA and a maximum-likelihood search), model selection and molecular-evolution statistics, with the tree kept in view.
-9. **Chromatogram** — Sanger chromatogram review, trimming and contig assembly, for trace records.
-10. **Genomics** — NGS assembly, genome variants, gene/CpG/repeat prediction, the Mol* 3D structure viewer and submission prep. For a protein the tab is **3D Structure**.
-11. **History** — Protein biophysics and codon tools, secondary structure, the enzymes view, the Bioinformatics Plugins runner, and an undoable history/lineage of every operation. For an enzyme set the tab is **Enzymes**.
-12. **Pipelines** — The guided multi-step QC pipelines below.
-13. **Info** — The record's name, dates and other details.
+1. **Sequence Map** — Circular plasmid map and linear sequence view side by side under one zoom, with restriction sites, ORFs, primers, translation, GC and hydropathy tracks, and a construct summary bar (length, GC, Tm, ORF status).
+2. **Annotations** — Sortable, filterable feature and primer table with one-click selection and GFF3 export; the tab shows the record's feature and primer count beside its name.
+3. **Flatfile** — Read-only GenBank, FASTA, EMBL and GFF3 text of the open record. For a text document, tree or structure it shows the source it was read from.
+4. **Cloning & Gel** — All cloning simulators, a co-digest buffer planner and a darkroom-style virtual agarose gel that stays beside its controls.
+5. **Vectors & Architect** — Vector catalog, modular part assembly and custom-vector QC.
+6. **Primers & CRISPR** — Oligo analysis, PCR design, mutagenesis and CRISPR guide/donor design.
+7. **Alignment** — Pairwise, dotplot and multiple alignment, with distance matrices, length graphs, virtual gels and alignment-image export, for an aligned or unaligned set and for an assembled contig.
+8. **Phylogenetics** — Tree building (opening on Neighbor-Joining, with UPGMA and a maximum-likelihood search), model selection and molecular-evolution statistics, with the tree kept in view.
+9. **Sanger & Contig** — Sanger chromatogram review, trimming and contig assembly, for trace records.
+10. **Protein & 3D** — The Mol* 3D structure viewer, for proteins and structures.
+11. **Pipelines & NGS** — The guided multi-step QC pipelines below and, for a DNA record, NGS assembly, genome variants, gene/CpG/repeat prediction and submission prep.
+
+Two document panels sit beside the studios: **History** (protein biophysics and codon tools, secondary structure, the enzymes view, the Bioinformatics Plugins runner, and an undoable history/lineage of every operation) and **Info** (the record's name, dates and other details).
 
 ### 3D Structure Viewer (Mol*)
 

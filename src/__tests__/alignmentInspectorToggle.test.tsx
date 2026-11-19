@@ -22,6 +22,7 @@ import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness } from './appHarness';
 import { cascaded, gridTracks, type CascadeView } from './cssCascade';
 import { dispatchLiveEvent, LiveElement, memoryStorage, type Layout, type LiveStorage } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
 
 // Each check launches the App afresh, some more than once.
 vi.setConfig({ testTimeout: 60_000 });
@@ -188,6 +189,8 @@ function inspector(app: AppHarness) {
   };
 }
 const ONE_COLUMN = ['minmax(0, 1fr)'];
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
 const ALIGNMENT_OPEN = { button: 'Hide Alignment Controls Inspector', appColumn: false, bodySplit: ONE_COLUMN, handle: [1, 1], shell: [1, 1], rail: [1, 1] };
 const ALIGNMENT_CLOSED = { button: 'Show Alignment Controls Inspector', appColumn: false, bodySplit: ONE_COLUMN, handle: [0, 0], shell: [0, 0], rail: [0, 0] };
 
@@ -475,7 +478,8 @@ describe('the traces and read QC views (AC4)', () => {
   it('offers no inspector on the chromatogram and QC report views', async () => {
     const desk = { window: 1280 };
     const NONE = { button: null, appColumn: false, bodySplit: ONE_COLUMN, handle: [0, 0], shell: [0, 0], rail: [0, 0] };
-    const CONTIG_OPEN = { ...ALIGNMENT_OPEN, button: 'Hide Contig Controls Inspector' };
+    // A contig's tab and inspector read the Alignment studio's registry name, not a per-record "Contig" (D0237).
+    const CONTIG_OPEN = { ...ALIGNMENT_OPEN, button: `Hide ${studioName('alignment')} Controls Inspector` };
     await withDesk(desk, memoryStorage(), async (app) => {
       const { SAMPLE_LIBRARY } = await import('../data/sampleLibrary');
       const byId = (id: string) => SAMPLE_LIBRARY.find((d) => d.id === id)!;
@@ -511,9 +515,9 @@ describe('the traces and read QC views (AC4)', () => {
       await app.click(modeTab(app, 'Multiple Sequence Alignment (MSA)'));
       expect(inspector(app), 'the MSA grid again, open as it was left').toEqual(CONTIG_OPEN);
 
-      // A read list (unaligned reads, no traces, on its Sequences tab): its QC Report claims nothing either.
+      // A read list (unaligned reads, no traces, on its Alignment tab, named by the registry): its QC Report claims nothing either.
       await onAlignment(app, byId('doc-contig-yghj-ion-torrent'));
-      expect(inspector(app), "the read list's MSA grid").toEqual({ ...ALIGNMENT_OPEN, button: 'Hide Sequences Controls Inspector' });
+      expect(inspector(app), "the read list's MSA grid").toEqual({ ...ALIGNMENT_OPEN, button: `Hide ${studioName('alignment')} Controls Inspector` });
       expect(app.one('[role="tablist"][aria-label="Sequence Alignment Modes"]').querySelectorAll('button[role="tab"]').map((t) => t.textContent.trim()), 'no Chromatogram for a read list without traces').not.toContain('Chromatogram');
       await app.click(modeTab(app, 'QC Report'));
       expect(app.canvas().querySelectorAll('.mbc-qc'), "the read list's QC report").toHaveLength(1);

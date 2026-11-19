@@ -22,6 +22,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness } from './appHarness';
 import type { LiveElement } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
 
 // Each check launches the App afresh.
 vi.setConfig({ testTimeout: 60_000 });
@@ -337,13 +338,16 @@ const rangeField = (scope: LiveElement, name: 'From' | 'To') => {
   return found[0];
 };
 
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
 describe("the fragment trace's dye channels (AC3)", () => {
   it("chooses the fragment trace's dye channels in App's inspector", async () => {
     await withApp(async (app) => {
       await onTextTab(app, FSA);
       expect(app.activeTab()).toBe('text-view');
-      expect(label(app.inspectorButton())).toBe('Hide Text Controls Inspector');
-      expect(paneTitle(app)).toBe('Text Controls');
+      // A text note's tab is Flatfile, the studio's registry name, not a per-record "Text" (D0237).
+      expect(label(app.inspectorButton())).toBe(`Hide ${studioName('flatfile')} Controls Inspector`);
+      expect(paneTitle(app)).toBe(`${studioName('flatfile')} Controls`);
       expect(sectionTitles(app.inspectorAside()), 'the Dye Channels section alone').toEqual(['Dye Channels']);
 
       // The four toggles: each drawn once, in the Dye Channels section, none on the trace.
@@ -380,7 +384,7 @@ describe("the fragment trace's dye channels (AC3)", () => {
 
       // Closed, no toggle is drawn and the trace keeps the choice; opened again, NED is still cleared.
       await app.click(app.inspectorButton()!);
-      expect(label(app.inspectorButton())).toBe('Show Text Controls Inspector');
+      expect(label(app.inspectorButton())).toBe(`Show ${studioName('flatfile')} Controls Inspector`);
       expect(app.inspectorAside()).toBeNull();
       expect(dyeToggles(app.doc.body), 'no toggle while closed').toHaveLength(0);
       expect(tracesDrawn(app.canvas())).toEqual(['6-FAM', 'VIC', 'LIZ']);

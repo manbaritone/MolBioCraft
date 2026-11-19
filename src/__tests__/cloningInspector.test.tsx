@@ -50,6 +50,7 @@ import type { CloningMethodType, SequenceDocument } from '../types/bio';
 import type { CloningSubToolType } from '../components/CloningAndGelStudio';
 import { mountApp, type AppHarness } from './appHarness';
 import { LiveDocument, LiveElement, parseMarkup } from './liveDom';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
 
 // Each check launches the App afresh.
 vi.setConfig({ testTimeout: 60_000 });
@@ -163,8 +164,10 @@ function shown(app: AppHarness) {
     sections: [...sections].sort((a, b) => Number(declared(a, 'order')) - Number(declared(b, 'order'))).map(sectionTitle),
   };
 }
-const OPEN = { button: 'Hide Cloning Controls Inspector', title: 'Cloning Controls' };
-const CLOSED = { button: 'Show Cloning Controls Inspector', title: null, sections: [] };
+/** A studio's one name, from the studio registry (US-01M6Q16Q, D0237): its tab and inspector title read it, whatever the record. */
+const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
+const OPEN = { button: `Hide ${studioName('cloning-gel')} Controls Inspector`, title: `${studioName('cloning-gel')} Controls` };
+const CLOSED = { button: `Show ${studioName('cloning-gel')} Controls Inspector`, title: null, sections: [] };
 const NONE = { button: null, title: null, sections: [] };
 
 /** The body of the column's section titled `title`. */

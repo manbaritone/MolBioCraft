@@ -6,6 +6,9 @@
  * Each topic says what the tool does, how it works, the options that matter, and what it saves.
  */
 
+import type { ViewerTab } from '../core/documentViews';
+import { STUDIO_ENTRIES } from '../core/studioRegistry';
+
 export interface HelpTopic {
   title: string;
   /** One or two sentences: what it is for. */
@@ -153,19 +156,28 @@ export const OPERATION_HELP: Record<string, HelpTopic> = {
   'make-blast-db': { title: 'Make BLAST Database from Selection', where: 'Tools → Databases → Make BLAST Database from Selection…', summary: 'Creates a local BLAST database from exactly the selected documents; it is kept between sessions in this browser.' },
 };
 
-export const VIEW_HELP: Record<string, HelpTopic> = {
-  'sequence-view': { title: 'Sequence view', summary: 'The sequence with annotations, translation, ORFs, primers and restriction sites. Select a region to copy, annotate, extract or design primers on it.' },
-  'annotations-table': { title: 'Annotations table', summary: 'Every annotation with its type, position and strand. Sort, filter and edit annotations here.' },
-  'text-view': { title: 'Text view', summary: 'Text documents and reports, the flatfile (GenBank / FASTA / EMBL / GFF3) of sequences, or the source text of imported files. Analysis results such as expression comparisons show their plots here.' },
-  'sequence-alignment': { title: 'Alignment view', summary: 'Alignments and contigs: consensus, identity, colouring, annotations per row, and tools such as dotplot, distances and translation.' },
-  phylogenetics: { title: 'Tree Explorer', summary: 'Tree documents: phylogram, cladogram, circular and radial layouts; support cutoff, branch lengths, time axis for timetrees; click a branch to root, flip, compress, colour or rename; save edits and export Newick / SVG / PNG.' },
-  'primers-pcr': { title: 'Primers & PCR', summary: 'Primer design, in-silico PCR, primer properties and saved primers for the sequence.' },
-  'cloning-gel': { title: 'Cloning & gel', summary: 'Restriction digests, virtual gels and cloning simulations.' },
-  'sanger-contig': { title: 'Sanger traces', summary: 'Chromatograms with base calls and quality, trimming and contig assembly.' },
-  'genomics-ngs': { title: 'Genomics & NGS', summary: 'Read mapping, variant calling and genome-scale tools.' },
-  'history-hybrid': { title: 'History', summary: 'Every operation that made or changed this document, with links to parent documents.' },
-  'document-info': { title: 'Info', summary: 'Document properties and metadata, custom fields (Manage fields… to define your own) and notes.' },
+/** What each studio's and panel's view is for; its title is the studio registry's name (US-01M6Q16Q). */
+const VIEW_SUMMARIES: Record<ViewerTab, Omit<HelpTopic, 'title'>> = {
+  'sequence-view': { summary: 'The sequence with annotations, translation, ORFs, primers and restriction sites. Select a region to copy, annotate, extract or design primers on it.' },
+  'annotations-table': { summary: 'Every annotation with its type, position and strand. Sort, filter and edit annotations here.' },
+  'text-view': { summary: 'Text documents and reports, the flatfile (GenBank / FASTA / EMBL / GFF3) of sequences, or the source text of imported files. Analysis results such as expression comparisons show their plots here.' },
+  'cloning-gel': { summary: 'Restriction digests, virtual gels and cloning simulations.' },
+  'vector-library': { summary: 'The vector catalog, modular part assembly and custom-vector QC, for DNA records.' },
+  'primers-pcr': { summary: 'Primer design, in-silico PCR, primer properties and saved primers for the sequence, and CRISPR guide and donor design.' },
+  'sequence-alignment': { summary: 'Alignments and contigs: consensus, identity, colouring, annotations per row, and tools such as dotplot, distances and translation.' },
+  phylogenetics: { summary: 'Tree documents: phylogram, cladogram, circular and radial layouts; support cutoff, branch lengths, time axis for timetrees; click a branch to root, flip, compress, colour or rename; save edits and export Newick / SVG / PNG.' },
+  'sanger-contig': { summary: 'Chromatograms with base calls and quality, trimming and contig assembly.' },
+  'genomics-ngs': { summary: 'The Mol* 3D structure viewer for proteins and structures. On a DNA record this tab holds the NGS and genome tools of Pipelines & NGS: read mapping, variant calling and genome-scale tools.' },
+  'guided-pipelines': { summary: 'The guided multi-step QC pipelines, which run a record through each check in turn and report its overall status.' },
+  'history-hybrid': { summary: 'Every operation that made or changed this document, with links to parent documents.' },
+  'document-info': { summary: 'Document properties and metadata, custom fields (Manage fields… to define your own) and notes.' },
 };
+
+/** One topic per studio and document panel, keyed by the tab it opens on and titled by its registry name. */
+export const VIEW_HELP: Record<string, HelpTopic> = Object.fromEntries(
+  STUDIO_ENTRIES.map((entry) => [entry.opens.tab, { title: entry.name, ...VIEW_SUMMARIES[entry.opens.tab] }]),
+);
+
 
 /** Topics matching a query (title, summary, method, options). */
 export function searchHelp(query: string): { id: string; topic: HelpTopic }[] {

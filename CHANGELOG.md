@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- **Every studio has one name**: the eleven studios are Sequence Map, Annotations, Flatfile, Cloning & Gel, Vectors & Architect, Primers & CRISPR, Alignment, Phylogenetics, Sanger & Contig, Protein & 3D and Pipelines & NGS, with History and Info as the two document panels. That name is the same on the studio tab, the inspector title, ⌘K, the search box, the Help panel and the status bar, whatever record is open. A text note's tab now reads Flatfile, not Text. An unaligned set or a contig reads Alignment, not Sequences or Contig. An enzyme set reads History, not Enzymes, and a protein structure reads Protein & 3D, not 3D Structure. The tab order puts Cloning & Gel before Vectors & Architect. The Annotations tab shows its count beside the name. ⌘K and the search box list each studio once. A studio the open record cannot show explains, in the status bar, what it needs and what the record is. ⌘-digit shortcuts are unchanged.
+
 ### Removed
 - **The desktop app opens no network port**: the embedded REST server and its `127.0.0.1:18420/api/v1` API were removed, with no replacement automation API (D0174). The app no longer listens on a loopback port, so it needs no inbound network exception; the interface reaches the analysis engine only through Tauri IPC and WebAssembly. Scripts that called the REST API no longer have an endpoint to call.
 
