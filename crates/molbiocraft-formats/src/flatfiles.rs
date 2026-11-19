@@ -567,8 +567,10 @@ fn segments_from_intervals(name: &str, color: &str, intervals: &[(usize, usize)]
 /// ORGANISM line, then each continuation line before the first holding a ';', which begins the
 /// lineage); and `Comment`, the COMMENT lines joined by "\n" as Biopython joins them, every
 /// COMMENT block of the record in order, leaving out a structured comment table's lines from its
-/// `##...-START##` line to its `##...-END##` line, as Biopython does. The first COMMENT line is read from after the keyword,
-/// trimmed; a continuation line from column 13, trailing space trimmed. A D0202
+/// `##...-START##` line to its `##...-END##` line, as Biopython does. Each COMMENT line is read
+/// from column 13, trailing space trimmed, so spaces after column 12 on the first line are kept;
+/// a blank or empty line is dropped and does not end the COMMENT, as Biopython drops every empty
+/// header line. A D0202
 /// `MolBioCraft name:` line is a COMMENT line like any other, so `Comment` holds it too. The
 /// accession, the name and every export are unchanged: the GenBank export still writes VERSION
 /// from the accession. An EMBL import keeps none of the three.
@@ -727,6 +729,11 @@ fn parse_insdc_record(
         // D0229: VERSION, ORGANISM and COMMENT, read as Biopython 1.88 reads them (see
         // parse_genbank_flatfile's doc).
         if !in_features {
+            // Biopython drops every header line that is empty once right-stripped before it reads
+            // the header, so a blank line inside a COMMENT is no line of it and does not end it.
+            if in_comment && raw_line.trim_end().is_empty() {
+                continue;
+            }
             let continued = raw_line.starts_with("            ");
             if in_comment && continued {
                 let data = raw_line[12..].trim_end();
@@ -769,9 +776,10 @@ fn parse_insdc_record(
                 (in_organism, in_lineage, in_definition) = (true, false, false);
                 continue;
             }
-            if let Some(rest) = raw_line.strip_prefix("COMMENT") {
-                // No `continue`: the D0202 name line below is a COMMENT line too.
-                let data = rest.trim();
+            if raw_line.starts_with("COMMENT") {
+                // No `continue`: the D0202 name line below is a COMMENT line too. The data is
+                // Biopython's `line[12:]`, right-stripped: spaces after column 12 are kept.
+                let data = raw_line.get(12..).unwrap_or("").trim_end();
                 in_structured = structured_comment_start(data);
                 if !in_structured {
                     comment_lines.push(data.to_string());

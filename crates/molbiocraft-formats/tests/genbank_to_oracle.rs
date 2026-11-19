@@ -469,3 +469,94 @@ fn import_keeps_version_organism_and_comment() {
         assert_eq!(export_genbank_flatfile(&cleared), e);
     }
 }
+
+fn comment_of(d: &SequenceDocument) -> Option<&str> {
+    d.doc_metadata
+        .as_ref()
+        .and_then(|m| m.get("Comment"))
+        .and_then(|v| v.as_str())
+}
+
+/// D0229's Comment where the COMMENT holds a blank line: Biopython 1.88 drops every empty header
+/// line before it reads the header (Bio/GenBank/Scanner.py, `lines = [_f for _f in lines if _f]`
+/// on lines it has already right-stripped), so a 12-space line and a truly empty line are both
+/// dropped and neither ends the COMMENT; the first line is `line[12:]`, so spaces after column 12
+/// are kept. The expected string is Biopython 1.88's `annotations["comment"]` of this record.
+#[test]
+fn import_comment_drops_blank_lines_as_biopython_does() {
+    let record = "LOCUS       BL000001                  30 bp    DNA     linear   BCT 19-NOV-2026\nACCESSION   BL000001\nVERSION     BL000001.1\nCOMMENT       Two spaces after column 12 are kept.  \n            The line after it.\n            \n\n            After a blank line and an empty one.\n            ##Assembly-Data-START##\n            Assembly Method :: SPAdes\n            ##Assembly-Data-END##\n               Indented three.\n\nCOMMENT     A second block.\nFEATURES             Location/Qualifiers\n     source          1..30\nORIGIN\n        1 atggctggca aacgtaccga accgctgtaa\n//\n";
+    let doc = parse_genbank_flatfile(record, "blank");
+    assert_eq!(
+        comment_of(&doc),
+        Some("  Two spaces after column 12 are kept.\nThe line after it.\nAfter a blank line and an empty one.\n   Indented three.\nA second block.")
+    );
+}
+
+/// The reference-data folder: `MOLBIOCRAFT_TEST_DATA_DIR` (a relative value is read from the repo
+/// root), else `<repo>/test-data`, as `real_resource_files.rs` reads it.
+fn test_data_file(rel: &str) -> Option<String> {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = match std::env::var_os("MOLBIOCRAFT_TEST_DATA_DIR") {
+        Some(d) if !d.is_empty() => repo.join(d),
+        _ => repo.join("test-data"),
+    };
+    let required = std::env::var_os("MOLBIOCRAFT_REQUIRE_TEST_DATA").is_some_and(|v| v == "1");
+    let p = dir.join(rel);
+    match std::fs::read_to_string(&p) {
+        Ok(s) => Some(s),
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {
+            assert!(!required, "reference data required (MOLBIOCRAFT_REQUIRE_TEST_DATA=1) but absent: {}", p.display());
+            eprintln!("skipped: reference data absent ({})", p.display());
+            None
+        }
+        Err(e) => panic!("{}: unreadable: {e}", p.display()),
+    }
+}
+
+/// Biopython 1.88's `annotations["comment"]` of the first record of each test-data GenBank file whose
+/// COMMENT holds a blank or empty line, written by `SeqIO.parse(path, "genbank")` on 2026-11-19.
+const BIOPYTHON_COMMENTS: [(&str, &str); 7] = [
+    (
+        "ncbi/NC_045512.gb",
+        "REVIEWED REFSEQ: This record has been curated by NCBI staff. The\nreference sequence is identical to MN908947.\nOn Jan 17, 2020 this sequence version replaced NC_045512.1.\nAnnotation was added using homology to SARSr-CoV NC_004718.3. ###\nFormerly called 'Wuhan seafood market pneumonia virus.' If you have\nquestions or suggestions, please email us at info@ncbi.nlm.nih.gov\nand include the accession number NC_045512.### Protein structures\ncan be found at\nhttps://www.ncbi.nlm.nih.gov/structure/?term=sars-cov-2.### Find\nall other Severe acute respiratory syndrome coronavirus 2\n(SARS-CoV-2) sequences at\nhttps://www.ncbi.nlm.nih.gov/genbank/sars-cov-2-seqs/\nCOMPLETENESS: full length.",
+    ),
+    (
+        "ncbi/V01555.gb",
+        "On May 5, 2006 this sequence version replaced V01555.1.\nCDS\nListed under this feature are all known protein coding regions as\nwell as all the major open reading frames in the sequence. In\ngeneral the term major is taken as the longest frame in a\nparticular region taking into account the adjacent longest frames\nand likely transcription signals. Note that on this basis some long\noverlapping frames have been excluded and on the other hand some\nsmall frames have been included which might represent exons or\ngenes because they occur in a logical combination with other\nfeatures or because of some other experimental data. The reading\nframes are named according to the Bam H1 fragment in which they\nstart. eg BALF3 is the third leftward frame starting in Bam H1\nfragment A. BORF1 is the first rightward frame in Bam H1 fragment\nO. If there is an obvious TATA sequence followed by an in frame Met\ncodon that satisfies the rules of Kozak [12] in that there is a\npurine at -3 and/or a G at +4 then the reading frame is numbered\nfrom the A of the ATG to the base preceding the termination codon.\nIf there is no obvious initiation codon or there is a substantial\nreading frame in phase before the ATG then the reading frame is\nnumbered from the first base of the first codon.\nSITEs of POLYA signals\nThis feature lists all occurences of the sequence AATAAA which is\nfound normally approximately 20 bases upstream of the mRNA\nprocessing/polyA addition site. The rarely used homolog ATTAAA is\nonly listed when it is found in a position close to the end of a\nmajor reading frame.\nSITEs of DONOR and ACCEPT sequences\nThis is not a comprehensive listing of all such sequences and only\nthe positions of a few have been noted because they occur in\npotentially interesting positions. The number quoted in the table\nis the position of the terminal base in the intron in each case.\nRestriction enzyme SITEs.\nOnly the positions of the sites Bam HI (BAM) are listed.\nRPT\nThis feature is used to define repetitive sequences.\nSITE DEL\nThis feature defines deletions in B95-8 with respect to other\nstrains such as RAJI and also to deletions in other strains such as\nP3HR1 and DAUDI with respect to B95-8.\nSITE HPN\nDenotes sequences with twofold symmetry ie could form hairpin\nloops. This is not a comprehensive list - only a few occurences\nnoted.\nORGRPL\nDenotes the region that encompasses an origin of replication (ori\nP).[13].\nNUMBERING\nThe DNA sequence of B95-8 EBV has been revised [19]. The original\n(Baer et al, 1984) base 359 has been deleted so the new sequence\naround that position reads TCAGTCTTT. To avoid renumbering the\nentire sequence, position 1 has benn moved 1 base to the left of\nthe EcoRI site separating EcoRI Dhet from EcoRI I\n(ie the first A of AGAATTC).",
+    ),
+    (
+        "biopython-tests/GenBank/protein_refseq2.gb",
+        "VALIDATED REFSEQ: This record has undergone preliminary review of\nthe sequence, but has not yet been subject to final review. The\nreference sequence was derived from K00020.1.\nPublication Note:  This RefSeq record includes a subset of the\npublications that are available for this gene. Please see the\nEntrez Gene record to access additional publications.",
+    ),
+    (
+        "biopython-tests/GenBank/tsa_acropora.gb",
+        "The Acropora millepora transcriptome shotgun assembly (TSA) project\nhas the project accession GHGH00000000.  This version of the\nproject (01) has the accession number GHGH01000000, and consists of\nsequences GHGH01000001-GHGH01126539.\nRaw RNA-seq reads were trimmed using libngs with minimum quality of\n20 and minimum read size of 80 nt. Trinity r2013-02-16 was then\nemployed for de novo transcriptome assembly.",
+    ),
+    (
+        "biopython-tests/GenBank/DS830848.gb",
+        "\nThis Wikel tick colony was established in 1996 using field\ncollected ticks from New York, Oklahoma and a Lyme Disease endemic\narea of Connecticut.  This colony has been continuously in-bred\nsince establishment and has not been supplemented with field\ncollected material.  The colony is known to be a competent vector\nof various Borrelia and Babesia isolates. Genomic DNA was prepared\nfrom embryonated eggs.\nThe Ixodes scapularis Genome Project (IGP) is a community-based\neffort initiated in early 2004 to sequence the I. scapularis\ngenome.  The IGP is funded by the National Institute of Allergy and\nInfectious Diseases (NIAID)/National Institute of Health as part of\nthe NIAID-funded Microbial Sequencing Centers (MSCs) at The J.\nCraig Venter Institute (http://www.jcvi.org) and The Broad\nInstitute (http://www.broad.mit.edu/).  The genome sequencing was\nperformed at both MSCs and the assembly at JCVI. The sum of all\nreads equals 6X based on an estimated genome size of 2.1 Gbp, while\nthe coverage on assembled contigs is 3.8X.  The scaffolds are\ncomprised of 570637 contigs; the other 570958 contigs in the 01\nversion of this project represent degenerate contigs that were not\nincorporated into scaffolds.  The annotation for this assembly will\nbe produced jointly by the MSCs and VectorBase\n(http://www.vectorbase.org).  Data release and use follow NIAID\nguidelines\n(http://www.niaid.nih.gov/dmid/genomes/mscs/data_release.htm).\nVectorBase (www.vectorbase.org), a NIAID Bioinformatics Resource\nCenter, is responsible for the long-term curation of the assembled\ngenome sequence  and its annotation.  For more information, contact\ninfo@vectorbase.org.\nAssembly name: JCVI_ISG_i3_1.0\nCoverage: 3.8x on assembled contigs; 6x based on an estimated\ngenome size of 2.1 Gbp\nAnnotation was added to the scaffolds in December 2008.",
+    ),
+    (
+        "biopython-tests/GenBank/HM138502.gbk",
+        "Swine influenza A (H1N1) virus isolated during human swine flu\noutbreak of 2009.",
+    ),
+    (
+        "biopython-tests/GenBank/bad_origin_wrap_fuzzy.gb",
+        "On Apr 11, 2002 this sequence version replaced L09137.1. These data\nand their annotation were supplied to GenBank by Will    Gilbert\nunder the auspices of the GenBank Currator Program. pUC19c  -\nCloning vector (beta-galactosidase mRNA on complementary strand)\nENTRY PUC19C                    #TYPE DNA CIRCULAR TITLE pUC19c -\nCloning vector\n              (beta-galactosidase mRNA on complementary strand)\nDATE      03-FEB-1986\n   #sequence  16-DEC-1986\nACCESSION VB0033\nSOURCE    artificial\nCOLLECTION  ATCC 37254\nREFERENCE\n   #number\n   #authors  Norrander J., Kempe T., Messing J.\n   #journal Gene (1983) 26: 101-106\nREFERENCE\n   #number  1\n   #authors  Yanisch-Perron C., Vieira J., Messing J.\n   #journal Gene (1985) 33: 103-119\n   #comment shows the complete compiled sequence\nREFERENCE\n   #number  2\n   #authors  Chambers,S.P., et al.\n   #journal Gene (1988) 68: 139-149\n   #describes mutation at nt1308 and its effect on copy number\nREFERENCE\n   #number\n   #authors Pouwels P.H., Enger-Valk B.E., Brammar W.J.\n   #book    Cloning Vectors, Elsvier 1985 and supplements\n   #comment  vector I-A-iv-20\nCOMMENT\n   This Sequence was obtained 3-MAR-1986 from J. Messing, Waksman\n   Institute, NJ on floppy disk.\n   Revised 16-DEC-1986 by F. Pfeiffer:\n   1062/3 'AT' to 'TA' to match revised sequence of PBR322\n   The beta-galactosidase mRNA sequence including the multiple\n   cloning site of M13mp19 is on the strand complementary to that\n   shown.\nKEYWORDS\nCROSSREFERENCE\n   #complement\n     VecBase(3):pUC19\n   #prerevised\n     GenBank(50):M11662, EMBL(11):ARPuc19\n   #parent\n     VecBase(3):pUC13, VecBase(3):M13mp19, VecSource(3):bGal19\nPARENT\n   Features of pUC19c (2686 bp)\n     residue     source\n      1- 137  2074-2210 pBR322\n    138- 237  2252-2351 pBR322\n    238- 395  1461-1304 (c) Lac-Operon\n    396- 452    57-   1 (c) polylinker of M13mp19\n    455- 682  1298-1071 (c) Lac-Operon\n    683-2686  2352-4355 pBR322\n   Conflict (cfl) and Mutations (mut):\n        pUC19c  source\n   mut 1308  A  G  2977   pBR322   linked to increased copy number\n   mut 1942  A  G  3611   pBR322\n   mut 2243  T  C  3912   pBR322\nFEATURE\n   1629-2417 789-1 (c) Ap-R\nb-lactamase                            POLYLINKER\nHindIII-SphI-PstI-SalI-XbaI-BamHI-SmaI-KpnI-SacI-EcoRI  SELECTION\n#resistance  Ap\n#indicator beta-galactosidase\nSUMMARY  pUC19c    #length 2686   #checksum 4465.",
+    ),
+];
+
+/// The seven real files: Comment equals Biopython 1.88's comment exactly. Skipped, per file, when
+/// the git-ignored reference data is absent.
+#[test]
+fn import_comment_matches_biopython_on_real_files() {
+    let mut differ = Vec::new();
+    for (rel, want) in BIOPYTHON_COMMENTS {
+        let Some(text) = test_data_file(rel) else { continue };
+        let doc = parse_genbank_flatfile(&text, rel);
+        if comment_of(&doc) != Some(want) {
+            differ.push(rel);
+        }
+    }
+    assert!(differ.is_empty(), "Comment differs from Biopython 1.88 on {differ:?}");
+}

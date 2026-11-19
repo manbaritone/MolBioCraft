@@ -76,6 +76,18 @@ export writes (D0202) is a COMMENT line like any other: 'Comment' keeps it verba
 keeps it in `annotations["comment"]`, and it still names the document. A record exported by the app
 and read back therefore has a 'Comment' that begins 'MolBioCraft name: '.
 
+Biopython 1.88 right-strips each header line and drops every one left empty before it reads the
+header (`Bio/GenBank/Scanner.py`, `lines = [_f for _f in lines if _f]`), and reads each COMMENT
+line from column 13 (`line[12:]`). So a 12-space line and a truly empty line inside a COMMENT are
+no lines of 'Comment' and do not end it, and spaces after column 12 on the first line are kept.
+`oracle.gbk` holds no such COMMENT, and its expected files are 0.54's output, so the case is an
+inline record in `genbank_to_oracle.rs` (`import_comment_drops_blank_lines_as_biopython_does`),
+asserted against the exact string Biopython 1.88 gives for it. A second test
+(`import_comment_matches_biopython_on_real_files`) compares 'Comment' with Biopython 1.88's
+`annotations["comment"]` for the seven test-data GenBank files whose COMMENT holds a blank or
+empty line (ncbi/NC_045512.gb, ncbi/V01555.gb and five Biopython test files), written as literals
+on 2026-11-19; it skips a file the git-ignored test-data folder does not hold.
+
 ## Real-world check (not committed)
 
 On phage lambda, the NCBI GenBank record NC_001416.1 (not committed), the port's `.fna`, `.faa`, `.orfs` and functions outputs are byte-identical to 0.54's `-n`, `-a`, `-o`
