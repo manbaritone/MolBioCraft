@@ -13,6 +13,12 @@ name: Nightly Reference Suite
 # among them. Together that is all the check reads, apart from the private lab runs, which are never
 # committed or fetched: their one test is local-only in the check, which names it in this log on
 # every run and fails on any other skip.
+#
+# The dependency audit (US01M6P2TK, TSD G9) is a second job, run alongside the reference suite and
+# not after it: cargo-deny's advisories check of each Cargo lockfile (the workspace's and the
+# desktop shell's, which is not a workspace member) against the RustSec advisory database, with
+# deny.toml naming any advisory accepted and why, and npm audit of the runtime npm dependencies,
+# which fails on a high or critical finding (D0217).
 
 on:
   schedule:
@@ -120,3 +126,44 @@ jobs:
           MOLBIOCRAFT_REQUIRE_TEST_DATA: '1'
           MOLBIOCRAFT_TEST_DATA_DIR: test-data
         run: node scripts/check_reference_suite.mjs
+
+  # cargo-deny comes from its own action, pinned to the commit of release v2.1.2, whose image
+  # installs cargo-deny 0.21.0 (moving the pin is the only way the audit's cargo-deny changes).
+  # rust-version: stable runs it with the toolchain the rest of CI builds with, not the image's
+  # 1.85. Each check reads deny.toml in the checkout root, the working directory, and fails on any
+  # advisory deny.toml does not accept. npm audit reads package-lock.json, so it needs no npm ci.
+  # The steps after the first run unless the run is cancelled, so one failed audit still lets the
+  # others report each night; a failed step still fails the job (no step may continue on error).
+  dependency-audit:
+    name: Dependency Audit (cargo-deny Advisories for Both Lockfiles + npm audit, ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: cargo-deny Advisories (Cargo.toml, the Workspace)
+        uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2, cargo-deny 0.21.0
+        with:
+          rust-version: stable
+          manifest-path: ./Cargo.toml
+          command: check advisories
+
+      - name: cargo-deny Advisories (src-tauri/Cargo.toml, the Desktop Shell)
+        if: ${{ !cancelled() }}
+        uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2, cargo-deny 0.21.0
+        with:
+          rust-version: stable
+          manifest-path: ./src-tauri/Cargo.toml
+          command: check advisories
+
+      - name: Setup Node.js 22
+        if: ${{ !cancelled() }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: npm audit (Runtime Dependencies, Fails on High or Critical)
+        if: ${{ !cancelled() }}
+        run: npm audit --omit=dev --audit-level=high

@@ -82,14 +82,16 @@ interface Step { id?: string; name?: string; uses?: string; run?: string; shell?
 interface Job { 'runs-on'?: string; needs?: string | string[]; if?: string; env?: Record<string, string>; permissions?: Record<string, string>; outputs?: Record<string, string>; steps: Step[] }
 interface Workflow { env?: Record<string, string>; permissions?: Record<string, string>; jobs: Record<string, Job>; [key: string]: unknown }
 
-/** release.yml as Ruby's Psych reads it (YAML 1.1, so the `on` key reads as the boolean true). */
-function releaseWorkflow(): Workflow {
-  const r = cp.spawnSync('ruby', ['-ryaml', '-rjson', '-e', 'print JSON.generate(YAML.safe_load(File.read(ARGV[0])))', repo('.github/workflows/release.yml')], { encoding: 'utf8' });
+/** A workflow file as Ruby's Psych reads it (YAML 1.1, so the `on` key reads as the boolean true). */
+function workflow(rel: string): Workflow {
+  const r = cp.spawnSync('ruby', ['-ryaml', '-rjson', '-e', 'print JSON.generate(YAML.safe_load(File.read(ARGV[0])))', repo(rel)], { encoding: 'utf8' });
   if (r.error !== undefined || r.status !== 0) {
-    throw new Error(`could not read .github/workflows/release.yml as YAML with ruby -ryaml (the offline parser this test uses; Ruby must be on PATH): ${r.error?.message ?? r.stderr}`);
+    throw new Error(`could not read ${rel} as YAML with ruby -ryaml (the offline parser this test uses; Ruby must be on PATH): ${r.error?.message ?? r.stderr}`);
   }
   return JSON.parse(r.stdout) as Workflow;
 }
+const releaseWorkflow = (): Workflow => workflow('.github/workflows/release.yml');
+const nightlyWorkflow = (): Workflow => workflow('.github/workflows/nightly.yml');
 
 function step(wf: Workflow, job: string, id: string): Step {
   const s = wf.jobs[job]?.steps.find((x) => x.id === id);
@@ -1198,4 +1200,62 @@ it('writes the release notes from the version\'s CHANGELOG section and publishes
   expect(at('actions/download-artifact@v4'), 'the artifacts are downloaded after the checkout, which would clean them').toBeGreaterThan(at('actions/checkout@v4'));
   const release = publish.steps.find((s) => s.uses === 'softprops/action-gh-release@v2');
   expect(release?.with?.body_path, 'the release notes are the CHANGELOG section').toBe('release-notes.md');
+});
+
+it('US-01M6P2TK AC1: audits both Cargo lockfiles and the npm runtime dependencies every night, failing on a finding', () => {
+  const wf = nightlyWorkflow();
+  const audit = wf.jobs['dependency-audit'] as (Job & Record<string, unknown>) | undefined;
+  expect(audit, 'nightly.yml has a dependency-audit job').toBeDefined();
+  if (audit === undefined) return;
+  // Its own job, run whether or not the reference suite passes, and never allowed to fail quietly.
+  expect(audit.needs, 'dependency-audit waits on no other job').toBeUndefined();
+  expect(audit.if, 'dependency-audit runs on every nightly run').toBeUndefined();
+  expect(audit['continue-on-error'], 'a failed audit fails the job').toBeUndefined();
+  expect(String(audit['runs-on']), 'the cargo-deny action is a Docker action, which runs only on a Linux runner').toMatch(/^ubuntu-/);
+  const steps = audit.steps as (Step & Record<string, unknown>)[];
+  expect(steps.filter((s) => s['continue-on-error'] !== undefined).map((s) => s.name), 'no audit step is allowed to fail').toEqual([]);
+  expect(steps[0]?.uses, 'the job checks out the repo first').toBe('actions/checkout@v4');
+  // The checkout and the first audit run unconditionally; every later step runs unless the run is
+  // cancelled, so a failed audit still lets the others report, and its failure still fails the job.
+  expect(steps.slice(0, 2).map((s) => s.if), 'the checkout and the first audit are unconditional').toEqual([undefined, undefined]);
+  expect(steps.slice(2).filter((s) => s.if !== '${{ !cancelled() }}').map((s) => s.name), 'each later step runs after a failed audit').toEqual([]);
+
+  // cargo-deny's advisories check, once per lockfile: the workspace and the desktop shell, which is
+  // not a workspace member and keeps its own Cargo.lock. The action is pinned to one release (and so
+  // to the cargo-deny version its image installs), not to a tag that moves.
+  const deny = steps.filter((s) => (s.uses ?? '').startsWith('EmbarkStudios/cargo-deny-action@'));
+  for (const s of deny) {
+    expect(s.uses, `${s.name ?? ''} pins one cargo-deny-action release (a commit SHA or vX.Y.Z)`).toMatch(/@([0-9a-f]{40}|v\d+\.\d+\.\d+)$/);
+    expect(s.with?.command, `${s.name ?? ''} runs the advisories check`).toBe('check advisories');
+  }
+  const manifests = deny.map((s) => String(s.with?.['manifest-path'] ?? './Cargo.toml').replace(/^\.\//, '')).sort();
+  expect(manifests, 'one advisories check for each Cargo manifest').toEqual(['Cargo.toml', 'src-tauri/Cargo.toml']);
+
+  // npm audit of the runtime dependencies, failing the job on a high or critical finding (D0217).
+  const npm = steps.filter((s) => /\bnpm audit\b/.test(s.run ?? ''));
+  expect(npm.map((s) => (s.run ?? '').trim()), 'one plain npm audit of the runtime dependencies at high').toEqual(['npm audit --omit=dev --audit-level=high']);
+  const setupNode = steps.findIndex((s) => (s.uses ?? '').startsWith('actions/setup-node@'));
+  expect(setupNode, 'Node is set up before npm audit runs').toBeGreaterThanOrEqual(0);
+  expect(steps.indexOf(npm[0]), 'npm audit runs after Node is set up').toBeGreaterThan(setupNode);
+
+  // The permissions stay read-only (R5), and the reference suite (US-01M6P2SS) keeps its steps as
+  // they were at fd9116d, with its check still a plain step whose failure fails its job (P2SS AC8).
+  expect(wf.permissions, 'the workflow token stays read-only').toEqual({ contents: 'read' });
+  expect(Object.keys(wf.jobs), 'the reference suite and the audit are the only nightly jobs').toEqual(['reference-suite', 'dependency-audit']);
+  expect(wf.jobs['reference-suite'].steps.map((s) => s.name), 'reference-suite step names as at fd9116d').toEqual([
+    'Checkout repository',
+    'Setup Node.js 22',
+    'Install Rust Stable Toolchain (with wasm32-unknown-unknown)',
+    'Cache Cargo Registry & Build Artifacts',
+    'Install Frontend Dependencies',
+    'Build Zero-Import Rust WebAssembly Engine',
+    'Restore Reference Data Cache (test-data/, Keyed on the Hash of fetch.sh)',
+    'Fetch Reference Data (scripts/outside-data/fetch.sh)',
+    'Save Reference Data Cache',
+    'Run Reference-Oracle Suite (All Vitest + cargo test --workspace --include-ignored, MOLBIOCRAFT_REQUIRE_TEST_DATA=1)',
+  ]);
+  const lines = text(repo('.github/workflows/nightly.yml')).split('\n');
+  const check = lines.findIndex((l) => /^\s*run:\s*node scripts\/check_reference_suite\.mjs\s*$/.test(l));
+  expect(check, 'nightly.yml runs node scripts/check_reference_suite.mjs').toBeGreaterThan(0);
+  expect(lines.slice(Math.max(0, check - 6), check + 1).join('\n'), 'the reference check is a plain step').not.toMatch(/continue-on-error|^\s*if:|\|\|/m);
 });

@@ -1,0 +1,19 @@
+# Copyright 2026 MolBioCraft Contributors
+# SPDX-License-Identifier: CC-BY-NC-4.0
+
+# cargo-deny configuration (US01M6P2TK, TSD G9), read by the nightly dependency-audit job's
+# `cargo deny check advisories` for Cargo.toml and src-tauri/Cargo.toml. Only the advisories check
+# runs. Field forms are those of the cargo-deny advisories config reference
+# (https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html, cargo-deny 0.21.0).
+#
+# Every other field keeps its documented default: the RustSec advisory database; every
+# vulnerability and unmaintained advisory an error (unmaintained = "all"); an unsound advisory an
+# error when it names a direct dependency of a workspace crate (unsound = "workspace"); a yanked
+# crate a warning.
+
+[advisories]
+# The advisories accepted, each as { id = "RUSTSEC-YYYY-NNNN", reason = "why it does not affect
+# MolBioCraft, or what it waits on" }, with an expiry = "YYYY-MM-DD" where a fix is due. An entry is
+# added only for an advisory a nightly run has reported, never in advance; a bare id string, with
+# no reason, is not accepted here.
+ignore = []
