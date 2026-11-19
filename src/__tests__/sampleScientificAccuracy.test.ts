@@ -472,13 +472,25 @@ describe('contig-summary genome records', () => {
 });
 
 /**
- * Genomes/Human, Genomes/Plants, Genomes/Viruses and Primers, pinned to the public NCBI records each
- * sample cites: the genome figures written here are checked against the fetched esummary records
- * (US-01M6TDFV), the viral and chrM sequences base for base against the fetched FASTA (US-01M6TGZ8),
- * and the primers against their fetched source records, in 'samples checked against the public
- * records they cite' below. The Tree Documents are MolBioCraft's own trees of the rebuilt alignments
- * (US-01M6TDSV). No sample carries a document date copied from another program: no Created or
- * Modified field (US-01M6TDFV, US-01M6TDSV).
+ * Genomes/Human, Genomes/Plants and Genomes/Viruses, and (in 'Primers and Tree Documents' below) the
+ * Primers, pinned to the public records they cite, NCBI and, for the BioBrick and M13 primers, the
+ * iGEM Registry, as scripts/outside-data/fetch.sh fetches them; the checks are in 'samples checked
+ * against the public records they cite' below.
+ * - Genomes: the length, accession, GI and topology written here are what 'genome samples match
+ *   their NCBI record summaries' checks against the fetched NCBI esummary records (US-01M6TDFV); the
+ *   seven virus genomes and chrM are checked base for base against their fetched NCBI FASTA
+ *   (US-01M6TGZ8).
+ * - Sequencing primers: VF2, VR and the five M13 primers equal their fetched iGEM Registry parts
+ *   (BBa_G00100, BBa_G00101 and BBa_G00103-BBa_G00107); the five T7, T3 and SP6 promoter primers
+ *   are each found, on either strand, in the fetched NCBI phage genome they cite.
+ * - Design primers: the three record-derived ones (cmv-fwd, ef1a-fwd, wpre-rev) equal their fetched
+ *   NCBI record at the cited span and strand; the three publication-cited ones (bgh-rev, 16s-27f,
+ *   16s-1492r) are checked against no fetched record but for a DOI citation whose quoted oligo
+ *   equals their binding region; the Gibson example design (gibson-mch-fwd) cites nothing and is
+ *   checked for its 'MolBioCraft example design' label.
+ * The Tree Documents are MolBioCraft's Neighbor-Joining trees of the rebuilt alignments, each
+ * recording the alignment it was built from (US-01M6TDSV). No sample carries a Created or Modified
+ * field (US-01M6TDFV, US-01M6TDSV).
  */
 describe('Human, plant and virus reference records', () => {
   const sample = (name: string) => {
