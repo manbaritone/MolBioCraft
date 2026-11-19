@@ -903,8 +903,8 @@ describe('the commands that open a Sequence section (AC14)', () => {
       await app.click(await menuRow(app, menubar(app, 'Sequence'), ['Annotate', 'Genes & ORFs'], 'Show ORFs'));
       opened('Sequence > Annotate > Genes & ORFs > Show ORFs', 'ORFs');
       await ready('Restriction Analysis');
-      await app.click(await menuRow(app, app.one('button.mbc-tool-btn[title="Cloning and assembly tools"]'), ['Restriction Digest'], 'Find Sites'));
-      opened('Cloning > Restriction Digest > Find Sites', 'Restriction Analysis');
+      await app.click(await menuRow(app, app.one('button.mbc-tool-btn[title="Cloning and assembly tools"]'), ['Restriction Cloning'], 'Find Sites'));
+      opened('Cloning > Restriction Cloning > Find Sites', 'Restriction Analysis');
       await ready('ORFs');
       await app.menu('annotate:find-orfs');
       opened('Annotate > Find ORFs (native)', 'ORFs');

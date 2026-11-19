@@ -180,12 +180,12 @@ describe('US-01M6Q1CF AC3: ⌘S saves the session and ⇧⌘E exports GenBank, a
       expect(key(fileSave, 'Save Session')).toEqual(['Ctrl+S']);
       expect(key(fileSave, 'Save Session As')).toEqual(['Ctrl+Alt+Shift+S']);
       expect(key(await menuRows(app, 'File', ['Export Sequences']), 'Export GenBank')).toEqual(['Ctrl+Shift+E']);
-      const tbExportSession = await menuRows(app, 'Export', ['Session'], true);
-      expect(key(tbExportSession, 'Save Session')).toEqual(['Ctrl+S']);
-      expect(key(await menuRows(app, 'Export', ['Sequence Files'], true), 'Export GenBank')).toEqual(['Ctrl+Shift+E']);
+      // Export ▾ is File › Export Sequences (D0254): Export GenBank is one of its top-level rows.
+      const tbExport = await menuRows(app, 'Export', [], true);
+      expect(key(tbExport, 'Export GenBank')).toEqual(['Ctrl+Shift+E']);
       const tbSession = await menuRows(app, 'Session', ['Save Session'], true);
       expect(key(tbSession, 'Save Session')).toEqual(['Ctrl+S']);
-      const every = [...fileSave, ...tbExportSession, ...tbSession];
+      const every = [...fileSave, ...tbExport, ...tbSession];
       expect(every.filter((r) => r.key === 'Ctrl+Alt+S')).toEqual([]);
     });
   });

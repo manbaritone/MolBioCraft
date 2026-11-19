@@ -453,6 +453,7 @@ import {
   shortcutLabelToAriaKeyshortcuts,
   ShortcutMenuNode,
 } from './core/menuShortcuts';
+import { command as registryCommand, formatCommandShortcut, menubarCommands, rankPaletteCommands, toolbarMenuItems, type ToolbarGroupId } from './core/commandRegistry';
 import {
   decideSessionReplacement,
   isSessionContentDirty,
@@ -3669,6 +3670,8 @@ export const App: React.FC = () => {
   nativeMacMenuBarRef.current = useNativeMacMenuBar;
   const sc = (key: string, mods?: { shift?: boolean; alt?: boolean }) =>
     formatPlatformShortcut(key, displayOs, mods);
+  /** A registry command's shortcut as this OS shows it (US-01M6Q1N2): the menubar reads its keys from the registry. */
+  const registryKey = (id: string) => formatCommandShortcut(registryCommand(id).shortcut, displayOs);
   /** `aria-keyshortcuts` for a control whose title shows the shortcut label `sc` returns. */
   const ariaSc = (key: string, mods?: { shift?: boolean; alt?: boolean }) =>
     shortcutLabelToAriaKeyshortcuts(sc(key, mods));
@@ -4878,35 +4881,26 @@ export const App: React.FC = () => {
     },
   });
 
-  const commandPaletteItems = useMemo(() => {
-    const items: {
-      id: string;
-      label: string;
-      category: string;
-      hint: string;
-      run: () => void;
-      studio?: StudioId;
-    }[] = [
-      {
-        id: 'edit-undo',
-        label:
-          undoStack.length > 0
-            ? `Undo: ${undoStack[undoStack.length - 1].label} (${undoStack[undoStack.length - 1].prevDoc.name})`
-            : 'Undo Last Sequence / Annotation Edit',
-        category: 'Edit History',
-        hint: sc('Z'),
-        run: () => handleUndoDocumentEdit(),
-      },
-      {
-        id: 'edit-redo',
-        label:
-          redoStack.length > 0
-            ? `Redo: ${redoStack[redoStack.length - 1].label} (${redoStack[redoStack.length - 1].nextDoc.name})`
-            : 'Redo Sequence / Annotation Edit',
-        category: 'Edit History',
-        hint: sc('Z', { shift: true }),
-        run: () => handleRedoDocumentEdit(),
-      },
+  /**
+   * ⌘K's entries that are not menubar commands: the studios (each carries its View › Studios command's
+   * path and key once the menubar is built), the two benchmark loaders and the colour-blind palette
+   * switch, and the open documents. The menubar's commands join them below, after topMenus.
+   */
+  type PaletteItem = {
+    id: string;
+    label: string;
+    category: string;
+    hint: string;
+    run: () => void;
+    studio?: StudioId;
+    commandId?: string;
+    path?: string[];
+    shortcut?: string;
+    disabled?: boolean;
+    reason?: string;
+  };
+  const commandPaletteExtras = useMemo(() => {
+    const items: PaletteItem[] = [
       {
         id: 'bench-genome-500k',
         label: 'Load 500,000 bp Annotated Chromosome (benchmark)',
@@ -4921,7 +4915,7 @@ export const App: React.FC = () => {
         hint: '10k aa',
         run: () => handleLoadBenchmarkDocument('protein-10k'),
       },
-      ...STUDIOS.map((entry) => studioCommandItem(entry)),
+      ...STUDIOS.map((entry): PaletteItem => ({ ...studioCommandItem(entry), commandId: `view-studio-${entry.id}` })),
       {
         id: 'a11y-colorblind',
         label: 'Switch Nucleotide Palette to Okabe-Ito Colorblind-Safe (Underline Cues)',
@@ -4931,13 +4925,6 @@ export const App: React.FC = () => {
           setColorScheme('colorblind-safe');
           setStatusBanner('Enabled Okabe-Ito Colorblind-Safe nucleotide palette with underline cues');
         },
-      },
-      {
-        id: 'theme-toggle',
-        label: `Toggle Appearance Theme (Currently ${darkMode ? 'Dark' : 'Light'})`,
-        category: 'Appearance',
-        hint: darkMode ? 'Light' : 'Dark',
-        run: () => handleQuickThemeToggle(),
       },
     ];
 
@@ -4966,10 +4953,7 @@ export const App: React.FC = () => {
   }, [
     activeNonDeletedDocs,
     commandPaletteQuery,
-    darkMode,
     sessionActive,
-    undoStack,
-    redoStack,
     hostOs,
   ]);
 
@@ -8856,8 +8840,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
       {
         kind: 'command',
         id: `${idPrefix}-ns-blank`,
-        label: 'Blank Session',
-        shortcut: sc('N', { alt: true }),
+        label: registryCommand('file-ns-blank').label,
+        shortcut: registryKey('file-ns-blank'),
         onSelect: () => handleStartNewSession('blank'),
       },
       { kind: 'separator', id: `${idPrefix}-ns-sep-1` },
@@ -8870,33 +8854,45 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: `${idPrefix}-ns-new-seq`,
-            label: 'New Sequence',
-            shortcut: sc('N'),
+            label: registryCommand('file-ns-new-seq').label,
+            shortcut: registryKey('file-ns-new-seq'),
             onSelect: () => handleStartNewSession('new-sequence'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-vec-cat`,
-            label: 'Vector Catalog',
+            label: registryCommand('file-ns-vec-cat').label,
             onSelect: () => handleStartNewSession('vector-catalog'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-vec-arch`,
-            label: 'Custom Vector',
+            label: registryCommand('file-ns-vec-arch').label,
             onSelect: () => handleStartNewSession('vector-architect'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-twist`,
-            label: 'Vector QC',
+            label: registryCommand('file-ns-twist').label,
             onSelect: () => handleStartNewSession('twist-onboarding'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-text-doc`,
-            label: 'Flatfile Document',
+            label: registryCommand('file-ns-text-doc').label,
             onSelect: () => handleStartNewSession('text-doc'),
+          },
+          {
+            kind: 'command',
+            id: `${idPrefix}-ns-new-text-doc`,
+            label: registryCommand('file-ns-new-text-doc').label,
+            onSelect: () => handleCreateNewTextDocument(),
+          },
+          {
+            kind: 'command',
+            id: `${idPrefix}-ns-new-enzyme-set`,
+            label: registryCommand('file-ns-new-enzyme-set').label,
+            onSelect: () => handleCreateNewEnzymeSetDocument(),
           },
         ],
       },
@@ -8909,25 +8905,25 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: `${idPrefix}-ns-clone-rest`,
-            label: 'Restriction Cloning',
+            label: registryCommand('file-ns-clone-rest').label,
             onSelect: () => handleStartNewSession('cloning-restriction'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-clone-asm`,
-            label: 'Seamless Assembly',
+            label: registryCommand('file-ns-clone-asm').label,
             onSelect: () => handleStartNewSession('cloning-assembly'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-primers`,
-            label: 'Primers & CRISPR',
+            label: registryCommand('file-ns-primers').label,
             onSelect: () => handleStartNewSession('primers-crispr'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-enzymes`,
-            label: 'Enzyme Digest',
+            label: registryCommand('file-ns-enzymes').label,
             onSelect: () => handleStartNewSession('enzyme-set'),
           },
         ],
@@ -8941,13 +8937,13 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: `${idPrefix}-ns-align`,
-            label: 'Sequence Alignment',
+            label: registryCommand('file-ns-align').label,
             onSelect: () => handleStartNewSession('align-task'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-phylo`,
-            label: 'Phylogenetic Tree',
+            label: registryCommand('file-ns-phylo').label,
             onSelect: () => handleStartNewSession('phylo-task'),
           },
         ],
@@ -8961,19 +8957,19 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: `${idPrefix}-ns-sanger`,
-            label: 'Sanger Traces',
+            label: registryCommand('file-ns-sanger').label,
             onSelect: () => handleStartNewSession('sanger-task'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-ngs`,
-            label: 'NGS & 3D Structure',
+            label: registryCommand('file-ns-ngs').label,
             onSelect: () => handleStartNewSession('ngs-genomics'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-pipeline`,
-            label: 'Guided Pipeline',
+            label: registryCommand('file-ns-pipeline').label,
             onSelect: () => handleStartNewSession('pipeline-task'),
           },
         ],
@@ -8987,29 +8983,29 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: `${idPrefix}-ns-imp-files`,
-            label: 'Import Files',
-            shortcut: sc('I'),
+            label: registryCommand('file-ns-imp-files').label,
+            shortcut: registryKey('file-ns-imp-files'),
             onSelect: () => handleStartNewSession('import-files'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-imp-clip`,
-            label: 'From Clipboard',
-            shortcut: sc('I', { shift: true }),
+            label: registryCommand('file-ns-imp-clip').label,
+            shortcut: registryKey('file-ns-imp-clip'),
             onSelect: () => handleStartNewSession('import-clipboard'),
           },
           {
             kind: 'command',
             id: `${idPrefix}-ns-folder`,
-            label: 'New Folder',
-            shortcut: sc('N', { shift: true }),
+            label: registryCommand('file-ns-folder').label,
+            shortcut: registryKey('file-ns-folder'),
             onSelect: () => handleStartNewSession('new-folder'),
           },
           { kind: 'separator', id: `${idPrefix}-ns-imp-sep` },
           {
             kind: 'command',
             id: `${idPrefix}-ns-samples`,
-            label: 'Sample Project',
+            label: registryCommand('file-ns-samples').label,
             onSelect: () => handleStartNewSession('sample-library'),
           },
         ],
@@ -9026,25 +9022,25 @@ requireActiveSession(() => handleCopySequenceToClipboard());
       {
         kind: 'command',
         id: `${idPrefix}-other-restore-backup`,
-        label: 'Restore Backup',
+        label: registryCommand('file-imp-other-restore-backup').label,
         onSelect: () => triggerOpenMbcPicker('replace'),
       },
       {
         kind: 'command',
         id: `${idPrefix}-other-sample-docs`,
-        label: 'Sample Documents',
+        label: registryCommand('file-imp-other-sample-docs').label,
         onSelect: () => handleImportSampleDocuments(),
       },
       {
         kind: 'command',
         id: `${idPrefix}-other-mbc-prefs`,
-        label: 'MolBioCraft Preferences',
+        label: registryCommand('file-imp-other-mbc-prefs').label,
         onSelect: () => triggerImportPreferencesPicker(),
       },
       {
         kind: 'command',
         id: `${idPrefix}-other-new-db-conn`,
-        label: 'New Database Connection',
+        label: registryCommand('file-imp-other-new-db-conn').label,
         onSelect: () => setDbExplorerCategory('ncbi-nucleotide'),
       },
     ],
@@ -9054,28 +9050,28 @@ requireActiveSession(() => handleCopySequenceToClipboard());
     {
       kind: 'command',
       id: `${idPrefix}-direct-files`,
-      label: 'Import Files',
-      shortcut: sc('I'),
+      label: registryCommand('file-imp-direct-files').label,
+      shortcut: registryKey('file-imp-direct-files'),
       onSelect: () => triggerImportFilesPicker(),
     },
     {
       kind: 'command',
       id: `${idPrefix}-direct-folder`,
-      label: 'Import Folder',
+      label: registryCommand('file-imp-direct-folder').label,
       onSelect: () => triggerImportFolderPicker(),
     },
     {
       kind: 'command',
       id: `${idPrefix}-metadata`,
-      label: 'Metadata from Spreadsheet…',
+      label: registryCommand('file-imp-metadata').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'import-metadata' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-direct-clipboard`,
-      label: 'Import From Clipboard',
-      shortcut: sc('I', { shift: true }),
+      label: registryCommand('file-imp-direct-clipboard').label,
+      shortcut: registryKey('file-imp-direct-clipboard'),
       onSelect: () => handleImportFromClipboardAction(),
     },
     buildImportOtherSubmenu(idPrefix),
@@ -9089,15 +9085,15 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-gb-fasta`,
-          label: 'Sequence Files',
-          shortcut: sc('I'),
+          label: registryCommand('file-imp-gb-fasta').label,
+          shortcut: registryKey('file-imp-gb-fasta'),
           onSelect: () => triggerImportFilesPicker(),
         },
         {
           kind: 'command',
           id: `${idPrefix}-clipboard`,
-          label: 'From Clipboard',
-          shortcut: sc('I', { shift: true }),
+          label: registryCommand('file-imp-clipboard').label,
+          shortcut: registryKey('file-imp-clipboard'),
           onSelect: () => handleImportFromClipboardAction(),
         },
       ],
@@ -9111,7 +9107,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-sanger`,
-          label: 'Sanger Traces',
+          label: registryCommand('file-imp-sanger').label,
           onSelect: () => {
             setHomeViewActive(false);
             handleStartNewSession('sanger-task');
@@ -9120,7 +9116,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-ngs`,
-          label: 'NGS Reads',
+          label: registryCommand('file-imp-ngs').label,
           onSelect: () => {
             setHomeViewActive(false);
             handleStartNewSession('ngs-genomics');
@@ -9137,7 +9133,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-vec-cat`,
-          label: 'Built-In Vectors',
+          label: registryCommand('file-imp-vec-cat').label,
           onSelect: () => {
             setHomeViewActive(false);
             handleStartNewSession('vector-catalog');
@@ -9146,7 +9142,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-twist`,
-          label: 'Custom Vector QC',
+          label: registryCommand('file-imp-twist').label,
           onSelect: () => {
             setHomeViewActive(false);
             handleStartNewSession('twist-onboarding');
@@ -9163,19 +9159,19 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-ncbi-uniprot`,
-          label: 'NCBI & UniProt',
+          label: registryCommand('file-imp-ncbi-uniprot').label,
           onSelect: () => setDbExplorerCategory('ncbi-nucleotide'),
         },
         {
           kind: 'command',
           id: `${idPrefix}-primer-database`,
-          label: 'Primers',
+          label: registryCommand('file-imp-primer-database').label,
           onSelect: () => openPrimerDatabaseWindow(),
         },
         {
           kind: 'command',
           id: `${idPrefix}-enzyme-database`,
-          label: 'Restriction Enzymes',
+          label: registryCommand('file-imp-enzyme-database').label,
           onSelect: () => openEnzymeDatabaseWindow(),
         },
       ],
@@ -9189,7 +9185,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-merge-mbc`,
-          label: 'Merge Session',
+          label: registryCommand('file-imp-merge-mbc').label,
           onSelect: () =>
             sessionActive
               ? triggerOpenMbcPicker('merge')
@@ -9206,7 +9202,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-prefs-json`,
-          label: 'Import Preferences',
+          label: registryCommand('file-imp-prefs-json').label,
           onSelect: () => triggerImportPreferencesPicker(),
         },
       ],
@@ -9270,21 +9266,21 @@ requireActiveSession(() => handleCopySequenceToClipboard());
     {
       kind: 'command',
       id: `${idPrefix}-msa-dialog`,
-      label: 'Multiple Alignment…',
+      label: registryCommand('top-align-msa-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'align' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-pairwise-dialog`,
-      label: 'Pairwise Alignment…',
+      label: registryCommand('top-align-pairwise-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'pairwise' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-structures-dialog`,
-      label: 'Align Structures…',
+      label: registryCommand('top-align-structures-dialog').label,
       disabled: !isCommandEnabled('align-structures'),
       description: commandDisabledReason('align-structures'),
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'align-structures' })),
@@ -9292,84 +9288,84 @@ requireActiveSession(() => handleCopySequenceToClipboard());
     {
       kind: 'command',
       id: `${idPrefix}-read-qc`,
-      label: 'Read QC Report…',
+      label: registryCommand('top-align-read-qc').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'read-qc' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-merge-pairs`,
-      label: 'Merge Paired Reads…',
+      label: registryCommand('top-align-merge-pairs').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'merge-pairs' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-trim-dialog`,
-      label: 'Trim Ends…',
+      label: registryCommand('top-align-trim-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'trim' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-denovo-dialog`,
-      label: 'De Novo Assemble…',
+      label: registryCommand('top-align-denovo-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'denovo' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-map-dialog`,
-      label: 'Map to Reference…',
+      label: registryCommand('top-align-map-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'map' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-expression-levels-dialog`,
-      label: 'Calculate Expression Levels…',
+      label: registryCommand('top-align-expression-levels-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'expression-levels' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-structural-variants-dialog`,
-      label: 'Find Structural Variants…',
+      label: registryCommand('top-align-structural-variants-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'structural-variants' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-translation-dialog`,
-      label: 'Translation Alignment…',
+      label: registryCommand('top-align-translation-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'transalign' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-highlight-sites`,
-      label: 'Highlight Sites…',
+      label: registryCommand('top-align-highlight-sites').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'highlight-sites' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-add-to-alignment`,
-      label: 'Add Sequences to Alignment…',
+      label: registryCommand('top-align-add-to-alignment').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'add-to-alignment' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-mask-dialog`,
-      label: 'Mask Alignment…',
+      label: registryCommand('top-align-mask-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'mask' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-consensus-dialog`,
-      label: 'Generate Consensus…',
+      label: registryCommand('top-align-consensus-dialog').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'consensus' })),
     },
@@ -9383,8 +9379,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-msa-mafft`,
-          label: 'MAFFT-style Alignment',
-          shortcut: sc('A', { alt: true }),
+          label: registryCommand('top-align-msa-mafft').label,
+          shortcut: registryKey('top-align-msa-mafft'),
           onSelect: () =>
             requireActiveSession(() =>
               openSequenceAlignment('msa', {
@@ -9395,7 +9391,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-msa-clustalo`,
-          label: 'Clustal-style Alignment',
+          label: registryCommand('top-align-msa-clustalo').label,
           onSelect: () =>
             requireActiveSession(() =>
               openSequenceAlignment('msa', {
@@ -9406,7 +9402,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-msa-muscle`,
-          label: 'MUSCLE-style Alignment',
+          label: registryCommand('top-align-msa-muscle').label,
           onSelect: () =>
             requireActiveSession(() =>
               openSequenceAlignment('msa', {
@@ -9426,7 +9422,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-pairwise-nw`,
-          label: 'Global (Needleman-Wunsch)',
+          label: registryCommand('top-align-pairwise-nw').label,
           onSelect: () =>
             requireActiveSession(() =>
               openSequenceAlignment('pairwise', { pairwiseAlgo: 'nw' })
@@ -9435,7 +9431,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-pairwise-sw`,
-          label: 'Local (Smith-Waterman)',
+          label: registryCommand('top-align-pairwise-sw').label,
           onSelect: () =>
             requireActiveSession(() =>
               openSequenceAlignment('pairwise', { pairwiseAlgo: 'sw' })
@@ -9444,7 +9440,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-dotplot`,
-          label: 'K-mer Dotplot',
+          label: registryCommand('top-align-dotplot').label,
           onSelect: () =>
             requireActiveSession(() => openSequenceAlignment('dotplot')),
         },
@@ -9460,21 +9456,21 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-map-ref`,
-          label: 'Map Reads',
+          label: registryCommand('top-align-map-ref').label,
           onSelect: () =>
             requireActiveSession(() => openGenomicsSuite('ngs-assembly')),
         },
         {
           kind: 'command',
           id: `${idPrefix}-denovo`,
-          label: 'De Novo Assembly',
+          label: registryCommand('top-align-denovo').label,
           onSelect: () =>
             requireActiveSession(() => openGenomicsSuite('ngs-assembly')),
         },
         {
           kind: 'command',
           id: `${idPrefix}-sanger-contig`,
-          label: 'Sanger Contigs',
+          label: registryCommand('top-align-sanger-contig').label,
           onSelect: () =>
             requireActiveSession(() => setViewerTab('sanger-contig')),
         },
@@ -9490,7 +9486,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-whole-genome`,
-          label: 'Genome Synteny',
+          label: registryCommand('top-align-whole-genome').label,
           onSelect: () =>
             requireActiveSession(() => openGenomicsSuite('genome-variants')),
         },
@@ -9507,42 +9503,42 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-gen-consensus`,
-          label: 'Generate Consensus',
+          label: registryCommand('top-align-gen-consensus').label,
           onSelect: () =>
             requireActiveSession(() => handleGenerateConsensusFromSelected()),
         },
         {
           kind: 'command',
           id: `${idPrefix}-concat`,
-          label: 'Concatenate Sequences',
+          label: registryCommand('top-align-concat').label,
           onSelect: () =>
             requireActiveSession(() => handleConcatenateSelectedSequences()),
         },
         {
           kind: 'command',
           id: `${idPrefix}-mask-lowcomp`,
-          label: 'Mask Homopolymers',
+          label: registryCommand('top-align-mask-lowcomp').label,
           onSelect: () =>
             requireActiveSession(() => handleMaskActiveSequence('low-complexity')),
         },
         {
           kind: 'command',
           id: `${idPrefix}-export-consensus`,
-          label: 'Export Consensus',
+          label: registryCommand('top-align-export-consensus').label,
           onSelect: () =>
             requireActiveSession(() => handleExportConsensusFasta()),
         },
         {
           kind: 'command',
           id: `${idPrefix}-haplotype-partitioner`,
-          label: 'Haplotype & Allele Partitioner',
+          label: registryCommand('top-align-haplotype-partitioner').label,
           onSelect: () =>
             requireActiveSession(() => openPluginTool('plugin-haplotype-partitioner')),
         },
         {
           kind: 'command',
           id: `${idPrefix}-ext-cli-suite`,
-          label: 'External CLI Suite',
+          label: registryCommand('top-align-ext-cli-suite').label,
           onSelect: () =>
             requireActiveSession(() => openPluginTool('plugin-external-cli-suite')),
         },
@@ -9554,42 +9550,42 @@ requireActiveSession(() => handleCopySequenceToClipboard());
     {
       kind: 'command',
       id: `${idPrefix}-build-tree`,
-      label: 'Build Tree…',
+      label: registryCommand('top-phylo-build-tree').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'tree' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-compute-distances`,
-      label: 'Compute Distances…',
+      label: registryCommand('top-phylo-compute-distances').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'compute-distances' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-timetree`,
-      label: 'Compute Timetree…',
+      label: registryCommand('top-phylo-timetree').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'timetree' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-condense-tree`,
-      label: 'Condense Tree…',
+      label: registryCommand('top-phylo-condense-tree').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'condense-tree' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-gene-dups`,
-      label: 'Gene Duplication Inference…',
+      label: registryCommand('top-phylo-gene-dups').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'gene-duplications' })),
     },
     {
       kind: 'command',
       id: `${idPrefix}-consensus-tree`,
-      label: 'Consensus Tree…',
+      label: registryCommand('top-phylo-consensus-tree').label,
       disabled: !sessionActive,
       onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'consensus-tree' })),
     },
@@ -9603,8 +9599,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-tree-ml`,
-          label: 'Maximum Likelihood',
-          shortcut: sc('T', { alt: true }),
+          label: registryCommand('top-phylo-tree-ml').label,
+          shortcut: registryKey('top-phylo-tree-ml'),
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'tree', method: 'Maximum Likelihood (ML)' })
@@ -9613,7 +9609,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-tree-fasttree`,
-          label: 'FastTree (runs if installed)',
+          label: registryCommand('top-phylo-tree-fasttree').label,
           onSelect: () =>
             requireActiveSession(() =>
               openPhylogeneticsModule('phylogeny', {
@@ -9624,7 +9620,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-tree-phyml`,
-          label: 'PhyML (runs if installed)',
+          label: registryCommand('top-phylo-tree-phyml').label,
           onSelect: () =>
             requireActiveSession(() =>
               openPhylogeneticsModule('phylogeny', {
@@ -9635,7 +9631,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-tree-raxml`,
-          label: 'RAxML (runs if installed)',
+          label: registryCommand('top-phylo-tree-raxml').label,
           onSelect: () =>
             requireActiveSession(() =>
               openPhylogeneticsModule('phylogeny', {
@@ -9646,7 +9642,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-tree-mrbayes`,
-          label: 'MrBayes (runs if installed)',
+          label: registryCommand('top-phylo-tree-mrbayes').label,
           onSelect: () =>
             requireActiveSession(() =>
               openPhylogeneticsModule('phylogeny', {
@@ -9658,7 +9654,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-tree-nj`,
-          label: 'Neighbor-Joining',
+          label: registryCommand('top-phylo-tree-nj').label,
           onSelect: () =>
             requireActiveSession(() =>
               openPhylogeneticsModule('phylogeny', {
@@ -9669,7 +9665,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-tree-me`,
-          label: 'Minimum Evolution',
+          label: registryCommand('top-phylo-tree-me').label,
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'tree', method: 'Minimum-Evolution (ME)' })
@@ -9678,7 +9674,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-tree-upgma`,
-          label: 'UPGMA Clustering',
+          label: registryCommand('top-phylo-tree-upgma').label,
           onSelect: () =>
             requireActiveSession(() =>
               openPhylogeneticsModule('phylogeny', {
@@ -9689,7 +9685,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-tree-mp`,
-          label: 'Maximum Parsimony',
+          label: registryCommand('top-phylo-tree-mp').label,
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'tree', method: 'Maximum Parsimony (MP)' })
@@ -9707,14 +9703,14 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-usertree`,
-          label: 'Analyze User Tree',
+          label: registryCommand('top-phylo-usertree').label,
           onSelect: () =>
             requireActiveSession(() => openPhylogeneticsModule('usertree')),
         },
         {
           kind: 'command',
           id: `${idPrefix}-ancestors-ml`,
-          label: 'Ancestors (ML)',
+          label: registryCommand('top-phylo-ancestors-ml').label,
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'evo', analysis: 'ancestors', initial: { method: 'ml' } })
@@ -9723,7 +9719,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-ancestors-mp`,
-          label: 'Ancestors (Parsimony)',
+          label: registryCommand('top-phylo-ancestors-mp').label,
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'evo', analysis: 'ancestors', initial: { method: 'mp' } })
@@ -9741,7 +9737,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-models-best`,
-          label: 'Best Fit Models',
+          label: registryCommand('top-phylo-models-best').label,
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'best' } })
@@ -9750,7 +9746,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-models-matrix`,
-          label: 'Rate Matrix',
+          label: registryCommand('top-phylo-models-matrix').label,
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'matrix' } })
@@ -9759,7 +9755,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-models-disparity`,
-          label: 'Homogeneity Test',
+          label: registryCommand('top-phylo-models-disparity').label,
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'disparity' } })
@@ -9777,14 +9773,14 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-data`,
-          label: 'Alignment Explorer',
+          label: registryCommand('top-phylo-data').label,
           onSelect: () =>
             requireActiveSession(() => openPhylogeneticsModule('data')),
         },
         {
           kind: 'command',
           id: `${idPrefix}-models-composition`,
-          label: 'Codon Composition',
+          label: registryCommand('top-phylo-models-composition').label,
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'composition' } })
@@ -9793,7 +9789,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-models-rscu`,
-          label: 'Codon Usage (RSCU)',
+          label: registryCommand('top-phylo-models-rscu').label,
           onSelect: () =>
             requireActiveSession(() =>
               setOperationDialog({ kind: 'evo', analysis: 'models', initial: { analysis: 'rscu' } })
@@ -9811,14 +9807,14 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-distance`,
-          label: 'Pairwise Distances',
+          label: registryCommand('top-phylo-distance').label,
           onSelect: () =>
             requireActiveSession(() => openPhylogeneticsModule('distance')),
         },
         {
           kind: 'command',
           id: `${idPrefix}-diversity`,
-          label: 'Population Diversity',
+          label: registryCommand('top-phylo-diversity').label,
           onSelect: () =>
             requireActiveSession(() => setOperationDialog({ kind: 'evo', analysis: 'diversity' })),
         },
@@ -9834,14 +9830,14 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-selection`,
-          label: 'Codon Selection (dN/dS)',
+          label: registryCommand('top-phylo-selection').label,
           onSelect: () =>
             requireActiveSession(() => setOperationDialog({ kind: 'evo', analysis: 'selection' })),
         },
         {
           kind: 'command',
           id: `${idPrefix}-rates`,
-          label: 'Gamma Site Rates',
+          label: registryCommand('top-phylo-rates').label,
           onSelect: () =>
             requireActiveSession(() => setOperationDialog({ kind: 'evo', analysis: 'rates' })),
         },
@@ -9857,28 +9853,28 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         {
           kind: 'command',
           id: `${idPrefix}-clocks`,
-          label: 'Molecular Clocks',
+          label: registryCommand('top-phylo-clocks').label,
           onSelect: () =>
             requireActiveSession(() => setOperationDialog({ kind: 'evo', analysis: 'clocks' })),
         },
         {
           kind: 'command',
           id: `${idPrefix}-diagnose`,
-          label: 'Variant Impact',
+          label: registryCommand('top-phylo-diagnose').label,
           onSelect: () =>
             requireActiveSession(() => openPhylogeneticsModule('diagnose')),
         },
         {
           kind: 'command',
           id: `${idPrefix}-species-delim`,
-          label: 'Species Delimitation',
+          label: registryCommand('top-phylo-species-delim').label,
           onSelect: () =>
             requireActiveSession(() => openPluginTool('plugin-species-delimitation')),
         },
         {
           kind: 'command',
           id: `${idPrefix}-hpc-phylo-job`,
-          label: 'HPC Phylogeny Job Builder',
+          label: registryCommand('top-phylo-hpc-phylo-job').label,
           onSelect: () =>
             requireActiveSession(() => openPluginTool('plugin-hpc-phylogeny-script')),
         },
@@ -9899,7 +9895,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'app-about-modal',
-            label: 'About MolBioCraft',
+            label: registryCommand('app-about-modal').label,
             onSelect: () => setAboutModalOpen(true),
           },
         ],
@@ -9912,15 +9908,15 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'app-prefs-open',
-            label: 'Preferences',
-            shortcut: sc(','),
+            label: registryCommand('app-prefs-open').label,
+            shortcut: registryKey('app-prefs-open'),
             onSelect: () => setPrefsModalTab('General'),
           },
           {
             kind: 'command',
             id: 'app-theme-toggle',
             label: `${darkMode ? 'Light' : 'Dark'} Appearance`,
-            shortcut: sc('L', { shift: true }),
+            shortcut: registryKey('app-theme-toggle'),
             onSelect: () => handleQuickThemeToggle(),
           },
         ],
@@ -9929,8 +9925,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
       {
         kind: 'command',
         id: 'app-quit-cmd',
-        label: 'Quit MolBioCraft',
-        shortcut: sc('Q'),
+        label: registryCommand('app-quit-cmd').label,
+        shortcut: registryKey('app-quit-cmd'),
         onSelect: () => handleRequestAppQuit(),
       },
     ],
@@ -9945,14 +9941,14 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-open-mbc',
-            label: 'Open Session',
-            shortcut: sc('O'),
+            label: registryCommand('file-open-mbc').label,
+            shortcut: registryKey('file-open-mbc'),
             onSelect: () => triggerOpenMbcPicker('replace'),
           },
           {
             kind: 'command',
             id: 'file-merge-mbc',
-            label: 'Merge Session',
+            label: registryCommand('file-merge-mbc').label,
             disabled: !sessionActive,
             onSelect: () => requireActiveSession(() => triggerOpenMbcPicker('merge')),
           },
@@ -9960,7 +9956,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-restore-auto',
-            label: 'Restore Autosave',
+            label: registryCommand('file-restore-auto').label,
             onSelect: () => handleRestoreLocalAutosave(),
           },
         ],
@@ -9974,16 +9970,16 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-save-mbc',
-            label: 'Save Session',
-            shortcut: sc('S'),
+            label: registryCommand('file-save-mbc').label,
+            shortcut: registryKey('file-save-mbc'),
             disabled: !sessionActive,
             onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(false)),
           },
           {
             kind: 'command',
             id: 'file-save-mbc-as',
-            label: 'Save Session As',
-            shortcut: sc('S', { shift: true, alt: true }),
+            label: registryCommand('file-save-mbc-as').label,
+            shortcut: registryKey('file-save-mbc-as'),
             disabled: !sessionActive,
             onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(true)),
           },
@@ -9991,8 +9987,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-close-session',
-            label: 'Close Session',
-            shortcut: sc('W', { shift: true }),
+            label: registryCommand('file-close-session').label,
+            shortcut: registryKey('file-close-session'),
             disabled: !sessionActive,
             onSelect: () => handleCloseSession(),
           },
@@ -10008,19 +10004,19 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-rename-folder',
-            label: 'Rename Folder',
+            label: registryCommand('file-rename-folder').label,
             onSelect: () => requireActiveSession(() => handleRenameSelectedFolder()),
           },
           {
             kind: 'command',
             id: 'file-folder-color',
-            label: 'Set Folder Color',
+            label: registryCommand('file-folder-color').label,
             onSelect: () => requireActiveSession(() => handleCycleSelectedFolderColor()),
           },
           {
             kind: 'command',
             id: 'file-move-folder',
-            label: 'Move to Folder',
+            label: registryCommand('file-move-folder').label,
             onSelect: () => requireActiveSession(() => handleMoveSelectedDocsToFolder()),
           },
         ],
@@ -10035,27 +10031,27 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-toggle-fav',
-            label: 'Toggle Favorite',
+            label: registryCommand('file-toggle-fav').label,
             onSelect: () => requireActiveSession(() => handleToggleFavoriteDocs()),
           },
           { kind: 'separator', id: 'file-trash-sep' },
           {
             kind: 'command',
             id: 'file-soft-delete',
-            label: 'Move to Trash',
+            label: registryCommand('file-soft-delete').label,
             onSelect: () => requireActiveSession(() => handleSoftDeleteSelectedDocs()),
           },
           {
             kind: 'command',
             id: 'file-put-back',
-            label: 'Restore from Trash',
+            label: registryCommand('file-put-back').label,
             disabled: deletedDocIds.length === 0,
             onSelect: () => requireActiveSession(() => handleRestoreFromDeletedItems()),
           },
           {
             kind: 'command',
             id: 'file-erase-all',
-            label: 'Empty Trash',
+            label: registryCommand('file-erase-all').label,
             disabled: deletedDocIds.length === 0,
             onSelect: () => requireActiveSession(() => handleEraseAllDeletedItems()),
           },
@@ -10070,14 +10066,14 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-backup-mbc',
-            label: 'Back Up Project',
+            label: registryCommand('file-backup-mbc').label,
             disabled: !sessionActive,
             onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(true)),
           },
           {
             kind: 'command',
             id: 'file-restore-backup-mbc',
-            label: 'Restore Backup',
+            label: registryCommand('file-restore-backup-mbc').label,
             onSelect: () => triggerOpenMbcPicker('replace'),
           },
         ],
@@ -10091,13 +10087,13 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-import-prefs',
-            label: 'Import Preferences',
+            label: registryCommand('file-import-prefs').label,
             onSelect: () => triggerImportPreferencesPicker(),
           },
           {
             kind: 'command',
             id: 'file-export-prefs',
-            label: 'Export Preferences',
+            label: registryCommand('file-export-prefs').label,
             onSelect: () => handleExportPreferencesFile(),
           },
         ],
@@ -10119,8 +10115,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-exp-gb',
-            label: 'Export GenBank',
-            shortcut: sc('E', { shift: true }),
+            label: registryCommand('file-exp-gb').label,
+            shortcut: registryKey('file-exp-gb'),
             disabled: !isCommandEnabled('export-active-document'),
             onSelect: () =>
               requireActiveSession(() =>
@@ -10130,8 +10126,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-exp-fasta',
-            label: 'Export FASTA',
-            shortcut: sc('S', { shift: true }),
+            label: registryCommand('file-exp-fasta').label,
+            shortcut: registryKey('file-exp-fasta'),
             disabled: !isCommandEnabled('export-sequence'),
             onSelect: () =>
               requireActiveSession(() =>
@@ -10141,7 +10137,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-exp-embl',
-            label: 'Export EMBL',
+            label: registryCommand('file-exp-embl').label,
             disabled: !isCommandEnabled('export-active-document'),
             onSelect: () =>
               requireActiveSession(() =>
@@ -10151,7 +10147,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-exp-gff3',
-            label: 'Export GFF3',
+            label: registryCommand('file-exp-gff3').label,
             disabled: !isCommandEnabled('export-active-document'),
             onSelect: () =>
               requireActiveSession(() =>
@@ -10161,17 +10157,34 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-exp-convert-genbank',
-            label: 'Convert GenBank…',
+            label: registryCommand('file-exp-convert-genbank').label,
             onSelect: () => setOperationDialog({ kind: 'convert-genbank' }),
           },
           {
             kind: 'command',
             id: 'file-exp-ncbi-tbl',
-            label: 'GenBank Submission',
+            label: registryCommand('file-exp-ncbi-tbl').label,
             disabled: !sessionActive,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('transform-submit')),
           },
+          // Offered only while an alignment is the active document (US-01M6S8C5).
+          ...(sessionActive && isAlignmentImageDocument(activeDoc)
+            ? [{
+                kind: 'submenu' as const,
+                id: 'file-exp-aln-img',
+                label: 'Alignment Image',
+                description: 'The whole alignment, in blocks of 60 columns under a position ruler, with names, identities and the consensus',
+                minWidth: 215,
+                children: ([['svg', 'SVG Vector'], ['png', 'PNG Image'], ['pdf', 'PDF Document']] as const).map(([format, label]) => ({
+                  kind: 'command' as const,
+                  id: `file-exp-aln-img-${format}`,
+                  label,
+                  description: `Save the whole alignment as a ${format.toUpperCase()} figure`,
+                  onSelect: () => requireActiveSession(() => handleExportAlignmentImage(format)),
+                })),
+              }]
+            : []),
         ],
       },
       {
@@ -10184,53 +10197,53 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-exp-sel-fasta',
-            label: 'Batch FASTA',
+            label: registryCommand('file-exp-sel-fasta').label,
             onSelect: () =>
               requireActiveSession(() => handleExportBatchDocuments('selected', 'fasta')),
           },
           {
             kind: 'command',
             id: 'file-exp-sel-fastastq',
-            label: 'Reads as FASTQ',
+            label: registryCommand('file-exp-sel-fastastq').label,
             onSelect: () =>
               requireActiveSession(() => handleExportBatchDocuments('selected', 'fastq')),
           },
           {
             kind: 'command',
             id: 'file-exp-mbc-json',
-            label: 'Export MBC JSON',
+            label: registryCommand('file-exp-mbc-json').label,
             onSelect: () => requireActiveSession(() => handleExportMbcJson()),
           },
           {
             kind: 'command',
             id: 'file-exp-folder-mbc',
-            label: 'Export Folder as MBC',
+            label: registryCommand('file-exp-folder-mbc').label,
             onSelect: () => requireActiveSession(() => handleExportFolderMbc()),
           },
           {
             kind: 'command',
             id: 'file-exp-folder-gb',
-            label: 'Export Folder',
+            label: registryCommand('file-exp-folder-gb').label,
             onSelect: () =>
               requireActiveSession(() => handleExportBatchDocuments('folder', 'gb')),
           },
           {
             kind: 'command',
             id: 'file-exp-lineage-gb',
-            label: 'Export Lineage',
+            label: registryCommand('file-exp-lineage-gb').label,
             onSelect: () => requireActiveSession(() => handleExportLineageBundle()),
           },
           {
             kind: 'command',
             id: 'file-exp-consensus-fa',
-            label: 'Export Consensus',
+            label: registryCommand('file-exp-consensus-fa').label,
             onSelect: () =>
               requireActiveSession(() => handleExportConsensusFasta()),
           },
           {
             kind: 'command',
             id: 'file-exp-svg-img',
-            label: 'Save SVG Map',
+            label: registryCommand('file-exp-svg-img').label,
             onSelect: () => requireActiveSession(() => handleSaveViewerAsSvgImage()),
           },
         ],
@@ -10244,8 +10257,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'file-print-cmd',
-            label: 'Print / Export PDF',
-            shortcut: sc('P'),
+            label: registryCommand('file-print-cmd').label,
+            shortcut: registryKey('file-print-cmd'),
             onSelect: () => requireActiveSession(() => handlePrintWorkbench()),
           },
         ],
@@ -10254,8 +10267,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
       {
         kind: 'command',
         id: 'file-quit-cmd',
-        label: 'Quit MolBioCraft',
-        shortcut: sc('Q'),
+        label: registryCommand('file-quit-cmd').label,
+        shortcut: registryKey('file-quit-cmd'),
         onSelect: () => handleRequestAppQuit(),
       },
     ],
@@ -10267,7 +10280,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           undoStack.length > 0
             ? `Undo ${undoStack[undoStack.length - 1].label}`
             : 'Undo',
-        shortcut: sc('Z'),
+        shortcut: registryKey('edit-undo-cmd'),
         disabled: !isCommandEnabled('undo'),
         onSelect: () => requireActiveSession(() => handleUndoDocumentEdit()),
       },
@@ -10278,7 +10291,7 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           redoStack.length > 0
             ? `Redo ${redoStack[redoStack.length - 1].label}`
             : 'Redo',
-        shortcut: sc('Z', { shift: true }),
+        shortcut: registryKey('edit-redo-cmd'),
         disabled: !isCommandEnabled('redo'),
         onSelect: () => requireActiveSession(() => handleRedoDocumentEdit()),
       },
@@ -10292,8 +10305,8 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           {
             kind: 'command',
             id: 'edit-copy-seq',
-            label: 'Copy Sequence',
-            shortcut: sc('C'),
+            label: registryCommand('edit-copy-seq').label,
+            shortcut: registryKey('edit-copy-seq'),
             disabled: !isCommandEnabled('export-sequence'),
             onSelect: () =>
 requireActiveSession(() => handleCopySequenceToClipboard()),
@@ -10301,8 +10314,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'edit-sel-all',
-            label: 'Select Sequence',
-            shortcut: sc('A'),
+            label: registryCommand('edit-sel-all').label,
+            shortcut: registryKey('edit-sel-all'),
             onSelect: () =>
               requireActiveSession(() =>
                 setSelectedRange({
@@ -10323,8 +10336,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'edit-find-doc',
-            label: 'Find in Sequence',
-            shortcut: sc('F'),
+            label: registryCommand('edit-find-doc').label,
+            shortcut: registryKey('edit-find-doc'),
             onSelect: () =>
               requireActiveSession(() => {
                 setViewerTab('sequence-view');
@@ -10337,20 +10350,20 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'edit-next-feat',
-            label: 'Next Feature',
-            shortcut: sc('G'),
+            label: registryCommand('edit-next-feat').label,
+            shortcut: registryKey('edit-next-feat'),
             onSelect: () => requireActiveSession(() => handleSelectNextFeature()),
           },
           {
             kind: 'command',
             id: 'edit-find-dups',
-            label: 'Find Duplicates…',
+            label: registryCommand('edit-find-dups').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'duplicates' })),
           },
           {
             kind: 'command',
             id: 'edit-batch-rename',
-            label: 'Batch Rename…',
+            label: registryCommand('edit-batch-rename').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'rename' })),
           },
         ],
@@ -10366,15 +10379,15 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'view-back',
-            label: 'Back',
-            shortcut: sc('['),
+            label: registryCommand('view-back').label,
+            shortcut: registryKey('view-back'),
             onSelect: () => requireActiveSession(() => handleGoBack()),
           },
           {
             kind: 'command',
             id: 'view-fwd',
-            label: 'Forward',
-            shortcut: sc(']'),
+            label: registryCommand('view-fwd').label,
+            shortcut: registryKey('view-fwd'),
             onSelect: () => requireActiveSession(() => handleGoForward()),
           },
         ],
@@ -10389,16 +10402,16 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'view-filter-folder',
-            label: 'Filter Folder',
-            shortcut: sc('F', { alt: true }),
+            label: registryCommand('view-filter-folder').label,
+            shortcut: registryKey('view-filter-folder'),
             onSelect: () =>
               requireActiveSession(() => handleFocusFolderFilter()),
           },
           {
             kind: 'command',
             id: 'view-search-tools',
-            label: 'Search Workspace',
-            shortcut: sc('F', { shift: true }),
+            label: registryCommand('view-search-tools').label,
+            shortcut: registryKey('view-search-tools'),
             onSelect: () => {
               window.setTimeout(() => {
                 document.getElementById('mbc-toolbar-global-search-input')?.focus();
@@ -10408,7 +10421,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'view-search-project',
-            label: 'Search Project…',
+            label: registryCommand('view-search-project').label,
             onSelect: () => requireActiveSession(() => openProjectSearch(PROJECT_ROOT, 'Entire project')),
           },
         ],
@@ -10422,25 +10435,25 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-tog-sidebar',
-            label: 'Project Sidebar',
+            label: registryCommand('view-tog-sidebar').label,
             checked: sessionActive && sidebarOpen,
             onToggle: () => requireActiveSession(() => setSidebarOpen((v) => !v)),
           },
           {
             kind: 'checkbox',
             id: 'view-tog-doctable',
-            label: 'Document Table',
+            label: registryCommand('view-tog-doctable').label,
             checked: sessionActive && !docTableCollapsed,
             onToggle: toggleDocumentTable,
           },
           {
             kind: 'checkbox',
             id: 'view-tog-inspector',
-            label: 'Inspector',
+            label: registryCommand('view-tog-inspector').label,
             // Checked while an inspector is shown; greyed on a tab with nothing to set.
             checked: inspectorVisible,
             disabled: !inspectorAvailable,
-            shortcut: sc('I', { alt: true }),
+            shortcut: registryKey('view-tog-inspector'),
             onToggle: () => requireActiveSession(() => handleToggleInspector()),
           },
         ],
@@ -10455,7 +10468,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-split-tb',
-            label: 'Document Table Below Viewer',
+            label: registryCommand('view-split-tb').label,
             checked: sessionActive && workspaceSplitMode === 'top-bottom',
             onToggle: () =>
               requireActiveSession(() => {
@@ -10466,7 +10479,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-split-lr',
-            label: 'Document Table Beside Viewer',
+            label: registryCommand('view-split-lr').label,
             checked: sessionActive && workspaceSplitMode === 'left-right',
             onToggle: () =>
               requireActiveSession(() => {
@@ -10478,9 +10491,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-expand-doc',
-            label: 'Expand Viewer',
+            label: registryCommand('view-expand-doc').label,
             checked: sessionActive && expandedDocView,
-            shortcut: sc('O', { shift: true }),
+            shortcut: registryKey('view-expand-doc'),
             onToggle: () => requireActiveSession(() => handleToggleExpandDocumentView()),
           },
         ],
@@ -10496,21 +10509,21 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-docsplit-single',
-            label: 'Single Pane',
+            label: registryCommand('view-docsplit-single').label,
             checked: sessionActive && documentSplit === 'single',
             onToggle: () => requireActiveSession(() => chooseDocumentSplit('single')),
           },
           {
             kind: 'checkbox',
             id: 'view-docsplit-side',
-            label: 'Side by Side',
+            label: registryCommand('view-docsplit-side').label,
             checked: sessionActive && documentSplit === 'side-by-side',
             onToggle: () => requireActiveSession(() => chooseDocumentSplit('side-by-side')),
           },
           {
             kind: 'checkbox',
             id: 'view-docsplit-stacked',
-            label: 'Top and Bottom',
+            label: registryCommand('view-docsplit-stacked').label,
             checked: sessionActive && documentSplit === 'top-bottom',
             onToggle: () => requireActiveSession(() => chooseDocumentSplit('top-bottom')),
           },
@@ -10520,7 +10533,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         // US-01M7DVS2: the checked rows' maps, under the rule the table toolbar's button reads.
         kind: 'command',
         id: 'view-map-gallery',
-        label: 'Map Gallery',
+        label: registryCommand('view-map-gallery').label,
         disabled: !isCommandEnabled('multi-record-view'),
         description: commandDisabledReason('multi-record-view'),
         onSelect: () => requireActiveSession(() => openMapGallery('maps')),
@@ -10529,7 +10542,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         // US-01M7DVV8: the checked rows side by side in the gallery's Compare Table, under the same rule.
         kind: 'command',
         id: 'view-compare-table',
-        label: 'Compare Table',
+        label: registryCommand('view-compare-table').label,
         disabled: !isCommandEnabled('multi-record-view'),
         description: commandDisabledReason('multi-record-view'),
         onSelect: () => requireActiveSession(() => openMapGallery('compare-table')),
@@ -10545,7 +10558,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {
         kind: 'command',
         id: 'view-restore-default-layout',
-        label: 'Restore Default Layout',
+        label: registryCommand('view-restore-default-layout').label,
         disabled: !sessionActive,
         onSelect: () => requireActiveSession(() => restoreDefaultLayout()),
       },
@@ -10573,7 +10586,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 {
                   kind: 'command',
                   id: 'view-no-tabs',
-                  label: 'No tabs open',
+                  label: registryCommand('view-no-tabs').label,
                   disabled: true,
                   onSelect: () => {},
                 },
@@ -10591,7 +10604,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: `view-studio-${entry.id}`,
             label: entry.name,
-            shortcut: entry.digit ? sc(String(entry.digit)) : undefined,
+            shortcut: registryKey(`view-studio-${entry.id}`),
             disabled: !availability.ok,
             description: availability.ok ? undefined : availability.reason,
             onSelect: () => openStudioByKey(entry),
@@ -10608,9 +10621,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-lay-split',
-            label: 'Split Map & Sequence',
+            label: registryCommand('view-lay-split').label,
             checked: sessionActive && effectiveMapLayoutMode === 'split',
-            shortcut: sc('1', { alt: true }),
+            shortcut: registryKey('view-lay-split'),
             disabled: !isCommandEnabled('map-layout-circle'),
             description: commandDisabledReason('map-layout-circle'),
             onToggle: () => requireActiveSession(() => chooseMapLayout('split')),
@@ -10618,9 +10631,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-lay-circ',
-            label: 'Circular Map',
+            label: registryCommand('view-lay-circ').label,
             checked: sessionActive && effectiveMapLayoutMode === 'circular',
-            shortcut: sc('2', { alt: true }),
+            shortcut: registryKey('view-lay-circ'),
             disabled: !isCommandEnabled('map-layout-circle'),
             description: commandDisabledReason('map-layout-circle'),
             onToggle: () => requireActiveSession(() => chooseMapLayout('circular')),
@@ -10628,17 +10641,17 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-lay-lin',
-            label: 'Linear Sequence',
+            label: registryCommand('view-lay-lin').label,
             checked: sessionActive && effectiveMapLayoutMode === 'linear',
-            shortcut: sc('3', { alt: true }),
+            shortcut: registryKey('view-lay-lin'),
             onToggle: () => requireActiveSession(() => chooseMapLayout('linear')),
           },
           { kind: 'separator', id: 'view-lay-sep' },
           {
             kind: 'command',
             id: 'view-set-origin',
-            label: 'Set Origin',
-            shortcut: sc('0', { shift: true }),
+            label: registryCommand('view-set-origin').label,
+            shortcut: registryKey('view-set-origin'),
             disabled: !isCommandEnabled('set-origin'),
             description: actsOnMainViewDescription('view-set-origin', 'Set Origin', commandDisabledReason('set-origin')),
             onSelect: () => requireActiveSession(() => handleSetOriginToSelection()),
@@ -10656,7 +10669,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-track-features',
-            label: 'Features',
+            label: registryCommand('view-track-features').label,
             checked: sessionActive && TRACK_MENU['features'].shown,
             disabled: !isCommandEnabled('track-features'),
             description: commandDisabledReason('track-features'),
@@ -10665,7 +10678,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-track-primers',
-            label: 'Primers',
+            label: registryCommand('view-track-primers').label,
             checked: sessionActive && TRACK_MENU['primers'].shown,
             disabled: !isCommandEnabled('track-primers'),
             description: commandDisabledReason('track-primers'),
@@ -10674,7 +10687,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-track-restriction-sites',
-            label: 'Restriction Sites',
+            label: registryCommand('view-track-restriction-sites').label,
             checked: sessionActive && TRACK_MENU['restriction-sites'].shown,
             disabled: !isCommandEnabled('track-restriction-sites'),
             description: commandDisabledReason('track-restriction-sites'),
@@ -10683,7 +10696,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-track-orfs',
-            label: 'ORFs',
+            label: registryCommand('view-track-orfs').label,
             checked: sessionActive && TRACK_MENU['orfs'].shown,
             disabled: !isCommandEnabled('track-orfs'),
             description: commandDisabledReason('track-orfs'),
@@ -10692,7 +10705,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-track-translation',
-            label: 'Translation',
+            label: registryCommand('view-track-translation').label,
             checked: sessionActive && TRACK_MENU['translation'].shown,
             disabled: !isCommandEnabled('track-translation'),
             description: commandDisabledReason('track-translation'),
@@ -10701,7 +10714,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-track-gc-graph',
-            label: 'GC Graph',
+            label: registryCommand('view-track-gc-graph').label,
             checked: sessionActive && TRACK_MENU['gc-graph'].shown,
             disabled: !isCommandEnabled('track-gc-graph'),
             description: commandDisabledReason('track-gc-graph'),
@@ -10710,7 +10723,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'view-track-hydropathy-graph',
-            label: 'Hydropathy Graph',
+            label: registryCommand('view-track-hydropathy-graph').label,
             checked: sessionActive && TRACK_MENU['hydropathy-graph'].shown,
             disabled: !isCommandEnabled('track-hydropathy-graph'),
             description: commandDisabledReason('track-hydropathy-graph'),
@@ -10721,7 +10734,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {
         kind: 'command',
         id: 'view-rotate-map',
-        label: 'Rotate Circular Map…',
+        label: registryCommand('view-rotate-map').label,
         disabled: !isCommandEnabled('rotate-map'),
         description: commandDisabledReason('rotate-map'),
         onSelect: () => requireActiveSession(() => handleRotateMapCommand('open')),
@@ -10729,7 +10742,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {
         kind: 'command',
         id: 'view-reset-rotation',
-        label: 'Reset Rotation',
+        label: registryCommand('view-reset-rotation').label,
         disabled: !isCommandEnabled('rotate-map'),
         description: commandDisabledReason('rotate-map'),
         onSelect: () => requireActiveSession(() => handleRotateMapCommand('reset')),
@@ -10744,32 +10757,32 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'view-enz',
-            label: 'Enzymes View',
+            label: registryCommand('view-enz').label,
             onSelect: () => requireActiveSession(() => openEnzymesView()),
           },
           {
             kind: 'command',
             id: 'view-annot',
-            label: 'Annotations Table',
+            label: registryCommand('view-annot').label,
             onSelect: () => requireActiveSession(() => setViewerTab('annotations-table')),
           },
           {
             kind: 'command',
             id: 'view-text',
-            label: 'Flatfile View',
+            label: registryCommand('view-text').label,
             onSelect: () => requireActiveSession(() => setViewerTab('text-view')),
           },
           {
             kind: 'command',
             id: 'view-mfe',
-            label: 'Secondary Structure',
+            label: registryCommand('view-mfe').label,
             onSelect: () =>
               requireActiveSession(() => openFoldingPanel()),
           },
           {
             kind: 'command',
             id: 'view-lineage',
-            label: 'History',
+            label: registryCommand('view-lineage').label,
             onSelect: () => requireActiveSession(() => openHybridSubTab('lineage')),
           },
         ],
@@ -10783,8 +10796,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'view-zoom-in',
-            label: 'Zoom In',
-            shortcut: sc('='),
+            label: registryCommand('view-zoom-in').label,
+            shortcut: registryKey('view-zoom-in'),
             disabled: !isCommandEnabled('zoom-map'),
             description: commandDisabledReason('zoom-map'),
             onSelect: () => requireActiveSession(() => zoomFocusedPane(1)),
@@ -10792,8 +10805,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'view-zoom-out',
-            label: 'Zoom Out',
-            shortcut: sc('-'),
+            label: registryCommand('view-zoom-out').label,
+            shortcut: registryKey('view-zoom-out'),
             disabled: !isCommandEnabled('zoom-map'),
             description: commandDisabledReason('zoom-map'),
             onSelect: () => requireActiveSession(() => zoomFocusedPane(-1)),
@@ -10801,8 +10814,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'view-zoom-100',
-            label: 'Actual Size (100%)',
-            shortcut: sc('0'),
+            label: registryCommand('view-zoom-100').label,
+            shortcut: registryKey('view-zoom-100'),
             disabled: !isCommandEnabled('zoom-map'),
             description: commandDisabledReason('zoom-map'),
             onSelect: () => requireActiveSession(() => zoomFocusedPane('actual')),
@@ -10810,7 +10823,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'view-fit',
-            label: 'Fit',
+            label: registryCommand('view-fit').label,
             disabled: !isCommandEnabled('fit-view'),
             description: commandDisabledReason('fit-view'),
             onSelect: () => requireActiveSession(() => fitFocusedPane('fit')),
@@ -10818,7 +10831,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'view-reset-view',
-            label: 'Reset View',
+            label: registryCommand('view-reset-view').label,
             disabled: !isCommandEnabled('fit-view'),
             description: commandDisabledReason('fit-view'),
             onSelect: () => requireActiveSession(() => fitFocusedPane('reset')),
@@ -10829,7 +10842,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {
         kind: 'checkbox',
         id: 'view-tog-menu-func-info',
-        label: 'Show Menu Function Info',
+        label: registryCommand('view-tog-menu-func-info').label,
         description:
           'Show or hide short function description tooltips when hovering or focusing menu items',
         checked: showMenuFunctionInfo,
@@ -10849,20 +10862,20 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'enz-choose',
-            label: 'Choose Enzymes',
-            shortcut: sc('E'),
+            label: registryCommand('enz-choose').label,
+            shortcut: registryKey('enz-choose'),
             onSelect: () => requireActiveSession(() => openEnzymesView()),
           },
           {
             kind: 'command',
             id: 'enz-digest-dialog',
-            label: 'Digest into Fragments…',
+            label: registryCommand('enz-digest-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'digest' })),
           },
           {
             kind: 'command',
             id: 'enz-table',
-            label: 'Enzymes Table',
+            label: registryCommand('enz-table').label,
             onSelect: () => requireActiveSession(() => openEnzymesView()),
           },
         ],
@@ -10877,7 +10890,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'enz-noncut',
-            label: 'Non-Cutters',
+            label: registryCommand('enz-noncut').label,
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Restriction Ligation', 'non-cutters')
@@ -10886,7 +10899,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'enz-silent',
-            label: 'Silent Mutations',
+            label: registryCommand('enz-silent').label,
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Restriction Ligation', 'silent-mutations')
@@ -10903,13 +10916,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'enz-suppliers',
-            label: 'Suppliers & Methylation',
+            label: registryCommand('enz-suppliers').label,
             onSelect: () => setPrefsModalTab('Enzymes'),
           },
           {
             kind: 'command',
             id: 'enz-gel-prefs',
-            label: 'Gel Preferences',
+            label: registryCommand('enz-gel-prefs').label,
             onSelect: () => setPrefsModalTab('Agarose Gels'),
           },
         ],
@@ -10927,20 +10940,20 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'feat-add',
-            label: 'Add Feature',
-            shortcut: sc('T'),
+            label: registryCommand('feat-add').label,
+            shortcut: registryKey('feat-add'),
             onSelect: () => requireActiveSession(() => handleAddFeatureFromSelection()),
           },
           {
             kind: 'command',
             id: 'feat-detect',
-            label: 'Detect Common Features',
+            label: registryCommand('feat-detect').label,
             onSelect: () => requireActiveSession(() => handleAutoDetectCommonFeatures()),
           },
           {
             kind: 'command',
             id: 'feat-protease',
-            label: 'Add Tag / Protease',
+            label: registryCommand('feat-protease').label,
             onSelect: () => requireActiveSession(() => handleDetectTagsAndProteaseSites()),
           },
         ],
@@ -10955,19 +10968,19 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'feat-manage-lib',
-            label: 'Manage Library',
+            label: registryCommand('feat-manage-lib').label,
             onSelect: () => requireActiveSession(() => setViewerTab('annotations-table')),
           },
           {
             kind: 'command',
             id: 'feat-transfer',
-            label: 'Transfer Features',
+            label: registryCommand('feat-transfer').label,
             onSelect: () => requireActiveSession(() => handleOpenTransferAnnotations()),
           },
           {
             kind: 'command',
             id: 'feat-extract',
-            label: 'Extract Features',
+            label: registryCommand('feat-extract').label,
             onSelect: () => requireActiveSession(() => handleExtractAnnotatedFeatures()),
           },
         ],
@@ -10985,49 +10998,49 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'prm-design-dialog',
-            label: 'Design Primers…',
+            label: registryCommand('prm-design-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'primers' })),
           },
           {
             kind: 'command',
             id: 'prm-degenerate-dialog',
-            label: 'Design Degenerate Primers…',
+            label: registryCommand('prm-degenerate-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'degenerate-primers' })),
           },
           {
             kind: 'command',
             id: 'prm-test-saved-dialog',
-            label: 'Test with Saved Primers…',
+            label: registryCommand('prm-test-saved-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'saved-primers' })),
           },
           {
             kind: 'command',
             id: 'prm-db-binding-dialog',
-            label: 'Find Where Stored Primers Bind…',
+            label: registryCommand('prm-db-binding-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'primer-db-binding' })),
           },
           {
             kind: 'command',
             id: 'prm-add',
-            label: 'Add Primer',
+            label: registryCommand('prm-add').label,
             onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
           },
           {
             kind: 'command',
             id: 'prm-add-list',
-            label: 'Import Primers from Spreadsheet…',
+            label: registryCommand('prm-add-list').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'import-primers' })),
           },
           {
             kind: 'command',
             id: 'prm-design-pair',
-            label: 'Design Primer Pair',
+            label: registryCommand('prm-design-pair').label,
             onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
           },
           {
             kind: 'command',
             id: 'prm-convert-oligo',
-            label: 'Selection to Oligo',
+            label: registryCommand('prm-convert-oligo').label,
             onSelect: () => requireActiveSession(() => handleConvertSelectionToOligo()),
           },
         ],
@@ -11042,19 +11055,19 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'prm-saved',
-            label: 'Map Saved Primers',
+            label: registryCommand('prm-saved').label,
             onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
           },
           {
             kind: 'command',
             id: 'prm-specificity',
-            label: 'Binding Specificity',
+            label: registryCommand('prm-specificity').label,
             onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
           },
           {
             kind: 'command',
             id: 'prm-export',
-            label: 'Export Primers',
+            label: registryCommand('prm-export').label,
             onSelect: () => requireActiveSession(() => handleExportPrimersFasta()),
           },
         ],
@@ -11069,14 +11082,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'prm-pcr-sim',
-            label: 'In-Silico PCR',
-            shortcut: sc('D'),
+            label: registryCommand('prm-pcr-sim').label,
+            shortcut: registryKey('prm-pcr-sim'),
             onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
           },
           {
             kind: 'command',
             id: 'prm-soe',
-            label: 'Overlap PCR',
+            label: registryCommand('prm-soe').label,
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Overlap Extension PCR', 'gel')
@@ -11085,8 +11098,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'prm-sdm',
-            label: 'Site Mutagenesis',
-            shortcut: sc('J'),
+            label: registryCommand('prm-sdm').label,
+            shortcut: registryKey('prm-sdm'),
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Restriction Ligation', 'mutagenesis')
@@ -11104,13 +11117,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'prm-crispr',
-            label: 'Find CRISPR Sites',
+            label: registryCommand('prm-crispr').label,
             onSelect: () => requireActiveSession(() => openPrimersStudio('crispr')),
           },
           {
             kind: 'command',
             id: 'prm-crispr-editing',
-            label: 'CRISPR Editing Analysis…',
+            label: registryCommand('prm-crispr-editing').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'crispr-editing' })),
           },
         ],
@@ -11125,7 +11138,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'prm-prefs',
-            label: 'Primer Preferences',
+            label: registryCommand('prm-prefs').label,
             onSelect: () => setPrefsModalTab('Primers'),
           },
         ],
@@ -11136,14 +11149,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
       {
         kind: 'command',
         id: 'act-clone-dialog',
-        label: 'Clone Insert into Vector…',
+        label: registryCommand('act-clone-dialog').label,
         disabled: !sessionActive,
         onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'cloning' })),
       },
       {
         kind: 'command',
         id: 'act-validate-clone',
-        label: 'Validate Clone…',
+        label: registryCommand('act-validate-clone').label,
         disabled: !sessionActive,
         onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'validate-clone' })),
       },
@@ -11157,7 +11170,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-rest-find-sites',
-            label: 'Find Sites',
+            label: registryCommand('act-rest-find-sites').label,
             onSelect: () =>
               requireActiveSession(() => {
                 setViewerTab('sequence-view');
@@ -11168,34 +11181,34 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-rest-digest-dialog',
-            label: 'Digest into Fragments…',
+            label: registryCommand('act-rest-digest-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'digest' })),
           },
           {
             kind: 'command',
             id: 'act-rest-frag',
-            label: 'Agarose Digest',
+            label: registryCommand('act-rest-frag').label,
             onSelect: () =>
               requireActiveSession(() => openCloningMethod('Restriction Ligation', 'gel')),
           },
           {
             kind: 'command',
             id: 'act-rest-ligate',
-            label: 'Ligate Fragments',
+            label: registryCommand('act-rest-ligate').label,
             onSelect: () =>
               requireActiveSession(() => openCloningMethod('Restriction Ligation', 'gel')),
           },
           {
             kind: 'command',
             id: 'act-rest-clone',
-            label: 'Restriction Ligation',
+            label: registryCommand('act-rest-clone').label,
             onSelect: () =>
               requireActiveSession(() => openCloningMethod('Restriction Ligation', 'gel')),
           },
           {
             kind: 'command',
             id: 'act-anneal',
-            label: 'Anneal Oligos',
+            label: registryCommand('act-anneal').label,
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Restriction Ligation', 'anneal-oligos')
@@ -11204,7 +11217,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-rest-noncut',
-            label: 'Non-Cutters',
+            label: registryCommand('act-rest-noncut').label,
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Restriction Ligation', 'non-cutters')
@@ -11222,14 +11235,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-pcr',
-            label: 'PCR Amplification',
-            shortcut: sc('D'),
+            label: registryCommand('act-pcr').label,
+            shortcut: registryKey('act-pcr'),
             onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
           },
           {
             kind: 'command',
             id: 'act-soe',
-            label: 'Overlap PCR',
+            label: registryCommand('act-soe').label,
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Overlap Extension PCR', 'gel')
@@ -11247,8 +11260,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-mut-primer',
-            label: 'Site Mutagenesis',
-            shortcut: sc('J'),
+            label: registryCommand('act-mut-primer').label,
+            shortcut: registryKey('act-mut-primer'),
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Restriction Ligation', 'mutagenesis')
@@ -11257,7 +11270,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-mut-shuffle',
-            label: 'Point Mutation',
+            label: registryCommand('act-mut-shuffle').label,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('transform-submit')),
           },
@@ -11273,14 +11286,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-gibson',
-            label: 'Gibson Assembly',
+            label: registryCommand('act-gibson').label,
             onSelect: () =>
               requireActiveSession(() => openCloningMethod('Gibson Assembly', 'gel')),
           },
           {
             kind: 'command',
             id: 'act-goldengate',
-            label: 'Golden Gate',
+            label: registryCommand('act-goldengate').label,
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Golden Gate (Type IIS)', 'gel')
@@ -11289,7 +11302,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-hifi',
-            label: 'NEBuilder HiFi',
+            label: registryCommand('act-hifi').label,
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('NEBuilder HiFi Assembly', 'gel')
@@ -11298,14 +11311,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-infusion',
-            label: 'In-Fusion',
+            label: registryCommand('act-infusion').label,
             onSelect: () =>
               requireActiveSession(() => openCloningMethod('In-Fusion Cloning', 'gel')),
           },
           {
             kind: 'command',
             id: 'act-parts',
-            label: 'Parts Cloning',
+            label: registryCommand('act-parts').label,
             onSelect: () =>
               requireActiveSession(() => openCloningMethod('Parts Cloning', 'gel')),
           },
@@ -11321,7 +11334,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-gw-lr',
-            label: 'Gateway LR Reaction',
+            label: registryCommand('act-gw-lr').label,
             disabled: !sessionActive,
             onSelect: () =>
               requireActiveSession(() =>
@@ -11331,7 +11344,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-gw-bp',
-            label: 'Gateway BP Reaction',
+            label: registryCommand('act-gw-bp').label,
             disabled: !sessionActive,
             onSelect: () =>
               requireActiveSession(() =>
@@ -11341,14 +11354,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-gw-annot-att',
-            label: 'Annotate att Sites',
+            label: registryCommand('act-gw-annot-att').label,
             disabled: !sessionActive,
             onSelect: () => requireActiveSession(() => handleAnnotateGatewaySites()),
           },
           {
             kind: 'command',
             id: 'act-gw-add-attb',
-            label: 'Add attB Sites',
+            label: registryCommand('act-gw-add-attb').label,
             disabled: !sessionActive,
             onSelect: () => requireActiveSession(() => handleAddAttBSitesToActive()),
           },
@@ -11378,7 +11391,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-ta-open',
-            label: 'TA / GC Cloning',
+            label: registryCommand('act-ta-open').label,
             disabled: !sessionActive,
             onSelect: () =>
               requireActiveSession(() => openCloningMethod('TA / GC Cloning', 'gel')),
@@ -11409,7 +11422,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'act-topo-open',
-            label: 'TOPO Cloning',
+            label: registryCommand('act-topo-open').label,
             disabled: !sessionActive,
             onSelect: () =>
               requireActiveSession(() => openCloningMethod('TOPO Cloning', 'gel')),
@@ -11451,16 +11464,16 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'tools-gel',
-            label: 'Agarose Gel',
-            shortcut: sc('G', { shift: true }),
+            label: registryCommand('tools-gel').label,
+            shortcut: registryKey('tools-gel'),
             onSelect: () =>
               requireActiveSession(() => openCloningMethod('Restriction Ligation', 'gel')),
           },
           {
             kind: 'command',
             id: 'tools-calc',
-            label: 'DNA Calculations',
-            shortcut: sc('M', { shift: true }),
+            label: registryCommand('tools-calc').label,
+            shortcut: registryKey('tools-calc'),
             onSelect: () =>
               requireActiveSession(() =>
                 openCloningMethod('Restriction Ligation', 'dna-calculations')
@@ -11478,20 +11491,20 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'tools-blast',
-            label: 'BLAST Search',
-            shortcut: sc('B', { shift: true }),
+            label: registryCommand('tools-blast').label,
+            shortcut: registryKey('tools-blast'),
             onSelect: () => requireActiveSession(() => setBlastModalOpen(true)),
           },
           {
             kind: 'command',
             id: 'tools-vec-cat',
-            label: 'Vector Catalog',
+            label: registryCommand('tools-vec-cat').label,
             onSelect: () => requireActiveSession(() => openVectorStudio('catalog')),
           },
           {
             kind: 'command',
             id: 'tools-vec-arch',
-            label: 'Vector Architect',
+            label: registryCommand('tools-vec-arch').label,
             onSelect: () => requireActiveSession(() => openVectorStudio('architect')),
           },
         ],
@@ -11505,37 +11518,37 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'tools-db-explorer',
-            label: 'NCBI & UniProt',
+            label: registryCommand('tools-db-explorer').label,
             onSelect: () => setDbExplorerCategory('ncbi-nucleotide'),
           },
           {
             kind: 'command',
             id: 'tools-primer-database',
-            label: 'Primers',
+            label: registryCommand('tools-primer-database').label,
             onSelect: () => openPrimerDatabaseWindow(),
           },
           {
             kind: 'command',
             id: 'tools-enzyme-database',
-            label: 'Restriction Enzymes',
+            label: registryCommand('tools-enzyme-database').label,
             onSelect: () => openEnzymeDatabaseWindow(),
           },
           {
             kind: 'command',
             id: 'tools-make-blast-db',
-            label: 'Make BLAST Database from Selection…',
+            label: registryCommand('tools-make-blast-db').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'make-blast-db' })),
           },
           {
             kind: 'command',
             id: 'tools-local-blast-dbs',
-            label: 'Local BLAST DBs',
+            label: registryCommand('tools-local-blast-dbs').label,
             onSelect: () => setDbExplorerCategory('local-blast-dbs'),
           },
           {
             kind: 'command',
             id: 'tools-blast-setup',
-            label: 'BLAST Setup',
+            label: registryCommand('tools-blast-setup').label,
             // BLAST is configured through local databases (Preferences had no BLAST settings).
             onSelect: () => setDbExplorerCategory('local-blast-dbs'),
           },
@@ -11551,34 +11564,34 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'tools-extract-ann',
-            label: 'Extract Features',
+            label: registryCommand('tools-extract-ann').label,
             onSelect: () => requireActiveSession(() => handleExtractAnnotatedFeatures()),
           },
           {
             kind: 'command',
             id: 'tools-mask-sel',
-            label: 'Mask Selection',
+            label: registryCommand('tools-mask-sel').label,
             onSelect: () =>
               requireActiveSession(() => handleMaskActiveSequence('selection')),
           },
           {
             kind: 'command',
             id: 'tools-mask-lowcomp',
-            label: 'Mask Homopolymers',
+            label: registryCommand('tools-mask-lowcomp').label,
             onSelect: () =>
               requireActiveSession(() => handleMaskActiveSequence('low-complexity')),
           },
           {
             kind: 'command',
             id: 'tools-concat-seqs',
-            label: 'Concatenate',
+            label: registryCommand('tools-concat-seqs').label,
             onSelect: () =>
               requireActiveSession(() => handleConcatenateSelectedSequences()),
           },
           {
             kind: 'command',
             id: 'tools-gen-consensus',
-            label: 'Generate Consensus',
+            label: registryCommand('tools-gen-consensus').label,
             onSelect: () =>
               requireActiveSession(() => handleGenerateConsensusFromSelected()),
           },
@@ -11594,26 +11607,26 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'tools-sanger',
-            label: 'Sanger Studio',
+            label: registryCommand('tools-sanger').label,
             onSelect: () => requireActiveSession(() => setViewerTab('sanger-contig')),
           },
           {
             kind: 'command',
             id: 'tools-ngs',
-            label: 'NGS Assembly',
+            label: registryCommand('tools-ngs').label,
             onSelect: () => requireActiveSession(() => openGenomicsSuite('ngs-assembly')),
           },
           {
             kind: 'command',
             id: 'tools-synteny',
-            label: 'Genome Variants',
+            label: registryCommand('tools-synteny').label,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('genome-variants')),
           },
           {
             kind: 'command',
             id: 'tools-gb-sub',
-            label: 'GenBank Submission',
+            label: registryCommand('tools-gb-sub').label,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('transform-submit')),
           },
@@ -11629,15 +11642,79 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'tools-pipelines',
-            label: 'Guided Pipelines',
-            shortcut: sc('Y', { shift: true }),
+            label: registryCommand('tools-pipelines').label,
+            shortcut: registryKey('tools-pipelines'),
             onSelect: () => requireActiveSession(() => setViewerTab('guided-pipelines')),
           },
           {
             kind: 'command',
             id: 'tools-workflows',
-            label: 'Lineage Manager',
+            label: registryCommand('tools-workflows').label,
             onSelect: () => requireActiveSession(() => openHybridSubTab('lineage')),
+          },
+          { kind: 'separator', id: 'tools-wf-presets-sep' },
+          {
+            kind: 'command',
+            id: 'tools-wf-oligo',
+            label: registryCommand('tools-wf-oligo').label,
+            onSelect: () =>
+              requireActiveSession(() => {
+                setViewerTab('cloning-gel');
+                setStatusBanner('Opened the Annealed Oligo Cloning tools — set the inputs there to run it.');
+              }),
+          },
+          {
+            kind: 'command',
+            id: 'tools-wf-batch-rest',
+            label: registryCommand('tools-wf-batch-rest').label,
+            onSelect: () =>
+              requireActiveSession(() => {
+                setViewerTab('cloning-gel');
+                setStatusBanner('Opened the Batch Restriction Cloning tools — set the inputs there to run it.');
+              }),
+          },
+          {
+            kind: 'command',
+            id: 'tools-wf-align-tree-run',
+            label: registryCommand('tools-wf-align-tree-run').label,
+            onSelect: () =>
+              requireActiveSession(() => {
+                if (openPhylogeneticsModule('phylogeny', {
+                  treeAlgo: 'Maximum Likelihood (ML)',
+                })) setStatusBanner('Opened the Align DNA then build tree tools — set the inputs there to run it.');
+              }),
+          },
+          {
+            kind: 'command',
+            id: 'tools-wf-mafft',
+            label: registryCommand('tools-wf-mafft').label,
+            onSelect: () =>
+              requireActiveSession(() => {
+                openSequenceAlignment('msa', {
+                  msaAlgo: 'consistency-nj',
+                });
+                setStatusBanner('Opened the Align DNA via MAFFT-style, MUSCLE-style & Clustal-style tools — set the inputs there to run it.');
+              }),
+          },
+          {
+            kind: 'command',
+            id: 'tools-wf-map-asm',
+            label: registryCommand('tools-wf-map-asm').label,
+            onSelect: () =>
+              requireActiveSession(() => {
+                openGenomicsSuite('ngs-assembly');
+                setStatusBanner('Opened the Combined mapping and de novo assembly tools — set the inputs there to run it.');
+              }),
+          },
+          {
+            kind: 'command',
+            id: 'tools-wf-apply-var',
+            label: registryCommand('tools-wf-apply-var').label,
+            onSelect: () =>
+              requireActiveSession(() => {
+                openGenomicsSuite('genome-variants');
+                setStatusBanner('Opened the Apply Variants to Reference Sequence tools — set the inputs there to run it.');
+              }),
           },
         ],
       },
@@ -11651,38 +11728,45 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'tools-wf-manage',
-            label: 'Manage Workflows…',
+            label: registryCommand('tools-wf-manage').label,
             onSelect: () => requireActiveSession(() => setManageWorkflowsOpen(true)),
           },
           {
             kind: 'command',
             id: 'tools-wf-run',
-            label: 'Run Workflow…',
+            label: registryCommand('tools-wf-run').label,
             onSelect: () => requireActiveSession(() => setRunWorkflowFor({})),
           },
+          { kind: 'separator', id: 'tools-wf-run-sep' },
+          ...allWorkflows().map((w): MenuNode => ({
+            kind: 'command',
+            id: `tools-wf-run-${w.id}`,
+            label: `${w.name}…`,
+            onSelect: () => requireActiveSession(() => setRunWorkflowFor({ workflowId: w.id })),
+          })),
           {
             kind: 'command',
             id: 'tools-wf-group-name',
-            label: 'Group by Prefix',
+            label: registryCommand('tools-wf-group-name').label,
             onSelect: () => requireActiveSession(() => handleWorkflowGroupByName()),
           },
           {
             kind: 'command',
             id: 'tools-wf-mod-intervals',
-            label: 'Modify Intervals',
+            label: registryCommand('tools-wf-mod-intervals').label,
             onSelect: () =>
               requireActiveSession(() => handleWorkflowModifyAnnotationIntervals()),
           },
           {
             kind: 'command',
             id: 'tools-wf-random-sample',
-            label: 'Sample Sequences',
+            label: registryCommand('tools-wf-random-sample').label,
             onSelect: () => requireActiveSession(() => handleWorkflowRandomlySample()),
           },
           {
             kind: 'command',
             id: 'tools-wf-set-cds',
-            label: 'Set CDS Translation',
+            label: registryCommand('tools-wf-set-cds').label,
             onSelect: () => requireActiveSession(() => handleWorkflowSetCdsTranslation()),
           },
         ],
@@ -11697,91 +11781,91 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'tools-plugin-euk-gene',
-            label: 'Eukaryotic Gene Predictor',
+            label: registryCommand('tools-plugin-euk-gene').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-euk-gene-predictor')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-microbial-gene',
-            label: 'Microbial Gene Predictor',
+            label: registryCommand('tools-plugin-microbial-gene').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-microbial-gene-predictor')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-crispr-arrays',
-            label: 'CRISPR Repeat Array Finder',
+            label: registryCommand('tools-plugin-crispr-arrays').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-crispr-repeat-arrays')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-tandem-repeats',
-            label: 'Microsatellite & Tandem Repeats',
+            label: registryCommand('tools-plugin-tandem-repeats').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-tandem-repeat-finder')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-haplotype-part',
-            label: 'Haplotype & Allele Partitioner',
+            label: registryCommand('tools-plugin-haplotype-part').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-haplotype-partitioner')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-taxonomic-class',
-            label: 'Taxonomic Sequence Classifier',
+            label: registryCommand('tools-plugin-taxonomic-class').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-taxonomic-classifier')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-species-delim',
-            label: 'Species Delimitation',
+            label: registryCommand('tools-plugin-species-delim').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-species-delimitation')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-protein-domains',
-            label: 'Protein Domains & Epitopes',
+            label: registryCommand('tools-plugin-protein-domains').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-protein-domains-epitopes')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-tm-topology',
-            label: 'Transmembrane & Signal Topology',
+            label: registryCommand('tools-plugin-tm-topology').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-transmembrane-topology')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-adapter-trimmer',
-            label: 'Adapter & Quality Read Trimmer',
+            label: registryCommand('tools-plugin-adapter-trimmer').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-adapter-quality-trimmer')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-synteny-blocks',
-            label: 'Whole-Genome Synteny Blocks',
+            label: registryCommand('tools-plugin-synteny-blocks').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-genome-synteny-blocks')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-hpc-phylo',
-            label: 'HPC Phylogeny Job Builder',
+            label: registryCommand('tools-plugin-hpc-phylo').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-hpc-phylogeny-script')),
           },
           {
             kind: 'command',
             id: 'tools-plugin-ext-cli',
-            label: 'External CLI Suite',
+            label: registryCommand('tools-plugin-ext-cli').label,
             onSelect: () =>
               requireActiveSession(() => openPluginTool('plugin-external-cli-suite')),
           },
@@ -11796,8 +11880,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'tools-prefs',
-            label: 'Preferences',
-            shortcut: sc('P', { shift: true }),
+            label: registryCommand('tools-prefs').label,
+            shortcut: registryKey('tools-prefs'),
             onSelect: () => setPrefsModalTab('General'),
           },
         ],
@@ -11815,8 +11899,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'seq-rc',
-            label: 'Reverse Complement',
-            shortcut: sc('R', { shift: true }),
+            label: registryCommand('seq-rc').label,
+            shortcut: registryKey('seq-rc'),
             disabled: !isCommandEnabled('strand-transform'),
             description: actsOnMainViewDescription('seq-rc', 'Reverse Complement', commandDisabledReason('strand-transform')),
             onSelect: () =>
@@ -11825,14 +11909,14 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'seq-comp',
-            label: 'Complement Only',
+            label: registryCommand('seq-comp').label,
             disabled: !isCommandEnabled('strand-transform'),
             onSelect: () => requireActiveSession(() => handleComplementOnlyActiveDoc()),
           },
           {
             kind: 'command',
             id: 'seq-rev',
-            label: 'Reverse Only',
+            label: registryCommand('seq-rev').label,
             disabled: !isCommandEnabled('strand-transform'),
             onSelect: () => requireActiveSession(() => handleReverseOnlyActiveDoc()),
           },
@@ -11848,13 +11932,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'seq-back-translate',
-            label: 'Back-Translate…',
+            label: registryCommand('seq-back-translate').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'backtranslate' })),
           },
           {
             kind: 'command',
             id: 'seq-translate',
-            label: 'Translate Frames',
+            label: registryCommand('seq-translate').label,
             onSelect: () =>
               requireActiveSession(() => {
                 setShowTranslation(true);
@@ -11864,13 +11948,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'seq-back-trans',
-            label: 'Back Translate',
+            label: registryCommand('seq-back-trans').label,
             onSelect: () => requireActiveSession(() => openProteinStudio()),
           },
           {
             kind: 'command',
             id: 'seq-dna-rna',
-            label: 'Convert DNA / RNA',
+            label: registryCommand('seq-dna-rna').label,
             disabled: !isCommandEnabled('convert-dna-rna'),
             onSelect: () => requireActiveSession(() => handleConvertDnaRna()),
           },
@@ -11886,20 +11970,20 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'checkbox',
             id: 'seq-circ-tog',
-            label: 'Circular Topology',
+            label: registryCommand('seq-circ-tog').label,
             checked: sessionActive && activeDoc.topology === 'circular',
             onToggle: () => requireActiveSession(() => handleToggleCircularLinear()),
           },
           {
             kind: 'command',
             id: 'seq-extract',
-            label: 'Extract Region',
+            label: registryCommand('seq-extract').label,
             onSelect: () => requireActiveSession(() => handleExtractSelectedRegion()),
           },
           {
             kind: 'command',
             id: 'seq-mutate',
-            label: 'Mutate & Shuffle',
+            label: registryCommand('seq-mutate').label,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('transform-submit')),
           },
@@ -11915,13 +11999,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'seq-merge-sanger',
-            label: 'Merge Reads',
+            label: registryCommand('seq-merge-sanger').label,
             onSelect: () => requireActiveSession(() => setViewerTab('sanger-contig')),
           },
           {
             kind: 'command',
             id: 'seq-denovo',
-            label: 'De Novo Assembly',
+            label: registryCommand('seq-denovo').label,
             onSelect: () => requireActiveSession(() => openGenomicsSuite('ngs-assembly')),
           },
         ],
@@ -11939,37 +12023,37 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'ann-orfs-dialog',
-            label: 'Find ORFs…',
+            label: registryCommand('ann-orfs-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'orfs' })),
           },
           {
             kind: 'command',
             id: 'ann-from-documents-dialog',
-            label: 'Annotate from Documents…',
+            label: registryCommand('ann-from-documents-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'annotate-from-documents' })),
           },
           {
             kind: 'command',
             id: 'ann-microsatellites-dialog',
-            label: 'Microsatellite Analysis…',
+            label: registryCommand('ann-microsatellites-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'microsatellites' })),
           },
           {
             kind: 'command',
             id: 'ann-expression-dialog',
-            label: 'Compare Expression Levels…',
+            label: registryCommand('ann-expression-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'expression' })),
           },
           {
             kind: 'command',
             id: 'ann-compare-dialog',
-            label: 'Compare Annotations…',
+            label: registryCommand('ann-compare-dialog').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'compare-annotations' })),
           },
           {
             kind: 'command',
             id: 'ann-orfs',
-            label: 'Show ORFs',
+            label: registryCommand('ann-orfs').label,
             onSelect: () =>
               requireActiveSession(() => {
                 setShowOrfs(true);
@@ -11981,21 +12065,21 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'ann-glimmer',
-            label: 'Predict Genes',
+            label: registryCommand('ann-glimmer').label,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('genes-cpg-repeats')),
           },
           {
             kind: 'command',
             id: 'ann-cpg',
-            label: 'CpG & Repeats',
+            label: registryCommand('ann-cpg').label,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('genes-cpg-repeats')),
           },
           {
             kind: 'command',
             id: 'ann-motifs',
-            label: 'Find Motifs',
+            label: registryCommand('ann-motifs').label,
             onSelect: () => requireActiveSession(() => handleOpenMotifSearch('Find Motifs')),
           },
         ],
@@ -12010,20 +12094,20 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'ann-crispr',
-            label: 'Find CRISPR Sites',
+            label: registryCommand('ann-crispr').label,
             onSelect: () => requireActiveSession(() => openPrimersStudio('crispr')),
           },
           {
             kind: 'command',
             id: 'ann-freebayes',
-            label: 'Call Variants',
+            label: registryCommand('ann-freebayes').label,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('genome-variants')),
           },
           {
             kind: 'command',
             id: 'ann-16s',
-            label: '16S / ITS Taxonomy',
+            label: registryCommand('ann-16s').label,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('genome-variants')),
           },
@@ -12039,19 +12123,19 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'ann-bbduk',
-            label: 'Trim NGS Reads',
+            label: registryCommand('ann-bbduk').label,
             onSelect: () => requireActiveSession(() => openGenomicsSuite('ngs-assembly')),
           },
           {
             kind: 'command',
             id: 'ann-blast',
-            label: 'Annotate by BLAST…',
+            label: registryCommand('ann-blast').label,
             onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'annotate-by-blast' })),
           },
           {
             kind: 'command',
             id: 'ann-transfer',
-            label: 'Transfer Features',
+            label: registryCommand('ann-transfer').label,
             onSelect: () => requireActiveSession(() => handleOpenTransferAnnotations()),
           },
         ],
@@ -12066,13 +12150,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'ann-prot-dom',
-            label: 'Protein Domains',
+            label: registryCommand('ann-prot-dom').label,
             onSelect: () => requireActiveSession(() => handleOpenMotifSearch('Protein Domains')),
           },
           {
             kind: 'command',
             id: 'ann-pdb',
-            label: '3D Structure & Coils',
+            label: registryCommand('ann-pdb').label,
             onSelect: () => requireActiveSession(() => openProteinStudio()),
           },
         ],
@@ -12098,31 +12182,31 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'help-panel',
             label: helpPanelOpen ? 'Hide Help Panel' : 'Show Help Panel',
-            shortcut: 'F1',
+            shortcut: registryKey('help-panel'),
             onSelect: () => setHelpPanelOpen((o) => !o),
           },
           {
             kind: 'command',
             id: 'help-shortcuts',
-            label: 'Keyboard Shortcuts',
+            label: registryCommand('help-shortcuts').label,
             onSelect: () => setPrefsModalTab('Keyboard'),
           },
           {
             kind: 'command',
             id: 'help-vec-guide',
-            label: 'Vector Guide',
+            label: registryCommand('help-vec-guide').label,
             onSelect: () => handleStartNewSession('twist-onboarding'),
           },
           {
             kind: 'command',
             id: 'help-tutorials',
-            label: 'Sample Tutorial',
+            label: registryCommand('help-tutorials').label,
             onSelect: () => handleStartNewSession('sample-library'),
           },
           {
             kind: 'command',
             id: 'help-examples',
-            label: 'Load Example Data…',
+            label: registryCommand('help-examples').label,
             onSelect: () => { setHomeViewActive(false); setOperationDialog({ kind: 'examples' }); },
           },
         ],
@@ -12136,13 +12220,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           {
             kind: 'command',
             id: 'help-updates',
-            label: 'Check for Updates',
+            label: registryCommand('help-updates').label,
             onSelect: () => setPrefsModalTab('General'),
           },
           {
             kind: 'command',
             id: 'help-about',
-            label: 'About MolBioCraft',
+            label: registryCommand('help-about').label,
             onSelect: () => setAboutModalOpen(true),
           },
         ],
@@ -12252,1164 +12336,78 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useNativeMacMenuBar, hostOs]);
 
+  // The toolbar dropdowns are named groups of the menubar (US-01M6Q1N2): the same nodes, so the same
+  // ids, labels, keys, availability and handlers (commandRegistry.ts TOOLBAR_GROUPS).
+  const topMenuBarEntries: {
+    id: Exclude<TopMenuId, 'app' | null>;
+    label: string;
+    minWidth: number;
+  }[] = [
+    { id: 'file', label: 'File', minWidth: 215 },
+    { id: 'edit', label: 'Edit', minWidth: 210 },
+    { id: 'view', label: 'View', minWidth: 215 },
+    { id: 'sequence', label: 'Sequence', minWidth: 215 },
+    { id: 'cloning', label: 'Cloning', minWidth: 215 },
+    { id: 'tools', label: 'Tools', minWidth: 220 },
+    { id: 'help', label: 'Help', minWidth: 210 },
+  ];
+  const topMenuLabels = Object.keys(topMenus).map((id) =>
+    id === 'app' ? 'MolBioCraft' : topMenuBarEntries.find((entry) => entry.id === id)?.label ?? id
+  );
+  const toolbarGroup = (id: ToolbarGroupId): MenuNode[] => toolbarMenuItems(Object.values(topMenus), topMenuLabels, id);
+  // ⌘K (US-01M6Q1N2): with a query, every menubar command whose label or path matches, ranked and
+  // capped, with its path, key, availability and the menu's own handler; each studio carries its
+  // View › Studios command's path, key, availability and handler (merged, not listed twice). An
+  // empty query lists the studios, the two benchmark loaders, the colour-blind palette switch and
+  // the documents.
+  const PALETTE_COMMAND_CAP = 60;
+  const commandPaletteItems: PaletteItem[] = (() => {
+    if (!commandPaletteOpen) return [];
+    const commands = menubarCommands(Object.values(topMenus), topMenuLabels);
+    const byId = new Map(commands.map((c) => [c.id, c]));
+    const extras = commandPaletteExtras.map((it): PaletteItem => {
+      const c = it.commandId ? byId.get(it.commandId) : undefined;
+      // A studio is its View › Studios command: that item's path, key, greyed state, reason and handler.
+      return c ? { ...it, path: c.path, shortcut: c.shortcut, disabled: c.disabled, reason: c.reason, run: c.run } : it;
+    });
+    const q = commandPaletteQuery.trim();
+    if (!q) return extras;
+    const studioIds = new Set(extras.flatMap((it) => (it.commandId ? [it.commandId] : [])));
+    const matches = rankPaletteCommands(commands.filter((c) => !studioIds.has(c.id)), q)
+      .slice(0, PALETTE_COMMAND_CAP)
+      .map((c): PaletteItem => ({
+        id: `cmd-${c.id}`,
+        commandId: c.id,
+        label: c.label,
+        category: c.path[0],
+        hint: '',
+        path: c.path,
+        shortcut: c.shortcut,
+        disabled: c.disabled,
+        reason: c.disabled ? c.reason ?? (sessionActive ? `${c.label} is not available right now.` : 'Open or create a session first.') : undefined,
+        run: c.run,
+      }));
+    return [...extras.filter((it) => it.studio), ...matches, ...extras.filter((it) => !it.studio)];
+  })();
+  /** Runs a ⌘K entry, or says why a disabled one cannot run and changes nothing. */
+  const choosePaletteItem = (it: PaletteItem) => {
+    setCommandPaletteOpen(false);
+    if (it.disabled) {
+      setStatusBanner(it.reason ?? `${it.label} is not available right now.`);
+      return;
+    }
+    it.run();
+  };
   const toolbarMenus: Record<Exclude<ToolbarDropdownId, null>, MenuNode[]> = {
-    add: [
-      {
-        kind: 'command',
-        id: 'tb-add-new-sequence',
-        label: 'New Sequence',
-        shortcut: sc('N'),
-        onSelect: () => {
-          setNewSeqInitialClipboardText('');
-          if (!sessionActive) {
-            setSessionActive(true);
-            setHomeViewActive(false);
-          }
-          setNewSeqModalOpen(true);
-        },
-      },
-      {
-        kind: 'command',
-        id: 'tb-add-new-folder',
-        label: 'New Folder',
-        shortcut: sc('N', { shift: true }),
-        onSelect: () => handleStartNewSession('new-folder'),
-      },
-      {
-        kind: 'command',
-        id: 'tb-add-text-doc',
-        label: 'Text Document',
-        onSelect: () => handleCreateNewTextDocument(),
-      },
-      {
-        kind: 'command',
-        id: 'tb-add-enzyme-set',
-        label: 'Enzyme Set',
-        onSelect: () => handleCreateNewEnzymeSetDocument(),
-      },
-      { kind: 'separator', id: 'tb-add-primary-sep' },
-      {
-        kind: 'command',
-        id: 'tb-add-import-files',
-        label: 'Import Files',
-        shortcut: sc('I'),
-        onSelect: () => triggerImportFilesPicker(),
-      },
-      {
-        kind: 'command',
-        id: 'tb-add-import-folder',
-        label: 'Import Folder',
-        onSelect: () => triggerImportFolderPicker(),
-      },
-      {
-        kind: 'command',
-        id: 'tb-add-import-clipboard',
-        label: 'Import From Clipboard',
-        shortcut: sc('I', { shift: true }),
-        onSelect: () => handleImportFromClipboardAction(),
-      },
-      buildImportOtherSubmenu('tb-add'),
-      { kind: 'separator', id: 'tb-add-legacy-sep' },
-      buildNewSessionSubmenu('tb-add'),
-      { kind: 'separator', id: 'tb-add-sep' },
-      {
-        kind: 'submenu',
-        id: 'tb-add-current',
-        label: 'Add to Session',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-add-seq-active',
-            label: 'Add Sequence',
-            onSelect: () => requireActiveSession(() => setNewSeqModalOpen(true)),
-          },
-          {
-            kind: 'command',
-            id: 'tb-add-vec-active',
-            label: 'Vector Catalog',
-            onSelect: () => requireActiveSession(() => openVectorStudio('catalog')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-add-imp-active',
-            label: 'Import Files',
-            onSelect: () => requireActiveSession(() => triggerImportFilesPicker()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-add-merge-active',
-            label: 'Merge Session',
-            onSelect: () => requireActiveSession(() => triggerOpenMbcPicker('merge')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-add-feat-active',
-            label: 'Add Feature',
-            onSelect: () => requireActiveSession(() => handleAddFeatureFromSelection()),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-add-open-mbc',
-        label: 'Open Session',
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-add-open-session',
-            label: 'Open Session',
-            shortcut: sc('O'),
-            onSelect: () => triggerOpenMbcPicker('replace'),
-          },
-          {
-            kind: 'command',
-            id: 'tb-add-restore-auto',
-            label: 'Restore Autosave',
-            onSelect: () => handleRestoreLocalAutosave(),
-          },
-        ],
-      },
-    ],
-    import: buildImportMenuNodes('tb-imp'),
-    export: [
-      {
-        kind: 'submenu',
-        id: 'tb-exp-flat',
-        label: 'Sequence Files',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-exp-gb',
-            label: 'Export GenBank',
-            shortcut: sc('E', { shift: true }),
-            disabled: !isCommandEnabled('export-active-document'),
-            onSelect: () =>
-              requireActiveSession(() =>
-                handleExportActiveDocument('genbank')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-fa',
-            label: 'Export FASTA',
-            disabled: !isCommandEnabled('export-sequence'),
-            onSelect: () =>
-              requireActiveSession(() =>
-                handleExportActiveDocument('fasta')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-embl',
-            label: 'Export EMBL',
-            disabled: !isCommandEnabled('export-active-document'),
-            onSelect: () =>
-              requireActiveSession(() =>
-                handleExportActiveDocument('embl')
-              ),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-exp-ann',
-        label: 'Annotations',
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-exp-gff3',
-            label: 'Export GFF3',
-            disabled: !isCommandEnabled('export-active-document'),
-            onSelect: () =>
-              requireActiveSession(() =>
-                handleExportActiveDocument('gff3')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'file-exp-convert-genbank',
-            label: 'Convert GenBank…',
-            onSelect: () => setOperationDialog({ kind: 'convert-genbank' }),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-ncbi',
-            label: 'GenBank Submission',
-            disabled: !sessionActive,
-            onSelect: () =>
-              requireActiveSession(() => openGenomicsSuite('transform-submit')),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-exp-mbc',
-        label: 'Session',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-exp-save-mbc',
-            label: 'Save Session',
-            shortcut: sc('S'),
-            onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(false)),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-save-mbc-as',
-            label: 'Save Session As',
-            shortcut: sc('S', { shift: true, alt: true }),
-            onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(true)),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-mbc-json',
-            label: 'Export MBC JSON',
-            onSelect: () => requireActiveSession(() => handleExportMbcJson()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-folder-mbc',
-            label: 'Export Folder as MBC',
-            onSelect: () => requireActiveSession(() => handleExportFolderMbc()),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-exp-batch',
-        label: 'Batch & Lineage',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-exp-batch-fa',
-            label: 'Batch FASTA',
-            onSelect: () =>
-              requireActiveSession(() => handleExportBatchDocuments('selected', 'fasta')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-batch-fastq',
-            label: 'Reads as FASTQ',
-            onSelect: () =>
-              requireActiveSession(() => handleExportBatchDocuments('selected', 'fastq')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-batch-folder-mbc',
-            label: 'Export Folder as MBC',
-            onSelect: () => requireActiveSession(() => handleExportFolderMbc()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-folder-gb',
-            label: 'Export Folder',
-            onSelect: () =>
-              requireActiveSession(() => handleExportBatchDocuments('folder', 'gb')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-lineage',
-            label: 'Export Lineage',
-            onSelect: () => requireActiveSession(() => handleExportLineageBundle()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-exp-consensus',
-            label: 'Export Consensus',
-            onSelect: () =>
-              requireActiveSession(() => handleExportConsensusFasta()),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-exp-img-prefs',
-        label: 'Images & Settings',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-exp-svg',
-            label: 'Save SVG Map',
-            onSelect: () => requireActiveSession(() => handleSaveViewerAsSvgImage()),
-          },
-          { kind: 'separator', id: 'tb-exp-prefs-sep' },
-          {
-            kind: 'command',
-            id: 'tb-exp-prefs',
-            label: 'Export Preferences',
-            onSelect: () => handleExportPreferencesFile(),
-          },
-        ],
-      },
-      // Offered only while an alignment is the active document (US-01M6S8C5).
-      ...(sessionActive && isAlignmentImageDocument(activeDoc)
-        ? [{
-            kind: 'submenu' as const,
-            id: 'tb-exp-aln-img',
-            label: 'Alignment Image',
-            description: 'The whole alignment, in blocks of 60 columns under a position ruler, with names, identities and the consensus',
-            minWidth: 215,
-            children: ([['svg', 'SVG Vector'], ['png', 'PNG Image'], ['pdf', 'PDF Document']] as const).map(([format, label]) => ({
-              kind: 'command' as const,
-              id: `tb-exp-aln-img-${format}`,
-              label,
-              description: `Save the whole alignment as a ${format.toUpperCase()} figure`,
-              onSelect: () => requireActiveSession(() => handleExportAlignmentImage(format)),
-            })),
-          }]
-        : []),
-      {
-        kind: 'submenu',
-        id: 'tb-exp-pdf',
-        label: 'Print & PDF',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-exp-print',
-            label: 'Print / Export PDF',
-            shortcut: sc('P'),
-            onSelect: () => requireActiveSession(() => handlePrintWorkbench()),
-          },
-        ],
-      },
-    ],
-    session: [
-      buildNewSessionSubmenu('tb-sess'),
-      {
-        kind: 'submenu',
-        id: 'tb-sess-open',
-        label: 'Open Session',
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-sess-open-mbc',
-            label: 'Open Session',
-            shortcut: sc('O'),
-            onSelect: () => triggerOpenMbcPicker('replace'),
-          },
-          {
-            kind: 'command',
-            id: 'tb-sess-merge',
-            label: 'Merge Session',
-            disabled: !sessionActive,
-            onSelect: () => requireActiveSession(() => triggerOpenMbcPicker('merge')),
-          },
-          { kind: 'separator', id: 'tb-sess-open-sep' },
-          {
-            kind: 'command',
-            id: 'tb-sess-restore',
-            label: 'Restore Autosave',
-            onSelect: () => handleRestoreLocalAutosave(),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-sess-save',
-        label: 'Save Session',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-sess-save-mbc',
-            label: 'Save Session',
-            shortcut: sc('S'),
-            onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(false)),
-          },
-          {
-            kind: 'command',
-            id: 'tb-sess-save-as',
-            label: 'Save Session As',
-            shortcut: sc('S', { shift: true, alt: true }),
-            onSelect: () => requireActiveSession(() => handleSaveMbcWorkbench(true)),
-          },
-          { kind: 'separator', id: 'tb-sess-close-sep' },
-          {
-            kind: 'command',
-            id: 'tb-sess-close',
-            label: 'Close Session',
-            shortcut: sc('W', { shift: true }),
-            onSelect: () => handleCloseSession(),
-          },
-        ],
-      },
-    ],
-    workflows: [
-      {
-        kind: 'submenu',
-        id: 'tb-wf-guided',
-        label: 'Guided Pipelines',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-wf-open-guided',
-            label: 'Guided Pipelines',
-            shortcut: sc('Y', { shift: true }),
-            onSelect: () => requireActiveSession(() => setViewerTab('guided-pipelines')),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-wf-cloning',
-        label: 'Cloning',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-wf-oligo',
-            label: 'Annealed Oligo Cloning',
-            onSelect: () =>
-              requireActiveSession(() => {
-                setViewerTab('cloning-gel');
-                setStatusBanner('Opened the Annealed Oligo Cloning tools — set the inputs there to run it.');
-              }),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-batch-rest',
-            label: 'Batch Restriction',
-            onSelect: () =>
-              requireActiveSession(() => {
-                setViewerTab('cloning-gel');
-                setStatusBanner('Opened the Batch Restriction Cloning tools — set the inputs there to run it.');
-              }),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-wf-align-tree',
-        label: 'Alignment & Trees',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-wf-align-tree-run',
-            label: 'Align & Build Tree',
-            onSelect: () =>
-              requireActiveSession(() => {
-                if (openPhylogeneticsModule('phylogeny', {
-                  treeAlgo: 'Maximum Likelihood (ML)',
-                })) setStatusBanner('Opened the Align DNA then build tree tools — set the inputs there to run it.');
-              }),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-mafft',
-            label: 'Multi-Engine MSA',
-            onSelect: () =>
-              requireActiveSession(() => {
-                openSequenceAlignment('msa', {
-                  msaAlgo: 'consistency-nj',
-                });
-                setStatusBanner('Opened the Align DNA via MAFFT-style, MUSCLE-style & Clustal-style tools — set the inputs there to run it.');
-              }),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-wf-ngs',
-        label: 'NGS Reads',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-wf-bbduk',
-            label: 'Trim NGS Reads',
-            onSelect: () =>
-              requireActiveSession(() => {
-                openGenomicsSuite('ngs-assembly');
-                setStatusBanner('Opened the Trim and Filter (BBDuk) tools — set the inputs there to run it.');
-              }),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-map-asm',
-            label: 'Map & Assemble',
-            onSelect: () =>
-              requireActiveSession(() => {
-                openGenomicsSuite('ngs-assembly');
-                setStatusBanner('Opened the Combined mapping and de novo assembly tools — set the inputs there to run it.');
-              }),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-wf-var-tax',
-        label: 'Variants & Taxonomy',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-wf-freebayes',
-            label: 'Call Variants',
-            onSelect: () =>
-              requireActiveSession(() => {
-                openGenomicsSuite('genome-variants');
-                setStatusBanner('Opened the read mapping and variant calling tools — set the inputs there to run them.');
-              }),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-apply-var',
-            label: 'Apply Variants',
-            onSelect: () =>
-              requireActiveSession(() => {
-                openGenomicsSuite('genome-variants');
-                setStatusBanner('Opened the Apply Variants to Reference Sequence tools — set the inputs there to run it.');
-              }),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-16s',
-            label: '16S / ITS Taxonomy',
-            onSelect: () =>
-              requireActiveSession(() => {
-                openGenomicsSuite('genome-variants');
-                setStatusBanner('Opened the Identify Organism (16S / ITS Taxonomy) tools — set the inputs there to run it.');
-              }),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-wf-doc-batch',
-        label: 'Batch Tasks',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-wf-exp-svg',
-            label: 'Export SVG Map',
-            onSelect: () => requireActiveSession(() => handleSaveViewerAsSvgImage()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-group-name',
-            label: 'Group by Prefix',
-            onSelect: () => requireActiveSession(() => handleWorkflowGroupByName()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-mod-intervals',
-            label: 'Modify Intervals',
-            onSelect: () =>
-              requireActiveSession(() => handleWorkflowModifyAnnotationIntervals()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-random-sample',
-            label: 'Sample Sequences',
-            onSelect: () => requireActiveSession(() => handleWorkflowRandomlySample()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-set-cds',
-            label: 'Set CDS Translation',
-            onSelect: () => requireActiveSession(() => handleWorkflowSetCdsTranslation()),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-wf-plugins',
-        label: 'Bioinformatics Plugins',
-        disabled: !sessionActive,
-        minWidth: 235,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-euk-gene',
-            label: 'Eukaryotic Gene Predictor',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-euk-gene-predictor')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-microbial-gene',
-            label: 'Microbial Gene Predictor',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-microbial-gene-predictor')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-crispr-arrays',
-            label: 'CRISPR Repeat Array Finder',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-crispr-repeat-arrays')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-tandem-repeats',
-            label: 'Microsatellite & Tandem Repeats',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-tandem-repeat-finder')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-haplotype-part',
-            label: 'Haplotype & Allele Partitioner',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-haplotype-partitioner')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-taxonomic-class',
-            label: 'Taxonomic Sequence Classifier',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-taxonomic-classifier')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-species-delim',
-            label: 'Species Delimitation',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-species-delimitation')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-protein-domains',
-            label: 'Protein Domains & Epitopes',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-protein-domains-epitopes')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-tm-topology',
-            label: 'Transmembrane & Signal Topology',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-transmembrane-topology')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-adapter-trimmer',
-            label: 'Adapter & Quality Read Trimmer',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-adapter-quality-trimmer')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-synteny-blocks',
-            label: 'Whole-Genome Synteny Blocks',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-genome-synteny-blocks')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-hpc-phylo',
-            label: 'HPC Phylogeny Job Builder',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-hpc-phylogeny-script')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-plugin-ext-cli',
-            label: 'External CLI Suite',
-            onSelect: () =>
-              requireActiveSession(() => openPluginTool('plugin-external-cli-suite')),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-wf-manage',
-        label: 'Workflow Manager',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-wf-manage-open',
-            label: 'Manage Workflows…',
-            onSelect: () => requireActiveSession(() => setManageWorkflowsOpen(true)),
-          },
-          {
-            kind: 'command',
-            id: 'tb-wf-run-open',
-            label: 'Run Workflow…',
-            onSelect: () => requireActiveSession(() => setRunWorkflowFor({})),
-          },
-          { kind: 'separator', id: 'tb-wf-run-sep' },
-          ...allWorkflows().map((w): MenuNode => ({
-            kind: 'command',
-            id: `tb-wf-run-${w.id}`,
-            label: `${w.name}…`,
-            onSelect: () => requireActiveSession(() => setRunWorkflowFor({ workflowId: w.id })),
-          })),
-        ],
-      },
-    ],
-    align: buildAlignmentMenuNodes('tb-align'),
-    tree: buildPhylogeneticsMenuNodes('tb-phylo'),
-    primers: [
-      {
-        kind: 'submenu',
-        id: 'tb-pr-design',
-        label: 'Primer Design',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-pr-dialog',
-            label: 'Design Primers…',
-            onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'primers' })),
-          },
-          {
-            kind: 'command',
-            id: 'tb-pr-test-saved',
-            label: 'Test with Saved Primers…',
-            onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'saved-primers' })),
-          },
-          {
-            kind: 'command',
-            id: 'tb-pr-db-binding',
-            label: 'Find Where Stored Primers Bind…',
-            onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'primer-db-binding' })),
-          },
-          {
-            kind: 'command',
-            id: 'tb-pr-new',
-            label: 'Design PCR Primers',
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-pr-add',
-            label: 'Add Primers',
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-pr-saved',
-            label: 'Map Saved Primers',
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-pr-chars',
-            label: 'Selection Tm',
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-pr-tail',
-        label: 'Extensions & PCR',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-pr-ext5',
-            label: "Add 5' Overhang",
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-pr-convert-oligo',
-            label: 'Selection to Oligo',
-            onSelect: () => requireActiveSession(() => handleConvertSelectionToOligo()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-pr-amplicon',
-            label: 'In-Silico PCR',
-            onSelect: () => requireActiveSession(() => setViewerTab('primers-pcr')),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-pr-crispr',
-        label: 'CRISPR Guides',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-pr-crispr-find',
-            label: 'Find CRISPR Sites',
-            onSelect: () => requireActiveSession(() => openPrimersStudio('crispr')),
-          },
-        ],
-      },
-    ],
-    cloning: [
-      {
-        kind: 'command',
-        id: 'tb-cl-clone-dialog',
-        label: 'Clone Insert into Vector…',
-        disabled: !sessionActive,
-        onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'cloning' })),
-      },
-      {
-        kind: 'command',
-        id: 'tb-cl-validate-clone',
-        label: 'Validate Clone…',
-        disabled: !sessionActive,
-        onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'validate-clone' })),
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-cl-digest',
-        label: 'Restriction Digest',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-cl-find-sites',
-            label: 'Find Sites',
-            onSelect: () =>
-              requireActiveSession(() => {
-                setViewerTab('sequence-view');
-                setRightPanelOpen(true);
-                setOpenRightPanels((p) => ({ ...p, restriction: true }));
-              }),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-digest-dialog',
-            label: 'Digest into Fragments…',
-            onSelect: () => requireActiveSession(() => setOperationDialog({ kind: 'digest' })),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-frag',
-            label: 'Agarose Digest',
-            onSelect: () =>
-              requireActiveSession(() => openCloningMethod('Restriction Ligation', 'gel')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-ligate',
-            label: 'Ligate Fragments',
-            onSelect: () =>
-              requireActiveSession(() => openCloningMethod('Restriction Ligation', 'gel')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-rest',
-            label: 'Restriction Cloning',
-            onSelect: () =>
-              requireActiveSession(() => openCloningMethod('Restriction Ligation', 'gel')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-rest-anneal',
-            label: 'Anneal Oligos',
-            onSelect: () =>
-              requireActiveSession(() =>
-                openCloningMethod('Restriction Ligation', 'anneal-oligos')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-noncut',
-            label: 'Non-Cutters',
-            onSelect: () =>
-              requireActiveSession(() =>
-                openCloningMethod('Restriction Ligation', 'non-cutters')
-              ),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-cl-seamless',
-        label: 'Seamless Assembly',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-cl-gibson',
-            label: 'Gibson Assembly',
-            onSelect: () =>
-              requireActiveSession(() => openCloningMethod('Gibson Assembly', 'gel')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-hifi',
-            label: 'NEBuilder HiFi',
-            onSelect: () =>
-              requireActiveSession(() =>
-                openCloningMethod('NEBuilder HiFi Assembly', 'gel')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-infusion',
-            label: 'In-Fusion',
-            onSelect: () =>
-              requireActiveSession(() => openCloningMethod('In-Fusion Cloning', 'gel')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-gg',
-            label: 'Golden Gate',
-            onSelect: () =>
-              requireActiveSession(() =>
-                openCloningMethod('Golden Gate (Type IIS)', 'gel')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-parts',
-            label: 'Parts Cloning',
-            onSelect: () =>
-              requireActiveSession(() => openCloningMethod('Parts Cloning', 'gel')),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-cl-gateway',
-        label: 'Gateway Cloning',
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-cl-gw',
-            label: 'BP / LR Cloning',
-            disabled: !sessionActive,
-            onSelect: () =>
-              requireActiveSession(() =>
-                openCloningMethod('Gateway BP/LR Recombination', 'gel')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-annot-att',
-            label: 'Annotate att Sites',
-            disabled: !sessionActive,
-            onSelect: () => requireActiveSession(() => handleAnnotateGatewaySites()),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-add-attb',
-            label: 'Add attB Sites',
-            disabled: !sessionActive,
-            onSelect: () => requireActiveSession(() => handleAddAttBSitesToActive()),
-          },
-          { kind: 'separator', id: 'tb-cl-gw-sep' },
-          {
-            kind: 'submenu',
-            id: 'tb-cl-gw-donors',
-            label: 'Donor Vectors',
-            minWidth: 205,
-            children: buildActionVectorGroupNodes('gateway-donor', 'tb-vec'),
-          },
-          {
-            kind: 'submenu',
-            id: 'tb-cl-gw-dests',
-            label: 'Destination Vectors',
-            minWidth: 205,
-            children: buildActionVectorGroupNodes('gateway-dest', 'tb-vec'),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-cl-topo-sub',
-        label: 'TOPO Cloning',
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-cl-topo',
-            label: 'TOPO Cloning',
-            disabled: !sessionActive,
-            onSelect: () =>
-              requireActiveSession(() => openCloningMethod('TOPO Cloning', 'gel')),
-          },
-          { kind: 'separator', id: 'tb-cl-topo-sep' },
-          {
-            kind: 'submenu',
-            id: 'tb-cl-topo-ta',
-            label: 'TOPO TA Vectors',
-            minWidth: 205,
-            children: buildActionVectorGroupNodes('topo-ta', 'tb-vec'),
-          },
-          {
-            kind: 'submenu',
-            id: 'tb-cl-topo-blunt',
-            label: 'Blunt TOPO Vectors',
-            minWidth: 205,
-            children: buildActionVectorGroupNodes('topo-blunt', 'tb-vec'),
-          },
-          {
-            kind: 'submenu',
-            id: 'tb-cl-topo-dir',
-            label: 'D-TOPO Vectors',
-            minWidth: 205,
-            children: buildActionVectorGroupNodes('topo-directional', 'tb-vec'),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-cl-tagc-sub',
-        label: 'TA & GC Cloning',
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-cl-ta',
-            label: 'TA / GC Cloning',
-            disabled: !sessionActive,
-            onSelect: () =>
-              requireActiveSession(() => openCloningMethod('TA / GC Cloning', 'gel')),
-          },
-          { kind: 'separator', id: 'tb-cl-tagc-sep' },
-          {
-            kind: 'submenu',
-            id: 'tb-cl-ta-vecs',
-            label: 'TA Vectors',
-            minWidth: 205,
-            children: buildActionVectorGroupNodes('ta-vectors', 'tb-vec'),
-          },
-          {
-            kind: 'submenu',
-            id: 'tb-cl-gc-vecs',
-            label: 'GC Vectors',
-            minWidth: 205,
-            children: buildActionVectorGroupNodes('gc-vectors', 'tb-vec'),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-cl-mut',
-        label: 'PCR & Mutagenesis',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-cl-sdm',
-            label: 'Site Mutagenesis',
-            shortcut: sc('J'),
-            onSelect: () =>
-              requireActiveSession(() =>
-                openCloningMethod('Restriction Ligation', 'mutagenesis')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-soe',
-            label: 'Overlap PCR',
-            onSelect: () =>
-              requireActiveSession(() =>
-                openCloningMethod('Overlap Extension PCR', 'gel')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-anneal',
-            label: 'Anneal Oligos',
-            onSelect: () =>
-              requireActiveSession(() =>
-                openCloningMethod('Restriction Ligation', 'anneal-oligos')
-              ),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-silent',
-            label: 'Silent Mutations',
-            onSelect: () =>
-              requireActiveSession(() =>
-                openCloningMethod('Restriction Ligation', 'silent-mutations')
-              ),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-cl-codon-sub',
-        label: 'Codon Optimization',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-cl-codons',
-            label: 'Optimize Codons',
-            onSelect: () => requireActiveSession(() => openProteinStudio()),
-          },
-        ],
-      },
-      {
-        kind: 'submenu',
-        id: 'tb-cl-vec-val',
-        label: 'Vectors & Validation',
-        disabled: !sessionActive,
-        minWidth: 215,
-        children: [
-          {
-            kind: 'command',
-            id: 'tb-cl-vec-cat',
-            label: 'Vector Catalog',
-            onSelect: () => requireActiveSession(() => openVectorStudio('catalog')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-vec-arch',
-            label: 'Vector Architect',
-            onSelect: () => requireActiveSession(() => openVectorStudio('architect')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-twist-qc',
-            label: 'Custom Vector QC',
-            onSelect: () =>
-              requireActiveSession(() => openVectorStudio('twist-onboarding')),
-          },
-          {
-            kind: 'command',
-            id: 'tb-cl-sanger-val',
-            label: 'Sanger Validation',
-            onSelect: () => requireActiveSession(() => setViewerTab('sanger-contig')),
-          },
-        ],
-      },
-      { kind: 'separator', id: 'tb-cl-enz-sep' },
-      {
-        kind: 'submenu',
-        id: 'tb-cl-enzymes-group',
-        label: 'Enzymes',
-        minWidth: 215,
-        children: enzymesMenuNodes,
-      },
-    ],
+    add: toolbarGroup('add'),
+    import: toolbarGroup('import'),
+    export: toolbarGroup('export'),
+    session: toolbarGroup('session'),
+    workflows: toolbarGroup('workflows'),
+    align: toolbarGroup('align'),
+    tree: toolbarGroup('tree'),
+    primers: toolbarGroup('primers'),
+    cloning: toolbarGroup('cloning'),
     'tab-plus': [
       buildNewSessionSubmenu('tab-plus'),
       ...(sessionActive
@@ -13882,19 +12880,6 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
     columns: buildTableColumnsMenuNodes('mf-cols'),
   };
 
-  const topMenuBarEntries: {
-    id: Exclude<TopMenuId, 'app' | null>;
-    label: string;
-    minWidth: number;
-  }[] = [
-    { id: 'file', label: 'File', minWidth: 215 },
-    { id: 'edit', label: 'Edit', minWidth: 210 },
-    { id: 'view', label: 'View', minWidth: 215 },
-    { id: 'sequence', label: 'Sequence', minWidth: 215 },
-    { id: 'cloning', label: 'Cloning', minWidth: 215 },
-    { id: 'tools', label: 'Tools', minWidth: 220 },
-    { id: 'help', label: 'Help', minWidth: 210 },
-  ];
 
   const allMenubarTriggers: {
     id: Exclude<TopMenuId, null>;
@@ -18267,9 +17252,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   setCommandPaletteIdx((i) => Math.max(0, i - 1));
                 } else if (e.key === 'Enter' && commandPaletteItems[commandPaletteIdx]) {
                   e.preventDefault();
-                  const chosen = commandPaletteItems[commandPaletteIdx];
-                  setCommandPaletteOpen(false);
-                  chosen.run();
+                  choosePaletteItem(commandPaletteItems[commandPaletteIdx]);
                 }
               }}
             />
@@ -18281,20 +17264,23 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   aria-selected={idx === commandPaletteIdx}
                   key={it.id}
                   data-studio={it.studio}
+                  data-command-id={it.commandId}
+                  aria-disabled={it.disabled ? true : undefined}
+                  title={it.disabled ? it.reason : undefined}
                   className={`mbc-cmd-palette-item ${
                     idx === commandPaletteIdx ? 'selected' : ''
-                  }`}
-                  onClick={() => {
-                    setCommandPaletteOpen(false);
-                    it.run();
-                  }}
+                  }${it.disabled ? ' disabled' : ''}`}
+                  onClick={() => choosePaletteItem(it)}
                 >
                   <span>
                     <strong>{it.label}</strong>
+                    {it.path && <span className="mbc-cmd-palette-path">{it.path.join(' › ')}</span>}
+                    {it.disabled && it.reason && <span className="mbc-cmd-palette-reason">{it.reason}</span>}
                   </span>
                   <span className="mbc-cmd-palette-meta">
                     <span className="mbc-cmd-cat-pill">{it.category}</span>
-                    <span>{it.hint}</span>
+                    {it.hint && <span>{it.hint}</span>}
+                    {it.shortcut && <kbd className="mbc-cmd-palette-key">{it.shortcut}</kbd>}
                   </span>
                 </button>
               ))}

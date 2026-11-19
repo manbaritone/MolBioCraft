@@ -7,6 +7,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../App';
 import appSrc from '../App.tsx?raw';
+import registrySrc from '../core/commandRegistry.ts?raw';
+
+/** The menu text: App.tsx's menu nodes and the command registry they read their labels from (US-01M6Q1N2). */
+const menuSrc = `${appSrc}\n${registrySrc}`;
 import spaceGroteskFontUrl from '../assets/fonts/space-grotesk/SpaceGrotesk-VariableFont_wght.ttf?url';
 import macMainMm from '../../packaging/macos/main.mm?raw';
 import tauriCapDefaultJson from '../../src-tauri/capabilities/default.json?raw';
@@ -768,7 +772,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(footerHtml).toContain('Navigator</button>');
 
     // Verify File -> Import Data parity across Web/Windows/Linux, macOS Cocoa, and Tauri v2
-    expect(appSrc).toContain("label: 'Import Data'");
+    expect(menuSrc).toContain("label: 'Import Data'");
     expect(macMainMm).toContain('@"Import Data"');
     expect(tauriMainRs).toContain('"Import Data"');
 
@@ -1757,7 +1761,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     );
 
     // 1. Zero trailing '...' in any menu label across Web/React, Tauri Rust, and macOS Cocoa
-    expect(appSrc).not.toMatch(/label:\s*['"`][^'"`]*\.\.\.['"`]/);
+    expect(menuSrc).not.toMatch(/label:\s*['"`][^'"`]*\.\.\.['"`]/);
     expect(homeTsxText).not.toMatch(/label:\s*['"`][^'"`]*\.\.\.['"`]/);
     expect(tauriMainRs).not.toMatch(/"[^"\n]*\.\.\."/);
     expect(macMainMm).not.toMatch(/@"[^"\n]*\.\.\."/);
@@ -1770,7 +1774,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
 
     // 2. Every menu label in App.tsx and ProjectFirstPageHome.tsx resolves to a clean, non-empty function description
     const allLabels = new Set<string>();
-    for (const src of [appSrc, homeTsxText]) {
+    for (const src of [menuSrc, homeTsxText]) {
       for (const m of src.matchAll(/label:\s*'([^']+)'/g)) {
         allLabels.add(m[1]);
       }
@@ -1853,7 +1857,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(cascadingMenuSrc).toContain("e.key === 'Control' && activeTooltip !== null");
     expect(appCssText).toContain('.desktop-menu-func-tooltip');
     expect(appCssText).toContain('.mbc-dark-mode .desktop-menu-func-tooltip');
-    expect(appSrc).toContain("label: 'Show Menu Function Info'");
+    expect(menuSrc).toContain("label: 'Show Menu Function Info'");
 
     const prefsGeneralHtml = renderToStaticMarkup(
       React.createElement(PreferencesModal, {
@@ -2055,18 +2059,18 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(tmStats.tmC).toBeGreaterThan(45);
 
     // Verify Add and Import menu actions in App.tsx
-    expect(appSrc).toContain("label: 'New Sequence'");
-    expect(appSrc).toContain("label: 'New Folder'");
-    expect(appSrc).toContain("label: 'Text Document'");
-    expect(appSrc).toContain("label: 'Enzyme Set'");
-    expect(appSrc).toContain("label: 'Import Files'");
-    expect(appSrc).toContain("label: 'Import Folder'");
-    expect(appSrc).toContain("label: 'Import From Clipboard'");
-    expect(appSrc).toContain("label: 'Import Other'");
-    expect(appSrc).toContain("label: 'Restore Backup'");
-    expect(appSrc).toContain("label: 'Sample Documents'");
-    expect(appSrc).toContain("label: 'MolBioCraft Preferences'");
-    expect(appSrc).toContain("label: 'New Database Connection'");
+    expect(menuSrc).toContain("label: 'New Sequence'");
+    expect(menuSrc).toContain("label: 'New Folder'");
+    expect(menuSrc).toContain("label: 'Text Document'");
+    expect(menuSrc).toContain("label: 'Enzyme Set'");
+    expect(menuSrc).toContain("label: 'Import Files'");
+    expect(menuSrc).toContain("label: 'Import Folder'");
+    expect(menuSrc).toContain("label: 'Import From Clipboard'");
+    expect(menuSrc).toContain("label: 'Import Other'");
+    expect(menuSrc).toContain("label: 'Restore Backup'");
+    expect(menuSrc).toContain("label: 'Sample Documents'");
+    expect(menuSrc).toContain("label: 'MolBioCraft Preferences'");
+    expect(menuSrc).toContain("label: 'New Database Connection'");
   });
 
   it('exports and imports .mbc files in both JSON format and PKZIP folder archive format', () => {
@@ -2122,7 +2126,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(parsedZip.envelope.documents).toHaveLength(2);
     expect(parsedZip.envelope.documents[0].name).toBe(sampleDocs[0].name);
 
-    expect(appSrc).toContain("label: 'Export MBC JSON'");
-    expect(appSrc).toContain("label: 'Export Folder as MBC'");
+    expect(menuSrc).toContain("label: 'Export MBC JSON'");
+    expect(menuSrc).toContain("label: 'Export Folder as MBC'");
   });
 });

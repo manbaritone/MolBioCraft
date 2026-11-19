@@ -6,6 +6,8 @@
  * options window. Both are set from the settings menu of that operation's window.
  */
 
+import { PLATFORM_SHORTCUTS, registryShortcuts } from './commandRegistry';
+
 export const OPERATION_LABELS = {
   'align-multiple': 'Multiple Alignment',
   'align-pairwise': 'Pairwise Alignment',
@@ -72,75 +74,11 @@ const KEY = 'molbiocraft.operationShortcuts.v1';
 export const OPERATION_SHORTCUTS_EVENT = 'molbiocraft:operation-shortcuts';
 
 /**
- * Shortcuts the workbench already uses (see menuShortcuts / native menus). An operation
- * cannot take one of these.
+ * Shortcuts the workbench already uses, which an operation cannot take: every key of the command
+ * registry (its commands' shortcuts and second keys) plus the platform's own keys (US-01M6Q1N2). It
+ * is derived, never kept by hand, so a key the menus gain or lose is reserved or freed with them.
  */
-export const RESERVED_SHORTCUTS = new Set([
-  'Mod+,',
-  'Mod+-',
-  'Mod+0',
-  'Mod+1',
-  'Mod+2',
-  'Mod+3',
-  'Mod+4',
-  'Mod+5',
-  'Mod+6',
-  'Mod+7',
-  'Mod+8',
-  'Mod+9',
-  'Mod+=',
-  'Mod+A',
-  // US-01M6Q1CF: View › Map Layout's Split, Circular and Linear.
-  'Mod+Alt+1',
-  'Mod+Alt+2',
-  'Mod+Alt+3',
-  'Mod+Alt+A',
-  'Mod+Alt+F',
-  'Mod+Alt+I',
-  'Mod+Alt+N',
-  'Mod+Alt+S',
-  'Mod+Alt+Shift+S',
-  'Mod+Alt+T',
-  'Mod+C',
-  'Mod+D',
-  'Mod+E',
-  'Mod+F',
-  'Mod+G',
-  'Mod+I',
-  'Mod+J',
-  'Mod+K',
-  'Mod+N',
-  'Mod+O',
-  'Mod+P',
-  'Mod+Q',
-  'Mod+S',
-  'Mod+Shift+0',
-  'Mod+Shift+A',
-  'Mod+Shift+B',
-  'Mod+Shift+C',
-  'Mod+Shift+E',
-  'Mod+Shift+F',
-  'Mod+Shift+G',
-  'Mod+Shift+I',
-  'Mod+Shift+L',
-  'Mod+Shift+M',
-  'Mod+Shift+N',
-  'Mod+Shift+O',
-  'Mod+Shift+P',
-  'Mod+Shift+R',
-  'Mod+Shift+S',
-  'Mod+Shift+W',
-  'Mod+Shift+Y',
-  'Mod+Shift+Z',
-  'Mod+T',
-  'Mod+V',
-  'Mod+W',
-  'Mod+X',
-  'Mod+Y',
-  'Mod+Z',
-  'Mod+[',
-  'Mod+]',
-]);
+export const RESERVED_SHORTCUTS: ReadonlySet<string> = new Set([...registryShortcuts(), ...PLATFORM_SHORTCUTS]);
 
 export function readOperationShortcuts(): Store {
   try {

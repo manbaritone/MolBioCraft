@@ -223,7 +223,9 @@ describe('Convert GenBank (US-01M7RCCA AC4, AC5)', () => {
       const toolbarExport = app.all('button.mbc-tool-btn').filter((b) => words(b.textContent) === 'Export');
       expect(toolbarExport, 'the toolbar Export menu').toHaveLength(1);
       await app.click(toolbarExport[0]);
-      await app.click(menuItem(app, 'Annotations'));
+      // Export ▾ is File › Export Sequences (D0254): Convert GenBank… is a top-level row, right after Export GFF3.
+      const rows = app.all('[role="menuitem"]').map((m) => words(m.textContent));
+      expect(rows[rows.indexOf('Convert GenBank…') - 1], 'the row before Convert GenBank…').toBe('Export GFF3');
       await app.click(menuItem(app, 'Convert GenBank…'));
       expect(app.one('input[data-genbank-to-source="records"]').checked, 'the open record is the source').toBe(true);
       expect(words(dialog(app).textContent)).toContain(`The record ${docs[1].name}`);
