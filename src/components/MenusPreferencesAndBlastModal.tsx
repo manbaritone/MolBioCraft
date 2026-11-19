@@ -2754,10 +2754,9 @@ interface NewSequenceModalProps {
 }
 
 /**
- * Oligo Tm / ΔG°37 from the Rust engine: SantaLucia (1998) nearest-neighbour parameters with
- * Owczarzy et al. (2004/2008) Na⁺/Mg²⁺ corrections — the same model as Primer3's
- * `santalucia` + `owczarzy` options (agrees to < 0.1 °C). dNTPs chelate Mg²⁺ 1:1, so the free
- * Mg²⁺ (Mg²⁺ − dNTP) is used, as in Primer3. N and the other ambiguity codes are kept, so an oligo
+ * Oligo Tm / ΔG°37 from the Rust engine (`calculatePrimerMetrics`): SantaLucia (1998) nearest-neighbour, von Ahsen (2001) Mg2+ equivalence (Primer3 default),
+ * the SantaLucia (1998) entropy salt correction on [Na⁺]eq = [Na⁺] + 120·√[Mg²⁺]. dNTPs chelate
+ * Mg²⁺ 1:1, so the free Mg²⁺ (Mg²⁺ − dNTP) is used, as in Primer3. N and the other ambiguity codes are kept, so an oligo
  * holding one has no Tm and `tmNoAnswerReason` says why (BG-01M6SHQ0): they were deleted first, so
  * ACGTNACGT was given the Tm of ACGTACGT, a different oligo.
  */

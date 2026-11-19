@@ -1,13 +1,16 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-//! Standards-compliant genomics streaming I/O powered by `noodles`:
-//! - `noodles-fasta` (FASTA multi-record parsing & formatted 70-col serialization)
-//! - `noodles-fastq` (FASTQ Phred+33 read parsing & Q20/Q30 quality control metrics)
-//! - `noodles-gff` (GFF3 feature parsing & Sequence Ontology record writing)
-//! - `noodles-bed` (BED3/BED6 genomic interval track parsing)
-//! - `noodles-vcf` (VCF v4.3+ header & variant call record parsing/formatting)
+//! Genomics text I/O, part of it through `noodles` (US-01M6P2WJ names which part):
+//! - `noodles-fasta` (FASTA multi-record parsing, and serialization at the writer's default of 80
+//!   bases per line)
+//! - `noodles-gff` (GFF3 record writing; GFF3 features are read by `parse_gff3_noodles`'s own
+//!   line reader)
+//! - `noodles-vcf` (VCF v4.x header & variant call record parsing)
 //! - `noodles-sam` (SAM alignment header & mapped read summary statistics)
+//! - FASTQ reads (Phred+33, Phred+64 or Solexa qualities, Q20/Q30 metrics) and BED3-BED12
+//!   intervals are read by this module's own line readers (`fastq_records`, `parse_bed_noodles`),
+//!   with no noodles crate.
 
 use std::collections::HashMap;
 
@@ -235,8 +238,8 @@ pub struct FastqParseSummary {
     pub reads: Vec<FastqReadRecord>,
 }
 
-/// Stream and parse FASTQ reads + Phred+33 base qualities using `noodles_fastq::io::Reader`.
-/// FASTQ quality encodings (Cock et al. 2010): Sanger / Illumina 1.8+ (Phred+33), Illumina
+/// FASTQ quality encodings, as `parse_fastq_noodles` reads them through this module's own record
+/// reader (`fastq_records`). The encodings (Cock et al. 2010): Sanger / Illumina 1.8+ (Phred+33), Illumina
 /// 1.3–1.7 (Phred+64) and Solexa (Solexa+64, converted to Phred).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FastqQualityEncoding {

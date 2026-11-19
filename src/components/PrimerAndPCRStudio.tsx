@@ -1699,7 +1699,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
           <div className="studio-card">
             <div className="studio-card-header">
               <h3>Oligo Biophysics &amp; Secondary Structure Calculator</h3>
-              <span className="badge-accent">Owczarzy Mg²⁺ / Na⁺ Salt Correction</span>
+              <span className="badge-accent">SantaLucia (1998) nearest-neighbour, von Ahsen (2001) Mg2+ equivalence (Primer3 default)</span>
             </div>
 
             <label className="form-field">

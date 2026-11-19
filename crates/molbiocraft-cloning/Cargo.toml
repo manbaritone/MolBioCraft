@@ -7,7 +7,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Restriction enzyme Aho-Corasick digest engine, agarose gel physics, Gibson/GoldenGate/Gateway/TOPO cloning, SantaLucia+Owczarzy PCR thermodynamics, MFE secondary structure, CRISPR scoring, modular vector architect, and batch sequence operations"
+description = "Restriction enzyme Aho-Corasick digest engine, agarose gel physics, Gibson/GoldenGate/Gateway/TOPO cloning, PCR thermodynamics by SantaLucia (1998) nearest-neighbour, von Ahsen (2001) Mg2+ equivalence (Primer3 default), MFE secondary structure, CRISPR scoring, modular vector architect, and batch sequence operations"
 
 [dependencies]
 molbiocraft-core = { path = "../molbiocraft-core" }

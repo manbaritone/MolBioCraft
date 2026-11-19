@@ -374,8 +374,9 @@ pub fn calculate_primer_metrics(
     }
 }
 
-/// Computes full SantaLucia (2004) + Owczarzy (2008) nearest-neighbor primer thermodynamics
-/// including exact dinucleotide enthalpy ($\Delta H^\circ$) and salt-adjusted entropy ($\Delta S^\circ$).
+/// Primer thermodynamics by SantaLucia (1998) nearest-neighbour, von Ahsen (2001) Mg2+ equivalence (Primer3 default): the
+/// summed nearest-neighbour enthalpy ($\Delta H^\circ$) and salt-adjusted entropy ($\Delta S^\circ$), with
+/// the Tm, $\Delta G^\circ_{37}$, hairpin and self-dimer values of `calculate_primer_metrics`.
 pub fn calculate_primer_thermodynamics_santalucia(
     raw_primer_seq: &str,
     na_mm: f64,

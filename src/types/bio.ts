@@ -733,7 +733,7 @@ export interface PairwiseAlignmentResult {
   yend?: number;
   cigar?: string;
   algorithm: 'Needleman-Wunsch (Global)' | 'Smith-Waterman (Local)' | (string & {});
-  engineUsed: 'C++ Native / Rust FFI' | 'TypeScript SIMD Fallback' | (string & {});
+  engineUsed: 'Rust engine (WebAssembly)' | 'Rust engine (desktop)' | (string & {});
 }
 
 export interface MSARow {

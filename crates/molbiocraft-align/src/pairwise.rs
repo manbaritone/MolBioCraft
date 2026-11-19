@@ -305,6 +305,13 @@ fn ambiguity_identity_warning(alignment: &PairwiseAlignmentResult) -> Option<Str
     }
 }
 
+/// The engine a pairwise result names (US-01M6P2WJ): this Rust code, by where it runs - the
+/// WebAssembly build the browser and the desktop webview load, or a native build such as the desktop
+/// shell's. The desktop's `cmd_pairwise_align` reply does not carry it; `invokePairwiseAlignHybrid`
+/// (src/lib/tauriIpc.ts) names that path "Rust engine (desktop)" itself.
+pub const PAIRWISE_ENGINE_LABEL: &str =
+    if cfg!(target_arch = "wasm32") { "Rust engine (WebAssembly)" } else { "Rust engine (desktop)" };
+
 /// Core Gotoh affine-gap pairwise alignment via `rust-bio`.
 pub fn align_pairwise_gotoh(
     raw_seq1: &str,
@@ -352,7 +359,7 @@ pub fn align_pairwise_gotoh(
             yend: 0,
             cigar: String::new(),
             algorithm: algo_label,
-            engine_used: "C++ Native / Rust FFI".to_string(),
+            engine_used: PAIRWISE_ENGINE_LABEL.to_string(),
             matrix: String::new(),
         };
     }
@@ -751,7 +758,7 @@ fn reconstruct_alignment_columns(
         yend: aln.yend,
         cigar: encode_cigar_from_columns(&a1, &a2, matrix_kind),
         algorithm,
-        engine_used: "C++ Native / Rust FFI".to_string(),
+        engine_used: PAIRWISE_ENGINE_LABEL.to_string(),
         matrix: matrix_kind.label().to_string(),
     }
 }

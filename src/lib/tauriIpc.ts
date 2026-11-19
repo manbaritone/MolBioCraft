@@ -543,8 +543,9 @@ export async function queryPlatformDiagnosticsHybrid(): Promise<
 }
 
 /**
- * Execute pairwise Needleman-Wunsch or Smith-Waterman alignment via Tauri's Rust -> C++17 FFI
- * (`cmd_pairwise_align`) with LRU caching when active, falling back cleanly to TypeScript otherwise.
+ * Execute pairwise Needleman-Wunsch or Smith-Waterman alignment through the desktop shell's Rust
+ * command (`cmd_pairwise_align`) with LRU caching when active, labelled "Rust engine (desktop)";
+ * otherwise through the Rust engine's WebAssembly build, whose reply names "Rust engine (WebAssembly)".
  */
 export async function invokePairwiseAlignHybrid(
   seq1: string,
@@ -587,7 +588,7 @@ export async function invokePairwiseAlignHybrid(
       gaps: out.gaps,
       identityPct: Number(out.identity_pct.toFixed(2)),
       algorithm: local ? 'Smith-Waterman (Local)' : 'Needleman-Wunsch (Global)',
-      engineUsed: 'C++ Native / Rust FFI',
+      engineUsed: 'Rust engine (desktop)',
     };
   }
 

@@ -617,3 +617,49 @@ fn a_stopped_scan_gives_no_all_clear_line() {
     assert!(!whole.stopped_early);
     assert_eq!(ids(audit_sequence_alerts_for_scan(&doc, &whole.sites, strain, false)), vec!["alert-clean".to_string()]);
 }
+
+/// US-01M6P2WJ AC3: every number the doc comment above `get_rebase_enzymes` gives is one of the
+/// catalogue's own counts - the whole catalogue, its core set (`CORE_CATALOG_LEN`) or the rest -
+/// read from the source text, so a count left behind when enzymes are added fails here. A site
+/// length written as `6-bp` is not a count and is passed over.
+#[test]
+fn catalogue_doc_count_matches() {
+    let source = include_str!("../src/rebase_catalog.rs");
+    let fn_at = source.find("pub fn get_rebase_enzymes()").expect("get_rebase_enzymes is in the source");
+    let doc: Vec<&str> = source[..fn_at]
+        .lines()
+        .rev()
+        .skip_while(|l| l.trim().is_empty())
+        .take_while(|l| l.trim_start().starts_with("///"))
+        .collect();
+    assert!(!doc.is_empty(), "get_rebase_enzymes carries a doc comment");
+    let doc = doc.into_iter().rev().map(|l| l.trim_start().trim_start_matches("///")).collect::<Vec<_>>().join(" ");
+
+    let total = get_rebase_enzymes().len();
+    let allowed = [total, CORE_CATALOG_LEN, total - CORE_CATALOG_LEN];
+    let bytes = doc.as_bytes();
+    let mut numbers = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric()) {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if !doc[i..].starts_with("-bp") {
+                numbers.push(doc[start..i].parse::<usize>().unwrap());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    for n in &numbers {
+        assert!(
+            allowed.contains(n),
+            "the get_rebase_enzymes doc gives {n}, but the catalogue holds {total} enzymes ({CORE_CATALOG_LEN} core, {} more): {doc}",
+            total - CORE_CATALOG_LEN
+        );
+    }
+    // the doc states the catalogue's size, so the check above has a count to hold
+    assert!(numbers.contains(&total), "the get_rebase_enzymes doc names the catalogue's {total} enzymes: {doc}");
+}

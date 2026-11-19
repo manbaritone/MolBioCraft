@@ -49,7 +49,7 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
     expect(diag.app_support_dir.length).toBeGreaterThan(0);
 
     const align = await invokePairwiseAlignHybrid('ATGGTGAGCAAG', 'ATGGTGTCTAAG', false);
-    expect(align.engineUsed).toBe('C++ Native / Rust FFI');
+    expect(align.engineUsed).toBe('Rust engine (WebAssembly)');
     expect(align.identityPct).toBeGreaterThan(70);
 
     const rc = await invokeReverseComplementHybrid('GAATTC');
@@ -98,10 +98,10 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
 
     expect(isTauriDesktopRuntime()).toBe(true);
 
-    // First call hits Tauri Rust/C++ IPC; second identical call hits bounded LRU cache
+    // First call hits the desktop shell's Rust command over IPC; second identical call hits bounded LRU cache
     const first = await invokePairwiseAlignHybrid('ATGGTG', 'ATGGTG', false);
     const second = await invokePairwiseAlignHybrid('ATGGTG', 'ATGGTG', false);
-    expect(first.engineUsed).toBe('C++ Native / Rust FFI');
+    expect(first.engineUsed).toBe('Rust engine (desktop)');
     expect(second.identityPct).toBe(100);
     expect(invokedCommands.filter((c) => c === 'cmd_pairwise_align')).toHaveLength(1);
     expect(TauriIpcCache.getTelemetry().hits).toBe(1);
@@ -357,5 +357,63 @@ describe('Tauri v2 IPC Bridge, Batch Operations, LRU Cache & Path Security', () 
     }
     // a tag outside the list is still not passed through as a code
     expect(await codeOf('[ERR_ASYNC_JOIN] task panicked')).toBe('ERR_INVALID_FILENAME');
+  });
+});
+
+describe('US-01M6P2WJ AC1: the pairwise engine label names the Rust engine where it runs', () => {
+  const g = globalThis as unknown as MockTauriInternals;
+  const pair = ['ATGGTGAGCAAGGGCGAGGAG', 'ATGGTGTCTAAGGGCGAGGAG'] as const;
+
+  beforeEach(() => {
+    TauriIpcCache.clear();
+    delete g.__TAURI_INTERNALS__;
+  });
+
+  afterEach(() => {
+    TauriIpcCache.clear();
+    delete g.__TAURI_INTERNALS__;
+  });
+
+  it('US-01M6P2WJ AC1 reports "Rust engine (WebAssembly)" in the browser, global and local', async () => {
+    expect(isTauriDesktopRuntime()).toBe(false);
+    const global = await invokePairwiseAlignHybrid(pair[0], pair[1], false);
+    const local = await invokePairwiseAlignHybrid(pair[0], pair[1], true);
+    expect(global.algorithm).toBe('Needleman-Wunsch (Global)');
+    expect(local.algorithm).toBe('Smith-Waterman (Local)');
+    expect(global.engineUsed).toBe('Rust engine (WebAssembly)');
+    expect(local.engineUsed).toBe('Rust engine (WebAssembly)');
+    // the engine aligned the pair rather than refusing it ("none (not aligned)")
+    expect(global.matches).toBeGreaterThan(0);
+  });
+
+  it('US-01M6P2WJ AC1 reports "Rust engine (desktop)" over IPC, global and local, and the cached reply keeps it', async () => {
+    const calls: string[] = [];
+    g.__TAURI_INTERNALS__ = {
+      invoke: async (cmd) => {
+        calls.push(cmd);
+        if (cmd !== 'cmd_pairwise_align') throw new Error(`[ERR_INVALID_FILENAME] Unexpected command ${cmd}`);
+        // the desktop command's reply carries no engine name of its own (bio_commands.rs AlignmentOutput)
+        return {
+          aligned_seq1: 'ATGGTGAGC',
+          aligned_seq2: 'ATGGTGTCT',
+          midline: '||||||   ',
+          score: 9,
+          matches: 6,
+          mismatches: 3,
+          gaps: 0,
+          identity_pct: 66.67,
+        };
+      },
+    };
+    expect(isTauriDesktopRuntime()).toBe(true);
+    const first = await invokePairwiseAlignHybrid(pair[0], pair[1], true);
+    const again = await invokePairwiseAlignHybrid(pair[0], pair[1], true);
+    const global = await invokePairwiseAlignHybrid(pair[0], pair[1], false);
+    expect(calls).toEqual(['cmd_pairwise_align', 'cmd_pairwise_align']);
+    expect(first.algorithm).toBe('Smith-Waterman (Local)');
+    expect(global.algorithm).toBe('Needleman-Wunsch (Global)');
+    expect(first.engineUsed).toBe('Rust engine (desktop)');
+    expect(again.engineUsed).toBe('Rust engine (desktop)');
+    expect(global.engineUsed).toBe('Rust engine (desktop)');
   });
 });

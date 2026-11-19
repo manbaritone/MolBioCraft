@@ -14,8 +14,8 @@
 //!    translates affected codons on forward and reverse strands (NCBI Genetic Codes 1 & 11),
 //!    formats HGVS `c.` / `p.` coordinates, computes Grantham (1974) physicochemical distance,
 //!    and summarizes Sequence Ontology impact tiers and Ts/Tv ratios.
-//! 3. `intersect_genomic_intervals_noodles`: Parses BED3+ and GFF3 genomic intervals via
-//!    `noodles_bed` / `noodles_gff`, sweeps & merges intervals, computes exact base-pair
+//! 3. `intersect_genomic_intervals_noodles`: Parses BED3+ and GFF3 genomic intervals with this
+//!    crate's own line readers (`parse_bed_noodles`, `parse_gff3_noodles`), sweeps & merges intervals, computes exact base-pair
 //!    intersection $|A \cap B|$, union $|A \cup B|$, Jaccard similarity $J(A, B)$, fold-enrichment,
 //!    and optional flanked FASTA subsequence extraction (`noodles_fasta`).
 

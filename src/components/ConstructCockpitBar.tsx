@@ -575,7 +575,7 @@ export const ConstructCockpitBar: React.FC<ConstructCockpitBarProps> = ({
                 <strong>GC:</strong> {telemetry.gcPct}% (skew {telemetry.gcSkew >= 0 ? `+${telemetry.gcSkew}` : telemetry.gcSkew})
               </span>
               {telemetry.tmC !== null && (
-                <span title="SantaLucia (1998) + Owczarzy (2008) Nearest-Neighbor / Salt-Adjusted Melting Temperature">
+                <span title="Melting temperature. Spans of 10-65 bp: SantaLucia (1998) nearest-neighbour, von Ahsen (2001) Mg2+ equivalence (Primer3 default). Longer spans: 81.5 + 0.41 x %GC - 675 / N, with no salt term.">
                   <strong>Duplex Tm:</strong> {telemetry.tmC} °C
                   {telemetry.deltaG !== null ? ` (ΔG ${telemetry.deltaG} kcal/mol)` : ''}
                 </span>

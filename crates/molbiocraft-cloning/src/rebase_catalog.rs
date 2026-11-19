@@ -150,9 +150,11 @@ fn enz(
 /// which src/__tests__/accessibilityFloor.test.tsx holds equal to this line.
 pub const CORE_CATALOG_LEN: usize = 28;
 
-/// Curated REBASE Type II, Type IIS Golden Gate, 8-bp Rare-Cutter, and Homing Endonuclease Catalog (132 enzymes).
-/// Preserves the exact 28 primary MCS enzymes at indices 0..28, followed by 104 high-specificity
-/// 6-bp, 7-bp, 8-bp, Type IIS, and homing endonucleases used in molecular cloning and genome mapping.
+/// Curated REBASE Type II, Type IIS Golden Gate, 8-bp rare-cutter and homing endonuclease catalog of
+/// 174 enzymes: the core cloning set of `CORE_CATALOG_LEN` (28) first, in a fixed order, then the
+/// other 146 - Type IIS, 8-bp rare-cutters, homing endonucleases and Type II enzymes used in
+/// molecular cloning and genome mapping. `catalogue_doc_count_matches` in
+/// tests/restriction_site_cap.rs holds every number in this comment to the catalogue's own counts.
 pub fn get_rebase_enzymes() -> Vec<RestrictionEnzyme> {
     vec![
         // ─── Core 28 Standard Cloning, Blunt, & Type IIS Enzymes (Indices 0..28) ───
