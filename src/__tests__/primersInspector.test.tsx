@@ -615,7 +615,7 @@ describe('the commands that open a Primers sub-tab (AC7)', () => {
         for (const from of ['Primers > Design', 'Sequence'] as const) {
           if (from === 'Sequence') {
             await app.clickTab('sequence-view');
-            expect(shown(app).title, 'on the Sequence tab').toBe('Sequence View Controls');
+            expect(shown(app).title, 'on the Sequence tab').toBe(`${studioName('sequence-map')} Controls`);
           } else {
             if (app.activeTab() !== 'primers-pcr') await app.clickTab('primers-pcr');
             await openSubTab(app, 'design');

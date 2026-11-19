@@ -4,6 +4,7 @@
 import type { SequenceDocument } from '../types/bio';
 import { isContigSummaryRecord } from './contigSummary';
 import { VIEWER_TAB_ORDER, studioForTab } from './studioRegistry';
+import type { GenomicsSubTabId } from './analysisContext';
 
 export type ViewerTab =
   | 'sequence-view' | 'annotations-table' | 'text-view' | 'vector-library'
@@ -20,11 +21,12 @@ export { VIEWER_TAB_ORDER };
 /**
  * The viewer header's label for a tab, which also names a studio tab's inspector (D0208): the name
  * of the studio or panel the tab belongs to, from the studio registry - one name per studio,
- * whatever the record (D0237). The record only decides which studio genomics-ngs belongs to
- * (Protein & 3D for a protein or a structure, Pipelines & NGS otherwise).
+ * whatever the record (D0237). The view the tab shows decides which studio genomics-ngs belongs to:
+ * Protein & 3D in its protein-3d view, Pipelines & NGS in any other (D0239); with no view given,
+ * the record's own (Protein & 3D for a protein or a structure, Pipelines & NGS otherwise).
  */
-export function viewerTabLabel(tab: ViewerTab, doc?: SequenceDocument): string {
-  return studioForTab(tab, doc).name;
+export function viewerTabLabel(tab: ViewerTab, doc?: SequenceDocument, view?: GenomicsSubTabId): string {
+  return studioForTab(tab, doc, view).name;
 }
 
 export function isTreeDocument(doc: SequenceDocument): boolean {

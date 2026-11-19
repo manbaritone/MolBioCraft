@@ -32,6 +32,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness, type MountOptions } from './appHarness';
+import { studioForTab } from '../core/studioRegistry';
 import { cascaded, gridTracks, type CascadeView } from './cssCascade';
 import { LiveElement } from './liveDom';
 
@@ -128,6 +129,8 @@ const aside = (app: AppHarness) => {
   expect(found, 'the inspector column is drawn').not.toBeNull();
   return found!;
 };
+/** App's inspector title on the Sanger tab: its studio's registry name (D0237, D0239). */
+const SANGER_CONTROLS = `${studioForTab('sanger-contig').name} Controls`;
 const paneTitle = (app: AppHarness) => app.inspectorAside()?.querySelectorAll('.mbc-pane-title span')[0]?.textContent ?? null;
 
 /** The field of each control row in `scope` whose caption starts with `caption`. */
@@ -225,13 +228,13 @@ describe("the chromatogram's view controls in the shared inspector (AC1)", () =>
       expect(app.activeTab()).toBe('sanger-contig');
 
       // App's own header button, its pane title, and its column beside its resizer.
-      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe('Hide Chromatogram View Controls Inspector');
-      expect(paneTitle(app)).toBe('Chromatogram View Controls');
+      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe(`Hide ${SANGER_CONTROLS} Inspector`);
+      expect(paneTitle(app)).toBe(SANGER_CONTROLS);
       const split = app.bodySplit();
       expect(split.children.map((c) => c.localName), 'viewer, resizer, column').toEqual(['div', 'div', 'aside']);
       const [host, resizer, column] = split.children;
       expect([host.contains(app.canvas()), resizer.getAttribute('role'), resizer.getAttribute('aria-label'), column === aside(app), column.classList.contains('mbc-right-controls')])
-        .toEqual([true, 'separator', 'Resize Chromatogram View Controls inspector', true, true]);
+        .toEqual([true, 'separator', `Resize ${SANGER_CONTROLS} inspector`, true, true]);
 
       // The six sections, in their order, in App's shared body; General & Layout alone unfolded.
       const body = one(aside(app).querySelectorAll('.mbc-inspector-sections'), "App's shared inspector body");
@@ -271,7 +274,7 @@ describe("the chromatogram's view controls in the shared inspector (AC1)", () =>
 
       // Closed: the button stays and the trace with it; no column and no section is drawn anywhere.
       await app.click(app.inspectorButton()!);
-      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe('Show Chromatogram View Controls Inspector');
+      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe(`Show ${SANGER_CONTROLS} Inspector`);
       expect(app.inspectorAside(), 'no column while the inspector is closed').toBeNull();
       expect(app.all('.mbc-right-controls, .mbc-accordion-section'), 'no section drawn while closed').toHaveLength(0);
       for (const title of TITLES) for (const control of CONTROLS[title]) expect(control.find(app.doc.body), `${control.what} not drawn while closed`).toHaveLength(0);
@@ -279,8 +282,8 @@ describe("the chromatogram's view controls in the shared inspector (AC1)", () =>
 
       // Opened again: the six sections under the title.
       await app.click(app.inspectorButton()!);
-      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe('Hide Chromatogram View Controls Inspector');
-      expect(paneTitle(app)).toBe('Chromatogram View Controls');
+      expect(app.inspectorButton()?.getAttribute('aria-label')).toBe(`Hide ${SANGER_CONTROLS} Inspector`);
+      expect(paneTitle(app)).toBe(SANGER_CONTROLS);
       expect(sectionsIn(aside(app)).map(titleOf)).toEqual([...TITLES]);
     });
   });
@@ -494,7 +497,7 @@ describe('the shared width and the note styles (AC4)', () => {
 
       // The empty-comparison note names the inspector.
       const compare = one(app.canvas().querySelectorAll('p.studio-panel-note').filter((p) => p.textContent.startsWith('Choose a reference')), 'empty-comparison note');
-      expect(words(compare.textContent)).toBe('Choose a reference in the Chromatogram View Controls inspector to compare this read. No reference comparison has been run.');
+      expect(words(compare.textContent)).toBe(`Choose a reference in the ${SANGER_CONTROLS} inspector to compare this read. No reference comparison has been run.`);
       expect(app.canvas().textContent.includes('sidebar'), 'no sidebar named on the canvas').toBe(false);
     });
   });

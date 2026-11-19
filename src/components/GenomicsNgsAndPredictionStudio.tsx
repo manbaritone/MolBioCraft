@@ -483,6 +483,11 @@ interface GenomicsNgsAndPredictionStudioProps {
   initialSubTab?: GenomicsSuiteSubTab;
   /** Incremented on every menu request so re-requesting the same sub-tab re-applies it. */
   commandNonce?: number;
+  /**
+   * Told of each sub-tab chosen on the studio's own sub-tab bar, so App names the tab, the
+   * inspector and the Help topic for the view shown (D0241).
+   */
+  onSubTabChange?: (subTab: GenomicsSuiteSubTab) => void;
   onCreateDocument: (newDoc: SequenceDocument) => void;
   onUpdateActiveSequence: (newSeq: string, summary: string) => void;
   /**
@@ -509,6 +514,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
   selectedRange = null,
   initialSubTab,
   commandNonce,
+  onSubTabChange,
   onCreateDocument,
   onUpdateActiveSequence,
   onComplementOnlyActiveDoc,
@@ -520,6 +526,11 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
   const availableTabs = genomicsTabsForDocument(activeDoc);
   const [selectedSubTab, setSubTab] = useState<GenomicsSuiteSubTab>(initialSubTab ?? availableTabs[0]);
   const subTab = availableTabs.includes(selectedSubTab) ? selectedSubTab : availableTabs[0];
+  /** A sub-tab chosen on the studio's own bar: shown here, and reported to App (D0241). */
+  const chooseSubTab = (next: GenomicsSuiteSubTab) => {
+    setSubTab(next);
+    onSubTabChange?.(next);
+  };
 
   useEffect(() => {
     if (initialSubTab) {
@@ -1038,7 +1049,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
             tabIndex={subTab === 'ngs-assembly' ? 0 : -1}
             aria-selected={subTab === 'ngs-assembly'}
             className={`method-tab-btn ${subTab === 'ngs-assembly' ? 'active' : ''}`}
-            onClick={() => setSubTab('ngs-assembly')}
+            onClick={() => chooseSubTab('ngs-assembly')}
           >
             <MolBioMenuGlyph glyph="map-to-ref" size={13} />
             <span>NGS Trim, Map &amp; Assemble</span>
@@ -1050,7 +1061,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
             tabIndex={subTab === 'genome-variants' ? 0 : -1}
             aria-selected={subTab === 'genome-variants'}
             className={`method-tab-btn ${subTab === 'genome-variants' ? 'active' : ''}`}
-            onClick={() => setSubTab('genome-variants')}
+            onClick={() => chooseSubTab('genome-variants')}
           >
             <MolBioMenuGlyph glyph="synteny-genome" size={13} />
             <span>Whole-Genome, Variants, STR &amp; 16S</span>
@@ -1062,7 +1073,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
             tabIndex={subTab === 'genes-cpg-repeats' ? 0 : -1}
             aria-selected={subTab === 'genes-cpg-repeats'}
             className={`method-tab-btn ${subTab === 'genes-cpg-repeats' ? 'active' : ''}`}
-            onClick={() => setSubTab('genes-cpg-repeats')}
+            onClick={() => chooseSubTab('genes-cpg-repeats')}
           >
             <MolBioMenuGlyph glyph="cpg-repeats" size={13} />
             <span>Glimmer Genes, CpG &amp; Repeats</span>
@@ -1074,7 +1085,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
             tabIndex={subTab === 'protein-3d' ? 0 : -1}
             aria-selected={subTab === 'protein-3d'}
             className={`method-tab-btn ${subTab === 'protein-3d' ? 'active' : ''}`}
-            onClick={() => setSubTab('protein-3d')}
+            onClick={() => chooseSubTab('protein-3d')}
           >
             <MolBioDocTypeIcon kind="protein" visualOverride="structure-3d" size={13} />
             <span>Coiled-Coils, Transmembrane &amp; 3D PDB</span>
@@ -1086,7 +1097,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
             tabIndex={subTab === 'transform-submit' ? 0 : -1}
             aria-selected={subTab === 'transform-submit'}
             className={`method-tab-btn ${subTab === 'transform-submit' ? 'active' : ''}`}
-            onClick={() => setSubTab('transform-submit')}
+            onClick={() => chooseSubTab('transform-submit')}
           >
             <MolBioMenuGlyph glyph="database-ncbi" size={13} />
             <span>Transform, Mutate/Shuffle &amp; GenBank Submit</span>

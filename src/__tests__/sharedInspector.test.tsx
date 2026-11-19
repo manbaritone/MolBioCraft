@@ -150,8 +150,8 @@ function shown(app: AppHarness) {
 const studioName = (id: string): string => STUDIO_ENTRIES.find((e) => e.id === id)!.name;
 /** The Pipelines tab's inspector title: Pipelines & NGS, the registry name of the studio guided-pipelines belongs to. */
 const PIPELINES = `${studioName('pipelines-ngs')} Controls`;
-const SEQUENCE_OPEN = { button: 'Hide Sequence View Controls Inspector', aside: true, hidden: false, resizer: 'Resize Sequence View Controls inspector', title: 'Sequence View Controls' };
-const SEQUENCE_CLOSED = { button: 'Show Sequence View Controls Inspector', aside: false, hidden: true, resizer: null, title: null };
+const SEQUENCE_OPEN = { button: `Hide ${studioName('sequence-map')} Controls Inspector`, aside: true, hidden: false, resizer: `Resize ${studioName('sequence-map')} Controls inspector`, title: `${studioName('sequence-map')} Controls` };
+const SEQUENCE_CLOSED = { button: `Show ${studioName('sequence-map')} Controls Inspector`, aside: false, hidden: true, resizer: null, title: null };
 const NONE = { button: null, aside: false, hidden: true, resizer: null, title: null };
 
 const resizer = (app: AppHarness) => app.one('.mbc-inspector-resizer', 'inspector resizer');
@@ -286,7 +286,7 @@ describe('the per-tab button (AC1)', () => {
       // A sequence record's Sequence tab: the button, the column and its resizer.
       await sequenceOf(app);
       expect(shown(app)).toEqual(SEQUENCE_OPEN);
-      expect(app.header().querySelectorAll('.mbc-viewer-zoom-controls button').map(label).filter(Boolean).pop(), 'the button is the zoom controls\' last').toBe('Hide Sequence View Controls Inspector');
+      expect(app.header().querySelectorAll('.mbc-viewer-zoom-controls button').map(label).filter(Boolean).pop(), 'the button is the zoom controls\' last').toBe(`Hide ${studioName('sequence-map')} Controls Inspector`);
 
       // The tabs with nothing to set draw no button and no column, while the inspector stays open.
       for (const tab of ['annotations-table', 'document-info'] as const) {
@@ -405,7 +405,7 @@ describe('the shortcut and the labels (AC4)', () => {
     await withApp({}, async (app) => {
       await sequenceOf(app);
       const button = () => app.inspectorButton()!;
-      expect([button().getAttribute('aria-keyshortcuts'), button().getAttribute('title')]).toEqual(['Control+Alt+I', 'Hide Sequence View Controls Inspector (Ctrl+Alt+I)']);
+      expect([button().getAttribute('aria-keyshortcuts'), button().getAttribute('title')]).toEqual(['Control+Alt+I', `Hide ${studioName('sequence-map')} Controls Inspector (Ctrl+Alt+I)`]);
       // One press, one toggle (a second handler for the same press would undo it).
       await app.press('i', { mod: true, alt: true });
       expect(shown(app), 'one press hides it').toEqual(SEQUENCE_CLOSED);
@@ -456,7 +456,7 @@ describe('the shortcut and the labels (AC4)', () => {
     // and the page leaves the key alone, so one press toggles once there too.
     await withApp(macHost(), async (app) => {
       await sequenceOf(app);
-      expect([app.inspectorButton()!.getAttribute('aria-keyshortcuts'), app.inspectorButton()!.getAttribute('title')]).toEqual(['Alt+Meta+I', 'Hide Sequence View Controls Inspector (⌥⌘I)']);
+      expect([app.inspectorButton()!.getAttribute('aria-keyshortcuts'), app.inspectorButton()!.getAttribute('title')]).toEqual(['Alt+Meta+I', `Hide ${studioName('sequence-map')} Controls Inspector (⌥⌘I)`]);
       await app.press('i', { mod: true, alt: true });
       expect(shown(app), 'the page does not act on the key itself').toEqual(SEQUENCE_OPEN);
       await app.menu('view:toggle-inspector');

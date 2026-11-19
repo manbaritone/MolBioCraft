@@ -241,6 +241,7 @@ import {
   type ViewerTab,
 } from './core/documentViews';
 import { STUDIOS, studioAvailability, studioForTab, studioIconElement, type StudioEntry, type StudioId } from './core/studioRegistry';
+import { genomicsTabsForDocument } from './core/analysisContext';
 import { ConstructCockpitBar, basicTmHasNoAnswer } from './components/ConstructCockpitBar';
 import {
   MENU_FUNCTION_INFO_EVENT,
@@ -8647,13 +8648,18 @@ requireActiveSession(() => handleCopySequenceToClipboard());
 
   const originalText = originalDocumentText(activeDoc);
 
-  /** The inspector's pane title, which its button and resizer name too: it follows the open tab. */
-  const inspectorTitle =
-    viewerTab === 'sequence-view'
-      ? 'Sequence View Controls'
-      : viewerTab === 'sanger-contig'
-      ? 'Chromatogram View Controls'
-      : `${viewerTabLabel(viewerTab, activeDoc)} Controls`;
+  /**
+   * The genomics-ngs sub-view the tab shows: the one a command or the studio's own sub-tab bar
+   * (onSubTabChange, D0241) last chose, or the record's first when that one does not apply (as the
+   * studio itself falls back). It decides the studio the tab belongs to, so the tab strip, the
+   * inspector title and the Help topic all name the same one (D0239).
+   */
+  const genomicsTabs = genomicsTabsForDocument(activeDoc);
+  const genomicsShownView = genomicsTabs.includes(genomicsInitialSubTab) ? genomicsInitialSubTab : genomicsTabs[0];
+  /** The studio or panel the open view belongs to (US-01M6Q16Q). */
+  const viewerStudio = studioForTab(viewerTab, activeDoc, genomicsShownView);
+  /** The inspector's pane title, which its button and resizer name too: its studio's registry name (D0237, D0239). */
+  const inspectorTitle = `${viewerStudio.name} Controls`;
 
   const buildActionVectorGroupNodes = (
     group: ActionVectorGroup,
@@ -15895,7 +15901,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   const prevGroup = idx > 0 ? tabGroups[visibleViewerTabs[idx - 1]] : tabGroups[tab];
                   const showGroupDivider = idx > 0 && prevGroup !== tabGroups[tab];
                   // The studio or panel the tab belongs to names it and draws its icon (US-01M6Q16Q).
-                  const tabStudio = studioForTab(tab, activeDoc);
+                  const tabStudio = studioForTab(tab, activeDoc, genomicsShownView);
                   return (
                     <React.Fragment key={tab}>
                       {showGroupDivider && (
@@ -15911,7 +15917,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                           else setViewerTab(tab);
                         }}>
                         {studioIconElement(tabStudio.icon)}
-                        <span className="mbc-vtab-name">{viewerTabLabel(tab, activeDoc)}</span>
+                        <span className="mbc-vtab-name">{viewerTabLabel(tab, activeDoc, genomicsShownView)}</span>
                         {tab === 'annotations-table' && (
                           <span className="mbc-vtab-count" aria-label={`${activeDoc.features.length + activeDoc.primers.length} annotations`}>
                             {activeDoc.features.length + activeDoc.primers.length}
@@ -16051,7 +16057,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   </ErrorBoundary>
                 )}
                 {!mapGalleryOpen && (
-                <ErrorBoundary label={viewerTabLabel(viewerTab, activeDoc)} resetKey={`${activeDoc.id}:${viewerTab}`}>
+                <ErrorBoundary label={viewerTabLabel(viewerTab, activeDoc, genomicsShownView)} resetKey={`${activeDoc.id}:${viewerTab}`}>
                 {/* The main view's studios reach the inspector; the split view's pane and the header stay outside. */}
                 <WorkbenchInspectorProvider open={rightPanelOpen} column={inspectorColumn} onClaimsChange={handleInspectorClaims}>
                 {viewerTab === 'sequence-view' && isContigSummaryRecord(activeDoc) && (
@@ -16700,6 +16706,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                       selectedRange={selectedRange}
                       initialSubTab={genomicsInitialSubTab}
                       commandNonce={studioCommandNonce}
+                      onSubTabChange={setGenomicsInitialSubTab}
                       onCreateDocument={(newDoc) => {
                         handleAddConstruct(newDoc);
                         setStatusBanner(
@@ -18139,7 +18146,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         />
       )}
 
-      {helpPanelOpen && <HelpPanel viewerTab={viewerTab} onClose={() => setHelpPanelOpen(false)} />}
+      {helpPanelOpen && <HelpPanel viewerTab={viewerStudio.opens.tab} onClose={() => setHelpPanelOpen(false)} />}
 
       {blastModalOpen && (
         <BlastSearchModal

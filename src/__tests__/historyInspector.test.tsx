@@ -434,7 +434,7 @@ describe('the commands that open a History sub-tab (AC5)', () => {
         for (const from of ['History > Protein', 'Sequence'] as const) {
           if (from === 'Sequence') {
             await app.clickTab('sequence-view');
-            expect(shown(app).title, 'on the Sequence tab').toBe('Sequence View Controls');
+            expect(shown(app).title, 'on the Sequence tab').toBe(`${studioName('sequence-map')} Controls`);
           } else {
             if (app.activeTab() !== 'history-hybrid') await app.clickTab('history-hybrid');
             await openSubTab(app, 'protein');

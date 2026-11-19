@@ -67,6 +67,28 @@ const ENZYMES: SequenceDocument = {
   docMetadata: { 'Document Type': 'Enzyme Set', 'Enzyme Names': 'EcoRI, BamHI', '# Enzymes': 2 },
 } as SequenceDocument;
 const LIBRARY = [DNA, TRACE, PROTEIN, TREE, ALIGNMENT, UNALIGNED, NOTE, ENZYMES];
+/** Cα records in fixed-column PDB (as caAtomsToPdb writes them), one helix per chain - a generated fixture. */
+function caPdb(chains: { id: string; seq: string; dx: number }[]): string {
+  const three: Record<string, string> = { A: 'ALA', G: 'GLY', K: 'LYS', L: 'LEU', M: 'MET', S: 'SER', V: 'VAL' };
+  const col = (s: string | number, w: number) => String(s).padStart(w).slice(0, w);
+  let serial = 0;
+  const lines: string[] = [];
+  for (const { id, seq, dx } of chains) {
+    [...seq].forEach((aa, i) => {
+      const t = (i * 100 * Math.PI) / 180;
+      const [x, y, z] = [dx + 2.3 * Math.cos(t), 2.3 * Math.sin(t), 1.5 * i];
+      lines.push(`ATOM  ${col(++serial, 5)}  CA  ${three[aa]} ${id}${col(i + 1, 4)}    ${col(x.toFixed(3), 8)}${col(y.toFixed(3), 8)}${col(z.toFixed(3), 8)}  1.00 20.00           C`);
+    });
+    lines.push('TER');
+  }
+  lines.push('END');
+  return `${lines.join('\n')}\n`;
+}
+/** A DNA record carrying a two-chain structure (as a chain of a protein-DNA complex is imported). */
+const DNA_COMPLEX: SequenceDocument = {
+  ...BASE, id: 'sr-dna-complex', name: 'SR_Complex_D', accession: 'SR_9', sequence: 'ATGGCCATTGTAATGGGCCGCTGA',
+  docMetadata: { PDBText: caPdb([{ id: 'A', seq: 'MKVLSAGLKVAMLS', dx: 0 }, { id: 'B', seq: 'GSLLKAVMGASLKV', dx: 15 }]), Chain: 'D' },
+} as SequenceDocument;
 
 /** Each studio tab of the header: its studio id, its name element's text, its count element's text. */
 function studioTabs(app: AppHarness): { view: string; studio: string; name: string; count: string | null; el: LiveElement }[] {
@@ -167,6 +189,71 @@ describe('US-01M6Q16Q AC2: every viewer tab and sub-view belongs to exactly one 
       for (const e of STUDIO_ENTRIES) expect(studioAvailability(e, doc).ok, `${e.name} on ${doc.name || 'a blank session'}`).toBe(supportedViewerTabs(doc).includes(e.opens.tab));
     }
   });
+
+  it('US-01M6Q16Q AC2 the label takes the view: genomics-ngs reads Protein & 3D in its protein-3d view and Pipelines & NGS in every other (D0239)', () => {
+    for (const doc of [DNA, PROTEIN, undefined]) {
+      expect(viewerTabLabel('genomics-ngs', doc, 'protein-3d'), `${doc?.name ?? 'no record'} in protein-3d`).toBe('Protein & 3D');
+      for (const view of ['ngs-assembly', 'genome-variants', 'genes-cpg-repeats', 'transform-submit'] as const) {
+        expect(viewerTabLabel('genomics-ngs', doc, view), `${doc?.name ?? 'no record'} in ${view}`).toBe('Pipelines & NGS');
+      }
+    }
+  });
+
+  it('US-01M6Q16Q AC2 on a DNA record the tab, the inspector title and the Help topic name the studio the genomics view shows (D0239)', async () => {
+    const app = await mountApp();
+    try {
+      // The name the tab, the inspector and Help give the open view: one studio, three places.
+      const shown = () => ({
+        tab: studioTabs(app).filter((t) => t.view === app.activeTab()).map((t) => [t.name, t.studio]),
+        inspector: app.inspectorButton()?.getAttribute('aria-label')?.replace(/^(Show|Hide) /, '').replace(/ Inspector$/, '') ?? null,
+        help: app.all('.mbc-help-panel h4').map((h) => words(h.textContent)),
+      });
+      const helpOpen = async () => { if (!app.all('.mbc-help-panel').length) await app.press('F1'); };
+      const choose = async (name: string) => app.click((await palette(app)).find((i) => i.label === name)!.el);
+      const studio = (name: string) => byName(name).id;
+
+      // A plain DNA record: ⌘K's Protein & 3D opens the genomics tab in its 3D view, which has no settings.
+      await openOn(app, DNA, 'sequence-view');
+      await helpOpen();
+      expect(app.all('.mbc-help-panel'), 'F1 opens the Help panel').toHaveLength(1);
+      await choose('Protein & 3D');
+      expect(app.activeTab(), '⌘K Protein & 3D opens the genomics tab').toBe('genomics-ngs');
+      expect(shown(), 'Protein & 3D on a DNA record').toEqual({ tab: [['Protein & 3D', studio('Protein & 3D')]], inspector: null, help: ['Protein & 3D'] });
+      await choose('Pipelines & NGS');
+      // It opens on the guided pipelines, which have no settings either.
+      expect(shown(), 'Pipelines & NGS on a DNA record')
+        .toEqual({ tab: [['Pipelines & NGS', studio('Pipelines & NGS')]], inspector: null, help: ['Pipelines & NGS'] });
+
+      // A DNA chain of a two-chain structure: the 3D view has its Structure section, so an inspector.
+      await app.restoreSession({ documents: [...LIBRARY, DNA_COMPLEX], activeDocId: DNA_COMPLEX.id, viewerTab: 'sequence-view' });
+      await helpOpen();
+      await choose('Protein & 3D');
+      expect(app.activeTab()).toBe('genomics-ngs');
+      expect(shown(), 'Protein & 3D on a DNA chain of a structure')
+        .toEqual({ tab: [['Protein & 3D', studio('Protein & 3D')]], inspector: 'Protein & 3D Controls', help: ['Protein & 3D'] });
+      // The same record's genomics tab in an NGS view (Tools > NGS suite) is Pipelines & NGS on all three.
+      await app.menu('tools:ngs-suite');
+      expect(app.activeTab()).toBe('genomics-ngs');
+      expect(shown(), 'the genomics tab of a DNA chain of a structure in its NGS view')
+        .toEqual({ tab: [['Pipelines & NGS', studio('Pipelines & NGS')]], inspector: 'Pipelines & NGS Controls', help: ['Pipelines & NGS'] });
+
+      // A click on the studio's own sub-tab bar renames all three by the same rule (D0241).
+      const subTab = async (label: string) => {
+        const hit = app.canvas().querySelectorAll('button[role="tab"]').filter((b) => words(b.textContent) === label);
+        expect(hit, `the studio's ${label} sub-tab`).toHaveLength(1);
+        await app.click(hit[0]);
+        expect(app.canvas().querySelectorAll('button[role="tab"][aria-selected="true"]').map((b) => words(b.textContent)), `${label} is selected`).toContain(label);
+      };
+      await subTab('Coiled-Coils, Transmembrane & 3D PDB');
+      expect(shown(), 'the studio\'s own 3D sub-tab')
+        .toEqual({ tab: [['Protein & 3D', studio('Protein & 3D')]], inspector: 'Protein & 3D Controls', help: ['Protein & 3D'] });
+      await subTab('Glimmer Genes, CpG & Repeats');
+      expect(shown(), 'back to an NGS sub-tab')
+        .toEqual({ tab: [['Pipelines & NGS', studio('Pipelines & NGS')]], inspector: 'Pipelines & NGS Controls', help: ['Pipelines & NGS'] });
+    } finally {
+      app.unmount();
+    }
+  });
 });
 
 // ─── AC3 ───
@@ -197,6 +284,25 @@ describe('US-01M6Q16Q AC3: each studio tab shows its registry name', () => {
       await openOn(app, DNA, 'annotations-table');
       const annotations = studioTabs(app).filter((t) => t.view === 'annotations-table');
       expect(annotations.map((t) => [t.name, t.count])).toEqual([['Annotations', '3']]);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('US-01M6Q16Q AC3 every inspector title is the registry name and Controls: a DNA record reads Sequence Map Controls, a trace Sanger & Contig Controls (D0237, D0239)', async () => {
+    const app = await mountApp();
+    try {
+      const title = () => ({
+        button: (app.inspectorButton()?.getAttribute('aria-label') ?? '').replace(/^(Show|Hide) /, ''),
+        pane: app.inspectorAside()?.querySelectorAll('.mbc-pane-title span')[0]?.textContent ?? null,
+      });
+      for (const [doc, tab] of [[DNA, 'sequence-view'], [TRACE, 'sanger-contig'], [TRACE, 'sequence-view']] as const) {
+        await openOn(app, doc, tab);
+        const name = studioForTab(tab, doc).name;
+        expect(title(), `${doc.name}'s ${tab} inspector`).toEqual({ button: `${name} Controls Inspector`, pane: `${name} Controls` });
+      }
+      expect(studioForTab('sequence-view', DNA).name).toBe('Sequence Map');
+      expect(studioForTab('sanger-contig', TRACE).name).toBe('Sanger & Contig');
     } finally {
       app.unmount();
     }
@@ -264,7 +370,8 @@ describe('US-01M6Q16Q AC5: an unavailable studio explains itself with the regist
   it('US-01M6Q16Q AC5 the studio error boundary is labelled by the registry name', () => {
     const src = appTsxSource();
     const boundaries = [...src.matchAll(/<ErrorBoundary label=\{([^}]+)\} resetKey=\{`\$\{activeDoc\.id\}:\$\{viewerTab\}`\}>/g)].map((m) => m[1]);
-    expect(boundaries).toEqual(['viewerTabLabel(viewerTab, activeDoc)']);
+    // It names the view as the tab does: by the genomics sub-view shown (D0239).
+    expect(boundaries).toEqual(['viewerTabLabel(viewerTab, activeDoc, genomicsShownView)']);
     expect(viewerTabLabel('sanger-contig', TRACE)).toBe('Sanger & Contig');
     expect(viewerTabLabel('genomics-ngs', PROTEIN)).toBe('Protein & 3D');
   });

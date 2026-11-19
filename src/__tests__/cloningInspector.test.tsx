@@ -596,7 +596,7 @@ describe('the commands that open a method or tool (AC5)', () => {
         for (const from of ['Sequence', 'Cloning, on another method and tool'] as const) {
           if (from === 'Sequence') {
             await app.clickTab('sequence-view');
-            expect(shown(app).title, 'on the Sequence tab').toBe('Sequence View Controls');
+            expect(shown(app).title, 'on the Sequence tab').toBe(`${studioName('sequence-map')} Controls`);
           } else {
             expect(app.activeTab(), 'on the Cloning tab').toBe('cloning-gel');
             await openMethod(app, 'TOPO Cloning');

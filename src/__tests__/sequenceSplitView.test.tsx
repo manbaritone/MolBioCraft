@@ -15,6 +15,10 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { studioForTab } from '../core/studioRegistry';
+
+/** The Sequence tab's studio name, which titles its inspector (D0237). */
+const SEQUENCE_MAP = studioForTab('sequence-view').name;
 
 // ─── Probes, installed before the modules under test load ───
 
@@ -802,7 +806,7 @@ describe('Split view side by side (US-01M6Q1CC)', () => {
       probe.onElement = (type, props) => {
         if (type === CircularPlasmidMap) live.map = props as unknown as NonNullable<typeof live.map>;
         if (type === LinearSequenceView) live.linearAt.push(pass);
-        if (type === 'button' && /Sequence View Controls Inspector$/.test(String(props['aria-label'] ?? ''))) live.inspectorAt[pass] = String(props['aria-label']);
+        if (type === 'button' && String(props['aria-label'] ?? '').endsWith(` ${SEQUENCE_MAP} Controls Inspector`)) live.inspectorAt[pass] = String(props['aria-label']);
         if (type === 'div' && props.className === 'sequence-blocks-scroll' && measured < widths.length) {
           (props.ref as (el: object) => void)({ clientWidth: widths[measured++] });
         }
@@ -829,7 +833,7 @@ describe('Split view side by side (US-01M6Q1CC)', () => {
     // AmpR clicked in Split with the inspector closed (rows 622px wide, 60 bases), then the inspector
     // opened (460px, 40 bases).
     const inspectorOpened = throughApp('split', [command('view:toggle-inspector'), clickAmpR, command('view:toggle-inspector')], [622, 460]);
-    expect([live.inspectorAt[3], live.inspectorAt[5]], 'closed at the click, open after').toEqual(['Show Sequence View Controls Inspector', 'Hide Sequence View Controls Inspector']);
+    expect([live.inspectorAt[3], live.inspectorAt[5]], 'closed at the click, open after').toEqual([`Show ${SEQUENCE_MAP} Controls Inspector`, `Hide ${SEQUENCE_MAP} Controls Inspector`]);
     expect(shown(inspectorOpened, 40), 'AmpR, then the inspector opened').toEqual(onPage('1,601–2,400 of 2,686 bp', 2400));
   });
 });

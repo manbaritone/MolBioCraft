@@ -20,6 +20,7 @@ import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { studioForTab } from '../core/studioRegistry';
 import type { MenuNode } from '../components/CascadingMenu';
 
 // ─── Probes, installed before the modules under test load ───
@@ -2264,7 +2265,7 @@ describe('accessibility floor (US-01M6Q193)', () => {
       { name: 'zoom out', re: /^Zoom Out \(/, scope: header },
       { name: 'zoom reset', re: /^Reset Zoom to 100% \(/, scope: header },
       { name: 'zoom in', re: /^Zoom In \(/, scope: header },
-      { name: 'inspector', re: /Sequence View Controls Inspector \(/, scope: header },
+      { name: 'inspector', re: new RegExp(`${studioForTab('sequence-view').name} Controls Inspector \\(`), scope: header },
       { name: 'Navigator', re: /^Quick Command Navigator \(/, scope: root },
     ];
     for (const c of CONTROLS) {

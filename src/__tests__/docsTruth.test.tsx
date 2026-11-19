@@ -303,11 +303,10 @@ describe('US-01M6P23W AC2: README names the registry\'s 11 studios and 2 panels,
       for (const [tab, label] of tabs) expect(label, tab).toBe(viewerTabLabel(tab, dna));
       // The annotation count is its own element beside the name.
       expect(app.all('button[role="tab"][data-view="annotations-table"] .mbc-vtab-count').map((c) => words(c.textContent))).toEqual(['3']);
-      // A studio's inspector button is named by its pane title, which the open tab's label gives
-      // (the Sequence and Chromatogram tabs keep their own "... View Controls" titles).
+      // A studio's inspector button is named by its pane title, which the open tab's label gives,
+      // the Sequence tab's included (D0239: no tab keeps a title of its own).
       const checked: string[] = [];
       for (const [tab] of tabs) {
-        if (tab === 'sequence-view' || tab === 'sanger-contig') continue;
         await app.clickTab(tab);
         const button = app.inspectorButton();
         if (!button) continue;

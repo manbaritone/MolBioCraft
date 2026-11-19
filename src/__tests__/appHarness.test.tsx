@@ -16,6 +16,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { NATIVE_MENU_COMMAND_RULES, resolveNativeMenuItemEnabled } from '../core/commandAvailability';
 import type { SequenceDocument } from '../types/bio';
 import { appTsxSource, LAZY_CHUNKS, macHost, mountApp, releaseLeakedMount, type AppHarness, type MountOptions } from './appHarness';
+import { studioForTab } from '../core/studioRegistry';
+
+/** The Sequence tab's studio name, which titles its inspector (D0237). */
+const SEQUENCE_MAP = studioForTab('sequence-view').name;
 import { appCssRules, cascaded, gridTracks, parseCss } from './cssCascade';
 import { blockedStorage, LiveDocument, LiveElement, LiveXMLSerializer, parseMarkup, SVG_NS } from './liveDom';
 
@@ -190,13 +194,13 @@ describe('reaches the App\'s own handlers (AC3)', () => {
 
       // Cmd/Ctrl+Alt+I on the Sequence tab hides its inspector and shows it again; Alt+I alone does nothing.
       const shown = () => ({ aside: app.inspectorAside() !== null, hidden: app.bodySplit().classList.contains('inspector-hidden'), label: app.inspectorButton()?.getAttribute('aria-label') });
-      expect(shown()).toEqual({ aside: true, hidden: false, label: 'Hide Sequence View Controls Inspector' });
+      expect(shown()).toEqual({ aside: true, hidden: false, label: `Hide ${SEQUENCE_MAP} Controls Inspector` });
       await app.press('i', { mod: true, alt: true });
-      expect(shown(), 'hidden by Ctrl+Alt+I').toEqual({ aside: false, hidden: true, label: 'Show Sequence View Controls Inspector' });
+      expect(shown(), 'hidden by Ctrl+Alt+I').toEqual({ aside: false, hidden: true, label: `Show ${SEQUENCE_MAP} Controls Inspector` });
       await app.press('i', { alt: true });
-      expect(shown(), 'Alt+I is not the shortcut').toEqual({ aside: false, hidden: true, label: 'Show Sequence View Controls Inspector' });
+      expect(shown(), 'Alt+I is not the shortcut').toEqual({ aside: false, hidden: true, label: `Show ${SEQUENCE_MAP} Controls Inspector` });
       await app.press('i', { mod: true, alt: true });
-      expect(shown(), 'shown again by Ctrl+Alt+I').toEqual({ aside: true, hidden: false, label: 'Hide Sequence View Controls Inspector' });
+      expect(shown(), 'shown again by Ctrl+Alt+I').toEqual({ aside: true, hidden: false, label: `Hide ${SEQUENCE_MAP} Controls Inspector` });
       // The command key is Ctrl on this host: Ctrl+= is View > Zoom In (the menu's own shortcut
       // binding), and Meta+= is no shortcut here.
       const zoom = () => app.header().querySelectorAll('button.zoom-pct-btn').map((b) => b.textContent);
@@ -208,7 +212,7 @@ describe('reaches the App\'s own handlers (AC3)', () => {
 
       // A click on the header's inspector button does the same.
       await app.click(app.inspectorButton()!);
-      expect(shown(), 'hidden by its button').toEqual({ aside: false, hidden: true, label: 'Show Sequence View Controls Inspector' });
+      expect(shown(), 'hidden by its button').toEqual({ aside: false, hidden: true, label: `Show ${SEQUENCE_MAP} Controls Inspector` });
       await app.click(app.inspectorButton()!);
       expect(shown().aside, 'shown by its button').toBe(true);
 

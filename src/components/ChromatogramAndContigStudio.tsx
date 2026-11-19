@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight, Settings2, TriangleAlert } from 'lucide-reac
 import { FigureExportButton } from './FigureExportButton';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import { hasBiologicalSequence } from '../core/documentViews';
+import { studioForTab } from '../core/studioRegistry';
 import { ChromatogramData, SequenceDocument } from '../types/bio';
 import { mapReadAndCallVariants } from '../core/bioEngine';
 import { mapVariantRefPositionToReadIndex } from '../core/chromatogramVariantNavigation';
@@ -1385,7 +1386,7 @@ export const ChromatogramAndContigStudio: React.FC<ChromatogramAndContigStudioPr
               </tbody>
             </WorkbenchSmartTable>
           )}
-        </div> : <p className="studio-panel-note">{`Choose a reference in the Chromatogram View Controls ${inWorkbench ? 'inspector' : 'sidebar'} to compare this read. No reference comparison has been run.`}</p>}
+        </div> : <p className="studio-panel-note">{`Choose a reference in the ${inWorkbench ? `${studioForTab('sanger-contig').name} Controls inspector` : 'Chromatogram View Controls sidebar'} to compare this read. No reference comparison has been run.`}</p>}
 
         {/* Mott PHREDProb Minimum-Error Trimming & Mixed-Peak Heterozygote Audit */}
         {chrom && mottTrimReport && (
