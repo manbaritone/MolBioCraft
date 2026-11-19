@@ -88,6 +88,22 @@ asserted against the exact string Biopython 1.88 gives for it. A second test
 empty line (ncbi/NC_045512.gb, ncbi/V01555.gb and five Biopython test files), written as literals
 on 2026-11-19; it skips a file the git-ignored test-data folder does not hold.
 
+'Organism' is the ORGANISM name as Biopython 1.88's ORGANISM branch reads it: the lineage begins at
+the first continuation line that holds a ';' or that is, stripped, exactly 'Bacteria.', 'Archaea.',
+'Eukaryota.', 'Unclassified.', 'Viruses.', 'cellular organisms.', 'other sequences.' or
+'unclassified sequences.'; a lone '.' before the lineage is a placeholder; an empty line is no line.
+`oracle.gbk` holds none of these cases, so `import_organism_matches_biopython` asserts inline records
+(one per kingdom-only line, and near misses) against Biopython 1.88's `annotations["organism"]`,
+plus ncbi/X02514.gb ('Unknown.') and every record of the 59 test-data files whose first line is a
+LOCUS line, written as literals on 2026-11-19 (Biopython refuses invalid_product.gb and
+no_origin_no_end.gb past the header, so theirs is its header reading's). `organism_placeholder_is_not_a_name`
+pins the '.' placeholder: an empty ORGANISM line then '.' is '' in Biopython, so no 'Organism'.
+
+With no VERSION and no ACCESSION line the record id is the LOCUS name, as Biopython's `SeqRecord.id`
+is. Where a 'MolBioCraft name:' line renames the document, the import keeps the LOCUS name as
+`doc_metadata` 'LOCUS name' (only then), and the id reads it: `record_id_falls_back_to_the_locus_name`
+checks the ids and file names 0.54 writes for such a record ('Long_name', not 'Long name').
+
 ## Real-world check (not committed)
 
 On phage lambda, the NCBI GenBank record NC_001416.1 (not committed), the port's `.fna`, `.faa`, `.orfs` and functions outputs are byte-identical to 0.54's `-n`, `-a`, `-o`

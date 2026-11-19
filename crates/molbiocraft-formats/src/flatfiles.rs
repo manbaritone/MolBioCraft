@@ -564,16 +564,22 @@ fn segments_from_intervals(name: &str, color: &str, intervals: &[(usize, usize)]
 /// D0229: the document's metadata keeps three header values, each only when the record has it:
 /// `Version`, the first token of the VERSION line (`VERSION NC_001416.1 GI:9626243` keeps
 /// NC_001416.1); `Organism`, the SOURCE/ORGANISM name, read as Biopython 1.88 reads it (the
-/// ORGANISM line, then each continuation line before the first holding a ';', which begins the
-/// lineage); and `Comment`, the COMMENT lines joined by "\n" as Biopython joins them, every
-/// COMMENT block of the record in order, leaving out a structured comment table's lines from its
+/// ORGANISM line, then each continuation line before the lineage, which begins at the first line
+/// that holds a ';' or that is, stripped, exactly one of Biopython's eight kingdom-only lines,
+/// 'Bacteria.', 'Archaea.', 'Eukaryota.', 'Unclassified.', 'Viruses.', 'cellular organisms.',
+/// 'other sequences.' or 'unclassified sequences.'; a lone '.' before the lineage is a placeholder,
+/// not part of the name, and a blank or empty line is no line); and `Comment`, the COMMENT lines
+/// joined by "\n" as Biopython joins them, every COMMENT block of the record in order, leaving out a structured comment table's lines from its
 /// `##...-START##` line to its `##...-END##` line, as Biopython does. Each COMMENT line is read
 /// from column 13, trailing space trimmed, so spaces after column 12 on the first line are kept;
 /// a blank or empty line is dropped and does not end the COMMENT, as Biopython drops every empty
 /// header line. A D0202
 /// `MolBioCraft name:` line is a COMMENT line like any other, so `Comment` holds it too. The
 /// accession, the name and every export are unchanged: the GenBank export still writes VERSION
-/// from the accession. An EMBL import keeps none of the three.
+/// from the accession. An EMBL import keeps none of the three. One more key, `LOCUS name`, holds the
+/// LOCUS line's name only when a D0202 line gives the document another name, so the genbank_to
+/// record id can fall back to the LOCUS name as Biopython's `SeqRecord.id` does (D0229); a record
+/// the COMMENT does not rename has no such key.
 ///
 /// The document carries no date: [`parse_genbank_flatfile_at`] with a blank time (D0203).
 pub fn parse_genbank_flatfile(text: &str, fallback_name: &str) -> SequenceDocument {
@@ -730,8 +736,9 @@ fn parse_insdc_record(
         // parse_genbank_flatfile's doc).
         if !in_features {
             // Biopython drops every header line that is empty once right-stripped before it reads
-            // the header, so a blank line inside a COMMENT is no line of it and does not end it.
-            if in_comment && raw_line.trim_end().is_empty() {
+            // the header, so a blank line inside a COMMENT or an ORGANISM is no line of it and does
+            // not end it.
+            if (in_comment || in_organism) && raw_line.trim_end().is_empty() {
                 continue;
             }
             let continued = raw_line.starts_with("            ");
@@ -755,7 +762,7 @@ fn parse_insdc_record(
             in_comment = false;
             if in_organism && continued {
                 let data = raw_line[12..].trim();
-                if in_lineage || data.contains(';') {
+                if in_lineage || data.contains(';') || LINEAGE_ONLY_LINES.contains(&data) {
                     in_lineage = true;
                 } else if data != "." {
                     if let Some(o) = organism.as_mut() {
@@ -969,7 +976,14 @@ fn parse_insdc_record(
     // D0229: the header values a GenBank record holds (see parse_genbank_flatfile's doc).
     if source == InsdcSource::GenBank {
         let comment = (!comment_lines.is_empty()).then(|| comment_lines.join("\n"));
-        for (key, value) in [("Version", version), ("Organism", organism), ("Comment", comment)] {
+        // The LOCUS name, kept only where a D0202 line gives the document another name.
+        let locus_name = comment_name.as_ref().filter(|n| **n != name).map(|_| name.clone());
+        for (key, value) in [
+            ("Version", version),
+            ("Organism", organism),
+            ("Comment", comment),
+            ("LOCUS name", locus_name),
+        ] {
             if let Some(v) = value.filter(|v| !v.is_empty()) {
                 doc_metadata.get_or_insert_with(HashMap::new).insert(key.to_string(), serde_json::json!(v));
             }
@@ -1098,6 +1112,19 @@ fn structured_comment_start(data: &str) -> bool {
 
 /// The start of the COMMENT line that holds a record name the LOCUS token cannot (D0202).
 const NAME_COMMENT: &str = "MolBioCraft name: ";
+
+/// The continuation lines that begin an ORGANISM's lineage although they hold no ';': Biopython
+/// 1.88's list (Bio/GenBank/Scanner.py, the ORGANISM branch), compared with the line stripped.
+const LINEAGE_ONLY_LINES: [&str; 8] = [
+    "Bacteria.",
+    "Archaea.",
+    "Eukaryota.",
+    "Unclassified.",
+    "Viruses.",
+    "cellular organisms.",
+    "other sequences.",
+    "unclassified sequences.",
+];
 
 const MONTHS: [&str; 12] = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 

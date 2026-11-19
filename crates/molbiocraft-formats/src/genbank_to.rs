@@ -109,8 +109,8 @@ fn metadata<'a>(doc: &'a SequenceDocument, key: &str) -> Option<&'a str> {
 
 /// The record id, Biopython's `SeqRecord.id` (D0229): the VERSION line's first token
 /// (`doc_metadata["Version"]`), else the ACCESSION token when the record has an ACCESSION line, else
-/// the LOCUS name. The last is the document's name, which is the LOCUS name unless a D0202
-/// `COMMENT MolBioCraft name:` line renamed the record.
+/// the LOCUS name. The last is `doc_metadata["LOCUS name"]` when a D0202 `COMMENT MolBioCraft name:`
+/// line renamed the record, else the document's name, which is then the LOCUS name.
 pub fn genbank_record_id(doc: &SequenceDocument) -> String {
     record_id(doc).0
 }
@@ -125,7 +125,7 @@ fn record_id(doc: &SequenceDocument) -> (String, Option<String>) {
         let w = format!("Record {id} has no VERSION line, so its accession is used as its id.");
         return (id, Some(w));
     }
-    let id = doc.name.clone();
+    let id = metadata(doc, "LOCUS name").unwrap_or(&doc.name).to_string();
     let w = format!(
         "Record {id} has no VERSION or ACCESSION line, so its LOCUS name is used as its id."
     );

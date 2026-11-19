@@ -560,3 +560,224 @@ fn import_comment_matches_biopython_on_real_files() {
     }
     assert!(differ.is_empty(), "Comment differs from Biopython 1.88 on {differ:?}");
 }
+
+fn organism_of(d: &SequenceDocument) -> Option<&str> {
+    d.doc_metadata
+        .as_ref()
+        .and_then(|m| m.get("Organism"))
+        .and_then(|v| v.as_str())
+}
+
+/// One record whose SOURCE block's ORGANISM line reads `  ORGANISM  ` followed by `organism`
+/// (its own text, then its continuation lines, each ending in "\n").
+fn organism_record(organism: &str) -> SequenceDocument {
+    let text = format!(
+        "LOCUS       KL000001                  30 bp    DNA     linear   BCT 19-NOV-2026\nACCESSION   KL000001\nVERSION     KL000001.1\nSOURCE      x\n  ORGANISM  {organism}FEATURES             Location/Qualifiers\n     source          1..30\nORIGIN\n        1 atggctggca aacgtaccga accgctgtaa\n//\n"
+    );
+    parse_genbank_flatfile(&text, "organism")
+}
+
+/// D0229's Organism is the ORGANISM name as Biopython 1.88 reads it (Bio/GenBank/Scanner.py,
+/// the ORGANISM branch): a continuation line starts the lineage when it holds a ';' or, stripped,
+/// is exactly one of eight kingdom-only lines; every later line is lineage too; a lone '.' before
+/// the lineage is a placeholder; and an empty header line is no line. Each expected value is
+/// Biopython 1.88's `annotations["organism"]` of that record (SeqIO.parse, 2026-11-19).
+#[test]
+fn import_organism_matches_biopython() {
+    let cases: [(&str, &str); 16] = [
+        ("Unknown.\n            Bacteria.\n", "Unknown."),
+        ("Unknown.\n            Archaea.\n", "Unknown."),
+        ("Unknown.\n            Eukaryota.\n", "Unknown."),
+        ("Unknown.\n            Unclassified.\n", "Unknown."),
+        ("Unknown.\n            Viruses.\n", "Unknown."),
+        ("Unknown.\n            cellular organisms.\n", "Unknown."),
+        ("Unknown.\n            other sequences.\n", "Unknown."),
+        ("Unknown.\n            unclassified sequences.\n", "Unknown."),
+        // A name continued on a second line, then a kingdom-only lineage.
+        (
+            "Escherichia coli str. K-12\n            substr. MG1655\n            Bacteria.\n",
+            "Escherichia coli str. K-12 substr. MG1655",
+        ),
+        // A line after a kingdom-only line is lineage, semicolon or not.
+        ("Unknown.\n            Viruses.\n            Riboviria\n", "Unknown."),
+        // The kingdom line is compared stripped.
+        ("Unknown.\n               Archaea.   \n", "Unknown."),
+        // Only the exact line starts the lineage: no stop, another case or more words are the name.
+        ("Unknown.\n            Bacteria\n", "Unknown. Bacteria"),
+        ("Unknown.\n            BACTERIA.\n", "Unknown. BACTERIA."),
+        ("Unknown.\n            Bacteria. strain X\n", "Unknown. Bacteria. strain X"),
+        ("Unknown.\n            Bacteria; Pseudomonadota.\n", "Unknown."),
+        // An empty line and a 12-space line are no lines and do not end the name.
+        (
+            "Escherichia coli\n\n            \n            str. K-12\n            Bacteria; Pseudomonadota.\n",
+            "Escherichia coli str. K-12",
+        ),
+    ];
+    for (organism, want) in cases {
+        assert_eq!(organism_of(&organism_record(organism)), Some(want), "{organism:?}");
+    }
+
+    // The reviewer's file: '  ORGANISM  Unknown.' then '            Unclassified.'.
+    if let Some(text) = test_data_file("ncbi/X02514.gb") {
+        assert_eq!(organism_of(&parse_genbank_flatfile(&text, "X02514")), Some("Unknown."));
+    }
+
+    // Every record of every test-data GenBank file: Organism is Biopython's organism, and absent
+    // where Biopython's is '' (D0229 keeps no empty value; pBAD30.gb's ORGANISM line is empty).
+    let mut differ = Vec::new();
+    for (rel, want) in BIOPYTHON_ORGANISMS {
+        let Some(text) = test_data_file(rel) else { continue };
+        let got: Vec<Option<String>> = split_genbank_records(&text)
+            .iter()
+            .map(|r| organism_of(&parse_genbank_flatfile(r, rel)).map(str::to_string))
+            .collect();
+        let want: Vec<Option<String>> = want
+            .iter()
+            .map(|o| (!o.is_empty()).then(|| o.to_string()))
+            .collect();
+        if got != want {
+            differ.push((rel, got, want));
+        }
+    }
+    assert!(differ.is_empty(), "Organism differs from Biopython 1.88: {differ:?}");
+}
+
+/// Biopython 1.88's `annotations["organism"]` of each record of each GenBank file in test-data (each
+/// file whose first line is a LOCUS line), in record order, written by `SeqIO.parse(path,
+/// "genbank")` on 2026-11-19. Biopython refuses two of them past the header (invalid_product.gb and
+/// no_origin_no_end.gb, in their features), so theirs is what its GenBankScanner's header reading
+/// (`_feed_header_lines`) gives.
+const BIOPYTHON_ORGANISMS: [(&str, &[&str]); 59] = [
+    ("biopython-tests/GenBank/1MRR_A.gp", &["Escherichia coli"]),
+    ("biopython-tests/GenBank/DS830848.gb", &["Ixodes scapularis"]),
+    ("biopython-tests/GenBank/EU851978.gbk", &["Influenza A virus (A/Wisconsin/36/2007(H1N1))"]),
+    ("biopython-tests/GenBank/EU851978_output.gbk", &["Influenza A virus (A/Wisconsin/36/2007(H1N1))"]),
+    ("biopython-tests/GenBank/EZ116220.gb", &["Rhagoletis pomonella"]),
+    ("biopython-tests/GenBank/GU949562.1.gb", &["Shewanella sp. MAR_280_P06_2010-01-20"]),
+    ("biopython-tests/GenBank/HM138502.gbk", &["Influenza A virus (A/California/07/2009(H1N1))"]),
+    ("biopython-tests/GenBank/HM138502_output.gbk", &["Influenza A virus (A/California/07/2009(H1N1))"]),
+    ("biopython-tests/GenBank/KF527485.gbk", &["Influenza A virus (A/California/07/2009(H1N1))"]),
+    ("biopython-tests/GenBank/KF527485_output.gbk", &["Influenza A virus (A/California/07/2009(H1N1))"]),
+    ("biopython-tests/GenBank/NC_000932.gb", &["Arabidopsis thaliana"]),
+    ("biopython-tests/GenBank/NC_005816.gb", &["Yersinia pestis biovar Microtus str. 91001"]),
+    ("biopython-tests/GenBank/NP_416719.gbwithparts", &["Escherichia coli str. K-12 substr. MG1655"]),
+    ("biopython-tests/GenBank/NT_019265.gb", &["Homo sapiens"]),
+    ("biopython-tests/GenBank/addgene-plasmid-11664-sequence-180430.gbk", &["synthetic DNA construct"]),
+    ("biopython-tests/GenBank/addgene-plasmid-39296-sequence-49545.gbk", &["synthetic DNA construct"]),
+    ("biopython-tests/GenBank/arab1.gb", &["Arabidopsis thaliana"]),
+    ("biopython-tests/GenBank/bad_loc_wrap.gb", &["."]),
+    ("biopython-tests/GenBank/bad_origin_wrap.gb", &["Mesorhizobium loti"]),
+    ("biopython-tests/GenBank/bad_origin_wrap_CDS.gb", &["synthetic DNA construct"]),
+    ("biopython-tests/GenBank/bad_origin_wrap_fuzzy.gb", &["Cloning vector pUC19c"]),
+    ("biopython-tests/GenBank/bad_origin_wrap_linear.gb", &["Mesorhizobium loti"]),
+    ("biopython-tests/GenBank/blank_seq.gb", &["Homo sapiens"]),
+    ("biopython-tests/GenBank/cor6_6.gb", &["Arabidopsis thaliana", "Arabidopsis thaliana", "Brassica napus", "Armoracia rusticana", "Brassica rapa", "Brassica napus"]),
+    ("biopython-tests/GenBank/dbsource_wrap.gb", &["Buthus occitanus tunetanus"]),
+    ("biopython-tests/GenBank/empty_accession.gbk", &["Streptomyces avermitilis"]),
+    ("biopython-tests/GenBank/empty_feature_qualifier.gb", &["Streptomyces avermitilis"]),
+    ("biopython-tests/GenBank/empty_version.gbk", &["Streptomyces avermitilis"]),
+    ("biopython-tests/GenBank/extra_keywords.gb", &["Drosophila melanogaster"]),
+    ("biopython-tests/GenBank/invalid_locus_line_spacing.gb", &["Streptomyces avermitilis"]),
+    ("biopython-tests/GenBank/invalid_misc_feature.gb", &["Streptomyces avermitilis"]),
+    ("biopython-tests/GenBank/invalid_product.gb", &["Streptomyces avermitilis"]),
+    ("biopython-tests/GenBank/invalid_structured_comment.gb", &["Mucambo virus"]),
+    ("biopython-tests/GenBank/iro.gb", &["Homo sapiens"]),
+    ("biopython-tests/GenBank/negative_location.gb", &["Streptomyces avermitilis"]),
+    ("biopython-tests/GenBank/no_end_marker.gb", &["Streptomyces avermitilis"]),
+    ("biopython-tests/GenBank/no_origin_no_end.gb", &["Streptomyces avermitilis"]),
+    ("biopython-tests/GenBank/noref.gb", &["Homo sapiens"]),
+    ("biopython-tests/GenBank/noref_date_warning.gb", &["Homo sapiens"]),
+    ("biopython-tests/GenBank/one_of.gb", &["Homo sapiens"]),
+    ("biopython-tests/GenBank/origin_line.gb", &["Mesorhizobium loti"]),
+    ("biopython-tests/GenBank/pBAD30.gb", &[""]),
+    ("biopython-tests/GenBank/pri1.gb", &["Homo sapiens"]),
+    ("biopython-tests/GenBank/protein_refseq.gb", &["Mus musculus"]),
+    ("biopython-tests/GenBank/protein_refseq2.gb", &["Mus musculus"]),
+    ("biopython-tests/GenBank/qualifier_escaping_read.gb", &["Mus musculus"]),
+    ("biopython-tests/GenBank/qualifier_escaping_write.gb", &["Mus musculus"]),
+    ("biopython-tests/GenBank/tls_KDHP01000000.gb", &["soil metagenome"]),
+    ("biopython-tests/GenBank/tsa_acropora.gb", &["Acropora millepora"]),
+    ("biopython-tests/GenBank/wrong_sequence_indent.gb", &["Streptomyces avermitilis"]),
+    ("ncbi/J01749.gb", &["Cloning vector pBR322"]),
+    ("ncbi/J02459.gb", &["Escherichia phage Lambda"]),
+    ("ncbi/L09137.gb", &["Cloning vector pUC19c"]),
+    ("ncbi/M77789.gb", &["Cloning vector pUC19"]),
+    ("ncbi/NC_001416.gb", &["Escherichia phage Lambda"]),
+    ("ncbi/NC_001422.gb", &["Escherichia phage phiX174"]),
+    ("ncbi/NC_045512.gb", &["Severe acute respiratory syndrome coronavirus 2"]),
+    ("ncbi/V01555.gb", &["human gammaherpesvirus 4"]),
+    ("ncbi/X02514.gb", &["Unknown."]),
+];
+
+/// D0229: with no VERSION and no ACCESSION line the record id is the LOCUS name, as Biopython's
+/// SeqRecord.id is, even when a D0202 'MolBioCraft name:' COMMENT line names the document. The
+/// functions and nucleotide texts and the `--separate -n` file name are genbank_to 0.54's for this
+/// record (`-f`, `-n` and `--separate -n`, run 2026-11-19): 'Long_name', not the document's name
+/// 'Long name'. The `.gbk` file is D0227 (9)'s, where 0.54 crashes, named by the same id.
+#[test]
+fn record_id_falls_back_to_the_locus_name() {
+    let record = |locus: &str, name: &str| {
+        parse_genbank_flatfile(
+            &format!("LOCUS       {locus:<16}          30 bp    DNA     linear   BCT 19-NOV-2026\nDEFINITION  No accession.\nCOMMENT     MolBioCraft name: {name}\nFEATURES             Location/Qualifiers\n     CDS             1..30\n                     /locus_tag=\"LN_1\"\n                     /product=\"Test protein\"\nORIGIN\n        1 atggctggca aacgtaccga accgctgtaa\n//\n"),
+            "named",
+        )
+    };
+    let doc = record("Long_name", "Long name");
+    assert_eq!(doc.name, "Long name", "the COMMENT line still names the document (D0202)");
+    assert_eq!(genbank_record_id(&doc), "Long_name");
+    let docs = std::slice::from_ref(&doc);
+    let warning = "Record Long_name has no VERSION or ACCESSION line, so its LOCUS name is used as its id.";
+    let functions = genbank_to_functions(docs, &opts());
+    assert_eq!(functions.text, "Long_name\tLN_1\tTest protein\n");
+    assert_eq!(functions.warnings, [warning]);
+    assert_eq!(
+        genbank_to_fna(docs, &opts()).text,
+        ">Long_name\nATGGCTGGCAAACGTACCGAACCGCTGTAA\n"
+    );
+    let separate = genbank_to_separate(docs, GenbankToSequenceOutput::Nucleotides, "ln", &opts());
+    assert_eq!(
+        separate.files,
+        [("ln.Long_name.fna".to_string(), ">Long_name\nATGGCTGGCAAACGTACCGAACCGCTGTAA\n".to_string())]
+    );
+    assert_eq!(separate.warnings, [warning]);
+    let gbk: Vec<String> = genbank_to_gbk_files(docs, &opts()).files.into_iter().map(|(n, _)| n).collect();
+    assert_eq!(gbk, ["Long_name.gbk"]);
+    // The filter selects the record by that id.
+    assert_eq!(genbank_to_fna(docs, &keep(&["Long_name"])).text.lines().count(), 2);
+    assert!(genbank_to_fna(docs, &keep(&["Long name"])).text.is_empty());
+
+    // A LOCUS name the document's name would not make (a hand-edited file) is still the id.
+    let other = record("AB12", "Something else");
+    assert_eq!(other.name, "Something else");
+    assert_eq!(genbank_record_id(&other), "AB12");
+    // The same record without the COMMENT line: the LOCUS name is both the name and the id.
+    let plain = parse_genbank_flatfile(
+        "LOCUS       AB12                      30 bp    DNA     linear   BCT 19-NOV-2026\nORIGIN\n        1 atggctggca aacgtaccga accgctgtaa\n//\n",
+        "plain",
+    );
+    assert_eq!((plain.name.as_str(), genbank_record_id(&plain)), ("AB12", "AB12".to_string()));
+    // Only a document the COMMENT renames keeps its LOCUS name as a key of its own.
+    let locus_key = |d: &SequenceDocument| d.doc_metadata.as_ref().and_then(|m| m.get("LOCUS name")).cloned();
+    assert_eq!(locus_key(&doc), Some(serde_json::json!("Long_name")));
+    assert_eq!(locus_key(&plain), None);
+    assert_eq!(locus_key(&record("Same_name", "Same_name")), None);
+}
+
+/// Biopython's ORGANISM branch passes over a continuation line that is a lone '.' before the
+/// lineage, "No lineage data, just . place holder". An empty ORGANISM line with that placeholder is
+/// '' in Biopython, which D0229 keeps as no Organism; after a name the placeholder adds nothing.
+/// Each value is Biopython 1.88's `annotations["organism"]` of that record.
+#[test]
+fn organism_placeholder_is_not_a_name() {
+    let empty = organism_record("\n            .\n");
+    assert_eq!(organism_of(&empty), None);
+    assert!(empty.doc_metadata.as_ref().is_some_and(|m| !m.contains_key("Organism")));
+    assert_eq!(organism_of(&organism_record("Homo sapiens\n            .\n")), Some("Homo sapiens"));
+    // After the lineage has begun the '.' is lineage, not the name.
+    assert_eq!(
+        organism_of(&organism_record("Homo sapiens\n            Eukaryota; Metazoa.\n            .\n")),
+        Some("Homo sapiens")
+    );
+    // The ORGANISM line's own '.' is the name, as Biopython reads it.
+    assert_eq!(organism_of(&organism_record(".\n            .\n")), Some("."));
+}
