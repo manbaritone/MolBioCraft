@@ -18,8 +18,9 @@ candidate and records the results before the release is tagged.
    someone ran it: PRD F27 stays Partial until a Windows or Linux run passes.
 5. Record the build each result came from: the commit and the artefact file name.
 
-Item sources: the coverage gaps and P1 rows of `MOLBIOCRAFT_FUNCTIONAL_INTEGRITY_AUDIT.md`
-(native menus and their state, file associations, print, undo and redo routing, native open and
+Item sources: the coverage gaps and P1 rows of the functional integrity audit
+(`MOLBIOCRAFT_FUNCTIONAL_INTEGRITY_AUDIT.md`, a local, untracked file at the repo root that is
+git-ignored, so a clone does not have it) (native menus and their state, file associations, print, undo and redo routing, native open and
 save dialogs, the installers, window close and quit, Shift+Cmd/Ctrl+R in a text field), the
 README's "First launch of an unsigned build", and the manual criteria of US-01M6P2B4 (AC3),
 US-01M6P2BS (AC4) and US-01M7QCXX (AC4), which are checked here, in the same native session.
@@ -43,7 +44,7 @@ Artefact: `MolBioCraft-<version>-macOS-universal.dmg` (universal, ad-hoc signed)
 | M8 Native menu | The native menu bar shows MolBioCraft, File, Edit, View and the other menus; items enable and disable as a session opens and closes (native menu state sync). |
 | M9 Native Undo / Redo | Edit > Undo (Cmd+Z) and Edit > Redo (Shift+Cmd+Z) undo and redo a document edit; with focus in a text field they undo and redo the typed text. |
 | M10 Shift+Cmd+R | Shift+Cmd+R runs Sequence > Strand > Reverse Complement on the open sequence and never reloads the window, including with focus in a text field. |
-| M11 Quit | MolBioCraft > Quit MolBioCraft (Cmd+Q) and the window's close button, with unsaved changes, show the quit confirmation; with the confirmation turned off, the first close quits. |
+| M11 Quit | MolBioCraft > Quit MolBioCraft (Cmd+Q) and the window's close button follow the Preferences option "Show confirmation dialog before quitting MolBioCraft": with it on (the default) they show the quit confirmation, with or without unsaved changes; with it off, the first one quits. One exception: with unsaved changes and an earlier autosaved session not yet restored, a "Quit Without Saving?" dialog appears even with the option off. |
 | M12 US-01M6P2B4 AC3 | From the release-profile build (`npm run package:installers`, the universal dmg), the app launches, opens a session and exports a GenBank file. |
 
 ## Windows
@@ -59,12 +60,13 @@ Artefacts: `MolBioCraft-<version>-Windows-x64.msi` and `MolBioCraft-<version>-Wi
 | W5 Save dialog | File > Save Session > Save Session As shows the Windows save dialog; the saved `.mbc` reopens. Cancelling leaves the session unsaved. |
 | W6 Export dialog | File > Export Sequences > Export GenBank (Ctrl+Shift+E) shows the save dialog and writes a `.gb` file that opens again. |
 | W7 File association open | With the app closed, double-click a `.gb` (and a `.mbc`) in Explorer: the installed app opens it. |
-| W8 US-01M7QCXX AC4 (MSI) | With the installed (MSI) app running, double-click a `.gb`: it opens in the running window and no second window appears. Checked once more with a relative path from a terminal (`molbiocraft-desktop rel/x.gb`, the installed app binary): it opens in the running window, no second window. |
+| W8 US-01M7QCXX AC4 (MSI) | With the installed (MSI) app running, double-click a `.gb`: it opens in the running window and no second window appears. Checked once more with a relative path from a terminal: the MSI does not put the app on `PATH`, so in PowerShell, from a folder that holds `rel\x.gb`, run the installed `molbiocraft-desktop.exe` by its full path, `& "<install folder>\molbiocraft-desktop.exe" rel\x.gb`, where `<install folder>` is the folder the MSI installed it into (the one holding `molbiocraft-desktop.exe`, `NOTICE` and `PROVENANCE.md`): it opens in the running window, no second window. |
 | W9 Print | File > Print & PDF > Print / Export PDF (Ctrl+P) shows the WebView2 print dialog. |
 | W10 In-window menu | The in-window menu bar's menus open, and their items enable and disable as a session opens and closes. |
-| W11 Shift+Ctrl+R | Shift+Ctrl+R runs Reverse Complement on the open sequence and never reloads the window, including with focus in a text field. |
+| W11a Shift+Ctrl+R on a sequence | With the open sequence focused (not a text field), Shift+Ctrl+R runs Reverse Complement and does not reload the window. |
+| W11b Shift+Ctrl+R in a text field | With focus in a text field, Shift+Ctrl+R does nothing: it runs no command and never reloads the window. |
 | W12 Undo / Redo | Edit > Undo (Ctrl+Z) and Redo (Ctrl+Shift+Z), labelled with the action they undo or redo, undo and redo a document edit; in a text field they act on the typed text. |
-| W13 Quit | File > Quit MolBioCraft (Ctrl+Q) and the window's close button, with unsaved changes, show the quit confirmation; with the confirmation turned off, the first close quits. |
+| W13 Quit | File > Quit MolBioCraft (Ctrl+Q) and the window's close button follow the Preferences option "Show confirmation dialog before quitting MolBioCraft": with it on (the default) they show the quit confirmation, with or without unsaved changes; with it off, the first one quits. One exception: with unsaved changes and an earlier autosaved session not yet restored, a "Quit Without Saving?" dialog appears even with the option off. |
 
 ## Linux
 
@@ -82,6 +84,7 @@ Artefact: `MolBioCraft-<version>-Linux-x86_64.deb` (x86_64; WebKitGTK 4.1, GTK 3
 | L8 US-01M7QCXX AC4 (.deb) | With the app (.deb) running, double-click a `.gb`: it opens in the running window and no second window appears. Checked once more with a relative path from a terminal (`molbiocraft-desktop rel/x.gb`): it opens in the running window, no second window. This needs a D-Bus session bus; without one the second launch runs as a second app. |
 | L9 Print | File > Print & PDF > Print / Export PDF (Ctrl+P) shows the WebKitGTK print dialog. |
 | L10 In-window menu | The in-window menu bar's menus open, and their items enable and disable as a session opens and closes. |
-| L11 Shift+Ctrl+R | Shift+Ctrl+R runs Reverse Complement on the open sequence and never reloads the window, including with focus in a text field. |
+| L11a Shift+Ctrl+R on a sequence | With the open sequence focused (not a text field), Shift+Ctrl+R runs Reverse Complement and does not reload the window. |
+| L11b Shift+Ctrl+R in a text field | With focus in a text field, Shift+Ctrl+R does nothing: it runs no command and never reloads the window. |
 | L12 Undo / Redo | Edit > Undo (Ctrl+Z) and Redo (Ctrl+Shift+Z), labelled with the action they undo or redo, undo and redo a document edit; in a text field they act on the typed text. |
-| L13 Quit | File > Quit MolBioCraft (Ctrl+Q) and the window's close button, with unsaved changes, show the quit confirmation; with the confirmation turned off, the first close quits. |
+| L13 Quit | File > Quit MolBioCraft (Ctrl+Q) and the window's close button follow the Preferences option "Show confirmation dialog before quitting MolBioCraft": with it on (the default) they show the quit confirmation, with or without unsaved changes; with it off, the first one quits. One exception: with unsaved changes and an earlier autosaved session not yet restored, a "Quit Without Saving?" dialog appears even with the option off. |

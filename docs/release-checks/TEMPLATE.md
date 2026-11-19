@@ -45,7 +45,8 @@ Artefact: `MolBioCraft-<version>-Windows-x64.msi`, `MolBioCraft-<version>-Window
 | W8 US-01M7QCXX AC4 (MSI) |  |  |  |  |  |
 | W9 Print |  |  |  |  |  |
 | W10 In-window menu |  |  |  |  |  |
-| W11 Shift+Ctrl+R |  |  |  |  |  |
+| W11a Shift+Ctrl+R on a sequence |  |  |  |  |  |
+| W11b Shift+Ctrl+R in a text field |  |  |  |  |  |
 | W12 Undo / Redo |  |  |  |  |  |
 | W13 Quit |  |  |  |  |  |
 
@@ -65,6 +66,7 @@ Artefact: `MolBioCraft-<version>-Linux-x86_64.deb`
 | L8 US-01M7QCXX AC4 (.deb) |  |  |  |  |  |
 | L9 Print |  |  |  |  |  |
 | L10 In-window menu |  |  |  |  |  |
-| L11 Shift+Ctrl+R |  |  |  |  |  |
+| L11a Shift+Ctrl+R on a sequence |  |  |  |  |  |
+| L11b Shift+Ctrl+R in a text field |  |  |  |  |  |
 | L12 Undo / Redo |  |  |  |  |  |
 | L13 Quit |  |  |  |  |  |
