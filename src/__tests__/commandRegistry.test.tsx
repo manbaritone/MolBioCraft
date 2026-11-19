@@ -634,4 +634,26 @@ describe('US-01M7QCN2 AC4: View › Table Columns offers presets and opens the c
       expect(shown(), 'and back').toBe(before);
     });
   }, 60_000);
+
+  it('US-01M7QCN2 AC4 Choose Columns on a folded document table unfolds it and opens its Columns menu', async () => {
+    await onRecords(PLASMID.id, async (app) => {
+      const folded = () => app.all('.mbc-doc-table-pane.collapsed').length === 1;
+      expect(folded(), 'the table starts unfolded').toBe(false);
+      await chooseMenu(app, 'View', ['Panels', 'Document Table']);
+      expect(folded(), 'View › Panels › Document Table folds the table').toBe(true);
+      expect(app.all('.doc-table-scroll'), 'a folded table draws no rows').toHaveLength(0);
+      expect(app.all('.mbc-columns-popover'), 'the Columns menu starts closed').toHaveLength(0);
+      if (app.all('button.desktop-menu-row').length) await closeMenus(app, menubarButton(app, 'View'));
+      await chooseMenu(app, 'View', ['Table Columns', 'Choose Columns…']);
+      expect(folded(), 'Choose Columns… unfolds the table').toBe(false);
+      expect(app.all('.doc-table-scroll'), 'the unfolded table draws its rows').toHaveLength(1);
+      const popover = app.all('.mbc-columns-popover[aria-label="Choose Visible Table Columns"]');
+      expect(popover, 'Choose Columns… opens the Columns menu').toHaveLength(1);
+      expect(popover[0].querySelectorAll('.mbc-columns-check-item').length, 'with its column check items').toBeGreaterThan(1);
+      expect(
+        popover[0].querySelectorAll('button.mbc-columns-action-btn').map((b) => words(b.textContent)),
+        'and its Load Column State action'
+      ).toContain('Load Column State...');
+    });
+  }, 60_000);
 });
