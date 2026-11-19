@@ -5,6 +5,7 @@ pub mod bam;
 pub mod chromatogram_mbc;
 pub mod flatfiles;
 pub mod genbank_to;
+pub mod genbank_to_bakta;
 pub mod genomic_tracks_noodles;
 pub mod noodles_io;
 pub mod pdb_mmcif;

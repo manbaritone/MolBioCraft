@@ -45,6 +45,10 @@ pub struct GenbankToOptions {
     pub complex_headers: bool,
     /// The record ids to keep, each with or without its `.version`; empty keeps every record.
     pub records: Vec<String>,
+    /// Bakta JSON only (D0228): the Gram stain, '+' or '-'; none reads it from the genus.
+    pub gram: Option<char>,
+    /// Bakta JSON only (D0227 (10)): the translation table; none is 11.
+    pub translation_table: Option<u32>,
 }
 
 /// One output's text and the warnings the conversion owes for it.
@@ -107,7 +111,7 @@ pub fn split_genbank_records(text: &str) -> Vec<String> {
 }
 
 /// A document metadata key's value, as text, when it holds some.
-fn metadata<'a>(doc: &'a SequenceDocument, key: &str) -> Option<&'a str> {
+pub(crate) fn metadata<'a>(doc: &'a SequenceDocument, key: &str) -> Option<&'a str> {
     doc.doc_metadata
         .as_ref()?
         .get(key)?
@@ -155,7 +159,7 @@ fn kept(id: &str, filter: &[String]) -> bool {
 }
 
 /// The records the filter keeps, each with its id, adding the record-id warnings for those.
-fn selected<'a>(
+pub(crate) fn selected<'a>(
     docs: &'a [SequenceDocument],
     opts: &GenbankToOptions,
     warnings: &mut Vec<String>,
@@ -172,7 +176,7 @@ fn selected<'a>(
 }
 
 /// A qualifier's values, in file order (the reader keeps repeats "\n"-separated).
-fn values<'a>(f: &'a SequenceFeature, key: &str) -> Option<Vec<&'a str>> {
+pub(crate) fn values<'a>(f: &'a SequenceFeature, key: &str) -> Option<Vec<&'a str>> {
     f.qualifiers
         .as_ref()?
         .get(key)
@@ -221,7 +225,7 @@ pub fn genbank_to_feature_id(record_id: &str, f: &SequenceFeature) -> String {
 }
 
 /// The CDS's extracted DNA, upper case: its parts joined, reverse-complemented on the minus strand.
-fn extract(doc: &SequenceDocument, f: &SequenceFeature) -> String {
+pub(crate) fn extract(doc: &SequenceDocument, f: &SequenceFeature) -> String {
     let seq = doc.sequence.as_bytes();
     let plus: String = parts(f)
         .iter()
@@ -383,7 +387,7 @@ fn per_record(
     (texts, dedup(warnings))
 }
 
-fn dedup(warnings: Vec<String>) -> Vec<String> {
+pub(crate) fn dedup(warnings: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     warnings
         .into_iter()
@@ -473,7 +477,7 @@ fn spaced(f: &SequenceFeature, key: &str) -> Option<String> {
 
 /// Python's `str.isspace`, which the `\S` of 0.54's regexes negates: Unicode White_Space and the
 /// four separators U+001C-U+001F.
-fn py_space(c: char) -> bool {
+pub(crate) fn py_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
@@ -506,7 +510,7 @@ fn ptt_cog(f: &SequenceFeature) -> String {
 
 /// The feature's 1-based start and its end, lowest part start to highest part end (Biopython's
 /// `location.start + 1` and `location.end`, D0227 (2)).
-fn span(f: &SequenceFeature) -> (usize, usize) {
+pub(crate) fn span(f: &SequenceFeature) -> (usize, usize) {
     let p = parts(f);
     let start = p.iter().map(|&(a, _)| a).min().unwrap_or(f.start);
     let end = p.iter().map(|&(_, b)| b).max().unwrap_or(f.end);

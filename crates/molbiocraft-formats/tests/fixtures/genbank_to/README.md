@@ -53,6 +53,27 @@ it in its doc comment): a partial `<1..>30` CDS whose 'GI:' and 'COG' are not at
 db_xrefs and product, a 20 bp CDS with two /gene values and the product 'COG0003, partial family',
 and a minus-strand order() with no product.
 
+## Bakta JSON (US-01M7RCMJ)
+
+`expected/oracle.bakta.json` is `genbank_to -g oracle.gbk --bakta-json oracle.bakta.json` (0.54,
+Biopython 1.88, Python 3.12.7, 2026-11-19; two runs byte-identical), written by 0.54's
+`json.dump(..., indent=4)` with no final newline. The port in `src/genbank_to_bakta.rs` follows
+GenBankToLib/genbank_to_json.py and bacteria.py of that release.
+
+The one line changed by hand is the version object (D0227 (10)): 0.54's `"genbank_to": "0.54"`
+became `"genbank_to": "0.54",` followed by `"molbiocraft": "CARGO_PKG_VERSION"`, a placeholder,
+since the port writes the crate's version there. `bakta_json_matches_genbank_to` compares the rest
+as parsed JSON (molecular_weight and isoelectric_point within 1e-9, every other value equal) and
+checks the version object on its own. No D0227 difference changes another line: Bakta keeps the
+pseudogene CDS (f) as 0.54 does (1), and the fixture holds no partial location (8).
+
+`oracle.gbk` cannot reach several of 0.54's feature rules, so `tests/genbank_to_bakta.rs` adds inline
+records with 0.54's own output for them, run the same way: `EDGE` (codon_start 3 and 0, old_locus_tag,
+/ribosome_binding_site, /label, a 'Class:' /note, /truncated, a lower-case /translation, a 'tRNA-'
+product, a complement anticodon position, a tmRNA, a partial CDS), the genome-metadata records
+`META_A` to `META_D`, and `JREC`, a CDS whose DNA holds 'J', on which 0.54 stops with Biopython's
+TranslationError.
+
 ## GFF3 and the AMRFinderPlus files (D0227 (7))
 
 0.54's `--gff3` and `--amr` write through BCBio's GFF writer, which the port does not follow, so they
@@ -134,3 +155,6 @@ D0227 difference applies there. Its ptt and phage_finder (73 CDS rows each) are 
 every row's start is one higher (0.54's `190..736` is the port's `191..736`), and every ptt length is
 an integer (`181.0` is `181`); no lambda CDS length is off a multiple of 3, and none is partial or
 pseudo, so no other difference applies.
+
+Its Bakta JSON (73 features) equals 0.54's `--bakta-json` as parsed JSON, every
+molecular_weight and isoelectric_point exactly, the version object aside (2026-11-19, US-01M7RCMJ).

@@ -1,0 +1,384 @@
+{
+    "genome": {
+        "genus": "Escherichia",
+        "species": "coli",
+        "strain": "K-12",
+        "complete": true,
+        "gram": "-",
+        "translation_table": 11
+    },
+    "stats": {
+        "no_sequences": 3,
+        "size": 900,
+        "gc": 0.4330357142857143,
+        "n_ratio": 0.0044444444444444444,
+        "n50": 720,
+        "coding_ratio": 0.6011111111111112
+    },
+    "features": [
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 1,
+            "stop": 33,
+            "strand": 1,
+            "product": "Alpha test protein",
+            "gene": "abcA",
+            "locus": "ORP00001.1",
+            "db_xrefs": [
+                "GI:123456",
+                "GeneID:7"
+            ],
+            "nt": "ATGAAAACCGCTTATATTGCTAAACAGCGTTAA",
+            "aa": "MKTAYIAKQR",
+            "aa_hexdigest": "960e92382bedae45c9bcb8b676df9079",
+            "seq_stats": {
+                "molecular_weight": 1209.4613,
+                "isoelectric_point": 10.288976860046386
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 41,
+            "stop": 70,
+            "strand": -1,
+            "product": "Beta test protein",
+            "locus": "ORT_0002",
+            "nt": "ATGGCNAAANNNGGCTGCCATGAAACCTAA",
+            "aa": "MAKXGCHET",
+            "aa_hexdigest": "ac8221c9229d110b079b124d95a5a859",
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 81,
+            "stop": 150,
+            "strand": 1,
+            "db_xrefs": [
+                "GeneID:3"
+            ],
+            "nt": "ATGTCTGATGAATTTGGCCATATTAAACTGATGAACCCGCAGCGTTCTACCGTGTGGTAA",
+            "aa": "MSDEFGHIKLMNPQRSTVW",
+            "aa_hexdigest": "723558bd51a79f4a34515d64012f0740",
+            "seq_stats": {
+                "molecular_weight": 2276.5927,
+                "isoelectric_point": 6.505643272399902
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 161,
+            "stop": 230,
+            "strand": -1,
+            "product": "Delta test protein",
+            "nt": "ATGGATAACCCGCAGCGTTCTACCGTGTGGTATGCTTGCGATGAATTTGGCCATATTTAA",
+            "aa": "MDNPQRSTVWYACDEFGHI",
+            "aa_hexdigest": "7c216aca34de773c2362e26f34549b42",
+            "seq_stats": {
+                "molecular_weight": 2269.4709,
+                "isoelectric_point": 4.535092353820801
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 241,
+            "stop": 270,
+            "strand": 1,
+            "product": "Epsilon test protein",
+            "nt": "ATGGAACCGTCTATTCTGGTGAACAAATAA",
+            "aa": "MEPSILVNK",
+            "aa_hexdigest": "5e32a5179d5720a1a53714459fef9b68",
+            "seq_stats": {
+                "molecular_weight": 1030.2389,
+                "isoelectric_point": 5.752981376647949
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 281,
+            "stop": 310,
+            "strand": 1,
+            "product": "Zeta pseudo protein",
+            "locus": "ORP00006.1",
+            "nt": "ATGACCCAGCCGCTGCTGCATCGTGCTTAA",
+            "aa": "MTQPLLHRA",
+            "aa_hexdigest": "e3f432c606ffbfd48538fb72226c02f0",
+            "seq_stats": {
+                "molecular_weight": 1066.2777,
+                "isoelectric_point": 9.519997978210448
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA",
+            "truncated": "unknown"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 321,
+            "stop": 340,
+            "strand": 1,
+            "product": "Eta short protein",
+            "locus": "ORT_0007",
+            "nt": "ATGAAACCCGGGTTTAAATA",
+            "aa": "MKPGFK",
+            "aa_hexdigest": "7a94ebfddc890728231dc4d43cc0b87a",
+            "seq_stats": {
+                "molecular_weight": 706.8962,
+                "isoelectric_point": 10.000867652893067
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA",
+            "truncated": "3-prime"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 351,
+            "stop": 368,
+            "strand": 1,
+            "product": "Theta table four protein",
+            "locus": "ORT_0008",
+            "nt": "ATGAAATGACCCGGGTAA",
+            "aa": "MK*PG",
+            "aa_hexdigest": "4b8f1e83515a8c0c3065fd9611e7310e",
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 381,
+            "stop": 410,
+            "strand": 1,
+            "product": "Iota frame protein",
+            "locus": "ORT_0009",
+            "nt": "ATGCGTACCGATAAAGGCTTTCTGCATTAA",
+            "frame": 1,
+            "aa": "CVPIKAFCI",
+            "aa_hexdigest": "f20ca3e614410b0adf42ec14aacf5044",
+            "seq_stats": {
+                "molecular_weight": 993.2864999999999,
+                "isoelectric_point": 8.058370780944824
+            },
+            "start_type": "TGC",
+            "rbs_motif": "NA",
+            "truncated": "5-prime-3-prime"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 421,
+            "stop": 450,
+            "strand": 1,
+            "product": "Kappa test protein",
+            "locus": "ORP00010.1",
+            "nt": "ATGAAAAAACTGCTGCCGACCGCTGGCTAA",
+            "aa": "MKKLLPTAG",
+            "aa_hexdigest": "5455ea8e2398bfbcfce0f3de3b2c210f",
+            "seq_stats": {
+                "molecular_weight": 958.2194,
+                "isoelectric_point": 10.000867652893067
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 461,
+            "stop": 490,
+            "strand": 1,
+            "product": "hypothetical protein",
+            "locus": "ORP00011.1",
+            "nt": "ATGCATCATCATCATCATCATGGCTCTTAA",
+            "aa": "MHHHHHHGS",
+            "aa_hexdigest": "7f30ec40bd019d139f29a722767bff65",
+            "seq_stats": {
+                "molecular_weight": 1116.1757,
+                "isoelectric_point": 7.014068031311035
+            },
+            "hypothetical": true,
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 501,
+            "stop": 530,
+            "strand": 1,
+            "product": "COG0001 test family.",
+            "locus": "ORP00012.1",
+            "nt": "ATGCGTCTGGAAGATGTGCAGAAATCTTAA",
+            "aa": "MRLEDVQKS",
+            "aa_hexdigest": "c97a57ee2f10e5eb4e9438ca9e47cfa4",
+            "seq_stats": {
+                "molecular_weight": 1105.2658,
+                "isoelectric_point": 5.823348045349121
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000001.1",
+            "start": 541,
+            "stop": 570,
+            "strand": 1,
+            "product": "Mu test protein",
+            "db_xrefs": [
+                "GI:55",
+                "GeneID:9"
+            ],
+            "nt": "ATGTGGTATTTTAACGATGAAAAAACCTAA",
+            "aa": "MWYFNDEKT",
+            "aa_hexdigest": "e7937052a76e4549a74f17f594c23b6e",
+            "seq_stats": {
+                "molecular_weight": 1233.3484,
+                "isoelectric_point": 4.369065666198731
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "tRNA",
+            "contig": "OR000001.1",
+            "start": 581,
+            "stop": 665,
+            "strand": 1,
+            "product": "tRNA-Leu",
+            "gene": "trnL",
+            "locus": "ORT_0014",
+            "nt": "AATGGCGGTATATGGCTACCAGCATCTCTCTGATTAAGGTTCACTTGTACTCTTTGGGGAATAAAAAAGGTCAACTGTGAATGTT",
+            "amino_acid": "Leu",
+            "anti_codon": "taa",
+            "anti_codon_pos": 615
+        },
+        {
+            "type": "rRNA",
+            "contig": "OR000001.1",
+            "start": 671,
+            "stop": 700,
+            "strand": 1,
+            "product": "5S ribosomal RNA",
+            "locus": "ORT_0015",
+            "nt": "GTAGAGGCCGGTGACGGCAAACGCAAGGGT"
+        },
+        {
+            "type": "ncRNA",
+            "contig": "OR000001.1",
+            "start": 701,
+            "stop": 715,
+            "strand": 1,
+            "product": "test ncRNA",
+            "locus": "ORT_0016",
+            "nt": "TCGGTTTTTTCACTG"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000002.1",
+            "start": 11,
+            "stop": 40,
+            "strand": 1,
+            "product": "Plasmid replication protein",
+            "locus": "ORP20001.1",
+            "nt": "ATGTCTACCCGTAAACCGCAGGAAGCTTAA",
+            "aa": "MSTRKPQEA",
+            "aa_hexdigest": "f4b5dc48779b94d77f20aeb5c588442c",
+            "seq_stats": {
+                "molecular_weight": 1047.1868,
+                "isoelectric_point": 8.498431968688966
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000002.1",
+            "start": 51,
+            "stop": 80,
+            "strand": -1,
+            "product": "Plasmid partition protein",
+            "locus": "ORT2_0002",
+            "nt": "ATGAACGATCTGAAAGCTGGCGTGTTTTAA",
+            "aa": "MNDLKAGVF",
+            "aa_hexdigest": "5b10e53142fbda2938c7ecf24b7e4082",
+            "seq_stats": {
+                "molecular_weight": 994.1651999999999,
+                "isoelectric_point": 5.587523078918457
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        },
+        {
+            "type": "CDS",
+            "contig": "OR000003",
+            "start": 1,
+            "stop": 30,
+            "strand": 1,
+            "product": "Contig protein",
+            "locus": "ORP30001.1",
+            "nt": "ATGGCTGGCAAACGTACCGAACCGCTGTAA",
+            "aa": "MAGKRTEPL",
+            "aa_hexdigest": "cad476c5153d91f4a69f7692c97e9cdf",
+            "seq_stats": {
+                "molecular_weight": 1002.1892,
+                "isoelectric_point": 8.498431968688966
+            },
+            "start_type": "ATG",
+            "rbs_motif": "NA"
+        }
+    ],
+    "sequences": [
+        {
+            "id": "OR000001.1",
+            "description": "Escherichia coli K-12 test chromosome OR000001, complete genome",
+            "sequence": "ATGAAAACCGCTTATATTGCTAAACAGCGTTAAGATTAAATTAGGTTTCATGGCAGCCNNNTTTNGCCATACAAACGAACATGTCTGATGAATTTGGCCATATTAAACTGCATTACGGTCATGAACCCGCAGCGTTCTACCGTGTGGTAAACGGATTATGTTAAATATGGCCAAATTCATCGCAAGCATAAGAGCACTGGCCACACGGTAGAACGCTGCGGGTTATCCATCTATGTTCCCATGGAACCGTCTATTCTGGTGAACAAATAAACAATGAGATATGACCCAGCCGCTGCTGCATCGTGCTTAATTACGATCGAATGAAACCCGGGTTTAAATATGCCAACGATATGAAATGACCCGGGTAATTCGTTCCGGGAATGCGTACCGATAAAGGCTTTCTGCATTAATCACCAATAAATGAAAAAACTGCTGCCGACCGCTGGCTAAGGATATGGCTATGCATCATCATCATCATCATGGCTCTTAAACGATATGACATGCGTCTGGAAGATGTGCAGAAATCTTAATACCCATTCAATGTGGTATTTTAACGATGAAAAAACCTAACTATTTTGCTAATGGCGGTATATGGCTACCAGCATCTCTCTGATTAAGGTTCACTTGTACTCTTTGGGGAATAAAAAAGGTCAACTGTGAATGTTCGGGGGTAGAGGCCGGTGACGGCAAACGCAAGGGTTCGGTTTTTTCACTGCTATA",
+            "length": 720,
+            "complete": true,
+            "type": "chromosome",
+            "topology": "linear",
+            "simple_id": "OR000001",
+            "name": "OR000001"
+        },
+        {
+            "id": "OR000002.1",
+            "description": "Test plasmid pOR2, complete sequence",
+            "sequence": "CATAAGTGCGATGTCTACCCGTAAACCGCAGGAAGCTTAAGATGTGTTACTTAAAACACGCCAGCTTTCAGATCGTTCATAAATGACCACCCGCTTGTGTTCGAAGCGCGTTTTAAATTC",
+            "length": 120,
+            "complete": true,
+            "type": "plasmid",
+            "topology": "circular",
+            "simple_id": "OR000002",
+            "name": "OR000002"
+        },
+        {
+            "id": "OR000003",
+            "description": "Test contig three",
+            "sequence": "ATGGCTGGCAAACGTACCGAACCGCTGTAAGGGGGTAGTATAGACCAAGTCTGTAGGTTT",
+            "length": 60,
+            "complete": false,
+            "type": "contig",
+            "topology": "linear",
+            "simple_id": "OR000003"
+        }
+    ],
+    "version": {
+        "genbank_to": "0.54",
+        "molbiocraft": "CARGO_PKG_VERSION"
+    }
+}
