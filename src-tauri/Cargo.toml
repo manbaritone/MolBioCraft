@@ -31,3 +31,13 @@ molbiocraft-wasm = { path = "../crates/molbiocraft-wasm" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSEvent"] }
+
+# Mirrors the root workspace's [profile.release]: src-tauri is excluded from the workspace (US-01M6P2B4).
+# Cargo's `trim-paths` is not stable, so this profile leaves the build machine's source paths in
+# panic locations. scripts/build_rust_wasm.mjs remaps them (`--remap-path-prefix`) for the WASM
+# engine; a plain `cargo build --release` does not.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"
