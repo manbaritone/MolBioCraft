@@ -242,4 +242,58 @@ describe('Convert GenBank (US-01M7RCCA AC4, AC5)', () => {
       expect(text.split('\n').filter((l) => l.startsWith('>'))).toEqual(['>ORP20001.1', '>ORT2_0002']);
     });
   });
+
+  it('converts the records checked in the document table, and the active record alone when none is checked', async () => {
+    // D0228: "Source: the selected open records (the active record when none is selected), or a
+    // GenBank file chosen from disk." Wrong implementations this catches: the active record sent
+    // whatever is checked (the checked pair holds a record that is not active), every open record
+    // sent (the second record stays unchecked, and with none checked only the active one may go).
+    const { parseGenBank } = await import('../core/fileParsers');
+    const records = ORACLE.split(/^\/\/[ \t]*\n/m).filter((r) => r.includes('LOCUS')).map((r) => `${r}//\n`);
+    const docs = records.map((r, i) => ({ ...parseGenBank(r, 'oracle', '2026-11-19T00:00:00.000Z'), id: `gbk-${i}` }));
+    expect(new Set(docs.map((d) => d.name)).size, 'three records, three names').toBe(3);
+    const tick = (app: AppHarness, i: number) =>
+      app.one(`input[type="checkbox"][aria-label="Select ${docs[i].name}"]`, `${docs[i].name}'s tick box`);
+    const headers = (text: string) => text.split('\n').filter((l) => l.startsWith('>'));
+    await withApp(async (app) => {
+      await app.restoreSession({ documents: docs, activeDocId: docs[1].id, viewerTab: 'sequence-view' });
+      // the restore checks the active record: clear it, then check the first and the third
+      await app.change(tick(app, 1), false);
+      await app.change(tick(app, 0), true);
+      await app.change(tick(app, 2), true);
+      expect([0, 1, 2].map((i) => tick(app, i).checked), 'the first and third are checked').toEqual([true, false, true]);
+
+      await openFromFileMenu(app);
+      expect(app.one('input[data-genbank-to-source="records"]').checked, 'the checked records are the source').toBe(true);
+      expect(words(dialog(app).textContent)).toContain('The 2 selected records');
+      await app.change(output(app, 'nucleotides'), true);
+      await convert(app);
+      expect(calls(), 'Convert calls the RPC once').toHaveLength(1);
+      expect((calls()[0].source as { documents: { id: string }[] }).documents.map((d) => d.id)).toEqual([docs[0].id, docs[2].id]);
+      const saved = app.downloads();
+      expect(saved).toHaveLength(1);
+      // the two checked records' nucleotides, and not the unchecked second one
+      expect(headers(await saved[0].text())).toEqual(['>OR000001.1', '>OR000003']);
+      // the Close button sits in the footer beside Convert
+      const close = app.all('button').filter((b) => words(b.textContent) === 'Close' && b.parentElement?.querySelector('[data-genbank-to-convert]'));
+      expect(close, 'the dialog Close button').toHaveLength(1);
+      await app.click(close[0]);
+      expect(app.all('[data-genbank-to-dialog]'), 'the dialog closed').toHaveLength(0);
+
+      // none checked: the active record (the last one checked) is the source, alone
+      await app.change(tick(app, 0), false);
+      await app.change(tick(app, 2), false);
+      expect([0, 1, 2].map((i) => tick(app, i).checked), 'nothing is checked').toEqual([false, false, false]);
+      await openFromFileMenu(app);
+      expect(app.one('input[data-genbank-to-source="records"]').checked).toBe(true);
+      expect(words(dialog(app).textContent)).toContain(`The record ${docs[2].name}`);
+      await app.change(output(app, 'nucleotides'), true);
+      await convert(app);
+      expect(calls()).toHaveLength(2);
+      expect((calls()[1].source as { documents: { id: string }[] }).documents.map((d) => d.id)).toEqual([docs[2].id]);
+      const second = app.downloads();
+      expect(second.map((f) => f.filename)).toEqual([saved[0].filename, `${docs[2].name}.fna`]);
+      expect(headers(await second[1].text())).toEqual(['>OR000003']);
+    });
+  });
 });
