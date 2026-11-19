@@ -45,7 +45,7 @@ interface NodeFs {
   copyFileSync: (from: string, to: string) => void;
   writeFileSync: (p: string, data: string | Uint8Array) => void;
   readFileSync: (p: string) => Uint8Array;
-  readdirSync: (p: string) => string[];
+  readdirSync: (p: string, o?: { recursive: boolean }) => string[];
   existsSync: (p: string) => boolean;
   rmSync: (p: string, o: { recursive: boolean; force: boolean }) => void;
   chmodSync: (p: string, mode: number) => void;
@@ -55,6 +55,7 @@ interface NodePath {
   resolve: (...p: string[]) => string;
   dirname: (p: string) => string;
   basename: (p: string) => string;
+  sep: string;
 }
 interface NodeOs { tmpdir: () => string }
 interface NodeUrl { fileURLToPath: (u: string) => string }
@@ -439,13 +440,18 @@ const LOCAL_ONLY = [...(/\nconst LOCAL_ONLY = \[([\s\S]*?)\n\];/.exec(text(CHECK
 // (the --reporter that is neither default nor json), as Vitest hands it the real one. A folder
 // that exists passes the test whatever it holds, as the resolver lets the real test run and its
 // walk of an empty folder passes. With REFERENCE_STUB_VACUOUS=1 it reports them passed even while
-// the folder is absent, as a test that ran without its data.
+// the folder is absent, as a test that ran without its data. REFERENCE_STUB_NEEDS maps a test
+// file to the data folder it reads: under MOLBIOCRAFT_REQUIRE_TEST_DATA=1, while that folder is
+// absent from the data directory, the file fails at collection with the resolver's own sentence,
+// as testData.ts throws it, and the stub exits 1 as Vitest does. With REFERENCE_STUB_SKIP=<file>
+// that file's one test is reported skipped. Each run's log line also holds the
+// MOLBIOCRAFT_TEST_DATA_DIR it was given.
 const VITEST_STUB = `
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 const args = process.argv.slice(2);
-fs.appendFileSync(process.env.REFERENCE_STUB_LOG, JSON.stringify({ tool: 'vitest', args, require: process.env.MOLBIOCRAFT_REQUIRE_TEST_DATA }) + '\\n');
+fs.appendFileSync(process.env.REFERENCE_STUB_LOG, JSON.stringify({ tool: 'vitest', args, require: process.env.MOLBIOCRAFT_REQUIRE_TEST_DATA, data: process.env.MOLBIOCRAFT_TEST_DATA_DIR }) + '\\n');
 const after = (flag) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
 const named = args.slice(1).filter((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--dir' && all[i - 1] !== '--exclude');
 const excluded = after('--exclude').map((p) => path.basename(p));
@@ -461,12 +467,20 @@ const outcome = (title) => {
   skipLines.push('skipped: reference data absent (' + path.join(dataDir, folders[title]) + ')');
   return 'skipped';
 };
-const testResults = files.map((f) => ({
+const needs = JSON.parse(process.env.REFERENCE_STUB_NEEDS || '{}');
+const absent = (f) => (process.env.MOLBIOCRAFT_REQUIRE_TEST_DATA === '1' && rel(f) in needs && !fs.existsSync(path.join(dataDir, needs[rel(f)])) ? path.join(dataDir, needs[rel(f)]) : null);
+const testResults = files.map((f) => (absent(f) ? {
+  name: f,
+  status: 'failed',
+  message: 'reference data required (MOLBIOCRAFT_REQUIRE_TEST_DATA=1) but absent: ' + absent(f),
+  assertionResults: [],
+} : {
   name: f,
   status: 'passed',
   message: '',
-  assertionResults: ['stub', ...(titles[rel(f)] ?? [])].map((title) => ({ title, fullName: title, status: outcome(title) })),
+  assertionResults: ['stub', ...(titles[rel(f)] ?? [])].map((title) => ({ title, fullName: title, status: title === 'stub' && rel(f) === process.env.REFERENCE_STUB_SKIP ? 'skipped' : outcome(title) })),
 }));
+const failedFiles = testResults.filter((t) => t.status === 'failed').length;
 const all = testResults.flatMap((t) => t.assertionResults);
 const passed = all.filter((t) => t.status === 'passed').length;
 if (skipLines.length) {
@@ -480,19 +494,38 @@ if (skipLines.length) {
   }
 }
 const out = args.find((a) => a.startsWith('--outputFile.json=')).slice('--outputFile.json='.length);
-fs.writeFileSync(out, JSON.stringify({ success: true, numFailedTestSuites: 0, numPassedTests: passed, numFailedTests: 0, numPendingTests: all.length - passed, numTodoTests: 0, testResults }));
-console.log('vitest stub: ' + files.length + ' test files passed');
+fs.writeFileSync(out, JSON.stringify({ success: failedFiles === 0, numFailedTestSuites: failedFiles, numPassedTests: passed, numFailedTests: 0, numPendingTests: all.length - passed, numTodoTests: 0, testResults }));
+console.log('vitest stub: ' + files.length + ' test files run, ' + (files.length - failedFiles) + ' passed');
+process.exitCode = failedFiles ? 1 : 0;
 `;
 
-// Stands in for cargo: logs its arguments and MOLBIOCRAFT_REQUIRE_TEST_DATA, and prints one test
-// target in which one test passed.
+// Stands in for cargo: logs its arguments, MOLBIOCRAFT_REQUIRE_TEST_DATA and
+// MOLBIOCRAFT_TEST_DATA_DIR, and prints one test target in which one test passed. Each Rust test
+// source in REFERENCE_STUB_NEEDS (a .rs path, mapped to the data folder it reads) adds a target
+// whose one test, reads_reference_data, passes, or, under MOLBIOCRAFT_REQUIRE_TEST_DATA=1 while
+// that folder is absent from the data directory, panics with the resolver's sentence, as
+// structure_model_reference.rs does, and the stub exits 101 as cargo does.
 const CARGO_STUB = `
 import fs from 'node:fs';
-fs.appendFileSync(process.env.REFERENCE_STUB_LOG, JSON.stringify({ tool: 'cargo', args: process.argv.slice(2), require: process.env.MOLBIOCRAFT_REQUIRE_TEST_DATA }) + '\\n');
-console.log(['     Running unittests src/lib.rs (target/debug/deps/reference_stub-0123456789abcdef)', '', 'running 1 test', 'test stub ... ok', '', 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s'].join('\\n'));
+import path from 'node:path';
+fs.appendFileSync(process.env.REFERENCE_STUB_LOG, JSON.stringify({ tool: 'cargo', args: process.argv.slice(2), require: process.env.MOLBIOCRAFT_REQUIRE_TEST_DATA, data: process.env.MOLBIOCRAFT_TEST_DATA_DIR }) + '\\n');
+const lines = ['     Running unittests src/lib.rs (target/debug/deps/reference_stub-0123456789abcdef)', '', 'running 1 test', 'test stub ... ok', '', 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s'];
+const dataDir = path.resolve(process.env.MOLBIOCRAFT_TEST_DATA_DIR || 'test-data');
+let failed = false;
+for (const [source, folder] of Object.entries(JSON.parse(process.env.REFERENCE_STUB_NEEDS || '{}')).filter(([f]) => f.endsWith('.rs'))) {
+  const name = path.posix.basename(source, '.rs');
+  const missing = path.join(dataDir, folder);
+  const absent = process.env.MOLBIOCRAFT_REQUIRE_TEST_DATA === '1' && !fs.existsSync(missing);
+  failed ||= absent;
+  lines.push('', '     Running tests/' + name + '.rs (target/debug/deps/' + name + '-0123456789abcdef)', '', 'running 1 test', 'test reads_reference_data ... ' + (absent ? 'FAILED' : 'ok'));
+  if (absent) lines.push('', 'failures:', '', '---- reads_reference_data stdout ----', "thread 'reads_reference_data' panicked at " + source + ':1:1:', 'reference data required (MOLBIOCRAFT_REQUIRE_TEST_DATA=1) but absent: ' + missing, '', 'failures:', '    reads_reference_data');
+  lines.push('', 'test result: ' + (absent ? 'FAILED. 0 passed; 1 failed' : 'ok. 1 passed; 0 failed') + '; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s');
+}
+console.log(lines.join('\\n'));
+process.exitCode = failed ? 101 : 0;
 `;
 
-interface StubRun { tool: string; args: string[]; require?: string }
+interface StubRun { tool: string; args: string[]; require?: string; data?: string }
 
 /** The check's last lines: its PASS line, or its FAIL line and one line per reason. */
 const verdict = (stdout: string): string => stdout.slice(stdout.lastIndexOf('\nreference suite'));
@@ -729,6 +762,180 @@ it("counts cargo's test targets from coloured output", { timeout: 60_000 }, () =
     expect(verdict(failed.stdout)).toBe(
       '\nreference suite (only cargo): FAIL\n  - cargo test exited with code 101\n  - cargo reference_stub (src/lib.rs): test colour::stub_fails FAILED\n'
     );
+  });
+});
+
+// Stands in for the Python interpreter that runs the derivation (a POSIX shell script that hands
+// its arguments to PYTHON_STUB) and for the derivation script. Both log their arguments,
+// MOLBIOCRAFT_REQUIRE_TEST_DATA and MOLBIOCRAFT_TEST_DATA_DIR; the interpreter runs the script it
+// is given after -I, and the script prints a `total:` line with no cell differing.
+const PYTHON_STUB = `
+import cp from 'node:child_process';
+import fs from 'node:fs';
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.REFERENCE_STUB_LOG, JSON.stringify({ tool: 'python', args, require: process.env.MOLBIOCRAFT_REQUIRE_TEST_DATA, data: process.env.MOLBIOCRAFT_TEST_DATA_DIR }) + '\\n');
+if (args[0] !== '-I') {
+  console.error('python stub: the derivation must run isolated (-I first)');
+  process.exit(2);
+}
+process.exit(cp.spawnSync(process.execPath, args.slice(1), { stdio: 'inherit' }).status ?? 1);
+`;
+const RAMA_SCRIPT_STUB = `
+import fs from 'node:fs';
+fs.appendFileSync(process.env.REFERENCE_STUB_LOG, JSON.stringify({ tool: 'ramachandran', args: process.argv.slice(2), require: process.env.MOLBIOCRAFT_REQUIRE_TEST_DATA, data: process.env.MOLBIOCRAFT_TEST_DATA_DIR }) + '\\n');
+console.log('total: 0 of 7776 cells differ; 0 doc comment mismatches');
+`;
+
+/** Every Vitest test file under src/__tests__ (Vitest's default include pattern), repo-relative. */
+const TEST_FILES = (fs.readdirSync(repo('src/__tests__'), { recursive: true }) as string[])
+  .map((f) => f.split(path.sep).join('/'))
+  .filter((f) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(f))
+  .map((f) => `src/__tests__/${f}`);
+const LOCAL_FILES = [...new Set(LOCAL_ONLY.map((t) => t.file))];
+
+/**
+ * The check as nightly.yml and release.yml run it, `node scripts/check_reference_suite.mjs` with no
+ * options, with every child replaced by a stub: Vitest, cargo, the Python interpreter and the
+ * derivation script. Each run starts from this environment without the MOLBIOCRAFT_REFERENCE_*,
+ * REFERENCE_STUB_* and reference-data variables, and returns what each stub logged, in order.
+ */
+function stubbedCheck(dir: string): (env: Record<string, string>) => SpawnResult & { ran: StubRun[] } {
+  const stub = (name: string, body: string): string => {
+    const f = path.join(dir, name);
+    fs.writeFileSync(f, body);
+    return f;
+  };
+  const log = path.join(dir, 'stub-runs.jsonl');
+  const pythonStub = stub('python-stub.mjs', PYTHON_STUB);
+  const python3 = path.join(dir, 'python3');
+  writeExecutable(python3, `#!/bin/sh\nexec "${proc.execPath}" "${pythonStub}" "$@"\n`);
+  const titles: Record<string, string[]> = {};
+  for (const t of LOCAL_ONLY) (titles[t.file] ??= []).push(t.test);
+  const base = {
+    ...Object.fromEntries(Object.entries(proc.env).filter(([k]) => !/^(MOLBIOCRAFT_REFERENCE_|REFERENCE_STUB_|MOLBIOCRAFT_TEST_DATA_DIR$|MOLBIOCRAFT_REQUIRE_TEST_DATA$)/.test(k))),
+    REFERENCE_STUB_LOG: log,
+    REFERENCE_STUB_TITLES: JSON.stringify(titles),
+    REFERENCE_STUB_DATA: JSON.stringify(Object.fromEntries(LOCAL_ONLY.map((t) => [t.test, t.data]))),
+    MOLBIOCRAFT_REFERENCE_VITEST: stub('vitest-stub.mjs', VITEST_STUB),
+    MOLBIOCRAFT_REFERENCE_CARGO: `"${proc.execPath}" "${stub('cargo-stub.mjs', CARGO_STUB)}"`,
+    MOLBIOCRAFT_REFERENCE_PYTHON: python3,
+    MOLBIOCRAFT_REFERENCE_RAMA_SCRIPT: stub('rama-stub.mjs', RAMA_SCRIPT_STUB),
+  };
+  return (env) => {
+    fs.rmSync(log, { recursive: false, force: true });
+    const r = cp.spawnSync(proc.execPath, [CHECK], { cwd: REPO, env: { ...base, ...env }, encoding: 'utf8' });
+    const ran = fs.existsSync(log) ? text(log).split('\n').filter(Boolean).map((l) => JSON.parse(l) as StubRun) : [];
+    return { ...r, ran };
+  };
+}
+
+/** The test files a Vitest run was handed by name (none: it ran every file under --dir). */
+const namedFiles = (args: string[]): string[] => args.slice(1).filter((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--dir' && all[i - 1] !== '--exclude');
+
+const onPosix = (): boolean => {
+  if (proc.platform !== 'win32') return true;
+  console.warn('skipped on win32: the Python stand-in is a POSIX shell script; the macOS and Linux CI runs run this');
+  return false;
+};
+
+it('US-01M6P2SS AC6: the reference check runs every Vitest file and every cargo test, ignored ones too, with the data required, and passes only when none skipped', { timeout: 60_000 }, () => {
+  if (!onPosix()) return;
+  inTemp('mbc-reference-ac6-', (dir) => {
+    const check = stubbedCheck(dir);
+    const data = path.join(dir, 'data');
+    fs.mkdirSync(data);
+    // The caller asks for the data not to be required; the check requires it of every child but
+    // the local-only run, which runs with it not required by design.
+    const clean = check({ MOLBIOCRAFT_REQUIRE_TEST_DATA: '0', MOLBIOCRAFT_TEST_DATA_DIR: data });
+    expect(verdict(clean.stdout), clean.stdout + clean.stderr).toBe('\nreference suite: PASS\n');
+    expect(clean.status).toBe(0);
+    expect(clean.ran.map((x) => [x.tool, x.require]), 'what the check ran, and the MOLBIOCRAFT_REQUIRE_TEST_DATA each saw').toEqual([
+      ['vitest', '1'],
+      ...(LOCAL_FILES.length ? [['vitest', '0']] : []),
+      ['cargo', '1'],
+      ['python', '1'],
+      ['ramachandran', '1'],
+    ]);
+    // Vitest: the whole of src/__tests__, no file named, only the local-only files left out (they
+    // run next, on their own), so every test file on disk ran and no list of suites is kept.
+    const main = clean.ran[0].args;
+    expect(main.slice(0, 3), 'the main Vitest run').toEqual(['run', '--dir', repo('src/__tests__')]);
+    expect(namedFiles(main), 'test files the main run was handed by name').toEqual([]);
+    expect(main.flatMap((a, i) => (main[i - 1] === '--exclude' ? [a] : [])), 'what the main run leaves out').toEqual(LOCAL_FILES.map((f) => `**/${path.basename(f)}`));
+    expect(TEST_FILES.length, 'test files on disk').toBeGreaterThan(100);
+    expect(clean.stdout).toContain(`\nvitest stub: ${TEST_FILES.length - LOCAL_FILES.length} test files run, ${TEST_FILES.length - LOCAL_FILES.length} passed\n`);
+    expect(clean.stdout).toContain(`\nvitest totals: ${TEST_FILES.length - LOCAL_FILES.length} files; ${TEST_FILES.length - LOCAL_FILES.length} passed, 0 failed, 0 skipped, 0 todo\n`);
+    // cargo: every workspace test, the #[ignore]d ones too; the derivation run isolated.
+    expect(clean.ran.find((x) => x.tool === 'cargo')?.args, 'the cargo run').toEqual(['test', '--workspace', '--no-fail-fast', '--', '--include-ignored']);
+    const py = clean.ran.find((x) => x.tool === 'python')?.args ?? [];
+    expect([py.slice(0, 3), py.slice(4)], 'the derivation run').toEqual([['-I', path.join(dir, 'rama-stub.mjs'), '--fetch'], ['--check', 'crates/molbiocraft-protein/src/backbone.rs']]);
+
+    // One test reported skipped, with everything else as above: the check fails and names its file.
+    const skipped = 'src/__tests__/rcsbSearch.test.ts';
+    expect(TEST_FILES).toContain(skipped);
+    const skip = check({ MOLBIOCRAFT_REQUIRE_TEST_DATA: '1', MOLBIOCRAFT_TEST_DATA_DIR: data, REFERENCE_STUB_SKIP: skipped });
+    expect(skip.status, skip.stdout + skip.stderr).toBe(1);
+    expect(verdict(skip.stdout)).toBe(`\nreference suite: FAIL\n  - vitest ${skipped}: 1 skipped of 1 tests ('stub' skipped)\n`);
+  });
+});
+
+it('US-01M6P2SS AC7: with the reference data pointed at a missing folder the check prints FAIL and exits non-zero', { timeout: 60_000 }, () => {
+  if (!onPosix()) return;
+  inTemp('mbc-reference-ac7-', (dir) => {
+    const check = stubbedCheck(dir);
+    const missing = path.join(dir, 'nonexistent');
+    const reads = 'src/__tests__/rcsbSearch.test.ts';
+    const r = check({ MOLBIOCRAFT_REQUIRE_TEST_DATA: '0', MOLBIOCRAFT_TEST_DATA_DIR: missing, REFERENCE_STUB_NEEDS: JSON.stringify({ [reads]: 'rcsb' }) });
+    expect(fs.existsSync(missing)).toBe(false);
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout.split('\n'), 'the data folder the check reads').toContain(`reference data: ${missing} (MOLBIOCRAFT_REQUIRE_TEST_DATA=1)`);
+    // Both children are handed the missing folder, with the data required.
+    const main = [r.ran.find((x) => x.tool === 'vitest'), r.ran.find((x) => x.tool === 'cargo')];
+    expect(main.map((x) => [x?.tool, x?.require, x?.data]), 'the folder and MOLBIOCRAFT_REQUIRE_TEST_DATA Vitest and cargo saw').toEqual([
+      ['vitest', '1', missing],
+      ['cargo', '1', missing],
+    ]);
+    expect(verdict(r.stdout)).toBe(
+      `\nreference suite: FAIL\n  - vitest exited with code 1\n  - vitest ${reads}: failed at collection: reference data required (MOLBIOCRAFT_REQUIRE_TEST_DATA=1) but absent: ${path.join(missing, 'rcsb')}\n`
+    );
+  });
+});
+
+it('US-01M6P2SS AC9: a reference-data test the check was never told about still runs, so with rcsb/ absent it fails naming the RCSB client, search and structure-model tests', { timeout: 60_000 }, () => {
+  if (!onPosix()) return;
+  inTemp('mbc-reference-ac9-', (dir) => {
+    const check = stubbedCheck(dir);
+    const tests = ['src/__tests__/rcsbClient.test.ts', 'src/__tests__/rcsbSearch.test.ts'];
+    const rust = 'crates/molbiocraft-formats/tests/structure_model_reference.rs';
+    for (const f of [...tests, rust]) expect(fs.existsSync(repo(f)), f).toBe(true);
+    // The check names none of them: it finds them by running everything.
+    for (const name of ['rcsb', 'rcsbClient', 'rcsbSearch', 'structure_model_reference']) expect(text(CHECK)).not.toContain(name);
+    const needs = JSON.stringify(Object.fromEntries([...tests, rust].map((f) => [f, 'rcsb'])));
+    const withRcsb = path.join(dir, 'data-with-rcsb');
+    const withoutRcsb = path.join(dir, 'data-without-rcsb');
+    fs.mkdirSync(path.join(withRcsb, 'rcsb'), { recursive: true });
+    fs.mkdirSync(path.join(withRcsb, 'genbank'));
+    fs.mkdirSync(path.join(withoutRcsb, 'genbank'), { recursive: true });
+
+    // With rcsb/ present they pass and so does the check.
+    const present = check({ MOLBIOCRAFT_TEST_DATA_DIR: withRcsb, REFERENCE_STUB_NEEDS: needs });
+    expect(verdict(present.stdout), present.stdout + present.stderr).toBe('\nreference suite: PASS\n');
+    expect(present.stdout).toContain('\ncargo totals: 2 test targets; 2 passed\n');
+
+    // With rcsb/ absent the check fails, naming each, though no run was handed a file by name.
+    const absent = check({ MOLBIOCRAFT_TEST_DATA_DIR: withoutRcsb, REFERENCE_STUB_NEEDS: needs });
+    expect(absent.status, absent.stdout + absent.stderr).toBe(1);
+    expect(namedFiles(absent.ran[0].args), 'test files the main Vitest run was handed by name').toEqual([]);
+    const v = verdict(absent.stdout);
+    expect(v.split('\n').slice(0, 2)).toEqual(['', 'reference suite: FAIL']);
+    const sentence = `reference data required (MOLBIOCRAFT_REQUIRE_TEST_DATA=1) but absent: ${path.join(withoutRcsb, 'rcsb')}`;
+    expect(v.split('\n').slice(2).filter(Boolean).sort()).toEqual([
+      '  - cargo structure_model_reference (tests/structure_model_reference.rs): test reads_reference_data FAILED',
+      '  - cargo test exited with code 101',
+      ...tests.map((f) => `  - vitest ${f}: failed at collection: ${sentence}`),
+      '  - vitest exited with code 1',
+    ].sort());
+    expect(absent.stdout, 'the cargo test failed on the resolver sentence').toContain(`\n${sentence}\n`);
   });
 });
 
