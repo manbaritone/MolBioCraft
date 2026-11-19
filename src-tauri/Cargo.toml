@@ -20,7 +20,8 @@ tauri-build = { version = "2.0.0", features = [] }
 tauri = { version = "2.0.0", features = [] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# rfd's gtk3 backend: Linux dialogs need neither xdg-desktop-portal nor zenity (D0212).
+rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
 molbiocraft-core = { path = "../crates/molbiocraft-core" }
 molbiocraft-formats = { path = "../crates/molbiocraft-formats" }
 molbiocraft-align = { path = "../crates/molbiocraft-align" }
