@@ -22,6 +22,7 @@
 //! bases of A; and the link cost's junction term is pinned.
 
 use molbiocraft_align::ngs_assembly::run_whole_genome_synteny_with_sampling;
+use molbiocraft_align::ngs_assembly::SYNTENY_DEFAULT_ENGINE;
 use molbiocraft_align::{run_whole_genome_synteny, WholeGenomeSyntenyReport};
 
 /// A seeded genome A and its copy B, with the B position each base of A was copied to.
@@ -379,7 +380,7 @@ fn pair_700kb() -> RelatedPair {
 #[test]
 fn near_identical_genomes_reach_full_coverage_or_warn() {
     let (a, b) = near_identical_pair();
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let report = run_whole_genome_synteny(&a, &b, engine);
         // the scan ran past the old 48-block stop, to the end of A
         assert!(report.blocks.len() > 48, "{engine}: {} blocks", report.blocks.len());
@@ -400,7 +401,7 @@ fn near_identical_genomes_reach_full_coverage_or_warn() {
 #[test]
 fn synteny_covers_a_related_3mb_pair_at_its_planted_coordinates() {
     let pair = pair_3mb();
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let report = run_whole_genome_synteny(&pair.a, &pair.b, engine);
         assert_covers_at_planted_coordinates(&pair, &report, engine);
         assert_unsampled(&report, engine);
@@ -413,7 +414,7 @@ fn synteny_covers_a_related_3mb_pair_at_its_planted_coordinates() {
 #[test]
 fn synteny_reaches_every_offset_after_an_indel() {
     let pair = pair_700kb();
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let report = run_whole_genome_synteny(&pair.a, &pair.b, engine);
         assert_covers_at_planted_coordinates(&pair, &report, engine);
     }
@@ -424,7 +425,7 @@ fn synteny_reaches_every_offset_after_an_indel() {
 #[test]
 fn synteny_names_any_sampling_in_its_warnings() {
     let pair = pair_700kb();
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let sampled = run_whole_genome_synteny_with_sampling(&pair.a, &pair.b, engine, 2, 4);
         assert!(sampled.genome_a_coverage_is_lower_bound, "{engine}: stride 2 is a lower bound");
         assert_eq!(sampled.warnings, vec![SAMPLING_SENTENCE_2_4.to_string()], "{engine}");
@@ -439,14 +440,14 @@ fn synteny_names_any_sampling_in_its_warnings() {
         );
     }
     // the ordinals are the stride and step the scan used
-    let other = run_whole_genome_synteny_with_sampling(&pair.a[..100_000], &pair.b[..100_000], "Mauve", 3, 11);
+    let other = run_whole_genome_synteny_with_sampling(&pair.a[..100_000], &pair.b[..100_000], "seed-13", 3, 11);
     assert!(other.genome_a_coverage_is_lower_bound);
     assert_eq!(
         other.warnings,
         vec!["Synteny indexed every 3rd base of genome B and seeded every 11th base of genome A; coverage is a lower bound.".to_string()]
     );
     let big = pair_3mb();
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         assert_unsampled(&run_whole_genome_synteny(&big.a, &big.b, engine), engine);
     }
 }
@@ -466,7 +467,7 @@ fn synteny_keeps_original_coordinates_across_an_n_gap() {
     assert_eq!(&pair.b[GAP_B..GAP_B + 100], "N".repeat(100));
     let b_acgt = pair.b.len() - 100;
     let planted_b = |i: usize| pair.truth[i];
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let report = run_whole_genome_synteny(&pair.a, &pair.b, engine);
         assert_eq!(measure(&pair, &report, |_| true).blocks_over_ambiguity, 0, "{engine}: a block covers an N");
         let sides: [(&str, Box<dyn Fn(usize) -> bool>); 4] = [
@@ -508,7 +509,7 @@ fn synteny_keeps_original_coordinates_across_an_n_gap() {
     let flank = related_pair(40_000, 0x0f1a_4e).a.to_ascii_lowercase();
     let ambiguity: String = "NnRYKMSWBDHV".chars().cycle().take(20_000).collect();
     let gapped = format!("{}{ambiguity}{}", &flank[..20_000], &flank[20_000..]);
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let report = run_whole_genome_synteny(&gapped, &flank, engine);
         assert!(report.genome_a_coverage_pct >= 99.0, "{engine}: {}% of the gapped genome", report.genome_a_coverage_pct);
         assert!(report.blocks.iter().all(|blk| blk.genome_a_end <= 20_000 || blk.genome_a_start > 40_000), "{engine}: a block crosses the ambiguity run");
@@ -539,7 +540,7 @@ fn synteny_keeps_original_coordinates_across_an_n_gap() {
         even_shifts: 0,
         reversed: false,
     };
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let report = run_whole_genome_synteny(&spotted.a, &spotted.b, engine);
         let m = measure(&spotted, &report, |_| true);
         assert_eq!(m.blocks_over_ambiguity, 0, "{engine}: a block runs past a lone N or R");
@@ -563,7 +564,7 @@ fn synteny_keeps_original_coordinates_across_an_n_gap() {
 fn synteny_finds_no_chance_blocks_between_unrelated_genomes() {
     let a = related_pair(2_000_000, 0x0a_11ce).a;
     let b = related_pair(2_000_000, 0x0b_0b0b).a;
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let report = run_whole_genome_synteny(&a, &b, engine);
         assert!(report.total_aligned_bp < 100, "{engine}: {} bp in {} blocks", report.total_aligned_bp, report.blocks.len());
         assert_eq!(report.genome_a_coverage_pct, 0.0, "{engine}");
@@ -591,7 +592,7 @@ fn synteny_keeps_a_repeated_element_on_its_own_copy() {
     let offset = |i: usize| pair.truth[i].map(|j| j as isize - i as isize);
     let shifts = (1..pair.a.len()).filter(|&i| in_later_copy(i) && in_later_copy(i - 1) && offset(i).is_some() && offset(i - 1).is_some() && offset(i) != offset(i - 1)).count();
     assert!(shifts >= 4, "fixture: {shifts} indels inside the later copies");
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let report = run_whole_genome_synteny(&pair.a, &pair.b, engine);
         let m = measure(&pair, &report, in_later_copy);
         assert!(m.covered as f64 >= 0.99 * (5 * ELEMENT) as f64, "{engine}: {} bases of the later copies covered", m.covered);
@@ -609,7 +610,7 @@ fn synteny_keeps_a_repeated_element_on_its_own_copy() {
 fn synteny_finds_an_inversion_whose_kmers_also_occur_forward() {
     let segment = related_pair(5_000, 0x1a_0e75).a.into_bytes();
     let rc = |s: &[u8]| -> Vec<u8> { s.iter().rev().map(|&c| complement(c)).collect() };
-    for (engine, k) in [("Mauve", 13usize), ("LASTZ", 11)] {
+    for (engine, k) in [("seed-13", 13usize), ("seed-11", 11)] {
         let mut b = rc(&segment);
         for p in 0..=segment.len() - k {
             b.extend_from_slice(&segment[p..p + k]);
@@ -647,7 +648,7 @@ fn synteny_keeps_short_blocks_between_close_indels() {
         let stretch = stretch_lengths(&pair);
         let short = stretch.iter().filter(|&&len| (1..25).contains(&len)).count() as f64 / pair.a.len() as f64;
         assert!(short > 0.1, "fixture: {:.1}% of A in stretches under 25 bp", 100.0 * short);
-        for engine in ["Mauve", "LASTZ"] {
+        for engine in ["seed-13", "seed-11"] {
             let report = run_whole_genome_synteny(&pair.a, &pair.b, engine);
             let m = measure(&pair, &report, |_| true);
             let planted = 100.0 * m.on_planted as f64 / pair.a.len() as f64;
@@ -678,7 +679,7 @@ fn synteny_keeps_short_blocks_between_close_indels() {
     // the first puts it beside it. Two copies of 13 bases at the same places, the pair of chance
     // seeds a chain must not make, are not: 26 less 8. And a run under the floor does not hide a
     // block that starts inside it: 20 bases copied, and 32 bases from their 13th copied elsewhere.
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let run = |copies: &[(usize, usize, usize)]| {
             let (a, b) = planted_copies(copies);
             run_whole_genome_synteny_with_sampling(&a, &b, engine, 1, 1)
@@ -715,7 +716,7 @@ fn synteny_keeps_short_blocks_between_close_indels() {
         b[923..943].copy_from_slice(&a[520..540]);
         (String::from_utf8(a).unwrap(), String::from_utf8(b).unwrap())
     };
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let report = run_whole_genome_synteny_with_sampling(&overshoot.0, &overshoot.1, engine, 1, 1);
         assert_eq!(spans(&report), vec![(501, 520, 901, 920), (521, 540, 924, 943)], "{engine}: two blocks meeting at an insertion");
     }
@@ -723,7 +724,7 @@ fn synteny_keeps_short_blocks_between_close_indels() {
     // a chain is never a pair of chance seeds: unrelated genomes share no block
     for (len, seed_a, seed_b) in [(300_000usize, 0x3a_11ceu64, 0x3b_0b0bu64), (5_000_000, 0x5a_11ce, 0x5b_0b0b)] {
         let (a, b) = (random_genome(len, seed_a), random_genome(len, seed_b));
-        for engine in ["Mauve", "LASTZ"] {
+        for engine in ["seed-13", "seed-11"] {
             let report = run_whole_genome_synteny(&a, &b, engine);
             let what = format!("{engine}, {len} bp: {} bp in {} blocks", report.total_aligned_bp, report.blocks.len());
             assert_eq!(report.genome_a_coverage_pct, 0.0, "{what}");
@@ -779,7 +780,7 @@ fn synteny_places_a_repeat_after_an_indel_on_its_own_copy() {
         .collect();
     let mirrored = reversed(&pair);
     for (strand, pair) in [("+", &pair), ("-", &mirrored)] {
-        for engine in ["Mauve", "LASTZ"] {
+        for engine in ["seed-13", "seed-11"] {
             let report = run_whole_genome_synteny(&pair.a, &pair.b, engine);
             for (what, range) in &repeats {
                 let m = measure(pair, &report, |i| range.contains(&i));
@@ -845,7 +846,7 @@ fn synteny_places_a_repeat_after_a_deletion_on_its_own_copy() {
             let mirrored = reversed(&pair);
             for (strand, pair) in [("+", &pair), ("-", &mirrored)] {
                 let class = if strand == "+" { "Collinear Synteny" } else { "Inversion" };
-                for engine in ["Mauve", "LASTZ"] {
+                for engine in ["seed-13", "seed-11"] {
                     let report = run_whole_genome_synteny(&pair.a, &pair.b, engine);
                     let what = format!("{engine}, {strand} strand, {deleted} bases deleted, trial {trial}");
                     let m = measure(pair, &report, |i| copy.contains(&i));
@@ -966,7 +967,7 @@ fn synteny_places_a_repeat_after_a_deletion_on_its_own_copy() {
         (a, b)
     };
     let text = |s: &[u8]| String::from_utf8(s.to_vec()).unwrap();
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let run = |(a, b): &(Vec<u8>, Vec<u8>)| spans(&run_whole_genome_synteny_with_sampling(&text(a), &text(b), engine, 1, 1));
         assert_eq!(run(&held_inverted), vec![(401, 600, 801, 1_000), (605, 700, 1_005, 1_100)], "{engine}: a seed held only by an inverted copy");
         assert_eq!(run(&patched), vec![(501, 574, 901, 974)], "{engine}: a block seeded again past where its score peaks");
@@ -987,7 +988,7 @@ fn synteny_places_a_repeat_after_a_deletion_on_its_own_copy() {
 /// on the floor, and are both blocks, where a junction term of 4 would drop them.
 #[test]
 fn synteny_link_cost_charges_its_junction_term() {
-    for engine in ["Mauve", "LASTZ"] {
+    for engine in ["seed-13", "seed-11"] {
         let run = |copies: &[(usize, usize, usize)]| {
             let (a, b) = planted_copies(copies);
             spans(&run_whole_genome_synteny_with_sampling(&a, &b, engine, 1, 1))
@@ -1012,4 +1013,47 @@ fn group_digits(n: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+/// US-01M6P23M AC5 (D0204, D0005): the engine a caller gets without naming one is the 13-mer seed
+/// scan, and its report says so. The WASM `run_whole_genome_synteny` op takes this default when the
+/// payload has no `engine`; it used to default to "LastZ", which matched no arm, so a 13-mer scan
+/// ran under a LASTZ name. The fixture tells the two seed lengths apart, so a default of 11-mer
+/// seeds would show.
+#[test]
+fn synteny_default_engine_is_named() {
+    let mut state = 0x2b7e_1516u32;
+    let a: String = (0..8_000)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            b"ACGT"[(state >> 30) as usize] as char
+        })
+        .collect();
+    // B is A without every 13th base: A and B share only 12-base stretches, each a diagonal
+    // apart, which 11-mers seed and 13-mers cannot
+    let b: String = a.chars().enumerate().filter(|(i, _)| i % 13 != 12).map(|(_, c)| c).collect();
+
+    assert_eq!(SYNTENY_DEFAULT_ENGINE, "seed-13");
+    let default = run_whole_genome_synteny(&a, &b, SYNTENY_DEFAULT_ENGINE);
+    assert_eq!(default.engine, "Built-in seed-and-extend synteny (13-mer seeds)");
+    assert!(default.warnings.is_empty(), "{:?}", default.warnings);
+    let eleven = run_whole_genome_synteny(&a, &b, "seed-11");
+    assert_eq!(eleven.engine, "Built-in seed-and-extend synteny (11-mer seeds)");
+    assert_ne!(default.total_aligned_bp, eleven.total_aligned_bp, "fixture: 11-mers align what 13-mers cannot");
+
+    // an unknown name, the old default "LastZ" and the old tool names among them, is the default
+    // with one warning naming it and the default
+    for unknown in ["LastZ", "LASTZ", "Mauve", "seed-12", ""] {
+        let r = run_whole_genome_synteny(&a, &b, unknown);
+        assert_eq!(r.engine, default.engine, "{unknown}");
+        assert_eq!(r.total_aligned_bp, default.total_aligned_bp, "{unknown}");
+        assert_eq!(r.blocks.len(), default.blocks.len(), "{unknown}");
+        assert_eq!(
+            r.warnings,
+            vec![format!(
+                "Unknown synteny engine \"{unknown}\"; aligned with the default, seed-13 (Built-in seed-and-extend synteny (13-mer seeds))."
+            )],
+            "{unknown}"
+        );
+    }
 }

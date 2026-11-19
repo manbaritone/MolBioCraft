@@ -776,7 +776,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         "run_ngs_mapping" => {
             let reference_seq = str_arg(&payload, "referenceSeq", "");
             let read_seq = str_arg(&payload, "readSeq", "");
-            let mapper = str_arg(&payload, "mapper", "Minimap2");
+            let mapper = str_arg(&payload, "mapper", molbiocraft_align::ngs_assembly::NGS_MAPPER_DEFAULT);
             to_val(run_ngs_reference_mapping(reference_seq, read_seq, mapper))
         }
         "map_read_and_call_variants" => {
@@ -793,14 +793,14 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         }
         "run_de_novo_assembly" => {
             let inputs: Vec<AssemblyReadInput> = parse_field(&payload, "inputs")?;
-            let assembler = str_arg(&payload, "assembler", "CAP3");
+            let assembler = str_arg(&payload, "assembler", molbiocraft_align::ngs_assembly::ASSEMBLER_DEFAULT);
             let min_overlap_bp = usize_arg(&payload, "minOverlapBp", 16);
             to_val(run_de_novo_assembly(&inputs, assembler, min_overlap_bp))
         }
         "run_whole_genome_synteny" => {
             let seq_a = str_arg(&payload, "seqA", "");
             let seq_b = str_arg(&payload, "seqB", "");
-            let engine = str_arg(&payload, "engine", "LastZ");
+            let engine = str_arg(&payload, "engine", molbiocraft_align::ngs_assembly::SYNTENY_DEFAULT_ENGINE);
             to_val(run_whole_genome_synteny(seq_a, seq_b, engine))
         }
         "call_freebayes_variants" => {

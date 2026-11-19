@@ -12,6 +12,8 @@ import { BlastSearchModal } from '../components/MenusPreferencesAndBlastModal';
 import { saveLastUsed } from '../core/optionProfiles';
 import { findORFs, simulateMolecularCloning } from '../core/bioEngine';
 import { runDeNovoAssembly } from '../core/genomicsAndStructureSuite';
+import { runDeNovo } from '../core/operationRunners';
+import type { SequenceDocument } from '../types/bio';
 
 class MemoryStorage {
   private m = new Map<string, string>();
@@ -79,15 +81,27 @@ describe('De Novo Assemble window', () => {
       return 'ACGT'[(x >>> 16) & 3];
     }).join('');
     const reads = Array.from({ length: 75 }, (_, i) => ({ name: `r${i}`, sequence: g.slice(i * 100, i * 100 + 500) }));
-    const rep = runDeNovoAssembly(reads, 'CAP3', 30);
+    const rep = runDeNovoAssembly(reads, 'overlap', 30);
     expect(rep.contigCount).toBe(1);
     expect(rep.contigs[0].sequence).toBe(g.slice(0, 7900));
   });
 
   it('joins two overlapping reads into one contig', () => {
     const src = plasmid.sequence.slice(0, 600);
-    const rep = runDeNovoAssembly([{ name: 'a', sequence: src.slice(0, 400) }, { name: 'b', sequence: src.slice(300) }], 'CAP3', 18);
+    const rep = runDeNovoAssembly([{ name: 'a', sequence: src.slice(0, 400) }, { name: 'b', sequence: src.slice(300) }], 'overlap', 18);
     expect(rep.contigs[0].sequence).toBe(src);
+  });
+
+  it('US-01M6P23M assembles New Contigs by greedy overlap at the minimum asked for, the default method', () => {
+    // two reads that overlap by 35 bp: the overlap method at 40 bp joins nothing, where de Bruijn
+    // (its minimum taken odd and within 15-31) would join them at 31
+    const src = plasmid.sequence.slice(0, 600);
+    const reads = [src.slice(0, 300), src.slice(265)].map((sequence, i): SequenceDocument => ({ ...plasmid, id: `r${i}`, name: `r${i}`, sequence }));
+    expect(runDeNovoAssembly(reads, 'debruijn', 40).contigCount, 'fixture: de Bruijn joins them').toBe(1);
+    expect(runDeNovoAssembly(reads, 'overlap', 40).contigs.every((c) => c.readCount === 1), 'fixture: overlap at 40 does not').toBe(true);
+    expect(() => runDeNovo(reads, { minOverlap: 40 }, { sourceLabel: 'reads' })).toThrow('No reads overlapped by ≥ 40 bp');
+    const joined = runDeNovo(reads, { minOverlap: 30 }, { sourceLabel: 'reads' });
+    expect(joined.created.map((d) => d.sequence)).toEqual([src]);
   });
 });
 

@@ -55,6 +55,11 @@ jobs:
       - name: Install Frontend Dependencies
         run: npm ci
 
+      # D0002 (US-01M6P23M): no user-visible string names a tool the app does not run. Reads every
+      # file under src/ and crates/*/src except the tests, with the default name list.
+      - name: Check Labels Name No Tool The App Does Not Run
+        run: node scripts/check_honest_labels.mjs
+
       # The committed engine source record (BG01M7FGSF) must match the Rust sources this commit carries.
       # The build step below rewrites public/molbiocraft_wasm.wasm.sources.sha256 from this
       # checkout before the Vitest provenance guard reads it, so that guard alone cannot see a

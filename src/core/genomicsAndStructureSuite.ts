@@ -54,10 +54,21 @@ export function runBbdukReadTrimming(
   });
 }
 
-export type NgsMapperEngine = 'Minimap2' | 'Bowtie2' | 'BBMap';
+/**
+ * The built-in read mapper's seed length (D0204, US-01M6P23M): 13-mer seeds every 3rd read base,
+ * or 11- or 9-mer seeds every 2nd. The engine maps any other value with seed-13 and warns (D0005).
+ */
+export type NgsMapperEngine = 'seed-13' | 'seed-11' | 'seed-9';
+/** What each mapper value is called: the engine's own `mapper` for it. */
+export const NGS_MAPPER_METHODS: Readonly<Record<NgsMapperEngine, string>> = {
+  'seed-13': 'Built-in seed mapper (13-mer seeds, step 3)',
+  'seed-11': 'Built-in seed mapper (11-mer seeds, step 2)',
+  'seed-9': 'Built-in seed mapper (9-mer seeds, step 2)',
+};
 
 export interface NgsReferenceMappingReport {
-  mapper: NgsMapperEngine;
+  /** The mapper that ran, by seed length and step, e.g. "Built-in seed mapper (13-mer seeds, step 3)". */
+  mapper: string;
   strand: '+' | '-';
   refStartBp: number;
   refEndBp: number;
@@ -68,12 +79,14 @@ export interface NgsReferenceMappingReport {
   mapqScore: number;
   cigar: string;
   mergedConsensusPreview: string;
+  /** D0005: one sentence when the mapper value was unknown and seed-13 mapped instead. */
+  warnings: string[];
 }
 
 export function runNgsReferenceMapping(
   referenceSeq: string,
   readSeq: string,
-  mapper: NgsMapperEngine = 'Minimap2'
+  mapper: NgsMapperEngine = 'seed-13'
 ): NgsReferenceMappingReport {
   return invokeRustBioSync<NgsReferenceMappingReport>('run_ngs_mapping', {
     referenceSeq,
@@ -82,7 +95,18 @@ export function runNgsReferenceMapping(
   });
 }
 
-export type DeNovoAssemblerEngine = 'CAP3' | 'Velvet' | 'Flye' | 'MIRA';
+/**
+ * The built-in assembler's method (D0204, US-01M6P23M). Both join a few long reads by greedy
+ * overlap and build a de Bruijn graph from 200+ reads of at most 400 bp: `overlap` picks its k from
+ * the read length, `debruijn` takes k from the minimum overlap (odd, 15-31) and joins by overlap at
+ * that length too. The engine assembles any other value with `overlap` and warns (D0005).
+ */
+export type DeNovoAssemblerEngine = 'overlap' | 'debruijn';
+/** What each assembler value is called in the studio. */
+export const DE_NOVO_ASSEMBLER_METHODS: Readonly<Record<DeNovoAssemblerEngine, string>> = {
+  overlap: 'Greedy overlap; de Bruijn graph with k from the read length for 200+ short reads',
+  debruijn: 'De Bruijn graph with k = the minimum overlap (odd, 15–31) for 200+ short reads; greedy overlap otherwise',
+};
 
 export interface AssembledContigRecord {
   id: string;
@@ -95,7 +119,8 @@ export interface AssembledContigRecord {
 }
 
 export interface DeNovoAssemblyReport {
-  assembler: DeNovoAssemblerEngine;
+  /** The method that ran: "de Bruijn graph (k = 31)" or "Greedy overlap (≥ 19 bp)". */
+  assembler: string;
   kmerOrOverlapBp: number;
   inputReadCount: number;
   contigCount: number;
@@ -104,11 +129,13 @@ export interface DeNovoAssemblyReport {
   n50Bp: number;
   l50Count: number;
   contigs: AssembledContigRecord[];
+  /** D0005: one sentence when the assembler value was unknown and `overlap` assembled instead. */
+  warnings: string[];
 }
 
 export function runDeNovoAssembly(
   inputs: { name: string; sequence: string }[],
-  assembler: DeNovoAssemblerEngine = 'CAP3',
+  assembler: DeNovoAssemblerEngine = 'overlap',
   minOverlapBp = 18
 ): DeNovoAssemblyReport {
   return invokeRustBioSync<DeNovoAssemblyReport>('run_de_novo_assembly', {
@@ -130,8 +157,20 @@ export interface SyntenyLcbBlock {
   identityPercent: number;
 }
 
+/**
+ * The built-in synteny scan's seed length (D0204, US-01M6P23M). The engine seeds any other value
+ * with seed-13 and warns (D0005).
+ */
+export type SyntenyEngine = 'seed-13' | 'seed-11';
+/** What each synteny engine value is called: the engine's own `engine` for it. */
+export const SYNTENY_ENGINE_METHODS: Readonly<Record<SyntenyEngine, string>> = {
+  'seed-13': 'Built-in seed-and-extend synteny (13-mer seeds)',
+  'seed-11': 'Built-in seed-and-extend synteny (11-mer seeds)',
+};
+
 export interface WholeGenomeSyntenyReport {
-  engine: 'LASTZ' | 'Mauve';
+  /** The scan that ran, by seed length, e.g. "Built-in seed-and-extend synteny (13-mer seeds)". */
+  engine: string;
   totalAlignedBp: number;
   /** The A/C/G/T bases of genome A the blocks cover, as a percentage of A's A/C/G/T bases. */
   genomeACoveragePct: number;
@@ -140,8 +179,9 @@ export interface WholeGenomeSyntenyReport {
   inversionCount: number;
   blocks: SyntenyLcbBlock[];
   /**
-   * D0005: what qualifies the coverage, one sentence each, as the engine wrote them: each genome's
-   * N and other ambiguity bases, which no block crosses, and any sampling. Empty for an N-free pair.
+   * D0005: what qualifies the result, one sentence each, as the engine wrote them: an unknown
+   * engine value and the default used for it, each genome's N and other ambiguity bases, which no
+   * block crosses, and any sampling. Empty for an N-free pair and a known engine.
    */
   warnings: string[];
 }
@@ -149,7 +189,7 @@ export interface WholeGenomeSyntenyReport {
 export function runWholeGenomeSynteny(
   seqA: string,
   seqB: string,
-  engine: 'LASTZ' | 'Mauve' = 'Mauve'
+  engine: SyntenyEngine = 'seed-13'
 ): WholeGenomeSyntenyReport {
   return invokeRustBioSync<WholeGenomeSyntenyReport>('run_whole_genome_synteny', {
     seqA,

@@ -9,6 +9,7 @@ import {
   callFreeBayesVariants,
   classifySequenceTaxonomy,
   complementOnlySequence,
+  DE_NOVO_ASSEMBLER_METHODS,
   DeNovoAssemblerEngine,
   extractTargetProteinSequence,
   findCpGIslands,
@@ -17,6 +18,7 @@ import {
   type GenomicRepeatReport,
   mutateAndShuffleSequence,
   MutateShuffleOptions,
+  NGS_MAPPER_METHODS,
   NgsMapperEngine,
   parsePdbCaCoordinates,
   type PdbCaAtom,
@@ -28,6 +30,8 @@ import {
   runDeNovoAssembly,
   runNgsReferenceMapping,
   runWholeGenomeSynteny,
+  SYNTENY_ENGINE_METHODS,
+  type SyntenyEngine,
   scanMicrosatelliteStrs,
 } from '../core/genomicsAndStructureSuite';
 import { caAtomsToPdb, hasStructure, structureAtomsOf, structureChainCount, structureTextOf } from '../core/structureModels';
@@ -381,7 +385,7 @@ function repeatArmOf(text: string): number | null {
 
 /** What a genome-scale scan is computed from, field by field; the genome names are kept to say so. */
 type ScanInput = Readonly<Record<string, string | number>>;
-type SyntenyInput = { genomeA: string; seqA: string; genomeB: string; seqB: string; engine: 'Mauve' | 'LASTZ' };
+type SyntenyInput = { genomeA: string; seqA: string; genomeB: string; seqB: string; engine: SyntenyEngine };
 type GenomeScanInput = { genome: string; seq: string; min: number };
 
 const sameScanInput = (a: ScanInput, b: ScanInput) =>
@@ -560,16 +564,16 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
   // 1. NGS Trim, Map & De Novo Assembly state
   const [bbdukKmer, setBbdukKmer] = useState<number>(11);
   const [bbdukMinQ, setBbdukMinQ] = useState<number>(20);
-  const [ngsMapper, setNgsMapper] = useState<NgsMapperEngine>('Minimap2');
+  const [ngsMapper, setNgsMapper] = useState<NgsMapperEngine>('seed-13');
   const [mapRefDocId, setMapRefDocId] = useState<string>(documents[0]?.id ?? activeDoc.id);
   const [mapReadDocId, setMapReadDocId] = useState<string>(
     documents.find((d) => d.chromatogram || d.sequence.length < 1500)?.id ?? activeDoc.id
   );
-  const [assembler, setAssembler] = useState<DeNovoAssemblerEngine>('CAP3');
+  const [assembler, setAssembler] = useState<DeNovoAssemblerEngine>('overlap');
   const [assemblyOverlap, setAssemblyOverlap] = useState<number>(19);
 
   // 2. Whole-Genome Synteny, FreeBayes Variants, Microsatellite STRs & 16S/ITS Taxonomy
-  const [syntenyEngine, setSyntenyEngine] = useState<'Mauve' | 'LASTZ'>('Mauve');
+  const [syntenyEngine, setSyntenyEngine] = useState<SyntenyEngine>('seed-13');
   const [genomePartnerId, setGenomePartnerId] = useState<string>(
     documents.find((d) => d.id !== activeDoc.id)?.id ?? activeDoc.id
   );
@@ -1098,7 +1102,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
           <div className="studio-card">
             <div className="studio-card-header">
               <h3>BBDuk Adapter/Quality Trimmer &amp; Reference Read Mapper</h3>
-              <span className="badge-accent">BBDuk • Minimap2 • Bowtie2 • BBMap</span>
+              <span className="badge-accent">BBDuk • Built-in Seed Mapper</span>
             </div>
 
             <InspectorSection title="Read Trimming" order={1}>
@@ -1189,9 +1193,9 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     value={ngsMapper}
                     onChange={(e) => setNgsMapper(e.target.value as NgsMapperEngine)}
                   >
-                    <option value="Minimap2">Minimap2 (ONT / PacBio / Short Read)</option>
-                    <option value="Bowtie2">Bowtie2 (FM-Index Short Read)</option>
-                    <option value="BBMap">BBMap / BBMerge (DNA &amp; RNA-Seq)</option>
+                    {(Object.keys(NGS_MAPPER_METHODS) as NgsMapperEngine[]).map((value) => (
+                      <option key={value} value={value}>{NGS_MAPPER_METHODS[value]}</option>
+                    ))}
                   </select>
                 </label>
               </InspectorSection>
@@ -1217,6 +1221,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
               </label>
             </div>
 
+            <ResultWarnings warnings={ngsMapReport.warnings} label="Read mapping warnings" />
             <div className="thermo-kpi-grid" style={{ marginTop: 8 }}>
               <div className="kpi-box">
                 <span className="kpi-label">Mapped Span &amp; Strand</span>
@@ -1241,8 +1246,8 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
 
           <div className="studio-card">
             <div className="studio-card-header">
-              <h3>De Novo &amp; Contig Assembler ({assembler})</h3>
-              <span className="badge-accent">CAP3 • Velvet • Flye • MIRA</span>
+              <h3>De Novo &amp; Contig Assembler ({assemblyReport.assembler})</h3>
+              <span className="badge-accent">Greedy Overlap • De Bruijn Graph</span>
             </div>
 
             <InspectorSection title="De Novo Assembly" order={3}>
@@ -1253,10 +1258,9 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     value={assembler}
                     onChange={(e) => setAssembler(e.target.value as DeNovoAssemblerEngine)}
                   >
-                    <option value="CAP3">CAP3 — Sanger &amp; Overlap-Layout-Consensus</option>
-                    <option value="Velvet">Velvet — Short-Read De Bruijn Graph</option>
-                    <option value="Flye">Flye — Long-Read PacBio HiFi / ONT Repeat Graph</option>
-                    <option value="MIRA">MIRA — Multi-Pass Genome &amp; EST Assembler</option>
+                    {(Object.keys(DE_NOVO_ASSEMBLER_METHODS) as DeNovoAssemblerEngine[]).map((value) => (
+                      <option key={value} value={value}>{DE_NOVO_ASSEMBLER_METHODS[value]}</option>
+                    ))}
                   </select>
                 </label>
                 <label className="form-field">
@@ -1277,6 +1281,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                 ? `Assembling the ${assemblyInputDocs.docs.length} ticked documents.`
                 : `No reads ticked: assembling the first ${assemblyInputDocs.docs.length} nucleotide documents. Tick 2 or more reads in the document table to choose the inputs.`}
             </div>
+            <ResultWarnings warnings={assemblyReport.warnings} label="Assembly warnings" />
             <div className="thermo-kpi-grid" style={{ marginTop: 8 }}>
               <div className="kpi-box">
                 <span className="kpi-label">Contigs Assembled</span>
@@ -1340,7 +1345,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                               moleculeType: 'DNA',
                               topology: 'linear',
                               sequence: ctg.sequence,
-                              description: `${assembler} de novo assembled contig (${ctg.lengthBp} bp, N50=${assemblyReport.n50Bp} bp)`,
+                              description: `De novo contig by ${assemblyReport.assembler} (${ctg.lengthBp} bp, N50=${assemblyReport.n50Bp} bp)`,
                               createdAt: now,
                               updatedAt: now,
                               features: [],
@@ -1362,14 +1367,14 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
       )}
 
       {/* =================================================================== */}
-      {/* TAB 2: Whole-Genome (LASTZ / Mauve), FreeBayes, STR & 16S/ITS Taxonomy */}
+      {/* TAB 2: Whole-genome synteny, FreeBayes, STR & 16S/ITS Taxonomy */}
       {/* =================================================================== */}
       {subTab === 'genome-variants' && freeBayesReport && strLoci && taxonomyHits && (
         <div className="studio-split-grid">
           <div className="studio-card">
             <div className="studio-card-header">
-              <h3>Whole-Genome Alignment ({syntenyEngine}) &amp; 16S/ITS Classifier</h3>
-              <span className="badge-accent">Mauve LCBs • LASTZ • 16S/ITS Taxonomy</span>
+              <h3>Whole-Genome Alignment ({SYNTENY_ENGINE_METHODS[syntenyEngine]}) &amp; 16S/ITS Classifier</h3>
+              <span className="badge-accent">Collinear Blocks • Seed-and-Extend • 16S/ITS Taxonomy</span>
             </div>
 
             <div className="form-grid-2col">
@@ -1379,10 +1384,11 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                   <span>Genome Alignment Engine:</span>
                   <select
                     value={syntenyEngine}
-                    onChange={(e) => setSyntenyEngine(e.target.value as 'Mauve' | 'LASTZ')}
+                    onChange={(e) => setSyntenyEngine(e.target.value as SyntenyEngine)}
                   >
-                    <option value="Mauve">Mauve — Locally Collinear Blocks &amp; Inversions</option>
-                    <option value="LASTZ">LASTZ — Chromosome-Scale Gapped Seed Aligner</option>
+                    {(Object.keys(SYNTENY_ENGINE_METHODS) as SyntenyEngine[]).map((value) => (
+                      <option key={value} value={value}>{SYNTENY_ENGINE_METHODS[value]}</option>
+                    ))}
                   </select>
                 </label>
               </InspectorSection>
@@ -1405,7 +1411,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
               {synteny && syntenyReport ? (
                 <>
                   <p className="studio-panel-note">
-                    Computed for {synteny.input.genomeA} ({bp(synteny.input.seqA)}) against {synteny.input.genomeB} ({bp(synteny.input.seqB)}) with {synteny.input.engine}
+                    Computed for {synteny.input.genomeA} ({bp(synteny.input.seqA)}) against {synteny.input.genomeB} ({bp(synteny.input.seqB)}) with {syntenyReport.engine}
                   </p>
                   <div className="thermo-kpi-grid" style={{ marginTop: 8 }}>
                     <div className="kpi-box">

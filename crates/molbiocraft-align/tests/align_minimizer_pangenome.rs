@@ -191,7 +191,8 @@ fn blast_synteny_ngs_trimming_reference_mapping_and_taxonomy_work() {
     }], "blastn", "Local");
     assert!(none.iter().all(|h| h.e_value.parse::<f64>().map(|e| e <= 10.0).unwrap_or(true)));
 
-    let synteny = run_whole_genome_synteny(&subj, &subj, "Mauve-LCB");
+    let synteny = run_whole_genome_synteny(&subj, &subj, "seed-13");
+    assert!(synteny.warnings.is_empty(), "{:?}", synteny.warnings);
     assert!(!synteny.blocks.is_empty());
 
     let dot = compute_dotplot_hits(query, query, 11, 10);
@@ -213,7 +214,8 @@ fn blast_synteny_ngs_trimming_reference_mapping_and_taxonomy_work() {
     assert!(trimmed.trimmed_length_bp >= 145);
     assert!(!trimmed.adapter_matches.is_empty());
 
-    let ngs = run_ngs_reference_mapping(&subj, &trimmed.trimmed_sequence, "Minimap2");
+    let ngs = run_ngs_reference_mapping(&subj, &trimmed.trimmed_sequence, "seed-13");
+    assert!(ngs.warnings.is_empty(), "{:?}", ngs.warnings);
     assert!(ngs.mapped_read_bases >= 140);
 
     // Semi-global Gotoh alignment & PAM250 protein alignment

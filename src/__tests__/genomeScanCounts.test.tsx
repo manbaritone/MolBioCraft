@@ -380,7 +380,7 @@ describe('genome scan counts', () => {
     const genomeB = doc('b', 'Genome B', withInsertions(genomeA.sequence));
     const read = doc('r', 'Read', genomeA.sequence.slice(10_000, 10_600));
     const loci = scanMicrosatelliteStrs(genomeA.sequence, 4);
-    const synteny = runWholeGenomeSynteny(genomeA.sequence, genomeB.sequence, 'Mauve');
+    const synteny = runWholeGenomeSynteny(genomeA.sequence, genomeB.sequence, 'seed-13');
     expect(loci.length, 'fixture: more STR loci than the table draws').toBeGreaterThan(250);
     expect(loci.filter((l) => l.alleleCall === '(CA)6').length, 'fixture: every planted locus found').toBeGreaterThanOrEqual(299);
     expect(synteny.blocks.length, 'fixture: more blocks than the table draws').toBeGreaterThan(250);
@@ -486,7 +486,7 @@ describe('genome scan counts', () => {
     const bases = randomBases(60_000, 0x5eed_0007);
     const gappedA = doc('ga', 'Gapped Genome', `${bases.slice(0, 30_000)}${'N'.repeat(100)}${bases.slice(30_100)}`);
     const partner = doc('gb', 'Partner Genome', bases);
-    const synteny = runWholeGenomeSynteny(gappedA.sequence, partner.sequence, 'Mauve');
+    const synteny = runWholeGenomeSynteny(gappedA.sequence, partner.sequence, 'seed-13');
     expect(synteny.warnings).toEqual([
       'Genome A holds 100 N or other ambiguity bases; no block crosses them, and coverage is of its 59,900 A/C/G/T bases.',
     ]);
@@ -511,7 +511,7 @@ describe('genome scan counts', () => {
     // the N-free pair of the first check shows no synteny warnings
     const plainA = doc('a', 'Genome A', strRichGenome());
     const plainB = doc('b', 'Genome B', withInsertions(plainA.sequence));
-    expect(runWholeGenomeSynteny(plainA.sequence, plainB.sequence, 'Mauve').warnings).toEqual([]);
+    expect(runWholeGenomeSynteny(plainA.sequence, plainB.sequence, 'seed-13').warnings).toEqual([]);
     expect(warningRegions(await studio(plainA, [plainA, plainB], 'genome-variants')).filter((r) => r.label === 'Synteny warnings')).toEqual([]);
 
     // the engine's report for the N pair with its coverage marked as a lower bound reads "at
@@ -520,7 +520,7 @@ describe('genome scan counts', () => {
     sync.mockClear();
     sync.mockReturnValueOnce({ ...synteny, genomeACoverageIsLowerBound: true });
     const bounded = await studio(gappedA, [gappedA, partner], 'genome-variants');
-    expect(sync.mock.calls).toEqual([[gappedA.sequence, partner.sequence, 'Mauve']]);
+    expect(sync.mock.calls).toEqual([[gappedA.sequence, partner.sequence, 'seed-13']]);
     expect(wordsOf(bounded)).toContain(
       `Aligned Bases & Coverage ${synteny.totalAlignedBp.toLocaleString()} bp (at least ${synteny.genomeACoveragePct}% of Gapped Genome) Inversions Detected`
     );
@@ -534,7 +534,7 @@ describe('genome scan counts', () => {
     const bases = randomBases(60_000, 0x5eed_0009);
     const gappedA = doc('na', 'Gapped Genome A', `${bases.slice(0, 30_000)}${'N'.repeat(100)}${bases.slice(30_100)}`);
     const gappedB = doc('nb', 'Gapped Genome B', `${bases.slice(0, 45_000)}${'N'.repeat(50)}${bases.slice(45_050)}`);
-    const synteny = runWholeGenomeSynteny(gappedA.sequence, gappedB.sequence, 'Mauve');
+    const synteny = runWholeGenomeSynteny(gappedA.sequence, gappedB.sequence, 'seed-13');
     expect(synteny.warnings).toEqual([
       'Genome A holds 100 N or other ambiguity bases; no block crosses them, and coverage is of its 59,900 A/C/G/T bases.',
       'Genome B holds 50 N or other ambiguity bases; no block crosses them, and coverage is of its 59,950 A/C/G/T bases.',

@@ -615,7 +615,7 @@ export function runDigest(doc: SequenceDocument, v: OptionValues, enzymes: reado
 
 export function runDeNovo(reads: SequenceDocument[], v: OptionValues, ctx: RunContext): OperationResult {
   const minOverlap = num(v.minOverlap ?? 18);
-  const rep = runDeNovoAssembly(reads.map((r) => ({ name: r.name, sequence: r.sequence })), 'CAP3', minOverlap);
+  const rep = runDeNovoAssembly(reads.map((r) => ({ name: r.name, sequence: r.sequence })), 'overlap', minOverlap);
   const contigs = rep.contigs.filter((c) => v.keepSingletons || c.readCount > 1);
   if (contigs.length === 0) throw new Error(`No reads overlapped by ≥ ${minOverlap} bp. Try a smaller minimum overlap.`);
   const t = now();

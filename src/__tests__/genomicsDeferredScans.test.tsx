@@ -468,11 +468,14 @@ const badges = (studio: Studio, title: string) => studio.container
   .elements((e) => e.classList.contains('studio-card-header') && words(e).startsWith(title))
   .flatMap((h) => h.elements((e) => e.classList.contains('badge-accent')).map(words));
 
-/** What the synteny panel shows for a result: its line naming the input, then its KPIs. */
-async function syntenyShown(a: SequenceDocument, b: SequenceDocument, engineName: 'Mauve' | 'LASTZ') {
-  const r = (await unspied()).runWholeGenomeSynteny(a.sequence, b.sequence, engineName);
+/**
+ * What the synteny panel shows for a result: its line naming the input and the engine it was
+ * computed with, as the engine names the scan it ran (D0204, D0234: seed-13 or seed-11), then its KPIs.
+ */
+async function syntenyShown(a: SequenceDocument, b: SequenceDocument, engineValue: 'seed-13' | 'seed-11') {
+  const r = (await unspied()).runWholeGenomeSynteny(a.sequence, b.sequence, engineValue);
   return {
-    line: `Computed for ${a.name} (${n(a.sequence.length)} bp) against ${b.name} (${n(b.sequence.length)} bp) with ${engineName}`,
+    line: `Computed for ${a.name} (${n(a.sequence.length)} bp) against ${b.name} (${n(b.sequence.length)} bp) with ${r.engine}`,
     kpis: [
       `${r.blocks.length}`,
       `${r.totalAlignedBp.toLocaleString()} bp (${r.genomeACoverageIsLowerBound ? `at least ${r.genomeACoveragePct}% of ${a.name}` : `${r.genomeACoveragePct}%`})`,
@@ -533,11 +536,11 @@ describe('Genomics genome-scale scans', () => {
     try {
       // the probe tells a scan made while React renders a component from one made outside a render
       function ScansWhileRendering() {
-        runWholeGenomeSynteny('ACGTACGTACGTACGTACGTACGTACGT', 'ACGTACGTACGTACGTACGTACGTACGT', 'Mauve');
+        runWholeGenomeSynteny('ACGTACGTACGTACGTACGTACGTACGT', 'ACGTACGTACGTACGTACGTACGTACGT', 'seed-13');
         return null;
       }
       studio.renderAlone(<ScansWhileRendering />);
-      runWholeGenomeSynteny('ACGTACGTACGTACGTACGTACGTACGT', 'ACGTACGTACGTACGTACGTACGTACGT', 'Mauve');
+      runWholeGenomeSynteny('ACGTACGTACGTACGTACGTACGTACGT', 'ACGTACGTACGTACGTACGTACGTACGT', 'seed-13');
       expect(probe.calls.map((c) => c.inRender), 'fixture: the probe sees a render').toEqual([true, false]);
       probe.calls.length = 0;
 
@@ -688,13 +691,15 @@ describe('Genomics genome-scale scans', () => {
 
     // ─── Whole-genome synteny ───
     probe.calls.length = 0;
+    // the deferred scan shows the engine chosen: 13-mer seeds (the default) and 11-mer seeds
     const pair = {
-      abMauve: await syntenyShown(genomeA, genomeB, 'Mauve'), abLastz: await syntenyShown(genomeA, genomeB, 'LASTZ'),
-      acMauve: await syntenyShown(genomeA, genomeC, 'Mauve'), acLastz: await syntenyShown(genomeA, genomeC, 'LASTZ'),
+      ab13: await syntenyShown(genomeA, genomeB, 'seed-13'), ab11: await syntenyShown(genomeA, genomeB, 'seed-11'),
+      ac13: await syntenyShown(genomeA, genomeC, 'seed-13'), ac11: await syntenyShown(genomeA, genomeC, 'seed-11'),
     };
-    // fixture: a related and an unrelated partner give different numbers
-    expect(pair.abMauve.kpis, 'fixture').not.toEqual(pair.acMauve.kpis);
-    expect(pair.abLastz.kpis, 'fixture').not.toEqual(pair.acLastz.kpis);
+    // fixture: a related and an unrelated partner give different numbers, and each engine its own line
+    expect(pair.ab13.kpis, 'fixture').not.toEqual(pair.ac13.kpis);
+    expect(pair.ab11.kpis, 'fixture').not.toEqual(pair.ac11.kpis);
+    expect(pair.ab13.line, 'fixture').not.toEqual(pair.ab11.line);
 
     const synteny = await mountStudio({ activeDoc: genomeA, documents: [genomeA, genomeB, genomeC, read], tab: 'genome-variants' });
     try {
@@ -705,50 +710,50 @@ describe('Genomics genome-scale scans', () => {
       expect(probe.calls).toEqual([]);
       synteny.settle();
       // landed: the genomes, their lengths and the engine it was computed for, then its numbers
-      expect(syntenyNow(synteny)).toEqual(pair.abMauve);
+      expect(syntenyNow(synteny)).toEqual(pair.ab13);
 
-      // another engine: 'Scanning…' at once, never the Mauve numbers, until the LASTZ result lands
-      synteny.choose(synteny.field('Genome Alignment Engine'), 'LASTZ');
+      // another engine: 'Scanning…' at once, never the 13-mer numbers, until the 11-mer result lands
+      synteny.choose(synteny.field('Genome Alignment Engine'), 'seed-11');
       expect(synteny.scanning('synteny')).toBe(true);
       synteny.settle();
-      expect(syntenyNow(synteny)).toEqual(pair.abLastz);
+      expect(syntenyNow(synteny)).toEqual(pair.ab11);
 
-      // another partner, then the engine back to Mauve while that scan waits: the A-C LASTZ scan is
-      // discarded unrun, and the A-C Mauve result lands
+      // another partner, then the engine back to 13-mer seeds while that scan waits: the A-C 11-mer
+      // scan is discarded unrun, and the A-C 13-mer result lands
       let from = probe.calls.length;
       synteny.choose(synteny.field('Compare Genome A Against'), 'c');
       expect(synteny.scanning('synteny')).toBe(true);
       synteny.paint();
-      synteny.choose(synteny.field('Genome Alignment Engine'), 'Mauve');
+      synteny.choose(synteny.field('Genome Alignment Engine'), 'seed-13');
       expect(synteny.scanning('synteny')).toBe(true);
       synteny.settle();
-      expect(callsOf('synteny', from)).toEqual([[genomeA.sequence, genomeC.sequence, 'Mauve']]);
-      expect(syntenyNow(synteny)).toEqual(pair.acMauve);
+      expect(callsOf('synteny', from)).toEqual([[genomeA.sequence, genomeC.sequence, 'seed-13']]);
+      expect(syntenyNow(synteny)).toEqual(pair.ac13);
 
-      // the partner back to B, and while that scan runs the engine is set to LASTZ: the A-B Mauve
-      // result is discarded when it returns, and the A-B LASTZ result lands
+      // the partner back to B, and while that scan runs the engine is set to 11-mer seeds: the A-B
+      // 13-mer result is discarded when it returns, and the A-B 11-mer result lands
       from = probe.calls.length;
       probe.during = (scan, args) => {
-        if (scan !== 'synteny' || args[2] !== 'Mauve') return;
+        if (scan !== 'synteny' || args[2] !== 'seed-13') return;
         probe.during = null;
-        synteny.choose(synteny.field('Genome Alignment Engine'), 'LASTZ');
+        synteny.choose(synteny.field('Genome Alignment Engine'), 'seed-11');
       };
       synteny.choose(synteny.field('Compare Genome A Against'), 'b');
       synteny.paint();
       synteny.nextTask();
-      expect(callsOf('synteny', from)).toEqual([[genomeA.sequence, genomeB.sequence, 'Mauve']]);
-      expect(synteny.scanning('synteny'), 'the Mauve result is discarded').toBe(true);
+      expect(callsOf('synteny', from)).toEqual([[genomeA.sequence, genomeB.sequence, 'seed-13']]);
+      expect(synteny.scanning('synteny'), 'the 13-mer result is discarded').toBe(true);
       synteny.settle();
       expect(callsOf('synteny', from)).toEqual([
-        [genomeA.sequence, genomeB.sequence, 'Mauve'], [genomeA.sequence, genomeB.sequence, 'LASTZ'],
+        [genomeA.sequence, genomeB.sequence, 'seed-13'], [genomeA.sequence, genomeB.sequence, 'seed-11'],
       ]);
-      expect(syntenyNow(synteny)).toEqual(pair.abLastz);
+      expect(syntenyNow(synteny)).toEqual(pair.ab11);
 
       // another active document: 'Scanning…' at once, then genome C against its partner
       synteny.redraw({ activeDoc: genomeC });
       expect(synteny.scanning('synteny')).toBe(true);
       synteny.settle();
-      expect(syntenyNow(synteny)).toEqual(await syntenyShown(genomeC, genomeB, 'LASTZ'));
+      expect(syntenyNow(synteny)).toEqual(await syntenyShown(genomeC, genomeB, 'seed-11'));
       expect(probe.calls.filter((c) => c.inRender || !c.panelScanning)).toEqual([]);
     } finally {
       synteny.unmount();
@@ -780,11 +785,12 @@ describe('Genomics genome-scale scans', () => {
         expect(computedFor(studio, 'synteny'), `"${label}"`).toBe(syntenyLine);
       }
       // a field synteny reads does start one: the count sees a run a keystroke causes
-      studio.choose(studio.field('Genome Alignment Engine'), 'LASTZ');
+      // (the landed line names the engine chosen, as the engine names it)
+      studio.choose(studio.field('Genome Alignment Engine'), 'seed-11');
       studio.settle();
       expect(runs()).toEqual({ synteny: 2, genes: 0, cpg: 0 });
       const syntenyLanded = computedFor(studio, 'synteny');
-      expect(syntenyLanded).toMatch(/ with LASTZ$/);
+      expect(syntenyLanded).toMatch(/ with Built-in seed-and-extend synteny \(11-mer seeds\)$/);
 
       // the genes sub-view: each scan runs once, then only its own field starts another run of it
       studio.tab(TAB_NAMES['genes-cpg-repeats']);

@@ -209,8 +209,31 @@ pub struct NgsReferenceMappingReport {
     pub mapq_score: u8,
     pub cigar: String,
     pub merged_consensus_preview: String,
+    /// D0005: one sentence when the mapper value was unknown and the default mapped instead.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
+/// The read mapper a caller gets without naming one (D0204).
+pub const NGS_MAPPER_DEFAULT: &str = "seed-13";
+
+/// D0204: the seed length and seed step of each mapper value. The report's `mapper` names them.
+fn ngs_mapper_seeds(mapper: &str) -> Option<(usize, usize)> {
+    match mapper {
+        "seed-13" => Some((13, 3)),
+        "seed-11" => Some((11, 2)),
+        "seed-9" => Some((9, 2)),
+        _ => None,
+    }
+}
+
+fn ngs_mapper_label(seed_len: usize, step: usize) -> String {
+    format!("Built-in seed mapper ({seed_len}-mer seeds, step {step})")
+}
+
+/// Maps `read_seq` onto `reference_seq` by voting exact-seed diagonals, on both strands. `mapper`
+/// is one of `seed-13` (13-mer seeds every 3rd read base), `seed-11` or `seed-9` (every 2nd); any
+/// other value maps with [`NGS_MAPPER_DEFAULT`] and says so in `warnings` (D0204, D0005).
 pub fn run_ngs_reference_mapping(
     reference_seq: &str,
     read_seq: &str,
@@ -231,16 +254,20 @@ pub fn run_ngs_reference_mapping(
         })
         .collect();
 
-    let seed_len = match mapper {
-        "Minimap2" => 13,
-        "Bowtie2" => 11,
-        _ => 9,
-    };
-    let step = if mapper == "Minimap2" { 3 } else { 2 };
+    let mut warnings = Vec::new();
+    let (seed_len, step) = ngs_mapper_seeds(mapper).unwrap_or_else(|| {
+        let (k, s) = ngs_mapper_seeds(NGS_MAPPER_DEFAULT).expect("the default is a mapper value");
+        warnings.push(format!(
+            "Unknown mapper \"{mapper}\"; mapped with the default, {NGS_MAPPER_DEFAULT} ({}).",
+            ngs_mapper_label(k, s)
+        ));
+        (k, s)
+    });
+    let mapper = ngs_mapper_label(seed_len, step);
 
     if ref_clean.len() < seed_len || read_clean.len() < seed_len {
         return NgsReferenceMappingReport {
-            mapper: mapper.to_string(),
+            mapper,
             strand: "+".to_string(),
             ref_start_bp: 1,
             ref_end_bp: ref_clean.len().min(read_clean.len()),
@@ -251,6 +278,7 @@ pub fn run_ngs_reference_mapping(
             mapq_score: 0,
             cigar: format!("{}S", read_clean.len()),
             merged_consensus_preview: read_clean.chars().take(120).collect(),
+            warnings,
         };
     }
 
@@ -363,7 +391,7 @@ pub fn run_ngs_reference_mapping(
     };
 
     NgsReferenceMappingReport {
-        mapper: mapper.to_string(),
+        mapper,
         strand: if use_rev { "-".to_string() } else { "+".to_string() },
         ref_start_bp: ref_start0 + 1,
         ref_end_bp: ref_start0 + compare_len.max(1),
@@ -374,6 +402,7 @@ pub fn run_ngs_reference_mapping(
         mapq_score: mapq,
         cigar,
         merged_consensus_preview: String::from_utf8_lossy(&consensus).into_owned(),
+        warnings,
     }
 }
 
@@ -587,6 +616,24 @@ pub struct DeNovoAssemblyReport {
     pub n50_bp: usize,
     pub l50_count: usize,
     pub contigs: Vec<AssembledContigRecord>,
+    /// D0005: one sentence when the assembler value was unknown and the default assembled instead.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// The assembler a caller gets without naming one (D0204).
+pub const ASSEMBLER_DEFAULT: &str = "overlap";
+
+/// D0204: whether an assembler value takes its de Bruijn k from the minimum overlap, and the word
+/// its contigs are named with. `overlap` picks k from the read length when it builds a de Bruijn
+/// graph (200+ reads of at most 400 bp); `debruijn` uses the minimum overlap, odd and within 15-31.
+/// Fewer or longer reads are joined by greedy overlap either way.
+fn assembler_method(assembler: &str) -> Option<(bool, &'static str)> {
+    match assembler {
+        "overlap" => Some((false, "Overlap")),
+        "debruijn" => Some((true, "DeBruijn")),
+        _ => None,
+    }
 }
 
 const MAX_ASSEMBLY_OVERLAP_BP: usize = 2000;
@@ -639,11 +686,23 @@ fn find_exact_or_tolerant_overlap(a: &str, b: &str, min_ov: usize) -> Option<Str
     None
 }
 
+/// Assembles `inputs` into contigs. `assembler` is `overlap` or `debruijn` ([`assembler_method`]);
+/// any other value assembles with [`ASSEMBLER_DEFAULT`] and says so in `warnings` (D0204, D0005).
+/// The report's `assembler` names the method that ran: a de Bruijn graph and its k, or greedy
+/// overlap and its minimum.
 pub fn run_de_novo_assembly(
     inputs: &[AssemblyReadInput],
     assembler: &str,
     min_overlap_bp: usize,
 ) -> DeNovoAssemblyReport {
+    let mut warnings = Vec::new();
+    let (assembler, (k_from_overlap, contig_word)) = match assembler_method(assembler) {
+        Some(method) => (assembler, method),
+        None => {
+            warnings.push(format!("Unknown assembler \"{assembler}\"; assembled with the default, {ASSEMBLER_DEFAULT}."));
+            (ASSEMBLER_DEFAULT, assembler_method(ASSEMBLER_DEFAULT).expect("the default is an assembler value"))
+        }
+    };
     #[derive(Clone)]
     struct PoolItem {
         seq: String,
@@ -667,7 +726,7 @@ pub fn run_de_novo_assembly(
         .filter(|s| s.len() >= 12)
         .collect();
 
-    let overlap_param = if assembler == "Velvet" {
+    let overlap_param = if k_from_overlap {
         (min_overlap_bp | 1).clamp(15, 31)
     } else {
         min_overlap_bp.max(12)
@@ -678,7 +737,7 @@ pub fn run_de_novo_assembly(
     // Short-read sets (Illumina-like): de Bruijn graph assembly with error k-mer filtering, tip
     // clipping and bubble popping. The greedy overlap merger below suits a few long (Sanger) reads.
     if input_read_count >= 200 && mean_len <= 400 {
-        let k = if assembler == "Velvet" { overlap_param } else { ((mean_len * 7 / 20) | 1).clamp(21, 63) };
+        let k = if k_from_overlap { overlap_param } else { ((mean_len * 7 / 20) | 1).clamp(21, 63) };
         used_k = k.clamp(15, 63) | 1;
         let dbg = crate::debruijn::assemble_debruijn(&clean_reads, k);
         let per_read_kmers = (mean_len.saturating_sub(k) + 1).max(1) as f64;
@@ -747,8 +806,8 @@ pub fn run_de_novo_assembly(
                 .count();
             let len = item.seq.len();
             AssembledContigRecord {
-                id: format!("contig-{}-{}", assembler.to_ascii_lowercase(), idx + 1),
-                name: format!("{}_Contig_{}", assembler, idx + 1),
+                id: format!("contig-{}-{}", assembler, idx + 1),
+                name: format!("{}_Contig_{}", contig_word, idx + 1),
                 length_bp: len,
                 gc_percent: ((gc as f64 / len.max(1) as f64) * 1000.0).round() / 10.0,
                 read_count: item.members,
@@ -774,7 +833,7 @@ pub fn run_de_novo_assembly(
     }
 
     DeNovoAssemblyReport {
-        assembler: if used_k > 0 { format!("de Bruijn graph (k = {used_k})") } else { assembler.to_string() },
+        assembler: if used_k > 0 { format!("de Bruijn graph (k = {used_k})") } else { format!("Greedy overlap (≥ {overlap_param} bp)") },
         kmer_or_overlap_bp: if used_k > 0 { used_k } else { overlap_param },
         input_read_count,
         contig_count: contigs.len(),
@@ -783,6 +842,7 @@ pub fn run_de_novo_assembly(
         n50_bp: n50,
         l50_count: l50,
         contigs,
+        warnings,
     }
 }
 
@@ -1174,6 +1234,22 @@ fn every_nth_base(n: usize) -> String {
 /// which cut its time on two unrelated 5 Mb genomes four- to fivefold against seeding at every base.
 const SYNTENY_SEED_STEP: usize = 4;
 
+/// The synteny engine a caller gets without naming one (D0204).
+pub const SYNTENY_DEFAULT_ENGINE: &str = "seed-13";
+
+/// D0204: the seed length of each synteny engine value. The report's `engine` names it.
+fn synteny_seed_len(engine: &str) -> Option<usize> {
+    match engine {
+        "seed-13" => Some(13),
+        "seed-11" => Some(11),
+        _ => None,
+    }
+}
+
+fn synteny_engine_label(seed_k: usize) -> String {
+    format!("Built-in seed-and-extend synteny ({seed_k}-mer seeds)")
+}
+
 /// Collinear blocks of genome A in genome B, forward or inverted, found by k-mer seed and ungapped
 /// extension along the whole of A, with A's coverage by every block found. Genome B is indexed at
 /// every base, so after an indel the scan reaches the new A-to-B offset whatever it is
@@ -1185,6 +1261,10 @@ const SYNTENY_SEED_STEP: usize = 4;
 /// numbering. A base other than A/C/G/T (N, another IUPAC ambiguity code) stays in place: no seed
 /// holds one and no block crosses one, the coverage is of A's A/C/G/T bases, and the warnings say
 /// how many each genome holds.
+///
+/// `engine` is `seed-13` or `seed-11`, the seed length; any other value seeds with
+/// [`SYNTENY_DEFAULT_ENGINE`] and says so in the warnings (D0204, D0005). The report's `engine`
+/// names the seed length used.
 pub fn run_whole_genome_synteny(
     seq_a: &str,
     seq_b: &str,
@@ -1212,7 +1292,16 @@ pub fn run_whole_genome_synteny_with_sampling(
     let acgt = |codes: &[u8]| codes.iter().filter(|&&c| c != SYNTENY_NOT_ACGT).count();
     let (acgt_a, acgt_b) = (acgt(&a), acgt(&b));
 
+    // D0204, D0005: an engine value other than seed-13 or seed-11 is the default, with a warning
     let mut warnings = Vec::new();
+    let seed_k = synteny_seed_len(engine).unwrap_or_else(|| {
+        let k = synteny_seed_len(SYNTENY_DEFAULT_ENGINE).expect("the default is an engine value");
+        warnings.push(format!(
+            "Unknown synteny engine \"{engine}\"; aligned with the default, {SYNTENY_DEFAULT_ENGINE} ({}).",
+            synteny_engine_label(k)
+        ));
+        k
+    });
     for (genome, codes, bases) in [("A", &a, acgt_a), ("B", &b, acgt_b)] {
         let other = codes.len() - bases;
         if other > 0 {
@@ -1232,7 +1321,6 @@ pub fn run_whole_genome_synteny_with_sampling(
         ));
     }
 
-    let seed_k = if engine == "LASTZ" { 11 } else { 13 };
     let index = SyntenyKmerIndex::build(&b, seed_k, b_stride);
     let fwd_target = |t: usize| b[t];
     let rc_target = |t: usize| match b[b.len() - 1 - t] {
@@ -1407,7 +1495,7 @@ pub fn run_whole_genome_synteny_with_sampling(
     let inversion_count = blocks.iter().filter(|blk| blk.strand == "-").count();
 
     WholeGenomeSyntenyReport {
-        engine: engine.to_string(),
+        engine: synteny_engine_label(seed_k),
         total_aligned_bp,
         genome_a_coverage_pct: (((total_aligned_bp as f64 / acgt_a.max(1) as f64) * 100.0)
             .min(100.0)
@@ -2483,7 +2571,7 @@ pub fn call_freebayes_variants_with_one_shot_limit(
     // The mapper reads A, C, G, T and N and leaves any other letter out, which would move it off
     // the reference's numbering, so it is handed every unknown base as N.
     let as_n = |s: &str| -> String { s.bytes().map(|b| if call_known(b) { b as char } else { 'N' }).collect() };
-    let mapping = run_ngs_reference_mapping(&as_n(&ref_clean), &as_n(&samp_clean), "Minimap2");
+    let mapping = run_ngs_reference_mapping(&as_n(&ref_clean), &as_n(&samp_clean), NGS_MAPPER_DEFAULT);
     let reverse = mapping.strand == "-";
     let aligned_query = if reverse {
         reverse_complement_iupac(&samp_clean, false)
@@ -2784,7 +2872,7 @@ mod de_novo_tests {
         let reads: Vec<AssemblyReadInput> = (0..120)
             .map(|i| AssemblyReadInput { name: format!("r{i}"), sequence: g[i * 100..i * 100 + 500].to_string() })
             .collect();
-        let rep = run_de_novo_assembly(&reads, "CAP3", 30);
+        let rep = run_de_novo_assembly(&reads, "overlap", 30);
         assert_eq!(rep.contig_count, 1, "contigs: {:?}", rep.contigs.iter().map(|c| c.length_bp).collect::<Vec<_>>());
         assert_eq!(rep.contigs[0].sequence, g[..11_900 + 500]);
         assert_eq!(rep.contigs[0].read_count, 120);

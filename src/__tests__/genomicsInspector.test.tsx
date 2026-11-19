@@ -129,7 +129,7 @@ const GENOME: SequenceDocument = {
 };
 /** The genome with one base in 97 substituted: the partner it is compared against. */
 const PARTNER: SequenceDocument = { ...BLANK, id: 'takr-partner', name: 'TAKR_Partner', accession: 'TAKR_0002', sequence: substituted(GENOME_SEQ, 97, 50) };
-/** 400 bp of the genome (1,001..1,400) with one base in 12 substituted: BBMap's 9-mer seeds place it, Minimap2's 13-mers cannot. */
+/** 400 bp of the genome (1,001..1,400) with one base in 12 substituted: 9-mer seeds place it, 13-mer seeds cannot. */
 const READ: SequenceDocument = { ...BLANK, id: 'takr-read', name: 'TAKR_Read', accession: 'TAKR_0003', sequence: substituted(GENOME_SEQ.slice(1000, 1400), 12, 6) };
 /** Two unrelated reads that overlap by 30 bp: joined at a minimum overlap of 19, not of 40. */
 const READ_A_SEQ = lettersFrom(0xaaaa, 300);
@@ -377,7 +377,7 @@ function trimmed(e: Engine, k: number, q: number) {
   };
 }
 /** What the trimmer card says of the read mapped with `mapper`, from the engine. */
-function mapped(e: Engine, mapper: 'Minimap2' | 'Bowtie2' | 'BBMap') {
+function mapped(e: Engine, mapper: 'seed-13' | 'seed-11' | 'seed-9') {
   const r = e.suite.runNgsReferenceMapping(GENOME_SEQ, READ.sequence, mapper);
   return {
     'Mapped Span & Strand': `${r.refStartBp}..${r.refEndBp} (${r.strand})`,
@@ -386,7 +386,7 @@ function mapped(e: Engine, mapper: 'Minimap2' | 'Bowtie2' | 'BBMap') {
   };
 }
 /** What the assembler card says, and the contigs it lists, from the engine (no reads ticked: every document). */
-function assembled(e: Engine, engineName: 'CAP3' | 'Velvet' | 'Flye' | 'MIRA', overlap: number) {
+function assembled(e: Engine, engineName: 'overlap' | 'debruijn', overlap: number) {
   const r = e.suite.runDeNovoAssembly(DNA_DOCS.map((d) => ({ name: d.name, sequence: d.sequence })), engineName, overlap);
   return {
     kpis: {
@@ -395,6 +395,8 @@ function assembled(e: Engine, engineName: 'CAP3' | 'Velvet' | 'Flye' | 'MIRA', o
       'Total Assembled': `${r.totalAssembledBp.toLocaleString()} bp`,
     },
     contigs: r.contigs.map((c) => c.name),
+    /** The method that ran, as the card's heading names it. */
+    method: r.assembler,
   };
 }
 const contigNames = (app: AppHarness) =>
@@ -437,14 +439,14 @@ describe("each sub-tab's parameters in App's inspector (AC1)", () => {
         "the sections sit in App's aside.mbc-right-controls").toBe(true);
       expectSections(app, 'ngs');
       expect([K, MIN_Q].map((name) => inSection(app, 'Read Trimming', name).value), 'BBDuk k and Q as the studio opens').toEqual(['11', '20']);
-      expect(inSection(app, 'Read Mapping', MAPPER).value).toBe('Minimap2');
-      expect([ASSEMBLER, OVERLAP].map((name) => inSection(app, 'De Novo Assembly', name).value)).toEqual(['CAP3', '19']);
+      expect(inSection(app, 'Read Mapping', MAPPER).value).toBe('seed-13');
+      expect([ASSEMBLER, OVERLAP].map((name) => inSection(app, 'De Novo Assembly', name).value)).toEqual(['overlap', '19']);
       // The reference and read pickers stay in the trimmer's card, beside the results they choose.
       for (const name of KEPT_IN_CARDS.ngs) expect(card(app, TRIMMER).contains(field(app.canvas(), name)), `${name} in the trimmer's card`).toBe(true);
 
       await openSubTab(app, 'genome');
       expectSections(app, 'genome');
-      expect([inSection(app, 'Genome Alignment', SYNTENY_ENGINE).value, inSection(app, 'STR Genotyping', MIN_STR).value]).toEqual(['Mauve', '4']);
+      expect([inSection(app, 'Genome Alignment', SYNTENY_ENGINE).value, inSection(app, 'STR Genotyping', MIN_STR).value]).toEqual(['seed-13', '4']);
       expect(card(app, ALIGNMENT_CARD).contains(field(app.canvas(), KEPT_IN_CARDS.genome[0])), 'the genome compared against stays with the alignment').toBe(true);
 
       await openSubTab(app, 'genes');
@@ -568,36 +570,42 @@ describe('a scan re-run from the inspector (AC3)', () => {
 
       // The mapper, on the read picked in the card.
       await app.change(field(card(app, TRIMMER), 'Query Read / Amplicon:'), READ.id);
-      const map = { minimap2: mapped(e, 'Minimap2'), bbmap: mapped(e, 'BBMap') };
-      expect(distinct(map.minimap2, map.bbmap), 'the fixture maps differently with Minimap2 and BBMap').toBe(true);
-      const mapKeys = Object.keys(map.minimap2);
-      expect(pick(kpis(card(app, TRIMMER)), mapKeys)).toEqual(map.minimap2);
-      await app.change(inSection(app, 'Read Mapping', MAPPER), 'BBMap');
-      expect(pick(kpis(card(app, TRIMMER)), mapKeys), 'mapped with BBMap').toEqual(map.bbmap);
+      const map = { seed13: mapped(e, 'seed-13'), seed9: mapped(e, 'seed-9') };
+      expect(distinct(map.seed13, map.seed9), 'the fixture maps differently with 13-mer and 9-mer seeds').toBe(true);
+      const mapKeys = Object.keys(map.seed13);
+      expect(pick(kpis(card(app, TRIMMER)), mapKeys)).toEqual(map.seed13);
+      await app.change(inSection(app, 'Read Mapping', MAPPER), 'seed-9');
+      expect(pick(kpis(card(app, TRIMMER)), mapKeys), 'mapped with 9-mer seeds').toEqual(map.seed9);
 
       // The assembler and its minimum overlap.
-      const asm = { opened: assembled(e, 'CAP3', 19), overlap40: assembled(e, 'CAP3', 40), mira: assembled(e, 'MIRA', 40) };
+      const asm = { opened: assembled(e, 'overlap', 19), overlap40: assembled(e, 'overlap', 40), debruijn: assembled(e, 'debruijn', 40) };
       expect(distinct(asm.opened.kpis, asm.overlap40.kpis), 'the fixture assembles differently at 19 and 40 bp').toBe(true);
-      expect(distinct(asm.overlap40.contigs, asm.mira.contigs), 'each engine names its contigs').toBe(true);
+      expect(distinct(asm.overlap40.contigs, asm.debruijn.contigs), 'each method names its contigs').toBe(true);
+      expect(distinct(asm.overlap40.method, asm.debruijn.method), 'the methods run at different lengths').toBe(true);
       expect([kpis(card(app, ASSEMBLER_CARD)), contigNames(app)]).toEqual([expect.objectContaining(asm.opened.kpis), asm.opened.contigs]);
       await app.change(inSection(app, 'De Novo Assembly', OVERLAP), '40');
       expect([kpis(card(app, ASSEMBLER_CARD)), contigNames(app)], 'overlap 40').toEqual([expect.objectContaining(asm.overlap40.kpis), asm.overlap40.contigs]);
-      await app.change(inSection(app, 'De Novo Assembly', ASSEMBLER), 'MIRA');
-      expect(textOf(card(app, ASSEMBLER_CARD), 'h3', ASSEMBLER_CARD)).toBe('De Novo & Contig Assembler (MIRA)');
-      expect([kpis(card(app, ASSEMBLER_CARD)), contigNames(app)], 'MIRA').toEqual([expect.objectContaining(asm.mira.kpis), asm.mira.contigs]);
+      expect(textOf(card(app, ASSEMBLER_CARD), 'h3', ASSEMBLER_CARD)).toBe(`De Novo & Contig Assembler (${asm.overlap40.method})`);
+      await app.change(inSection(app, 'De Novo Assembly', ASSEMBLER), 'debruijn');
+      // the heading names the method that ran, as the engine names it
+      expect(textOf(card(app, ASSEMBLER_CARD), 'h3', ASSEMBLER_CARD)).toBe(`De Novo & Contig Assembler (${asm.debruijn.method})`);
+      expect([kpis(card(app, ASSEMBLER_CARD)), contigNames(app)], 'debruijn').toEqual([expect.objectContaining(asm.debruijn.kpis), asm.debruijn.contigs]);
 
-      // Genome & variants. The synteny engine: a new scan runs (Scanning…), and lands for LASTZ.
+      // Genome & variants. The synteny engine: a new scan runs (Scanning…), and lands for 11-mer seeds,
+      // named as the engine names the scan it ran.
       await openSubTab(app, 'genome');
-      const syntenyNote = (engineName: string) => `Computed for ${GENOME.name} (6,000 bp) against ${PARTNER.name} (6,000 bp) with ${engineName}`;
-      const blocks = (engineName: 'Mauve' | 'LASTZ') => String(e.suite.runWholeGenomeSynteny(GENOME_SEQ, PARTNER.sequence, engineName).blocks.length);
-      expect(textOf(app.canvas(), '.studio-panel-note', 'Computed for')).toBe(syntenyNote('Mauve'));
-      expect(kpis(card(app, ALIGNMENT_CARD))['Collinear Blocks (LCBs)']).toBe(blocks('Mauve'));
-      await app.change(inSection(app, 'Genome Alignment', SYNTENY_ENGINE), 'LASTZ');
+      const synteny = (value: 'seed-13' | 'seed-11') => e.suite.runWholeGenomeSynteny(GENOME_SEQ, PARTNER.sequence, value);
+      const syntenyNote = (value: 'seed-13' | 'seed-11') => `Computed for ${GENOME.name} (6,000 bp) against ${PARTNER.name} (6,000 bp) with ${synteny(value).engine}`;
+      const blocks = (value: 'seed-13' | 'seed-11') => String(synteny(value).blocks.length);
+      expect(syntenyNote('seed-13'), 'fixture: each seed length is named').not.toBe(syntenyNote('seed-11'));
+      expect(textOf(app.canvas(), '.studio-panel-note', 'Computed for')).toBe(syntenyNote('seed-13'));
+      expect(kpis(card(app, ALIGNMENT_CARD))['Collinear Blocks (LCBs)']).toBe(blocks('seed-13'));
+      await app.change(inSection(app, 'Genome Alignment', SYNTENY_ENGINE), 'seed-11');
       expect(busyScans(app).map((s) => s.getAttribute('data-mbc-scan')), 'the synteny scan runs again').toEqual(['synteny']);
       await landScans(app);
-      expect(textOf(app.canvas(), '.studio-panel-note', 'Computed for'), 'computed with LASTZ').toBe(syntenyNote('LASTZ'));
-      expect(textOf(card(app, ALIGNMENT_CARD), 'h3', ALIGNMENT_CARD)).toBe('Whole-Genome Alignment (LASTZ) & 16S/ITS Classifier');
-      expect(kpis(card(app, ALIGNMENT_CARD))['Collinear Blocks (LCBs)']).toBe(blocks('LASTZ'));
+      expect(textOf(app.canvas(), '.studio-panel-note', 'Computed for'), 'computed with 11-mer seeds').toBe(syntenyNote('seed-11'));
+      expect(textOf(card(app, ALIGNMENT_CARD), 'h3', ALIGNMENT_CARD)).toBe(`Whole-Genome Alignment (${synteny('seed-11').engine}) & 16S/ITS Classifier`);
+      expect(kpis(card(app, ALIGNMENT_CARD))['Collinear Blocks (LCBs)']).toBe(blocks('seed-11'));
       // The STR minimum.
       const strs = (min: number) => String(e.suite.scanMicrosatelliteStrs(GENOME_SEQ, min).length);
       expect(strs(4), 'the fixture counts different STR loci at 4 and 7 copies').not.toBe(strs(7));
@@ -660,12 +668,12 @@ describe('a scan re-run from the inspector (AC3)', () => {
       await openSubTab(app, 'ngs');
       expect([K, MIN_Q].map((name) => inSection(app, 'Read Trimming', name).value)).toEqual(['15', '15']);
       expect([inSection(app, 'Read Mapping', MAPPER).value, inSection(app, 'De Novo Assembly', ASSEMBLER).value, inSection(app, 'De Novo Assembly', OVERLAP).value])
-        .toEqual(['BBMap', 'MIRA', '40']);
-      expect(pick(kpis(card(app, TRIMMER)), [...trimKeys, ...mapKeys]), 'NGS results kept').toEqual({ ...trim.q15, ...map.bbmap });
-      expect(contigNames(app)).toEqual(asm.mira.contigs);
+        .toEqual(['seed-9', 'debruijn', '40']);
+      expect(pick(kpis(card(app, TRIMMER)), [...trimKeys, ...mapKeys]), 'NGS results kept').toEqual({ ...trim.q15, ...map.seed9 });
+      expect(contigNames(app)).toEqual(asm.debruijn.contigs);
       await openSubTab(app, 'genome');
-      expect([inSection(app, 'Genome Alignment', SYNTENY_ENGINE).value, inSection(app, 'STR Genotyping', MIN_STR).value]).toEqual(['LASTZ', '7']);
-      expect(textOf(app.canvas(), '.studio-panel-note', 'Computed for')).toBe(syntenyNote('LASTZ'));
+      expect([inSection(app, 'Genome Alignment', SYNTENY_ENGINE).value, inSection(app, 'STR Genotyping', MIN_STR).value]).toEqual(['seed-11', '7']);
+      expect(textOf(app.canvas(), '.studio-panel-note', 'Computed for')).toBe(syntenyNote('seed-11'));
       expect(kpis(card(app, VARIANT_CARD))[strKey]).toBe(strs(7));
       await openSubTab(app, 'transform');
       expect([MODE, RATE, SEED].map((name) => inSection(app, 'Benchmark Generator', name).value)).toEqual(['point-mutate', '10', '7']);
@@ -894,13 +902,13 @@ describe('the studio drawn on its own keeps its settings in place (AC8)', () => 
         fieldRow(trimRow, [K, MIN_Q], 'the k and Q row');
         expect([inRow(page, trimRow, K).value, inRow(page, trimRow, MIN_Q).value]).toEqual(['11', '20']);
         fieldRow(mapRow, [MAPPER, 'Reference Sequence:', 'Query Read / Amplicon:'], 'the mapper, then the reference and read');
-        expect(inRow(page, mapRow, MAPPER).value).toBe('Minimap2');
+        expect(inRow(page, mapRow, MAPPER).value).toBe('seed-13');
         // The assembler's card: its header, the engine and overlap row, then the input note.
         const assembler = cardIn(page, ASSEMBLER_CARD);
         expect(classesOf(assembler).slice(0, 3), "the assembler card's first rows").toEqual(['studio-card-header', 'form-grid-2col', 'info-callout']);
         const asmRow = assembler.children[1];
         fieldRow(asmRow, [ASSEMBLER, OVERLAP], 'the engine and overlap row');
-        expect([inRow(page, asmRow, ASSEMBLER).value, inRow(page, asmRow, OVERLAP).value]).toEqual(['CAP3', '19']);
+        expect([inRow(page, asmRow, ASSEMBLER).value, inRow(page, asmRow, OVERLAP).value]).toEqual(['overlap', '19']);
       });
     });
   });
@@ -913,7 +921,7 @@ describe('the studio drawn on its own keeps its settings in place (AC8)', () => 
         expect(classesOf(alignment).slice(0, 2)).toEqual(['studio-card-header', 'form-grid-2col']);
         const engineRow = alignment.children[1];
         fieldRow(engineRow, [SYNTENY_ENGINE, `Compare ${GENOME.name} Against:`], 'the engine, then the genome compared against');
-        expect(inRow(page, engineRow, SYNTENY_ENGINE).value).toBe('Mauve');
+        expect(inRow(page, engineRow, SYNTENY_ENGINE).value).toBe('seed-13');
         // The STR minimum, inline after the variant card's two buttons.
         const variants = cardIn(page, VARIANT_CARD);
         const rows = variants.children.filter((c) => c.classList.contains('cloning-action-row'));

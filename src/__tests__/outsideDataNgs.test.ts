@@ -60,7 +60,7 @@ describe.skipIf(!have)('NGS against wgsim truth, BWA-MEM + bcftools and SPAdes',
 
   it('de novo assembly reconstructs phiX174 as SPAdes does', () => {
     const reads = fastq(dataPath('sim/phix_r1.fq'));
-    const rep = runDeNovoAssembly(reads.map((r) => ({ name: r.name, sequence: r.seq })), 'CAP3', 30);
+    const rep = runDeNovoAssembly(reads.map((r) => ({ name: r.name, sequence: r.seq })), 'overlap', 30);
     const longest = Math.max(...rep.contigs.map((c) => c.lengthBp));
     const spades = Math.max(...R.phix.spades_contigs.map((s: string) => s.length));
     // identity of the longest contig to the genome (either strand), at the offset of its first 25-mer

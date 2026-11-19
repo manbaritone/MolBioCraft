@@ -137,7 +137,7 @@ mod tests {
                 sequence: "GGCGAGGAGCTGTTCACCGGGGTGGTGCCCATCCTG".into(),
             },
         ];
-        let asm = run_de_novo_assembly(&reads, "CAP3", 16);
+        let asm = run_de_novo_assembly(&reads, "overlap", 16);
         assert_eq!(asm.contig_count, 1);
         assert!(asm.largest_contig_bp > 45);
 

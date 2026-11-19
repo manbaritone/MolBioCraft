@@ -25,6 +25,12 @@ import {
 import { constructPhylogeneticTree } from '../core/phyloEvoEngine';
 import { reverseComplement, runMultipleSequenceAlignment } from '../core/bioEngine';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
+import {
+  DE_NOVO_ASSEMBLER_METHODS, NGS_MAPPER_METHODS, SYNTENY_ENGINE_METHODS,
+  type DeNovoAssemblerEngine, type NgsMapperEngine, type SyntenyEngine, type WholeGenomeSyntenyReport,
+  type NgsReferenceMappingReport, type DeNovoAssemblyReport,
+} from '../core/genomicsAndStructureSuite';
+import { invokeRustBioSync } from '../lib/rustBioEngine';
 
 describe('Built-In Genomics, NGS, Gene/Repeat Prediction, Protein Topology & 3D PDB Suite', () => {
   const pet28 = SAMPLE_LIBRARY[0];
@@ -39,7 +45,7 @@ describe('Built-In Genomics, NGS, Gene/Repeat Prediction, Protein Topology & 3D 
     expect(complementOnlySequence('AUGC', true)).toBe('UACG');
   });
 
-  it('trims Illumina adapters with BBDuk, maps reads via Minimap2/Bowtie2/BBMap, and assembles contigs via CAP3/Velvet/Flye/MIRA', () => {
+  it('trims Illumina adapters with BBDuk, maps reads with each seed length, and assembles contigs by overlap and de Bruijn graph', () => {
     const cleanCore = pet28.sequence.slice(200, 380);
     const contaminatedRead = `NN${cleanCore}AGATCGGAAGAGCACACGTCTGAACTCCAGTCACAAAAAAAA`;
     const trimRep = runBbdukReadTrimming(contaminatedRead, undefined, { kmerLen: 11 });
@@ -47,8 +53,9 @@ describe('Built-In Genomics, NGS, Gene/Repeat Prediction, Protein Topology & 3D 
     expect(trimRep.trimmedLengthBp).toBe(cleanCore.length);
     expect(trimRep.trimmedSequence).toBe(cleanCore);
 
-    for (const mapper of ['Minimap2', 'Bowtie2', 'BBMap'] as const) {
+    for (const mapper of ['seed-13', 'seed-11', 'seed-9'] as const) {
       const mapRep = runNgsReferenceMapping(pet28.sequence, reverseComplement(cleanCore), mapper);
+      expect(mapRep.warnings, mapper).toEqual([]);
       expect(mapRep.strand).toBe('-');
       expect(mapRep.refStartBp).toBe(201);
       expect(mapRep.identityPercent).toBe(100);
@@ -58,7 +65,7 @@ describe('Built-In Genomics, NGS, Gene/Repeat Prediction, Protein Topology & 3D 
     const frag1 = pet28.sequence.slice(100, 260);
     const frag2 = pet28.sequence.slice(220, 390);
     const frag3 = reverseComplement(pet28.sequence.slice(350, 510));
-    for (const asm of ['CAP3', 'Velvet', 'Flye', 'MIRA'] as const) {
+    for (const asm of ['overlap', 'debruijn'] as const) {
       const asmRep = runDeNovoAssembly(
         [
           { name: 'read_1', sequence: frag1 },
@@ -68,18 +75,19 @@ describe('Built-In Genomics, NGS, Gene/Repeat Prediction, Protein Topology & 3D 
         asm,
         25
       );
+      expect(asmRep.warnings, asm).toEqual([]);
       expect(asmRep.contigCount).toBe(1);
       expect(asmRep.largestContigBp).toBe(410);
       expect(asmRep.n50Bp).toBe(410);
     }
   });
 
-  it('detects Mauve/LASTZ synteny & inversions, calls FreeBayes variants, genotypes STRs, and classifies 16S/ITS taxonomy', () => {
+  it('detects seed-and-extend synteny & inversions, calls FreeBayes variants, genotypes STRs, and classifies 16S/ITS taxonomy', () => {
     const blockA = pet28.sequence.slice(0, 180);
     const invertedBlockB = reverseComplement(pet28.sequence.slice(200, 380));
     const rearrangedGenome = `${blockA}ACGTACGT${invertedBlockB}`;
 
-    const synteny = runWholeGenomeSynteny(pet28.sequence.slice(0, 420), rearrangedGenome, 'Mauve');
+    const synteny = runWholeGenomeSynteny(pet28.sequence.slice(0, 420), rearrangedGenome, 'seed-13');
     expect(synteny.blocks.length).toBeGreaterThanOrEqual(2);
     expect(synteny.inversionCount).toBeGreaterThanOrEqual(1);
 
@@ -239,6 +247,109 @@ describe('Built-In Genomics, NGS, Gene/Repeat Prediction, Protein Topology & 3D 
       const tree = constructPhylogeneticTree(names, seqs, algo, 'Tamura-Nei (TN93)', 500);
       expect(tree.algorithm).toBe(algo);
       expect(tree.newick.endsWith(';')).toBe(true);
+    }
+  });
+});
+
+// ─── US-01M6P23M: the options name their method (D0204, D0005) ───
+
+/** The genomicsInspector fixtures, built the same way: a seeded LCG genome with planted features. */
+function lettersFrom(seed: number, n: number, alphabet = 'ACGT'): string {
+  let st = seed >>> 0;
+  let out = '';
+  for (let i = 0; i < n; i++) {
+    st = (Math.imul(st, 1664525) + 1013904223) >>> 0;
+    out += alphabet[Math.floor((st / 2 ** 32) * alphabet.length)];
+  }
+  return out;
+}
+const plant = (seq: string, at: number, piece: string) => seq.slice(0, at) + piece + seq.slice(at + piece.length);
+const SWAP: Record<string, string> = { A: 'C', C: 'G', G: 'T', T: 'A' };
+const substituted = (seq: string, every: number, from: number) => [...seq].map((b, i) => (i % every === from ? SWAP[b] : b)).join('');
+const GENOME_SEQ = (() => {
+  let g = lettersFrom(0x7a4b, 6000);
+  g = plant(g, 300, lettersFrom(0xc9c9, 500, 'CG'));
+  g = plant(g, 1200, 'AC'.repeat(5));
+  g = plant(g, 1300, 'TG'.repeat(6));
+  return plant(g, 1400, 'GATA'.repeat(8));
+})();
+/** genomicsInspector's READ: 400 bp of the genome (1,001..1,400) with one base in 12 substituted. */
+const READ_1_IN_12 = substituted(GENOME_SEQ.slice(1000, 1400), 12, 6);
+
+const MAPPER_LABEL = (k: number, step: number) => `Built-in seed mapper (${k}-mer seeds, step ${step})`;
+const without = <T extends { warnings: string[] }>(r: T) => ({ ...r, warnings: [] });
+
+describe('US-01M6P23M mapping, assembly and synteny name their method', () => {
+  it('US-01M6P23M AC3 seed-9 names its 9-mer seeds and step 2, and maps the 1-in-12 read that 13-mers miss', () => {
+    const nine = runNgsReferenceMapping(GENOME_SEQ, READ_1_IN_12, 'seed-9');
+    expect(nine.mapper).toBe('Built-in seed mapper (9-mer seeds, step 2)');
+    expect(nine.warnings).toEqual([]);
+    expect([nine.strand, nine.refStartBp, nine.refEndBp]).toEqual(['+', 1001, 1400]);
+    expect(nine.seedHits).toBeGreaterThan(0);
+    // the fixture: no 13-mer of the read is in the genome, so 13-mer seeds find nothing
+    const thirteen = runNgsReferenceMapping(GENOME_SEQ, READ_1_IN_12, 'seed-13');
+    expect(thirteen.mapper).toBe(MAPPER_LABEL(13, 3));
+    expect(thirteen.seedHits).toBe(0);
+    expect(runNgsReferenceMapping(GENOME_SEQ, READ_1_IN_12, 'seed-11').mapper).toBe(MAPPER_LABEL(11, 2));
+    // the default is seed-13, in TypeScript and in the engine when the payload names no mapper
+    expect(runNgsReferenceMapping(GENOME_SEQ, READ_1_IN_12)).toEqual(thirteen);
+    expect(invokeRustBioSync<NgsReferenceMappingReport>('run_ngs_mapping', { referenceSeq: GENOME_SEQ, readSeq: READ_1_IN_12 })).toEqual(thirteen);
+    // the studio's option labels are the engine's own names for each value
+    for (const value of Object.keys(NGS_MAPPER_METHODS) as NgsMapperEngine[]) {
+      expect(runNgsReferenceMapping(GENOME_SEQ, READ_1_IN_12, value).mapper, value).toBe(NGS_MAPPER_METHODS[value]);
+    }
+  });
+
+  it('US-01M6P23M AC4 an unknown mapper, an old tool name among them, maps with seed-13 and warns once naming both', () => {
+    const fallback = runNgsReferenceMapping(GENOME_SEQ, READ_1_IN_12, 'seed-13');
+    for (const unknown of ['minimap2', 'Minimap2', 'BBMap', 'seed-7', '']) {
+      const r = runNgsReferenceMapping(GENOME_SEQ, READ_1_IN_12, unknown as NgsMapperEngine);
+      expect(without(r), unknown).toEqual(fallback);
+      expect(r.warnings, unknown).toEqual([
+        `Unknown mapper "${unknown}"; mapped with the default, seed-13 (${MAPPER_LABEL(13, 3)}).`,
+      ]);
+    }
+  });
+
+  it('US-01M6P23M AC4 an unknown assembler, an old tool name among them, assembles by overlap and warns once naming both', () => {
+    // two reads that overlap by 35 bp: joined at k = 31 (de Bruijn, the odd minimum clamped to 15-31), not at an overlap of 40
+    const a = lettersFrom(0x1111, 200);
+    const reads = [{ name: 'a', sequence: a }, { name: 'b', sequence: a.slice(165) + lettersFrom(0x2222, 200) }];
+    const overlap = runDeNovoAssembly(reads, 'overlap', 40);
+    const debruijn = runDeNovoAssembly(reads, 'debruijn', 40);
+    expect([overlap.contigCount, debruijn.contigCount], 'fixture: the methods differ').toEqual([2, 1]);
+    expect([overlap.assembler, overlap.kmerOrOverlapBp, overlap.contigs[0].name]).toEqual(['Greedy overlap (≥ 40 bp)', 40, 'Overlap_Contig_1']);
+    expect([debruijn.assembler, debruijn.kmerOrOverlapBp, debruijn.contigs[0].name]).toEqual(['Greedy overlap (≥ 31 bp)', 31, 'DeBruijn_Contig_1']);
+    expect(runDeNovoAssembly(reads, undefined, 40)).toEqual(overlap);
+    expect(invokeRustBioSync<DeNovoAssemblyReport>('run_de_novo_assembly', { inputs: reads, minOverlapBp: 40 })).toEqual(overlap);
+    expect(Object.keys(DE_NOVO_ASSEMBLER_METHODS)).toEqual(['overlap', 'debruijn']);
+    for (const unknown of ['CAP3', 'Velvet', 'cap3', 'olc', '']) {
+      const r = runDeNovoAssembly(reads, unknown as DeNovoAssemblerEngine, 40);
+      expect(without(r), unknown).toEqual(overlap);
+      expect(r.warnings, unknown).toEqual([`Unknown assembler "${unknown}"; assembled with the default, overlap.`]);
+    }
+  });
+
+  it('US-01M6P23M AC4 an unknown synteny engine, an old tool name among them, seeds 13-mers and warns once naming both', () => {
+    // B is the genome without every 13th base: they share only 12-base stretches, which 11-mers seed and 13-mers cannot
+    const b = [...GENOME_SEQ].filter((_, i) => i % 13 !== 12).join('');
+    const s13 = runWholeGenomeSynteny(GENOME_SEQ, b, 'seed-13');
+    const s11 = runWholeGenomeSynteny(GENOME_SEQ, b, 'seed-11');
+    expect([s13.engine, s11.engine]).toEqual(['Built-in seed-and-extend synteny (13-mer seeds)', 'Built-in seed-and-extend synteny (11-mer seeds)']);
+    expect(s13.totalAlignedBp, 'fixture: 11-mers align what 13-mers cannot').not.toBe(s11.totalAlignedBp);
+    expect([s13.warnings, s11.warnings]).toEqual([[], []]);
+    expect(runWholeGenomeSynteny(GENOME_SEQ, b)).toEqual(s13);
+    // the engine's own default when the payload names no engine (it was "LastZ", which matched nothing)
+    expect(invokeRustBioSync<WholeGenomeSyntenyReport>('run_whole_genome_synteny', { seqA: GENOME_SEQ, seqB: b })).toEqual(s13);
+    for (const value of Object.keys(SYNTENY_ENGINE_METHODS) as SyntenyEngine[]) {
+      expect(runWholeGenomeSynteny(GENOME_SEQ, b, value).engine, value).toBe(SYNTENY_ENGINE_METHODS[value]);
+    }
+    for (const unknown of ['Mauve', 'LASTZ', 'LastZ', 'lastz', '']) {
+      const r = runWholeGenomeSynteny(GENOME_SEQ, b, unknown as SyntenyEngine);
+      expect(without(r), unknown).toEqual(s13);
+      expect(r.warnings, unknown).toEqual([
+        `Unknown synteny engine "${unknown}"; aligned with the default, seed-13 (Built-in seed-and-extend synteny (13-mer seeds)).`,
+      ]);
     }
   });
 });
