@@ -39,7 +39,8 @@ please cite:
 3. THIRD-PARTY OPEN-SOURCE LIBRARIES
 ================================================================================
 MolBioCraft incorporates the following open-source libraries under their
-respective MIT, Apache-2.0, ISC, Unlicense, or file-level MPL-2.0 terms:
+respective MIT, Apache-2.0, ISC, Unlicense, file-level MPL-2.0 or Biopython
+License Agreement terms:
 - rust-bio (`bio` 2.0) — Copyright (c) Johannes Köster and contributors (MIT)
 - noodles (`noodles-core`, `noodles-fasta`, `noodles-fastq`, `noodles-gff`,
   `noodles-vcf`, `noodles-bed`, `noodles-sam`) — Copyright (c) Michael Macias (MIT)
@@ -74,6 +75,17 @@ respective MIT, Apache-2.0, ISC, Unlicense, or file-level MPL-2.0 terms:
   Velankar, S., Burley, S.K., Koča, J., & Rose, A.S., 2021. Mol* Viewer: modern
   web app for 3D visualization and analysis of large biomolecular structures.
   Nucleic Acids Research, 49(W1), W431-W437)
+- genbank_to (`0.54`) — Copyright (c) Rob Edwards (MIT; source:
+  https://github.com/linsalrob/genbank_to). Its GenBank conversions
+  (GenBankToLib/genbank.py, main.py, genbank_to_json.py) are ported to Rust,
+  and the Gram-stain genus lists of its bacteria.py copied as data, in
+  `crates/molbiocraft-formats` (genbank_to.rs, genbank_to_bakta.rs) for
+  Convert GenBank, which runs no Python
+- Biopython (`1.88`) — Copyright (c) The Biopython Contributors (Biopython
+  License Agreement; source: https://github.com/biopython/biopython).
+  The protein molecular-weight table (Bio.Data.IUPACData) and the pK tables of
+  the isoelectric point (Bio.SeqUtils.IsoelectricPoint) are ported in
+  `crates/molbiocraft-formats/src/genbank_to_bakta.rs` for Bakta JSON
 
 ================================================================================
 4. TRADEMARKS & NON-AFFILIATION NOTICE

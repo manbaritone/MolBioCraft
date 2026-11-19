@@ -212,6 +212,7 @@ static void setupMainMenu(MolBioCraftAppDelegate *delegate) {
     [fileExportSeqSub addItem:makeActionItem(@"Export FASTA", @"file:save-fasta", @"s", SHIFT_CMD, delegate)];
     [fileExportSeqSub addItem:makeActionItem(@"Export EMBL", @"file:export-embl", @"", 0, delegate)];
     [fileExportSeqSub addItem:makeActionItem(@"Export GFF3", @"file:export-gff3", @"", 0, delegate)];
+    [fileExportSeqSub addItem:makeActionItem(@"Convert GenBank…", @"file:convert-genbank", @"", 0, delegate)];
 
     NSMenu *fileExportBatchSub = addSubmenu(fileMenu, @"Batch & SVG Export");
     [fileExportBatchSub addItem:makeActionItem(@"Batch FASTA", @"file:export-batch-fasta", @"", 0, delegate)];

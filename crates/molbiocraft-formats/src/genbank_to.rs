@@ -26,6 +26,11 @@
 //!
 //! The records are the app's own [`SequenceDocument`]s, read by [`crate::parse_genbank_flatfile`]
 //! from text [`split_genbank_records`] splits; the record id is [`genbank_record_id`] (D0229).
+//!
+//! [`genbank_to_convert`] is the Convert GenBank dialog's one entry (US-01M7RCCA, D0228): it reads
+//! the records from text, a file's bytes (gzip found by the 1f8b magic bytes) or open documents,
+//! writes the chosen outputs under D0228's file names, and packs several into one deflate zip
+//! ([`write_zip`]).
 
 use crate::flatfiles::{ends_record, export_genbank_flatfile, record_length};
 use crate::noodles_io::export_gff3_noodles;
@@ -746,4 +751,307 @@ pub fn genbank_to_amrfinder(
         ],
         warnings: dedup(warnings),
     }
+}
+
+// ─── The Convert GenBank entry (US-01M7RCCA, D0228) ───
+
+/// One of the Convert GenBank dialog's outputs (D0228), in the order their files are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GenbankToOutput {
+    /// `<base>.fna`, [`genbank_to_fna`].
+    Nucleotides,
+    /// `<base>.orfs`, [`genbank_to_orfs`].
+    CdsDna,
+    /// `<base>.faa`, [`genbank_to_faa`].
+    Proteins,
+    /// `<base>.functions.tsv`, [`genbank_to_functions`].
+    Functions,
+    /// `<base>.ptt`, [`genbank_to_ptt`].
+    Ptt,
+    /// `<base>.phage_finder.tsv`, [`genbank_to_phage_finder`].
+    PhageFinder,
+    /// `<base>.gff3`, [`genbank_to_gff3`].
+    Gff3,
+    /// `<base>.amr.gff`, `<base>.amr.faa` and `<base>.amr.fna`, [`genbank_to_amrfinder`].
+    AmrFinderPlus,
+    /// `<base>.bakta.json`, [`crate::genbank_to_bakta::genbank_to_bakta_json`].
+    BaktaJson,
+}
+
+impl GenbankToOutput {
+    /// Every output, in the order their files are written.
+    pub const ALL: [Self; 9] = [
+        Self::Nucleotides,
+        Self::CdsDna,
+        Self::Proteins,
+        Self::Functions,
+        Self::Ptt,
+        Self::PhageFinder,
+        Self::Gff3,
+        Self::AmrFinderPlus,
+        Self::BaktaJson,
+    ];
+}
+
+/// Where the conversion reads its records: GenBank text, a file's bytes (gzip when they start with
+/// the 1f8b magic bytes, else UTF-8 text), or the app's open documents.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)]
+pub enum GenbankToSource {
+    Text { text: String },
+    Bytes { bytes: Vec<u8> },
+    Documents { documents: Vec<SequenceDocument> },
+}
+
+/// A Convert GenBank request (D0228): the source, the base name its files are named from, the
+/// outputs, and the options. `gram` is "+" or "-", or none to read it from the genus.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenbankToRequest {
+    pub source: GenbankToSource,
+    pub base_name: String,
+    #[serde(default)]
+    pub outputs: Vec<GenbankToOutput>,
+    #[serde(default)]
+    pub include_pseudogenes: bool,
+    #[serde(default)]
+    pub complex_headers: bool,
+    #[serde(default)]
+    pub separate: bool,
+    #[serde(default)]
+    pub records: Vec<String>,
+    #[serde(default)]
+    pub gram: Option<String>,
+    #[serde(default)]
+    pub translation_table: Option<u32>,
+}
+
+/// One written file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct GenbankToFile {
+    pub name: String,
+    pub text: String,
+}
+
+/// The files written, in output order; the deflate zip holding them when there is more than one
+/// (none for one file); and the warnings the formats functions owe, each once.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct GenbankToResponse {
+    pub files: Vec<GenbankToFile>,
+    pub zip: Option<Vec<u8>>,
+    pub warnings: Vec<String>,
+}
+
+/// The records a request's source holds, parsed by the app's GenBank reader, or the reason it
+/// holds none. Bytes starting 1f8b are inflated as gzip (every member, as `gzip -d` does).
+fn source_documents(source: &GenbankToSource, base: &str) -> Result<Vec<SequenceDocument>, String> {
+    let text = match source {
+        GenbankToSource::Documents { documents } => return Ok(documents.clone()),
+        GenbankToSource::Text { text } => std::borrow::Cow::Borrowed(text.as_str()),
+        GenbankToSource::Bytes { bytes } if bytes.starts_with(&[0x1f, 0x8b]) => {
+            use std::io::Read;
+            let mut out = Vec::new();
+            flate2::read::MultiGzDecoder::new(bytes.as_slice())
+                .read_to_end(&mut out)
+                .map_err(|e| format!("{base} is gzip but cannot be inflated: {e}"))?;
+            std::borrow::Cow::Owned(String::from_utf8(out).map_err(|_| {
+                format!("{base} is not UTF-8 text or gzip, so it cannot be read as GenBank.")
+            })?)
+        }
+        GenbankToSource::Bytes { bytes } => {
+            std::borrow::Cow::Borrowed(std::str::from_utf8(bytes).map_err(|_| {
+                format!("{base} is not UTF-8 text or gzip, so it cannot be read as GenBank.")
+            })?)
+        }
+    };
+    Ok(split_genbank_records(&text)
+        .iter()
+        .map(|r| crate::parse_genbank_flatfile(r, base))
+        .collect())
+}
+
+/// Convert GenBank (D0228): reads the source's records and writes each chosen output under its
+/// D0228 file name with exactly the text its formats function writes, in [`GenbankToOutput::ALL`]
+/// order, each once. One file per record splits the nucleotide, CDS DNA and protein outputs as
+/// [`genbank_to_separate`] does, and with no output chosen writes [`genbank_to_gbk_files`]. More than
+/// one file is also packed into one deflate zip ([`write_zip`]). It refuses, writing nothing: no
+/// output without one file per record; a Gram stain or translation table without Bakta JSON, as
+/// 0.54 does; a source with no GenBank record; a record filter that keeps none; and Bakta JSON's own
+/// refusals.
+pub fn genbank_to_convert(req: &GenbankToRequest) -> Result<GenbankToResponse, String> {
+    let base = req.base_name.as_str();
+    let wants = |o: GenbankToOutput| req.outputs.contains(&o);
+    if (req.gram.is_some() || req.translation_table.is_some()) && !wants(GenbankToOutput::BaktaJson)
+    {
+        return Err("Gram stain and translation table apply only to Bakta JSON.".to_string());
+    }
+    if req.outputs.is_empty() && !req.separate {
+        return Err("Choose at least one output.".to_string());
+    }
+    let gram = match req.gram.as_deref() {
+        None => None,
+        Some(g) => {
+            let mut chars = g.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Some(c),
+                _ => {
+                    return Err(format!(
+                        "Gram stain {g} is not one genbank_to accepts: give '+' or '-'."
+                    ))
+                }
+            }
+        }
+    };
+    let docs = source_documents(&req.source, base)?;
+    if docs.is_empty() {
+        return Err(format!("No GenBank record was found in {base}."));
+    }
+    let opts = GenbankToOptions {
+        include_pseudogenes: req.include_pseudogenes,
+        complex_headers: req.complex_headers,
+        records: req.records.clone(),
+        gram,
+        translation_table: req.translation_table,
+    };
+    if selected(&docs, &opts, &mut Vec::new()).is_empty() {
+        let names: Vec<&str> = opts.records.iter().map(|r| r.trim()).collect();
+        return Err(format!(
+            "No record in {base} is named {}.",
+            names.join(" or ")
+        ));
+    }
+
+    let one = |name: String, t: GenbankToText| GenbankToFiles {
+        files: vec![(name, t.text)],
+        warnings: t.warnings,
+    };
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    for out in GenbankToOutput::ALL.into_iter().filter(|o| wants(*o)) {
+        let sequence = match out {
+            GenbankToOutput::Nucleotides => Some(GenbankToSequenceOutput::Nucleotides),
+            GenbankToOutput::CdsDna => Some(GenbankToSequenceOutput::CdsDna),
+            GenbankToOutput::Proteins => Some(GenbankToSequenceOutput::Proteins),
+            _ => None,
+        };
+        let written = match (out, sequence) {
+            (_, Some(s)) if req.separate => genbank_to_separate(&docs, s, base, &opts),
+            (_, Some(s)) => one(format!("{base}.{}", s.extension()), joined(&docs, s, &opts)),
+            (GenbankToOutput::Functions, _) => one(
+                format!("{base}.functions.tsv"),
+                genbank_to_functions(&docs, &opts),
+            ),
+            (GenbankToOutput::Ptt, _) => one(format!("{base}.ptt"), genbank_to_ptt(&docs, &opts)),
+            (GenbankToOutput::PhageFinder, _) => one(
+                format!("{base}.phage_finder.tsv"),
+                genbank_to_phage_finder(&docs, &opts),
+            ),
+            (GenbankToOutput::Gff3, _) => {
+                one(format!("{base}.gff3"), genbank_to_gff3(&docs, &opts))
+            }
+            (GenbankToOutput::AmrFinderPlus, _) => genbank_to_amrfinder(&docs, base, &opts),
+            (GenbankToOutput::BaktaJson, _) => one(
+                format!("{base}.bakta.json"),
+                crate::genbank_to_bakta::genbank_to_bakta_json(&docs, &opts)?,
+            ),
+            _ => unreachable!("every sequence output is matched above"),
+        };
+        files.extend(written.files);
+        warnings.extend(written.warnings);
+    }
+    if req.outputs.is_empty() {
+        let gbk = genbank_to_gbk_files(&docs, &opts);
+        files.extend(gbk.files);
+        warnings.extend(gbk.warnings);
+    }
+    if files.is_empty() {
+        return Err(format!(
+            "No file was written: no record kept from {base} has a line in the chosen outputs."
+        ));
+    }
+    let files: Vec<GenbankToFile> = files
+        .into_iter()
+        .map(|(name, text)| GenbankToFile { name, text })
+        .collect();
+    let zip = if files.len() > 1 {
+        Some(write_zip(&files)?)
+    } else {
+        None
+    };
+    Ok(GenbankToResponse {
+        files,
+        zip,
+        warnings: dedup(warnings),
+    })
+}
+
+/// A PKZIP archive holding `files` in order, each deflated, its name flagged UTF-8 (bit 11) and
+/// dated 1980-01-01 00:00, so the same files always give the same bytes. It refuses what needs
+/// Zip64: an entry, or the archive, of 4 GiB or more, or more than 65,535 entries.
+pub fn write_zip(files: &[GenbankToFile]) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    const TOO_BIG: &str =
+        "The files are too large for one zip: an entry or the archive reaches 4 GiB.";
+    let fit = |n: usize| u32::try_from(n).map_err(|_| TOO_BIG.to_string());
+    let count = u16::try_from(files.len()).map_err(|_| {
+        format!(
+            "{} files are too many for one zip (65,535 at most).",
+            files.len()
+        )
+    })?;
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for f in files {
+        let data = f.text.as_bytes();
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(data).map_err(|e| e.to_string())?;
+        let packed = enc.finish().map_err(|e| e.to_string())?;
+        let name = f.name.as_bytes();
+        let name_len = u16::try_from(name.len())
+            .map_err(|_| format!("The file name {} is too long for a zip.", f.name))?;
+        let crc = crc32fast::hash(data);
+        let offset = fit(out.len())?;
+        // version 2.0, UTF-8 name, deflate, 00:00 on 1980-01-01, CRC-32, sizes, name length
+        let mut common = Vec::with_capacity(26);
+        common.extend_from_slice(&20u16.to_le_bytes());
+        common.extend_from_slice(&0x0800u16.to_le_bytes());
+        common.extend_from_slice(&8u16.to_le_bytes());
+        common.extend_from_slice(&0u16.to_le_bytes());
+        common.extend_from_slice(&0x0021u16.to_le_bytes());
+        common.extend_from_slice(&crc.to_le_bytes());
+        common.extend_from_slice(&fit(packed.len())?.to_le_bytes());
+        common.extend_from_slice(&fit(data.len())?.to_le_bytes());
+        common.extend_from_slice(&name_len.to_le_bytes());
+        common.extend_from_slice(&0u16.to_le_bytes()); // extra field length
+
+        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        out.extend_from_slice(&common);
+        out.extend_from_slice(name);
+        out.extend_from_slice(&packed);
+
+        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes()); // made by: version 2.0, MS-DOS
+        central.extend_from_slice(&common);
+        central.extend_from_slice(&0u16.to_le_bytes()); // comment length
+        central.extend_from_slice(&0u16.to_le_bytes()); // disk number
+        central.extend_from_slice(&0u16.to_le_bytes()); // internal attributes
+        central.extend_from_slice(&0u32.to_le_bytes()); // external attributes
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(name);
+    }
+    let central_at = fit(out.len())?;
+    let central_len = fit(central.len())?;
+    out.extend_from_slice(&central);
+    fit(out.len() + 22)?;
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&central_len.to_le_bytes());
+    out.extend_from_slice(&central_at.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    Ok(out)
 }

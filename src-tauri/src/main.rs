@@ -351,6 +351,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             )?,
             &item("file:export-embl", "Export EMBL", None)?,
             &item("file:export-gff3", "Export GFF3", None)?,
+            &item("file:convert-genbank", "Convert GenBank…", None)?,
         ],
     )?;
 

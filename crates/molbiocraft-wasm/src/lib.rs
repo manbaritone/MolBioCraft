@@ -581,6 +581,31 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             }
             Ok(Value::String(export_genbank_flatfile_dated(&doc, date)))
         }
+        "genbank_to_convert" => {
+            // Convert GenBank (US-01M7RCCA, D0228): the dialog's request, handed to the formats
+            // entry whole. Every key is read before any is parsed, so none is left unread behind
+            // an earlier one that fails.
+            use molbiocraft_formats::genbank_to::{genbank_to_convert, GenbankToRequest};
+            let source: Value = parse_field(&payload, "source")?;
+            let outputs: Option<Value> = parse_opt_field(&payload, "outputs")?;
+            let records: Option<Value> = parse_opt_field(&payload, "records")?;
+            let gram: Option<Value> = parse_opt_field(&payload, "gram")?;
+            let table: Option<Value> = parse_opt_field(&payload, "translationTable")?;
+            let request = json!({
+                "source": source,
+                "baseName": str_arg(&payload, "baseName", ""),
+                "outputs": outputs.unwrap_or_else(|| json!([])),
+                "includePseudogenes": bool_arg(&payload, "includePseudogenes", false),
+                "complexHeaders": bool_arg(&payload, "complexHeaders", false),
+                "separate": bool_arg(&payload, "separate", false),
+                "records": records.unwrap_or_else(|| json!([])),
+                "gram": gram,
+                "translationTable": table,
+            });
+            let request: GenbankToRequest = serde_json::from_value(request)
+                .map_err(|e| format!("Invalid genbank_to_convert payload: {e}"))?;
+            to_val(genbank_to_convert(&request)?)
+        }
         "parse_embl" => {
             let text = str_arg(&payload, "text", "");
             let fallback_name = str_arg(&payload, "fallbackName", "Imported_EMBL");

@@ -267,6 +267,7 @@ const MENU_LABEL_DESCRIPTIONS: Record<string, string> = {
   'Export FASTA': 'Export nucleotide or protein residues in standard FASTA (.fasta) format',
   'Export EMBL': 'Export sequence and feature annotations in EBI EMBL flatfile (.embl) format',
   'Export GFF3': 'Export genomic feature coordinates and qualifiers in Generic Feature Format v3 (.gff3)',
+  'Convert GenBank…': 'Convert a GenBank file or the open records into genbank_to FASTA, ORF, protein, functions, ptt, phage_finder, GFF3, AMRFinderPlus and Bakta JSON files; needs no open session',
   'Batch FASTA': 'Export all checked table documents together into a multi-record FASTA file',
   'Export MBC JSON': 'Export the active workbench or selected documents in structured JSON (.mbc) format',
   'Export Folder as MBC': 'Package the active folder and documents into a ZIP archive saved with .mbc extension',

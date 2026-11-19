@@ -152,6 +152,7 @@ import {
   type SplitPaneView,
 } from './core/documentSplit';
 import { StructureAlignmentDialog } from './components/StructureAlignmentDialog';
+import { GenbankToDialog } from './components/GenbankToDialog';
 import { hasStructure } from './core/structureModels';
 import { ExpressionLevelsDialog, StructuralVariantsDialog, MakeBlastDbDialog, CrisprEditingDialog, AnnotateByBlastDialog, AnnotateFromDocumentsDialog, DegeneratePrimersDialog, ImportPrimersDialog, ImportPrimersToDatabaseDialog } from './components/SequenceAnalysisToolDialogs';
 import type { OptionValues } from './core/optionProfiles';
@@ -1174,6 +1175,7 @@ export const App: React.FC = () => {
     | { kind: 'structural-variants' }
     | { kind: 'microsatellites' }
     | { kind: 'align-structures' }
+    | { kind: 'convert-genbank' }
     | null
   >(null);
   // The Primer Database as it is when a primer dialog opens (US-01M7DQMY): read once per opening,
@@ -7633,6 +7635,10 @@ export const App: React.FC = () => {
             handleExportActiveDocument('gff3')
           );
           break;
+        case 'file:convert-genbank':
+          // D0228: needs no session; a GenBank file can be converted with none open.
+          setOperationDialog({ kind: 'convert-genbank' });
+          break;
         case 'file:print':
           requireActiveSession(() => handlePrintWorkbench());
           break;
@@ -9947,7 +9953,6 @@ requireActiveSession(() => handleCopySequenceToClipboard());
         id: 'file-export-seq',
         label: 'Export Sequences',
         minWidth: 220,
-        disabled: !sessionActive,
         children: [
           {
             kind: 'command',
@@ -9993,8 +9998,15 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           },
           {
             kind: 'command',
+            id: 'file-exp-convert-genbank',
+            label: 'Convert GenBank…',
+            onSelect: () => setOperationDialog({ kind: 'convert-genbank' }),
+          },
+          {
+            kind: 'command',
             id: 'file-exp-ncbi-tbl',
             label: 'GenBank Submission',
+            disabled: !sessionActive,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('transform-submit')),
           },
@@ -12232,7 +12244,6 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         kind: 'submenu',
         id: 'tb-exp-ann',
         label: 'Annotations',
-        disabled: !sessionActive,
         minWidth: 215,
         children: [
           {
@@ -12247,8 +12258,15 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           },
           {
             kind: 'command',
+            id: 'file-exp-convert-genbank',
+            label: 'Convert GenBank…',
+            onSelect: () => setOperationDialog({ kind: 'convert-genbank' }),
+          },
+          {
+            kind: 'command',
             id: 'tb-exp-ncbi',
             label: 'GenBank Submission',
+            disabled: !sessionActive,
             onSelect: () =>
               requireActiveSession(() => openGenomicsSuite('transform-submit')),
           },
@@ -17830,6 +17848,13 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             handleAddOperationResult(r.created[1], 'text-view', r.summary);
             handleAddOperationResult(r.created[0], 'sequence-view', r.summary);
           }}
+          onClose={() => setOperationDialog(null)}
+        />
+      )}
+      {operationDialog?.kind === 'convert-genbank' && (
+        <GenbankToDialog
+          records={sessionActive ? (selectedAnalysisDocuments.length ? selectedAnalysisDocuments : activeDoc.id ? [activeDoc] : []) : []}
+          activeName={activeDoc.name}
           onClose={() => setOperationDialog(null)}
         />
       )}

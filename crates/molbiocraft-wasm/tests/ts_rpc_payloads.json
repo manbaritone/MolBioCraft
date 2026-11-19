@@ -430,6 +430,17 @@
   "seq",
   "topology"
  ],
+ "genbank_to_convert": [
+  "baseName",
+  "complexHeaders",
+  "gram",
+  "includePseudogenes",
+  "outputs",
+  "records",
+  "separate",
+  "source",
+  "translationTable"
+ ],
  "generate_catalog_circular_svg": [
   "entry"
  ],

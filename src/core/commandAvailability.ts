@@ -378,6 +378,7 @@ export const NATIVE_MENU_SESSION_INDEPENDENT_IDS = [
   'edit:redo',
   'enzymes:suppliers',
   'file:close-session',
+  'file:convert-genbank',
   'file:export-preferences',
   'file:import-clipboard',
   'file:import-files',

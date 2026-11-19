@@ -123,6 +123,49 @@ export function parseGff3Sequences(text: string, nowIso = new Date().toISOString
   return invokeRustBioSync<Gff3Sequences>('parse_gff3_sequences', { text, nowIso });
 }
 
+/** One of Convert GenBank's outputs (D0228), named as the engine names it. */
+export type GenbankToOutput =
+  | 'nucleotides'
+  | 'cdsDna'
+  | 'proteins'
+  | 'functions'
+  | 'ptt'
+  | 'phageFinder'
+  | 'gff3'
+  | 'amrFinderPlus'
+  | 'baktaJson';
+
+/** A Convert GenBank request (US-01M7RCCA, D0228): every key is sent, the Bakta-only two as null without Bakta JSON. */
+export interface GenbankToRequest {
+  /** GenBank text, a file's bytes (gzip found by its 1f8b magic bytes), or open documents. */
+  source: { text: string } | { bytes: number[] } | { documents: SequenceDocument[] };
+  /** The name the files are named from: `<base>.faa`, `<base>.genbank_to.zip`. */
+  baseName: string;
+  outputs: GenbankToOutput[];
+  includePseudogenes: boolean;
+  complexHeaders: boolean;
+  /** One file per record. */
+  separate: boolean;
+  /** Record ids to keep, with or without their version; [] keeps every record. */
+  records: string[];
+  /** Bakta JSON only: '+' or '-', or null to read it from the genus. */
+  gram: '+' | '-' | null;
+  /** Bakta JSON only: the translation table, or null for 11. */
+  translationTable: number | null;
+}
+
+/** The files written, the zip holding them when there is more than one (else null), and the warnings. */
+export interface GenbankToResponse {
+  files: { name: string; text: string }[];
+  zip: number[] | null;
+  warnings: string[];
+}
+
+/** Convert GenBank: genbank_to 0.54's outputs, written by the engine (EP-01M7RC9C); throws the engine's refusal. */
+export function convertGenbank(request: GenbankToRequest): GenbankToResponse {
+  return invokeRustBioSync<GenbankToResponse>('genbank_to_convert', request);
+}
+
 /** A modified residue of a structure chain, read as its parent's code (`MSE` 1 as `M`). */
 export interface StructureModifiedResidue {
   resName: string;
