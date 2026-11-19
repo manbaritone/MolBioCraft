@@ -601,3 +601,86 @@ describe('BG-01M7DH9X: focus, mixed enzymes and the edit\'s confirmation in the 
     });
   });
 });
+
+describe('BG-01M7H5M0: a custom enzyme with a built-in\'s name keeps its own checkbox, Tab place and row', () => {
+  vi.setConfig({ testTimeout: 120_000 });
+
+  /**
+   * The engine's scan of the sample plasmid with three enzymes: the built-in EcoRI, a custom "EcoRI"
+   * (its own `custom:` id, the same motif) and the first built-in after EcoRI by name that cuts the
+   * plasmid. The sites are listed built-in EcoRI, custom EcoRI, then the third, so the two rows of one
+   * name sit side by side in that order. Each of the panel's four keyed places (the checkbox refs,
+   * the box a change remembers, the Tab order and the React row key) kept by name rather than by
+   * enzymeKey fails a check here: the same name, two rows, so the name no longer tells them apart.
+   */
+  const BUILT_IN = REBASE_ENZYMES.find((e) => e.name === 'EcoRI')!;
+  const CUSTOM = { ...BUILT_IN, id: 'custom:h5m0-ecori', source: 'custom' as const, provenance: 'BG-01M7H5M0 test definition' };
+  const NEXT = REBASE_ENZYMES.find((e) => e.name.localeCompare('EcoRI', 'en', { sensitivity: 'base' }) > 0 && keptOf(e.name).length > 0)!;
+  const scanned = scanRestrictionSites(plasmid.sequence, 'circular', [BUILT_IN, CUSTOM, NEXT]);
+  const of = (id: string) => scanned.sites.filter((s) => (s.enzyme.id ?? s.enzyme.name) === id);
+  const PAIR_SITES = [...of(BUILT_IN.name), ...of(CUSTOM.id), ...of(NEXT.name)];
+  const PAIR_COUNTS = restrictionSiteCountsByName(scanned);
+  const box = (label: string) => `Show ${label} sites on the maps`;
+  const [BUILT_IN_BOX, CUSTOM_BOX, NEXT_BOX] = [box('EcoRI'), box('EcoRI (custom)'), box(NEXT.name)];
+
+  /** The panel alone, mounted in the live DOM with its choices held as the App holds them, Shown only on. */
+  async function withPairPanel(run: (app: AppHarness, focused: () => string, listed: () => string[]) => Promise<void>) {
+    const app = await mountApp();
+    const errors = vi.spyOn(console, 'error');
+    // React, React DOM and the panel as the App loaded them, so the panel's hooks run under this root.
+    const React = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const { DisplayedSitesPanel: Panel } = await import('../components/DisplayedSitesPanel');
+    const host = app.doc.createElement('div');
+    app.doc.body.appendChild(host);
+    const root = createRoot(host as unknown as Element);
+    try {
+      const Holder = () => {
+        const [visibility, setVisibility] = React.useState(EMPTY);
+        return React.createElement(Panel, {
+          sites: PAIR_SITES, siteCounts: PAIR_COUNTS, visibility, molecule: MOLECULE, uniqueCuttersOnly: false,
+          onVisibilityChange: setVisibility, onGoToSite: () => {}, initialShownOnly: true,
+        });
+      };
+      await React.act(async () => { root.render(React.createElement(Holder)); });
+      await app.settle();
+      const focused = () => {
+        const el = app.doc.activeElement as LiveElement;
+        return el === (app.doc.body as unknown) ? 'body' : el.getAttribute('aria-label') ?? `<${el.localName}>`;
+      };
+      const listed = () => host.querySelectorAll('.mbc-dsites-row > .mbc-dsites-enzyme input[type="checkbox"]').map((b) => b.getAttribute('aria-label') ?? '');
+      await run(app, focused, listed);
+      const duplicateKeys = errors.mock.calls.map((c) => c.map(String).join(' ')).filter((m) => /same key/i.test(m));
+      expect(duplicateKeys, 'React reports no duplicate key').toEqual([]);
+    } finally {
+      errors.mockRestore();
+      await React.act(async () => { root.unmount(); });
+      app.unmount();
+    }
+  }
+
+  it('fixture: the built-in and the custom enzyme of the same name each cut the plasmid, beside a third enzyme', () => {
+    expect([of(BUILT_IN.name).length, of(CUSTOM.id).length, of(NEXT.name).length].every((n) => n > 0)).toBe(true);
+    expect(of(CUSTOM.id).every((s) => s.enzyme.name === 'EcoRI')).toBe(true);
+  });
+
+  it('BG-01M7H5M0 AC1 with a built-in and a custom enzyme of the same name under Shown only, hiding the custom one from the keyboard moves focus to the next listed row, never the built-in', async () => {
+    await withPairPanel(async (app, focused, listed) => {
+      expect(listed()).toEqual([BUILT_IN_BOX, CUSTOM_BOX, NEXT_BOX]);
+      app.one(`[aria-label="${CUSTOM_BOX}"]`, CUSTOM_BOX).focus();
+      expect(focused()).toBe(CUSTOM_BOX);
+      await app.press(' ');
+      expect(listed(), 'the custom row leaves the list; the built-in of its name stays').toEqual([BUILT_IN_BOX, NEXT_BOX]);
+      expect(focused(), 'focus moves to the next listed row, not the same-name built-in').toBe(NEXT_BOX);
+    });
+  });
+
+  it('BG-01M7H5M0 AC1 with the same name listed twice under Shown only, hiding the built-in from the keyboard moves focus to the custom row after it', async () => {
+    await withPairPanel(async (app, focused, listed) => {
+      app.one(`[aria-label="${BUILT_IN_BOX}"]`, BUILT_IN_BOX).focus();
+      await app.press(' ');
+      expect(listed(), 'the built-in row leaves the list; the custom one of its name stays').toEqual([CUSTOM_BOX, NEXT_BOX]);
+      expect(focused(), 'focus moves to the next listed row, the custom one of the same name').toBe(CUSTOM_BOX);
+    });
+  });
+});
