@@ -480,7 +480,7 @@ fn begins_qualifier(line: &str) -> bool {
 /// Whether a line ends a GenBank or EMBL record: "//" from column 1, trailing space aside, as
 /// Biopython 1.88 ends one and the app's importer splits a file (splitFlatfileRecords). An
 /// indented line beginning with "//", such as a wrapped qualifier's, does not.
-fn ends_record(line: &str) -> bool {
+pub(crate) fn ends_record(line: &str) -> bool {
     line.trim_end() == "//"
 }
 
@@ -561,6 +561,18 @@ fn segments_from_intervals(name: &str, color: &str, intervals: &[(usize, usize)]
 /// D0202: "the parser takes the record name from that line when present", the line being
 /// `COMMENT     MolBioCraft name: <name>`; the document id is still made from the LOCUS name.
 ///
+/// D0229: the document's metadata keeps three header values, each only when the record has it:
+/// `Version`, the first token of the VERSION line (`VERSION NC_001416.1 GI:9626243` keeps
+/// NC_001416.1); `Organism`, the SOURCE/ORGANISM name, read as Biopython 1.88 reads it (the
+/// ORGANISM line, then each continuation line before the first holding a ';', which begins the
+/// lineage); and `Comment`, the COMMENT lines joined by "\n" as Biopython joins them, every
+/// COMMENT block of the record in order, leaving out a structured comment table's lines from its
+/// `##...-START##` line to its `##...-END##` line, as Biopython does. The first COMMENT line is read from after the keyword,
+/// trimmed; a continuation line from column 13, trailing space trimmed. A D0202
+/// `MolBioCraft name:` line is a COMMENT line like any other, so `Comment` holds it too. The
+/// accession, the name and every export are unchanged: the GenBank export still writes VERSION
+/// from the accession. An EMBL import keeps none of the three.
+///
 /// The document carries no date: [`parse_genbank_flatfile_at`] with a blank time (D0203).
 pub fn parse_genbank_flatfile(text: &str, fallback_name: &str) -> SequenceDocument {
     parse_genbank_flatfile_at(text, fallback_name, "")
@@ -617,6 +629,14 @@ fn parse_insdc_record(
     let without_final_stop = |d: &str| d.strip_suffix('.').unwrap_or(d).to_string();
     let mut locus_length: usize = 0;
     let mut comment_name: Option<String> = None;
+    // D0229's header values (see parse_genbank_flatfile's doc), and which of them a 12-space
+    // continuation line continues.
+    let mut version: Option<String> = None;
+    let mut organism: Option<String> = None;
+    let mut comment_lines: Vec<String> = Vec::new();
+    let (mut in_comment, mut in_organism, mut in_lineage) = (false, false, false);
+    // Inside a structured comment table, whose lines Biopython keeps out of the comment.
+    let mut in_structured = false;
 
     // The D0005 warnings the import writes into the document's Notes (see this function's doc).
     let mut warnings: Vec<String> = Vec::new();
@@ -702,6 +722,62 @@ fn parse_insdc_record(
                 molecule_type = MoleculeType::RNA;
             }
             continue;
+        }
+
+        // D0229: VERSION, ORGANISM and COMMENT, read as Biopython 1.88 reads them (see
+        // parse_genbank_flatfile's doc).
+        if !in_features {
+            let continued = raw_line.starts_with("            ");
+            if in_comment && continued {
+                let data = raw_line[12..].trim_end();
+                if data.contains("-START##") {
+                    if structured_comment_start(data) {
+                        in_structured = true;
+                    } else {
+                        comment_lines.push(data.to_string());
+                    }
+                } else if in_structured && (data.contains("::") || !data.contains("-END##")) {
+                    // A line of the table.
+                } else if data.contains("-END##") {
+                    in_structured = false;
+                } else {
+                    comment_lines.push(data.to_string());
+                }
+                continue;
+            }
+            in_comment = false;
+            if in_organism && continued {
+                let data = raw_line[12..].trim();
+                if in_lineage || data.contains(';') {
+                    in_lineage = true;
+                } else if data != "." {
+                    if let Some(o) = organism.as_mut() {
+                        o.push(' ');
+                        o.push_str(data);
+                    }
+                }
+                continue;
+            }
+            in_organism = false;
+            if let Some(rest) = raw_line.strip_prefix("VERSION") {
+                version = rest.split_whitespace().next().map(str::to_string);
+                in_definition = false;
+                continue;
+            }
+            if let Some(rest) = raw_line.strip_prefix("  ORGANISM") {
+                organism = Some(rest.trim().to_string());
+                (in_organism, in_lineage, in_definition) = (true, false, false);
+                continue;
+            }
+            if let Some(rest) = raw_line.strip_prefix("COMMENT") {
+                // No `continue`: the D0202 name line below is a COMMENT line too.
+                let data = rest.trim();
+                in_structured = structured_comment_start(data);
+                if !in_structured {
+                    comment_lines.push(data.to_string());
+                }
+                in_comment = true;
+            }
         }
 
         // The one full stop that ends the definition is dropped, GenBank's convention (see this
@@ -882,6 +958,15 @@ fn parse_insdc_record(
             ("Is Contig Summary".to_string(), serde_json::json!(true)),
         ]));
     }
+    // D0229: the header values a GenBank record holds (see parse_genbank_flatfile's doc).
+    if source == InsdcSource::GenBank {
+        let comment = (!comment_lines.is_empty()).then(|| comment_lines.join("\n"));
+        for (key, value) in [("Version", version), ("Organism", organism), ("Comment", comment)] {
+            if let Some(v) = value.filter(|v| !v.is_empty()) {
+                doc_metadata.get_or_insert_with(HashMap::new).insert(key.to_string(), serde_json::json!(v));
+            }
+        }
+    }
     // What ORIGIN held against what LOCUS declared, then what reading it left out or could not
     // read (see this function's doc). Only a record with an ORIGIN block has bases to count.
     if in_origin {
@@ -996,6 +1081,12 @@ pub(crate) fn record_length(doc: &SequenceDocument) -> usize {
 /// The start of the one /note that marks a primer_bind feature as one of the document's primers
 /// (D0201).
 const PRIMER_NOTE: &str = "MolBioCraft primer: ";
+
+/// Whether a COMMENT line opens a structured comment table (`##Genome-Assembly-Data-START##`),
+/// Biopython 1.88's `([^#]+)-START##$`: it ends in "-START##" after a character that is not '#'.
+fn structured_comment_start(data: &str) -> bool {
+    data.strip_suffix("-START##").and_then(|p| p.chars().last()).is_some_and(|c| c != '#')
+}
 
 /// The start of the COMMENT line that holds a record name the LOCUS token cannot (D0202).
 const NAME_COMMENT: &str = "MolBioCraft name: ";

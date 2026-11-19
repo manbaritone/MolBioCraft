@@ -1,0 +1,16 @@
+OR000001.1	ORP00001.1	Alpha test protein
+OR000001.1	ORT_0002	Beta test protein
+OR000001.1	GeneID:3	Hypothetical protein
+OR000001.1	OR000001.1.join{[200:230](-), [160:190](-)}	Delta test protein
+OR000001.1	OR000001.1.[240:270](+)	Epsilon test protein
+OR000001.1	ORP00006.1	Zeta pseudo protein
+OR000001.1	ORT_0007	Eta short protein
+OR000001.1	ORT_0008	Theta table four protein
+OR000001.1	ORT_0009	Iota frame protein
+OR000001.1	ORP00010.1	Kappa test protein|Kappa alternative name
+OR000001.1	ORP00011.1	hypothetical protein
+OR000001.1	ORP00012.1	COG0001 test family.
+OR000001.1	GeneID:9|GI:55	Mu test protein
+OR000002.1	ORP20001.1	Plasmid replication protein
+OR000002.1	ORT2_0002	Plasmid partition protein
+OR000003	ORP30001.1	Contig protein

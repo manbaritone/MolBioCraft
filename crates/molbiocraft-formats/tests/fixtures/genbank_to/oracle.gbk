@@ -1,0 +1,119 @@
+LOCUS       OR000001                 720 bp    DNA     linear   BCT 19-NOV-2026
+DEFINITION  Escherichia coli K-12 test chromosome OR000001, complete genome.
+ACCESSION   OR000001
+VERSION     OR000001.1  GI:900001
+KEYWORDS    .
+SOURCE      Escherichia coli K-12
+  ORGANISM  Escherichia coli K-12
+            Bacteria; Pseudomonadota; Gammaproteobacteria; Enterobacterales;
+            Enterobacteriaceae; Escherichia.
+COMMENT     Hand-written test record for the MolBioCraft genbank_to port;
+            it holds no third-party data. Complete test genome.
+FEATURES             Location/Qualifiers
+     source          1..720
+                     /organism="Escherichia coli K-12"
+                     /mol_type="genomic DNA"
+                     /strain="K-12"
+                     /db_xref="taxon:83333"
+     gene            1..33
+                     /gene="abcA"
+     CDS             1..33
+                     /gene="abcA"
+                     /product="Alpha test protein"
+                     /protein_id="ORP00001.1"
+                     /db_xref="GI:123456"
+                     /db_xref="GeneID:7"
+                     /translation="MKTAYIAKQR"
+     CDS             complement(41..70)
+                     /locus_tag="ORT_0002"
+                     /product="Beta test protein"
+     CDS             join(81..110,121..150)
+                     /db_xref="GeneID:3"
+     CDS             complement(join(161..190,201..230))
+                     /product="Delta test protein"
+     CDS             241..270
+                     /product="Epsilon test protein"
+     CDS             281..310
+                     /pseudo
+                     /product="Zeta pseudo protein"
+                     /protein_id="ORP00006.1"
+     CDS             321..340
+                     /locus_tag="ORT_0007"
+                     /product="Eta short protein"
+     CDS             351..368
+                     /locus_tag="ORT_0008"
+                     /transl_table=4
+                     /product="Theta table four protein"
+     CDS             381..410
+                     /locus_tag="ORT_0009"
+                     /codon_start=2
+                     /product="Iota frame protein"
+     CDS             421..450
+                     /product="Kappa test protein"
+                     /product="Kappa alternative name"
+                     /protein_id="ORP00010.1"
+     CDS             461..490
+                     /product="hypothetical protein"
+                     /protein_id="ORP00011.1"
+     CDS             501..530
+                     /product="COG0001 test family."
+                     /protein_id="ORP00012.1"
+     CDS             541..570
+                     /product="Mu test protein"
+                     /db_xref="GeneID:9"
+                     /db_xref="GI:55"
+     gene            581..665
+                     /gene="trnL"
+                     /locus_tag="ORT_0014"
+     tRNA            581..665
+                     /gene="trnL"
+                     /locus_tag="ORT_0014"
+                     /product="tRNA-Leu"
+                     /anticodon=(pos:615..617,aa:Leu,seq:taa)
+     rRNA            671..700
+                     /locus_tag="ORT_0015"
+                     /product="5S ribosomal RNA"
+     ncRNA           701..715
+                     /locus_tag="ORT_0016"
+                     /ncRNA_class="other"
+                     /product="test ncRNA"
+ORIGIN
+        1 atgaaaaccg cttatattgc taaacagcgt taagattaaa ttaggtttca tggcagccnn
+       61 ntttngccat acaaacgaac atgtctgatg aatttggcca tattaaactg cattacggtc
+      121 atgaacccgc agcgttctac cgtgtggtaa acggattatg ttaaatatgg ccaaattcat
+      181 cgcaagcata agagcactgg ccacacggta gaacgctgcg ggttatccat ctatgttccc
+      241 atggaaccgt ctattctggt gaacaaataa acaatgagat atgacccagc cgctgctgca
+      301 tcgtgcttaa ttacgatcga atgaaacccg ggtttaaata tgccaacgat atgaaatgac
+      361 ccgggtaatt cgttccggga atgcgtaccg ataaaggctt tctgcattaa tcaccaataa
+      421 atgaaaaaac tgctgccgac cgctggctaa ggatatggct atgcatcatc atcatcatca
+      481 tggctcttaa acgatatgac atgcgtctgg aagatgtgca gaaatcttaa tacccattca
+      541 atgtggtatt ttaacgatga aaaaacctaa ctattttgct aatggcggta tatggctacc
+      601 agcatctctc tgattaaggt tcacttgtac tctttgggga ataaaaaagg tcaactgtga
+      661 atgttcgggg gtagaggccg gtgacggcaa acgcaagggt tcggtttttt cactgctata
+//
+LOCUS       OR000002                 120 bp    DNA     circular BCT 19-NOV-2026
+DEFINITION  Test plasmid pOR2, complete sequence.
+ACCESSION   OR000002
+VERSION     OR000002.1
+FEATURES             Location/Qualifiers
+     CDS             11..40
+                     /product="Plasmid replication protein"
+                     /protein_id="ORP20001.1"
+                     /translation="MSTRKPQEA"
+     CDS             complement(51..80)
+                     /locus_tag="ORT2_0002"
+                     /product="Plasmid partition protein"
+ORIGIN
+        1 cataagtgcg atgtctaccc gtaaaccgca ggaagcttaa gatgtgttac ttaaaacacg
+       61 ccagctttca gatcgttcat aaatgaccac ccgcttgtgt tcgaagcgcg ttttaaattc
+//
+LOCUS       OR000003                  60 bp    DNA     linear   BCT 19-NOV-2026
+DEFINITION  Test contig three.
+ACCESSION   OR000003
+FEATURES             Location/Qualifiers
+     CDS             1..30
+                     /product="Contig protein"
+                     /protein_id="ORP30001.1"
+ORIGIN
+        1 atggctggca aacgtaccga accgctgtaa gggggtagta tagaccaagt ctgtaggttt
+//
