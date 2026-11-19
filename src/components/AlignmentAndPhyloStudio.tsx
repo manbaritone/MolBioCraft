@@ -6232,8 +6232,13 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
   );
 };
 
-/** The model the studio's Run ML search fits: Build Tree's default (GTR with gamma rates, D0205). */
-const ML_SEARCH_MODEL = 'GTR+G';
+/**
+ * The model the studio's Run ML search fits, as the engine fits it (ml_search.rs ml_tree_search):
+ * Build Tree's default GTR with gamma rates on a nucleotide alignment (D0205), LG with gamma rates on
+ * a protein one. The option, the callouts and the request all read it, so none names a model that
+ * does not run (D0002/D0003).
+ */
+const mlSearchModel = (isNucleotide: boolean): string => (isNucleotide ? 'GTR+G' : 'LG+G');
 
 export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
   documents,
@@ -6555,7 +6560,8 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
   // default model, and kept for the rows it ran on. It runs on the interface thread, so the press
   // first draws the running state and the search starts on the next task.
   const mlAlgo = treeAlgorithm === 'Maximum Likelihood (ML)';
-  const mlKey = externalTreeCacheKey(`ML ${ML_SEARCH_MODEL}`, taxaNames, alignedSeqs);
+  const mlModel = mlSearchModel(isNucleotidePhyloAlignment);
+  const mlKey = externalTreeCacheKey(`ML ${mlModel}`, taxaNames, alignedSeqs);
   const [mlRun, setMlRun] = useState<{ key: string; status: 'running' | 'done' | 'error'; result?: MlSearchReport; error?: string } | null>(null);
   const mlRunNow = mlRun && mlRun.key === mlKey ? mlRun : null;
   useEffect(() => {
@@ -6563,14 +6569,14 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
     const { key } = mlRun;
     const id = setTimeout(() => {
       try {
-        setMlRun({ key, status: 'done', result: mlTreeSearch(taxaNames, alignedSeqs, ML_SEARCH_MODEL) });
+        setMlRun({ key, status: 'done', result: mlTreeSearch(taxaNames, alignedSeqs, mlModel) });
       } catch (err) {
         const message = (err instanceof Error ? err.message : String(err)).replace(/^\[MolBioCraft Rust Engine :: [^\]]+\]\s*/, '');
         setMlRun({ key, status: 'error', error: message });
       }
     }, 0);
     return () => clearTimeout(id);
-    // taxaNames/alignedSeqs are captured by the run's key.
+    // taxaNames/alignedSeqs (and the model they set) are captured by the run's key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mlRun]);
   const mlResult = mlAlgo && mlRunNow?.status === 'done' ? mlRunNow.result : undefined;
@@ -7786,7 +7792,7 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
                       Maximum Parsimony — score the NJ tree (no parsimony search)
                     </option>
                     <option value="Maximum Likelihood (ML)">
-                      Maximum Likelihood — built-in ML search ({ML_SEARCH_MODEL}), on Run ML search
+                      Maximum Likelihood — built-in ML search ({mlModel}), on Run ML search
                     </option>
                     <optgroup label="External programs (run on this computer if installed)">
                       {EXTERNAL_TREE_ALGORITHMS.map((algo) => {
@@ -7939,14 +7945,14 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
               let body: React.ReactNode;
               let alert = false;
               if (mlRunNow?.status === 'running') {
-                body = `Running the maximum-likelihood search (${ML_SEARCH_MODEL}) on ${taxaNames.length} sequences × ${(alignedSeqs[0]?.length ?? 0).toLocaleString()} sites… The Neighbor-Joining tree is shown until it finishes.`;
+                body = `Running the maximum-likelihood search (${mlModel}) on ${taxaNames.length} sequences × ${(alignedSeqs[0]?.length ?? 0).toLocaleString()} sites… The Neighbor-Joining tree is shown until it finishes.`;
               } else if (mlRunNow?.status === 'error') {
                 alert = true;
                 body = <>{mlRunNow.error} The Neighbor-Joining tree is shown instead.{runBtn}</>;
               } else if (mlResult) {
                 body = `Tree from the built-in maximum-likelihood search (${mlResult.model}).`;
               } else {
-                body = <>The maximum-likelihood search ({ML_SEARCH_MODEL}) runs when you press Run ML search; the Neighbor-Joining tree is shown until then.{runBtn}</>;
+                body = <>The maximum-likelihood search ({mlModel}) runs when you press Run ML search; the Neighbor-Joining tree is shown until then.{runBtn}</>;
               }
               return (
                 <div

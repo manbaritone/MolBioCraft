@@ -296,3 +296,98 @@ describe('US-01M6P2HD AC3: no report or saved tree names a search that did not r
     });
   });
 });
+
+// ─── BG-01M7RR52: the ML option and callouts name the model the engine fits; the studio's two ML result guards ───
+
+/** Five globins (the Build Tree protein case above), gap-padded to one length: the engine fits LG+G to them (ml_search.rs ml_tree_search). */
+const GLOBINS: [string, string][] = ([
+  ['HBB_HUMAN', 'MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKVKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFGKEFTPPVQAAYQKVVAGVANALAHKYH'],
+  ['HBB_HORSE', 'VQLSGEEKAAVLALWDKVNEEEVGGEALGRLLVVYPWTQRFFDSFGDLSNPGAVMGNPKVKAHGKKVLHSFGEGVHHLDNLKGTFAALSELHCDKLHVDPENFRLLGNVLVVVLARHFGKDFTPELQASYQKVVAGVANALAHKYH-'],
+  ['HBA_HUMAN', 'VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHF-DLSH-----GSAQVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLDKFLASVSTVLTSKYR--'],
+  ['HBA_HORSE', 'VLSAADKTNVKAAWSKVGGHAGEYGAEALERMFLGFPTTKTYFPHF-DLSH-----GSAQVKAHGKKVGDALTLAVGHLDDLPGALSNLSDLHAHKLRVDPVNFKLLSHCLLSTLAVHLPNDFTPAVHASLDKFLSSVSTVLTSKYR--'],
+  ['MYG_HUMAN', 'GLSDGEWQLVLNVWGKVEADIPGHGQEVLIRLFKGHPETLEKFDKFKHLKSEDEMKASEDLKKHGATVLTALGGILKKKGHHEAEIKPLAQSHATKHKIPVKYLEFISECIIQVLQSKHPGDFGADAQGAMNKALELFRKDMASNYKELG'],
+] as [string, string][]).map(([n, s], _i, all) => [n, s.padEnd(Math.max(...all.map(([, t]) => t.length)), '-')]);
+const PROTEIN = { ...alignmentOf('rr52-globins', GLOBINS), moleculeType: 'Protein' } as SequenceDocument;
+/** A second nucleotide alignment, of other rows than EIGHT's. */
+const SIX = alignmentOf('rr52-six', ROWS.slice(2));
+const mlOptionText = (app: AppHarness) => words(methodSelect(app).options.find((o) => o.value === 'Maximum Likelihood (ML)')?.textContent);
+
+describe('BG-01M7RR52 AC1: the ML option and callouts name the model the engine fits', () => {
+  it('BG-01M7RR52 AC1 says LG+G on a protein alignment in the option, the idle and running callouts, and the finished tree', async () => {
+    // The engine's own model for these rows: asked for GTR+G, it fits LG+G to a protein alignment.
+    const { mlTreeSearch } = await import('../core/phyloEvoEngine');
+    expect(mlTreeSearch(GLOBINS.map(([n]) => n), GLOBINS.map(([, s]) => s), 'GTR+G').model, 'the engine fits LG+G to a protein alignment').toBe('LG+G');
+    await withApp(async (app) => {
+      await onTree(app, PROTEIN);
+      expect(mlOptionText(app)).toBe('Maximum Likelihood — built-in ML search (LG+G), on Run ML search');
+      await app.change(methodSelect(app), 'Maximum Likelihood (ML)');
+      expect(callouts(app), 'the idle callout').toContain('The maximum-likelihood search (LG+G) runs when you press Run ML search; the Neighbor-Joining tree is shown until then.Run ML search');
+      await app.click(runButtons(app)[0]);
+      expect(callouts(app), 'the running callout').toContain(`Running the maximum-likelihood search (LG+G) on 5 sequences × ${GLOBINS[0][1].length} sites… The Neighbor-Joining tree is shown until it finishes.`);
+      await searchRuns(app);
+      expect(heading(app)).toBe('Maximum-likelihood tree (built-in, LG+G)');
+      expect(lnlCard(app).label).toBe('lnL (LG+G, ML search)');
+      expect(callouts(app)).toContain('Tree from the built-in maximum-likelihood search (LG+G).');
+      expect(callouts(app).join(' | '), 'no label names GTR+G on a protein alignment').not.toMatch(/GTR\+G/);
+      expect(mlOptionText(app)).not.toMatch(/GTR\+G/);
+    });
+  }, 120000);
+
+  it('BG-01M7RR52 AC1 says GTR+G on a nucleotide alignment in the option and the idle callout', async () => {
+    await withApp(async (app) => {
+      await onTree(app, EIGHT);
+      expect(mlOptionText(app)).toBe('Maximum Likelihood — built-in ML search (GTR+G), on Run ML search');
+      await app.change(methodSelect(app), 'Maximum Likelihood (ML)');
+      expect(callouts(app)).toContain('The maximum-likelihood search (GTR+G) runs when you press Run ML search; the Neighbor-Joining tree is shown until then.Run ML search');
+    });
+  });
+});
+
+describe('BG-01M7RR52 AC1: the ML tree is shown only for Maximum Likelihood and only for the rows it ran on', () => {
+  it('BG-01M7RR52 AC1 shows the UPGMA tree on choosing UPGMA after a run, and the kept ML tree on choosing ML again', async () => {
+    await withApp(async (app) => {
+      await onTree(app, EIGHT);
+      await app.change(methodSelect(app), 'Maximum Likelihood (ML)');
+      await app.click(runButtons(app)[0]);
+      await searchRuns(app);
+      expect(heading(app), 'the search ran').toBe('Maximum-likelihood tree (built-in, GTR+G)');
+      const mlNewick = shownNewick(app);
+
+      engineReports.length = 0;
+      await app.change(methodSelect(app), 'UPGMA');
+      expect(heading(app)).not.toMatch(CLAIMS_A_SEARCH);
+      const upgma = engineReports.at(-1)!;
+      expect(upgma.algorithm, 'the engine was asked for the UPGMA tree').toBe('UPGMA');
+      expect(shownNewick(app), 'the tree shown is the UPGMA tree').toBe(words(upgma.report.newick));
+      expect(shownNewick(app)).not.toBe(mlNewick);
+      expect(lnlCard(app).label).toBe('lnL (JC69, this tree)');
+      expect(callouts(app).join(' | '), 'no ML callout on UPGMA').not.toMatch(/maximum-likelihood search/);
+
+      await app.change(methodSelect(app), 'Maximum Likelihood (ML)');
+      expect(heading(app), 'the search is kept for these rows').toBe('Maximum-likelihood tree (built-in, GTR+G)');
+      expect(shownNewick(app)).toBe(mlNewick);
+      expect(runButtons(app)).toHaveLength(0);
+    });
+  });
+
+  it('BG-01M7RR52 AC1 shows Neighbor-Joining with Run ML search offered again on opening a different alignment after a run', async () => {
+    await withApp(async (app) => {
+      await onTree(app, EIGHT);
+      await app.change(methodSelect(app), 'Maximum Likelihood (ML)');
+      await app.click(runButtons(app)[0]);
+      await searchRuns(app);
+      expect(heading(app), 'the search ran on EIGHT').toBe('Maximum-likelihood tree (built-in, GTR+G)');
+      expect(shownNewick(app)).toContain('HD_1');
+
+      // Restoring a session holding the other alignment, on this tab (File > Restore Autosave): the studio stays open.
+      await app.restoreSession({ documents: [SIX], activeDocId: SIX.id, viewerTab: 'phylogenetics' });
+      expect(methodSelect(app).value, 'Maximum Likelihood stays chosen').toBe('Maximum Likelihood (ML)');
+      expect(shownNewick(app), 'the tree shown is of the other alignment').not.toContain('HD_1');
+      expect(shownNewick(app)).toContain('HD_3');
+      expect(heading(app)).toBe('Neighbor-Joining tree');
+      expect(lnlCard(app).label).toBe('lnL (JC69, this tree)');
+      expect(runButtons(app), 'Run ML search is offered again').toHaveLength(1);
+      expect(callouts(app)).toContain('The maximum-likelihood search (GTR+G) runs when you press Run ML search; the Neighbor-Joining tree is shown until then.Run ML search');
+    });
+  });
+});
