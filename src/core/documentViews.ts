@@ -136,10 +136,30 @@ export function isPreAlignedInputSet(docs: readonly Pick<SequenceDocument, 'sequ
   );
 }
 
+/** The history operation that pairs an imported tree with an alignment of its taxa (US-01M6P2EZ). */
+export const PAIR_ALIGNMENT_OPERATION = 'Pair Alignment';
+
+/**
+ * The document a tree's rows come from, read from its history from the latest entry back: the
+ * first entry whose parentIds name one of `liveDocuments` with at least two alignment rows decides,
+ * so a later pairing wins over an earlier one and an 'Edit Tree' entry (which names the tree
+ * itself) is passed over. A 'Pair Alignment' entry whose alignment is not among `liveDocuments`
+ * (in the trash or erased) ends the walk: the tree has no rows, and `missingId` names the
+ * alignment, so an older pairing is not used in its place.
+ */
+export function treeSourceAlignment(tree: SequenceDocument, liveDocuments: readonly SequenceDocument[]): { doc: SequenceDocument | null; missingId: string | null } {
+  for (let i = tree.history.length - 1; i >= 0; i--) {
+    const entry = tree.history[i];
+    const doc = liveDocuments.find((candidate) => entry.parentIds.includes(candidate.id) && (candidate.alignmentMeta?.sequences?.length ?? 0) > 1);
+    if (doc) return { doc, missingId: null };
+    if (entry.operation === PAIR_ALIGNMENT_OPERATION) return { doc: null, missingId: entry.parentIds[0] ?? null };
+  }
+  return { doc: null, missingId: null };
+}
+
 export function phylogenySourceDocuments(activeDoc: SequenceDocument, selectedDocuments: readonly SequenceDocument[], projectDocuments: readonly SequenceDocument[]): SequenceDocument[] {
   const sources = activeDoc.alignmentMeta?.sequences ?? (isTreeDocument(activeDoc)
-    ? projectDocuments.find((candidate) => activeDoc.history.some((entry) => entry.parentIds.includes(candidate.id)) &&
-      (candidate.alignmentMeta?.sequences?.length ?? 0) > 1)?.alignmentMeta?.sequences : undefined);
+    ? treeSourceAlignment(activeDoc, projectDocuments).doc?.alignmentMeta?.sequences : undefined);
   if (sources && sources.length > 1) {
     // Rows of a stored alignment are aligned by construction unless the source
     // explicitly says otherwise (its alignment metadata sets isAligned to false).

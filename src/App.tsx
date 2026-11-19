@@ -229,6 +229,9 @@ import { ImportedTreeViewer } from './components/ImportedTreeViewer';
 import {
   preferredViewerTab,
   phylogenySourceDocuments,
+  PAIR_ALIGNMENT_OPERATION,
+  treeSourceAlignment,
+  isTreeDocument,
   relevantViewerTabs,
   resolveViewerTab,
   VIEWER_TAB_LABELS,
@@ -1832,6 +1835,9 @@ export const App: React.FC = () => {
   const [phyloInitialAncestralMethod, setPhyloInitialAncestralMethod] =
     useState<AncestralInferenceMethod>('Maximum Likelihood (Empirical Bayes)');
   const [phyloCommandNonce, setPhyloCommandNonce] = useState<number>(0);
+  // The tree a command opening a Phylogenetics module (phylo:* among them) opened the studio for
+  // (US-01M6P2EZ, D0199); null shows the tree viewer, as opening the tab does.
+  const [treeStudioFor, setTreeStudioFor] = useState<string | null>(null);
 
   const [cloningInitialMethod, setCloningInitialMethod] =
     useState<CloningMethodType>('Restriction Ligation');
@@ -2536,6 +2542,26 @@ export const App: React.FC = () => {
     ),
     [activeDoc, selectedAnalysisDocuments, catalogNonDeletedDocs]
   );
+  // Leaving the Phylogenetics tab puts a tree back in its viewer (US-01M6P2EZ).
+  useEffect(() => {
+    if (viewerTab !== 'phylogenetics') setTreeStudioFor(null);
+  }, [viewerTab]);
+  // An imported tree (no rows of its own) is paired with an alignment by a 'Pair Alignment' history
+  // entry; the picker offers the session's live alignments of at least two rows (US-01M6P2EZ).
+  const treePairing = useMemo(() => {
+    if (!activeDoc.docMetadata?.Newick || (activeDoc.alignmentMeta?.sequences?.length ?? 0) > 1) return null;
+    const { doc, missingId } = treeSourceAlignment(activeDoc, catalogNonDeletedDocs);
+    const missingName = missingId === null ? null
+      : catalogAllDocs.find((d) => d.id === missingId)?.name
+        ?? [...activeDoc.history].reverse().find((h) => h.operation === PAIR_ALIGNMENT_OPERATION && h.parentIds[0] === missingId)
+          ?.description.replace(/^Paired with alignment /, '')
+        ?? missingId;
+    return {
+      chosenId: doc?.id ?? '',
+      missingName,
+      choices: activeNonDeletedDocs.filter((d) => !isTreeDocument(d) && (d.alignmentMeta?.sequences?.length ?? 0) > 1),
+    };
+  }, [activeDoc, catalogNonDeletedDocs, catalogAllDocs, activeNonDeletedDocs]);
   const isProteinSequence = activeDoc.moleculeType === 'Protein';
   const hasSequenceData = hasBiologicalSequence(activeDoc);
   const isDnaSequence = activeDoc.moleculeType === 'DNA' && hasSequenceData;
@@ -2954,6 +2980,21 @@ export const App: React.FC = () => {
    * Several documents changed by one action, recorded as one undoable step (US-01M7DQMY AC3):
    * undo and redo restore or reapply every one of them together.
    */
+  /** Pairs the active tree with an alignment: a 'Pair Alignment' history entry naming it (US-01M6P2EZ). */
+  const pairTreeWithAlignment = (alignmentId: string) => {
+    const alignment = activeNonDeletedDocs.find((d) => d.id === alignmentId);
+    if (!alignment) return;
+    const t = new Date().toISOString();
+    handleUpdateDocument({
+      ...activeDoc,
+      updatedAt: t,
+      history: [...activeDoc.history, {
+        id: `hist-${Date.now().toString(36)}`, timestamp: t, operation: PAIR_ALIGNMENT_OPERATION,
+        description: `Paired with alignment ${alignment.name}`, parentIds: [alignment.id], lengthBp: 0, topology: 'linear',
+      }],
+    }, PAIR_ALIGNMENT_OPERATION);
+  };
+
   const handleUpdateDocuments = (updatedDocs: SequenceDocument[], actionLabel: string) => {
     const steps = updatedDocs.flatMap((u) => {
       const prevDoc = documents.find((d) => d.id === u.id);
@@ -3484,6 +3525,15 @@ export const App: React.FC = () => {
       ancestralMethod?: AncestralInferenceMethod;
     }
   ) => {
+    // A tree opens the studio only on at least two source rows (phylogenySourceDocuments: its own,
+    // its paired alignment's, or a same-type selection).
+    if (activeDoc.docMetadata?.Newick) {
+      if (phylogenyInputs.length < 2) {
+        setStatusBanner('Pair this tree with an alignment of the same taxa first.');
+        return;
+      }
+      setTreeStudioFor(activeDoc.id);
+    }
     setPhyloInitialTab(tab);
     if (opts?.treeAlgo) setPhyloInitialTreeAlgo(opts.treeAlgo);
     if (opts?.modelsView) setPhyloInitialModelsView(opts.modelsView);
@@ -16646,14 +16696,58 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   )}
 
                   {viewerTab === 'phylogenetics' && (
+                    activeDoc.docMetadata?.Newick && treeStudioFor === activeDoc.id && phylogenyInputs.length >= 2 ? (
+                      <>
+                        <div className="mbc-tree-studio-back">
+                          <button type="button" className="btn-secondary-sm" onClick={() => setTreeStudioFor(null)}>
+                            Back to tree
+                          </button>
+                        </div>
+                        <PhylogeneticsStudio
+                          key={`tree-studio-${activeDoc.id}`}
+                          documents={phylogenyInputs}
+                          activeDoc={activeDoc}
+                          initialPhyloTab={phyloInitialTab}
+                          initialTreeAlgorithm={phyloInitialTreeAlgo}
+                          initialModelsSubView={phyloInitialModelsView}
+                          initialAncestralMethod={phyloInitialAncestralMethod}
+                          commandNonce={phyloCommandNonce}
+                          initialUserNewick={String(activeDoc.docMetadata.Newick)}
+                        />
+                      </>
+                    ) :
                     activeDoc.docMetadata?.Newick ? (
-                      <ImportedTreeViewer
-                        key={activeDoc.id}
-                        doc={activeDoc}
-                        onUpdateDocument={(d) => handleUpdateDocument(d, 'Edit Tree')}
-                        onDownload={(content, name, mime) => void handleDownloadFile(content, name, mime)}
-                        onDownloadBinary={(bytes, name, mime) => void handleDownloadBinaryFile(bytes, name, mime)}
-                      />
+                      <>
+                        {treePairing && (
+                          <div className="mbc-tree-pairing">
+                            <label>
+                              <span>Paired alignment</span>{' '}
+                              <select
+                                aria-label="Paired alignment"
+                                value={treePairing.chosenId}
+                                onChange={(e) => { if (e.target.value) pairTreeWithAlignment(e.target.value); }}
+                              >
+                                <option value="">Choose an alignment…</option>
+                                {treePairing.choices.map((d) => (
+                                  <option key={d.id} value={d.id}>{d.name}</option>
+                                ))}
+                              </select>
+                            </label>
+                            {treePairing.missingName !== null && (
+                              <span role="status">
+                                {`The paired alignment ${treePairing.missingName} is no longer in the session; choose another.`}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        <ImportedTreeViewer
+                          key={activeDoc.id}
+                          doc={activeDoc}
+                          onUpdateDocument={(d) => handleUpdateDocument(d, 'Edit Tree')}
+                          onDownload={(content, name, mime) => void handleDownloadFile(content, name, mime)}
+                          onDownloadBinary={(bytes, name, mime) => void handleDownloadBinaryFile(bytes, name, mime)}
+                        />
+                      </>
                     ) :
                     phylogenyInputs.length < 2 ? (
                       <div className="mbc-studio-loading-state" role="status">

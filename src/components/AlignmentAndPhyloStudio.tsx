@@ -131,7 +131,9 @@ import { formatAlignmentText, nexusAlphabetWarning } from '../core/alignmentExpo
 import { PairwiseAlignmentView } from './PairwiseAlignmentView';
 import { ResultWarnings } from './ResultWarnings';
 import { exportToGenBank } from '../core/fileParsers';
-import { groupOf, normalizeMsaPresetId } from '../core/operationRunners';
+import { groupOf, normalizeMsaPresetId, sanitizeNewickLabel } from '../core/operationRunners';
+import { parseNewick } from '../core/treeConsensus';
+import { tipNames } from '../core/treeLayout';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 
 export type AlignmentSubMode = 'msa' | 'pairwise' | 'dotplot';
@@ -466,6 +468,29 @@ export interface PhylogeneticsStudioProps {
   initialModelsSubView?: ModelsSubViewId;
   initialAncestralMethod?: AncestralInferenceMethod;
   commandNonce?: number;
+  /**
+   * A tree document's own Newick (US-01M6P2EZ): the user-tree module evaluates it in place of the
+   * studio's own tree, and says which taxa the tree and the rows do not share.
+   */
+  initialUserNewick?: string;
+}
+
+/**
+ * The sentence for a tree and rows that do not hold the same taxa, or null when they do. Names are
+ * compared after sanitizeNewickLabel and shown as written: the tips in tree order, the rows in row
+ * order; a list that is empty is left out.
+ */
+export function treeTaxaMismatch(tips: readonly string[], rows: readonly string[]): string | null {
+  const tipKeys = new Set(tips.map(sanitizeNewickLabel));
+  const rowKeys = new Set(rows.map(sanitizeNewickLabel));
+  const treeOnly = tips.filter((t) => !rowKeys.has(sanitizeNewickLabel(t)));
+  const rowsOnly = rows.filter((r) => !tipKeys.has(sanitizeNewickLabel(r)));
+  if (!treeOnly.length && !rowsOnly.length) return null;
+  return [
+    'The tree and the paired alignment do not hold the same taxa.',
+    ...(treeOnly.length ? [`In the tree only: ${treeOnly.join(', ')}.`] : []),
+    ...(rowsOnly.length ? [`In the alignment only: ${rowsOnly.join(', ')}.`] : []),
+  ].join(' ');
 }
 
 // Alignment-menu MSA commands (preset + nonce) consumed so far; module-level so a remount of the
@@ -6209,6 +6234,7 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
   initialModelsSubView = 'best-models',
   initialAncestralMethod = 'Maximum Likelihood (Empirical Bayes)',
   commandNonce = 0,
+  initialUserNewick,
 }) => {
   const [evoTab, setEvoTab] = useState<PhyloModuleTab>(initialPhyloTab);
 
@@ -6233,7 +6259,7 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
   const [showBootstrap, setShowBootstrap] = useState<boolean>(true);
 
   // User Tree state
-  const [customNewickText, setCustomNewickText] = useState<string>('');
+  const [customNewickText, setCustomNewickText] = useState<string>(initialUserNewick ?? '');
 
   // Ancestors state
   const [ancestralMethod, setAncestralMethod] =
@@ -6609,6 +6635,22 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [customNewickText, phyloRep.newick, taxaNames, alignedSeqs, evoTab]
   );
+  // A tree document's taxa against the rows (US-01M6P2EZ); a Newick the parser cannot read is left
+  // to the engine, which says why it did not evaluate it.
+  const userTreeTaxaMismatch = useMemo(() => {
+    if (initialUserNewick === undefined || !tabIs('usertree')) return null;
+    let tips: string[];
+    try {
+      tips = tipNames(parseNewick(customNewickText || phyloRep.newick));
+    } catch {
+      return null;
+    }
+    return treeTaxaMismatch(tips, taxaNames);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialUserNewick, customNewickText, phyloRep.newick, taxaNames, evoTab]);
+  const userTreeNotEvaluated = initialUserNewick === undefined ? null : userTreeRep?.notes.find((n) => n.startsWith('Tree not evaluated')) ?? null;
+  // Either one draws no figure: the engine's numbers would be for a tree it did not evaluate.
+  const userTreeRefusal = userTreeTaxaMismatch ?? userTreeNotEvaluated;
   const userTreeLayoutReport = useMemo(
     () =>
       layoutNewickPhylogeneticTreeRust(
@@ -8050,6 +8092,12 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
               />
             </label>
 
+            {userTreeRefusal && (
+              <div className="info-callout" role="status" style={{ margin: '8px 0' }}>
+                {userTreeRefusal}
+              </div>
+            )}
+            {!userTreeRefusal && (<>
             <div className="thermo-kpi-grid">
               <div className="kpi-box">
                 <span className="kpi-label">lnL (JC69) / AICc</span>
@@ -8112,9 +8160,10 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
                 ))}
               </tbody>
             </WorkbenchSmartTable>
+            </>)}
           </div>
 
-          <div className="studio-card">
+          {!userTreeRefusal && (<div className="studio-card">
             <div className="studio-card-header">
               <h3>Find Gene Duplications (Speciation vs Duplication Nodes)</h3>
             </div>
@@ -8223,7 +8272,7 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
               ))}
             </svg>
             </div>
-          </div>
+          </div>)}
         </div>
       )}
 
