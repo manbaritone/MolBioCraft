@@ -26,6 +26,8 @@ export type MenuNode =
       icon?: React.ReactNode;
       description?: string;
       shortcut?: string;
+      /** A key shown on the row but not bound by the menu, where another listener owns it (⌘K). */
+      shortcutHint?: string;
       disabled?: boolean;
       onSelect: () => void;
     }
@@ -724,7 +726,7 @@ const CascadingMenuLevel: React.FC<MenuLevelProps> = ({
               type="button"
               role={supportsNativeFocusGroup ? undefined : 'menuitem'}
               aria-describedby={hasActiveTip ? tooltipDomId : undefined}
-              aria-keyshortcuts={shortcutLabelToAriaKeyshortcuts(node.shortcut)}
+              aria-keyshortcuts={shortcutLabelToAriaKeyshortcuts(node.shortcut || node.shortcutHint)}
               disabled={node.disabled}
               className="desktop-menu-row"
               onFocus={(e) =>
@@ -787,60 +789,15 @@ const CascadingMenuLevel: React.FC<MenuLevelProps> = ({
                 ) : null;
               })()}
               <span className="desktop-menu-label">{node.label}</span>
-              {node.shortcut && (
+              {(node.shortcut || (node.kind === 'command' && node.shortcutHint)) && (
                 <span className="desktop-menu-hint" aria-hidden="true">
-                  <kbd>{node.shortcut}</kbd>
+                  <kbd>{node.shortcut || (node.kind === 'command' ? node.shortcutHint : undefined)}</kbd>
                 </span>
               )}
             </button>
           );
         })}
 
-        {depth === 0 && !isContextMenu && (
-          <>
-            <hr className="desktop-menu-sep desktop-menu-info-sep" />
-            <button
-              type="button"
-              role="menuitemcheckbox"
-              aria-checked={showFunctionInfo}
-              className="desktop-menu-row desktop-menu-info-toggle-row"
-              onPointerEnter={(e) => {
-                recordPointerSample(e.clientX, e.clientY);
-                setActiveTooltip(null);
-                focusMenuRowFromPointer(e.currentTarget);
-                if (openSubmenu !== null) {
-                  clearHoverTimer();
-                  setOpenSubmenu(null);
-                }
-              }}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                clearHoverTimer();
-              }}
-              onKeyDown={(e) => {
-                if (e.key === ' ' || e.key === 'Enter') {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onToggleFunctionInfo();
-                }
-              }}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onToggleFunctionInfo();
-              }}
-            >
-              <Info size={13} className="desktop-menu-info-icon" aria-hidden="true" />
-              <span className="desktop-menu-label">Function Info</span>
-              <span
-                className={`desktop-menu-info-pill ${showFunctionInfo ? 'is-on' : 'is-off'}`}
-                aria-hidden="true"
-              >
-                <span className="desktop-menu-info-pill-knob" />
-              </span>
-            </button>
-          </>
-        )}
       </div>
 
       {showFunctionInfo &&

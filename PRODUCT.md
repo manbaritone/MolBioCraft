@@ -76,7 +76,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 
 ## Accessibility & Inclusion
 
-- Keyboard-first navigation: the common commands have menu shortcuts (⌘K, ⌘F, ⇧⌘F, ⌘N, ⌘O, ⌘S, ⇧⌘E, ⌘I, ⇧⌘R, ⌥⌘I, ⌘1–⌘9, ⌥⌘1–⌥⌘3, ⌘,, F1), all listed in Preferences › Keyboard
+- Keyboard-first navigation: the common commands have menu shortcuts (⌘K, ⌘F, ⌘N, ⌘O, ⌘S, ⇧⌘E, ⌘I, ⇧⌘R, ⌥⌘I, ⌘1–⌘9, ⌥⌘1–⌥⌘3, ⌘,, F1), all listed in Preferences › Keyboard
 - High-contrast multi-tone SVG palettes (Standard and Okabe-Ito colorblind-safe)
 - Scalable vector output maintains legibility at any zoom level
 - Screen-reader accessible React components with semantic HTML structure

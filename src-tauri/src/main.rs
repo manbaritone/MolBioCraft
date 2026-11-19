@@ -1473,8 +1473,19 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &item("help:panel", "Show Help Panel", Some("F1"))?,
             &item("help:shortcuts", "Keyboard Shortcuts", None)?,
             &item("help:tutorials", "Tutorials & Samples", None)?,
-            &item("help:examples", "Load Example Data…", None)?,
             &item("help:vector-guide", "Vector Guide", None)?,
+        ],
+    )?;
+
+    // US-01M7QCN2: the evolution examples and the two benchmark documents, none needing a session.
+    let help_examples_sub = submenu_escaped(
+        app,
+        "Load Example Data",
+        true,
+        &[
+            &item("help:examples", "Evolution Examples…", None)?,
+            &item("help:bench-genome", "500 kbp Annotated Genome", None)?,
+            &item("help:bench-protein", "10,000 aa Protein", None)?,
         ],
     )?;
 
@@ -1492,7 +1503,7 @@ fn build_macos_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         app,
         "Help",
         true,
-        &[&help_guides_sub, &help_about_sub],
+        &[&help_guides_sub, &help_examples_sub, &help_about_sub],
     )?;
 
     Menu::with_items(

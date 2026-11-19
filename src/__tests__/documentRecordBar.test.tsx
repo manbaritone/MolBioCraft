@@ -669,11 +669,8 @@ describe('the record bar (US-01M6Q10G)', () => {
         pick: (type, props) => type === 'input' && props.id === 'mbc-toolbar-global-search-input',
         act: (props) => (props.onChange as (e: unknown) => void)({ target: { value: target.name } }),
       },
-      {
-        what: `the search hit for ${target.name}`,
-        pick: (type, props) => type === 'button' && hasClass(props, 'mbc-header-search-item') && childText(props.children).includes('File') && childText(props.children).includes(target.name),
-        act: (props) => (props.onMouseDown as (e: unknown) => void)({ preventDefault() {} }),
-      },
+      // Typing in the header search opens ⌘K with the text (US-01M7QCN2, D0255): the hit is ⌘K's row.
+      press(`⌘K's hit for ${target.name}`, (p) => hasClass(p, 'mbc-cmd-palette-item') && childText(p.children).includes(`${target.name} (${target.accession})`)),
     ], target.name, 'the toolbar\'s file search');
   });
 });

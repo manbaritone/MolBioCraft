@@ -1752,9 +1752,8 @@ describe('Folder-Aware Dynamic Columns, Universal Table Filter & Column Popover 
     expect(appSrc).toContain('handleSelectProjectFolder(folder);');
     expect(appSrc).toContain('computeViewportClampedContextMenuPosition(');
 
-    // CascadingMenuPopup supports isContextMenu to hide Function Info and suppress auto-icons
+    // CascadingMenuPopup supports isContextMenu to suppress auto-icons
     expect(menuSrc).toContain('isContextMenu?: boolean;');
-    expect(menuSrc).toContain('depth === 0 && !isContextMenu');
     expect(appSrc).toContain('folderContextMenu && <CascadingMenuPopup');
     expect(appSrc).toContain('isContextMenu={true}');
 

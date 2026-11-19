@@ -8,10 +8,13 @@
  * dispatcher binds, the toolbar items are the ones each dropdown draws, and ⌘K is read from its DOM.
  */
 
+import { readFileSync } from 'node:fs';
+import { act } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import { mountApp, type AppHarness } from './appHarness';
-import type { LiveElement } from './liveDom';
+import { dispatchLiveEvent, type LiveElement } from './liveDom';
+import { DOC_TABLE_COLUMN_PRESETS } from '../core/workbenchBatchOperations';
 import {
   COMMANDS, COMMAND_BY_ID, PLATFORM_SHORTCUTS, isGeneratedCommand, SECOND_KEYS, TOOLBAR_GROUPS, formatCommandShortcut, menubarNodeAt,
   registryShortcuts, type RegistryMenuNode, type ToolbarGroupId,
@@ -130,8 +133,9 @@ describe('US-01M6Q1N2 AC1: every surface shows the registry label and shortcut',
         if (first) expect({ label, key }, `${id} in ${where} and ${first.where}`).toEqual({ label: first.label, key: first.key });
         else seen.set(id, { label, key, where });
       };
-      for (const l of bar) check(l.node.id!, l.node.label ?? '', l.node.shortcut ?? '', 'menubar');
-      for (const l of tb) check(l.node.id!, l.node.label ?? '', l.node.shortcut ?? '', 'toolbar');
+      // A row's key is the one it binds, or the one it shows for another listener (the Command Palette's ⌘K).
+      for (const l of bar) check(l.node.id!, l.node.label ?? '', l.node.shortcut ?? l.node.shortcutHint ?? '', 'menubar');
+      for (const l of tb) check(l.node.id!, l.node.label ?? '', l.node.shortcut ?? l.node.shortcutHint ?? '', 'toolbar');
       // ⌘K: every command the toolbar shows, each found by its label.
       const shared = [...new Map(tb.map((l) => [l.node.id!, l])).values()].filter((l) => !isGeneratedCommand(l.node.id!));
       expect(shared.length, 'the toolbar shares commands with the menubar').toBeGreaterThan(60);
@@ -151,7 +155,7 @@ describe('US-01M6Q1N2 AC1: every surface shows the registry label and shortcut',
       const bindings = collectMenuShortcutBindings(menubar() as never);
       for (const b of bindings) expect(linuxKey(b.id), `binding ${b.id}`).not.toBe('');
       const bound = new Set(bindings.map((b) => COMMAND_BY_ID.get(b.id)!.shortcut));
-      expect([...new Set(COMMANDS.flatMap((c) => (c.shortcut ? [c.shortcut] : [])))].filter((s) => s !== 'F1' && !bound.has(s)), 'registry keys no binding takes').toEqual([]);
+      expect([...new Set(COMMANDS.flatMap((c) => (c.shortcut ? [c.shortcut] : [])))].filter((s) => s !== 'F1' && s !== 'Mod+K' && !bound.has(s)), 'registry keys no binding takes (F1 and ⌘K have their own listeners, D0255 (2))').toEqual([]);
     } finally {
       app.unmount();
     }
@@ -169,7 +173,7 @@ describe('US-01M6Q1N2 AC2: ⌘K finds every menubar command by its path', () => 
         const hit = (await palette(app, l.node.label ?? '')).filter((i) => i.id === l.node.id);
         if (hit.length !== 1) { missing.push(`${l.node.id} ${l.path.join(' › ')}`); continue; }
         expect(hit[0].path, `${l.node.id}'s path`).toBe(l.path.join(' › '));
-        expect(hit[0].key, `${l.node.id}'s shortcut`).toBe(l.node.shortcut ?? '');
+        expect(hit[0].key, `${l.node.id}'s shortcut`).toBe(l.node.shortcut ?? l.node.shortcutHint ?? '');
       }
       expect(missing, 'menubar leaves ⌘K does not find').toEqual([]);
       const gibson = await paletteCommand(app, 'gibson', 'act-gibson');
@@ -407,4 +411,227 @@ describe('US-01M6Q1N2 AC12: Map Gallery and Compare Table are registry commands 
       app.unmount();
     }
   }, 120_000);
+});
+
+// ─── US-01M7QCN2: the header search, Help › Load Example Data, Function Info and Table Columns ───
+
+const rowsLabelled = (app: AppHarness, text: string) =>
+  app.all('button.desktop-menu-row').filter((b) => words(b.querySelectorAll('.desktop-menu-label')[0]?.textContent) === text);
+function menubarButton(app: AppHarness, name: string): LiveElement {
+  const found = app.all('.mbc-menubar button.menu-item').filter((b) => words(b.textContent) === name);
+  if (found.length !== 1) throw new Error(`the menubar draws ${found.length} ${name} menus`);
+  return found[0];
+}
+/** Clicks `top` on the menubar, then each row of `path` in turn (the last one is chosen). */
+async function chooseMenu(app: AppHarness, top: string, path: string[]) {
+  await app.click(menubarButton(app, top));
+  for (const label of path) {
+    const rows = rowsLabelled(app, label);
+    if (rows.length !== 1) throw new Error(`"${label}" is drawn ${rows.length} times`);
+    await app.click(rows[0]);
+  }
+}
+async function closeMenus(app: AppHarness, opener: LiveElement) {
+  for (let i = 0; i < 3 && app.all('button.desktop-menu-row').length; i++) await app.click(opener);
+  expect(app.all('button.desktop-menu-row'), 'the menus closed').toHaveLength(0);
+}
+const toast = (app: AppHarness) => words(app.all('.statusbar-toast-text')[0]?.textContent);
+const topSub = (top: string, label: string) => {
+  const sub = menubar()[TOP.indexOf(top)].filter((n) => n.kind === 'submenu' && n.label === label);
+  if (sub.length !== 1) throw new Error(`${top} has ${sub.length} "${label}" submenus at its top level`);
+  return sub[0];
+};
+const labelsOf = (nodes: readonly Node[] | undefined) => (nodes ?? []).filter((n) => n.kind !== 'separator').map((n) => n.label);
+const nativeItems = (src: string) => [...src.matchAll(/item\(\s*"([^"]+)",\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]);
+const EXAMPLES = ['Evolution Examples…', '500 kbp Annotated Genome', '10,000 aa Protein'];
+const LOADED: Record<string, RegExp> = {
+  '500 kbp Annotated Genome': /^Loaded ".+" \(500,000 bp, \d+ annotations; [\d,]+ KiB held in memory\)$/,
+  '10,000 aa Protein': /^Loaded ".+" \(10,000 aa, \d+ annotations; [\d,]+ KiB held in memory\)$/,
+};
+
+describe('US-01M7QCN2 AC1: Help › Load Example Data offers the two benchmark documents', () => {
+  it('US-01M7QCN2 AC1 Help Load Example Data offers the two benchmark documents', async () => {
+    // The native Help menu: the same three items in their own submenu, out of Guides, none needing a session.
+    const mainRs = readFileSync('src-tauri/src/main.rs', 'utf8');
+    const native = mainRs.slice(mainRs.indexOf('let help_examples_sub'), mainRs.indexOf('let help_about_sub'));
+    expect(nativeItems(native), 'the native Help › Load Example Data').toEqual([
+      ['help:examples', 'Evolution Examples…'], ['help:bench-genome', '500 kbp Annotated Genome'], ['help:bench-protein', '10,000 aa Protein'],
+    ]);
+    expect(native).toContain('"Load Example Data"');
+    const guides = mainRs.slice(mainRs.indexOf('let help_guides_sub'), mainRs.indexOf('let help_examples_sub'));
+    expect(nativeItems(guides).map((i) => i[0]), 'Guides no longer holds it').not.toContain('help:examples');
+    expect(mainRs.slice(mainRs.indexOf('let help_menu'), mainRs.indexOf('let help_menu') + 300)).toMatch(/&help_guides_sub,\s*&help_examples_sub,\s*&help_about_sub/);
+
+    // Each benchmark from the in-window menu, without a session and with one; and from the native id.
+    for (const withSession of [false, true]) {
+      for (const label of Object.keys(LOADED)) {
+        for (const via of ['menu', 'native'] as const) {
+          const what = `${label} from the ${via}, ${withSession ? 'in a session' : 'with no session'}`;
+          const app = await mountApp();
+          try {
+            if (withSession) await app.restoreSession({ documents: [PLASMID], activeDocId: PLASMID.id, viewerTab: 'sequence-view' });
+            const sub = topSub('Help', 'Load Example Data');
+            expect(labelsOf(sub.children), `${what}: the submenu`).toEqual(EXAMPLES);
+            expect((sub.children ?? []).map((n) => Boolean(n.disabled)), `${what}: none greyed`).toEqual([false, false, false]);
+            if (via === 'menu') await chooseMenu(app, 'Help', ['Load Example Data', label]);
+            else await app.menu(label.startsWith('500') ? 'help:bench-genome' : 'help:bench-protein');
+            expect(toast(app), what).toMatch(LOADED[label]);
+            expect(app.railTabs().length, `${what}: a session is open`).toBeGreaterThan(0);
+          } finally {
+            app.unmount();
+          }
+        }
+      }
+    }
+
+    // ⌘K finds both under Help › Load Example Data, once each, and runs the menu's loader.
+    const app = await mountApp();
+    try {
+      const found = (await palette(app, 'benchmark')).filter((i) => i.path === `Help › Load Example Data › ${i.label}`);
+      expect(found.map((i) => [i.label, i.id]), '⌘K "benchmark"').toEqual([['500 kbp Annotated Genome', 'help-bench-genome'], ['10,000 aa Protein', 'help-bench-protein']]);
+      const named = await palette(app, '10,000 aa Protein');
+      expect(named.filter((i) => i.label === '10,000 aa Protein').map((i) => i.id), 'listed once').toEqual(['help-bench-protein']);
+      await app.click(named.find((i) => i.label === '10,000 aa Protein')!.el);
+      expect(toast(app), 'chosen from ⌘K').toMatch(LOADED['10,000 aa Protein']);
+    } finally {
+      app.unmount();
+    }
+  }, 120_000);
+});
+
+describe('US-01M7QCN2 AC2: the header search opens the command palette', () => {
+  it('US-01M7QCN2 AC2 the header search opens the command palette with what was typed', async () => {
+    await onRecords(PLASMID.id, async (app) => {
+      const search = app.one('#mbc-toolbar-global-search-input', 'the header search');
+      const table = () => words(app.one('.doc-table-scroll', 'the document table').textContent);
+      const open = () => app.all('.mbc-cmd-palette-input');
+      // ⌘K toggles the palette shut (the harness's Escape does not reach the dialog).
+      const shut = async () => {
+        if (open().length) await app.press('k', { mod: true });
+        expect(open(), 'the palette is shut').toHaveLength(0);
+      };
+      const listed = () => app.all('.mbc-cmd-palette-item').map((el) => words(el.querySelector('strong')?.textContent));
+      expect(table(), 'both records listed').toMatch(/CR_Plasmid[\s\S]*CR_Protein|CR_Protein[\s\S]*CR_Plasmid/);
+
+      await app.input(search, 'gibson');
+      expect(open(), 'typing opens ⌘K').toHaveLength(1);
+      expect(open()[0].value, 'with the text typed').toBe('gibson');
+      expect(listed(), '⌘K lists Gibson Assembly').toContain('Gibson Assembly');
+      expect(search.value, 'the header field keeps no query').toBe('');
+      expect(app.all('.mbc-header-search-results'), 'no second list under the field').toHaveLength(0);
+      expect(table(), 'the document table is not filtered').toContain('CR_Plasmid');
+      expect(table()).toContain('CR_Protein');
+      await shut();
+      expect(open(), 'closed').toHaveLength(0);
+
+      // ⇧⌘F: a second key that opens ⌘K for one release (D0017 (3)).
+      await app.press('f', { mod: true, shift: true });
+      expect(open().map((i) => i.value), '⇧⌘F opens ⌘K empty').toEqual(['']);
+      await shut();
+
+      // Focus alone does not open it; a click or Enter on the empty field does (D0255 (4)).
+      // The live DOM fires no focus events, so the focusin a browser fires (React's onFocus) is
+      // dispatched here, and its focusout after (React's select plugin reads a selection the live DOM lacks).
+      search.focus();
+      await act(async () => { dispatchLiveEvent(search, 'focusin', {}); });
+      await app.settle();
+      expect(open(), 'focus alone').toHaveLength(0);
+      await act(async () => { dispatchLiveEvent(search, 'focusout', {}); });
+      await app.click(search);
+      expect(open().map((i) => i.value), 'a click on the empty field').toEqual(['']);
+      await shut();
+      search.focus();
+      await app.press('Enter');
+      expect(open().map((i) => i.value), 'Enter on the empty field').toEqual(['']);
+      await shut();
+
+      // View › Search & Filter: Command Palette (⌘K) and Filter Folder (⌥⌘F), no Search Workspace.
+      const sf = menubar()[TOP.indexOf('View')].filter((n) => n.kind === 'submenu').flatMap((n) => n.children ?? []).find((n) => n.kind === 'submenu' && n.label === 'Search & Filter')
+        ?? menubar()[TOP.indexOf('View')].find((n) => n.kind === 'submenu' && n.label === 'Search & Filter');
+      const rows = (sf?.children ?? []).map((n) => [n.label, n.shortcut ?? n.shortcutHint ?? '']);
+      expect(rows).toContainEqual(['Command Palette', 'Ctrl+K']);
+      expect(rows).toContainEqual(['Filter Folder', 'Ctrl+Alt+F']);
+      expect(rows.map((r) => r[0])).not.toContain('Search Workspace');
+      // Shown, not bound (D0255 (2)): the ⌘K listener is the one binding, so the menu binds no key for it.
+      expect(collectMenuShortcutBindings(menubar() as never).filter((b) => b.id === 'view-search-tools'), 'the menu binds no key for Command Palette').toEqual([]);
+      await chooseMenu(app, 'View', ['Search & Filter']);
+      const cp = rowsLabelled(app, 'Command Palette');
+      expect(cp.map((r) => [words(r.querySelector('.desktop-menu-hint')?.textContent), r.getAttribute('aria-keyshortcuts')]), 'the row shows ⌘K').toEqual([['Ctrl+K', 'Control+K']]);
+      await app.click(cp[0]);
+      expect(open().map((i) => i.value), 'the menu item opens ⌘K').toEqual(['']);
+      await shut();
+      await app.menu('view:search-tools');
+      expect(open().map((i) => i.value), 'the native Search Tools & Files opens ⌘K').toEqual(['']);
+    });
+  }, 60_000);
+});
+
+describe('US-01M7QCN2 AC3: the menus no longer carry the Function Info switch', () => {
+  it('US-01M7QCN2 AC3 no popup has a Function Info row and the View switch still governs the descriptions', async () => {
+    await onRecords(PLASMID.id, async (app) => {
+      const tips = () => app.all('[role="tooltip"]').map((t) => words(t.textContent)).filter(Boolean);
+      const noRow = (what: string) => {
+        expect(app.all('.desktop-menu-popup').length, `${what}: a popup is drawn`).toBeGreaterThan(0);
+        expect(app.all('.desktop-menu-info-toggle-row'), `${what}: no Function Info row`).toHaveLength(0);
+        expect(app.all('.desktop-menu-popup button').filter((b) => words(b.textContent) === 'Function Info'), what).toHaveLength(0);
+      };
+      const hover = async (row: LiveElement) => {
+        await act(async () => { dispatchLiveEvent(row, 'pointerover', { pointerId: 1, pointerType: 'mouse', isPrimary: true }); });
+        await app.settle();
+      };
+      const view = menubarButton(app, 'View');
+      await app.click(view);
+      noRow('the View dropdown');
+      await hover(rowsLabelled(app, 'Show Menu Function Info')[0]);
+      expect(tips(), 'hovering shows its description while on').toEqual(['Show or hide short function description tooltips when hovering or focusing menu items']);
+      await app.click(rowsLabelled(app, 'Panels')[0]);
+      noRow('the View › Panels submenu');
+      await closeMenus(app, view);
+
+      const tool = app.all('button.mbc-tool-btn')[0];
+      await app.click(tool);
+      noRow('a toolbar dropdown');
+      await closeMenus(app, tool);
+
+      // Switched off from View: no description on hover.
+      await chooseMenu(app, 'View', ['Show Menu Function Info']);
+      if (!app.all('button.desktop-menu-row').length) await app.click(view);
+      const sw = rowsLabelled(app, 'Show Menu Function Info')[0];
+      expect(sw.getAttribute('aria-checked'), 'the View switch reads off').toBe('false');
+      await hover(sw);
+      expect(tips(), 'no description once off').toEqual([]);
+      await closeMenus(app, view);
+
+      // Preferences › General keeps the switch.
+      menubarLeaves().find((l) => l.node.id === 'app-prefs-open')!.node.onSelect!();
+      await app.settle();
+      expect(words(app.doc.body.textContent)).toContain('Show short function descriptions when hovering or focusing menu items');
+    });
+  }, 60_000);
+});
+
+describe('US-01M7QCN2 AC4: View › Table Columns offers presets and opens the column chooser', () => {
+  it('US-01M7QCN2 AC4 View Table Columns lists the presets and Choose Columns opens the document table Columns menu', async () => {
+    await onRecords(PLASMID.id, async (app) => {
+      const sub = topSub('View', 'Table Columns');
+      expect(labelsOf(sub.children), 'View › Table Columns').toEqual([
+        ...Object.values(DOC_TABLE_COLUMN_PRESETS).map((p) => p.label), 'Lock Column Order', 'Save Current State', 'Choose Columns…',
+      ]);
+      expect((sub.children ?? []).filter((n) => n.kind === 'checkbox').map((n) => n.label), 'no per-column checkbox').toEqual(['Lock Column Order']);
+      expect(app.all('.mbc-columns-popover'), 'the Columns menu starts closed').toHaveLength(0);
+      await chooseMenu(app, 'View', ['Table Columns', 'Choose Columns…']);
+      expect(app.all('.mbc-columns-popover[aria-label="Choose Visible Table Columns"]'), 'Choose Columns… opens the Columns menu').toHaveLength(1);
+      const heads = () => app.all('.doc-table-scroll th').map((th) => words(th.textContent));
+      // %GC: the document table's own label for it ('% GC').
+      const isGc = (t: string) => /^% ?GC$/.test(t);
+      const gcItems = () => app.all('.mbc-columns-check-item').filter((l) => isGc(words(l.querySelector('.mbc-columns-check-label')?.textContent)));
+      expect(gcItems(), 'the Columns menu lists %GC once').toHaveLength(1);
+      const shown = () => app.all('.doc-table-scroll th').some((th) => isGc(words(th.textContent)));
+      const before = shown();
+      await app.click(gcItems()[0].querySelector('input')!);
+      expect(shown(), 'toggling %GC flips the column').toBe(!before);
+      await app.click(gcItems()[0].querySelector('input')!);
+      expect(shown(), 'and back').toBe(before);
+    });
+  }, 60_000);
 });

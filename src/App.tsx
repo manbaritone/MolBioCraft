@@ -1501,7 +1501,6 @@ export const App: React.FC = () => {
   const [navIndex, setNavIndex] = useState<number>(0);
 
   const [tableFilter, setTableFilter] = useState<string>('');
-  const [globalSearchQuery, setGlobalSearchQuery] = useState<string>('');
   const [helpMenuSearch, setHelpMenuSearch] = useState<string>('');
   const [docTableCollapsed, setDocTableCollapsed] = useState<boolean>(false);
   /** Folds or shows the document table for a workbench event (opening a document folds it; selecting rows never does). */
@@ -1728,8 +1727,6 @@ export const App: React.FC = () => {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
   const [commandPaletteQuery, setCommandPaletteQuery] = useState<string>('');
   const [commandPaletteIdx, setCommandPaletteIdx] = useState<number>(0);
-  const [headerSearchFocused, setHeaderSearchFocused] = useState<boolean>(false);
-  const [headerSearchIdx, setHeaderSearchIdx] = useState<number>(0);
   const [sidebarWidthPx, setSidebarWidthPx] = useState<number>(
     () => loadPersistedWorkspaceLayout().sidebarWidthPx
   );
@@ -2401,22 +2398,12 @@ export const App: React.FC = () => {
   );
 
   const filteredDocuments = useMemo(() => {
-    const globalStr = globalSearchQuery.trim().toLowerCase();
     const searchableColIds = orderedVisibleDocColumns
       .filter((c) => c.id !== 'icon')
       .map((c) => c.id);
 
     const scope = wholeProjectSearch && activeDocFilterCount > 0 ? catalogNonDeletedDocs : docsInSelectedFolder;
     const baseList = scope.filter((d) => {
-      if (
-        globalStr &&
-        !d.name.toLowerCase().includes(globalStr) &&
-        !d.accession.toLowerCase().includes(globalStr) &&
-        !d.description.toLowerCase().includes(globalStr)
-      ) {
-        return false;
-      }
-
       if (activeDocFilterCount === 0) return true;
 
       const metrics = computeDocumentTableMetrics(d);
@@ -2440,7 +2427,6 @@ export const App: React.FC = () => {
     docFilterRules,
     docFilterMatchMode,
     activeDocFilterCount,
-    globalSearchQuery,
     favoriteIdsSet,
     sortColumn,
     sortDirection,
@@ -4903,16 +4889,18 @@ export const App: React.FC = () => {
     const items: PaletteItem[] = [
       {
         id: 'bench-genome-500k',
-        label: 'Load 500,000 bp Annotated Chromosome (benchmark)',
-        category: 'Large Genome',
-        hint: '500 kbp',
+        label: registryCommand('help-bench-genome').label,
+        category: 'Help',
+        hint: 'benchmark, 500 kbp',
+        commandId: 'help-bench-genome',
         run: () => handleLoadBenchmarkDocument('genome-500k'),
       },
       {
         id: 'bench-protein-10k',
-        label: 'Load 10,000 aa Multi-Domain Polyprotein (benchmark)',
-        category: 'Giant Protein',
-        hint: '10k aa',
+        label: registryCommand('help-bench-protein').label,
+        category: 'Help',
+        hint: 'benchmark, 10k aa',
+        commandId: 'help-bench-protein',
         run: () => handleLoadBenchmarkDocument('protein-10k'),
       },
       ...STUDIOS.map((entry): PaletteItem => ({ ...studioCommandItem(entry), commandId: `view-studio-${entry.id}` })),
@@ -4957,141 +4945,6 @@ export const App: React.FC = () => {
     hostOs,
   ]);
 
-  const headerSearchMatches = useMemo(() => {
-    const q = globalSearchQuery.trim().toLowerCase();
-    if (!q) return [];
-
-    const candidates: {
-      id: string;
-      label: string;
-      category: string;
-      hint: string;
-      run: () => void;
-      studio?: StudioId;
-    }[] = [
-      {
-        id: 'hs-new-seq',
-        label: 'New Sequence',
-        category: 'Tool',
-        hint: sc('N'),
-        run: () => handleStartNewSession('new-sequence'),
-      },
-      {
-        id: 'hs-import-seq',
-        label: 'Import Sequence Files',
-        category: 'Import',
-        hint: `.gb / .fasta / .ab1 • ${sc('I')}`,
-        run: () => triggerImportFilesPicker(),
-      },
-      ...STUDIOS.map((entry) => studioCommandItem(entry)),
-      {
-        id: 'hs-blast',
-        label: 'BLAST Search',
-        category: 'Tool',
-        hint: 'BLAST',
-        run: () => {
-          if (!sessionActive) handleStartNewSession('sample-library');
-          setBlastModalOpen(true);
-        },
-      },
-      {
-        id: 'hs-prefs',
-        label: 'Preferences',
-        category: 'Settings',
-        hint: sc(','),
-        run: () => setPrefsModalTab('General'),
-      },
-      {
-        id: 'hs-examples',
-        label: 'Load Example Data…',
-        category: 'Help',
-        hint: 'Microsatellite runs, grouped alignment, gene/species trees, supported tree',
-        run: () => { setHomeViewActive(false); setOperationDialog({ kind: 'examples' }); },
-      },
-      {
-        id: 'hs-wf-manage',
-        label: 'Manage Workflows…',
-        category: 'Workflows',
-        hint: 'Create, edit, import or export workflows',
-        run: () => { setHomeViewActive(false); setManageWorkflowsOpen(true); },
-      },
-      {
-        id: 'hs-wf-run',
-        label: 'Run Workflow…',
-        category: 'Workflows',
-        hint: 'Run a saved workflow on the selection',
-        run: () => { setHomeViewActive(false); setRunWorkflowFor({}); },
-      },
-      ...[
-        { id: 'plugin-euk-gene-predictor', label: 'Eukaryotic Gene Predictor', hint: 'Bioinformatics Plugin • Exons & Kozak' },
-        { id: 'plugin-microbial-gene-predictor', label: 'Microbial Gene Predictor', hint: 'Bioinformatics Plugin • Shine-Dalgarno RBS' },
-        { id: 'plugin-crispr-repeat-arrays', label: 'CRISPR Repeat Array Finder', hint: 'Bioinformatics Plugin • Direct Repeats & Spacers' },
-        { id: 'plugin-tandem-repeat-finder', label: 'Microsatellite & Tandem Repeats', hint: 'Bioinformatics Plugin • STR / VNTR Scanner' },
-        { id: 'plugin-haplotype-partitioner', label: 'Haplotype & Allele Partitioner', hint: 'Bioinformatics Plugin • Hd & Segregating Sites' },
-        { id: 'plugin-taxonomic-classifier', label: 'Taxonomic Sequence Classifier', hint: 'Bioinformatics Plugin • k-mer & CpG/UpA' },
-        { id: 'plugin-species-delimitation', label: 'Species Delimitation', hint: 'Bioinformatics Plugin • Barcode Gap & P(RD)' },
-        { id: 'plugin-protein-domains-epitopes', label: 'Protein Domains & Epitopes', hint: 'Bioinformatics Plugin • PROSITE, GOR IV & Kolaskar' },
-        { id: 'plugin-transmembrane-topology', label: 'Transmembrane & Signal Topology', hint: 'Bioinformatics Plugin • TM Helices & Signal Peptide' },
-        { id: 'plugin-adapter-quality-trimmer', label: 'Adapter & Quality Read Trimmer', hint: 'Bioinformatics Plugin • Adapter & Mott Trimming' },
-        { id: 'plugin-genome-synteny-blocks', label: 'Whole-Genome Synteny Blocks', hint: 'Bioinformatics Plugin • LCB Anchors & Inversions' },
-        { id: 'plugin-hpc-phylogeny-script', label: 'HPC Phylogeny Job Builder', hint: 'Bioinformatics Plugin • PHYLIP + Slurm Script' },
-        { id: 'plugin-external-cli-suite', label: 'External CLI Suite', hint: 'Bioinformatics Plugin • Reproducible Shell Commands' },
-      ].map((p) => ({
-        id: `hs-${p.id}`,
-        label: p.label,
-        category: 'Bioinformatics Plugins',
-        hint: p.hint,
-        run: () => {
-          if (!sessionActive) handleStartNewSession('sample-library');
-          openPluginTool(p.id);
-        },
-      })),
-      // Every operation options window (Multiple Alignment…, Find ORFs…, …).
-      ...(Object.keys(OPERATION_LABELS) as OperationId[]).map((op) => ({
-        id: `hs-op-${op}`,
-        label: `${OPERATION_LABELS[op]}…`,
-        category: 'Operation',
-        hint: opShortcuts.shortcuts[op] ? formatShortcut(opShortcuts.shortcuts[op]!, IS_MAC_PLATFORM) : 'Options window',
-        run: () => {
-          setHomeViewActive(false);
-          openOperationRef.current(op);
-        },
-      })),
-    ];
-
-    const searchableDocs = sessionActive ? activeNonDeletedDocs : SAMPLE_LIBRARY;
-    for (const d of searchableDocs) {
-      candidates.push({
-        id: `hs-doc-${d.id}`,
-        label: d.name,
-        category: 'File',
-        hint: `${d.accession} • ${d.sequence.length.toLocaleString()} ${
-          d.moleculeType === 'Protein' ? 'aa' : 'bp'
-        }`,
-        run: () => {
-          if (!sessionActive) {
-            setSessionActive(true);
-          }
-          setHomeViewActive(false);
-          setOpenTabIds((prev) => (prev.includes(d.id) ? prev : [...prev, d.id]));
-          selectDocumentWithHistory(d.id);
-          applyDocTableEvent({ kind: 'open' });
-          if (d.chromatogram) {
-            setViewerTab('sanger-contig');
-          }
-        },
-      });
-    }
-
-    return candidates
-      .filter(
-        (it) =>
-          it.label.toLowerCase().includes(q) ||
-          it.category.toLowerCase().includes(q) ||
-          it.hint.toLowerCase().includes(q)
-      )
-      .slice(0, 8);
-  }, [globalSearchQuery, sessionActive, activeNonDeletedDocs, hostOs, opShortcuts]);
 
   // Cross-platform global keyboard shortcuts (Cmd ⌘ on macOS; Ctrl on Windows & Linux)
   const primaryShortcutHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
@@ -7683,6 +7536,12 @@ export const App: React.FC = () => {
         case 'help:panel':
           setHelpPanelOpen((o) => !o);
           break;
+        case 'help:bench-genome':
+          handleLoadBenchmarkDocument('genome-500k');
+          break;
+        case 'help:bench-protein':
+          handleLoadBenchmarkDocument('protein-10k');
+          break;
         case 'help:examples':
           // Works without a session: adding the examples opens one.
           setHomeViewActive(false);
@@ -7903,9 +7762,10 @@ requireActiveSession(() => handleCopySequenceToClipboard());
           requireActiveSession(() => handleFocusFolderFilter());
           break;
         case 'view:search-tools':
-          window.setTimeout(() => {
-            document.getElementById('mbc-toolbar-global-search-input')?.focus();
-          }, 30);
+          // The native 'Search Tools & Files' (⇧⌘F) opens ⌘K (D0255 (3)).
+          setCommandPaletteQuery('');
+          setCommandPaletteIdx(0);
+          setCommandPaletteOpen(true);
           break;
         case 'view:search-project':
           requireActiveSession(() => openProjectSearch(PROJECT_ROOT, 'Entire project'));
@@ -8721,10 +8581,11 @@ requireActiveSession(() => handleCopySequenceToClipboard());
       ev.preventDefault();
       requireActiveSession(() => handleFocusFolderFilter());
     } else if (key === 'f' && ev.shiftKey && !ev.altKey) {
+      // D0017 (3): ⇧⌘F is a second key that opens ⌘K, for one release, then removed.
       ev.preventDefault();
-      window.setTimeout(() => {
-        document.getElementById('mbc-toolbar-global-search-input')?.focus();
-      }, 30);
+      setCommandPaletteQuery('');
+      setCommandPaletteIdx(0);
+      setCommandPaletteOpen(true);
     } else if (key === 'a' && ev.altKey && !ev.shiftKey) {
       ev.preventDefault();
       requireActiveSession(() =>
@@ -10411,11 +10272,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             kind: 'command',
             id: 'view-search-tools',
             label: registryCommand('view-search-tools').label,
-            shortcut: registryKey('view-search-tools'),
+            // Shown, not bound: the ⌘K listener is the one binding (D0255 (2)).
+            shortcutHint: registryKey('view-search-tools'),
             onSelect: () => {
-              window.setTimeout(() => {
-                document.getElementById('mbc-toolbar-global-search-input')?.focus();
-              }, 30);
+              setCommandPaletteQuery('');
+              setCommandPaletteIdx(0);
+              setCommandPaletteOpen(true);
             },
           },
           {
@@ -10553,7 +10415,44 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         label: 'Table Columns',
         disabled: !sessionActive,
         minWidth: 220,
-        children: buildTableColumnsMenuNodes('view-cols'),
+        children: [
+          ...(Object.keys(DOC_TABLE_COLUMN_PRESETS) as DocTableColumnPresetId[]).map(
+            (presetId): MenuNode => ({
+              kind: 'command',
+              id: `view-cols-preset-${presetId}`,
+              label: DOC_TABLE_COLUMN_PRESETS[presetId].label,
+              onSelect: () => requireActiveSession(() => handleApplyColumnPreset(presetId)),
+            })
+          ),
+          { kind: 'separator', id: 'view-cols-sep-1' },
+          {
+            kind: 'checkbox',
+            id: 'view-cols-col-lock',
+            label: 'Lock Column Order',
+            checked: lockColumnOrder,
+            onToggle: () => requireActiveSession(() => setLockColumnOrder((v) => !v)),
+          },
+          {
+            kind: 'command',
+            id: 'view-cols-col-save',
+            label: 'Save Current State',
+            onSelect: () => requireActiveSession(() => handleSaveDocColumnState()),
+          },
+          {
+            kind: 'command',
+            id: 'view-cols-choose',
+            label: 'Choose Columns…',
+            // The document table's own Columns menu, every column a checkbox (US-01M7QCN2).
+            onSelect: () =>
+              requireActiveSession(() => {
+                setDocTableCollapsed(false);
+                setDocColumnsAnchorRect(
+                  document.querySelector('.mbc-columns-trigger-btn')?.getBoundingClientRect() ?? null
+                );
+                setDocColumnsPopoverOpen(true);
+              }),
+          },
+        ],
       },
       {
         kind: 'command',
@@ -12203,11 +12102,31 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             label: registryCommand('help-tutorials').label,
             onSelect: () => handleStartNewSession('sample-library'),
           },
+        ],
+      },
+      {
+        kind: 'submenu',
+        id: 'help-examples-sub',
+        label: 'Load Example Data',
+        minWidth: 230,
+        children: [
           {
             kind: 'command',
             id: 'help-examples',
             label: registryCommand('help-examples').label,
             onSelect: () => { setHomeViewActive(false); setOperationDialog({ kind: 'examples' }); },
+          },
+          {
+            kind: 'command',
+            id: 'help-bench-genome',
+            label: registryCommand('help-bench-genome').label,
+            onSelect: () => handleLoadBenchmarkDocument('genome-500k'),
+          },
+          {
+            kind: 'command',
+            id: 'help-bench-protein',
+            label: registryCommand('help-bench-protein').label,
+            onSelect: () => handleLoadBenchmarkDocument('protein-10k'),
           },
         ],
       },
@@ -12357,7 +12276,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
   const toolbarGroup = (id: ToolbarGroupId): MenuNode[] => toolbarMenuItems(Object.values(topMenus), topMenuLabels, id);
   // ⌘K (US-01M6Q1N2): with a query, every menubar command whose label or path matches, ranked and
   // capped, with its path, key, availability and the menu's own handler; each studio carries its
-  // View › Studios command's path, key, availability and handler (merged, not listed twice). An
+  // View › Studios command's path, key, availability and handler, and each benchmark loader its Help ›
+  // Load Example Data command's (merged, not listed twice). An
   // empty query lists the studios, the two benchmark loaders, the colour-blind palette switch and
   // the documents.
   const PALETTE_COMMAND_CAP = 60;
@@ -12367,7 +12287,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
     const byId = new Map(commands.map((c) => [c.id, c]));
     const extras = commandPaletteExtras.map((it): PaletteItem => {
       const c = it.commandId ? byId.get(it.commandId) : undefined;
-      // A studio is its View › Studios command: that item's path, key, greyed state, reason and handler.
+      // A studio is its View › Studios command, and a benchmark its Help › Load Example Data command:
+      // that item's path, key, greyed state, reason and handler.
       return c ? { ...it, path: c.path, shortcut: c.shortcut, disabled: c.disabled, reason: c.reason, run: c.run } : it;
     });
     const q = commandPaletteQuery.trim();
@@ -13252,119 +13173,37 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
               autoCorrect="off"
               autoCapitalize="off"
               spellCheck={false}
-              value={globalSearchQuery}
-              onFocus={() => {
-                setHeaderSearchFocused(true);
-                setHeaderSearchIdx(0);
-              }}
-              onBlur={() => {
-                setHeaderSearchFocused(false);
+              value=""
+              aria-haspopup="dialog"
+              onClick={(e) => {
+                // A click on the field opens ⌘K empty, as pressing ⌘K does (D0255 (4)); focus alone does not.
+                setCommandPaletteQuery('');
+                setCommandPaletteIdx(0);
+                setCommandPaletteOpen(true);
+                // ⌘K's own field takes the focus, and the typing, from here.
+                e.currentTarget.blur();
               }}
               onChange={(e) => {
-                setGlobalSearchQuery(e.target.value);
-                setHeaderSearchFocused(true);
-                setHeaderSearchIdx(0);
+                // ⇧⌘F folds into ⌘K (US-01M7QCN2): what is typed here opens ⌘K with that text.
+                setCommandPaletteQuery(e.target.value);
+                setCommandPaletteIdx(0);
+                setCommandPaletteOpen(true);
               }}
               onKeyDown={(e) => {
-                if (e.key === 'ArrowDown' && headerSearchMatches.length > 0) {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                   e.preventDefault();
-                  setHeaderSearchFocused(true);
-                  setHeaderSearchIdx((i) =>
-                    Math.min(headerSearchMatches.length - 1, i + 1)
-                  );
-                } else if (e.key === 'ArrowUp' && headerSearchMatches.length > 0) {
-                  e.preventDefault();
-                  setHeaderSearchFocused(true);
-                  setHeaderSearchIdx((i) => Math.max(0, i - 1));
-                } else if (
-                  e.key === 'Enter' &&
-                  !e.nativeEvent.isComposing &&
-                  headerSearchMatches.length > 0
-                ) {
-                  e.preventDefault();
-                  const chosen =
-                    headerSearchMatches[
-                      Math.min(headerSearchIdx, headerSearchMatches.length - 1)
-                    ];
-                  if (chosen) {
-                    chosen.run();
-                    setGlobalSearchQuery('');
-                    setHeaderSearchFocused(false);
-                    (e.currentTarget as HTMLInputElement).blur();
-                  }
+                  setCommandPaletteQuery('');
+                  setCommandPaletteIdx(0);
+                  setCommandPaletteOpen(true);
+                  e.currentTarget.blur();
                 } else if (e.key === 'Escape') {
-                  e.stopPropagation();
-                  if (globalSearchQuery.length > 0) {
-                    setGlobalSearchQuery('');
-                  } else {
-                    setHeaderSearchFocused(false);
-                    (e.currentTarget as HTMLInputElement).blur();
-                  }
+                  (e.currentTarget as HTMLInputElement).blur();
                 }
               }}
             />
-            {globalSearchQuery.length > 0 ? (
-              <button
-                type="button"
-                className="toolbar-search-clear"
-                aria-label="Clear search query"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  setGlobalSearchQuery('');
-                  setHeaderSearchIdx(0);
-                }}
-              >
-                <X size={11} aria-hidden="true" />
-              </button>
-            ) : (
-              <kbd className="toolbar-search-kbd" aria-hidden="true">
-                {sc('F', { shift: true })}
-              </kbd>
-            )}
-            {headerSearchFocused && globalSearchQuery.trim().length > 0 && (
-              <div
-                className="mbc-header-search-results"
-                role="listbox"
-                aria-label="Matching tools and project files"
-              >
-                {headerSearchMatches.length > 0 ? (
-                  headerSearchMatches.map((item, idx) => (
-                    <button
-                      type="button"
-                      key={item.id}
-                      data-studio={item.studio}
-                      role="option"
-                      aria-selected={idx === headerSearchIdx}
-                      className={`mbc-header-search-item ${
-                        idx === headerSearchIdx ? 'selected' : ''
-                      }`}
-                      onMouseEnter={() => setHeaderSearchIdx(idx)}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        item.run();
-                        setGlobalSearchQuery('');
-                        setHeaderSearchFocused(false);
-                      }}
-                    >
-                      <span className="mbc-header-search-label">
-                        <span className="mbc-search-leading-icon" aria-hidden="true">
-                          {item.studio ? studioIconElement(STUDIOS.find((e) => e.id === item.studio)!.icon, 14) : resolveMenuItemIcon(item.id, item.label, false, 14)}
-                        </span>
-                        <span>{item.label}</span>
-                      </span>
-                      <span className="mbc-header-search-meta">
-                        <span className="mbc-cmd-cat-pill">{item.category}</span>
-                        <span>{item.hint}</span>
-                      </span>
-                    </button>
-                  ))
-                ) : (
-                  <div className="mbc-header-search-empty">
-                    No matching tools or project files
-                  </div>
-                )}
-              </div>
-            )}
+            <kbd className="toolbar-search-kbd" aria-hidden="true">
+              {sc('K')}
+            </kbd>
           </search>
 
           <div className="toolbar-dropdown-anchor">
@@ -14630,7 +14469,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                               <span>
                                 No favorite sequences yet — click the star icon on any row to bookmark a sequence.
                               </span>
-                            ) : activeDocFilterCount > 0 || globalSearchQuery.trim().length > 0 ? (
+                            ) : activeDocFilterCount > 0 ? (
                               <span className="mbc-empty-inline-recovery">
                                 <span>
                                   No sequences in <strong>{folderLabel(selectedFolder)}</strong> match the current search or filter.
@@ -14641,7 +14480,6 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                                   onClick={() => {
                                     setTableFilter('');
                                     setDocFilterRules([]);
-                                    setGlobalSearchQuery('');
                                   }}
                                 >
                                   Clear Search &amp; Filters

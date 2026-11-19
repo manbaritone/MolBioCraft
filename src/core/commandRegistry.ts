@@ -120,7 +120,7 @@ const MENUBAR_COMMANDS: readonly CommandSpec[] = [
   { id: 'view-back', label: 'Back', path: ['View', 'History'], shortcut: 'Mod+[' },
   { id: 'view-fwd', label: 'Forward', path: ['View', 'History'], shortcut: 'Mod+]' },
   { id: 'view-filter-folder', label: 'Filter Folder', path: ['View', 'Search & Filter'], shortcut: 'Mod+Alt+F' },
-  { id: 'view-search-tools', label: 'Search Workspace', path: ['View', 'Search & Filter'], shortcut: 'Mod+Shift+F' },
+  { id: 'view-search-tools', label: 'Command Palette', path: ['View', 'Search & Filter'], shortcut: 'Mod+K' },
   { id: 'view-search-project', label: 'Search Project…', path: ['View', 'Search & Filter'] },
   { id: 'view-tog-sidebar', label: 'Project Sidebar', path: ['View', 'Panels'] },
   { id: 'view-tog-doctable', label: 'Document Table', path: ['View', 'Panels'] },
@@ -355,7 +355,9 @@ const MENUBAR_COMMANDS: readonly CommandSpec[] = [
   { id: 'help-shortcuts', label: 'Keyboard Shortcuts', path: ['Help', 'Guides'] },
   { id: 'help-vec-guide', label: 'Vector Guide', path: ['Help', 'Guides'] },
   { id: 'help-tutorials', label: 'Sample Tutorial', path: ['Help', 'Guides'] },
-  { id: 'help-examples', label: 'Load Example Data…', path: ['Help', 'Guides'] },
+  { id: 'help-examples', label: 'Evolution Examples…', path: ['Help', 'Load Example Data'] },
+  { id: 'help-bench-genome', label: '500 kbp Annotated Genome', path: ['Help', 'Load Example Data'] },
+  { id: 'help-bench-protein', label: '10,000 aa Protein', path: ['Help', 'Load Example Data'] },
   { id: 'help-updates', label: 'Check for Updates', path: ['Help', 'About'] },
   { id: 'help-about', label: 'About MolBioCraft', path: ['Help', 'About'] },
   { id: 'view-no-tabs', label: 'No tabs open', path: ['View', 'Open Tabs'] },
@@ -397,12 +399,13 @@ export function command(id: string): CommandSpec {
 }
 
 /**
- * Second keys of registry commands that no menu shows: D0017 (3)'s ⌥⌘S for Save Session (one release,
- * then removed), Ctrl+Y for Redo (the document undo listener), and the two native Edit keys the
+ * Second keys of registry commands that no menu shows: D0017 (3)'s ⌥⌘S for Save Session and ⇧⌘F for
+ * the Command Palette (each for one release, then removed), Ctrl+Y for Redo (the document undo listener), and the two native Edit keys the
  * in-window Edit › Selection shows as ⌘C and ⌘A until US-01M6Q159 builds the native menu from here.
  */
 export const SECOND_KEYS: readonly { shortcut: string; commandId: string }[] = [
   { shortcut: 'Mod+Alt+S', commandId: 'file-save-mbc' },
+  { shortcut: 'Mod+Shift+F', commandId: 'view-search-tools' },
   { shortcut: 'Mod+Y', commandId: 'edit-redo-cmd' },
   { shortcut: 'Mod+Shift+C', commandId: 'edit-copy-seq' },
   { shortcut: 'Mod+Shift+A', commandId: 'edit-sel-all' },
@@ -448,6 +451,8 @@ export interface RegistryMenuNode {
   id?: string;
   label?: string;
   shortcut?: string;
+  /** A key the row shows but the menu does not bind (the Command Palette's ⌘K, owned by its listener). */
+  shortcutHint?: string;
   description?: string;
   disabled?: boolean;
   children?: RegistryMenuNode[];
@@ -520,7 +525,7 @@ export function menubarCommands(trees: readonly (readonly RegistryMenuNode[])[],
       if (!run || !n.id || seen.has(n.id)) continue;
       seen.add(n.id);
       out.push({
-        id: n.id, label: n.label ?? '', path: [...path, n.label ?? ''], shortcut: n.shortcut || undefined,
+        id: n.id, label: n.label ?? '', path: [...path, n.label ?? ''], shortcut: n.shortcut || n.shortcutHint || undefined,
         disabled: off, reason: off ? (n.disabled && n.description ? n.description : why) : undefined, run,
       });
     }

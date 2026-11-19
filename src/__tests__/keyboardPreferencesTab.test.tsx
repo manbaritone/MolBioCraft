@@ -133,8 +133,10 @@ const EXPLICIT_HANDLER_COMBOS: Combo[] = [
 /**
  * Ctrl+Y is the primary handler's second Redo key; no menu item shows it, so its row is Redo's (Ctrl+Shift+Z).
  * Ctrl+Alt+S is Save Session's second key for one release (D0017 (3), D0244), shown in no menu: its row is Ctrl+S.
+ * Ctrl+Shift+F is the Command Palette's second key for one release (D0017 (3), D0255): its row is Ctrl+K.
  */
-const ROW_OF: Record<string, string> = { 'Ctrl+Y': 'Ctrl+Shift+Z', 'Ctrl+Alt+S': 'Ctrl+S' };
+const EXPLICIT_ROW_PRESS: Record<string, [string, PressModifiers]> = { 'Ctrl+K': ['k', { mod: true }] };
+const ROW_OF: Record<string, string> = { 'Ctrl+Y': 'Ctrl+Shift+Z', 'Ctrl+Alt+S': 'Ctrl+S', 'Ctrl+Shift+F': 'Ctrl+K' };
 
 const labelOf = (c: Combo) => formatPlatformShortcut(c.key.toUpperCase(), 'linux', c.mods);
 
@@ -229,7 +231,9 @@ describe('US-01M6P2G2 AC3: a combination an explicit handler consumes is listed 
       expect(pressed.rows, `one Keyboard row for ${rowLabel}`).toHaveLength(1);
       expect(pressed.after, `${label} changes the App`).not.toEqual(pressed.before);
       const path = pressed.rows[0][0];
-      const chosen = await launch(combo, rowLabel, (app) => runMenuPath(app, path));
+      // An explicit row (no menu path) is its own listener's key: Ctrl+K's row is the ⌘K listener (D0255 (2)).
+      const explicit = EXPLICIT_ROW_PRESS[rowLabel];
+      const chosen = await launch(combo, rowLabel, (app) => (path.includes(' > ') || !explicit ? runMenuPath(app, path) : app.press(...explicit)));
       expect(chosen.rows).toEqual(pressed.rows);
       expect(chosen.before, 'both launches start from the same state').toEqual(pressed.before);
       expect(chosen.after, `${label} runs ${path}`).toEqual(pressed.after);

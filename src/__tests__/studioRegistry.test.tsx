@@ -343,11 +343,14 @@ describe('US-01M6Q16Q AC4: ⌘K and the header search list each studio once unde
       expect(app.activeTab()).toBe('cloning-gel');
       expect(studioTabs(app).filter((t) => t.view === 'cloning-gel').map((t) => t.name)).toEqual(['Cloning & Gel']);
 
-      const search = app.one('#mbc-toolbar-global-search-input', 'the header search');
+      // The header search opens ⌘K with what is typed (US-01M7QCN2, D0255): each studio is found there once.
       for (const entry of STUDIOS) {
-        await app.input(search, entry.name);
-        const hits = app.all('.mbc-header-search-item');
-        const named = hits.filter((h) => words(h.querySelectorAll('.mbc-header-search-label')[0]?.textContent ?? '') === entry.name);
+        if (app.all('.mbc-cmd-palette-input').length) await app.press('k', { mod: true });
+        await app.input(app.one('#mbc-toolbar-global-search-input', 'the header search'), entry.name);
+        expect(app.one('.mbc-cmd-palette-input', '⌘K, opened by the header search').value).toBe(entry.name);
+        const hits = app.all('.mbc-cmd-palette-item');
+        // The studio's own item (a menu command may share its name, as Primers & CRISPR's submenu does).
+        const named = hits.filter((h) => h.getAttribute('data-studio') && words(h.querySelector('strong')?.textContent ?? '') === entry.name);
         expect(named.map((h) => h.getAttribute('data-studio')), `the header search for "${entry.name}" lists it once`).toEqual([entry.id]);
         expect(hits.filter((h) => h.getAttribute('data-studio')).map((h) => h.getAttribute('data-studio')), `"${entry.name}" lists no other studio item twice`)
           .toEqual([...new Set(hits.filter((h) => h.getAttribute('data-studio')).map((h) => h.getAttribute('data-studio')))]);

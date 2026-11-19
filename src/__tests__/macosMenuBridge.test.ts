@@ -1803,7 +1803,8 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
       resolveMenuNodeFunctionDescription('view-cols-pctGc', '%GC', undefined, false)
     ).toContain('Show or hide the "%GC" column');
 
-    // 3. CascadingMenuPopup renders inline non-closing Function Info menuitemcheckbox toggle row
+    // 3. CascadingMenuPopup draws no Function Info switch row (US-01M7QCN2 AC3): View › Show Menu Function
+    // Info and Preferences › General keep the switch, and the description still shows on hover (part 4).
     const popupItems: MenuNode[] = [
       {
         kind: 'command',
@@ -1833,11 +1834,11 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
         onCloseAll: () => {},
       })
     );
-    expect(popupOnHtml).toContain('desktop-menu-info-toggle-row');
-    expect(popupOnHtml).toContain('Function Info');
-    expect(popupOnHtml).toContain('desktop-menu-info-pill is-on');
-    expect(popupOnHtml).toContain('role="menuitemcheckbox"');
-    expect(popupOnHtml).toContain('aria-checked="true"');
+    expect(popupOnHtml).toContain('Pairwise / Multiple Align');
+    expect(popupOnHtml).not.toContain('desktop-menu-info-toggle-row');
+    expect(popupOnHtml).not.toContain('Function Info');
+    expect(popupOnHtml).not.toContain('desktop-menu-info-pill');
+    expect(popupOnHtml).not.toContain('role="menuitemcheckbox"');
 
     const popupOffHtml = renderToStaticMarkup(
       React.createElement(CascadingMenuPopup, {
@@ -1847,8 +1848,9 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
         onCloseAll: () => {},
       })
     );
-    expect(popupOffHtml).toContain('desktop-menu-info-pill is-off');
-    expect(popupOffHtml).toContain('aria-checked="false"');
+    expect(popupOffHtml).toContain('Pairwise / Multiple Align');
+    expect(popupOffHtml).not.toContain('desktop-menu-info-toggle-row');
+    expect(popupOffHtml).not.toContain('desktop-menu-info-pill');
 
     // 4. Verify WCAG 1.4.13 tooltip wiring in CascadingMenu.tsx + CSS + View menu + Preferences -> General
     expect(cascadingMenuSrc).toContain('role="tooltip"');

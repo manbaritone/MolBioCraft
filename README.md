@@ -164,11 +164,12 @@ The builds are not yet signed by Apple or Microsoft (the macOS app carries only 
 
 ## Keyboard Shortcuts
 
+The search box at the top of the window opens the command palette (`⌘K` / `Ctrl+K`) with what you type. For this release `⇧⌘F` / `Ctrl+Shift+F` also opens the palette as a second key; it will be removed in a later release.
+
 | Menu path | macOS | Windows &amp; Linux |
 | :--- | :--- | :--- |
 | **Quick Command Navigator** | `⌘K` | `Ctrl+K` |
 | **Edit > Find & Navigate > Find in Sequence** | `⌘F` | `Ctrl+F` |
-| **View > Search & Filter > Search Workspace** | `⇧⌘F` | `Ctrl+Shift+F` |
 | **File > New Session > Sequences & Vectors > New Sequence** | `⌘N` | `Ctrl+N` |
 | **File > New Session > Blank Session** | `⌥⌘N` | `Ctrl+Alt+N` |
 | **File > Open Session > Open Session** | `⌘O` | `Ctrl+O` |

@@ -702,18 +702,19 @@ describe('library and storage names', () => {
     has('proteomics', 'Predicted Disulfides');
     expect(wordsOf(renders.history)).toMatch(/Lineage: (Topological DAG Verified|Cyclic Graph) • \d+ nodes across \d+ layer\(s\)/);
     const palette = wordsOf(renders['command palette']);
-    expect(palette).toContain('Load 500,000 bp Annotated Chromosome (benchmark)');
-    expect(palette).toContain('Load 10,000 aa Multi-Domain Polyprotein (benchmark)');
+    // The benchmark loaders are Help › Load Example Data commands, which ⌘K lists (US-01M7QCN2, D0255).
+    expect(palette).toContain('500 kbp Annotated Genome Help › Load Example Data › 500 kbp Annotated Genome');
+    expect(palette).toContain('10,000 aa Protein Help › Load Example Data › 10,000 aa Protein');
   });
 
   it('keeps library and storage names out of studio headings, in the notices a run leaves', () => {
     // Loading the benchmark chromosome from the palette leaves a notice in the status bar.
-    const html = renderApp({ session: 'sample-library', clicks: [/Navigator$/, /^Load 500,000 bp Annotated Chromosome/] });
+    const html = renderApp({ session: 'sample-library', clicks: [/Navigator$/, /^500 kbp Annotated Genome/] });
     const banner = wordsOf(/<span class="statusbar-toast-text">([\s\S]*?)<\/span>/.exec(html)?.[1] ?? '');
     expect(banner).toMatch(/^Loaded ".+" \(500,000 bp, \d+ annotations; [\d,]+ KiB held in memory\)$/);
     expect(banner).not.toMatch(JARGON);
     // Choosing the polyprotein again switches to the one already loaded, with its own notice.
-    const again = renderApp({ session: 'sample-library', clicks: [/Navigator$/, /^Load 10,000 aa Multi-Domain Polyprotein/, /Navigator$/, /^Load 10,000 aa Multi-Domain Polyprotein/] });
+    const again = renderApp({ session: 'sample-library', clicks: [/Navigator$/, /^10,000 aa Protein/, /Navigator$/, /^10,000 aa Protein/] });
     const switched = wordsOf(/<span class="statusbar-toast-text">([\s\S]*?)<\/span>/.exec(again)?.[1] ?? '');
     expect(switched).toMatch(/^Switched to benchmark document ".+" \(10,000 aa\)$/);
 
