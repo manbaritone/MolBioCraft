@@ -6302,7 +6302,8 @@ export const App: React.FC = () => {
     e.stopPropagation();
     fileDragDepthRef.current = 0;
     setIsFileDragActive(false);
-    const fileList = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+    // A drop that carries no files (a table-column drag bubbling up) is not a file drop.
+    const fileList = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
     if (fileList.length === 0) return;
     await importIncomingFilesBatch(fileList, 'replace', 'dropped');
   };

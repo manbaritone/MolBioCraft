@@ -1810,3 +1810,44 @@ describe("US-01M7DVV8 AC5: a row's name opens its record by id", () => {
     });
   });
 });
+
+describe('BG-01M7SY31 AC1: a drop on the workbench with no dataTransfer or no files is ignored', () => {
+  it('BG-01M7SY31 AC1 a drop with no dataTransfer, one with no files and one with an empty file list throw nothing, import nothing and clear the drop overlay', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => { rejections.push(reason); };
+    process.on('unhandledRejection', onRejection);
+    try {
+      await withApp(async (app) => {
+        await restore(app, [CA, CB], CA.id);
+        const docs = [CA, CB];
+        const shown = () => tableRows(app).map((r) => rowAccession(r, docs)).sort();
+        const before = shown();
+        expect(before, 'the fixture: both records in the table').toEqual([CA.accession, CB.accession].sort());
+        const workbench = app.one('.mbc-workbench', 'the workbench drop target');
+        const overlay = () => app.all('.mbc-window-drop-overlay').length;
+        const drops: [string, Record<string, unknown>][] = [
+          ['no dataTransfer', {}],
+          ['a dataTransfer with no files property', { dataTransfer: { types: ['text/plain'] } }],
+          ['a dataTransfer with an empty file list', { dataTransfer: { types: ['Files'], files: [] } }],
+        ];
+        for (const [what, init] of drops) {
+          await React.act(async () => { dispatchLiveEvent(workbench, 'dragenter', { dataTransfer: { types: ['Files'], files: [] } }); });
+          await app.settle();
+          expect(overlay(), `the fixture: a file drag over the workbench shows the drop overlay before ${what}`).toBe(1);
+          let ev: ReturnType<typeof dispatchLiveEvent> | undefined;
+          await React.act(async () => { ev = dispatchLiveEvent(workbench, 'drop', init); });
+          await app.settle();
+          // Unhandled rejections are reported after the microtask queue drains.
+          await new Promise((r) => setImmediate(r));
+          await new Promise((r) => setImmediate(r));
+          expect(ev!.defaultPrevented, `the workbench drop handler ran on ${what}`).toBe(true);
+          expect(rejections.map(String), `a drop with ${what} raises no unhandled rejection`).toEqual([]);
+          expect(overlay(), `a drop with ${what} clears the drop overlay`).toBe(0);
+          expect(shown(), `a drop with ${what} imports nothing and leaves the documents as they were`).toEqual(before);
+        }
+      });
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+});
