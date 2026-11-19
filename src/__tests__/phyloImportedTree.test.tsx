@@ -390,7 +390,10 @@ const STARTED = 'Started Phylogenetic Analysis session';
 const ALIGN_BUILD_OPENED = 'Opened the Align DNA then build tree tools — set the inputs there to run it.';
 const goneSentence = (name: string) => `The paired alignment ${name} is no longer in the session; choose another.`;
 const fewRowsSentence = (name: string) => `The paired alignment ${name} has fewer than two rows; choose another.`;
-/** The toolbar's Workflows > Alignment & Trees > Align & Build Tree, clicked as a user does. */
+/**
+ * The toolbar's Workflows > Pipelines > Align & Build Tree, clicked as a user does: the dropdown
+ * projects the menubar's Tools > Pipelines, so the row is the registry command tools-wf-align-tree-run.
+ */
 async function alignAndBuildTree(app: AppHarness): Promise<void> {
   const rowNamed = (text: string, where: string) => {
     const found = app.all('button').filter((b) => words(b.textContent) === text);
@@ -398,7 +401,7 @@ async function alignAndBuildTree(app: AppHarness): Promise<void> {
     return found[0];
   };
   await app.click(rowNamed('Workflows', 'the toolbar\'s Workflows button'));
-  await app.click(rowNamed('Alignment & Trees', 'the Alignment & Trees row'));
+  await app.click(rowNamed('Pipelines', 'the Pipelines row'));
   await app.click(rowNamed('Align & Build Tree', 'the Align & Build Tree row'));
 }
 
