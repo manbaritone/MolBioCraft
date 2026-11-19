@@ -1,17 +1,18 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-//! The genbank_to port (US-01M7RC3P, D0227-D0229) against genbank_to 0.54's own output on the
+//! The genbank_to port (US-01M7RC3P, US-01M7RC56, D0227, D0228, D0240) against genbank_to 0.54's own output on the
 //! hand-written fixture `fixtures/genbank_to/oracle.gbk`. The expected files, the command lines that
 //! wrote them and every line changed by hand (with its D0227 item) are in that folder's README.md.
 
 use molbiocraft_core::SequenceDocument;
 use molbiocraft_formats::genbank_to::{
-    genbank_record_id, genbank_to_faa, genbank_to_fna, genbank_to_functions, genbank_to_gbk_files,
-    genbank_to_orfs, genbank_to_separate, split_genbank_records, GenbankToOptions,
+    genbank_record_id, genbank_to_amrfinder, genbank_to_faa, genbank_to_fna, genbank_to_functions,
+    genbank_to_gbk_files, genbank_to_gff3, genbank_to_orfs, genbank_to_phage_finder,
+    genbank_to_ptt, genbank_to_separate, split_genbank_records, GenbankToOptions,
     GenbankToSequenceOutput,
 };
-use molbiocraft_formats::{export_genbank_flatfile, parse_genbank_flatfile};
+use molbiocraft_formats::{export_genbank_flatfile, export_gff3_noodles, parse_genbank_flatfile};
 
 const ORACLE: &str = include_str!("fixtures/genbank_to/oracle.gbk");
 const FNA: &str = include_str!("fixtures/genbank_to/expected/oracle.fna");
@@ -22,6 +23,8 @@ const PSEUDO_FAA: &str = include_str!("fixtures/genbank_to/expected/oracle.pseud
 const FUNCTIONS: &str = include_str!("fixtures/genbank_to/expected/oracle.functions.tsv");
 const PSEUDO_FUNCTIONS: &str =
     include_str!("fixtures/genbank_to/expected/oracle.pseudo.functions.tsv");
+const PTT: &str = include_str!("fixtures/genbank_to/expected/oracle.ptt");
+const PHAGE_FINDER: &str = include_str!("fixtures/genbank_to/expected/oracle.phage_finder.tsv");
 
 const NO_VERSION_WARNING: &str =
     "Record OR000003 has no VERSION line, so its accession is used as its id.";
@@ -504,8 +507,17 @@ fn test_data_file(rel: &str) -> Option<String> {
     let p = dir.join(rel);
     match std::fs::read_to_string(&p) {
         Ok(s) => Some(s),
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {
-            assert!(!required, "reference data required (MOLBIOCRAFT_REQUIRE_TEST_DATA=1) but absent: {}", p.display());
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            assert!(
+                !required,
+                "reference data required (MOLBIOCRAFT_REQUIRE_TEST_DATA=1) but absent: {}",
+                p.display()
+            );
             eprintln!("skipped: reference data absent ({})", p.display());
             None
         }
@@ -552,13 +564,18 @@ const BIOPYTHON_COMMENTS: [(&str, &str); 7] = [
 fn import_comment_matches_biopython_on_real_files() {
     let mut differ = Vec::new();
     for (rel, want) in BIOPYTHON_COMMENTS {
-        let Some(text) = test_data_file(rel) else { continue };
+        let Some(text) = test_data_file(rel) else {
+            continue;
+        };
         let doc = parse_genbank_flatfile(&text, rel);
         if comment_of(&doc) != Some(want) {
             differ.push(rel);
         }
     }
-    assert!(differ.is_empty(), "Comment differs from Biopython 1.88 on {differ:?}");
+    assert!(
+        differ.is_empty(),
+        "Comment differs from Biopython 1.88 on {differ:?}"
+    );
 }
 
 fn organism_of(d: &SequenceDocument) -> Option<&str> {
@@ -614,19 +631,28 @@ fn import_organism_matches_biopython() {
         ),
     ];
     for (organism, want) in cases {
-        assert_eq!(organism_of(&organism_record(organism)), Some(want), "{organism:?}");
+        assert_eq!(
+            organism_of(&organism_record(organism)),
+            Some(want),
+            "{organism:?}"
+        );
     }
 
     // The reviewer's file: '  ORGANISM  Unknown.' then '            Unclassified.'.
     if let Some(text) = test_data_file("ncbi/X02514.gb") {
-        assert_eq!(organism_of(&parse_genbank_flatfile(&text, "X02514")), Some("Unknown."));
+        assert_eq!(
+            organism_of(&parse_genbank_flatfile(&text, "X02514")),
+            Some("Unknown.")
+        );
     }
 
     // Every record of every test-data GenBank file: Organism is Biopython's organism, and absent
     // where Biopython's is '' (D0229 keeps no empty value; pBAD30.gb's ORGANISM line is empty).
     let mut differ = Vec::new();
     for (rel, want) in BIOPYTHON_ORGANISMS {
-        let Some(text) = test_data_file(rel) else { continue };
+        let Some(text) = test_data_file(rel) else {
+            continue;
+        };
         let got: Vec<Option<String>> = split_genbank_records(&text)
             .iter()
             .map(|r| organism_of(&parse_genbank_flatfile(r, rel)).map(str::to_string))
@@ -639,7 +665,10 @@ fn import_organism_matches_biopython() {
             differ.push((rel, got, want));
         }
     }
-    assert!(differ.is_empty(), "Organism differs from Biopython 1.88: {differ:?}");
+    assert!(
+        differ.is_empty(),
+        "Organism differs from Biopython 1.88: {differ:?}"
+    );
 }
 
 /// Biopython 1.88's `annotations["organism"]` of each record of each GenBank file in test-data (each
@@ -649,62 +678,195 @@ fn import_organism_matches_biopython() {
 /// (`_feed_header_lines`) gives.
 const BIOPYTHON_ORGANISMS: [(&str, &[&str]); 59] = [
     ("biopython-tests/GenBank/1MRR_A.gp", &["Escherichia coli"]),
-    ("biopython-tests/GenBank/DS830848.gb", &["Ixodes scapularis"]),
-    ("biopython-tests/GenBank/EU851978.gbk", &["Influenza A virus (A/Wisconsin/36/2007(H1N1))"]),
-    ("biopython-tests/GenBank/EU851978_output.gbk", &["Influenza A virus (A/Wisconsin/36/2007(H1N1))"]),
-    ("biopython-tests/GenBank/EZ116220.gb", &["Rhagoletis pomonella"]),
-    ("biopython-tests/GenBank/GU949562.1.gb", &["Shewanella sp. MAR_280_P06_2010-01-20"]),
-    ("biopython-tests/GenBank/HM138502.gbk", &["Influenza A virus (A/California/07/2009(H1N1))"]),
-    ("biopython-tests/GenBank/HM138502_output.gbk", &["Influenza A virus (A/California/07/2009(H1N1))"]),
-    ("biopython-tests/GenBank/KF527485.gbk", &["Influenza A virus (A/California/07/2009(H1N1))"]),
-    ("biopython-tests/GenBank/KF527485_output.gbk", &["Influenza A virus (A/California/07/2009(H1N1))"]),
-    ("biopython-tests/GenBank/NC_000932.gb", &["Arabidopsis thaliana"]),
-    ("biopython-tests/GenBank/NC_005816.gb", &["Yersinia pestis biovar Microtus str. 91001"]),
-    ("biopython-tests/GenBank/NP_416719.gbwithparts", &["Escherichia coli str. K-12 substr. MG1655"]),
+    (
+        "biopython-tests/GenBank/DS830848.gb",
+        &["Ixodes scapularis"],
+    ),
+    (
+        "biopython-tests/GenBank/EU851978.gbk",
+        &["Influenza A virus (A/Wisconsin/36/2007(H1N1))"],
+    ),
+    (
+        "biopython-tests/GenBank/EU851978_output.gbk",
+        &["Influenza A virus (A/Wisconsin/36/2007(H1N1))"],
+    ),
+    (
+        "biopython-tests/GenBank/EZ116220.gb",
+        &["Rhagoletis pomonella"],
+    ),
+    (
+        "biopython-tests/GenBank/GU949562.1.gb",
+        &["Shewanella sp. MAR_280_P06_2010-01-20"],
+    ),
+    (
+        "biopython-tests/GenBank/HM138502.gbk",
+        &["Influenza A virus (A/California/07/2009(H1N1))"],
+    ),
+    (
+        "biopython-tests/GenBank/HM138502_output.gbk",
+        &["Influenza A virus (A/California/07/2009(H1N1))"],
+    ),
+    (
+        "biopython-tests/GenBank/KF527485.gbk",
+        &["Influenza A virus (A/California/07/2009(H1N1))"],
+    ),
+    (
+        "biopython-tests/GenBank/KF527485_output.gbk",
+        &["Influenza A virus (A/California/07/2009(H1N1))"],
+    ),
+    (
+        "biopython-tests/GenBank/NC_000932.gb",
+        &["Arabidopsis thaliana"],
+    ),
+    (
+        "biopython-tests/GenBank/NC_005816.gb",
+        &["Yersinia pestis biovar Microtus str. 91001"],
+    ),
+    (
+        "biopython-tests/GenBank/NP_416719.gbwithparts",
+        &["Escherichia coli str. K-12 substr. MG1655"],
+    ),
     ("biopython-tests/GenBank/NT_019265.gb", &["Homo sapiens"]),
-    ("biopython-tests/GenBank/addgene-plasmid-11664-sequence-180430.gbk", &["synthetic DNA construct"]),
-    ("biopython-tests/GenBank/addgene-plasmid-39296-sequence-49545.gbk", &["synthetic DNA construct"]),
-    ("biopython-tests/GenBank/arab1.gb", &["Arabidopsis thaliana"]),
+    (
+        "biopython-tests/GenBank/addgene-plasmid-11664-sequence-180430.gbk",
+        &["synthetic DNA construct"],
+    ),
+    (
+        "biopython-tests/GenBank/addgene-plasmid-39296-sequence-49545.gbk",
+        &["synthetic DNA construct"],
+    ),
+    (
+        "biopython-tests/GenBank/arab1.gb",
+        &["Arabidopsis thaliana"],
+    ),
     ("biopython-tests/GenBank/bad_loc_wrap.gb", &["."]),
-    ("biopython-tests/GenBank/bad_origin_wrap.gb", &["Mesorhizobium loti"]),
-    ("biopython-tests/GenBank/bad_origin_wrap_CDS.gb", &["synthetic DNA construct"]),
-    ("biopython-tests/GenBank/bad_origin_wrap_fuzzy.gb", &["Cloning vector pUC19c"]),
-    ("biopython-tests/GenBank/bad_origin_wrap_linear.gb", &["Mesorhizobium loti"]),
+    (
+        "biopython-tests/GenBank/bad_origin_wrap.gb",
+        &["Mesorhizobium loti"],
+    ),
+    (
+        "biopython-tests/GenBank/bad_origin_wrap_CDS.gb",
+        &["synthetic DNA construct"],
+    ),
+    (
+        "biopython-tests/GenBank/bad_origin_wrap_fuzzy.gb",
+        &["Cloning vector pUC19c"],
+    ),
+    (
+        "biopython-tests/GenBank/bad_origin_wrap_linear.gb",
+        &["Mesorhizobium loti"],
+    ),
     ("biopython-tests/GenBank/blank_seq.gb", &["Homo sapiens"]),
-    ("biopython-tests/GenBank/cor6_6.gb", &["Arabidopsis thaliana", "Arabidopsis thaliana", "Brassica napus", "Armoracia rusticana", "Brassica rapa", "Brassica napus"]),
-    ("biopython-tests/GenBank/dbsource_wrap.gb", &["Buthus occitanus tunetanus"]),
-    ("biopython-tests/GenBank/empty_accession.gbk", &["Streptomyces avermitilis"]),
-    ("biopython-tests/GenBank/empty_feature_qualifier.gb", &["Streptomyces avermitilis"]),
-    ("biopython-tests/GenBank/empty_version.gbk", &["Streptomyces avermitilis"]),
-    ("biopython-tests/GenBank/extra_keywords.gb", &["Drosophila melanogaster"]),
-    ("biopython-tests/GenBank/invalid_locus_line_spacing.gb", &["Streptomyces avermitilis"]),
-    ("biopython-tests/GenBank/invalid_misc_feature.gb", &["Streptomyces avermitilis"]),
-    ("biopython-tests/GenBank/invalid_product.gb", &["Streptomyces avermitilis"]),
-    ("biopython-tests/GenBank/invalid_structured_comment.gb", &["Mucambo virus"]),
+    (
+        "biopython-tests/GenBank/cor6_6.gb",
+        &[
+            "Arabidopsis thaliana",
+            "Arabidopsis thaliana",
+            "Brassica napus",
+            "Armoracia rusticana",
+            "Brassica rapa",
+            "Brassica napus",
+        ],
+    ),
+    (
+        "biopython-tests/GenBank/dbsource_wrap.gb",
+        &["Buthus occitanus tunetanus"],
+    ),
+    (
+        "biopython-tests/GenBank/empty_accession.gbk",
+        &["Streptomyces avermitilis"],
+    ),
+    (
+        "biopython-tests/GenBank/empty_feature_qualifier.gb",
+        &["Streptomyces avermitilis"],
+    ),
+    (
+        "biopython-tests/GenBank/empty_version.gbk",
+        &["Streptomyces avermitilis"],
+    ),
+    (
+        "biopython-tests/GenBank/extra_keywords.gb",
+        &["Drosophila melanogaster"],
+    ),
+    (
+        "biopython-tests/GenBank/invalid_locus_line_spacing.gb",
+        &["Streptomyces avermitilis"],
+    ),
+    (
+        "biopython-tests/GenBank/invalid_misc_feature.gb",
+        &["Streptomyces avermitilis"],
+    ),
+    (
+        "biopython-tests/GenBank/invalid_product.gb",
+        &["Streptomyces avermitilis"],
+    ),
+    (
+        "biopython-tests/GenBank/invalid_structured_comment.gb",
+        &["Mucambo virus"],
+    ),
     ("biopython-tests/GenBank/iro.gb", &["Homo sapiens"]),
-    ("biopython-tests/GenBank/negative_location.gb", &["Streptomyces avermitilis"]),
-    ("biopython-tests/GenBank/no_end_marker.gb", &["Streptomyces avermitilis"]),
-    ("biopython-tests/GenBank/no_origin_no_end.gb", &["Streptomyces avermitilis"]),
+    (
+        "biopython-tests/GenBank/negative_location.gb",
+        &["Streptomyces avermitilis"],
+    ),
+    (
+        "biopython-tests/GenBank/no_end_marker.gb",
+        &["Streptomyces avermitilis"],
+    ),
+    (
+        "biopython-tests/GenBank/no_origin_no_end.gb",
+        &["Streptomyces avermitilis"],
+    ),
     ("biopython-tests/GenBank/noref.gb", &["Homo sapiens"]),
-    ("biopython-tests/GenBank/noref_date_warning.gb", &["Homo sapiens"]),
+    (
+        "biopython-tests/GenBank/noref_date_warning.gb",
+        &["Homo sapiens"],
+    ),
     ("biopython-tests/GenBank/one_of.gb", &["Homo sapiens"]),
-    ("biopython-tests/GenBank/origin_line.gb", &["Mesorhizobium loti"]),
+    (
+        "biopython-tests/GenBank/origin_line.gb",
+        &["Mesorhizobium loti"],
+    ),
     ("biopython-tests/GenBank/pBAD30.gb", &[""]),
     ("biopython-tests/GenBank/pri1.gb", &["Homo sapiens"]),
-    ("biopython-tests/GenBank/protein_refseq.gb", &["Mus musculus"]),
-    ("biopython-tests/GenBank/protein_refseq2.gb", &["Mus musculus"]),
-    ("biopython-tests/GenBank/qualifier_escaping_read.gb", &["Mus musculus"]),
-    ("biopython-tests/GenBank/qualifier_escaping_write.gb", &["Mus musculus"]),
-    ("biopython-tests/GenBank/tls_KDHP01000000.gb", &["soil metagenome"]),
-    ("biopython-tests/GenBank/tsa_acropora.gb", &["Acropora millepora"]),
-    ("biopython-tests/GenBank/wrong_sequence_indent.gb", &["Streptomyces avermitilis"]),
+    (
+        "biopython-tests/GenBank/protein_refseq.gb",
+        &["Mus musculus"],
+    ),
+    (
+        "biopython-tests/GenBank/protein_refseq2.gb",
+        &["Mus musculus"],
+    ),
+    (
+        "biopython-tests/GenBank/qualifier_escaping_read.gb",
+        &["Mus musculus"],
+    ),
+    (
+        "biopython-tests/GenBank/qualifier_escaping_write.gb",
+        &["Mus musculus"],
+    ),
+    (
+        "biopython-tests/GenBank/tls_KDHP01000000.gb",
+        &["soil metagenome"],
+    ),
+    (
+        "biopython-tests/GenBank/tsa_acropora.gb",
+        &["Acropora millepora"],
+    ),
+    (
+        "biopython-tests/GenBank/wrong_sequence_indent.gb",
+        &["Streptomyces avermitilis"],
+    ),
     ("ncbi/J01749.gb", &["Cloning vector pBR322"]),
     ("ncbi/J02459.gb", &["Escherichia phage Lambda"]),
     ("ncbi/L09137.gb", &["Cloning vector pUC19c"]),
     ("ncbi/M77789.gb", &["Cloning vector pUC19"]),
     ("ncbi/NC_001416.gb", &["Escherichia phage Lambda"]),
     ("ncbi/NC_001422.gb", &["Escherichia phage phiX174"]),
-    ("ncbi/NC_045512.gb", &["Severe acute respiratory syndrome coronavirus 2"]),
+    (
+        "ncbi/NC_045512.gb",
+        &["Severe acute respiratory syndrome coronavirus 2"],
+    ),
     ("ncbi/V01555.gb", &["human gammaherpesvirus 4"]),
     ("ncbi/X02514.gb", &["Unknown."]),
 ];
@@ -723,10 +885,14 @@ fn record_id_falls_back_to_the_locus_name() {
         )
     };
     let doc = record("Long_name", "Long name");
-    assert_eq!(doc.name, "Long name", "the COMMENT line still names the document (D0202)");
+    assert_eq!(
+        doc.name, "Long name",
+        "the COMMENT line still names the document (D0202)"
+    );
     assert_eq!(genbank_record_id(&doc), "Long_name");
     let docs = std::slice::from_ref(&doc);
-    let warning = "Record Long_name has no VERSION or ACCESSION line, so its LOCUS name is used as its id.";
+    let warning =
+        "Record Long_name has no VERSION or ACCESSION line, so its LOCUS name is used as its id.";
     let functions = genbank_to_functions(docs, &opts());
     assert_eq!(functions.text, "Long_name\tLN_1\tTest protein\n");
     assert_eq!(functions.warnings, [warning]);
@@ -737,13 +903,26 @@ fn record_id_falls_back_to_the_locus_name() {
     let separate = genbank_to_separate(docs, GenbankToSequenceOutput::Nucleotides, "ln", &opts());
     assert_eq!(
         separate.files,
-        [("ln.Long_name.fna".to_string(), ">Long_name\nATGGCTGGCAAACGTACCGAACCGCTGTAA\n".to_string())]
+        [(
+            "ln.Long_name.fna".to_string(),
+            ">Long_name\nATGGCTGGCAAACGTACCGAACCGCTGTAA\n".to_string()
+        )]
     );
     assert_eq!(separate.warnings, [warning]);
-    let gbk: Vec<String> = genbank_to_gbk_files(docs, &opts()).files.into_iter().map(|(n, _)| n).collect();
+    let gbk: Vec<String> = genbank_to_gbk_files(docs, &opts())
+        .files
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
     assert_eq!(gbk, ["Long_name.gbk"]);
     // The filter selects the record by that id.
-    assert_eq!(genbank_to_fna(docs, &keep(&["Long_name"])).text.lines().count(), 2);
+    assert_eq!(
+        genbank_to_fna(docs, &keep(&["Long_name"]))
+            .text
+            .lines()
+            .count(),
+        2
+    );
     assert!(genbank_to_fna(docs, &keep(&["Long name"])).text.is_empty());
 
     // A LOCUS name the document's name would not make (a hand-edited file) is still the id.
@@ -755,9 +934,17 @@ fn record_id_falls_back_to_the_locus_name() {
         "LOCUS       AB12                      30 bp    DNA     linear   BCT 19-NOV-2026\nORIGIN\n        1 atggctggca aacgtaccga accgctgtaa\n//\n",
         "plain",
     );
-    assert_eq!((plain.name.as_str(), genbank_record_id(&plain)), ("AB12", "AB12".to_string()));
+    assert_eq!(
+        (plain.name.as_str(), genbank_record_id(&plain)),
+        ("AB12", "AB12".to_string())
+    );
     // Only a document the COMMENT renames keeps its LOCUS name as a key of its own.
-    let locus_key = |d: &SequenceDocument| d.doc_metadata.as_ref().and_then(|m| m.get("LOCUS name")).cloned();
+    let locus_key = |d: &SequenceDocument| {
+        d.doc_metadata
+            .as_ref()
+            .and_then(|m| m.get("LOCUS name"))
+            .cloned()
+    };
     assert_eq!(locus_key(&doc), Some(serde_json::json!("Long_name")));
     assert_eq!(locus_key(&plain), None);
     assert_eq!(locus_key(&record("Same_name", "Same_name")), None);
@@ -771,13 +958,456 @@ fn record_id_falls_back_to_the_locus_name() {
 fn organism_placeholder_is_not_a_name() {
     let empty = organism_record("\n            .\n");
     assert_eq!(organism_of(&empty), None);
-    assert!(empty.doc_metadata.as_ref().is_some_and(|m| !m.contains_key("Organism")));
-    assert_eq!(organism_of(&organism_record("Homo sapiens\n            .\n")), Some("Homo sapiens"));
+    assert!(empty
+        .doc_metadata
+        .as_ref()
+        .is_some_and(|m| !m.contains_key("Organism")));
+    assert_eq!(
+        organism_of(&organism_record("Homo sapiens\n            .\n")),
+        Some("Homo sapiens")
+    );
     // After the lineage has begun the '.' is lineage, not the name.
     assert_eq!(
-        organism_of(&organism_record("Homo sapiens\n            Eukaryota; Metazoa.\n            .\n")),
+        organism_of(&organism_record(
+            "Homo sapiens\n            Eukaryota; Metazoa.\n            .\n"
+        )),
         Some("Homo sapiens")
     );
     // The ORGANISM line's own '.' is the name, as Biopython reads it.
-    assert_eq!(organism_of(&organism_record(".\n            .\n")), Some("."));
+    assert_eq!(
+        organism_of(&organism_record(".\n            .\n")),
+        Some(".")
+    );
+}
+
+/// An inline record for the ptt and phage_finder rules the fixture cannot reach: a partial CDS
+/// (`<1..>30`, D0227 (8)) whose 'GI:' and 'COG' are not at the start of its db_xrefs and product, a
+/// 20 bp CDS with two /gene values and a product 'COG0003, ...', and a minus-strand order() with no
+/// product. 0.54 writes for it (2026-11-19, the README's command lines on this text):
+/// `<0..>30 + 9.0 - [<0:>30](+) EDP00001.1 - Family COG0002 member`,
+/// `30..50 + 5.666666666666667 77 edgA edgB EDP00002.1 COG0003, COG0003, partial family` and
+/// `50..60 - 2.0 - order{[54:60](-), [50:53](-)} ED000001.1.order{...} - -`.
+const EDGE: &str = "LOCUS       ED000001                  60 bp    DNA     linear   BCT 19-NOV-2026
+DEFINITION  Edge cases for ptt and phage_finder.
+ACCESSION   ED000001
+VERSION     ED000001.1
+FEATURES             Location/Qualifiers
+     CDS             <1..>30
+                     /product=\"Family COG0002 member\"
+                     /db_xref=\"GeneID:1\"
+                     /db_xref=\"GI:2\"
+                     /protein_id=\"EDP00001.1\"
+                     /translation=\"MAGKRTEPL\"
+     CDS             31..50
+                     /gene=\"edgA\"
+                     /gene=\"edgB\"
+                     /product=\"COG0003, partial family\"
+                     /db_xref=\"GI:77\"
+                     /protein_id=\"EDP00002.1\"
+     CDS             complement(order(51..53,55..60))
+ORIGIN
+        1 atggctggca aacgtaccga accgctgtaa gggggtagta tagaccaagt ctgtaggttt
+//
+";
+
+fn edge() -> Vec<SequenceDocument> {
+    vec![parse_genbank_flatfile(EDGE, "edge")]
+}
+
+#[test]
+fn ptt_matches_genbank_to_with_named_fixes() {
+    let docs = records();
+    let plain = genbank_to_ptt(&docs, &opts());
+    assert_eq!(plain.text, PTT);
+    assert_eq!(plain.warnings, [NO_VERSION_WARNING]);
+    let lines: Vec<&str> = plain.text.lines().collect();
+    assert!(
+        lines.iter().all(|l| l.split('\t').count() == 8),
+        "eight columns, no header"
+    );
+    // CDS (a): 1-based start (D0227 (2)), integer length (3), GI from 'GI:123456 GeneID:7'.
+    assert_eq!(
+        lines[0],
+        "1..33\t+\t10\t123456\tabcA\tORP00001.1\t-\tAlpha test protein"
+    );
+    // The complement CDS reads '<low>..<high>' with '-'; no /gene gives the location text.
+    assert_eq!(
+        lines[1],
+        "41..70\t-\t9\t-\t[40:70](-)\tORT_0002\t-\tBeta test protein"
+    );
+    // CDS (d), a minus-strand join: lowest start to highest end, length over both parts.
+    assert!(lines.contains(
+        &"161..230\t-\t19\t-\tjoin{[200:230](-), [160:190](-)}\tOR000001.1.join{[200:230](-), [160:190](-)}\t-\tDelta test protein"
+    ));
+    // CDS (g), 20 bp: 20 // 3 - 1 = 5, where 0.54 writes 5.666666666666667.
+    assert!(lines.contains(&"321..340\t+\t5\t-\t[320:340](+)\tORT_0007\t-\tEta short protein"));
+    // CDS (j): two products joined by a space, not '|'.
+    assert!(lines.contains(
+        &"421..450\t+\t9\t-\t[420:450](+)\tORP00010.1\t-\tKappa test protein Kappa alternative name"
+    ));
+    // CDS (l): COG; CDS (m): 'GeneID:9 GI:55' does not start 'GI:', so GI is '-'.
+    assert!(lines
+        .contains(&"501..530\t+\t9\t-\t[500:530](+)\tORP00012.1\tCOG0001\tCOG0001 test family."));
+    assert!(lines.contains(&"541..570\t+\t9\t-\t[540:570](+)\tGeneID:9|GI:55\t-\tMu test protein"));
+    // CDS (f), /pseudo, only with Include pseudogenes (D0227 (1)), after CDS (e).
+    assert!(!plain.text.contains("ORP00006.1"));
+    let with = genbank_to_ptt(&docs, &pseudo()).text;
+    let mut want: Vec<&str> = lines.clone();
+    want.insert(
+        5,
+        "281..310\t+\t9\t-\t[280:310](+)\tORP00006.1\t-\tZeta pseudo protein",
+    );
+    assert_eq!(
+        with,
+        want.iter().map(|l| format!("{l}\n")).collect::<String>()
+    );
+    // The record filter (D0227 (4)).
+    assert_eq!(
+        genbank_to_ptt(&docs, &keep(&["OR000002"])).text,
+        "11..40\t+\t9\t-\t[10:40](+)\tORP20001.1\t-\tPlasmid replication protein\n51..80\t-\t9\t-\t[50:80](-)\tORT2_0002\t-\tPlasmid partition protein\n"
+    );
+    // The inline record: re.match, not re.search, for GI and COG; COG keeps its punctuation;
+    // repeated /gene joined by a space; no partial marks and join{} for order() (D0227 (8)).
+    assert_eq!(
+        genbank_to_ptt(&edge(), &opts()).text,
+        "1..30\t+\t9\t-\t[0:30](+)\tEDP00001.1\t-\tFamily COG0002 member\n\
+         31..50\t+\t5\t77\tedgA edgB\tEDP00002.1\tCOG0003,\tCOG0003, partial family\n\
+         51..60\t-\t2\t-\tjoin{[54:60](-), [50:53](-)}\tED000001.1.join{[54:60](-), [50:53](-)}\t-\t-\n"
+    );
+    // A feature of an open record with strand 0 is '+', as 0.54's `strand >= 0` reads it.
+    let mut unstranded = edge();
+    unstranded[0].features[0].strand = 0;
+    assert!(genbank_to_ptt(&unstranded, &opts())
+        .text
+        .starts_with("1..30\t+\t9\t"));
+}
+
+#[test]
+fn phage_finder_matches_genbank_to_with_named_fixes() {
+    let docs = records();
+    let plain = genbank_to_phage_finder(&docs, &opts());
+    assert_eq!(plain.text, PHAGE_FINDER);
+    assert_eq!(plain.warnings, [NO_VERSION_WARNING]);
+    let lines: Vec<&str> = plain.text.lines().collect();
+    assert!(lines.iter().all(|l| l.split('\t').count() == 6));
+    assert_eq!(
+        lines[0],
+        "OR000001.1\t720\tORP00001.1\t1\t33\tAlpha test protein"
+    );
+    assert!(lines.contains(&"OR000001.1\t720\tORT_0002\t41\t70\tBeta test protein"));
+    assert!(lines.contains(&"OR000001.1\t720\tGeneID:3\t81\t150\tHypothetical protein"));
+    assert!(lines.contains(
+        &"OR000001.1\t720\tORP00010.1\t421\t450\tKappa test protein Kappa alternative name"
+    ));
+    assert!(lines.contains(&"OR000002.1\t120\tORT2_0002\t51\t80\tPlasmid partition protein"));
+    assert!(lines.contains(&"OR000003\t60\tORP30001.1\t1\t30\tContig protein"));
+    assert!(!plain.text.contains("ORP00006.1"));
+    let with = genbank_to_phage_finder(&docs, &pseudo()).text;
+    let mut want = lines.clone();
+    want.insert(
+        5,
+        "OR000001.1\t720\tORP00006.1\t281\t310\tZeta pseudo protein",
+    );
+    assert_eq!(
+        with,
+        want.iter().map(|l| format!("{l}\n")).collect::<String>()
+    );
+    assert_eq!(
+        genbank_to_phage_finder(&docs, &keep(&["OR000003"])).text,
+        "OR000003\t60\tORP30001.1\t1\t30\tContig protein\n"
+    );
+    assert_eq!(
+        genbank_to_phage_finder(&edge(), &opts()).text,
+        "ED000001.1\t60\tEDP00001.1\t1\t30\tFamily COG0002 member\n\
+         ED000001.1\t60\tEDP00002.1\t31\t50\tCOG0003, partial family\n\
+         ED000001.1\t60\tED000001.1.join{[54:60](-), [50:53](-)}\t51\t60\tHypothetical protein\n"
+    );
+}
+
+/// The value of attribute `key` in a GFF3 line's column 9.
+fn attr<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    line.split('\t')
+        .nth(8)?
+        .split(';')
+        .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// The record ids, in order, with each record's export (US-01M7RC3P's feature ids are `gb-feat-<n>`).
+fn exports(docs: &[SequenceDocument]) -> Vec<(String, String)> {
+    docs.iter()
+        .map(|d| (genbank_record_id(d), export_gff3_noodles(d)))
+        .collect()
+}
+
+#[test]
+fn gff3_is_the_app_export_with_record_ids() {
+    let docs = records();
+    let out = genbank_to_gff3(&docs, &opts());
+    assert_eq!(out.warnings, [NO_VERSION_WARNING]);
+    let text = &out.text;
+    assert!(text.starts_with("##gff-version 3\n"));
+    assert_eq!(text.matches("##gff-version").count(), 1);
+    assert!(!text.contains("##FASTA"));
+    // Each record's export lines after its first, in record order: the same lines, one for one,
+    // with only column 1, the ##sequence-region id and the ID changed.
+    let mut want_len = 1;
+    let mut lines = text.lines().skip(1);
+    for (rid, export) in exports(&docs) {
+        for e in export.lines().skip(1) {
+            want_len += 1;
+            let got = lines.next().expect("a line for every export line");
+            if let Some(region) = e.strip_prefix("##sequence-region ") {
+                let rest = region.split_once(' ').unwrap().1;
+                assert_eq!(got, format!("##sequence-region {rid} {rest}"));
+                continue;
+            }
+            let (g, w): (Vec<&str>, Vec<&str>) =
+                (got.split('\t').collect(), e.split('\t').collect());
+            assert_eq!(g.len(), 9, "{got}");
+            assert_eq!(g[0], rid, "column 1 is the record id: {got}");
+            assert_eq!(g[1..8], w[1..8], "columns 2-8 are the export's: {got}");
+            assert_eq!(
+                attr(got, "ID").unwrap(),
+                format!("{rid}.{}", attr(e, "ID").unwrap())
+            );
+            assert_eq!(attr(got, "Name"), attr(e, "Name"));
+        }
+    }
+    assert!(lines.next().is_none());
+    assert_eq!(text.lines().count(), want_len);
+    // Stated literally: the sequence regions, and CDS (a)'s and the contig's lines.
+    for region in [
+        "##sequence-region OR000001.1 1 720",
+        "##sequence-region OR000002.1 1 120",
+        "##sequence-region OR000003 1 60",
+    ] {
+        assert!(text.lines().any(|l| l == region), "{region}");
+    }
+    assert!(text
+        .lines()
+        .any(|l| l
+            == "OR000001.1\tMolBioCraft\tCDS\t1\t33\t.\t+\t0\tID=OR000001.1.gb-feat-3;Name=abcA"));
+    assert!(text.lines().any(|l| {
+        l == "OR000003\tMolBioCraft\tCDS\t1\t30\t.\t+\t0\tID=OR000003.gb-feat-1;Name=Contig protein"
+    }));
+    // No two lines of different features share an ID: lines sharing one are one feature's parts
+    // (same record, type and strand), as CDS (c) and (d)'s joins are.
+    let mut by_id: std::collections::HashMap<&str, Vec<Vec<&str>>> = Default::default();
+    for l in text.lines().filter(|l| !l.starts_with('#')) {
+        by_id
+            .entry(attr(l, "ID").unwrap())
+            .or_default()
+            .push(l.split('\t').collect());
+    }
+    for (id, ls) in &by_id {
+        assert!(
+            ls.iter()
+                .all(|c| c[0] == ls[0][0] && c[2] == ls[0][2] && c[6] == ls[0][6]),
+            "{id} names lines of different features"
+        );
+    }
+    assert_eq!(by_id["OR000001.1.gb-feat-5"].len(), 2);
+    assert_eq!(by_id["OR000001.1.gb-feat-6"].len(), 2);
+    assert!(by_id.contains_key("OR000002.1.gb-feat-1") && by_id.contains_key("OR000003.gb-feat-1"));
+    // Non-CDS features are kept.
+    let types: Vec<&str> = text.lines().filter_map(|l| l.split('\t').nth(2)).collect();
+    for t in ["source", "gene", "tRNA", "rRNA", "ncRNA"] {
+        assert!(types.contains(&t), "{t} is kept");
+    }
+    // The record filter (D0227 (4)).
+    let one = genbank_to_gff3(&docs, &keep(&["OR000002.1"])).text;
+    assert_eq!(
+        one,
+        "##gff-version 3\n##sequence-region OR000002.1 1 120\n\
+         OR000002.1\tMolBioCraft\tCDS\t11\t40\t.\t+\t0\tID=OR000002.1.gb-feat-1;Name=Plasmid replication protein\n\
+         OR000002.1\tMolBioCraft\tCDS\t51\t80\t.\t-\t0\tID=OR000002.1.gb-feat-2;Name=Plasmid partition protein\n"
+    );
+}
+
+#[test]
+fn amrfinder_files_follow_d0227() {
+    let docs = records();
+    let out = genbank_to_amrfinder(&docs, "oracle", &opts());
+    let names: Vec<&str> = out.files.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["oracle.amr.gff", "oracle.amr.faa", "oracle.amr.fna"]
+    );
+    let (gff, faa, fna) = (&out.files[0].1, &out.files[1].1, &out.files[2].1);
+    // .amr.faa: simple headers and no pseudogenes, whatever the options say; .amr.fna: -n.
+    assert_eq!(faa, FAA);
+    assert_eq!(fna, FNA);
+    let both = GenbankToOptions {
+        include_pseudogenes: true,
+        complex_headers: true,
+        ..GenbankToOptions::default()
+    };
+    assert_eq!(
+        genbank_to_amrfinder(&docs, "oracle", &both).files,
+        out.files
+    );
+    // .amr.gff: the GFF3 with no ##FASTA, its non-CDS lines all kept.
+    let gff3 = genbank_to_gff3(&docs, &opts()).text;
+    assert!(gff.starts_with("##gff-version 3\n") && !gff.contains("##FASTA"));
+    let non_cds = |t: &str| -> Vec<String> {
+        t.lines()
+            .filter(|l| l.split('\t').nth(2) != Some("CDS"))
+            .map(String::from)
+            .collect()
+    };
+    assert_eq!(non_cds(gff), non_cds(&gff3));
+    let faa_heads = headers(faa);
+    let fna_heads = headers(fna);
+    // Each CDS of the fixture, by its feature: kept with Name = protein_id when that protein_id heads
+    // an .amr.faa record, else no line.
+    let mut kept_ids = Vec::new();
+    for d in &docs {
+        let rid = genbank_record_id(d);
+        for f in d.features.iter().filter(|f| f.feature_type == "CDS") {
+            let id = format!("{rid}.{}", f.id);
+            let lines: Vec<&str> = gff
+                .lines()
+                .filter(|l| attr(l, "ID") == Some(id.as_str()))
+                .collect();
+            let gff3_lines: Vec<&str> = gff3
+                .lines()
+                .filter(|l| attr(l, "ID") == Some(id.as_str()))
+                .collect();
+            assert!(!gff3_lines.is_empty(), "{id} is in the GFF3");
+            let pid = f
+                .qualifiers
+                .as_ref()
+                .and_then(|q| q.get("protein_id"))
+                .cloned();
+            match pid {
+                Some(p) if faa_heads.contains(&p.as_str()) => {
+                    assert_eq!(lines.len(), gff3_lines.len(), "{p}");
+                    for (l, g) in lines.iter().zip(&gff3_lines) {
+                        let want = g.replace(
+                            &format!(";Name={}", attr(g, "Name").unwrap()),
+                            &format!(";Name={p}"),
+                        );
+                        assert_eq!(*l, want, "{p}'s line has Name={p}");
+                        assert_eq!(l.matches("Name=").count(), 1);
+                        assert!(fna_heads.contains(&l.split('\t').next().unwrap()));
+                    }
+                    kept_ids.push(p);
+                }
+                _ => assert!(lines.is_empty(), "{id} ({pid:?}) has no .amr.gff line"),
+            }
+        }
+    }
+    assert_eq!(
+        kept_ids,
+        [
+            "ORP00001.1",
+            "ORP00010.1",
+            "ORP00011.1",
+            "ORP00012.1",
+            "ORP20001.1",
+            "ORP30001.1"
+        ]
+    );
+    assert!(gff.lines().any(|l| {
+        l == "OR000001.1\tMolBioCraft\tCDS\t1\t33\t.\t+\t0\tID=OR000001.1.gb-feat-3;Name=ORP00001.1"
+    }));
+    assert!(
+        !gff.contains("ORP00006.1") && !gff.contains("Zeta pseudo"),
+        "CDS (f) is dropped"
+    );
+    let no_pid = |id: &str| {
+        format!("CDS {id} has no protein_id, so the AMRFinderPlus .gff has no line for it.")
+    };
+    let mut want: Vec<String> = [
+        "ORT_0002",
+        "GeneID:3",
+        "OR000001.1.join{[200:230](-), [160:190](-)}",
+        "OR000001.1.[240:270](+)",
+        "ORT_0007",
+        "ORT_0008",
+        "ORT_0009",
+        "GeneID:9|GI:55",
+        "ORT2_0002",
+    ]
+    .iter()
+    .map(|id| no_pid(id))
+    .collect();
+    want.push("CDS ORT_0007 in OR000001.1 was left out of the proteins: its length (20 bp) is not a multiple of 3 and it has no /translation.".into());
+    want.push(NO_VERSION_WARNING.into());
+    let mut got = out.warnings.clone();
+    got.sort();
+    want.sort();
+    assert_eq!(got, want);
+    // A CDS with a protein_id that heads no .amr.faa record (20 bp, no /translation) has no line
+    // and no 'no protein_id' warning; the record filter selects records for all three files.
+    let e = genbank_to_amrfinder(&edge(), "edge", &opts());
+    assert!(e.files[0]
+        .1
+        .contains("ID=ED000001.1.gb-feat-1;Name=EDP00001.1"));
+    assert!(!e.files[0].1.contains("ED000001.1.gb-feat-2"));
+    assert!(!e
+        .warnings
+        .iter()
+        .any(|w| w.contains("EDP00002.1 has no protein_id")));
+    let k = genbank_to_amrfinder(&docs, "oracle", &keep(&["OR000003"]));
+    assert_eq!(
+        k.files[2].1,
+        ">OR000003\nATGGCTGGCAAACGTACCGAACCGCTGTAAGGGGGTAGTATAGACCAAGTCTGTAGGTTT\n"
+    );
+    assert_eq!(
+        k.files[1].1,
+        ">ORP30001.1\nMAGKRTEPL*\n".replace("MAGKRTEPL*", fasta_seq(FAA, "ORP30001.1").unwrap())
+    );
+    assert!(k.files[0]
+        .1
+        .lines()
+        .all(|l| l.starts_with('#') || l.starts_with("OR000003\t")));
+}
+
+/// A record with no VERSION or ACCESSION line, so its id is its name: a pseudogene CDS with no
+/// protein_id, and a CDS with one.
+const RESERVED: &str =
+    "LOCUS       AE000001                  60 bp    DNA     linear   BCT 19-NOV-2026
+DEFINITION  Reserved characters in GFF3 ids.
+FEATURES             Location/Qualifiers
+     CDS             1..30
+                     /pseudo
+                     /locus_tag=\"AET_0001\"
+     CDS             31..60
+                     /protein_id=\"AEP00002.1\"
+                     /translation=\"MKTAYIAKQR\"
+ORIGIN
+        1 atggctggca aacgtaccga accgctgtaa gggggtagta tagaccaagt ctgtaggttt
+//
+";
+
+#[test]
+fn gff3_and_amrfinder_ids_keep_reserved_characters_encoded() {
+    // An open record the app renamed, and a feature id with GFF3-reserved characters: the record id
+    // is percent-encoded inside ID, and the line still maps back to its feature by the decoded ID.
+    let mut doc = parse_genbank_flatfile(RESERVED, "reserved");
+    doc.name = "AE;1=x".to_string();
+    doc.features[1].id = "f;2".to_string();
+    let docs = [doc];
+    assert_eq!(genbank_record_id(&docs[0]), "AE;1=x");
+    let gff3 = genbank_to_gff3(&docs, &opts()).text;
+    let cds: Vec<&str> = gff3.lines().filter(|l| l.contains("\tCDS\t")).collect();
+    assert_eq!(cds.len(), 2, "{gff3}");
+    assert_eq!(attr(cds[1], "ID"), Some("AE%3B1%3Dx.f%3B2"));
+    assert!(cds.iter().all(|l| l.starts_with("AE;1=x\t")));
+    let amr = genbank_to_amrfinder(&docs, "r", &opts());
+    let gff: Vec<&str> = amr.files[0]
+        .1
+        .lines()
+        .filter(|l| l.contains("\tCDS\t"))
+        .collect();
+    // The protein_id CDS keeps its line, found through the decoded ID; the pseudogene has none, and,
+    // being left out of the AMRFinderPlus files, no 'no protein_id' warning either.
+    assert_eq!(gff.len(), 1, "{}", amr.files[0].1);
+    assert_eq!(attr(gff[0], "Name"), Some("AEP00002.1"));
+    assert_eq!(attr(gff[0], "ID"), Some("AE%3B1%3Dx.f%3B2"));
+    assert_eq!(
+        amr.warnings,
+        ["Record AE;1=x has no VERSION or ACCESSION line, so its LOCUS name is used as its id."]
+    );
 }

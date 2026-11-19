@@ -1,0 +1,15 @@
+1..33	+	10	123456	abcA	ORP00001.1	-	Alpha test protein
+41..70	-	9	-	[40:70](-)	ORT_0002	-	Beta test protein
+81..150	+	19	-	join{[80:110](+), [120:150](+)}	GeneID:3	-	-
+161..230	-	19	-	join{[200:230](-), [160:190](-)}	OR000001.1.join{[200:230](-), [160:190](-)}	-	Delta test protein
+241..270	+	9	-	[240:270](+)	OR000001.1.[240:270](+)	-	Epsilon test protein
+321..340	+	5	-	[320:340](+)	ORT_0007	-	Eta short protein
+351..368	+	5	-	[350:368](+)	ORT_0008	-	Theta table four protein
+381..410	+	9	-	[380:410](+)	ORT_0009	-	Iota frame protein
+421..450	+	9	-	[420:450](+)	ORP00010.1	-	Kappa test protein Kappa alternative name
+461..490	+	9	-	[460:490](+)	ORP00011.1	-	hypothetical protein
+501..530	+	9	-	[500:530](+)	ORP00012.1	COG0001	COG0001 test family.
+541..570	+	9	-	[540:570](+)	GeneID:9|GI:55	-	Mu test protein
+11..40	+	9	-	[10:40](+)	ORP20001.1	-	Plasmid replication protein
+51..80	-	9	-	[50:80](-)	ORT2_0002	-	Plasmid partition protein
+1..30	+	9	-	[0:30](+)	ORP30001.1	-	Contig protein

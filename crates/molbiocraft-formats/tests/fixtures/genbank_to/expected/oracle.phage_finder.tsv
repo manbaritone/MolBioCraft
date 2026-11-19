@@ -1,0 +1,15 @@
+OR000001.1	720	ORP00001.1	1	33	Alpha test protein
+OR000001.1	720	ORT_0002	41	70	Beta test protein
+OR000001.1	720	GeneID:3	81	150	Hypothetical protein
+OR000001.1	720	OR000001.1.join{[200:230](-), [160:190](-)}	161	230	Delta test protein
+OR000001.1	720	OR000001.1.[240:270](+)	241	270	Epsilon test protein
+OR000001.1	720	ORT_0007	321	340	Eta short protein
+OR000001.1	720	ORT_0008	351	368	Theta table four protein
+OR000001.1	720	ORT_0009	381	410	Iota frame protein
+OR000001.1	720	ORP00010.1	421	450	Kappa test protein Kappa alternative name
+OR000001.1	720	ORP00011.1	461	490	hypothetical protein
+OR000001.1	720	ORP00012.1	501	530	COG0001 test family.
+OR000001.1	720	GeneID:9|GI:55	541	570	Mu test protein
+OR000002.1	120	ORP20001.1	11	40	Plasmid replication protein
+OR000002.1	120	ORT2_0002	51	80	Plasmid partition protein
+OR000003	60	ORP30001.1	1	30	Contig protein

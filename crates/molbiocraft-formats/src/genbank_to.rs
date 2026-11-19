@@ -9,19 +9,26 @@
 //! - [`genbank_to_orfs`], `-o`: each CDS's extracted DNA;
 //! - [`genbank_to_faa`], `-a`: each CDS's protein;
 //! - [`genbank_to_functions`], `-f`: `<record id>\t<feature id>\t<product>`;
-//! - [`genbank_to_separate`] and [`genbank_to_gbk_files`], `--separate`: one file per record.
+//! - [`genbank_to_separate`] and [`genbank_to_gbk_files`], `--separate`: one file per record;
+//! - [`genbank_to_ptt`], `-p`: the NCBI ptt protein table;
+//! - [`genbank_to_phage_finder`], `--phage_finder`: phage_finder's gene table;
+//! - [`genbank_to_gff3`], `--gff3`, and [`genbank_to_amrfinder`], `--amr`: built from the app's own
+//!   GFF3 export, [`export_gff3_noodles`], not from 0.54's BCBio writer (D0227 (7)).
 //!
 //! Each follows 0.54 byte for byte except D0227's named differences: a CDS carrying /pseudo is left
-//! out of every output here unless [`GenbankToOptions::include_pseudogenes`] (1); the record filter
-//! selects records for every output and does not imply one file per record (4); the complex header
-//! is written as D0227 (5) states, since 0.54 crashes there; a de novo translation uses the CDS's
-//! /transl_table (6); positions carry no partial marks and order() reads as join{} (8); and one file
-//! per record with no output chosen writes each record's GenBank export (9).
+//! out of every output here unless [`GenbankToOptions::include_pseudogenes`], and out of the
+//! AMRFinderPlus files always (1); ptt and phage_finder starts are 1-based (2); the ptt length is an
+//! integer (3); the record filter selects records for every output and does not imply one file per
+//! record (4); the complex header is written as D0227 (5) states, since 0.54 crashes there; a de novo
+//! translation uses the CDS's /transl_table (6); GFF3 and the AMRFinderPlus .gff are the app's export
+//! with record ids (7); positions carry no partial marks and order() reads as join{} (8); and one
+//! file per record with no output chosen writes each record's GenBank export (9).
 //!
 //! The records are the app's own [`SequenceDocument`]s, read by [`crate::parse_genbank_flatfile`]
 //! from text [`split_genbank_records`] splits; the record id is [`genbank_record_id`] (D0229).
 
-use crate::flatfiles::{ends_record, export_genbank_flatfile};
+use crate::flatfiles::{ends_record, export_genbank_flatfile, record_length};
+use crate::noodles_io::export_gff3_noodles;
 use molbiocraft_core::genetic_codes::{resolve_genetic_code, translate_codon};
 use molbiocraft_core::{reverse_complement, SequenceDocument, SequenceFeature};
 
@@ -31,7 +38,8 @@ const NO_ACCESSION: &str = "GB_IMPORT_001";
 /// The conversion's options (D0228).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GenbankToOptions {
-    /// Keep CDS features carrying /pseudo in the ORF, protein and functions outputs (D0227 (1)).
+    /// Keep CDS features carrying /pseudo in the ORF, protein, functions, ptt and phage_finder
+    /// outputs (D0227 (1)); the AMRFinderPlus files leave them out whatever this says.
     pub include_pseudogenes: bool,
     /// Head each ORF and protein record with D0227 (5)'s complex header.
     pub complex_headers: bool,
@@ -454,6 +462,284 @@ pub fn genbank_to_gbk_files(docs: &[SequenceDocument], opts: &GenbankToOptions) 
         .collect();
     GenbankToFiles {
         files,
+        warnings: dedup(warnings),
+    }
+}
+
+/// A qualifier's values joined by a space, 0.54's `feat_to_text` without its '-' default.
+fn spaced(f: &SequenceFeature, key: &str) -> Option<String> {
+    values(f, key).map(|v| v.join(" "))
+}
+
+/// Python's `str.isspace`, which the `\S` of 0.54's regexes negates: Unicode White_Space and the
+/// four separators U+001C-U+001F.
+fn py_space(c: char) -> bool {
+    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
+}
+
+/// 0.54's ptt GI: `re.match('GI:(\d+)')` on the db_xrefs joined by a space, so only when that text
+/// starts 'GI:' and a digit; else '-'. The digits are ASCII, as GenBank text is.
+fn ptt_gi(f: &SequenceFeature) -> String {
+    spaced(f, "db_xref")
+        .as_deref()
+        .and_then(|x| x.strip_prefix("GI:"))
+        .map(|rest| {
+            rest.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+/// 0.54's ptt COG: `re.match('(COG\S+)')` on the products joined by a space, so a product starting
+/// 'COG' and at least one non-space character, punctuation kept; else '-'.
+fn ptt_cog(f: &SequenceFeature) -> String {
+    spaced(f, "product")
+        .and_then(|p| {
+            let rest = p.strip_prefix("COG")?;
+            let run: String = rest.chars().take_while(|&c| !py_space(c)).collect();
+            (!run.is_empty()).then(|| format!("COG{run}"))
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+/// The feature's 1-based start and its end, lowest part start to highest part end (Biopython's
+/// `location.start + 1` and `location.end`, D0227 (2)).
+fn span(f: &SequenceFeature) -> (usize, usize) {
+    let p = parts(f);
+    let start = p.iter().map(|&(a, _)| a).min().unwrap_or(f.start);
+    let end = p.iter().map(|&(_, b)| b).max().unwrap_or(f.end);
+    (start, end)
+}
+
+/// 0.54's `-p`: per CDS, `<start>..<end>`, '+' or '-', length, GI, gene (else the location text),
+/// feature id, COG and product (else '-'), tab-separated with no header. Starts are 1-based (D0227
+/// (2)); the length is the nucleotide length over every part, integer-divided by 3, minus 1 (3).
+pub fn genbank_to_ptt(docs: &[SequenceDocument], opts: &GenbankToOptions) -> GenbankToText {
+    let mut warnings = Vec::new();
+    let records = selected(docs, opts, &mut warnings);
+    let mut text = String::new();
+    for c in cds(&records, opts) {
+        let f = c.feature;
+        let (start, end) = span(f);
+        let nt: usize = parts(f)
+            .iter()
+            .map(|&(a, b)| (b + 1).saturating_sub(a))
+            .sum();
+        let length = (nt / 3) as i64 - 1;
+        text.push_str(&format!(
+            "{start}..{end}\t{}\t{length}\t{}\t{}\t{}\t{}\t{}\n",
+            if f.strand >= 0 { "+" } else { "-" },
+            ptt_gi(f),
+            spaced(f, "gene").unwrap_or_else(|| location_text(f)),
+            c.fid,
+            ptt_cog(f),
+            spaced(f, "product").unwrap_or_else(|| "-".to_string()),
+        ));
+    }
+    GenbankToText {
+        text,
+        warnings: dedup(warnings),
+    }
+}
+
+/// 0.54's `--phage_finder`: per CDS, `<record id>\t<record length>\t<feature id>\t<start>\t<end>\t
+/// <product>`, the products joined by a space, 'Hypothetical protein' without one, the start 1-based
+/// (D0227 (2)).
+pub fn genbank_to_phage_finder(
+    docs: &[SequenceDocument],
+    opts: &GenbankToOptions,
+) -> GenbankToText {
+    let mut warnings = Vec::new();
+    let records = selected(docs, opts, &mut warnings);
+    let mut text = String::new();
+    for c in cds(&records, opts) {
+        let (start, end) = span(c.feature);
+        let product =
+            spaced(c.feature, "product").unwrap_or_else(|| "Hypothetical protein".to_string());
+        text.push_str(&format!(
+            "{}\t{}\t{}\t{start}\t{end}\t{product}\n",
+            c.rid,
+            record_length(c.doc),
+            c.fid
+        ));
+    }
+    GenbankToText {
+        text,
+        warnings: dedup(warnings),
+    }
+}
+
+/// A GFF3 column-9 value with its reserved characters (';', '=', '&', ',', '%' and controls)
+/// percent-encoded, as GFF3 requires.
+fn gff_encode(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for c in v.chars() {
+        if matches!(c, ';' | '=' | '&' | ',' | '%') || c.is_control() {
+            let mut b = [0u8; 4];
+            for byte in c.encode_utf8(&mut b).bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A percent-encoded GFF3 value decoded; an incomplete escape is kept as written.
+fn gff_decode(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = (b[i] == b'%')
+            .then(|| v.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match hex {
+            Some(byte) => {
+                out.push(byte);
+                i += 3;
+            }
+            None => {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// One line of a record's GFF3 and the feature its ID names (none for a directive).
+struct GffLine<'a> {
+    columns: Vec<String>,
+    feature: Option<&'a SequenceFeature>,
+}
+
+impl GffLine<'_> {
+    fn text(&self) -> String {
+        format!("{}\n", self.columns.join("\t"))
+    }
+}
+
+/// One record's [`export_gff3_noodles`] lines after its '##gff-version 3' (D0227 (7)): column 1 and
+/// ##sequence-region become the record id, and each ID becomes `<record id>.<export ID>`, by which
+/// the line is mapped back to its feature.
+fn gff3_lines<'a>(rid: &str, doc: &'a SequenceDocument) -> Vec<GffLine<'a>> {
+    let mut out = Vec::new();
+    for line in export_gff3_noodles(doc).lines().skip(1) {
+        if let Some(region) = line.strip_prefix("##sequence-region ") {
+            let rest = region.split_once(' ').map_or("", |(_, r)| r);
+            out.push(GffLine {
+                columns: vec![format!("##sequence-region {rid} {rest}")],
+                feature: None,
+            });
+            continue;
+        }
+        let mut columns: Vec<String> = line.split('\t').map(String::from).collect();
+        let mut feature = None;
+        if columns.len() == 9 && !line.starts_with('#') {
+            columns[0] = rid.to_string();
+            let attrs: Vec<String> = columns[8]
+                .split(';')
+                .map(|kv| match kv.strip_prefix("ID=") {
+                    Some(id) => {
+                        let fid = gff_decode(id);
+                        feature = doc.features.iter().find(|f| f.id == fid);
+                        format!("ID={}.{id}", gff_encode(rid))
+                    }
+                    None => kv.to_string(),
+                })
+                .collect();
+            columns[8] = attrs.join(";");
+        }
+        out.push(GffLine { columns, feature });
+    }
+    out
+}
+
+/// `--gff3` (D0227 (7)): '##gff-version 3' once, then each selected record's lines of the app's GFF3
+/// export after its first, as [`gff3_lines`] rewrites them, in record order.
+pub fn genbank_to_gff3(docs: &[SequenceDocument], opts: &GenbankToOptions) -> GenbankToText {
+    let mut warnings = Vec::new();
+    let mut text = String::from("##gff-version 3\n");
+    for (rid, doc) in selected(docs, opts, &mut warnings) {
+        for l in gff3_lines(&rid, doc) {
+            text.push_str(&l.text());
+        }
+    }
+    GenbankToText {
+        text,
+        warnings: dedup(warnings),
+    }
+}
+
+/// `--amr` (D0227 (7)): `<base>.amr.gff`, `<base>.amr.faa` and `<base>.amr.fna`, in that order.
+/// The .faa is [`genbank_to_faa`] with simple headers and no pseudogenes, whatever the options say;
+/// the .fna is [`genbank_to_fna`]. The .gff is [`genbank_to_gff3`]'s text with no ##FASTA section:
+/// a CDS line is kept only when its feature's protein_id heads an .faa record, with its Name value
+/// replaced by that protein_id; every other CDS line is dropped and every non-CDS line kept. Each CDS
+/// without a protein_id, pseudogenes aside, warns that the .gff has no line for it.
+pub fn genbank_to_amrfinder(
+    docs: &[SequenceDocument],
+    base: &str,
+    opts: &GenbankToOptions,
+) -> GenbankToFiles {
+    let amr = GenbankToOptions {
+        records: opts.records.clone(),
+        ..GenbankToOptions::default()
+    };
+    let faa = genbank_to_faa(docs, &amr);
+    let fna = genbank_to_fna(docs, &amr);
+    let heads: std::collections::HashSet<&str> = faa
+        .text
+        .lines()
+        .filter_map(|l| l.strip_prefix('>'))
+        .collect();
+    let mut warnings = Vec::new();
+    let mut id_warnings = Vec::new();
+    let records = selected(docs, &amr, &mut id_warnings);
+    for c in cds(&records, &amr) {
+        if values(c.feature, "protein_id").is_none() {
+            warnings.push(format!(
+                "CDS {} has no protein_id, so the AMRFinderPlus .gff has no line for it.",
+                c.fid
+            ));
+        }
+    }
+    let mut gff = String::from("##gff-version 3\n");
+    for (rid, doc) in &records {
+        for mut l in gff3_lines(rid, doc) {
+            if !l.feature.is_some_and(|f| f.feature_type == "CDS") {
+                gff.push_str(&l.text());
+                continue;
+            }
+            let pid = l
+                .feature
+                .and_then(|f| values(f, "protein_id"))
+                .map(|v| v.join("|"))
+                .filter(|p| heads.contains(p.as_str()));
+            let Some(pid) = pid else { continue };
+            let name = format!("Name={}", gff_encode(&pid));
+            let mut attrs: Vec<String> = l.columns[8].split(';').map(String::from).collect();
+            match attrs.iter_mut().find(|kv| kv.starts_with("Name=")) {
+                Some(kv) => *kv = name,
+                None => attrs.push(name),
+            }
+            l.columns[8] = attrs.join(";");
+            gff.push_str(&l.text());
+        }
+    }
+    warnings.extend(faa.warnings);
+    warnings.extend(fna.warnings);
+    GenbankToFiles {
+        files: vec![
+            (format!("{base}.amr.gff"), gff),
+            (format!("{base}.amr.faa"), faa.text),
+            (format!("{base}.amr.fna"), fna.text),
+        ],
         warnings: dedup(warnings),
     }
 }

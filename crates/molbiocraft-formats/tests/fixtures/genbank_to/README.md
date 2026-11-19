@@ -3,7 +3,8 @@
 `oracle.gbk` is written by hand for the genbank_to port (EP-01M7RC9C, US-01M7RC3P). It holds no
 third-party data: its sequences are generated (a fixed linear congruential filler with each CDS
 written in from the protein it is meant to encode), and its names, accessions and products are
-invented. US-01M7RC3P is the only story that edits it; the later genbank_to stories read it as is.
+invented. US-01M7RC3P is the only story that edits it; the later genbank_to stories read it as is
+(US-01M7RC56 added the ptt and phage_finder expected files below without changing it).
 
 ## Oracle
 
@@ -21,6 +22,8 @@ genbank_to -g oracle.gbk -a oracle.keep.faa
 genbank_to -g oracle.gbk -a oracle.drop.faa --pseudo
 genbank_to -g oracle.gbk -f oracle.functions.tsv
 genbank_to -g oracle.gbk -f oracle.pf.tsv --pseudo
+genbank_to -g oracle.gbk -p oracle.ptt
+genbank_to -g oracle.gbk --phage_finder oracle.phage_finder.tsv
 ```
 
 0.54 inverts `--pseudo` for `-a` and `-o` (it passes the flag as `skip_pseudo`), so their default run
@@ -40,9 +43,27 @@ has no attribute 'position') under Biopython 1.88, so the complex headers are st
 | `expected/oracle.pseudo.faa` | `-a oracle.keep.faa` | D0227 (6): line 14, CDS (h) `ORT_0008`, `MK*PG*` changed to `MKWPG*`. |
 | `expected/oracle.functions.tsv` | `-f oracle.functions.tsv` | none |
 | `expected/oracle.pseudo.functions.tsv` | `-f oracle.functions.tsv` | D0227 (1): line 6, `OR000001.1<TAB>ORP00006.1<TAB>Zeta pseudo protein` (CDS (f)), added after the CDS (e) line, since Include pseudogenes keeps CDS (f) in the functions too. |
+| `expected/oracle.ptt` | `-p oracle.ptt` | D0227 (1): line 6, `280..310<TAB>+<TAB>9.0<TAB>-<TAB>[280:310](+)<TAB>ORP00006.1<TAB>-<TAB>Zeta pseudo protein` (CDS (f)), removed; 0.54's ptt never leaves a pseudogene out. D0227 (2): column 1 of every remaining line, the start raised by one: `0..33` to `1..33` (CDS (a)), `40..70` to `41..70` (b), `80..150` to `81..150` (c), `160..230` to `161..230` (d), `240..270` to `241..270` (e), `320..340` to `321..340` (g), `350..368` to `351..368` (h), `380..410` to `381..410` (i), `420..450` to `421..450` (j), `460..490` to `461..490` (k), `500..530` to `501..530` (l), `540..570` to `541..570` (m), `10..40` to `11..40` and `50..80` to `51..80` (OR000002.1), `0..30` to `1..30` (OR000003). D0227 (3): column 3 of every remaining line written as an integer: `10.0` to `10` (a), `19.0` to `19` (c, d), `5.666666666666667` to `5` (g, 20 bp: 20 // 3 - 1), `5.0` to `5` (h), and `9.0` to `9` on the other ten lines. The gene column's location text (column 5) is unchanged: it is the 0-based text 0.54 and the fallback feature id share. |
+| `expected/oracle.phage_finder.tsv` | `--phage_finder oracle.phage_finder.tsv` | D0227 (1): line 6, `OR000001.1<TAB>720<TAB>ORP00006.1<TAB>280<TAB>310<TAB>Zeta pseudo protein` (CDS (f)), removed. D0227 (2): column 4 of every remaining line raised by one, the same fifteen starts as the ptt's (`0` to `1` for CDS (a) ... `0` to `1` for OR000003). |
 
 D0227 (4) and (8) change no line here: the joined outputs carry no record filter, and the fixture's
-locations carry no partial marks and no order().
+locations carry no partial marks and no order(). Since the fixture cannot reach them, the ptt and
+phage_finder tests add an inline record (`EDGE` in `genbank_to_oracle.rs`, with 0.54's own lines for
+it in its doc comment): a partial `<1..>30` CDS whose 'GI:' and 'COG' are not at the start of its
+db_xrefs and product, a 20 bp CDS with two /gene values and the product 'COG0003, partial family',
+and a minus-strand order() with no product.
+
+## GFF3 and the AMRFinderPlus files (D0227 (7))
+
+0.54's `--gff3` and `--amr` write through BCBio's GFF writer, which the port does not follow, so they
+have no expected file here. `gff3_is_the_app_export_with_record_ids` checks the GFF3 against the
+app's own export (`export_gff3_noodles`) line for line: '##gff-version 3' once, column 1 and
+##sequence-region the record id, every ID '<record id>.<export ID>', columns 2-8 and Name unchanged,
+and the lines that share an ID one feature's parts. `amrfinder_files_follow_d0227` checks the .amr.faa
+against `expected/oracle.faa` and the .amr.fna against `expected/oracle.fna`, and the .amr.gff CDS by
+CDS through each feature's protein_id: ORP00001.1, ORP00010.1, ORP00011.1, ORP00012.1, ORP20001.1 and
+ORP30001.1 keep their line with Name replaced by the protein_id; CDS (f) and the nine CDS with no
+protein_id have none, and each of those nine is named in a warning.
 
 ## The fixture's cases
 
@@ -108,4 +129,8 @@ checks the ids and file names 0.54 writes for such a record ('Long_name', not 'L
 
 On phage lambda, the NCBI GenBank record NC_001416.1 (not committed), the port's `.fna`, `.faa`, `.orfs` and functions outputs are byte-identical to 0.54's `-n`, `-a`, `-o`
 and `-f` (2026-11-19). The record has no /pseudo CDS and no /transl_table other than 11, so no
-D0227 difference applies there.
+D0227 difference applies there. Its ptt and phage_finder (73 CDS rows each) are byte-identical to
+0.54's `-p` and `--phage_finder` once D0227 (2) and (3) are applied to 0.54's text (2026-11-19, US-01M7RC56):
+every row's start is one higher (0.54's `190..736` is the port's `191..736`), and every ptt length is
+an integer (`181.0` is `181`); no lambda CDS length is off a multiple of 3, and none is partial or
+pseudo, so no other difference applies.
