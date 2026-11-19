@@ -22,6 +22,8 @@ import {
 import { loadLastUsed, saveLastUsed } from '../core/optionProfiles';
 import { OptionProfilesMenu } from './OperationDialog';
 import { OperationShortcutsEditor } from './OperationShortcutsEditor';
+import { menuShortcutRows, type ShortcutMenuNode } from '../core/menuShortcuts';
+import { detectHostOS, type SupportedOS } from '../platform/osPlatform';
 import {
   MENU_FUNCTION_INFO_EVENT,
   readStoredShowMenuFunctionInfo,
@@ -346,80 +348,6 @@ export const DEFAULT_ENZYME_SUPPLIERS: string[] = [
   'ZYMO Research',
 ];
 
-export const KEYBOARD_SHORTCUT_ENTRIES: { action: string; shortcut: string }[] = [
-  { action: 'About MolBioCraft & License', shortcut: '' },
-  { action: 'Actions - Restriction and Insertion Cloning', shortcut: '' },
-  { action: 'Actions - PCR Amplification', shortcut: '⌘D' },
-  { action: 'Actions - Overlap Extension PCR (SOE-PCR)', shortcut: '' },
-  { action: 'Actions - Primer-Directed Mutagenesis', shortcut: '⌘J' },
-  { action: 'Actions - Gateway BP / LR Recombination', shortcut: '' },
-  { action: 'Actions - Gibson Assembly', shortcut: '' },
-  { action: 'Actions - Golden Gate (Type IIS) Assembly', shortcut: '' },
-  { action: 'Actions - In-Fusion Cloning', shortcut: '' },
-  { action: 'Actions - HiFi DNA Assembly', shortcut: '' },
-  { action: 'Actions - TA or GC Cloning', shortcut: '' },
-  { action: 'Actions - TOPO Cloning', shortcut: '' },
-  { action: 'Actions - Anneal Oligos', shortcut: '' },
-  { action: 'Alignment - Multiple Sequence Alignment (MAFFT)', shortcut: '⌥⌘A' },
-  { action: 'Alignment - Clustal Omega / MUSCLE MSA', shortcut: '' },
-  { action: 'Alignment - Global & Local Pairwise Alignment (NW / SW)', shortcut: '' },
-  { action: 'Alignment - EMBOSS K-mer Dotplot', shortcut: '' },
-  { action: 'Edit - Copy Selected Sequence', shortcut: '⌘C' },
-  { action: 'Edit - Cut', shortcut: '⌘X' },
-  { action: 'Edit - Paste', shortcut: '⌘V' },
-  { action: 'Edit - Select Full Sequence', shortcut: '⌘A' },
-  { action: 'Edit - Find in Sequence', shortcut: '⌘F' },
-  { action: 'Edit - Go to Next Feature', shortcut: '⌘G' },
-  { action: 'Edit - Reverse Complement', shortcut: '⇧⌘R' },
-  { action: 'Edit - Undo', shortcut: '⌘Z' },
-  { action: 'Edit - Redo', shortcut: '⇧⌘Z' },
-  { action: 'Enzymes - Choose Enzymes', shortcut: '⌘E' },
-  { action: 'Enzymes - Find Non-Cutting Enzymes', shortcut: '' },
-  { action: 'Enzymes - Silent Mutations', shortcut: '' },
-  { action: 'Features - Add Feature', shortcut: '⌘T' },
-  { action: 'Features - Detect Common Features', shortcut: '' },
-  { action: 'File - New Blank Session', shortcut: '⌥⌘N' },
-  { action: 'File - New Sequence (DNA / RNA / Protein)', shortcut: '⌘N' },
-  { action: 'File - New Project Folder', shortcut: '⇧⌘N' },
-  { action: 'File - Open Session (.mbc)', shortcut: '⌘O' },
-  { action: 'File - Import Sequence Files', shortcut: '⌘I' },
-  { action: 'File - Import Sequence From Clipboard', shortcut: '⇧⌘I' },
-  { action: 'File - Save GenBank (.gb)', shortcut: '⌘S' },
-  { action: 'File - Save FASTA (.fasta)', shortcut: '⇧⌘S' },
-  { action: 'File - Save Workbench Session (.mbc)', shortcut: '⌥⌘S' },
-  { action: 'File - Close Current Session', shortcut: '⇧⌘W' },
-  { action: 'File - Print / PDF Report', shortcut: '⌘P' },
-  { action: 'Phylogenetics - Construct Maximum Likelihood Tree (ML)', shortcut: '⌥⌘T' },
-  { action: 'Phylogenetics - Neighbor-Joining / Parsimony / Bayesian Trees', shortcut: '' },
-  { action: 'Phylogenetics - Find Best Substitution Models (BIC / AICc)', shortcut: '' },
-  { action: 'Phylogenetics - Evolutionary Distances & Population Diversity', shortcut: '' },
-  { action: 'Phylogenetics - Codon Selection (dN/dS) & RelTime Timetree', shortcut: '' },
-  { action: 'Phylogenetics - Diagnose Missense Mutation Impact', shortcut: '' },
-  { action: 'Preferences', shortcut: '⌘,' },
-  { action: 'Quit MolBioCraft', shortcut: '⌘Q' },
-  { action: 'Primers - Design Primers & Oligo Biophysics', shortcut: '' },
-  { action: 'Primers - Find CRISPR Sites', shortcut: '' },
-  { action: 'Tools - Simulate Agarose Gel', shortcut: '⇧⌘G' },
-  { action: 'Tools - Show DNA Calculations', shortcut: '⇧⌘M' },
-  { action: 'Tools - BLAST Homology Search', shortcut: '⇧⌘B' },
-  { action: 'Tools - Sanger Trace & Contig Verification (.ab1)', shortcut: '' },
-  { action: 'Tools - Guided Multi-Task Bio Pipelines', shortcut: '⇧⌘Y' },
-  { action: 'View - Back', shortcut: '⌘[' },
-  { action: 'View - Forward', shortcut: '⌘]' },
-  { action: 'View - Map View', shortcut: '⌘1' },
-  { action: 'View - Sequence View', shortcut: '⌘2' },
-  { action: 'View - Enzymes View (123 / ||||)', shortcut: '⌘3' },
-  { action: 'View - Features View', shortcut: '⌘4' },
-  { action: 'View - Primers View', shortcut: '⌘5' },
-  { action: 'View - Text / Flatfile View', shortcut: '⌘6' },
-  { action: 'View - Secondary Structure (MFE)', shortcut: '⌘7' },
-  { action: 'View - History & Lineage', shortcut: '⌘8' },
-  { action: 'View - Set Circular Origin', shortcut: '⇧⌘0' },
-  { action: 'View - Zoom In', shortcut: '⌘=' },
-  { action: 'View - Zoom Out', shortcut: '⌘-' },
-  { action: 'View - Actual Size (100%)', shortcut: '⌘0' },
-];
-
 interface PreferencesModalProps {
   initialTab: PreferencesTabId;
   onClose: () => void;
@@ -430,6 +358,16 @@ interface PreferencesModalProps {
   onExportPreferences?: () => void;
   onImportPreferences?: () => void;
   onResetAllPreferences?: () => void;
+  /**
+   * The menu trees the App's shortcuts dispatch from (App passes `Object.values(topMenus)`); the
+   * Keyboard tab lists their shortcuts with menuShortcutRows. Without them it lists only the
+   * EXPLICIT_SHORTCUT_ROWS.
+   */
+  menuTrees?: readonly (readonly ShortcutMenuNode[])[];
+  /** The menu bar's name for each of `menuTrees` ("File", "View", ...), which starts each row's path. */
+  menuTreeLabels?: readonly string[];
+  /** The OS the shortcut labels are written for (the App's display OS); the host's when not given. */
+  shortcutOs?: SupportedOS;
 }
 
 export const PreferencesModal: React.FC<PreferencesModalProps> = ({
@@ -442,6 +380,9 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
   onExportPreferences,
   onImportPreferences,
   onResetAllPreferences,
+  menuTrees,
+  menuTreeLabels,
+  shortcutOs,
 }) => {
   const [activeTab, setActiveTab] = useState<PreferencesTabId>(initialTab);
   // Persisted workbench preferences (src/core/userPreferences.ts).
@@ -491,7 +432,12 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
 
   // Keyboard tab state
   const [shortcutFilter, setShortcutFilter] = useState('');
-  const [selectedShortcutAction, setSelectedShortcutAction] = useState<string>('View - Back');
+  const shortcutRows = useMemo(
+    () => menuShortcutRows(menuTrees ?? [], { topLabels: menuTrees ? menuTreeLabels : undefined, os: shortcutOs ?? detectHostOS() }),
+    [menuTrees, menuTreeLabels, shortcutOs]
+  );
+  const [selectedShortcutPath, setSelectedShortcutPath] = useState<string | null>(null);
+  const selectedShortcut = shortcutRows.find((r) => r.path === selectedShortcutPath) ?? shortcutRows[0];
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -505,12 +451,12 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
 
   const filteredShortcuts = useMemo(
     () =>
-      KEYBOARD_SHORTCUT_ENTRIES.filter(
+      shortcutRows.filter(
         (s) =>
-          s.action.toLowerCase().includes(shortcutFilter.toLowerCase()) ||
-          s.shortcut.toLowerCase().includes(shortcutFilter.toLowerCase())
+          s.path.toLowerCase().includes(shortcutFilter.toLowerCase()) ||
+          s.label.toLowerCase().includes(shortcutFilter.toLowerCase())
       ),
-    [shortcutFilter]
+    [shortcutRows, shortcutFilter]
   );
 
   const handleMoveSupplier = (direction: 'up' | 'down' | 'top') => {
@@ -2354,7 +2300,7 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
                   style={{ width: 280 }}
                 />
                 <span style={{ fontSize: 12, opacity: 0.8 }}>
-                  Showing {filteredShortcuts.length} commands
+                  Showing {filteredShortcuts.length} shortcuts
                 </span>
               </div>
               <WorkbenchSmartTable
@@ -2372,13 +2318,13 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
                 <tbody>
                   {filteredShortcuts.map((item) => (
                     <tr
-                      key={item.action}
-                      className={selectedShortcutAction === item.action ? 'selected-row' : ''}
-                      onClick={() => setSelectedShortcutAction(item.action)}
+                      key={item.path}
+                      className={`mbc-menu-shortcut-row${selectedShortcut?.path === item.path ? ' selected-row' : ''}`}
+                      onClick={() => setSelectedShortcutPath(item.path)}
                     >
-                      <td>{item.action}</td>
+                      <td>{item.path}</td>
                       <td>
-                        <code>{item.shortcut || '—'}</code>
+                        <code>{item.label}</code>
                       </td>
                     </tr>
                   ))}
@@ -2386,14 +2332,11 @@ export const PreferencesModal: React.FC<PreferencesModalProps> = ({
               </WorkbenchSmartTable>
               <div className="prefs-row" style={{ justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span>Shortcut for &ldquo;{selectedShortcutAction}&rdquo;:</span>
+                  <span>Shortcut for &ldquo;{selectedShortcut?.path ?? ''}&rdquo;:</span>
                   <input
                     type="text"
                     readOnly
-                    value={
-                      KEYBOARD_SHORTCUT_ENTRIES.find((k) => k.action === selectedShortcutAction)
-                        ?.shortcut || ''
-                    }
+                    value={selectedShortcut?.label ?? ''}
                     style={{ width: 84 }}
                   />
                 </div>

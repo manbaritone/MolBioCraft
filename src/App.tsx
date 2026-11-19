@@ -18241,6 +18241,12 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
           onChangeConfirmBeforeQuit={applyConfirmBeforeQuitPreference}
           onExportPreferences={handleExportPreferencesFile}
           onImportPreferences={triggerImportPreferencesPicker}
+          // The Keyboard tab lists the shortcuts of the trees the shortcut dispatcher reads (US-01M6P2G2).
+          menuTrees={Object.values(topMenus)}
+          menuTreeLabels={Object.keys(topMenus).map((id) =>
+            id === 'app' ? 'MolBioCraft' : topMenuBarEntries.find((entry) => entry.id === id)?.label ?? id
+          )}
+          shortcutOs={displayOs}
           onResetAllPreferences={() => {
             resetUserPreferences();
             applyThemePreference('system');

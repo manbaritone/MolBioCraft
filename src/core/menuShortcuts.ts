@@ -12,7 +12,7 @@
  * subject to the same disabled state.
  */
 
-import type { SupportedOS } from '../platform/osPlatform';
+import { formatPlatformShortcut, type SupportedOS } from '../platform/osPlatform';
 
 export interface ParsedShortcut {
   /** Normalised key: single upper-case character or a named key ("F5", ","). */
@@ -150,15 +150,27 @@ export interface MenuShortcutBinding {
   run: () => void;
 }
 
-/** Flatten menu trees into shortcut bindings; the first definition of a combination wins. */
-export function collectMenuShortcutBindings(trees: readonly (readonly ShortcutMenuNode[])[]): MenuShortcutBinding[] {
-  const out: MenuShortcutBinding[] = [];
+/** A bound menu item met by walkBoundShortcuts, with the submenu labels above it. */
+interface BoundShortcutItem {
+  node: ShortcutMenuNode;
+  /** The labels of the submenus that hold it, outermost first. */
+  submenus: string[];
+  shortcut: ParsedShortcut;
+  disabled: boolean;
+  run: () => void;
+}
+
+/**
+ * Every menu item a key combination runs, in menu order: an item with a handler and a shortcut label
+ * parseShortcutLabel reads, and only the first item that displays a given combination.
+ */
+function walkBoundShortcuts(trees: readonly (readonly ShortcutMenuNode[])[], visit: (item: BoundShortcutItem, tree: number) => void): void {
   const seen = new Set<string>();
-  const walk = (nodes: readonly ShortcutMenuNode[], ancestorDisabled: boolean) => {
+  const walk = (nodes: readonly ShortcutMenuNode[], ancestorDisabled: boolean, submenus: string[], tree: number) => {
     for (const node of nodes) {
       const disabled = ancestorDisabled || Boolean(node.disabled);
       if (node.kind === 'submenu' && node.children) {
-        walk(node.children, disabled);
+        walk(node.children, disabled, [...submenus, node.label ?? ''], tree);
         continue;
       }
       const run = node.kind === 'checkbox' ? node.onToggle : node.kind === 'command' ? node.onSelect : undefined;
@@ -167,11 +179,65 @@ export function collectMenuShortcutBindings(trees: readonly (readonly ShortcutMe
       const key = `${parsed.primary}|${parsed.ctrlOnly}|${parsed.alt}|${parsed.shift}|${parsed.key}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ id: node.id ?? '', label: node.label ?? '', shortcut: parsed, disabled, run });
+      visit({ node, submenus, shortcut: parsed, disabled, run }, tree);
     }
   };
-  for (const tree of trees) walk(tree, false);
+  trees.forEach((tree, i) => walk(tree, false, [], i));
+}
+
+/** Flatten menu trees into shortcut bindings; the first definition of a combination wins. */
+export function collectMenuShortcutBindings(trees: readonly (readonly ShortcutMenuNode[])[]): MenuShortcutBinding[] {
+  const out: MenuShortcutBinding[] = [];
+  walkBoundShortcuts(trees, ({ node, shortcut, disabled, run }) => {
+    out.push({ id: node.id ?? '', label: node.label ?? '', shortcut, disabled, run });
+  });
   return out;
+}
+
+/** One row of the Preferences Keyboard tab: where the command is, and the keys that run it. */
+export interface MenuShortcutRow {
+  /** The menu item's id ('' for an explicit row). */
+  id: string;
+  /** The item's menu path, 'File > Export Sequences > Export GenBank'. */
+  path: string;
+  /** The shortcut label, as the menu shows it ('⌘S' on macOS, 'Ctrl+S' elsewhere). */
+  label: string;
+}
+
+/**
+ * Shortcuts the App binds outside the menu trees, listed after the menu rows. `primary` rows take the
+ * platform's command key (⌘K on macOS, Ctrl+K elsewhere); the others are the bare key.
+ */
+export const EXPLICIT_SHORTCUT_ROWS: readonly { path: string; key: string; primary: boolean }[] = [
+  // App.tsx's Quick Command Palette listener; no menu item displays it.
+  { path: 'Quick Command Navigator', key: 'K', primary: true },
+  // App.tsx's own F1 listener. Help > Guides shows "F1", but parseShortcutLabel binds no bare key.
+  { path: 'Help > Guides > Show or Hide Help Panel', key: 'F1', primary: false },
+];
+
+/**
+ * The Preferences Keyboard tab's rows: each menu item a combination runs, found by the walk
+ * collectMenuShortcutBindings dispatches from (so a combination bound twice is listed once, under
+ * its first definition), then EXPLICIT_SHORTCUT_ROWS formatted for `os`. `topLabels` names each tree
+ * (the menu bar's "File", "View", ...) and starts its rows' paths; when given it must name every tree.
+ */
+export function menuShortcutRows(
+  trees: readonly (readonly ShortcutMenuNode[])[],
+  opts: { topLabels?: readonly string[]; os: SupportedOS }
+): MenuShortcutRow[] {
+  const { topLabels, os } = opts;
+  if (topLabels && topLabels.length !== trees.length) {
+    throw new Error(`menuShortcutRows was given ${trees.length} menu trees but ${topLabels.length} labels for them`);
+  }
+  const rows: MenuShortcutRow[] = [];
+  walkBoundShortcuts(trees, ({ node, submenus }, tree) => {
+    const path = [...(topLabels ? [topLabels[tree]] : []), ...submenus, node.label ?? ''].join(' > ');
+    rows.push({ id: node.id ?? '', path, label: node.shortcut?.trim() ?? '' });
+  });
+  for (const row of EXPLICIT_SHORTCUT_ROWS) {
+    rows.push({ id: '', path: row.path, label: row.primary ? formatPlatformShortcut(row.key, os) : row.key });
+  }
+  return rows;
 }
 
 /** Find the menu binding for a key event, if any. */

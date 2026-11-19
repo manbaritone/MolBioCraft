@@ -5,11 +5,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   collectMenuShortcutBindings,
   eventMatchesShortcut,
+  EXPLICIT_SHORTCUT_ROWS,
   findMenuShortcut,
+  menuShortcutRows,
   parseShortcutLabel,
   ShortcutMenuNode,
 } from '../core/menuShortcuts';
 import { formatPlatformShortcut, SupportedOS } from '../platform/osPlatform';
+import { appTsxSource, mountApp, type AppHarness } from './appHarness';
 
 const key = (
   k: string,
@@ -120,3 +123,108 @@ describe('menu-derived keyboard shortcuts', () => {
     expect(findMenuShortcut(bindings, key('q', { ctrlKey: true }), 'linux')).toBeUndefined();
   });
 });
+
+// ─── US-01M6P2G2: the Preferences Keyboard tab's rows ───
+
+/** The Keyboard tab's rows in the mounted App, as [menu path, shortcut label]. */
+async function keyboardTabRows(app: AppHarness): Promise<[string, string][]> {
+  await app.menu('app:preferences');
+  await app.click(app.one('#prefs-tab-keyboard', 'Preferences Keyboard tab'));
+  return app.all('tr.mbc-menu-shortcut-row').map((r) => {
+    const cells = r.querySelectorAll('td');
+    return [cells[0].textContent.trim(), cells[1].textContent.trim()];
+  });
+}
+
+describe('US-01M6P2G2 AC1: Keyboard rows come from the menu trees the shortcuts dispatch from', () => {
+  const noop = () => undefined;
+  const fileTree: ShortcutMenuNode[] = [
+    {
+      kind: 'submenu', id: 'exp', label: 'Export Sequences', children: [
+        { kind: 'command', id: 'gb', label: 'Export GenBank', shortcut: 'Ctrl+S', onSelect: noop },
+        { kind: 'separator' },
+        { kind: 'command', id: 'fa', label: 'Export FASTA', shortcut: 'Ctrl+Shift+S', onSelect: noop },
+      ],
+    },
+    // Shown but bound to nothing: the dispatcher skips it, so the tab does too.
+    { kind: 'command', id: 'dead', label: 'No Handler', shortcut: 'Ctrl+E' },
+    // A bare key the label parser does not bind (F1 is an explicit row instead).
+    { kind: 'command', id: 'help', label: 'Show Help Panel', shortcut: 'F1', onSelect: noop },
+    { kind: 'command', id: 'plain', label: 'No Shortcut', onSelect: noop },
+  ];
+  const viewTree: ShortcutMenuNode[] = [
+    {
+      kind: 'submenu', id: 'lay', label: 'Map Layout', disabled: true, children: [
+        { kind: 'checkbox', id: 'split', label: 'Split Map & Sequence', shortcut: 'Ctrl+1', onToggle: noop },
+      ],
+    },
+    // Bound a second time: the dispatcher runs the File item, so the tab lists only that one.
+    { kind: 'command', id: 'gb-again', label: 'Save Again', shortcut: 'Ctrl+S', onSelect: noop },
+  ];
+
+  it('US-01M6P2G2 AC1 lists each bound item once, by its menu path, first definition winning, then the explicit rows', () => {
+    const rows = menuShortcutRows([fileTree, viewTree], { topLabels: ['File', 'View'], os: 'linux' });
+    expect(rows.map((r) => [r.path, r.label])).toEqual([
+      ['File > Export Sequences > Export GenBank', 'Ctrl+S'],
+      ['File > Export Sequences > Export FASTA', 'Ctrl+Shift+S'],
+      // A disabled submenu's item still has its shortcut; it is listed.
+      ['View > Map Layout > Split Map & Sequence', 'Ctrl+1'],
+      ['Quick Command Navigator', 'Ctrl+K'],
+      ['Help > Guides > Show or Hide Help Panel', 'F1'],
+    ]);
+    // The same walk and the same first-definition key as the dispatcher: the menu rows are the bindings, in order.
+    const bindings = collectMenuShortcutBindings([fileTree, viewTree]);
+    expect(rows.slice(0, bindings.length).map((r) => r.id)).toEqual(bindings.map((b) => b.id));
+    expect(rows.length).toBe(bindings.length + EXPLICIT_SHORTCUT_ROWS.length);
+    // The explicit rows read the host's format; on macOS they are the glyph labels.
+    const mac = menuShortcutRows([], { os: 'macos' });
+    expect(mac.map((r) => [r.path, r.label])).toEqual([['Quick Command Navigator', '⌘K'], ['Help > Guides > Show or Hide Help Panel', 'F1']]);
+    // Without top labels the path starts at the tree's own items; a label list of the wrong length is refused.
+    expect(menuShortcutRows([fileTree], { os: 'linux' })[0].path).toBe('Export Sequences > Export GenBank');
+    expect(() => menuShortcutRows([fileTree, viewTree], { topLabels: ['File'], os: 'linux' })).toThrow(/2 menu trees but 1 label/);
+  });
+
+  it('US-01M6P2G2 AC1 the running App lists every combination bound twice once, under its first definition', async () => {
+    // Source pins: App hands Preferences the same trees the dispatcher reads. (The hand-kept table's
+    // deletion is AC1's own `git grep` over src.)
+    const src = appTsxSource();
+    expect(src).toContain('collectMenuShortcutBindings(\n    Object.values(topMenus)');
+    expect(src).toMatch(/<PreferencesModal[\s\S]{0,800}menuTrees=\{Object\.values\(topMenus\)/);
+
+    const app = await mountApp();
+    try {
+      const rows = await keyboardTabRows(app);
+      const byLabel = (label: string) => rows.filter((r) => r[1] === label).map((r) => r[0]);
+      expect(rows.length, 'the tab lists the menu shortcuts').toBeGreaterThan(40);
+      // Each combination appears once.
+      const labels = rows.map((r) => r[1]);
+      expect(labels.filter((l, i) => labels.indexOf(l) !== i), 'no combination is listed twice').toEqual([]);
+      expect({
+        'Ctrl+3': byLabel('Ctrl+3'),
+        'Ctrl+D': byLabel('Ctrl+D'),
+        'Ctrl+J': byLabel('Ctrl+J'),
+        'Ctrl+I': byLabel('Ctrl+I'),
+        'Ctrl+Shift+I': byLabel('Ctrl+Shift+I'),
+        'Ctrl+Q': byLabel('Ctrl+Q'),
+      }).toEqual(FIRST_DEFINITIONS);
+      expect(rows.slice(-2)).toEqual([['Quick Command Navigator', 'Ctrl+K'], ['Help > Guides > Show or Hide Help Panel', 'F1']]);
+    } finally {
+      app.unmount();
+    }
+  }, 120_000);
+});
+
+/**
+ * The first definition of each combination App.tsx binds twice, in menu-bar order (Linux host), as the
+ * walk the dispatcher uses finds it. The later definitions (Enzymes Table for ⌘3, In-Silico PCR for
+ * ⌘D, a second Site Mutagenesis for ⌘J, File's direct Import Files and Import From Clipboard for ⌘I and
+ * ⇧⌘I, and File's own Quit MolBioCraft for ⌘Q) are not listed.
+ */
+const FIRST_DEFINITIONS: Record<string, string[]> = {
+  'Ctrl+3': ['View > Studio Views > Enzymes View'],
+  'Ctrl+D': ['Cloning > PCR Cloning > PCR Amplification'],
+  'Ctrl+J': ['Cloning > Mutagenesis > Site Mutagenesis'],
+  'Ctrl+I': ['File > New Session > Starter & Import > Import Files'],
+  'Ctrl+Shift+I': ['File > New Session > Starter & Import > From Clipboard'],
+  'Ctrl+Q': ['MolBioCraft > Quit MolBioCraft'],
+};
