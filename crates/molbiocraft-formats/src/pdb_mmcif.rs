@@ -536,9 +536,14 @@ pub const REQUIRED_ATOM_SITE_COLUMNS: [&str; 8] = [
 /// after a residue at any other position the numbering has restarted (ALA 1, GLY 2, ALA 1, GLY 2,
 /// with or without `TER`), and the row starts a new residue. A row with no residue number (a water
 /// or ligand, `label_seq_id` `.`, with no `auth_seq_id`) joins the residue listed just before it
-/// when that one has the same name and no number either, unless that residue already holds an
-/// atom of the row's name and neither row carries an alt id: the row then starts the next
-/// residue. So unnumbered waters stay one residue each, and a ligand's atoms one residue.
+/// when that one has the same name and no number either, unless that residue already took a row
+/// of the row's atom name and the row is not that atom's next conformer (a named alt id listed
+/// after every alt id of that name so far, none of them blank): the row then starts the next
+/// residue. So an unnumbered water whose oxygen repeats an alt id, or an ordered water beside a
+/// disordered one, is a residue of its own, and a ligand's atoms, conformers listed in alt-id
+/// order, one residue; with no number, a blank and a named row of one name are two residues, not
+/// one atom. Two single-conformer waters listed in alt-id order (`O A`, then `O B`) cannot be
+/// told from one water's two conformers and read as one.
 ///
 /// Secondary structure is taken only from the file: `_struct_conf` helix rows and
 /// `_struct_sheet_range` strands, which set each residue's
@@ -1126,6 +1131,8 @@ type ResidueKey = (Option<i32>, Option<i32>, Option<String>, String);
 struct ChainBuilder {
     chain: StructureChain,
     residue_index: HashMap<ResidueKey, usize>,
+    /// (atom name, alt id) of every row the last residue took while it had no number.
+    unnumbered_rows: Vec<(String, Option<String>)>,
 }
 
 struct ModelBuilder {
@@ -1138,10 +1145,19 @@ fn occupancy_rank(occupancy: Option<f64>) -> f64 {
     occupancy.unwrap_or(f64::NEG_INFINITY)
 }
 
-/// Two rows of one atom name, neither an alternate location: in an unnumbered residue, the second
-/// is the same atom of the next residue.
-fn same_atom_twice(kept: &StructureAtom, row: &StructureAtom) -> bool {
-    kept.name == row.name && kept.alt_loc.is_none() && row.alt_loc.is_none()
+/// Whether a row of an unnumbered residue (no `label_seq_id`, no `auth_seq_id`) is the next
+/// residue's, given the (atom name, alt id) of each row the residue has taken: it is unless the
+/// residue holds no atom of its name, or the row is that atom's next conformer, a named alt id
+/// listed after every alt id of that name so far, none of them blank. So a repeated pair, an
+/// ordered atom beside a disordered one, or an alt id listed out of order starts the next residue.
+fn starts_next_unnumbered(taken: &[(String, Option<String>)], name: &str, alt: Option<&str>) -> bool {
+    taken.iter().any(|(n, a)| {
+        n == name
+            && match (a.as_deref(), alt) {
+                (Some(a), Some(alt)) => a >= alt,
+                _ => true,
+            }
+    })
 }
 
 fn build_models(text: &str, t: &CifTable<'_>) -> Result<Vec<StructureModel>, MmcifError> {
@@ -1278,6 +1294,7 @@ impl ModelsBuilder {
                         residues: Vec::new(),
                     },
                     residue_index: HashMap::new(),
+                    unnumbered_rows: Vec::new(),
                 });
                 mb.chains.len() - 1
             }
@@ -1301,13 +1318,14 @@ impl ModelsBuilder {
         };
         let ri = if label_seq.is_none() && auth_seq.is_none() {
             // No residue number (a water or ligand with no `auth_seq_id`): row order is all there
-            // is, so the row joins the residue listed just before it unless that residue already
-            // holds this atom with neither row an alternate location; then it starts the next one.
-            let joins = same_as_last
-                && cb.chain.residues.last().is_some_and(|r| !r.atoms.iter().any(|a| same_atom_twice(a, &atom)));
-            if !joins {
+            // is, so the row joins the residue listed just before it unless it repeats an atom
+            // that residue holds other than as its next conformer; then it starts the next one.
+            let alt = atom.alt_loc.as_deref();
+            if !same_as_last || starts_next_unnumbered(&cb.unnumbered_rows, &atom.name, alt) {
                 cb.chain.residues.push(new_residue());
+                cb.unnumbered_rows.clear();
             }
+            cb.unnumbered_rows.push((atom.name.clone(), atom.alt_loc.clone()));
             cb.chain.residues.len() - 1
         } else if same_as_last {
             cb.chain.residues.len() - 1
@@ -2197,7 +2215,9 @@ mod tests {
     /// BG01M6PETK: waters have no `label_seq_id` (`.`), so without an `auth_seq_id` (no column, or
     /// `?`) a residue has no number. Such a row joins the residue listed just before it, of the
     /// same name and also unnumbered, unless that residue already holds an atom of the row's name
-    /// and neither row carries an alt id; then it is the next residue.
+    /// and the row is not that atom's next conformer (a named alt id after every alt id of that
+    /// name listed so far, none of them blank); then it is the next residue. Disordered waters
+    /// next to ordered ones are pinned by hand-built rows and by rows of RCSB 3NIR.
     #[test]
     fn unnumbered_waters_stay_separate_residues() {
         let rows = [
@@ -2220,6 +2240,28 @@ mod tests {
             "HETATM 13 C C1 . LIG D 3 . ? 8.0 0.0 0.0 1.00 30.0 ? ? LIG A C1 1",
             "HETATM 14 C C2 . LIG D 3 . ? 9.0 0.0 0.0 1.00 30.0 ? ? LIG A C2 1",
             "HETATM 15 O O3 . LIG D 3 . ? 10.0 0.0 0.0 1.00 30.0 ? ? LIG A O3 1",
+            // A disordered water, then an ordered one: two residues.
+            "HETATM 16 O O A HOH G 2 . ? 11.0 0.0 0.0 0.60 30.0 ? ? HOH A O 1",
+            "HETATM 17 O O B HOH G 2 . ? 11.5 0.0 0.0 0.40 30.0 ? ? HOH A O 1",
+            "HETATM 18 O O . HOH G 2 . ? 12.0 0.0 0.0 1.00 30.0 ? ? HOH A O 1",
+            // Two disordered waters, the alt ids repeated: two residues, each its own conformer.
+            "HETATM 19 O O A HOH H 2 . ? 13.0 0.0 0.0 0.60 30.0 ? ? HOH A O 1",
+            "HETATM 20 O O B HOH H 2 . ? 13.5 0.0 0.0 0.40 30.0 ? ? HOH A O 1",
+            "HETATM 21 O O A HOH H 2 . ? 14.0 0.0 0.0 0.30 30.0 ? ? HOH A O 1",
+            "HETATM 22 O O B HOH H 2 . ? 14.5 0.0 0.0 0.70 30.0 ? ? HOH A O 1",
+            // An ordered water, then a disordered one: two residues.
+            "HETATM 23 O O . HOH I 2 . ? 15.0 0.0 0.0 1.00 30.0 ? ? HOH A O 1",
+            "HETATM 24 O O A HOH I 2 . ? 16.0 0.0 0.0 0.40 30.0 ? ? HOH A O 1",
+            "HETATM 25 O O B HOH I 2 . ? 16.5 0.0 0.0 0.60 30.0 ? ? HOH A O 1",
+            // Two waters of one conformer each, the second listed with an earlier alt id: two.
+            "HETATM 26 O O B HOH J 2 . ? 17.0 0.0 0.0 0.50 30.0 ? ? HOH A O 1",
+            "HETATM 27 O O A HOH J 2 . ? 18.0 0.0 0.0 0.50 30.0 ? ? HOH A O 1",
+            // A ligand with one shared atom and two conformers of the others: one residue.
+            "HETATM 28 C C1 . LIG K 3 . ? 19.0 0.0 0.0 1.00 30.0 ? ? LIG A C1 1",
+            "HETATM 29 C C2 A LIG K 3 . ? 20.0 0.0 0.0 0.60 30.0 ? ? LIG A C2 1",
+            "HETATM 30 O O3 A LIG K 3 . ? 21.0 0.0 0.0 0.60 30.0 ? ? LIG A O3 1",
+            "HETATM 31 C C2 B LIG K 3 . ? 20.5 0.0 0.0 0.40 30.0 ? ? LIG A C2 1",
+            "HETATM 32 O O3 B LIG K 3 . ? 21.5 0.0 0.0 0.40 30.0 ? ? LIG A O3 1",
         ];
         let auth_seq = COLUMNS.iter().position(|c| *c == "auth_seq_id").unwrap();
         let without_column: Vec<usize> = all_columns().into_iter().filter(|&i| i != auth_seq).collect();
@@ -2232,6 +2274,11 @@ mod tests {
             ),
             ("E", vec![vec![("O", 6.0)]]),
             ("D", vec![vec![("C1", 8.0), ("C2", 9.0), ("O3", 10.0)]]),
+            ("G", vec![vec![("O", 11.0)], vec![("O", 12.0)]]),
+            ("H", vec![vec![("O", 13.0)], vec![("O", 14.5)]]),
+            ("I", vec![vec![("O", 15.0)], vec![("O", 16.5)]]),
+            ("J", vec![vec![("O", 17.0)], vec![("O", 18.0)]]),
+            ("K", vec![vec![("C1", 19.0), ("C2", 20.0), ("O3", 21.0)]]),
         ];
         for (what, order) in [("no auth_seq_id column", without_column), ("auth_seq_id ?", all_columns())] {
             let s = parse_mmcif_structure(&atom_site_cif(&COLUMNS, &rows, &order, false)).unwrap();
@@ -2249,6 +2296,62 @@ mod tests {
                 .collect();
             assert_eq!(got, want, "{what}");
         }
+
+        // Three runs of the water rows of RCSB 3NIR (https://files.rcsb.org/download/3NIR.cif,
+        // rows 925-937, 985-991 and 1005-1016, as written), where ordered waters sit next to
+        // disordered ones and single conformers are listed out of alt-id order. Without the
+        // auth_seq_id column they read as the 25 waters the column numbers, each with the oxygen
+        // the column gives it.
+        let rows_3nir = [
+            "HETATM 925 O O . HOH F 3 . ? 10.759 -7.000 2.339 1.00 8.61 ? 3016 HOH A O 1",
+            "HETATM 926 O O A HOH F 3 . ? 9.223 -0.226 11.891 0.70 4.02 ? 3017 HOH A O 1",
+            "HETATM 927 O O B HOH F 3 . ? 10.070 -0.699 10.571 0.30 4.83 ? 3017 HOH A O 1",
+            "HETATM 928 O O . HOH F 3 . ? 3.614 -5.327 12.334 1.00 4.45 ? 3018 HOH A O 1",
+            "HETATM 929 O O . HOH F 3 . ? 0.444 -4.372 10.478 1.00 7.16 ? 3019 HOH A O 1",
+            "HETATM 930 O O . HOH F 3 . ? -0.764 -2.826 8.601 1.00 3.13 ? 3020 HOH A O 1",
+            "HETATM 931 O O . HOH F 3 . ? -0.954 -6.691 10.960 1.00 6.57 ? 3021 HOH A O 1",
+            "HETATM 932 O O . HOH F 3 . ? -4.655 -8.957 0.034 1.00 3.39 ? 3022 HOH A O 1",
+            "HETATM 933 O O A HOH F 3 . ? -1.293 -16.470 8.830 0.50 8.33 ? 3023 HOH A O 1",
+            "HETATM 934 O O B HOH F 3 . ? -1.328 -16.293 8.368 0.50 2.75 ? 3023 HOH A O 1",
+            "HETATM 935 O O A HOH F 3 . ? 8.584 -18.856 19.332 0.50 4.52 ? 3024 HOH A O 1",
+            "HETATM 936 O O B HOH F 3 . ? 8.579 -18.421 19.811 0.50 10.13 ? 3024 HOH A O 1",
+            "HETATM 937 O O . HOH F 3 . ? 9.431 -16.340 22.149 1.00 6.14 ? 3025 HOH A O 1",
+            "HETATM 985 O O . HOH F 3 . ? 12.269 -16.750 21.091 0.50 15.25 ? 3079 HOH A O 1",
+            "HETATM 986 O O B HOH F 3 . ? -9.018 -7.028 0.721 0.50 4.27 ? 3081 HOH A O 1",
+            "HETATM 987 O O A HOH F 3 . ? 1.337 -13.173 14.881 0.50 10.05 ? 3082 HOH A O 1",
+            "HETATM 988 O O B HOH F 3 . ? 1.749 -13.679 14.772 0.50 23.50 ? 3082 HOH A O 1",
+            "HETATM 989 O O A HOH F 3 . ? -10.142 -8.689 -0.507 0.50 7.45 ? 3083 HOH A O 1",
+            "HETATM 990 O O A HOH F 3 . ? 10.523 -9.399 20.877 0.50 11.35 ? 3084 HOH A O 1",
+            "HETATM 991 O O B HOH F 3 . ? 9.170 -9.674 20.203 0.50 10.95 ? 3084 HOH A O 1",
+            "HETATM 1005 O O . HOH F 3 . ? 7.091 -8.083 19.851 1.00 37.22 ? 3101 HOH A O 1",
+            "HETATM 1006 O O A HOH F 3 . ? 11.183 -13.960 1.752 0.50 19.35 ? 3102 HOH A O 1",
+            "HETATM 1007 O O B HOH F 3 . ? 10.433 -14.791 2.856 0.50 12.59 ? 3102 HOH A O 1",
+            "HETATM 1008 O O B HOH F 3 . ? 11.136 -17.612 1.888 0.50 17.73 ? 3103 HOH A O 1",
+            "HETATM 1009 O O A HOH F 3 . ? 18.875 -16.413 15.631 1.00 23.49 ? 3106 HOH A O 1",
+            "HETATM 1010 O O A HOH F 3 . ? 16.383 -18.101 16.612 0.50 13.99 ? 3107 HOH A O 1",
+            "HETATM 1011 O O B HOH F 3 . ? 17.691 -17.755 17.120 0.50 13.65 ? 3107 HOH A O 1",
+            "HETATM 1012 O O . HOH F 3 . ? 1.646 -16.592 16.340 1.00 36.07 ? 3108 HOH A O 1",
+            "HETATM 1013 O O . HOH F 3 . ? -0.133 -14.685 14.826 1.00 66.28 ? 3109 HOH A O 1",
+            "HETATM 1014 O O . HOH F 3 . ? 8.535 -7.801 16.902 1.00 48.06 ? 3110 HOH A O 1",
+            "HETATM 1015 O O D HOH F 3 . ? 5.832 -6.170 -2.159 0.40 12.97 ? 3111 HOH A O 1",
+            "HETATM 1016 O O B HOH F 3 . ? -3.549 -14.409 2.724 0.50 9.21 ? 3112 HOH A O 1",
+        ];
+        let waters = |order: &[usize]| -> Vec<(Option<i32>, Vec<(Option<String>, f64)>)> {
+            let s = parse_mmcif_structure(&atom_site_cif(&COLUMNS, &rows_3nir, order, false)).unwrap();
+            assert_eq!(s.models[0].chains.len(), 1);
+            s.models[0].chains[0]
+                .residues
+                .iter()
+                .map(|r| (r.auth_seq_id, r.atoms.iter().map(|a| (a.alt_loc.clone(), a.x)).collect()))
+                .collect()
+        };
+        let numbered = waters(&all_columns());
+        assert_eq!(numbered.len(), 25, "the auth_seq_id column numbers 25 waters");
+        let strip = |w: Vec<(Option<i32>, Vec<(Option<String>, f64)>)>| -> Vec<Vec<(Option<String>, f64)>> {
+            w.into_iter().map(|(_, atoms)| atoms).collect()
+        };
+        let without_column: Vec<usize> = all_columns().into_iter().filter(|&i| i != auth_seq).collect();
+        assert_eq!(strip(waters(&without_column)), strip(numbered), "3NIR waters with no auth_seq_id column");
     }
 
     /// BG01M6PETK: CIF data names, and the `data_` and `loop_` words, are case-insensitive, so
