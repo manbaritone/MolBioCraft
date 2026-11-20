@@ -707,15 +707,27 @@ describe('library and storage names', () => {
     expect(palette).toContain('10,000 aa Protein Help › Load Example Data › 10,000 aa Protein');
   });
 
+  /**
+   * The status bar's one notice, read from its `.statusbar-toast-text` span whatever attributes the
+   * span carries (BG-01M6W06S gave it a title), with that title, which must be the whole notice.
+   */
+  const statusNotice = (markup: string): string => {
+    const spans = [...markup.matchAll(/<span\b([^>]*\bclass="statusbar-toast-text"[^>]*)>([\s\S]*?)<\/span>/g)];
+    expect(spans, 'one status-bar notice').toHaveLength(1);
+    const [, attrs, text] = spans[0];
+    expect(/\btitle="([^"]*)"/.exec(attrs)?.[1], "the notice's title is its whole text").toBe(text);
+    return wordsOf(text);
+  };
+
   it('keeps library and storage names out of studio headings, in the notices a run leaves', () => {
     // Loading the benchmark chromosome from the palette leaves a notice in the status bar.
     const html = renderApp({ session: 'sample-library', clicks: [/Navigator$/, /^500 kbp Annotated Genome/] });
-    const banner = wordsOf(/<span class="statusbar-toast-text">([\s\S]*?)<\/span>/.exec(html)?.[1] ?? '');
+    const banner = statusNotice(html);
     expect(banner).toMatch(/^Loaded ".+" \(500,000 bp, \d+ annotations; [\d,]+ KiB held in memory\)$/);
     expect(banner).not.toMatch(JARGON);
     // Choosing the polyprotein again switches to the one already loaded, with its own notice.
     const again = renderApp({ session: 'sample-library', clicks: [/Navigator$/, /^10,000 aa Protein/, /Navigator$/, /^10,000 aa Protein/] });
-    const switched = wordsOf(/<span class="statusbar-toast-text">([\s\S]*?)<\/span>/.exec(again)?.[1] ?? '');
+    const switched = statusNotice(again);
     expect(switched).toMatch(/^Switched to benchmark document ".+" \(10,000 aa\)$/);
 
     // Annotating the HMM segments hands the App the notice it shows in the status bar.
