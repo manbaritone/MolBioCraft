@@ -16,12 +16,15 @@
  */
 
 import type { SequenceDocument } from '../types/bio';
-import type { TableFilterRule } from '../components/WorkbenchSmartTable';
+import type { TableFilterOperator, TableFilterRule } from '../components/WorkbenchSmartTable';
 import { PROJECT_ROOT } from './projectExplorer';
-import { scopesOffered, type CombineChoice, type SearchMode, type SearchScope } from './projectSearch';
+import { scopesOffered, type CombineChoice, type MotifEngine, type SearchMode, type SearchScope } from './projectSearch';
+
+/** The operators a Residues rule offers: the motif engine answers whether a molecule holds a motif, nothing else. */
+export const RESIDUES_OPERATORS = ['contains', 'not-contains'] as const satisfies readonly TableFilterOperator[];
 
 export const SEARCH_FIELDS = [
-  { id: '__residues__', label: 'Residues (both strands)' },
+  { id: '__residues__', label: 'Residues (both strands)', operators: RESIDUES_OPERATORS },
   { id: '__annotations__', label: 'Annotation name / type' },
   { id: '__metadata__', label: 'Any metadata value' },
 ] as const;
@@ -30,7 +33,11 @@ export const isSearchField = (colId: string) => SEARCH_FIELDS.some((f) => f.id =
 
 const COMP: Record<string, string> = { A: 'T', T: 'A', U: 'A', G: 'C', C: 'G', N: 'N', R: 'Y', Y: 'R', S: 'S', W: 'W', K: 'M', M: 'K', B: 'V', V: 'B', D: 'H', H: 'D' };
 
-/** Text a search field matches against. Residues: the sequence and its reverse complement. */
+/**
+ * Text a search field matches against. Residues: the sequence and its reverse complement, as
+ * literal text; the document table's Residues rule never reads it, since searchFieldRule decides
+ * that rule through the motif engine.
+ */
 export function searchFieldText(d: SequenceDocument, colId: string): string {
   if (colId === '__residues__') {
     const s = d.sequence.toUpperCase();
@@ -43,6 +50,90 @@ export function searchFieldText(d: SequenceDocument, colId: string): string {
     return Object.entries(d.docMetadata ?? {}).filter(([k]) => k !== 'Notes' && k !== 'Newick').map(([k, v]) => `${k}: ${String(v)}`).join('\u0000');
   }
   return '';
+}
+
+/** A Residues rule's answer for one document: matched or not, or the reason the engine refused it. */
+export type ResiduesOutcome = { matched: boolean } | { refused: string };
+
+const ENGINE_REASON = /^\[MolBioCraft Rust Engine :: [^\]]*\] ([\s\S]*)$/;
+const RESIDUES_OPERATORS_ONLY = 'Residues takes only contains or does not contain, so no record is matched.';
+
+/** The engine's definite-hit count per document object and query, so a re-render does not search again. */
+const engineAnswers = new WeakMap<MotifEngine, WeakMap<SequenceDocument, Map<string, { definite: number } | { refused: string }>>>();
+
+/** Searches `d` for `query` through `engine`, both strands, a circular molecule across its origin. */
+function definiteHits(d: SequenceDocument, query: string, engine: MotifEngine): { definite: number } | { refused: string } {
+  let byDoc = engineAnswers.get(engine);
+  if (!byDoc) engineAnswers.set(engine, (byDoc = new WeakMap()));
+  let byQuery = byDoc.get(d);
+  if (!byQuery) byDoc.set(d, (byQuery = new Map()));
+  const known = byQuery.get(query);
+  if (known) return known;
+  let answer: { definite: number } | { refused: string };
+  try {
+    const protein = d.moleculeType === 'Protein';
+    // One hit listed is enough: the counts cover the whole molecule.
+    const out = engine(d.sequence, query, { mode: protein ? 'protein' : 'nucleotide', circular: !protein && d.topology === 'circular', searchBothStrands: !protein, maxHits: 1 });
+    answer = { definite: out.definiteHits };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = ENGINE_REASON.exec(message)?.[1];
+    // An engine that could not run (not loaded yet) is named, and asked again on the next render.
+    if (reason === undefined) return { refused: `the motif engine could not run: ${message}` };
+    answer = { refused: reason };
+  }
+  byQuery.set(query, answer);
+  return answer;
+}
+
+/**
+ * Whether `d` passes a Residues rule (BG-01M7DXRN): the motif engine (US-01M7DVBH's
+ * search_iupac_motif) reads the query by IUPAC rules on both strands, across the origin of a
+ * circular molecule, and counts definite hits only; 'does not contain' is the exact negation of
+ * 'contains'. A document the engine refuses (no sequence, a query letter outside its alphabet) is
+ * matched by neither, with the engine's reason.
+ */
+export function residuesOutcome(d: SequenceDocument, rule: TableFilterRule, engine: MotifEngine): ResiduesOutcome {
+  if (!(RESIDUES_OPERATORS as readonly string[]).includes(rule.operator)) return { refused: RESIDUES_OPERATORS_ONLY };
+  const answer = definiteHits(d, rule.value.trim(), engine);
+  if ('refused' in answer) return answer;
+  return { matched: rule.operator === 'contains' ? answer.definite > 0 : answer.definite === 0 };
+}
+
+/** The document table's decider for a search-field rule on `d`: a Residues rule by the engine, any other left to its text. */
+export function searchFieldRule(d: SequenceDocument, engine: MotifEngine): (rule: TableFilterRule) => boolean | undefined {
+  return (rule) => {
+    if (rule.colId !== '__residues__') return undefined;
+    const out = residuesOutcome(d, rule, engine);
+    return 'matched' in out && out.matched;
+  };
+}
+
+/** How many refused records a rule's note names before it counts the rest. */
+const NOTE_NAMES = 5;
+
+/**
+ * The sentence under each Residues rule (by rule id) that the engine could not answer for some of
+ * `docs`: the records by name, each with the engine's reason. A rule every record answered has none.
+ */
+export function residuesRuleNotes(docs: readonly SequenceDocument[], rules: readonly TableFilterRule[], engine: MotifEngine): Record<string, string> {
+  const notes: Record<string, string> = {};
+  for (const rule of rules) {
+    if (rule.colId !== '__residues__' || rule.value.trim() === '') continue;
+    if (!(RESIDUES_OPERATORS as readonly string[]).includes(rule.operator)) {
+      notes[rule.id] = RESIDUES_OPERATORS_ONLY;
+      continue;
+    }
+    const refused = docs
+      .map((d) => ({ d, out: residuesOutcome(d, rule, engine) }))
+      .filter((x): x is { d: SequenceDocument; out: { refused: string } } => 'refused' in x.out)
+      .sort((a, b) => a.d.name.localeCompare(b.d.name));
+    if (refused.length === 0) continue;
+    const named = refused.slice(0, NOTE_NAMES).map((x) => `${x.d.name} (${x.out.refused})`);
+    const more = refused.length > NOTE_NAMES ? `; and ${refused.length - NOTE_NAMES} more` : '';
+    notes[rule.id] = `Not searched, so not matched: ${named.join('; ')}${more}.`;
+  }
+  return notes;
 }
 
 export interface SavedSearch {

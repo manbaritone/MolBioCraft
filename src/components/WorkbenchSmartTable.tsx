@@ -33,7 +33,21 @@ export interface SmartTableColumnOption {
   id: string;
   label: string;
   alwaysVisible?: boolean;
+  /** The only operators a rule on this field offers (every operator unless given). */
+  operators?: readonly TableFilterOperator[];
 }
+
+/** Every filter operator, in the order the rule's operator list shows them. */
+const FILTER_OPERATOR_OPTIONS: readonly { id: TableFilterOperator; label: string }[] = [
+  { id: 'contains', label: 'contains' },
+  { id: 'equals', label: 'equals' },
+  { id: 'not-contains', label: 'does not contain' },
+  { id: 'starts-with', label: 'starts with' },
+  { id: 'gt', label: '>' },
+  { id: 'gte', label: '\u2265' },
+  { id: 'lt', label: '<' },
+  { id: 'lte', label: '\u2264' },
+];
 
 export interface PersistedTableColumnState {
   visibleIds: string[];
@@ -116,12 +130,18 @@ export function evaluateSingleFilterRule(
   }
 }
 
+/**
+ * Whether a row passes the quick filter and the rules. `fieldRule` decides a rule outright when it
+ * answers (true or false), as the document table's Residues rule is decided by the motif engine;
+ * a rule it leaves undefined is matched against `getCellText` as text.
+ */
 export function evaluateTableRowFilters(
   getCellText: (colId: string) => string,
   searchableColIds: readonly string[],
   quickFilter: string,
   rules: readonly TableFilterRule[],
-  matchMode: 'all' | 'any'
+  matchMode: 'all' | 'any',
+  fieldRule?: (rule: TableFilterRule) => boolean | undefined
 ): boolean {
   const q = quickFilter.trim().toLowerCase();
   if (q) {
@@ -135,6 +155,8 @@ export function evaluateTableRowFilters(
   if (activeRules.length === 0) return true;
 
   const evalRule = (rule: TableFilterRule): boolean => {
+    const decided = fieldRule?.(rule);
+    if (decided !== undefined) return decided;
     if (rule.colId === '__all__') {
       if (rule.operator === 'not-contains') {
         return searchableColIds.every((cid) =>
@@ -371,6 +393,8 @@ export interface WorkbenchFilterPanelProps {
   onSaveSearch?: (name: string) => void;
   onLoadSearch?: (id: string) => void;
   onDeleteSearch?: (id: string) => void;
+  /** A sentence shown under a rule, by rule id (e.g. the records a Residues rule could not search). */
+  ruleNotes?: Readonly<Record<string, string>>;
 }
 
 export const WorkbenchFilterPanel: React.FC<WorkbenchFilterPanelProps> = ({
@@ -390,6 +414,7 @@ export const WorkbenchFilterPanel: React.FC<WorkbenchFilterPanelProps> = ({
   onSaveSearch,
   onLoadSearch,
   onDeleteSearch,
+  ruleNotes,
 }) => {
   const defaultColId = columns[0]?.id ?? '__all__';
   const [saveName, setSaveName] = React.useState<string | null>(null);
@@ -409,6 +434,16 @@ export const WorkbenchFilterPanel: React.FC<WorkbenchFilterPanelProps> = ({
 
   const handleUpdateRule = (id: string, patch: Partial<TableFilterRule>) => {
     onRulesChange(rules.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  };
+
+  /** The operators a rule on `colId` offers. */
+  const operatorsFor = (colId: string): readonly TableFilterOperator[] =>
+    [...columns, ...(extraFields ?? [])].find((c) => c.id === colId)?.operators ?? FILTER_OPERATOR_OPTIONS.map((o) => o.id);
+
+  /** A new field keeps the rule's operator when it offers it, else takes the field's first. */
+  const handleChangeField = (rule: TableFilterRule, colId: string) => {
+    const offered = operatorsFor(colId);
+    handleUpdateRule(rule.id, { colId, operator: offered.includes(rule.operator) ? rule.operator : offered[0] });
   };
 
   const handleRemoveRule = (id: string) => {
@@ -504,11 +539,12 @@ export const WorkbenchFilterPanel: React.FC<WorkbenchFilterPanelProps> = ({
       {rules.length > 0 && (
         <div className="mbc-filter-rules-stack">
           {rules.map((rule) => (
-            <div key={rule.id} className="mbc-filter-rule-row">
+            <React.Fragment key={rule.id}>
+            <div className="mbc-filter-rule-row">
               <select
                 className="mbc-filter-select"
                 value={rule.colId}
-                onChange={(e) => handleUpdateRule(rule.id, { colId: e.target.value })}
+                onChange={(e) => handleChangeField(rule, e.target.value)}
                 aria-label="Filter column"
               >
                 <option value="__all__">All Columns</option>
@@ -534,14 +570,10 @@ export const WorkbenchFilterPanel: React.FC<WorkbenchFilterPanelProps> = ({
                 }
                 aria-label="Filter operator"
               >
-                <option value="contains">contains</option>
-                <option value="equals">equals</option>
-                <option value="not-contains">does not contain</option>
-                <option value="starts-with">starts with</option>
-                <option value="gt">&gt;</option>
-                <option value="gte">&ge;</option>
-                <option value="lt">&lt;</option>
-                <option value="lte">&le;</option>
+                {FILTER_OPERATOR_OPTIONS.filter((o) => operatorsFor(rule.colId).includes(o.id) || o.id === rule.operator).map((o) => (
+                  // An operator the field does not offer (a rule saved before it was restricted) is shown, never offered.
+                  <option key={o.id} value={o.id} disabled={!operatorsFor(rule.colId).includes(o.id)}>{o.label}</option>
+                ))}
               </select>
 
               <input
@@ -570,6 +602,8 @@ export const WorkbenchFilterPanel: React.FC<WorkbenchFilterPanelProps> = ({
                 </svg>
               </button>
             </div>
+            {ruleNotes?.[rule.id] && <p className="mbc-filter-rule-note" role="status">{ruleNotes[rule.id]}</p>}
+            </React.Fragment>
           ))}
         </div>
       )}

@@ -9,8 +9,9 @@ import { INTERNAL_MODIFICATIONS, normalizePrimerSequence, parsePrimerSpreadsheet
 import { ImportPrimersDialog } from '../components/SequenceAnalysisToolDialogs';
 import {
   deleteProjectSearch, deleteTableSearch, discardUnreadableSearches, loadSavedSearches, PROJECT_SEARCHES_KEY, readProjectSearches,
-  readTableSearches, saveProjectSearch, saveTableSearch, searchFieldText, TABLE_SEARCHES_KEY, upsertSavedSearch, type ProjectSavedSearch, type SavedSearch,
+  readTableSearches, saveProjectSearch, saveTableSearch, searchFieldRule, searchFieldText, TABLE_SEARCHES_KEY, upsertSavedSearch, type ProjectSavedSearch, type SavedSearch,
 } from '../core/savedSearches';
+import { searchIupacMotifRust } from '../lib/rustBioEngine';
 import { evaluateTableRowFilters } from '../components/WorkbenchSmartTable';
 import { runAnnotateByBlast, runImportPrimers, type OperationResult } from '../core/operationRunners';
 import { calculatePrimerMetrics } from '../core/bioEngine';
@@ -95,6 +96,67 @@ describe('advanced search fields', () => {
     list = upsertSavedSearch(list, { ...base, name: 'kan PLASMIDS', quickFilter: 'kan' });
     expect(list).toHaveLength(1);
     expect(list[0].quickFilter).toBe('kan');
+  });
+});
+
+/**
+ * BG-01M7DXRN: a Residues rule is decided by the IUPAC motif engine (US-01M7DVBH's search_iupac_motif,
+ * both strands, definite hits only, a circular molecule read across its origin), as the App's table
+ * filter calls it: evaluateTableRowFilters with searchFieldRule(doc, searchIupacMotifRust).
+ */
+describe('BG-01M7DXRN Residues rules through the motif engine', () => {
+  const doc = (id: string, sequence: string, more: Partial<SequenceDocument> = {}): SequenceDocument => ({
+    id, name: id, accession: id, description: '', sequence, moleculeType: 'DNA', topology: 'linear', folder: 'F',
+    createdAt: '', updatedAt: '', features: [], primers: [], history: [], ...more,
+  } as SequenceDocument);
+  /** Whether `d` passes one Residues rule, as the App's table filter evaluates it. */
+  const passes = (d: SequenceDocument, operator: 'contains' | 'not-contains', value: string) =>
+    evaluateTableRowFilters((c) => searchFieldText(d, c), [], '', [{ id: 'r', colId: '__residues__', operator, value }], 'all', searchFieldRule(d, searchIupacMotifRust));
+  // 600 bases of C, A and G with no GAATTC on either strand (no T at all).
+  const filler = 'CAGCCAGACAGGCAAGCCAG'.repeat(30);
+
+  it('BG-01M7DXRN AC1 a Residues rule finds an EcoRI site spanning base 1 of a circular plasmid, and does not contain is its exact negation', () => {
+    // GAATTC split across the origin: ATTC opens the molecule and GA closes it.
+    const across = `ATTC${filler}GA`;
+    expect(across.includes('GAATTC'), 'the fixture holds the site only across the origin').toBe(false);
+    const circular = doc('circ', across, { topology: 'circular' });
+    const linear = doc('lin', across, { topology: 'linear' });
+    const inside = doc('inside', `${filler}GAATTC${filler}`);
+    const none = doc('none', filler, { topology: 'circular' });
+    expect(passes(circular, 'contains', 'GAATTC'), 'the site across base 1 of the circle').toBe(true);
+    expect(passes(linear, 'contains', 'GAATTC'), 'a linear molecule of the same bases has no site').toBe(false);
+    expect(passes(inside, 'contains', 'gaattc'), 'a site inside the molecule, typed in lower case').toBe(true);
+    expect(passes(none, 'contains', 'GAATTC')).toBe(false);
+    for (const d of [circular, linear, inside, none]) {
+      for (const q of ['GAATTC', 'gaattc', 'CCAGAC', 'GRATTC']) {
+        expect(passes(d, 'not-contains', q), `${d.id} ${q}: does not contain is the negation of contains`).toBe(!passes(d, 'contains', q));
+      }
+    }
+    expect(passes(circular, 'not-contains', 'GAATTC')).toBe(false);
+    expect(passes(linear, 'not-contains', 'GAATTC')).toBe(true);
+  });
+
+  it('BG-01M7DXRN AC2 a Residues rule finds a U motif on an RNA reverse strand and reads R in the query as A or G', () => {
+    // AGCCAU on the top strand is AUGGCU on the reverse strand; the top strand holds no AUGGCU.
+    const rna = doc('rna', `CCCCUCCCC${'AGCCAU'}CCCCUCCCC`, { moleculeType: 'RNA' });
+    expect(rna.sequence.includes('AUGGCU'), 'the motif is on the reverse strand only').toBe(false);
+    expect(passes(rna, 'contains', 'AUGGCU'), 'the U motif on the reverse strand of an RNA').toBe(true);
+    expect(passes(rna, 'not-contains', 'AUGGCU')).toBe(false);
+    expect(passes(rna, 'contains', 'AGCCAU'), 'and on its top strand').toBe(true);
+    expect(passes(rna, 'contains', 'AUGGCC'), 'a motif on neither strand').toBe(false);
+    // R is A or G: GRATTC matches GAATTC and GGATTC, not GCATTC; its reverse complement GAATYC is in none.
+    const ga = doc('ga', 'CCCCGAATTCCCCC');
+    const gg = doc('gg', 'CCCCGGATTCCCCC');
+    const gc = doc('gc', 'CCCCGCATTCCCCC');
+    expect(passes(ga, 'contains', 'GRATTC'), 'R reads A').toBe(true);
+    expect(passes(gg, 'contains', 'GRATTC'), 'R reads G').toBe(true);
+    expect(passes(gc, 'contains', 'GRATTC'), 'R never reads C').toBe(false);
+    expect(passes(gc, 'not-contains', 'GRATTC')).toBe(true);
+    // An N in the sequence may be any base, so it is a possible hit, never a definite one.
+    const n = doc('n', 'CCCCGANTTCCCCC');
+    expect(passes(n, 'contains', 'GAATTC'), 'N in the sequence is no definite hit').toBe(false);
+    expect(passes(n, 'not-contains', 'GAATTC')).toBe(true);
+    expect(passes(n, 'contains', 'GANTTC'), 'an N in the query covers the N in the sequence').toBe(true);
   });
 });
 

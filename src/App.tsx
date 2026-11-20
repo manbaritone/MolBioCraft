@@ -112,7 +112,7 @@ import { MetadataImportDialog } from './components/MetadataImportDialog';
 import { ComputeDistancesDialog, CondenseTreeDialog, EvolutionAnalysisDialog, TimetreeDialog, ExamplesDialog, GeneDuplicationDialog, HighlightSitesDialog } from './components/EvolutionAnalysisDialogs';
 import type { EvoAnalysis } from './core/evolutionAnalyses';
 import { loadStoredBlastDbs, localBlastDbDocuments, storeBlastDbs } from './core/localBlastDb';
-import { deleteTableSearch, isSearchField, loadSavedSearches, saveTableSearch, SEARCH_FIELDS, searchFieldText, type ProjectSavedSearch, type SavedSearch } from './core/savedSearches';
+import { deleteTableSearch, isSearchField, loadSavedSearches, residuesRuleNotes, saveTableSearch, SEARCH_FIELDS, searchFieldRule, searchFieldText, type ProjectSavedSearch, type SavedSearch } from './core/savedSearches';
 import { ExpressionDialog, ExpressionResultsView } from './components/ExpressionViews';
 import { HelpPanel } from './components/HelpPanel';
 import { FragmentTraceView, MicrosatelliteDialog } from './components/FragmentViews';
@@ -385,6 +385,7 @@ import {
   generateLargeGenomeBenchmarkRust,
   generateLargeProteinBenchmarkRust,
   queryCuratedDatabaseRecordsRust,
+  searchIupacMotifRust,
   spliceModularPartIntoDocumentRust,
 } from './lib/rustBioEngine';
 import type { VectorStudioTab } from './components/VectorLibraryAndDesignStudio';
@@ -2491,13 +2492,23 @@ export const App: React.FC = () => {
     />
   );
 
+  /** The documents the table's filter reads: the whole project when that scope is on and a filter is set. */
+  const docFilterScope = useMemo(
+    () => (wholeProjectSearch && activeDocFilterCount > 0 ? catalogNonDeletedDocs : docsInSelectedFolder),
+    [wholeProjectSearch, activeDocFilterCount, catalogNonDeletedDocs, docsInSelectedFolder]
+  );
+  /** The records each Residues rule could not search, named under the rule with the engine's reason. */
+  const docFilterRuleNotes = useMemo(
+    () => residuesRuleNotes(docFilterScope, docFilterRules, searchIupacMotifRust),
+    [docFilterScope, docFilterRules]
+  );
+
   const filteredDocuments = useMemo(() => {
     const searchableColIds = orderedVisibleDocColumns
       .filter((c) => c.id !== 'icon')
       .map((c) => c.id);
 
-    const scope = wholeProjectSearch && activeDocFilterCount > 0 ? catalogNonDeletedDocs : docsInSelectedFolder;
-    const baseList = scope.filter((d) => {
+    const baseList = docFilterScope.filter((d) => {
       if (activeDocFilterCount === 0) return true;
 
       const metrics = computeDocumentTableMetrics(d);
@@ -2507,15 +2518,15 @@ export const App: React.FC = () => {
         searchableColIds,
         tableFilter,
         docFilterRules,
-        docFilterMatchMode
+        docFilterMatchMode,
+        // A Residues rule is decided by the motif engine, never by the residues as text (BG-01M7DXRN).
+        searchFieldRule(d, searchIupacMotifRust)
       );
     });
 
     return sortDocumentsByColumn(baseList, sortColumn, sortDirection, favoriteIdsSet);
   }, [
-    docsInSelectedFolder,
-    wholeProjectSearch,
-    catalogNonDeletedDocs,
+    docFilterScope,
     orderedVisibleDocColumns,
     tableFilter,
     docFilterRules,
@@ -13487,6 +13498,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     placeholder="Filter documents across visible columns..."
                     inputId="mbc-folder-filter-input"
                     extraFields={SEARCH_FIELDS}
+                    ruleNotes={docFilterRuleNotes}
                     wholeProject={wholeProjectSearch}
                     onWholeProjectChange={setWholeProjectSearch}
                     savedSearches={savedSearches}
