@@ -3,9 +3,11 @@
 
 //! Regressions for cloning-engine batch operations found by the functional audit.
 
+use molbiocraft_cloning::batch_ops::convert_selection_to_oligo_primer_at;
 use molbiocraft_cloning::{
     extract_annotated_features_to_documents, find_non_cutting_enzymes_for_topology,
-    get_sample_library, mask_sequence_regions, simulate_restriction_digest, MAX_MASK_RUN_FEATURES,
+    get_sample_library, mask_sequence_regions, simulate_restriction_digest, SelectionRange1Based,
+    MAX_MASK_RUN_FEATURES,
 };
 use molbiocraft_core::types::{SequenceDocument, SequenceFeature, Topology};
 
@@ -119,7 +121,6 @@ fn extract_features_spanning_the_origin() {
     assert_eq!(out[0].sequence, format!("{}{}", &seq[34..], &seq[..6]));
 }
 
-
 #[test]
 fn mask_of_many_runs_masks_without_flooding_or_spanning_annotations() {
     // 600 separate homopolymer runs: one annotation each would flood the document.
@@ -164,4 +165,87 @@ fn protease_sites_carry_their_own_motif_on_both_strands() {
         .find(|f| f.name.contains("Thrombin"))
         .expect("thrombin site detected");
     assert_eq!(thr.cleavage_site.as_deref(), Some("LVPR▼GS"));
+}
+
+/// A 400 bp linear sequence, long enough for a 301..322 oligo to be taken as selected.
+fn oligo_doc() -> SequenceDocument {
+    let unit = "ATGCGTACCTGAGTCAAGTTCGAT";
+    doc(&unit.repeat(17)[..400], Topology::Linear)
+}
+
+fn primer_ids(d: &SequenceDocument) -> Vec<String> {
+    d.primers.iter().map(|p| p.id.clone()).collect()
+}
+
+fn range(start: usize, end: usize) -> Option<SelectionRange1Based> {
+    Some(SelectionRange1Based { start, end })
+}
+
+// BG-01M6VZR5 AC1: a repeat conversion of one range keeps both records, under distinct ids.
+#[test]
+fn converting_a_range_twice_gives_distinct_oligo_ids() {
+    let first = convert_selection_to_oligo_primer_at(&oligo_doc(), range(301, 322), 1, "");
+    assert_eq!(first.primer.id, "prm-oligo-301-322");
+    let second = convert_selection_to_oligo_primer_at(&first.updated_doc, range(301, 322), 1, "");
+    assert_eq!(second.primer.id, "prm-oligo-301-322-2");
+    assert_eq!(
+        primer_ids(&second.updated_doc),
+        vec!["prm-oligo-301-322", "prm-oligo-301-322-2"]
+    );
+    // The record returned is the record stored.
+    assert_eq!(second.updated_doc.primers[1].id, second.primer.id);
+    assert_eq!(
+        second.updated_doc.primers[1].sequence,
+        second.primer.sequence
+    );
+    let third = convert_selection_to_oligo_primer_at(&second.updated_doc, range(301, 322), 1, "");
+    assert_eq!(third.primer.id, "prm-oligo-301-322-3");
+
+    // Unique in the document, not counted per range: an id another primer already holds is
+    // skipped and a free one below it is used, so a suffix drawn from a count of same-range
+    // oligos (which lands on the taken `-3` here) cannot pass.
+    let mut taken = oligo_doc();
+    let mut squatter = first.primer.clone();
+    squatter.id = "prm-oligo-301-322-3".into();
+    squatter.name = "Imported".into();
+    taken.primers.push(squatter);
+    let a = convert_selection_to_oligo_primer_at(&taken, range(301, 322), 1, "");
+    assert_eq!(a.primer.id, "prm-oligo-301-322");
+    let b = convert_selection_to_oligo_primer_at(&a.updated_doc, range(301, 322), 1, "");
+    assert_eq!(b.primer.id, "prm-oligo-301-322-2");
+    let c = convert_selection_to_oligo_primer_at(&b.updated_doc, range(301, 322), 1, "");
+    assert_eq!(c.primer.id, "prm-oligo-301-322-4");
+    assert_eq!(
+        primer_ids(&c.updated_doc),
+        vec![
+            "prm-oligo-301-322-3",
+            "prm-oligo-301-322",
+            "prm-oligo-301-322-2",
+            "prm-oligo-301-322-4"
+        ]
+    );
+}
+
+// BG-01M6VZR5 AC2: the forward and the reverse oligo of one range are two primers, not one id.
+#[test]
+fn forward_and_reverse_oligos_of_one_range_get_distinct_ids() {
+    for (first_strand, second_strand) in [(1, -1), (-1, 1)] {
+        let a =
+            convert_selection_to_oligo_primer_at(&oligo_doc(), range(301, 322), first_strand, "");
+        let b = convert_selection_to_oligo_primer_at(
+            &a.updated_doc,
+            range(301, 322),
+            second_strand,
+            "",
+        );
+        let ids = primer_ids(&b.updated_doc);
+        assert_eq!(ids.len(), 2, "both oligos are stored: {ids:?}");
+        assert_ne!(
+            ids[0], ids[1],
+            "strands {first_strand}/{second_strand}: {ids:?}"
+        );
+        assert_eq!(b.primer.id, ids[1]);
+        assert_eq!(b.updated_doc.primers[0].strand, first_strand);
+        assert_eq!(b.updated_doc.primers[1].strand, second_strand);
+    }
 }

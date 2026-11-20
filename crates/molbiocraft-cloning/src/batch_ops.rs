@@ -860,8 +860,22 @@ pub fn convert_selection_to_oligo_primer_at(
     let metrics = calculate_primer_metrics(&oligo_seq, 50.0, 1.5, 250.0);
     let round1 = |v: f64| (v * 10.0).round() / 10.0;
 
+    // The id is unique among the document's primers: a repeat conversion of a range, or the
+    // other strand of it, keeps its own record under the first free `-2`, `-3`, ... suffix
+    // (BG-01M6VZR5).
+    let base_id = format!("prm-oligo-{}-{}", raw_start, adj_end);
+    let taken = |id: &str| doc.primers.iter().any(|p| p.id == id);
+    let id = if taken(&base_id) {
+        (2..)
+            .map(|n| format!("{base_id}-{n}"))
+            .find(|candidate| !taken(candidate))
+            .expect("a free suffix")
+    } else {
+        base_id
+    };
+
     let primer = PrimerRecord {
-        id: format!("prm-oligo-{}-{}", raw_start, adj_end),
+        id,
         name: format!(
             "Oligo_{}_{}_{}",
             raw_start,
