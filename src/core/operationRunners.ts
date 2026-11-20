@@ -12,7 +12,7 @@ import { computeAlignmentConsensusAndIdentity } from './alignmentAnalysis';
 import { addSequencesToAlignment, columnRuns, columnsToMask, stripColumns, translationAlign, type MaskContent, type MaskOptions } from './alignmentTools';
 import { calculatePrimerMetrics, digestEndLabel, findORFs, mapReadAndCallVariants, resolveDigestKeys, runLocalBlastSearch, simulateEnzymeDigest, testSavedPrimersOnSequence } from './bioEngine';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
-import { describeSpreadsheetProblem, parsePrimerSpreadsheet, type PrimerColumnMapping } from './primerImport';
+import { describePrimerModifications, describeSpreadsheetProblem, parsePrimerSpreadsheet, type PrimerColumnMapping } from './primerImport';
 import { analyzeEditing } from './crisprEditing';
 import { differentialExpression, type CountTable } from './expression';
 import { queryCentricRows } from './localBlastDb';
@@ -1567,7 +1567,9 @@ export function runAnnotateFromDocuments(targets: SequenceDocument[], references
  * (parsePrimerSpreadsheet, US-01M7DQHR). A single-line row read the same way as before is named,
  * sequenced and described as it was at 77728aa (AC4 pins this). A sheet that cannot be read (a
  * quote never closed, a workbook or other binary file) is refused with its row and field rather than
- * imported in part. `mapping` is the columns the user chose.
+ * imported in part. A row with modifications records them in docMetadata 'Modifications' as the
+ * preview reads them, and keeps the base an internal one stands for (BG-01M7DS7G). `mapping` is the
+ * columns the user chose.
  */
 export function runImportPrimers(text: string, v: OptionValues, mapping?: Partial<PrimerColumnMapping>): OperationResult {
   const { rows, skipped, problem } = parsePrimerSpreadsheet(text, mapping);
@@ -1583,7 +1585,11 @@ export function runImportPrimers(text: string, v: OptionValues, mapping?: Partia
     return {
       id: uid(`ip${i}`), name: r.name, accession: '', description: r.description || `Imported primer (${r.sequence.length} nt)`,
       moleculeType: 'DNA', topology: 'linear', sequence: r.sequence, features: [], primers: [], documentKind: 'primer',
-      docMetadata: { 'Source Format': 'Primer spreadsheet', 'Tm (°C)': m.tmNoAnswerReason ?? Number(m.tmC.toFixed(1)), 'GC %': Number(m.gcPercent.toFixed(1)) },
+      docMetadata: {
+        'Source Format': 'Primer spreadsheet', 'Tm (°C)': m.tmNoAnswerReason ?? Number(m.tmC.toFixed(1)), 'GC %': Number(m.gcPercent.toFixed(1)),
+        // The row's modifications as the preview reads them (BG-01M7DS7G); none, no row.
+        ...(r.modifications.length ? { Modifications: describePrimerModifications(r.modifications) } : {}),
+      },
       history: [{ id: uid('hist'), timestamp: t, operation: 'Import Primers', description: 'Imported from a primer spreadsheet', parentIds: [], lengthBp: r.sequence.length, topology: 'linear' }],
       createdAt: t, updatedAt: t, folder,
     };

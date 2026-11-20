@@ -11,7 +11,7 @@ import { OperationDialog, OptionRow } from './OperationDialog';
 import { alignmentRowsOf, runCalculateExpressionLevels, runFindStructuralVariants, runCrisprEditing, runAnnotateByBlast, runAnnotateFromDocuments, runDesignDegeneratePrimers, runImportPrimers, type OperationResult } from '../core/operationRunners';
 import { featuresTooLongToTransfer, MAX_TRANSFERRED_FEATURE_BP } from '../core/annotateFromDocuments';
 import {
-  choiceFor, classifyPrimerRows, countsOf, DEFAULT_DUPLICATE_CHOICES, describeImportCounts, describeSpreadsheetProblem, DUPLICATE_CLASS_LABEL, fieldLabel, importedRowsOf,
+  choiceFor, classifyPrimerRows, countsOf, DEFAULT_DUPLICATE_CHOICES, describeImportCounts, describePrimerModifications, describeSpreadsheetProblem, DUPLICATE_CLASS_LABEL, fieldLabel, importedRowsOf,
   classChanges, DUPLICATE_CHOICES_FOR, NO_COLUMN_MAPPING, NO_ROW_CHOICES, planFromClassified, planPrimerDatabaseImport, readPrimerSpreadsheet, REVIEW_AT_OPEN, savePrimerDatabaseImport,
   describeMatch, type ReviewBasis,
   type DuplicateChoice, type DuplicateChoices, type PrimerColumnMapping,
@@ -338,7 +338,7 @@ export const ImportPrimersDialog: React.FC<ImportPrimersDialogProps> = ({ onCrea
                               <td data-ip-col="original" style={{ fontFamily: 'var(--font-mono, monospace)' }}>{r.original}</td>
                               <td data-ip-col="normalized" style={{ fontFamily: 'var(--font-mono, monospace)' }}>{r.sequence}</td>
                               <td data-ip-col="molecule">{r.molecule}</td>
-                              <td data-ip-col="modifications">{r.modifications.map((m) => `${m.text} ${m.placement === 'internal' ? `at ${m.position}${m.base ? ` (${m.base})` : ''}` : `${m.placement} end`}, no Tm calculation`).join('; ')}</td>
+                              <td data-ip-col="modifications">{describePrimerModifications(r.modifications)}</td>
                               <td data-ip-col="labels">{r.labels.join(', ')}</td>
                               <td data-ip-col="import">
                                 {r.errors.map((e) => `${fieldLabel(reading.header, e.column)}: ${e.message}`).join('; ')}

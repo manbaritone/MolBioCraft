@@ -13,7 +13,8 @@
  *   dropped, and a row with an error is kept with it.
  * - `parsePrimerSpreadsheet` derives what Import Primers makes from those rows, as it always has:
  *   duplicate names renamed `_2`, `_3`, a blank name `Primer_<n>`, U written as T, slash
- *   modifications removed with any base they stand for, and rows under 6 bases skipped.
+ *   modifications removed but any base one stands for kept (BG-01M7DS7G), and rows under 6 bases
+ *   skipped.
  *
  * The first line that is neither blank nor a `#` comment picks the separator (a tab, else a
  * semicolon when the line has no comma, else a comma) and may be a header; a comment never is. Columns are found by name (name/primer/oligo/id,
@@ -74,6 +75,14 @@ export interface PrimerModification {
   base: string | null;
   /** Modifications take no part in a Tm or other thermodynamic calculation. */
   noThermodynamics: true;
+}
+
+/**
+ * A row's modifications as the Import Primers preview shows them and its documents record them
+ * (BG-01M7DS7G): "/iBiodT/ at 7 (T), no Tm calculation; /3Phos/ 3' end, no Tm calculation".
+ */
+export function describePrimerModifications(mods: readonly PrimerModification[]): string {
+  return mods.map((m) => `${m.text} ${m.placement === 'internal' ? `at ${m.position}${m.base ? ` (${m.base})` : ''}` : `${m.placement} end`}, no Tm calculation`).join('; ');
 }
 
 export type PrimerField = 'name' | 'sequence' | 'description' | 'labels' | 'row';
@@ -443,6 +452,8 @@ export interface ImportedPrimerRow {
   description: string;
   /** The faithful row it comes from. */
   row: number;
+  /** That row's modifications, which the document records (BG-01M7DS7G). */
+  modifications: PrimerModification[];
 }
 
 export interface PrimerImportResult {
@@ -453,13 +464,12 @@ export interface PrimerImportResult {
 }
 
 /**
- * The sequence Import Primers writes for a faithful row: the bases an internal slash modification
- * stands for are dropped with it (as the documents path always has; BG-01M7DS7G tracks keeping
- * it), and U is written as T.
+ * The sequence Import Primers writes for a faithful row: its normalized sequence, so the base an
+ * internal slash modification stands for (the T of /iBiodT/) is kept at its position (BG-01M7DS7G,
+ * D0265), and U is written as T.
  */
 export function importedSequenceOf(row: FaithfulPrimerRow): string {
-  const dropped = new Set(row.modifications.filter((m) => m.base && m.text.startsWith('/')).map((m) => m.position));
-  return [...row.sequence].filter((_b, k) => !dropped.has(k + 1)).join('').replace(/U/g, 'T');
+  return row.sequence.replace(/U/g, 'T');
 }
 
 /** The reason a row is skipped, as the dialog and the error message show it. */
@@ -487,7 +497,7 @@ export function importedRowsOf(reading: PrimerSpreadsheetReading): PrimerImportR
     const k = (seen.get(name) ?? 0) + 1;
     seen.set(name, k);
     if (k > 1) name = `${name}_${k}`;
-    rows.push({ name, sequence, description: r.description, row: r.row });
+    rows.push({ name, sequence, description: r.description, row: r.row, modifications: r.modifications });
   }
   return { rows, skipped, problem: reading.problem };
 }

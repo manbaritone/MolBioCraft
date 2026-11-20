@@ -13,6 +13,7 @@ import {
 } from '../core/savedSearches';
 import { evaluateTableRowFilters } from '../components/WorkbenchSmartTable';
 import { runAnnotateByBlast, runImportPrimers, type OperationResult } from '../core/operationRunners';
+import { calculatePrimerMetrics } from '../core/bioEngine';
 import type { SequenceDocument } from '../types/bio';
 
 /**
@@ -403,8 +404,10 @@ describe('US-01M7DQHR primer sheet reading', () => {
    * What Import Primers made at 77728aa, captured by running that commit's runImportPrimers on each
    * sheet: [name, sequence, description, Tm (°C), GC %]. Every row here is on one line, and every
    * row the old reader accepted is read the same way now, so the documents must not change: M13F_2 renaming, the A / A / A_2 quirk,
-   * Primer_<n> for a blank name, U written as T, slash modifications removed (with the base
-   * /iBiodT/ stands for), 5'-/-3' marks, spaces and hyphens removed, and the Tm or its reason.
+   * Primer_<n> for a blank name, U written as T, slash modifications removed, 5'-/-3' marks, spaces
+   * and hyphens removed, and the Tm or its reason. One row changes from 77728aa: the base /iBiodT/
+   * stands for is kept, so Bio is the 14-nt ACGTACTACGTACG with its own Tm and GC (D0265:
+   * "BG-01M7DS7G re-pins US-01M7DQHR AC4 so an internal modification keeps the base it stands for").
    */
   const BEFORE: Record<string, { text: string; summary: string; docs: [string, string, string, number | string, number][] }> = {
     existingCsv: { text: 'Primer name,Sequence (5\'-3\'),Notes\nM13F,GTAAAACGACGGCCAGT,"universal, forward"\nM13F,5\'-CAGGAAACAGCTATGAC-3\',dup\nbad,HELLO WORLD,x\nshort,ACG,\n', summary: 'Imported 2 primers (2 rows skipped)', docs: [
@@ -430,7 +433,7 @@ describe('US-01M7DQHR primer sheet reading', () => {
       ['M13F_2', 'CAGGAAACAGCTATGAC', 'second', 52.6, 47.1],
       ['M13F_3', 'TGTAAAACGACGGCCAGTG', 'third', 61.6, 52.6],
       ['Primer_6', 'ACGTACGTACGT', 'nameless', 45.6, 50],
-      ['Bio', 'ACGTACACGTACG', 'biotin', 47.6, 53.8],
+      ['Bio', 'ACGTACTACGTACG', 'biotin', 47.7, 50],
       ['Three', 'ACGTACGTACGTACG', 'Imported primer (15 nt)', 52.7, 53.3],
       ['lower', 'ACGTACGTACGTACGT', 'lower case', 56.3, 50],
       ['spaced', 'ACGTACGTACGTACGT', 'spaces and dashes', 56.3, 50],
@@ -450,8 +453,9 @@ describe('US-01M7DQHR primer sheet reading', () => {
   };
 
   // Wrong implementations these fail on: duplicate names left as they are or numbered by row, U kept
-  // in a DNA document, the base /iBiodT/ stands for written into the document, a modification left in,
-  // the description fallback or the Tm reason changed, and a comment or blank line read as a row.
+  // in a DNA document, the base /iBiodT/ stands for dropped from the document with its code (D0265
+  // reverses the 77728aa pin), a modification left in, the description fallback or the Tm reason
+  // changed, and a comment or blank line read as a row.
   it.each(Object.keys(BEFORE))('US-01M7DQHR AC4 Import Primers makes the documents it made at 77728aa: %s', (key) => {
     const { text, summary, docs } = BEFORE[key];
     const made = runImportPrimers(text, { folder: '' });
@@ -504,15 +508,16 @@ describe('US-01M7DQHR primer sheet reading', () => {
 describe('BG-01M7DTWB internal IDT codes, vertical tabs and the table itself', () => {
   /**
    * What 77728aa made from these rows, captured by running that commit's parser:
-   * [name, sequence, description, Tm (°C), GC %].
+   * [name, sequence, description, Tm (°C), GC %]; except that a code standing for a base keeps it
+   * (D0265, BG-01M7DS7G), so inosine, tamra and fam are 14 nt with the N or T their code gives.
    */
   const PROBES_BEFORE: [string, string, string, number | string, number][] = [
     ['zen', 'ACGTACGTACGTACGTACG', 'Imported primer (19 nt)', 60, 52.6],
     ['zen2', 'ACGTACGTACGTACGTACG', 'Imported primer (19 nt)', 60, 52.6],
     ['tao', 'ACGTACGTACGTACGTACG', 'Imported primer (19 nt)', 60, 52.6],
-    ['inosine', 'ACGTACACGTACG', 'Imported primer (13 nt)', 47.6, 53.8],
-    ['tamra', 'ACGTACACGTACG', 'Imported primer (13 nt)', 47.6, 53.8],
-    ['fam', 'ACGTACACGTACG', 'Imported primer (13 nt)', 47.6, 53.8],
+    ['inosine', 'ACGTACNACGTACG', 'Imported primer (14 nt)', 'Tm n/a: the span holds 1 N or other ambiguity base; Tm is computed on A/C/G/T only, as Primer3 does', 50],
+    ['tamra', 'ACGTACTACGTACG', 'Imported primer (14 nt)', 47.7, 50],
+    ['fam', 'ACGTACTACGTACG', 'Imported primer (14 nt)', 47.7, 50],
     ['sp9', 'ACGTACACGTACG', 'Imported primer (13 nt)', 47.6, 53.8],
   ];
   const PROBES = 'name,sequence\nzen,/56-FAM/ACGTACGTA/iZEN/CGTACGTACG/3IABkFQ/\nzen2,/56-FAM/ACGTACGTA/ZEN/CGTACGTACG/3IABkFQ/\ntao,/5Cy5/ACGTACGTA/iTAO/CGTACGTACG/3IAbRQSp/\ninosine,ACGTAC/ideoxyI/ACGTACG\ntamra,ACGTAC/i6-TAMN/ACGTACG\nfam,ACGTAC/i6-FAMK/ACGTACG\nsp9,ACGTAC/iSp9/ACGTACG\n';
@@ -590,6 +595,65 @@ describe('BG-01M7DTWB internal IDT codes, vertical tabs and the table itself', (
     expect(readPrimerSpreadsheet(named).rows.map((x) => x.name)).toEqual(['M13 F', 'M13 R', 'two lines']);
     const made = await renderImportDialog(named).run();
     expect(made.flatMap((m) => m.created.map((d) => d.name))).toEqual(['M13 F', 'M13 R', 'two lines']);
+  });
+});
+
+// ─── BG-01M7DS7G: an internal modification keeps the base it stands for in the document ───
+//
+// D0265: BG-01M7DS7G re-pins US-01M7DQHR AC4 so an internal modification keeps the base it stands
+// for. The document is the oligo the faithful reading gives (U written as T), not that oligo less
+// the base under a /i.../ code.
+
+describe('BG-01M7DS7G the base an internal modification stands for', () => {
+  const BIO = 'name;sequence;description\nBio;ACGTAC/iBiodT/ACGTACG;biotin\n';
+
+  // Wrong implementations: the base under /iBiodT/ dropped with the code (the 13-nt ACGTACACGTACG and
+  // its Tm), the base kept only for /iBiodT/ or only for a T, a 2'-O-methyl U left as U in a DNA
+  // document, a spacer or quencher given a base, and the dialog's Import making the old document.
+  it('BG-01M7DS7G AC1 Import Primers keeps the base an internal modification stands for in the document', async () => {
+    const made = runImportPrimers(BIO, {});
+    expect(made.summary).toBe('Imported 1 primer');
+    const [d] = made.created;
+    // The Tm the app gives this 14-nt oligo (calculatePrimerMetrics, the function runImportPrimers calls).
+    const m = calculatePrimerMetrics('ACGTACTACGTACG');
+    expect([d.name, d.sequence, d.sequence.length, d.description, d.docMetadata?.['Tm (°C)'], d.docMetadata?.['GC %']])
+      .toEqual(['Bio', 'ACGTACTACGTACG', 14, 'biotin', Number(m.tmC.toFixed(1)), 50]);
+    expect(d.docMetadata?.['Tm (°C)'], 'the Tm of the 14-nt oligo, not of the 13-nt ACGTACACGTACG').not.toBe(Number(calculatePrimerMetrics('ACGTACACGTACG').tmC.toFixed(1)));
+    expect(d.history.map((h) => h.lengthBp)).toEqual([14]);
+    // Without a description the fallback counts the kept base.
+    expect(runImportPrimers('Bio,ACGTAC/iBiodT/ACGTACG\n', {}).created[0].description).toBe('Imported primer (14 nt)');
+    // Every code in the table: its base kept at its position (U written as T), none for an insert.
+    // The flanks hold no T, so the U of /i2OMeU/ makes an RNA row rather than a refused one.
+    for (const [code, base] of INTERNAL_MODIFICATIONS) {
+      const doc = runImportPrimers(`p,ACGCA/${code}/CAGCAG\n`, {}).created[0];
+      expect(doc.sequence, code).toBe(`ACGCA${base.replace('U', 'T')}CAGCAG`);
+    }
+    // The dialog's Import makes the same document.
+    const dialog = renderImportDialog(BIO);
+    expect((await dialog.run()).flatMap((x) => x.created.map((c) => [c.name, c.sequence]))).toEqual([['Bio', 'ACGTACTACGTACG']]);
+  });
+
+  // Wrong implementations: no 'Modifications' row on the document, the code without its position or
+  // base, the 5'/3' codes left out, or a wording that differs from the preview's Modifications column.
+  it('BG-01M7DS7G AC2 a document made from a row with an internal modification names it and its position', () => {
+    const [d] = runImportPrimers(BIO, {}).created;
+    expect(String(d.docMetadata?.['Modifications'])).toContain('/iBiodT/ at 7 (T)');
+    expect(d.docMetadata?.['Modifications'], 'as the preview reads it').toBe(renderImportDialog(BIO).rows[0].cells.modifications);
+    const mixed = 'name,sequence\nprobe,/56-FAM/ACGTAC/iBiodT/ACGTACG/3IABkFQ/\nplain,ACGTACGTACGTAC\n';
+    const made = runImportPrimers(mixed, {}).created;
+    expect(made[0].docMetadata?.['Modifications']).toBe(renderImportDialog(mixed).rows[0].cells.modifications);
+    expect(made[1].docMetadata && 'Modifications' in made[1].docMetadata, 'a row with none has no Modifications row').toBe(false);
+  });
+
+  // Wrong readings (the name-guess dfaf261 removed): a code missing from the table read as the last
+  // letter of its name (/iBiotinTEG/ as G, /iCustomT/ as T) or dropped, so the row imports anyway.
+  it('BG-01M7DS7G AC4 an internal modification missing from the table is refused with its row, never read from its name', () => {
+    const text = 'name,sequence\nteg,ACGTAC/iBiotinTEG/ACGTACG\ncustom,ACGTAC/iCustomT/ACGTACG\nok,ACGTACGTACGTAC\n';
+    const reason = (code: string) => `/${code}/ at position 7 is not an internal modification MolBioCraft knows, so it cannot tell whether it puts a base there or sits between two`;
+    expect(parsePrimerSpreadsheet(text).skipped).toEqual([{ line: 2, reason: reason('iBiotinTEG') }, { line: 3, reason: reason('iCustomT') }]);
+    const made = runImportPrimers(text, {});
+    expect([made.summary, made.created.map((d) => [d.name, d.sequence])]).toEqual(['Imported 1 primer (2 rows skipped)', [['ok', 'ACGTACGTACGTAC']]]);
+    expect(() => runImportPrimers('teg,ACGTAC/iBiotinTEG/ACGTACG\n', {})).toThrow(`No primers imported: line 1 ${reason('iBiotinTEG')}.`);
   });
 });
 
