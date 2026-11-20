@@ -85,25 +85,70 @@ function repeatListLabel(report: GenomicRepeatReport): string {
 }
 
 /**
- * The Min Repeat Arm box (BG-01M6SQ9T, D0055): the repeat scan runs this long after the last
- * keystroke, or at once on Enter or when the box loses focus, and only at a whole number of bases
- * from the least to the most arm length here.
+ * The Min Repeat Arm box (BG-01M6SQ9T, D0055), and the Min Protein Length and Min CpG Island boxes
+ * that settle as it does (BG-01M6VZGD): a box's scan runs this long after the last keystroke, or at
+ * once on Enter or when the box loses focus, and only at a whole number from the box's least to its
+ * most value.
  */
-const REPEAT_ARM_SETTLE_MS = 400;
+const SETTLE_MS = 400;
 const MIN_REPEAT_ARM_BP = 8;
 const MAX_REPEAT_ARM_BP = 24;
+const MIN_PROTEIN_AA = 20;
+const MAX_PROTEIN_AA = 300;
+const MIN_CPG_ISLAND_BP = 100;
+const MAX_CPG_ISLAND_BP = 1000;
 
-/** The Min Repeat Arm box's text as an arm length to scan at, or null when it is not one. */
-function repeatArmOf(text: string): number | null {
+/** A box's text as the whole number from `least` to `most` it names, or null when it names none. */
+function wholeNumberIn(text: string, least: number, most: number): number | null {
   if (!/^\d+$/.test(text.trim())) return null;
-  const arm = Number(text);
-  return arm >= MIN_REPEAT_ARM_BP && arm <= MAX_REPEAT_ARM_BP ? arm : null;
+  const value = Number(text);
+  return value >= least && value <= most ? value : null;
 }
+const repeatArmOf = (text: string) => wholeNumberIn(text, MIN_REPEAT_ARM_BP, MAX_REPEAT_ARM_BP);
+const proteinAaOf = (text: string) => wholeNumberIn(text, MIN_PROTEIN_AA, MAX_PROTEIN_AA);
+const cpgIslandBpOf = (text: string) => wholeNumberIn(text, MIN_CPG_ISLAND_BP, MAX_CPG_ISLAND_BP);
+
+/**
+ * A number box that settles (D0055): `text` is what the box holds while it is typed in, `value` the
+ * number its scan runs at. `value` moves to the text SETTLE_MS after the last keystroke, or at once
+ * on `settle` (Enter, or the box losing focus), and only when `valueOf` reads a number from it; a
+ * settle on text that names none puts `value` back in the box. The draft and the timer are the
+ * studio's, so a close of the inspector mid-typing loses neither.
+ */
+function useSettledNumber(initial: number, valueOf: (text: string) => number | null) {
+  const [value, setValue] = useState<number>(initial);
+  const [text, setText] = useState<string>(String(initial));
+  useEffect(() => {
+    const next = valueOf(text);
+    if (next === null || next === value) return undefined;
+    const timer = setTimeout(() => setValue(next), SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [text, value, valueOf]);
+  const settle = () => {
+    const next = valueOf(text);
+    if (next === null) setText(String(value));
+    else setValue(next);
+  };
+  return { value, text, setText, settle };
+}
+
+/** The props that make a number input the box of a settled number. */
+const settledBoxProps = (box: ReturnType<typeof useSettledNumber>) => ({
+  value: box.text,
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => box.setText(e.target.value),
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') box.settle();
+  },
+  onBlur: box.settle,
+});
 
 /** What a genome-scale scan is computed from, field by field; the genome names are kept to say so. */
 type ScanInput = Readonly<Record<string, string | number>>;
 type SyntenyInput = { genomeA: string; seqA: string; genomeB: string; seqB: string; engine: SyntenyEngine };
 type GenomeScanInput = { genome: string; seq: string; min: number };
+type ChainInput = { seqA: string; seqB: string };
+type SequenceInput = { seq: string };
+type ThresholdInput = { seq: string; min: number };
 
 const sameScanInput = (a: ScanInput, b: ScanInput) =>
   Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => Object.is(a[k], b[k]));
@@ -113,6 +158,12 @@ const syntenyScan = (i: SyntenyInput) => runWholeGenomeSynteny(i.seqA, i.seqB, i
 const SYNTENY_SEED_MER: Readonly<Record<SyntenyEngine, string>> = { 'seed-13': '13-mer', 'seed-11': '11-mer' };
 const geneScan = (i: GenomeScanInput) => predictGlimmerMicrobialGenes(i.seq, i.min);
 const cpgScan = (i: GenomeScanInput) => findCpGIslands(i.seq, i.min);
+const minimizerScan = (i: ChainInput) =>
+  alignLargeGenomesMinimizerChainRust(i.seqA, i.seqB, 8, 13, 64) as EngineCoverage<ReturnType<typeof alignLargeGenomesMinimizerChainRust>> & { totalChains?: number; minChainAnchors?: number };
+const hmmScan = (i: SequenceInput): EngineCoverage<HmmGenomeSegmentationReport> => segmentGenomeHmmViterbiRust(i.seq);
+const pssmScan = (i: ThresholdInput): EngineCoverage<PssmMotifScanReport> => scanJasparPssmMotifsRust(i.seq, i.min);
+const strScan = (i: ThresholdInput) => scanMicrosatelliteStrs(i.seq, i.min);
+const taxonomyScan = (i: SequenceInput) => classifySequenceTaxonomy(i.seq);
 
 /**
  * Runs `run` in a task of its own once the next frame has been painted (where there are no frames,
@@ -134,17 +185,19 @@ function afterNextPaint(run: () => void): () => void {
 }
 
 /**
- * A genome-scale scan (whole-genome synteny, gene prediction, the CpG island scan) the studio never
- * runs while it renders (BG-01M6T6HW): on unrelated 5 Mb genomes synteny alone takes hundreds of
- * milliseconds (D0061). Returns the landed result and the input it was computed for, or null while
- * there is none for `input`, which the panel shows as 'Scanning…'. The scan runs in a task of its
- * own after the frame that shows that has been painted. A result is shown only under the input it
- * was computed from: an input changed while its scan waits cancels it, and a result that returns
- * after its input changed is dropped. `input` is null while the scan's sub-view is not shown; the
- * last result shows again, with no new run, when its input comes back. A scan that throws, throws
- * here, in render, as it did when it ran in render.
+ * A genome-scale scan the studio never runs while it renders (BG-01M6T6HW; whole-genome synteny,
+ * gene prediction and the CpG island scan, then the minimizer chainer, the HMM segmentation, the TF
+ * motif scan, the STR scan and the taxonomy classifier, BG-01M6VZGD): on unrelated 5 Mb genomes
+ * synteny alone takes hundreds of milliseconds (D0061). Returns the landed outcome and the input it
+ * was computed for, or null while there is none for `input`, which the panel shows as 'Scanning…'.
+ * The scan runs in a task of its own after the frame that shows that has been painted. An outcome is
+ * shown only under the input it was computed from: an input changed while its scan waits cancels it,
+ * and an outcome that returns after its input changed is dropped. `input` is null while the scan's
+ * sub-view is not shown; the last outcome shows again, with no new run, when its input comes back.
+ * A scan that throws lands as its error (`result` null), which its panel shows in place of
+ * 'Scanning…'.
  */
-function useScanAfterPaint<I extends ScanInput, R>(input: I | null, scan: (input: I) => R): { input: I; result: R } | null {
+function useScanAfterPaint<I extends ScanInput, R>(input: I | null, scan: (input: I) => R): ScanOutcome<I, R> | null {
   const [landed, setLanded] = useState<{ input: I; result?: R; failure?: { error: unknown } } | null>(null);
   const current = input && landed && sameScanInput(landed.input, input) ? landed : null;
   const waiting = input !== null && current === null;
@@ -165,9 +218,30 @@ function useScanAfterPaint<I extends ScanInput, R>(input: I | null, scan: (input
       cancel();
     };
   }, [input, waiting, scan]);
-  if (current?.failure) throw current.failure.error;
-  return current ? { input: current.input, result: current.result as R } : null;
+  if (!current) return null;
+  if (current.failure) return { input: current.input, result: null, error: scanErrorText(current.failure.error) };
+  return { input: current.input, result: current.result as R, error: null };
 }
+
+/** A landed scan: its result, or the error it threw, under the input it was computed for. */
+type ScanOutcome<I, R> = { input: I; result: R; error: null } | { input: I; result: null; error: string };
+
+/** What a scan's error says, as its panel shows it. */
+function scanErrorText(error: unknown): string {
+  const said = error instanceof Error ? error.message : String(error);
+  return said.trim() || 'the engine gave no reason';
+}
+
+/** What a scan's panel shows in place of its numbers when the scan threw. */
+const ScanFailedNote = ({ error }: { error: string }) => (
+  <div className="info-callout" role="alert" style={{ color: 'var(--mbc-red)', margin: '4px 0' }}>
+    The scan failed: {error}
+  </div>
+);
+
+/** What a scan's panel shows when it has no result: its error when it threw, else 'Scanning…'. */
+const NoResultNote = ({ outcome }: { outcome: { error: string | null } | null }) =>
+  outcome?.error ? <ScanFailedNote error={outcome.error} /> : <ScanningNote />;
 
 /** What a scan's panel shows in place of its numbers while the scan waits or runs. */
 const ScanningNote = () => (
@@ -310,25 +384,14 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
   const [minStrCopies, setMinStrCopies] = useState<number>(4);
 
   // 3. Glimmer Microbial Genes, CpG Islands, Genomic Repeats, Viterbi HMM & JASPAR PSSM Motifs
-  const [glimmerMinAa, setGlimmerMinAa] = useState<number>(45);
-  const [cpgMinLen, setCpgMinLen] = useState<number>(200);
-  const [repeatMinArm, setRepeatMinArm] = useState<number>(10);
-  // What the Min Repeat Arm box holds while it is typed in; the scan moves to it once it settles.
-  const [repeatArmText, setRepeatArmText] = useState<string>('10');
+  // Min Protein Length, Min CpG Island and Min Repeat Arm settle before their scan moves (D0055)
+  const glimmerMinAaBox = useSettledNumber(45, proteinAaOf);
+  const glimmerMinAa = glimmerMinAaBox.value;
+  const cpgMinLenBox = useSettledNumber(200, cpgIslandBpOf);
+  const cpgMinLen = cpgMinLenBox.value;
+  const repeatArmBox = useSettledNumber(10, repeatArmOf);
+  const repeatMinArm = repeatArmBox.value;
   const [pssmMinRelScore, setPssmMinRelScore] = useState<number>(0.84);
-
-  useEffect(() => {
-    const arm = repeatArmOf(repeatArmText);
-    if (arm === null || arm === repeatMinArm) return undefined;
-    const timer = setTimeout(() => setRepeatMinArm(arm), REPEAT_ARM_SETTLE_MS);
-    return () => clearTimeout(timer);
-  }, [repeatArmText, repeatMinArm]);
-  /** Enter or blur: scan at the box's arm now, or, when it holds no arm to scan at, show the one in use. */
-  const settleRepeatArm = () => {
-    const arm = repeatArmOf(repeatArmText);
-    if (arm === null) setRepeatArmText(String(repeatMinArm));
-    else setRepeatMinArm(arm);
-  };
 
   // The synteny partner genome.
   const partnerDoc = useMemo(
@@ -413,14 +476,17 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
   // short (BG-01M6S1C1). They used to be handed the first 120, 100 and 60 kb, unannounced. The
   // chainer counts a chain only from `minChainAnchors` anchors, the fewest that chance seed matches
   // between genomes of these lengths are not expected to chain; its chains, coverage, identity and
-  // inversion count are those chains alone.
-  const minimizerChainReport = useMemo((): EngineCoverage<ReturnType<typeof alignLargeGenomesMinimizerChainRust>> & { totalChains?: number; minChainAnchors?: number } | null => {
+  // inversion count are those chains alone. These five (with the STR scan and the taxonomy
+  // classifier below) run after paint, as synteny does, never in render (BG-01M6VZGD).
+  const minimizerInput = useMemo((): ChainInput | null => {
     if (subTab !== 'genome-variants') return null;
     const seqA = activeDoc.moleculeType === 'Protein' ? '' : activeDoc.sequence;
     const seqB = partnerDoc.moleculeType === 'Protein' ? '' : partnerDoc.sequence;
     if (seqA.length < 25 || seqB.length < 25) return null;
-    return alignLargeGenomesMinimizerChainRust(seqA, seqB, 8, 13, 64);
+    return { seqA, seqB };
   }, [subTab, activeDoc.moleculeType, activeDoc.sequence, partnerDoc.moleculeType, partnerDoc.sequence]);
+  const minimizer = useScanAfterPaint(minimizerInput, minimizerScan);
+  const minimizerChainReport = minimizer?.result ?? null;
 
   const vcfConsequenceReport = useMemo(() => {
     if (subTab !== 'genome-variants') return null;
@@ -433,27 +499,35 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
     );
   }, [subTab, mapRefDoc.moleculeType, mapRefDoc.sequence, mapRefDoc.features, freeBayesReport?.vcfText]);
 
-  const hmmSegmentationReport = useMemo((): EngineCoverage<HmmGenomeSegmentationReport> | null => {
+  const hmmInput = useMemo((): SequenceInput | null => {
     if (subTab !== 'genes-cpg-repeats') return null;
     if (activeDoc.moleculeType === 'Protein' || activeDoc.sequence.length < 30) return null;
-    return segmentGenomeHmmViterbiRust(activeDoc.sequence);
+    return { seq: activeDoc.sequence };
   }, [subTab, activeDoc.moleculeType, activeDoc.sequence]);
+  const hmm = useScanAfterPaint(hmmInput, hmmScan);
+  const hmmSegmentationReport = hmm?.result ?? null;
 
-  const pssmMotifReport = useMemo((): EngineCoverage<PssmMotifScanReport> | null => {
+  const pssmInput = useMemo((): ThresholdInput | null => {
     if (subTab !== 'genes-cpg-repeats') return null;
     if (activeDoc.moleculeType === 'Protein' || activeDoc.sequence.length < 12) return null;
-    return scanJasparPssmMotifsRust(activeDoc.sequence, pssmMinRelScore);
+    return { seq: activeDoc.sequence, min: pssmMinRelScore };
   }, [subTab, activeDoc.moleculeType, activeDoc.sequence, pssmMinRelScore]);
+  const pssm = useScanAfterPaint(pssmInput, pssmScan);
+  const pssmMotifReport = pssm?.result ?? null;
 
-  const strLoci = useMemo(
-    () => subTab === 'genome-variants' ? scanMicrosatelliteStrs(activeDoc.sequence, minStrCopies) : null,
+  const strInput = useMemo(
+    (): ThresholdInput | null => subTab === 'genome-variants' ? { seq: activeDoc.sequence, min: minStrCopies } : null,
     [subTab, activeDoc.sequence, minStrCopies]
   );
+  const str = useScanAfterPaint(strInput, strScan);
+  const strLoci = str?.result ?? null;
 
-  const taxonomyHits = useMemo(
-    () => subTab === 'genome-variants' ? classifySequenceTaxonomy(activeDoc.sequence) : null,
+  const taxonomyInput = useMemo(
+    (): SequenceInput | null => subTab === 'genome-variants' ? { seq: activeDoc.sequence } : null,
     [subTab, activeDoc.sequence]
   );
+  const taxonomy = useScanAfterPaint(taxonomyInput, taxonomyScan);
+  const taxonomyHits = taxonomy?.result ?? null;
 
   const geneInput = useMemo(
     (): GenomeScanInput | null => subTab === 'genes-cpg-repeats' ? { genome: activeDoc.name, seq: activeDoc.sequence, min: glimmerMinAa } : null,
@@ -837,7 +911,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
       {/* =================================================================== */}
       {/* TAB 2: Whole-genome synteny, FreeBayes, STR & 16S/ITS Taxonomy */}
       {/* =================================================================== */}
-      {subTab === 'genome-variants' && freeBayesReport && strLoci && taxonomyHits && (
+      {subTab === 'genome-variants' && freeBayesReport && (
         <div className="studio-split-grid">
           <div className="studio-card">
             <div className="studio-card-header">
@@ -947,12 +1021,14 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                   </div>
                 </>
               ) : (
-                <ScanningNote />
+                <NoResultNote outcome={synteny} />
               )}
             </div>
 
-            {minimizerChainReport && (
-              <div className="mbc-studio-isolated-region" style={{ marginTop: 10 }}>
+            {minimizerInput && (
+              <div className="mbc-studio-isolated-region" data-mbc-scan="minimizer" aria-busy={minimizer ? undefined : true} style={{ marginTop: 10 }}>
+                {minimizerChainReport ? (
+                <>
                 <div className="mbc-table-caption">
                   Large-Genome (w={minimizerChainReport.windowW}, k={minimizerChainReport.kmerK})-Minimizer Co-Linear Chainer ({minimizerChainReport.totalChains ?? minimizerChainReport.chains.length} chains • {minimizerChainReport.rawSeedMatches} seed anchors{minimizerChainReport.minChainAnchors !== undefined && <> • chains of at least {minimizerChainReport.minChainAnchors} anchors</>})
                 </div>
@@ -1000,6 +1076,10 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     )}
                   </tbody>
                 </WorkbenchSmartTable>
+                </>
+                ) : (
+                  <NoResultNote outcome={minimizer} />
+                )}
               </div>
             )}
 
@@ -1007,15 +1087,16 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
               <strong style={{ fontSize: 12 }}>
                 Taxonomic Classification (16S rRNA / ITS / Replicon Signatures) — {activeDoc.name}:
               </strong>
-              <div className="plugin-list-box" style={{ maxHeight: 135, marginTop: 6 }}>
-                {taxonomyHits.length === 0 && (
+              <div className="plugin-list-box" data-mbc-scan="taxonomy" aria-busy={taxonomy ? undefined : true} style={{ maxHeight: 135, marginTop: 6 }}>
+                {!taxonomyHits && <NoResultNote outcome={taxonomy} />}
+                {taxonomyHits?.length === 0 && (
                   <div className="plugin-row-item">
                     <div className="plugin-row-text">
                       No marker signature (16S / ITS / replicon) was found in this sequence, so no taxon is suggested.
                     </div>
                   </div>
                 )}
-                {taxonomyHits.map((hit) => (
+                {taxonomyHits?.map((hit) => (
                   <div key={hit.rank} className="plugin-row-item">
                     <div className="plugin-row-text">
                       <strong>
@@ -1054,7 +1135,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
               </div>
               <div className="kpi-box">
                 <span className="kpi-label">STR Loci in {activeDoc.name}</span>
-                <strong className="kpi-val">{strLoci.length}</strong>
+                <strong className="kpi-val">{strLoci ? strLoci.length : str?.error ? '—' : '…'}</strong>
               </div>
             </div>
             {/* what the call did not compare: an empty input (BG-01M6TE8J), the part of a sample past
@@ -1211,7 +1292,9 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
               </div>
             )}
 
-            <div style={{ marginTop: 10 }}>
+            <div data-mbc-scan="str" aria-busy={str ? undefined : true} style={{ marginTop: 10 }}>
+              {strLoci ? (
+              <>
               <div id={strTableId} className="mbc-table-caption">
                 Microsatellite / STR Genotypes ({listCountLabel(Math.min(strLoci.length, TABLE_ROWS_SHOWN), strLoci.length, 'first')})
               </div>
@@ -1250,6 +1333,10 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                   )}
                 </tbody>
               </WorkbenchSmartTable>
+              </>
+              ) : (
+                <NoResultNote outcome={str} />
+              )}
             </div>
           </div>
         </div>
@@ -1271,10 +1358,10 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                 {inlineSetting('Min Protein Length (aa):', 6, 12, (
                   <input
                     type="number"
-                    min={20}
-                    max={300}
-                    value={glimmerMinAa}
-                    onChange={(e) => setGlimmerMinAa(Number(e.target.value) || 45)}
+                    min={MIN_PROTEIN_AA}
+                    max={MAX_PROTEIN_AA}
+                    step={1}
+                    {...settledBoxProps(glimmerMinAaBox)}
                     style={inlineBoxWidth(70)}
                   />
                 ))}
@@ -1338,13 +1425,15 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     </WorkbenchSmartTable>
                 </>
               ) : (
-                <ScanningNote />
+                <NoResultNote outcome={genes} />
               )}
             </div>
 
             {/* rust-bio Viterbi 3-State Discrete-Emission HMM Compositional Genome Segmentation */}
-            {hmmSegmentationReport && (
-              <div className="mbc-studio-isolated-region" style={{ marginTop: 12 }}>
+            {hmmInput && (
+              <div className="mbc-studio-isolated-region" data-mbc-scan="hmm" aria-busy={hmm ? undefined : true} style={{ marginTop: 12 }}>
+                {hmmSegmentationReport ? (
+                <>
                 <div className="studio-card-header" style={{ paddingTop: 2 }}>
                   <h4>
                     Genome segmentation, 3-state HMM (Viterbi path, ln P* = {hmmSegmentationReport.viterbiLogProb})
@@ -1425,6 +1514,10 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     ))}
                   </tbody>
                 </WorkbenchSmartTable>
+                </>
+                ) : (
+                  <NoResultNote outcome={hmm} />
+                )}
               </div>
             )}
           </div>
@@ -1442,10 +1535,10 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                 {inlineSetting('Min CpG Island (bp):', 6, 12, (
                   <input
                     type="number"
-                    min={100}
-                    max={1000}
-                    value={cpgMinLen}
-                    onChange={(e) => setCpgMinLen(Number(e.target.value) || 200)}
+                    min={MIN_CPG_ISLAND_BP}
+                    max={MAX_CPG_ISLAND_BP}
+                    step={1}
+                    {...settledBoxProps(cpgMinLenBox)}
                     style={inlineBoxWidth(68)}
                   />
                 ))}
@@ -1471,12 +1564,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     min={MIN_REPEAT_ARM_BP}
                     max={MAX_REPEAT_ARM_BP}
                     step={1}
-                    value={repeatArmText}
-                    onChange={(e) => setRepeatArmText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') settleRepeatArm();
-                    }}
-                    onBlur={settleRepeatArm}
+                    {...settledBoxProps(repeatArmBox)}
                     style={inlineBoxWidth(56)}
                   />
                 ))}
@@ -1539,7 +1627,7 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     </WorkbenchSmartTable>
                 </>
               ) : (
-                <ScanningNote />
+                <NoResultNote outcome={cpg} />
               )}
             </div>
 
@@ -1584,11 +1672,11 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
             </div>
 
             {/* rust-bio DNAMotif JASPAR PSSM / PWM Transcription Factor Motif Scanner */}
-            {pssmMotifReport && (
+            {pssmInput && (
               <div className="mbc-studio-isolated-region" style={{ marginTop: 12 }}>
                 <div className="studio-card-header" style={{ paddingTop: 2 }}>
                   <h4>
-                    Transcription-factor motif scan, JASPAR PWMs ({pssmMotifReport.totalHits} hits across {pssmMotifReport.motifsEvaluated} matrices)
+                    Transcription-factor motif scan, JASPAR PWMs{pssmMotifReport && <> ({pssmMotifReport.totalHits} hits across {pssmMotifReport.motifsEvaluated} matrices)</>}
                   </h4>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <InspectorSection title="TF Motif Scan" order={4}>
@@ -1607,8 +1695,9 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     <button
                       type="button"
                       className="btn-primary-sm"
-                      disabled={pssmMotifReport.hits.length === 0}
+                      disabled={!pssmMotifReport || pssmMotifReport.hits.length === 0}
                       onClick={() => {
+                        if (!pssmMotifReport) return;
                         const feats: SequenceFeature[] = pssmMotifReport.hits
                           .slice(0, 30)
                           .map((hit, idx) => ({
@@ -1631,6 +1720,9 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     </button>
                   </div>
                 </div>
+                <div data-mbc-scan="pssm" aria-busy={pssm ? undefined : true}>
+                {pssmMotifReport ? (
+                <>
                 <div className="mbc-table-caption">
                   Best-scoring binding sites, every matrix ({listCountLabel(pssmMotifReport.hits.length, pssmMotifReport.totalHits, 'top')})
                 </div>
@@ -1672,6 +1764,11 @@ export const GenomicsNgsAndPredictionStudio: React.FC<
                     )}
                   </tbody>
                 </WorkbenchSmartTable>
+                </>
+                ) : (
+                  <NoResultNote outcome={pssm} />
+                )}
+                </div>
               </div>
             )}
           </div>

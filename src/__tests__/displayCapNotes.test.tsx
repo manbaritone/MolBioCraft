@@ -14,7 +14,9 @@
  * captioned with a count and one with none; and pairwise identity past 4,000 pairs and mean GC from
  * 4,096 bases a bin were sampled, and read as exact.
  *
- * Every component is rendered with renderToStaticMarkup and read as the words it shows; every
+ * Every component is rendered with renderToStaticMarkup and read as the words it shows (the
+ * Genomics studio, whose chainer and HMM segmentation run after its first frame, BG-01M6VZGD, is
+ * mounted with React's client renderer and read once its scans have landed); every
  * number the engine computes comes from the real WASM engine (public/molbiocraft_wasm.wasm). The
  * sequences are generated from fixed seeds, so no reference data is needed.
  */
@@ -70,6 +72,7 @@ const { findORFs } = await import('../core/bioEngine');
 const { findRestrictionSitesAligned, meanPairwiseIdentity } = await import('../core/alignmentViewModel');
 const { getResidentTrackOverviewRust, segmentGenomeHmmViterbiRust } = await import('../lib/rustBioEngine');
 const { EMPTY_WORKSPACE_DOCUMENT } = await import('../core/emptyWorkspace');
+const { LiveDocument, LiveWindow } = await import('./liveDom');
 type SequenceDocument = import('../types/bio').SequenceDocument;
 type SequenceFeature = import('../types/bio').SequenceFeature;
 type StudioProps = React.ComponentProps<typeof SequenceAlignmentStudio>;
@@ -192,8 +195,40 @@ const linear = (doc: SequenceDocument, showGcGraph = false) =>
   );
 const studioProps = (doc: SequenceDocument, more: Partial<StudioProps> = {}): StudioProps =>
   ({ documents: [doc], projectDocuments: [doc], activeDoc: doc, ...more }) as StudioProps;
+/**
+ * What `element` shows once every scan it runs after paint has landed (BG-01M6T6HW, BG-01M6VZGD:
+ * a static render shows those panels as 'Scanning…'), as markup: mounted with React's client
+ * renderer on a live page under fake timers, every queued task run until none is left, read, then
+ * unmounted.
+ */
+async function landedMarkup(element: React.ReactElement): Promise<string> {
+  const g = globalThis as Record<string, unknown>;
+  const before = { window: g.window, document: g.document };
+  const page = new LiveDocument();
+  Object.assign(g, { window: new LiveWindow(page), document: page });
+  const { flushSync } = await import('react-dom');
+  const { createRoot } = await import('react-dom/client');
+  vi.useFakeTimers();
+  const container = page.createElement('div');
+  page.body.appendChild(container);
+  const root = createRoot(container as unknown as Element);
+  try {
+    flushSync(() => root.render(element));
+    for (let round = 0; vi.getTimerCount() > 0; round++) {
+      if (round === 20) throw new Error('the studio still had tasks queued after 20 rounds');
+      flushSync(() => { vi.runOnlyPendingTimers(); });
+    }
+    expect(container.innerHTML, 'every scan has landed').not.toMatch(/aria-busy="true"/);
+    return container.innerHTML;
+  } finally {
+    try { flushSync(() => root.unmount()); } finally {
+      for (const [k, v] of Object.entries(before)) if (v === undefined) delete g[k]; else g[k] = v;
+      vi.useRealTimers();
+    }
+  }
+}
 const genomics = (activeDoc: SequenceDocument, documents: SequenceDocument[], tab: 'genes-cpg-repeats' | 'genome-variants') =>
-  renderToStaticMarkup(
+  landedMarkup(
     <GenomicsNgsAndPredictionStudio activeDoc={activeDoc} documents={documents} initialSubTab={tab}
       onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop} />
   );
@@ -354,7 +389,7 @@ describe('display cap notes', () => {
     expect(warningsLabelled(shortSites, 'Consensus site list warnings')).toEqual([]);
   }, 60_000);
 
-  it('labels the genomics tables with their totals', () => {
+  it('labels the genomics tables with their totals', async () => {
     // ─── Variant calls and their HGVS consequences: first 25 and first 20 ───
     // Wrong implementations this catches: a caption counting the rows it draws ("25", "first 25
     // of 25"), one with no count, and a "first N of" on a table that shows every row.
@@ -368,11 +403,11 @@ describe('display cap notes', () => {
       return bases.join('');
     };
     const ref = dna('ref', 'Reference 30 kb', reference);
-    const variantsTab = (snps: number) => {
+    const variantsTab = async (snps: number) => {
       const sample = dna(`s${snps}`, `Sample ${snps} SNPs`, withSnps(snps));
       return genomics(sample, [ref, sample], 'genome-variants');
     };
-    const sixty = variantsTab(60);
+    const sixty = await variantsTab(60);
     expect(wordsOf(sixty), 'fixture: the caller finds every SNP').toContain('Polymorphisms (Sample 60 SNPs vs Reference 30 kb) 60 (60 SNPs, 0 MNP/Indel)');
     expect(caption(sixty, 'Variant Calls')).toBe('Variant Calls (first 25 of 60; single sequence vs. reference, no read-depth QUAL)');
     expect(rowsUnder(sixty, 'Variant Calls')).toHaveLength(25);
@@ -381,7 +416,7 @@ describe('display cap notes', () => {
     expect(caption(sixty, 'VCF coding consequences, HGVS')).toMatch(/^VCF coding consequences, HGVS \(HIGH: \d+ • MODERATE: \d+ • LOW: \d+\)$/);
     expect(warningsLabelled(sixty, 'HGVS consequence warnings')).toEqual(['The table lists the first 20 of 60 records.']);
     expect(rowsUnder(sixty, 'VCF coding consequences, HGVS')).toHaveLength(20);
-    const ten = variantsTab(10);
+    const ten = await variantsTab(10);
     expect(caption(ten, 'Variant Calls')).toBe('Variant Calls (10; single sequence vs. reference, no read-depth QUAL)');
     expect(rowsUnder(ten, 'Variant Calls')).toHaveLength(10);
     expect(warningsLabelled(ten, 'HGVS consequence warnings')).toEqual([]);
@@ -398,7 +433,7 @@ describe('display cap notes', () => {
     const targetDoc = dna('t', 'Target 400 kb', target);
     const queryDoc = dna('q', 'Query blocks', query);
     const read = dna('r', 'Read', target.slice(5_000, 6_000));
-    const chained = genomics(targetDoc, [queryDoc, targetDoc, read], 'genome-variants');
+    const chained = await genomics(targetDoc, [queryDoc, targetDoc, read], 'genome-variants');
     const said = warningsLabelled(chained, 'Minimizer chaining warnings');
     const found = said.map((w) => /^Chain list capped: it lists the 64 highest-scoring of the ([\d,]+) chains found;/.exec(w)?.[1]).find(Boolean);
     expect(found, `fixture: more chains than the engine lists (${said.join(' | ')})`).toBeDefined();
@@ -415,14 +450,14 @@ describe('display cap notes', () => {
     const segments = segmentGenomeHmmViterbiRust(banded).segments.length;
     expect(segments, 'fixture: more segments than the table draws').toBeGreaterThan(24);
     const bandedDoc = dna('banded', 'Banded composition', banded);
-    const genes = genomics(bandedDoc, [bandedDoc], 'genes-cpg-repeats');
+    const genes = await genomics(bandedDoc, [bandedDoc], 'genes-cpg-repeats');
     expect(caption(genes, 'Viterbi path segments')).toBe(`Viterbi path segments (first 24 of ${n(segments)})`);
     expect(rowsUnder(genes, 'Viterbi path segments')).toHaveLength(24);
     const fewBanded = Array.from({ length: 4 }, (_, i) => block(i)).join('');
     const fewSegments = segmentGenomeHmmViterbiRust(fewBanded).segments.length;
     expect(fewSegments, 'fixture').toBeLessThanOrEqual(24);
     const fewDoc = dna('few', 'Four blocks', fewBanded);
-    const fewGenes = genomics(fewDoc, [fewDoc], 'genes-cpg-repeats');
+    const fewGenes = await genomics(fewDoc, [fewDoc], 'genes-cpg-repeats');
     expect(caption(fewGenes, 'Viterbi path segments')).toBe(`Viterbi path segments (${fewSegments})`);
     expect(rowsUnder(fewGenes, 'Viterbi path segments')).toHaveLength(fewSegments);
   }, 60_000);

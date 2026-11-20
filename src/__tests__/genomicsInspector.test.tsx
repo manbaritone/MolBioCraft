@@ -193,7 +193,10 @@ async function wait(app: AppHarness, ms: number) {
   await app.settle();
 }
 const busyScans = (app: AppHarness) => app.all('[data-mbc-scan][aria-busy="true"]');
-/** Lets every scan that waits for a painted frame (synteny, genes, CpG; BG-01M6T6HW) land. */
+/**
+ * Lets every scan that waits for a painted frame land: synteny, genes and CpG (BG-01M6T6HW), and the
+ * minimizer chainer, HMM segmentation, TF motif scan, STR scan and taxonomy (BG-01M6VZGD).
+ */
 async function landScans(app: AppHarness) {
   for (let round = 0; round < 8 && busyScans(app).length; round++) await wait(app, 0);
   expect(busyScans(app).map((s) => s.getAttribute('data-mbc-scan')), 'every scan has landed').toEqual([]);
@@ -627,6 +630,8 @@ describe('a scan re-run from the inspector (AC3)', () => {
       const strKey = `STR Loci in ${GENOME.name}`;
       expect(kpis(card(app, VARIANT_CARD))[strKey]).toBe(strs(4));
       await app.change(inSection(app, 'STR Genotyping', MIN_STR), '7');
+      expect(busyScans(app).map((s) => s.getAttribute('data-mbc-scan')), 'the STR scan runs again').toEqual(['str']);
+      await landScans(app);
       expect(kpis(card(app, VARIANT_CARD))[strKey], '7 copies').toBe(strs(7));
 
       // Genes, CpG & repeats: each minimum's scan, run again for its new value.
@@ -643,11 +648,14 @@ describe('a scan re-run from the inspector (AC3)', () => {
       const notes = () => app.canvas().querySelectorAll('.studio-panel-note').map((p) => words(p.textContent)).filter((t) => t.startsWith('Computed for'));
       expect([geneBadge(), notes()]).toEqual([genes(45), [`Computed for ${GENOME.name} (6,000 bp), proteins ≥ 45 aa`, `Computed for ${GENOME.name} (6,000 bp), islands ≥ 200 bp`]]);
       await app.change(inSection(app, 'Gene Prediction', MIN_AA), '150');
+      // the box settles 400 ms after the last keystroke, as Min Repeat Arm does (D0055, BG-01M6VZGD)
+      await wait(app, 400);
       expect(busyScans(app).map((s) => s.getAttribute('data-mbc-scan')), 'the gene scan runs again').toEqual(['genes']);
       await landScans(app);
       expect([geneBadge(), notes()[0]], '150 aa').toEqual([genes(150), `Computed for ${GENOME.name} (6,000 bp), proteins ≥ 150 aa`]);
       expect(textOf(app.canvas(), '.mbc-table-caption', 'Gardiner-Garden')).toBe(islands(200));
       await app.change(inSection(app, 'CpG Islands', MIN_CPG), '600');
+      await wait(app, 400);
       expect(busyScans(app).map((s) => s.getAttribute('data-mbc-scan')), 'the CpG scan runs again').toEqual(['cpg']);
       await landScans(app);
       expect([textOf(app.canvas(), '.mbc-table-caption', 'Gardiner-Garden'), notes()[1]], '600 bp').toEqual([islands(600), `Computed for ${GENOME.name} (6,000 bp), islands ≥ 600 bp`]);
@@ -657,6 +665,8 @@ describe('a scan re-run from the inspector (AC3)', () => {
       expect(shownRepeatCaption(app), 'arms ≥ 16 bp').toBe(repeatCaption(e, 16));
       expect(textOf(app.canvas(), 'h4', 'Transcription-factor motif scan')).toBe(motifs(0.84));
       await app.change(inSection(app, 'TF Motif Scan', MIN_SCORE), '0.92');
+      expect(busyScans(app).map((s) => s.getAttribute('data-mbc-scan')), 'the TF motif scan runs again').toEqual(['pssm']);
+      await landScans(app);
       expect(textOf(app.canvas(), 'h4', 'Transcription-factor motif scan'), 'score 0.92').toBe(motifs(0.92));
 
       // Transform & submit: the mode, then the rate it enables, then the seed.

@@ -27,6 +27,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MenuNode } from '../components/CascadingMenu';
 import { dataPath, haveTestData } from './testData';
 import { abifWithoutQualities, seededChromatogram } from './traceFixtures';
+import { LiveDocument, LiveWindow } from './liveDom';
 
 // ─── Probes (installed before the App and studio modules are loaded) ───
 
@@ -259,6 +260,49 @@ function clicking(labels: RegExp[], render: () => string): string {
   clicker.steps.length = 0;
   clicker.steps.push(...labels.map((label) => ({ label, done: false })));
   const html = render();
+  for (const s of clicker.steps) expect(s.done, `a button matching ${s.label} was clicked`).toBe(true);
+  clicker.steps.length = 0;
+  return html;
+}
+
+/**
+ * What `element` shows once every scan it runs after paint has landed (BG-01M6T6HW, BG-01M6VZGD:
+ * a static render shows those panels as 'Scanning…'), as markup: mounted with React's client
+ * renderer on a live page under fake timers, every queued task run until none is left, read, then
+ * unmounted.
+ */
+async function landedMarkup(element: React.ReactElement): Promise<string> {
+  const g = globalThis as Record<string, unknown>;
+  const before = { window: g.window, document: g.document };
+  const page = new LiveDocument();
+  Object.assign(g, { window: new LiveWindow(page), document: page });
+  const { flushSync } = await import('react-dom');
+  const { createRoot } = await import('react-dom/client');
+  vi.useFakeTimers();
+  const container = page.createElement('div');
+  page.body.appendChild(container);
+  const root = createRoot(container as unknown as Element);
+  try {
+    flushSync(() => root.render(element));
+    for (let round = 0; vi.getTimerCount() > 0; round++) {
+      if (round === 20) throw new Error('the studio still had tasks queued after 20 rounds');
+      flushSync(() => { vi.runOnlyPendingTimers(); });
+    }
+    expect(container.innerHTML, 'every scan has landed').not.toMatch(/aria-busy="true"/);
+    return container.innerHTML;
+  } finally {
+    try { flushSync(() => root.unmount()); } finally {
+      for (const [k, v] of Object.entries(before)) if (v === undefined) delete g[k]; else g[k] = v;
+      vi.useRealTimers();
+    }
+  }
+}
+
+/** As `clicking`, for a render that lands after paint (`landedMarkup`). */
+async function clickingLanded(labels: RegExp[], render: () => Promise<string>): Promise<string> {
+  clicker.steps.length = 0;
+  clicker.steps.push(...labels.map((label) => ({ label, done: false })));
+  const html = await render();
   for (const s of clicker.steps) expect(s.done, `a button matching ${s.label} was clicked`).toBe(true);
   clicker.steps.length = 0;
   return html;
@@ -659,7 +703,7 @@ describe('the phylogeny card (PhylogeneticsStudio, phylogeny module)', () => {
 // ─── AC3 ───
 
 describe('library and storage names', () => {
-  it('keeps library and storage names out of studio headings', () => {
+  it('keeps library and storage names out of studio headings', async () => {
     const fwd = byId('doc-contig-coi-fwd');
     const rev = byId('doc-contig-coi-rev');
     const renders: Record<string, string> = {
@@ -668,9 +712,10 @@ describe('library and storage names', () => {
       // The assembly options and the preview open on a click: both are clicked here.
       'chromatogram': clicking([/^Contig Assembly$/, /^Run assembly preview$/], () => renderToStaticMarkup(
         <ChromatogramAndContigStudio documents={[fwd, rev]} activeDoc={fwd} selectedDocuments={[fwd, rev]} onCreateDocument={noop} />)),
-      'variants': renderToStaticMarkup(<GenomicsNgsAndPredictionStudio activeDoc={plasmid} documents={[plasmid]} initialSubTab="genome-variants"
+      // the Genomics studio's scans land after its first frame (BG-01M6VZGD): read once they have
+      'variants': await landedMarkup(<GenomicsNgsAndPredictionStudio activeDoc={plasmid} documents={[plasmid]} initialSubTab="genome-variants"
         onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop} />),
-      'genes and motifs': renderToStaticMarkup(<GenomicsNgsAndPredictionStudio activeDoc={plasmid} documents={[plasmid]} initialSubTab="genes-cpg-repeats"
+      'genes and motifs': await landedMarkup(<GenomicsNgsAndPredictionStudio activeDoc={plasmid} documents={[plasmid]} initialSubTab="genes-cpg-repeats"
         onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop} />),
       'proteomics': renderToStaticMarkup(<ProteinStudio activeDoc={plasmid} />),
       'history': renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={plasmid} allDocuments={SAMPLE_LIBRARY} initialSubTab="lineage" />),
@@ -719,7 +764,7 @@ describe('library and storage names', () => {
     return wordsOf(text);
   };
 
-  it('keeps library and storage names out of studio headings, in the notices a run leaves', () => {
+  it('keeps library and storage names out of studio headings, in the notices a run leaves', async () => {
     // Loading the benchmark chromosome from the palette leaves a notice in the status bar.
     const html = renderApp({ session: 'sample-library', clicks: [/K Command Palette$/, /^500 kbp Annotated Genome/] });
     const banner = statusNotice(html);
@@ -730,9 +775,10 @@ describe('library and storage names', () => {
     const switched = statusNotice(again);
     expect(switched).toMatch(/^Switched to benchmark document ".+" \(10,000 aa\)$/);
 
-    // Annotating the HMM segments hands the App the notice it shows in the status bar.
+    // Annotating the HMM segments hands the App the notice it shows in the status bar (the
+    // segmentation lands after the studio's first frame, BG-01M6VZGD, and its button with it).
     const notices: string[] = [];
-    clicking([/^\+ Annotate HMM Segments$/], () => renderToStaticMarkup(
+    await clickingLanded([/^\+ Annotate HMM Segments$/], () => landedMarkup(
       <GenomicsNgsAndPredictionStudio activeDoc={plasmid} documents={[plasmid]} initialSubTab="genes-cpg-repeats"
         onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={(_features, summary) => notices.push(summary)} />));
     expect(notices).toHaveLength(1);

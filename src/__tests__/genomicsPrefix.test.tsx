@@ -10,16 +10,18 @@
  * The expected ranges are the test's own numbers: the documented 12,000,000-bp cap written out
  * here and the bases each document holds, counted here. The numbers the studio shows for a capped
  * result are checked against the engine run on the covered bases alone. Every number comes from
- * the real WASM engine; the sequences are generated from fixed seeds.
+ * the real WASM engine; the sequences are generated from fixed seeds. BG-01M6VZGD: the three scans
+ * run after the studio's first frame, never in render, so the studio is mounted with React's client
+ * renderer, its scans are let land, and what it then shows is read as markup.
  */
 
 import React from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GenomicsNgsAndPredictionStudio } from '../components/GenomicsNgsAndPredictionStudio';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import { alignLargeGenomesMinimizerChainRust, scanJasparPssmMotifsRust, segmentGenomeHmmViterbiRust } from '../lib/rustBioEngine';
 import type { SequenceDocument } from '../types/bio';
+import { LiveDocument, LiveWindow } from './liveDom';
 
 /** Deterministic pseudo-random bases (LCG), the same for the same seed. */
 function randomBases(n: number, seed: number): string {
@@ -43,8 +45,41 @@ const basesIn = (seq: string) => {
   for (let i = 0; i < seq.length; i++) if ('ACGTacgt'.includes(seq[i])) count++;
   return count;
 };
+/**
+ * What `element` shows once every scan it runs after paint has landed (BG-01M6T6HW, BG-01M6VZGD:
+ * a static render shows those panels as 'Scanning…'), as markup: mounted with React's client
+ * renderer on a live page under fake timers, every queued task run until none is left, read, then
+ * unmounted.
+ */
+async function landedMarkup(element: React.ReactElement): Promise<string> {
+  const g = globalThis as Record<string, unknown>;
+  const before = { window: g.window, document: g.document };
+  const page = new LiveDocument();
+  Object.assign(g, { window: new LiveWindow(page), document: page });
+  const { flushSync } = await import('react-dom');
+  const { createRoot } = await import('react-dom/client');
+  vi.useFakeTimers();
+  const container = page.createElement('div');
+  page.body.appendChild(container);
+  const root = createRoot(container as unknown as Element);
+  try {
+    flushSync(() => root.render(element));
+    for (let round = 0; vi.getTimerCount() > 0; round++) {
+      if (round === 20) throw new Error('the studio still had tasks queued after 20 rounds');
+      flushSync(() => { vi.runOnlyPendingTimers(); });
+    }
+    expect(container.innerHTML, 'every scan has landed').not.toMatch(/aria-busy="true"/);
+    return container.innerHTML;
+  } finally {
+    try { flushSync(() => root.unmount()); } finally {
+      for (const [k, v] of Object.entries(before)) if (v === undefined) delete g[k]; else g[k] = v;
+      vi.useRealTimers();
+    }
+  }
+}
+
 const studio = (activeDoc: SequenceDocument, documents: SequenceDocument[], tab: 'genes-cpg-repeats' | 'genome-variants') =>
-  renderToStaticMarkup(
+  landedMarkup(
     <GenomicsNgsAndPredictionStudio activeDoc={activeDoc} documents={documents} initialSubTab={tab}
       onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop} />
   );
@@ -91,7 +126,7 @@ const kpi = (html: string, label: string) =>
 const CAP = 12_000_000;
 
 describe('genomics prefix', () => {
-  it('shows the covered range for prefix-limited genomics analyses', () => {
+  it('shows the covered range for prefix-limited genomics analyses', async () => {
     // ─── HMM segmentation and TF scan: a genome 250 kb past the cap ───
     // Its last 250 kb is GC-rich with a T7 promoter every 10 kb, so reading it would change both
     // the state fractions and the hit count.
@@ -101,7 +136,7 @@ describe('genomics prefix', () => {
     const whole = basesIn(genome);
     expect(whole, 'fixture: 250,000 bases past the cap').toBe(CAP + 250_000);
     const big = doc('big', 'Genome past the cap', genome);
-    const genes = studio(big, [big], 'genes-cpg-repeats');
+    const genes = await studio(big, [big], 'genes-cpg-repeats');
 
     expect(warningsLabelled(genes, 'HMM segmentation warnings')).toEqual([
       `HMM segmentation covered only the first ${n(CAP)} bp of the ${n(whole)}-bp sequence; the state fractions and segments describe bases 1-${n(CAP)} only.`,
@@ -126,7 +161,7 @@ describe('genomics prefix', () => {
 
     // a genome inside the cap is covered whole: no range to show
     const plasmidSized = doc('small', 'Inside the cap', randomBases(300_000, 0x5eed_c1c2));
-    const inside = studio(plasmidSized, [plasmidSized], 'genes-cpg-repeats');
+    const inside = await studio(plasmidSized, [plasmidSized], 'genes-cpg-repeats');
     expect(warningsLabelled(inside, 'HMM segmentation warnings')).toEqual([]);
     expect(warningsLabelled(inside, 'TF motif scan warnings').filter((w) => w.includes('covered only'))).toEqual([]);
     // 300 kb is past the 100 kb and 60 kb the studio used to hand these scans: the segments run
@@ -142,7 +177,7 @@ describe('genomics prefix', () => {
     const queryBases = basesIn(query.sequence);
     expect(queryBases).toBe(CAP + 250_000);
     const read = doc('r', 'Read', head.slice(5_000, 6_000));
-    const paired = studio(target, [query, target, read], 'genome-variants');
+    const paired = await studio(target, [query, target, read], 'genome-variants');
     expect(warningsLabelled(paired, 'Minimizer chaining warnings')).toEqual([
       `Minimizer chaining compared only the first ${n(CAP)} bp of the ${n(queryBases)}-bp query; query bases past ${n(CAP)} are not chained.`,
     ]);
@@ -156,7 +191,7 @@ describe('genomics prefix', () => {
     const dense = doc('dt', 'Sixty copies', unit.repeat(60));
     const denseQuery = doc('dq', 'Twenty copies', unit.repeat(20));
     const denseBases = basesIn(denseQuery.sequence);
-    const capped = studio(dense, [denseQuery, dense, read], 'genome-variants');
+    const capped = await studio(dense, [denseQuery, dense, read], 'genome-variants');
     const said = warningsLabelled(capped, 'Minimizer chaining warnings');
     const cut = /^Seed anchor cap reached: the chainer stopped at ([\d,]+) seed anchors, so it compared only query bases 1-([\d,]+) of ([\d,]+); query bases past ([\d,]+) are not chained, and both coverage figures count only chains from bases 1-([\d,]+)\.$/.exec(said[0] ?? '');
     expect(cut, said.join(' | ')).not.toBeNull();
@@ -180,7 +215,7 @@ describe('genomics prefix', () => {
     expect(wordsOf(capped)).toContain(`Minimizer Co-Linear Chainer (${listCut!.replace(/,/g, '')} chains •`);
   }, 120_000);
 
-  it('counts in the chainer caption and table only the chains chance would not form', () => {
+  it('counts in the chainer caption and table only the chains chance would not form', async () => {
     // Two 1 Mb genomes 1% apart by substitution alone are one co-linear chain. Round 1 counted
     // every chain of 3 anchors, so on this pair chance seed matches added a minus-strand
     // "inversion" of 4 anchors at 69.9% to the caption ("2 chains") and the table.
@@ -190,7 +225,7 @@ describe('genomics prefix', () => {
     const read = doc('cr', 'Read', genome.slice(5_000, 6_000));
     const engine = alignLargeGenomesMinimizerChainRust(genome, related, 8, 13, 64) as ReturnType<typeof alignLargeGenomesMinimizerChainRust> & { minChainAnchors?: number };
     expect(engine.minChainAnchors, 'the engine names the fewest anchors a chain needs').toBeGreaterThan(3);
-    const colinear = studio(target, [doc('cq', 'Genome, 1% substituted', related), target, read], 'genome-variants');
+    const colinear = await studio(target, [doc('cq', 'Genome, 1% substituted', related), target, read], 'genome-variants');
     expect(wordsOf(colinear)).toContain(
       `Minimizer Co-Linear Chainer (1 chains • ${engine.rawSeedMatches} seed anchors • chains of at least ${engine.minChainAnchors} anchors)`
     );
@@ -201,7 +236,7 @@ describe('genomics prefix', () => {
     // The same pair with a 5 kb inversion planted at bases 400,001-405,000 of the query: the
     // inversion is still reported, once, where it was planted.
     const inverted = related.slice(0, 400_000) + revcomp(related.slice(400_000, 405_000)) + related.slice(405_000);
-    const withInversion = studio(target, [doc('ci', 'Genome with an inversion', inverted), target, read], 'genome-variants');
+    const withInversion = await studio(target, [doc('ci', 'Genome with an inversion', inverted), target, read], 'genome-variants');
     expect(wordsOf(withInversion)).toContain('Minimizer Co-Linear Chainer (2 chains •');
     const inversions = rowsUnder(withInversion, 'Large-Genome (w=8, k=13)-Minimizer Co-Linear Chainer').filter((r) => r.includes('(inversion)'));
     expect(inversions).toHaveLength(1);

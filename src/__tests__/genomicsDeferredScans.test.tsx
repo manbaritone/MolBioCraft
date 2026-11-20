@@ -18,16 +18,23 @@
  * wrapped in spies that record each call: its arguments, whether React was rendering a component
  * when it was made (read from React's own hooks dispatcher, which is a component's while React
  * renders it), and whether the scan's panel then read 'Scanning…'.
+ *
+ * BG-01M6VZGD: the minimizer chainer, the HMM segmentation, the JASPAR TF motif scan, the STR scan
+ * and the taxonomy classifier are deferred the same way, and spied the same way; Min Protein Length
+ * and Min CpG Island settle as Min Repeat Arm does (D0055: 400 ms after the last keystroke, or Enter
+ * or blur, valid values only) before their scan runs; and a scan that throws ends its 'Scanning…'
+ * and shows its error in its panel.
  */
 
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-type ScanName = 'synteny' | 'genes' | 'cpg';
+type ScanName = 'synteny' | 'genes' | 'cpg' | 'minimizer' | 'hmm' | 'pssm' | 'str' | 'taxonomy';
+const ALL_SCANS: readonly ScanName[] = ['synteny', 'genes', 'cpg', 'minimizer', 'hmm', 'pssm', 'str', 'taxonomy'];
 
 /** What each spied scan call records, and the hooks a check sets to read the studio at that moment. */
 const probe = vi.hoisted(() => ({
-  calls: [] as { scan: 'synteny' | 'genes' | 'cpg'; args: unknown[]; inRender: boolean; panelScanning: boolean }[],
+  calls: [] as { scan: string; args: unknown[]; inRender: boolean; panelScanning: boolean }[],
   /** Whether React is rendering a component now: installed when the studio is mounted. */
   inRender: (): boolean => {
     throw new Error('the render probe is not installed');
@@ -36,28 +43,43 @@ const probe = vi.hoisted(() => ({
   panelScanning: (_scan: string): boolean => false,
   /** Run inside a scan after the engine answers and before the scan returns: a change made while it runs. */
   during: null as null | ((scan: string, args: unknown[]) => void),
+  /** The scans that throw, once called and recorded, in place of answering. */
+  failing: new Set<string>(),
 }));
 
-// The three genome-scale scans the studio calls are the real engine calls, wrapped to record each
+/** Wraps an engine call to record each call, and to throw when the check makes that scan fail. */
+const spiedScan = vi.hoisted(() => <A extends unknown[], R>(scan: string, fn: (...args: A) => R) => (...args: A): R => {
+  probe.calls.push({ scan, args, inRender: probe.inRender(), panelScanning: probe.panelScanning(scan) });
+  if (probe.failing.has(scan)) throw new Error(`the ${scan} engine broke`);
+  const result = fn(...args);
+  probe.during?.(scan, args);
+  return result;
+});
+
+// The eight genome-scale scans the studio calls are the real engine calls, wrapped to record each
 // call. Every other call, here and in the studio, goes to the engine unchanged.
 vi.mock('../core/genomicsAndStructureSuite', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../core/genomicsAndStructureSuite')>();
-  function spied<A extends unknown[], R>(scan: 'synteny' | 'genes' | 'cpg', fn: (...args: A) => R) {
-    return vi.fn((...args: A): R => {
-      probe.calls.push({ scan, args, inRender: probe.inRender(), panelScanning: probe.panelScanning(scan) });
-      const result = fn(...args);
-      probe.during?.(scan, args);
-      return result;
-    });
-  }
   return {
     ...actual,
-    runWholeGenomeSynteny: spied('synteny', actual.runWholeGenomeSynteny),
-    predictGlimmerMicrobialGenes: spied('genes', actual.predictGlimmerMicrobialGenes),
-    findCpGIslands: spied('cpg', actual.findCpGIslands),
+    runWholeGenomeSynteny: vi.fn(spiedScan('synteny', actual.runWholeGenomeSynteny)),
+    predictGlimmerMicrobialGenes: vi.fn(spiedScan('genes', actual.predictGlimmerMicrobialGenes)),
+    findCpGIslands: vi.fn(spiedScan('cpg', actual.findCpGIslands)),
+    scanMicrosatelliteStrs: vi.fn(spiedScan('str', actual.scanMicrosatelliteStrs)),
+    classifySequenceTaxonomy: vi.fn(spiedScan('taxonomy', actual.classifySequenceTaxonomy)),
   };
 });
-import { runWholeGenomeSynteny } from '../core/genomicsAndStructureSuite';
+vi.mock('../lib/rustBioEngine', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/rustBioEngine')>();
+  return {
+    ...actual,
+    alignLargeGenomesMinimizerChainRust: vi.fn(spiedScan('minimizer', actual.alignLargeGenomesMinimizerChainRust)),
+    segmentGenomeHmmViterbiRust: vi.fn(spiedScan('hmm', actual.segmentGenomeHmmViterbiRust)),
+    scanJasparPssmMotifsRust: vi.fn(spiedScan('pssm', actual.scanJasparPssmMotifsRust)),
+  };
+});
+import { classifySequenceTaxonomy, runWholeGenomeSynteny, scanMicrosatelliteStrs } from '../core/genomicsAndStructureSuite';
+import { alignLargeGenomesMinimizerChainRust, scanJasparPssmMotifsRust, segmentGenomeHmmViterbiRust } from '../lib/rustBioEngine';
 import type { GenomicsSuiteSubTab } from '../components/GenomicsNgsAndPredictionStudio';
 // Imported once the tree's window and document are in place (mountStudio): the studio loads React
 // DOM through the shared inspector, and React DOM loaded first would ignore typing (D0081).
@@ -271,6 +293,7 @@ async function mountStudio(start: StudioInput) {
     probe.inRender = () => { throw new Error('the render probe is not installed'); };
     probe.panelScanning = () => false;
     probe.during = null;
+    probe.failing.clear();
     if (fakeTimeouts) Object.assign(g, { setTimeout: fakeTimeouts.set, clearTimeout: fakeTimeouts.clear });
     tasks.clear();
     vi.clearAllTimers();
@@ -396,14 +419,34 @@ async function mountStudio(start: StudioInput) {
       setValue.call(select, value);
       dispatch(select, 'change');
     },
-    /** One character typed at the end of a box, or the next option picked in a select. */
+    /**
+     * Another value in the field: the next option picked in a select; in a number box with a least
+     * and a most value, the other of the two, typed (a value it takes, so a box that settles reaches
+     * it); otherwise one character typed at the end.
+     */
     change(field: TestElement) {
       if (field.nodeName === 'SELECT') {
         const values = field.options.map((o) => o.value);
         studio.choose(field, values[(values.indexOf(field.value) + 1) % values.length]);
+      } else if (field.type === 'number' && field.hasAttribute('min') && field.hasAttribute('max')) {
+        const [least, most] = [field.getAttribute('min')!, field.getAttribute('max')!];
+        studio.type(field, field.value === least ? most : least);
       } else {
         studio.type(field, `${field.value}1`);
       }
+    },
+    /** Enter is pressed in the box. */
+    enter(box: TestElement) {
+      dispatch(box, 'keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, charCode: 0 });
+    },
+    /** The box loses focus. */
+    blur(box: TestElement) {
+      box.blur();
+      dispatch(box, 'focusout');
+    },
+    /** `ms` pass on the clock, and the timers due in them run. */
+    wait(ms: number) {
+      flushSync(() => { vi.advanceTimersByTime(ms); });
     },
     /** The studio as the app draws it for another active document, or other documents. */
     redraw(next: Partial<StudioInput>) {
@@ -422,6 +465,13 @@ async function mountStudio(start: StudioInput) {
       expect(run, 'a task queued').toBeDefined();
       tasks.delete(id!);
       flushSync(() => run!());
+    },
+    /** Queued frames and tasks run until none is left; the clock does not move. */
+    settle0() {
+      for (let i = 0; i < 50 && (frames.size > 0 || tasks.size > 0); i++) {
+        studio.paint();
+        while (tasks.size > 0) studio.nextTask();
+      }
     },
     /** Frames, tasks and timers run until nothing is left to run. */
     settle() {
@@ -520,7 +570,10 @@ const TAB_NAMES: Record<GenomicsSuiteSubTab, string> = {
 };
 /** The scans each sub-view shows. */
 const SCANS_ON: Record<GenomicsSuiteSubTab, ScanName[]> = {
-  'ngs-assembly': [], 'genome-variants': ['synteny'], 'genes-cpg-repeats': ['genes', 'cpg'], 'transform-submit': [],
+  'ngs-assembly': [],
+  'genome-variants': ['synteny', 'minimizer', 'str', 'taxonomy'],
+  'genes-cpg-repeats': ['genes', 'cpg', 'hmm', 'pssm'],
+  'transform-submit': [],
 };
 
 describe('Genomics genome-scale scans', () => {
@@ -541,6 +594,14 @@ describe('Genomics genome-scale scans', () => {
       studio.renderAlone(<ScansWhileRendering />);
       runWholeGenomeSynteny('ACGTACGTACGTACGTACGTACGTACGT', 'ACGTACGTACGTACGTACGTACGTACGT', 'seed-13');
       expect(probe.calls.map((c) => c.inRender), 'fixture: the probe sees a render').toEqual([true, false]);
+      // fixture: each of the five BG-01M6VZGD spies records its scan, so a call the studio makes is seen
+      const bases = genomeA.sequence.slice(0, 2_000);
+      alignLargeGenomesMinimizerChainRust(bases, bases, 8, 13, 64);
+      segmentGenomeHmmViterbiRust(bases);
+      scanJasparPssmMotifsRust(bases, 0.84);
+      scanMicrosatelliteStrs(bases, 4);
+      classifySequenceTaxonomy(bases);
+      expect(probe.calls.slice(2).map((c) => c.scan), 'fixture: the five spies').toEqual(['minimizer', 'hmm', 'pssm', 'str', 'taxonomy']);
       probe.calls.length = 0;
 
       // opening the tab, every sub-view in turn and back, and a keystroke or a pick in every field of
@@ -573,8 +634,19 @@ describe('Genomics genome-scale scans', () => {
         }
       }
 
+      // another active document, on each sub-view with scans: every scan runs again, and none in the step
+      for (const view of ['genes-cpg-repeats', 'genome-variants'] as const) {
+        const from = probe.calls.length;
+        studio.redraw({ activeDoc: view === 'genes-cpg-repeats' ? genomeC : genomeA });
+        expect(probe.calls.slice(from), `${view}, another document: no scan in the step`).toEqual([]);
+        for (const scan of SCANS_ON[view]) expect(studio.scanning(scan), `${view}, ${scan}: Scanning… for the new document`).toBe(true);
+        studio.settle();
+        for (const scan of SCANS_ON[view]) expect(studio.scanning(scan), `${view}, ${scan}: landed for the new document`).toBe(false);
+        if (view === 'genes-cpg-repeats') { studio.tab(TAB_NAMES['genome-variants']); studio.settle(); }
+      }
+
       // fixture: each scan ran, more than once, so a scan made in render would have been seen
-      for (const scan of ['synteny', 'genes', 'cpg'] as const) {
+      for (const scan of ALL_SCANS) {
         expect(callsOf(scan).length, `fixture: ${scan} ran more than once`).toBeGreaterThan(1);
       }
       expect(probe.calls.filter((c) => c.inRender), 'scans made while React rendered').toEqual([]);
@@ -609,12 +681,12 @@ describe('Genomics genome-scale scans', () => {
       expect(cpgNow(genes)).toEqual({ line: null, caption: [], badge: null });
       genes.paint();
       expect(probe.calls).toEqual([]);
-      // each lands in a task of its own: after the first, the other still reads 'Scanning…'
+      // each lands in a task of its own: after the first, the others still read 'Scanning…'
       genes.nextTask();
       expect(probe.calls.map((c) => c.scan)).toHaveLength(1);
-      const first = probe.calls[0].scan;
-      const other = first === 'genes' ? 'cpg' : 'genes';
-      expect([genes.scanning(first), genes.scanning(other)]).toEqual([false, true]);
+      const first = probe.calls[0].scan as ScanName;
+      expect(SCANS_ON['genes-cpg-repeats'].map((scan) => genes.scanning(scan)))
+        .toEqual(SCANS_ON['genes-cpg-repeats'].map((scan) => scan !== first));
       genes.settle();
       expect(genesNow(genes)).toEqual(want.genes45);
       expect(cpgNow(genes)).toEqual({ line: want.cpg200.line, caption: want.cpg200.caption, badge: want.cpg200.badge });
@@ -622,6 +694,7 @@ describe('Genomics genome-scale scans', () => {
       // a new minimum protein length: at once the gene panel reads 'Scanning…', not the 45 aa
       // result, until the 60 aa one lands; the CpG panel keeps its result
       genes.type(genes.field('Min Protein Length'), '60');
+      genes.wait(400);
       expect(genes.scanning('genes')).toBe(true);
       expect(genesNow(genes)).toEqual(empty);
       expect(cpgNow(genes).line).toBe(want.cpg200.line);
@@ -632,10 +705,12 @@ describe('Genomics genome-scale scans', () => {
       // is discarded unrun, the panel never shows the 200 or the 300 bp result, and the 250 bp one lands
       let from = probe.calls.length;
       genes.type(genes.field('Min CpG Island'), '300');
+      genes.wait(400);
       expect(genes.scanning('cpg')).toBe(true);
       genes.paint();
       expect(genes.scanning('cpg')).toBe(true);
       genes.type(genes.field('Min CpG Island'), '250');
+      genes.enter(genes.field('Min CpG Island'));
       expect(genes.scanning('cpg')).toBe(true);
       genes.settle();
       expect(callsOf('cpg', from)).toEqual([[genomeA.sequence, 250]]);
@@ -648,8 +723,10 @@ describe('Genomics genome-scale scans', () => {
         if (scan !== 'cpg' || args[1] !== 220) return;
         probe.during = null;
         genes.type(genes.field('Min CpG Island'), '280');
+        genes.enter(genes.field('Min CpG Island'));
       };
       genes.type(genes.field('Min CpG Island'), '220');
+      genes.enter(genes.field('Min CpG Island'));
       genes.paint();
       genes.nextTask();
       expect(callsOf('cpg', from)).toEqual([[genomeA.sequence, 220]]);
@@ -666,8 +743,10 @@ describe('Genomics genome-scale scans', () => {
         if (scan !== 'cpg' || args[1] !== 300) return;
         probe.during = null;
         genes.type(genes.field('Min CpG Island'), '280');
+        genes.blur(genes.field('Min CpG Island'));
       };
       genes.type(genes.field('Min CpG Island'), '300');
+      genes.enter(genes.field('Min CpG Island'));
       expect(genes.scanning('cpg')).toBe(true);
       genes.paint();
       genes.nextTask();
@@ -831,6 +910,200 @@ describe('Genomics genome-scale scans', () => {
       studio.settle();
       expect(runs()).toEqual(was);
       expect(inRender()).toEqual([]);
+    } finally {
+      studio.unmount();
+    }
+  }, 60_000);
+
+  it('settles Min Protein Length and Min CpG Island before scanning', async () => {
+    probe.calls.length = 0;
+    const want = { genes45: await genesShown(genomeA, 45), genes60: await genesShown(genomeA, 60), genes150: await genesShown(genomeA, 150) };
+    expect(new Set([want.genes45, want.genes60, want.genes150].map((w) => w.caption[0])).size, 'fixture: each length reads differently').toBe(3);
+    const studio = await mountStudio({ activeDoc: genomeA, documents: [genomeA], tab: 'genes-cpg-repeats' });
+    try {
+      studio.settle();
+      expect(genesNow(studio)).toEqual(want.genes45);
+      const minAa = () => studio.field('Min Protein Length');
+      const minCpg = () => studio.field('Min CpG Island');
+
+      // 6 then 60, 100 ms apart: nothing runs at 6, nor at 60 until 400 ms after its keystroke; the
+      // 45 aa result stays shown meanwhile, and then one scan runs, at 60
+      let from = probe.calls.length;
+      studio.type(minAa(), '6');
+      studio.wait(100);
+      studio.type(minAa(), '60');
+      expect(minAa().value, 'the box holds what was typed').toBe('60');
+      studio.wait(399);
+      studio.settle0();
+      expect(callsOf('genes', from), 'no scan 399 ms after the last keystroke').toEqual([]);
+      expect([studio.scanning('genes'), genesNow(studio)], 'the 45 aa result still shown').toEqual([false, want.genes45]);
+      studio.wait(1);
+      expect(studio.scanning('genes'), '400 ms after it: the scan for 60 aa waits').toBe(true);
+      studio.settle();
+      expect(callsOf('genes', from), 'one scan, at 60').toEqual([[genomeA.sequence, 60]]);
+      expect(genesNow(studio)).toEqual(want.genes60);
+
+      // two lengths it takes, 100 ms apart: one scan, at the second
+      from = probe.calls.length;
+      studio.type(minAa(), '100');
+      studio.wait(100);
+      studio.type(minAa(), '150');
+      studio.settle();
+      expect(callsOf('genes', from), 'one scan, at 150').toEqual([[genomeA.sequence, 150]]);
+      expect(genesNow(studio)).toEqual(want.genes150);
+
+      // Enter and blur settle at once, with no wait
+      from = probe.calls.length;
+      studio.type(minAa(), '60');
+      studio.enter(minAa());
+      expect(studio.scanning('genes'), 'Enter: the 60 aa scan waits at once').toBe(true);
+      studio.paint();
+      studio.settle0();
+      expect(callsOf('genes', from)).toEqual([[genomeA.sequence, 60]]);
+      expect(genesNow(studio)).toEqual(want.genes60);
+      from = probe.calls.length;
+      studio.type(minAa(), '150');
+      studio.blur(minAa());
+      expect(studio.scanning('genes'), 'blur: the 150 aa scan waits at once').toBe(true);
+      studio.paint();
+      studio.settle0();
+      expect(callsOf('genes', from)).toEqual([[genomeA.sequence, 150]]);
+
+      // an empty box, 0 and a length past the box's range run no scan, by timer, Enter or blur;
+      // blur puts the length scanned at back in the box
+      from = probe.calls.length;
+      for (const text of ['', '0', '6', '301']) {
+        studio.type(minAa(), text);
+        studio.wait(400);
+        studio.enter(minAa());
+        studio.settle();
+        expect([studio.scanning('genes'), genesNow(studio)], `"${text}": the 150 aa result kept`).toEqual([false, want.genes150]);
+        studio.blur(minAa());
+        expect(minAa().value, `"${text}": blur restores the length scanned at`).toBe('150');
+      }
+      expect(callsOf('genes', from), 'no scan at an empty box, 0, 6 or 301').toEqual([]);
+
+      // Min CpG Island: 300 on Enter, then 2, 20, 200, 100 ms apart: one scan, at 200, 400 ms after
+      // the last keystroke
+      studio.type(minCpg(), '300');
+      studio.enter(minCpg());
+      studio.settle();
+      expect(computedFor(studio, 'cpg')).toBe((await cpgShown(genomeA, 300)).line);
+      from = probe.calls.length;
+      for (const text of ['2', '20', '200']) {
+        studio.type(minCpg(), text);
+        studio.wait(100);
+      }
+      studio.wait(299);
+      studio.settle0();
+      expect(callsOf('cpg', from), 'no CpG scan 399 ms after the last keystroke').toEqual([]);
+      studio.wait(1);
+      studio.settle();
+      expect(callsOf('cpg', from), 'one CpG scan, at 200').toEqual([[genomeA.sequence, 200]]);
+      expect(computedFor(studio, 'cpg')).toBe((await cpgShown(genomeA, 200)).line);
+      from = probe.calls.length;
+      for (const text of ['', '0', '99', '1001']) {
+        studio.type(minCpg(), text);
+        studio.wait(400);
+        studio.enter(minCpg());
+        studio.settle();
+        studio.blur(minCpg());
+        expect(minCpg().value, `"${text}": blur restores the length scanned at`).toBe('200');
+      }
+      expect(callsOf('cpg', from), 'no CpG scan at an empty box, 0, 99 or 1001').toEqual([]);
+      expect(callsOf('genes', from), 'the CpG box starts no gene scan').toEqual([]);
+      expect(probe.calls.filter((c) => c.inRender || !c.panelScanning)).toEqual([]);
+    } finally {
+      studio.unmount();
+    }
+  }, 60_000);
+
+  it('scans at a settled Min Repeat Arm and names a renamed document', async () => {
+    probe.calls.length = 0;
+    const suite = await unspied();
+    /** The repeat list's caption for a scan at `arm`, as the studio words it (repeatListLabel). */
+    const repeatCaption = (seq: string, arm: number) => {
+      const r = suite.findGenomicRepeats(seq, arm);
+      const count = r.totalIsLowerBound
+        ? `${n(r.repeats.length)} of at least ${n(r.totalRepeats)}, the longest found before the scan stopped`
+        : listCount(r.repeats.length, r.totalRepeats, 'top');
+      return `Direct, Inverted & Palindromic Repeats (arms ≥ ${r.minArmBp} bp, ${count})`;
+    };
+    expect(repeatCaption(genomeA.sequence, 10), 'fixture: 10 and 16 bp arms read differently').not.toBe(repeatCaption(genomeA.sequence, 16));
+    const studio = await mountStudio({ activeDoc: genomeA, documents: [genomeA, genomeB], tab: 'genes-cpg-repeats' });
+    try {
+      const repeatsShown = () => studio.container
+        .elements((e) => e.classList.contains('mbc-table-caption') && words(e).startsWith('Direct, Inverted')).map(words);
+      studio.settle();
+      expect(repeatsShown()).toEqual([repeatCaption(genomeA.sequence, 10)]);
+
+      // 1, then 16: the box settles at 16 400 ms after the last keystroke, and the repeat list is
+      // then the 16 bp one; no genome-scale scan runs again for it
+      const from = probe.calls.length;
+      studio.type(studio.field('Min Repeat Arm'), '1');
+      studio.wait(100);
+      studio.type(studio.field('Min Repeat Arm'), '16');
+      studio.wait(399);
+      expect(repeatsShown(), 'not settled yet').toEqual([repeatCaption(genomeA.sequence, 10)]);
+      studio.wait(1);
+      expect(repeatsShown(), 'settled at 16').toEqual([repeatCaption(genomeA.sequence, 16)]);
+      studio.settle();
+      expect(probe.calls.slice(from), 'the arm starts no genome-scale scan').toEqual([]);
+
+      // the document renamed: each panel's line names it at its new name, never the old one
+      const oldLines = [computedFor(studio, 'genes'), computedFor(studio, 'cpg')];
+      expect(oldLines, 'fixture: the lines name the old name').toEqual([(await genesShown(genomeA, 45)).line, (await cpgShown(genomeA, 200)).line]);
+      const renamed = { ...genomeA, name: 'Genome A, renamed' };
+      studio.redraw({ activeDoc: renamed, documents: [renamed, genomeB] });
+      studio.settle();
+      expect(computedFor(studio, 'genes')).toBe((await genesShown(renamed, 45)).line);
+      expect(computedFor(studio, 'cpg')).toBe((await cpgShown(renamed, 200)).line);
+      expect([computedFor(studio, 'genes'), computedFor(studio, 'cpg')], 'the old name is gone').not.toContain(oldLines[0]);
+      expect(computedFor(studio, 'cpg'), 'the old name is gone').not.toBe(oldLines[1]);
+      expect(repeatsShown(), 'the settled arm kept').toEqual([repeatCaption(genomeA.sequence, 16)]);
+      studio.tab(TAB_NAMES['genome-variants']);
+      studio.settle();
+      expect(computedFor(studio, 'synteny')).toBe((await syntenyShown(renamed, genomeB, 'seed-13')).line);
+      const again = { ...genomeA, name: 'Genome A, renamed twice' };
+      studio.redraw({ activeDoc: again, documents: [again, genomeB] });
+      studio.settle();
+      expect(computedFor(studio, 'synteny')).toBe((await syntenyShown(again, genomeB, 'seed-13')).line);
+      expect(probe.calls.filter((c) => c.inRender || !c.panelScanning)).toEqual([]);
+    } finally {
+      studio.unmount();
+    }
+  }, 60_000);
+
+  it('shows the error when a genome scan throws', async () => {
+    probe.calls.length = 0;
+    const studio = await mountStudio({ activeDoc: genomeA, documents: [genomeA, genomeB], tab: 'genes-cpg-repeats' });
+    try {
+      /** The alert a failed scan's panel shows, as its words. */
+      const alertIn = (scan: ScanName) => (studio.panel(scan)?.elements((e) => e.getAttribute('role') === 'alert') ?? []).map(words);
+      for (const scan of ALL_SCANS) probe.failing.add(scan);
+      for (const view of ['genes-cpg-repeats', 'genome-variants'] as const) {
+        if (view !== 'genes-cpg-repeats') studio.tab(TAB_NAMES[view]);
+        for (const scan of SCANS_ON[view]) expect(studio.scanning(scan), `${scan}: Scanning… while it waits`).toBe(true);
+        studio.settle();
+        for (const scan of SCANS_ON[view]) {
+          expect(callsOf(scan).length, `fixture: ${scan} ran`).toBeGreaterThan(0);
+          // the failed scan's panel no longer reads 'Scanning…' nor says it is busy, and shows the error
+          expect(studio.scanning(scan), `${scan}: Scanning… ended`).toBe(false);
+          expect(studio.panel(scan)?.getAttribute('aria-busy'), `${scan}: not busy`).toBeNull();
+          expect(alertIn(scan), `${scan}: its error shown`).toEqual([`The scan failed: the ${scan} engine broke`]);
+        }
+      }
+
+      // the engine mended, another input: the scan runs again and its result replaces the error
+      probe.failing.clear();
+      studio.tab(TAB_NAMES['genes-cpg-repeats']);
+      studio.type(studio.field('Min Protein Length'), '60');
+      studio.enter(studio.field('Min Protein Length'));
+      expect(studio.scanning('genes')).toBe(true);
+      studio.settle();
+      expect(alertIn('genes')).toEqual([]);
+      expect(genesNow(studio)).toEqual(await genesShown(genomeA, 60));
+      expect(alertIn('cpg'), 'the CpG error stays, for the input it failed on').toEqual(['The scan failed: the cpg engine broke']);
     } finally {
       studio.unmount();
     }
