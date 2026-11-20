@@ -156,6 +156,38 @@ describe('exporting a figure', () => {
       expect(finalize('<svg viewBox="0 0 8 4"/>')).toBe(asFile(`<svg width="80" height="40" ${XMLNS} viewBox="0 0 8 4"/>`));
     });
 
+    // BG-01M6PZED: CSS outranks the width and height attributes, so a root style="width:100%" kept in
+    // the file made it open at the window's width (1200x200 for an 800x200 figure in Chromium).
+    // Wrong implementations: the style kept whole; only `width` dropped (height:auto or max-width
+    // still sizes the file); a look-alike (stroke-width, line-height) dropped with it; an upper-case
+    // WIDTH kept; a child's style touched; an empty style="" left behind.
+    it("drops the root's inline CSS size from the export, in px, % or auto, and keeps the rest of its style", () => {
+      const rect = '<rect style="width: 5px; height: 1px" width="2" height="1"/>';
+      const cases: [string, string][] = [
+        // px: the whole style was the size, so the attribute goes.
+        ['style="width:800px;height:200px"', ''],
+        // % as FragmentViews' electropherogram and the BLAST query view write it.
+        ['style="width: 100%; display: block;"', ' style="display: block"'],
+        // auto, with the max-width a phylogeny root carries.
+        ['style="width: 100%; max-width: 600px; height: auto; display: block"', ' style="display: block"'],
+        ['style="min-width:10px;min-height:5px;max-height:90%;width:100% !important"', ''],
+        // Look-alike names stay; a CSS property name is not case-sensitive.
+        ['style="stroke-width:2;WIDTH:50%;line-height:3;Height: 7px"', ' style="stroke-width:2; line-height:3"'],
+        // Single quotes, and a quoted value inside.
+        ["style='width:100%;font-family:\"Inter\"'", " style='font-family:\"Inter\"'"],
+        // A `;` inside a url() or a quoted value does not end the declaration.
+        ['style="background:url(data:image/png;base64,AAAA);width:100%;font-family:&quot;A;B&quot;"', ' style="background:url(data:image/png;base64,AAAA); font-family:&quot;A;B&quot;"'],
+        ["style='content:\"x;y\";height:auto'", " style='content:\"x;y\"'"],
+        // A style with no size is left exactly as written.
+        ['style="display:block ;fill: red;"', ' style="display:block ;fill: red;"'],
+      ];
+      for (const [style, kept] of cases) {
+        expect(finalize(`<svg viewBox="0 0 8 4" ${style}>${rect}</svg>`), style).toBe(
+          asFile(`<svg width="80" height="40" ${XMLNS} viewBox="0 0 8 4"${kept}>${rect}</svg>`)
+        );
+      }
+    });
+
     it('refuses markup that has no svg start tag to size, rather than writing an unsized file', () => {
       expect(() => finalize('<g width="2"/>')).toThrow(/does not open with an <svg> start tag/);
       expect(() => finalize('<svgx width="2"/>')).toThrow(/does not open with an <svg> start tag/);
@@ -272,6 +304,36 @@ describe('exporting a figure', () => {
             '<rect x="0" y="0" width="430" height="350" rx="8" fill="#090d16"/>' +
             '<rect x="50" y="20" width="44" height="10" rx="2" fill="#04060b"/>' +
             '<rect x="52" y="96" width="40" height="3.5" filter="url(#cloning-gel-glow)"/>' +
+            '</svg>'
+        )
+      );
+    });
+
+    it("drops the root's inline CSS size from the export through captureSvg, so the electropherogram opens at its pixel size", () => {
+      // Shaped like FragmentViews.tsx's electropherogram: style={{ width: '100%', display: 'block' }}
+      // on a viewBox root, drawn 1200 wide on screen and exported at its 800x200 viewBox size.
+      const plot = new FakeElement(
+        'svg',
+        [
+          ['viewBox', '0 0 800 200'],
+          ['style', 'width: 100%; display: block;'],
+          ['role', 'img'],
+        ],
+        [new FakeElement('path', [['d', 'M0 0L800 200'], ['style', 'stroke-width: 1.5']])],
+        { width: 1200, height: 300 }
+      );
+      vi.stubGlobal('document', { documentElement: new FakeElement('html', [], [new FakeElement('div', [], [plot])]) });
+      vi.stubGlobal('getComputedStyle', () => ({ backgroundColor: 'rgb(255, 255, 255)', getPropertyValue: () => '' }));
+      vi.stubGlobal('XMLSerializer', class { serializeToString(node: FakeElement) { return node.serialize(); } });
+
+      const capture = captureSvg(plot as unknown as SVGSVGElement);
+
+      expect([capture.cssWidth, capture.cssHeight]).toEqual([800, 200]);
+      expect(capture.markup).toBe(
+        asFile(
+          '<svg width="800" height="200" viewBox="0 0 800 200" style="display: block" role="img" xmlns="http://www.w3.org/2000/svg">' +
+            '<rect x="0" y="0" width="100%" height="100%" fill="rgb(255, 255, 255)"/>' +
+            '<path d="M0 0L800 200" style="stroke-width: 1.5"/>' +
             '</svg>'
         )
       );

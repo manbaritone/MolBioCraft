@@ -110,6 +110,10 @@ export const SVG_FILE_PROLOGUE = '<?xml version="1.0" encoding="UTF-8" standalon
  * The size is written on the root element alone. A root that carries only a viewBox (many figures
  * do) leaves the first `width` and `height` in the markup to a child, so the root's start tag is
  * read on its own and nothing below it is touched.
+ *
+ * CSS outranks the width and height attributes, so the root's inline `style` loses every size
+ * declaration (width, height and their min-/max- forms, in any unit or `auto`); a style that held
+ * nothing else is dropped. A file kept `width:100%` opened at the window's width (BG-01M6PZED).
  */
 export function finalizeSvgMarkup(
   markup: string,
@@ -127,13 +131,14 @@ export function finalizeSvgMarkup(
     added += ' xmlns="http://www.w3.org/2000/svg"';
   }
   // Everything in the start tag after `<svg` except the root's own width and height, each taken
-  // with the whitespace before it.
+  // with the whitespace before it, and its style less any size.
   let kept = '';
   let at = ROOT_SVG_OPEN.length;
   for (const attr of root.attributes) {
-    if (attr.name !== 'width' && attr.name !== 'height') continue;
+    if (attr.name !== 'width' && attr.name !== 'height' && attr.name !== 'style') continue;
     kept += out.slice(at, attr.start);
     at = attr.end;
+    if (attr.name === 'style') kept += styleWithoutSize(out.slice(attr.start, attr.end));
   }
   kept += out.slice(at, root.end);
   let startTag = `${ROOT_SVG_OPEN}${added}${kept}`;
@@ -153,6 +158,51 @@ export function finalizeSvgMarkup(
 }
 
 const ROOT_SVG_OPEN = '<svg';
+
+/** The CSS properties that size an element's box, and so would override the exported size. */
+const CSS_SIZE_PROPERTY = /^(?:min-|max-)?(?:width|height)$/i;
+
+/**
+ * A root `style` attribute as written (whitespace, name, `=`, quoted value) with its size
+ * declarations removed, or '' when nothing else is left in it. A style with no size is returned
+ * as it was. Declarations are split on the `;` outside quotes and parentheses, so a value such as
+ * `url(data:image/png;base64,...)` stays whole.
+ */
+function styleWithoutSize(attribute: string): string {
+  const open = attribute.search(/["']/);
+  const quote = attribute[open];
+  const value = attribute.slice(open + 1, -1);
+  const declarations: string[] = [];
+  let current = '';
+  let inQuote: string | null = null;
+  let depth = 0;
+  for (let i = 0; i < value.length; ) {
+    // A CSS quote, written raw or as the XML reference a serializer writes inside an attribute.
+    const entity = /^&(?:quot|apos|#34|#39|#x22|#x27);/i.exec(value.slice(i, i + 6))?.[0];
+    const token = entity ?? value[i];
+    const q = entity ? (/quot|34|22/i.test(entity) ? '"' : "'") : token === '"' || token === "'" ? token : null;
+    i += token.length;
+    if (inQuote) {
+      if (q === inQuote) inQuote = null;
+    } else if (q) {
+      inQuote = q;
+    } else if (token === '(') {
+      depth += 1;
+    } else if (token === ')') {
+      depth = Math.max(0, depth - 1);
+    } else if (token === ';' && depth === 0) {
+      declarations.push(current);
+      current = '';
+      continue;
+    }
+    current += token;
+  }
+  declarations.push(current);
+  const isSize = (d: string) => d.includes(':') && CSS_SIZE_PROPERTY.test(d.slice(0, d.indexOf(':')).trim());
+  if (!declarations.some(isSize)) return attribute;
+  const rest = declarations.map((d) => d.trim()).filter((d) => d && !isSize(d));
+  return rest.length ? ` style=${quote}${rest.join('; ')}${quote}` : '';
+}
 
 interface StartTagAttribute {
   name: string;
