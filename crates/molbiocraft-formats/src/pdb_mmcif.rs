@@ -531,10 +531,13 @@ pub const REQUIRED_ATOM_SITE_COLUMNS: [&str; 8] = [
 ///
 /// **Residues and restarted numbering:** rows of one residue share its `label_seq_id`,
 /// `auth_seq_id`, `pdbx_PDB_ins_code` and `label_comp_id` within a chain. Rows of a residue seen
-/// earlier rejoin it only while every residue listed since is at its position (number and
-/// insertion code), as at a microheterogeneous site whose residue types are listed row by row;
-/// after a residue at any other position the numbering has restarted (ALA 1, GLY 2, ALA 1, GLY 2,
-/// with or without `TER`), and the row starts a new residue. A row with no residue number (a water
+/// earlier rejoin it while every residue listed since is at its position (number and insertion
+/// code), as at a microheterogeneous site whose residue types are listed row by row, or when the
+/// row brings a named alt id the residue does not yet hold for that atom and the residue already
+/// holds rows with named alt ids, as when conformers are written as blocks over several residues
+/// (every alt A row of residues 17-19, then every alt B row). Otherwise, after a residue at any
+/// other position, the numbering has restarted (ALA 1, GLY 2, ALA 1, GLY 2, with or without
+/// `TER`), and the row starts a new residue. A row with no residue number (a water
 /// or ligand, `label_seq_id` `.`, with no `auth_seq_id`) joins the residue listed just before it
 /// when that one has the same name and no number either, unless that residue already took a row
 /// of the row's atom name and the row is not that atom's next conformer (a named alt id listed
@@ -1133,6 +1136,8 @@ struct ChainBuilder {
     residue_index: HashMap<ResidueKey, usize>,
     /// (atom name, alt id) of every row the last residue took while it had no number.
     unnumbered_rows: Vec<(String, Option<String>)>,
+    /// By residue index, (atom name, alt id) of every row with a named alt id the residue took.
+    named_alt_rows: HashMap<usize, Vec<(String, String)>>,
 }
 
 struct ModelBuilder {
@@ -1295,6 +1300,7 @@ impl ModelsBuilder {
                     },
                     residue_index: HashMap::new(),
                     unnumbered_rows: Vec::new(),
+                    named_alt_rows: HashMap::new(),
                 });
                 mb.chains.len() - 1
             }
@@ -1330,15 +1336,24 @@ impl ModelsBuilder {
         } else if same_as_last {
             cb.chain.residues.len() - 1
         } else {
-            // A key seen earlier names that residue only while every residue listed since is at
-            // its position (an interleaved microheterogeneous site); after any other position the
+            // A key seen earlier names that residue while every residue listed since is at its
+            // position (an interleaved microheterogeneous site), or when the row brings a named
+            // alt id the residue does not yet hold for this atom and the residue holds rows with
+            // named alt ids (conformers written as blocks over several residues); otherwise the
             // numbering has restarted, and the row starts a new residue (BG-01M7QC16).
             let key: ResidueKey = (label_seq, auth_seq, ins_code.map(str::to_string), res_name.to_string());
             let same_position = |r: &StructureResidue| {
                 r.label_seq_id == label_seq && r.auth_seq_id == auth_seq && r.ins_code.as_deref() == ins_code
             };
+            let next_conformer = |i: usize| {
+                atom.alt_loc.as_deref().is_some_and(|alt| {
+                    cb.named_alt_rows
+                        .get(&i)
+                        .is_some_and(|rows| !rows.iter().any(|(n, a)| *n == atom.name && a == alt))
+                })
+            };
             match cb.residue_index.get(&key) {
-                Some(&i) if cb.chain.residues[i + 1..].iter().all(same_position) => i,
+                Some(&i) if cb.chain.residues[i + 1..].iter().all(same_position) || next_conformer(i) => i,
                 _ => {
                     cb.chain.residues.push(new_residue());
                     let i = cb.chain.residues.len() - 1;
@@ -1347,6 +1362,9 @@ impl ModelsBuilder {
                 }
             }
         };
+        if let Some(alt) = &atom.alt_loc {
+            cb.named_alt_rows.entry(ri).or_default().push((atom.name.clone(), alt.clone()));
+        }
         let residue = &mut cb.chain.residues[ri];
         // Alternate locations of one atom: rows of its name of which at least one carries an alt
         // id. A blank alt id among named ones is one of them (Biopython keeps them as one atom).

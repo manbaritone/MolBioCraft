@@ -660,4 +660,141 @@ fn a_restart_repeating_name_and_number_keeps_both_residues() {
     inserted.push_str("END\n");
     let names: Vec<String> = pdb_model(&inserted).remove(0).1.into_iter().map(|(n, _)| n).collect();
     assert_eq!(names, ["GLY", "SER", "GLY"], "GLY 1, SER 1A, GLY 1");
+
+    // A position is its label_seq_id as well as its author number and insertion code: ALA, then
+    // GLY at another label_seq_id under the same author number 1, then ALA again is a restart.
+    let label_restart = self::cif(&[
+        ("ATOM", "C", "CA", "ALA", "A", "1", 1),
+        ("ATOM", "C", "CA", "GLY", "A", "2", 1),
+        ("ATOM", "C", "CA", "ALA", "A", "1", 1),
+    ]);
+    let names: Vec<String> = cif_model(&label_restart).remove(0).1.into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["ALA", "GLY", "ALA"], "GLY at label_seq_id 2 under author number 1");
+
+    // Conformers written as blocks over several residues stay their residues (round 2).
+    block_written_conformers_rejoin_their_residues();
+}
+
+/// RCSB 2VB1 (https://files.rcsb.org/download/2VB1.pdb) residues 16-20, heavy atoms, its own
+/// rows with residues 17-19 written as conformer blocks, as SHELXL PART blocks write them: every
+/// blank and alt A row of LEU 17, ASP 18 and ASN 19, then every alt B row of the three.
+const BLOCK_CONFORMERS_2VB1: &[&str] = &[
+    "ATOM    306  N   GLY A  16     -12.964  17.064  18.598  1.00  6.67           N  ",
+    "ATOM    307  CA  GLY A  16     -13.454  18.075  19.496  1.00  7.11           C  ",
+    "ATOM    308  C   GLY A  16     -12.431  18.819  20.285  1.00  6.23           C  ",
+    "ATOM    309  O   GLY A  16     -12.824  19.479  21.236  1.00  8.68           O  ",
+    "ATOM    313  N   LEU A  17     -11.136  18.836  19.887  1.00  5.37           N  ",
+    "ATOM    314  CA ALEU A  17     -10.150  19.598  20.671  0.72  5.39           C  ",
+    "ATOM    316  C   LEU A  17     -10.023  21.024  20.340  1.00  5.44           C  ",
+    "ATOM    317  O   LEU A  17      -9.456  21.762  21.171  1.00  6.04           O  ",
+    "ATOM    318  CB ALEU A  17      -8.731  18.969  20.561  0.72  4.07           C  ",
+    "ATOM    320  CG ALEU A  17      -8.581  17.623  21.322  0.72  4.29           C  ",
+    "ATOM    322  CD1ALEU A  17      -7.176  17.090  21.117  0.72  5.33           C  ",
+    "ATOM    324  CD2ALEU A  17      -8.859  17.778  22.818  0.72  5.74           C  ",
+    "ATOM    347  N   ASP A  18     -10.473  21.485  19.187  1.00  5.39           N  ",
+    "ATOM    348  CA AASP A  18     -10.239  22.884  18.888  0.68  4.62           C  ",
+    "ATOM    350  C  AASP A  18     -11.080  23.737  19.834  0.68  4.42           C  ",
+    "ATOM    352  O  AASP A  18     -12.309  23.693  19.776  0.68  5.22           O  ",
+    "ATOM    354  CB AASP A  18     -10.604  23.241  17.441  0.68  5.40           C  ",
+    "ATOM    356  CG AASP A  18     -10.323  24.703  17.125  0.68  6.92           C  ",
+    "ATOM    358  OD1AASP A  18      -9.437  25.335  17.706  0.68  5.54           O  ",
+    "ATOM    360  OD2AASP A  18     -11.001  25.213  16.212  0.68 12.15           O  ",
+    "ATOM    369  N  AASN A  19     -10.413  24.530  20.675  0.80  4.20           N  ",
+    "ATOM    371  CA AASN A  19     -11.082  25.375  21.661  0.80  3.87           C  ",
+    "ATOM    373  C  AASN A  19     -11.670  24.576  22.810  0.80  3.76           C  ",
+    "ATOM    375  O  AASN A  19     -12.469  25.126  23.586  0.80  4.27           O  ",
+    "ATOM    377  CB AASN A  19     -12.114  26.342  21.059  0.80  4.37           C  ",
+    "ATOM    379  CG AASN A  19     -12.364  27.530  21.977  0.80  3.77           C  ",
+    "ATOM    381  OD1AASN A  19     -11.455  28.034  22.646  0.80  4.43           O  ",
+    "ATOM    383  ND2AASN A  19     -13.603  28.007  21.966  0.80  4.50           N  ",
+    "ATOM    315  CA BLEU A  17     -10.118  19.513  20.654  0.28  5.36           C  ",
+    "ATOM    319  CB BLEU A  17      -8.938  18.545  20.555  0.28  8.02           C  ",
+    "ATOM    321  CG BLEU A  17      -8.005  18.449  21.739  0.28  5.41           C  ",
+    "ATOM    323  CD1BLEU A  17      -8.687  18.102  23.039  0.28  8.14           C  ",
+    "ATOM    325  CD2BLEU A  17      -6.896  17.509  21.304  0.28  5.88           C  ",
+    "ATOM    349  CA BASP A  18     -10.469  22.972  18.904  0.40  9.42           C  ",
+    "ATOM    351  C  BASP A  18     -11.235  23.875  19.847  0.32  8.78           C  ",
+    "ATOM    353  O  BASP A  18     -12.479  23.866  19.919  0.32 15.29           O  ",
+    "ATOM    355  CB BASP A  18     -10.962  23.157  17.464  0.32 10.14           C  ",
+    "ATOM    357  CG BASP A  18     -12.221  22.423  17.137  0.32 11.90           C  ",
+    "ATOM    359  OD1BASP A  18     -12.388  21.238  17.463  0.32 11.82           O  ",
+    "ATOM    361  OD2BASP A  18     -13.016  23.163  16.473  0.32 13.08           O  ",
+    "ATOM    370  N  BASN A  19     -10.570  24.727  20.633  0.20  7.16           N  ",
+    "ATOM    372  CA BASN A  19     -10.855  25.664  21.730  0.20  9.83           C  ",
+    "ATOM    374  C  BASN A  19     -11.342  25.102  23.065  0.20  9.22           C  ",
+    "ATOM    376  O  BASN A  19     -11.880  25.746  23.979  0.20 12.23           O  ",
+    "ATOM    378  CB BASN A  19     -11.938  26.675  21.300  0.20  7.85           C  ",
+    "ATOM    380  CG BASN A  19     -11.532  27.468  20.066  0.20 14.86           C  ",
+    "ATOM    382  OD1BASN A  19     -10.417  27.277  19.608  0.20 22.82           O  ",
+    "ATOM    384  ND2BASN A  19     -12.458  28.297  19.603  0.20 16.97           N  ",
+    "ATOM    397  N  ATYR A  20     -11.243  23.333  22.984  0.87  4.18           N  ",
+    "ATOM    398  N  BTYR A  20     -11.146  23.834  23.216  0.13  6.55           N  ",
+    "ATOM    399  CA ATYR A  20     -11.710  22.554  24.124  0.87  4.10           C  ",
+    "ATOM    400  CA BTYR A  20     -11.631  22.981  24.278  0.13  6.61           C  ",
+    "ATOM    401  C  ATYR A  20     -11.173  23.193  25.411  0.87  4.12           C  ",
+    "ATOM    402  C  BTYR A  20     -11.041  23.477  25.594  0.13  6.50           C  ",
+    "ATOM    403  O  ATYR A  20      -9.964  23.373  25.561  0.87  4.38           O  ",
+    "ATOM    404  O  BTYR A  20      -9.835  23.614  25.766  0.13  7.52           O  ",
+    "ATOM    405  CB ATYR A  20     -11.250  21.088  23.999  0.87  4.61           C  ",
+    "ATOM    406  CB BTYR A  20     -11.351  21.512  24.028  0.13  5.54           C  ",
+    "ATOM    407  CG ATYR A  20     -11.808  20.259  25.148  0.87  4.93           C  ",
+    "ATOM    408  CG BTYR A  20     -11.833  20.597  25.144  0.13  6.21           C  ",
+    "ATOM    409  CD1ATYR A  20     -13.070  19.764  25.093  0.87  6.16           C  ",
+    "ATOM    410  CD2ATYR A  20     -11.089  20.027  26.308  0.87  7.11           C  ",
+    "ATOM    411  CE1ATYR A  20     -13.617  19.035  26.125  0.87  8.59           C  ",
+    "ATOM    412  CE2ATYR A  20     -11.658  19.290  27.360  0.87  9.45           C  ",
+    "ATOM    413  CZ ATYR A  20     -12.909  18.815  27.249  0.87 10.05           C  ",
+    "ATOM    414  OH ATYR A  20     -13.371  18.123  28.318  0.87 13.53           O  ",
+];
+
+/// BG-01M7QC16 AC1, round 2 (also called from
+/// [`a_restart_repeating_name_and_number_keeps_both_residues`], which the AC1 Verify line runs):
+/// alternate conformers written as blocks over several residues rejoin
+/// their residues. A row of a residue seen earlier, after residues at other positions, rejoins it
+/// when it brings a named alt id the residue does not yet hold for that atom and the residue
+/// already holds rows with named alt ids; otherwise the numbering has restarted. Wrong
+/// implementations, and the case that catches each:
+/// - the B block read as a restart (round 1): eight residues, GLDNLDNY;
+/// - only the kept atom's alt id checked, not every row's: in ALA 1 (CA alt B, then CA alt A, the
+///   tie keeping B), GLY 2, ALA 1 (CA alt A, alt B), the restarted CA alt A reads as not held and
+///   the restart merges into the first ALA 1;
+/// - rejoining on any named alt id: the restart onto an interleaved site in
+///   [`a_restart_repeating_name_and_number_keeps_both_residues`] reads one ALA 1.
+#[test]
+fn block_written_conformers_rejoin_their_residues() {
+    let mut text = String::from("HEADER    2VB1 RESIDUES 16-20, CONFORMER BLOCKS\n");
+    for row in BLOCK_CONFORMERS_2VB1 {
+        text.push_str(row);
+        text.push('\n');
+    }
+    text.push_str("END\n");
+    let read = pdb_model(&text).remove(0).1;
+    let shape: Vec<(&str, usize)> = read.iter().map(|(n, a)| (n.as_str(), a.len())).collect();
+    assert_eq!(shape, [("GLY", 4), ("LEU", 8), ("ASP", 8), ("ASN", 8), ("TYR", 12)], "five residues");
+    assert_eq!(sequences(text.clone())["chains"][0]["sequence"], "GLDNY", "the chain sequence");
+    assert_eq!(c_alpha_names(text), ["GLY", "LEU", "ASP", "ASN", "TYR"], "the C-alpha view agrees");
+
+    // A restart of a disordered residue repeats an alt id the residue already holds: a restart.
+    let restart = blank_chain_atoms(
+        &[
+            ('B', "ALA", 1, &[" CA"]),
+            ('A', "ALA", 1, &[" CA"]),
+            (' ', "GLY", 2, BACKBONE),
+            ('A', "ALA", 1, &[" CA"]),
+            ('B', "ALA", 1, &[" CA"]),
+        ],
+        None,
+    );
+    let model = parse_pdb_structure(&restart).unwrap();
+    let kept: Vec<(&str, Vec<Option<&str>>)> = model.models[0].chains[0]
+        .residues
+        .iter()
+        .map(|r| (r.res_name.as_str(), r.atoms.iter().filter(|a| a.name == "CA").map(|a| a.alt_loc.as_deref()).collect()))
+        .collect();
+    // Each ALA 1 keeps the CA listed first on the occupancy tie: B in the first, A in the restart.
+    assert_eq!(
+        kept,
+        [("ALA", vec![Some("B")]), ("GLY", vec![None]), ("ALA", vec![Some("A")])],
+        "a disordered ALA 1 restarted after GLY 2"
+    );
 }
