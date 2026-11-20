@@ -5,13 +5,11 @@ import React, { useEffect, useId, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { saveWorkbenchFile } from '../platform/macosMenuBridge';
 import {
-  alignPdbStructuresKabsch,
   callFreeBayesVariants,
   classifySequenceTaxonomy,
   complementOnlySequence,
   DE_NOVO_ASSEMBLER_METHODS,
   DeNovoAssemblerEngine,
-  extractTargetProteinSequence,
   findCpGIslands,
   findGenomicRepeats,
   GenBankSubmissionMeta,
@@ -20,9 +18,6 @@ import {
   MutateShuffleOptions,
   NGS_MAPPER_METHODS,
   NgsMapperEngine,
-  parsePdbCaCoordinates,
-  type PdbCaAtom,
-  predictCoiledCoilsAndTransmembrane,
   predictGlimmerMicrobialGenes,
   prepareGenBankSubmissionPackage,
   reverseOnlySequence,
@@ -34,9 +29,6 @@ import {
   type SyntenyEngine,
   scanMicrosatelliteStrs,
 } from '../core/genomicsAndStructureSuite';
-import { caAtomsToPdb, hasStructure, structureAtomsOf, structureChainCount, structureTextOf } from '../core/structureModels';
-import { chainOf, parseStructure, type Structure } from '../core/structureView';
-import { backboneTorsions, plottedModelOf, type BackboneTorsionReport, type PlottedModel } from '../core/ramachandran';
 import { SequenceDocument, SequenceFeature } from '../types/bio';
 import {
   alignLargeGenomesMinimizerChainRust,
@@ -47,10 +39,8 @@ import {
   type PssmMotifScanReport,
 } from '../lib/rustBioEngine';
 import { WorkbenchSmartTable } from './WorkbenchSmartTable';
-import { MolBioDocTypeIcon, MolBioMenuGlyph } from './MolBioIcons';
-import { ProteinStructure3DViewer } from './ProteinStructure3DViewer';
-import { RamachandranPlot } from './RamachandranPlot';
-import { pdbTextLoadProblem, trimmedReadSaveBlockReason } from '../core/ngsTrimSave';
+import { MolBioMenuGlyph } from './MolBioIcons';
+import { trimmedReadSaveBlockReason } from '../core/ngsTrimSave';
 import { ScrollableMenuStrip } from './ScrollableMenuStrip';
 import { ResultWarnings } from './ResultWarnings';
 import { subsetNote } from './CircularPlasmidMap';

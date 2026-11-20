@@ -17,6 +17,11 @@ export interface StudioRailProps {
   readonly items: readonly StudioRailItem[];
   /** The viewer tab actually showing (the tablist's data-current-view). */
   readonly currentView: ViewerTab;
+  /**
+   * What the main pane shows in place of a studio, when it does ('database-explorer' while the
+   * Database Explorer is open, BG-01M7V0TD): the tablist's data-current-studio names it, not a studio.
+   */
+  readonly shownInstead?: string;
   /** The number the Annotations entry shows beside its name. */
   readonly annotationCount: number;
   /** Opens an applicable studio or panel. */
@@ -27,7 +32,7 @@ export interface StudioRailProps {
 
 const reasonId = (entry: StudioEntry) => `mbc-studio-rail-reason-${entry.id}`;
 
-export function StudioRail({ items, currentView, annotationCount, onOpen, onRefuse }: StudioRailProps): React.ReactElement {
+export function StudioRail({ items, currentView, shownInstead, annotationCount, onOpen, onRefuse }: StudioRailProps): React.ReactElement {
   const currentItem = items.find((item) => item.current) ?? items[0];
   const [focusId, setFocusId] = useState<string | null>(null);
   const buttons = useRef(new Map<string, HTMLButtonElement>());
@@ -53,7 +58,7 @@ export function StudioRail({ items, currentView, annotationCount, onOpen, onRefu
         role="tablist"
         aria-orientation="vertical"
         aria-label="Studios and document panels"
-        data-current-studio={currentItem.entry.id}
+        data-current-studio={shownInstead ?? currentItem.entry.id}
         data-current-view={currentView}
       >
         {items.map((item, index) => {

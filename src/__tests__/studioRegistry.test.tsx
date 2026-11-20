@@ -7,20 +7,31 @@
  * Help panel's view topics, the redirect message and the studio error boundary all read (D0237).
  * The App is mounted through appHarness.tsx; React DOM's server renderer is loaded only after a
  * mount (or in a test that mounts nothing), so the harness's live-DOM check holds.
+ *
+ * BG-01M7V0TD: with no session the database explorer is left by ⌘[, View › History › Back (in-window
+ * and native) and a new session, which then shows; the rail's data-current-studio names the explorer
+ * while it is open; and the studio routing branches Sprint 39 left untested are pinned: the redirect
+ * names the studio of the tab asked for, a DNA chain of a structure has the 3D view, the Enzymes view
+ * refuses a non-DNA record, the Enzymes view and Folding close, Back-Translate opens its dialog on a
+ * protein and Protein Domains opens the Protein studio on one.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import {
   DOCUMENT_PANELS, STUDIOS, STUDIO_ENTRIES, studioAvailability, studioForView, studioForTab, studioIconElement,
   type StudioEntry,
 } from '../core/studioRegistry';
-import { VIEWER_TAB_ORDER, supportedViewerTabs, viewerTabLabel, type ViewerTab } from '../core/documentViews';
+import { VIEWER_TAB_ORDER, preferredViewerTab, relevantViewerTabs, supportedViewerTabs, viewerTabLabel, type ViewerTab } from '../core/documentViews';
+import { resolveNativeMenuItemEnabled } from '../core/commandAvailability';
 import { VIEW_HELP } from '../data/helpTopics';
-import { appTsxSource, mountApp, type AppHarness } from './appHarness';
+import { appTsxSource, macHost, mountApp, type AppHarness } from './appHarness';
 import type { LiveElement } from './liveDom';
 import type { GenomicsSubTabId } from '../core/analysisContext';
 import { seededChromatogram } from './traceFixtures';
+
+// A macOS host's mocked Tauri runtime records the native menu states (BG-01M7V0TD); the other mounts are Linux hosts.
+vi.mock('../lib/tauriIpc', async (importOriginal) => (await import('./appHarness')).tauriIpcMock(await importOriginal<object>()));
 
 const RAIL = ['Sequence Map', 'Annotations', 'Flatfile', 'Cloning & Gel', 'Vectors & Architect', 'Primers & CRISPR',
   'Alignment', 'Phylogenetics', 'Sanger & Contig', 'Protein & 3D', 'Pipelines & NGS'];
@@ -228,7 +239,7 @@ describe('US-01M6Q16Q AC2: every viewer tab and sub-view belongs to exactly one 
       await helpOpen();
       expect(app.all('.mbc-help-panel'), 'F1 opens the Help panel').toHaveLength(1);
       await choose('Protein & 3D');
-      expect(app.activeTab(), '⌘K Protein & 3D opens the genomics tab').toBe('protein-3d');
+      expect(app.activeTab(), '⌘K Protein & 3D opens its own tab').toBe('protein-3d');
       expect(shown(), 'Protein & 3D on a DNA record').toEqual({ tab: [['Protein & 3D', studio('Protein & 3D')]], inspector: 'Protein & 3D Controls', help: ['Protein & 3D'] });
       await choose('Pipelines & NGS');
       // It opens on the guided pipelines, which have no settings either.
@@ -454,5 +465,230 @@ describe('US-01M6Q16Q AC8: the registry assigns ⌘1-⌘9 in rail order and no d
   it('US-01M6Q16Q AC8 gives Sequence Map to Sanger & Contig the digits 1 to 9 and none to the rest', () => {
     expect(STUDIOS.map((s) => [s.name, s.digit])).toEqual(RAIL.map((n, i) => [n, i < 9 ? i + 1 : undefined]));
     expect(DOCUMENT_PANELS.map((p) => p.digit)).toEqual([undefined, undefined]);
+  });
+});
+
+// ─── BG-01M7V0TD ───
+
+const explorerPane = (app: AppHarness) => app.all('.mbc-db-explorer-pane');
+const railList = (app: AppHarness) => app.all('.mbc-studio-rail-list');
+const menuRows = (app: AppHarness) => app.all('.desktop-menu-popup').flatMap((p) => p.querySelectorAll('button'));
+/** Opens the in-window menubar's `top` menu and each submenu of `path`; gives the last row, unclicked. */
+async function menuRow(app: AppHarness, path: string[]): Promise<LiveElement> {
+  const [top, ...rest] = path;
+  const trigger = app.all('.mbc-menubar [role="menuitem"]').find((b) => words(b.textContent) === top);
+  if (!trigger) throw new Error(`the menu bar has no ${top} menu`);
+  await app.click(trigger);
+  let row: LiveElement | undefined;
+  for (const label of rest) {
+    row = menuRows(app).find((b) => {
+      const t = words(b.textContent);
+      const after = t.slice(label.length).trim();
+      return t.startsWith(label) && (after.length < 3 || /^(Ctrl|Shift|Alt|[⌘⇧⌥⌃])/.test(after));
+    });
+    if (!row) throw new Error(`no "${label}" in the open menu: ${menuRows(app).map((b) => words(b.textContent)).join(' | ')}`);
+    if (label !== rest[rest.length - 1]) await app.click(row);
+  }
+  return row!;
+}
+async function closeMenus(app: AppHarness) {
+  for (let i = 0; i < 3 && app.all('.desktop-menu-popup').length; i++) await app.press('Escape');
+}
+const isDisabled = (el: LiveElement) => el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
+
+const RNA: SequenceDocument = { ...BASE, id: 'sr-rna', name: 'SR_RNA', accession: 'SR_10', moleculeType: 'RNA', sequence: 'AUGGCCAUUGUAAUGGGCCGCUGAAAGGGUGCCCGA' } as SequenceDocument;
+const PLAIN_PROTEIN: SequenceDocument = { ...BASE, id: 'sr-plain-protein', name: 'SR_Plain', accession: 'SR_11', moleculeType: 'Protein', sequence: 'MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRFKDLGE' } as SequenceDocument;
+const ROUTING_LIBRARY = [...LIBRARY, RNA, PLAIN_PROTEIN, DNA_COMPLEX];
+const openRouted = (app: AppHarness, doc: SequenceDocument, viewerTab: ViewerTab) =>
+  app.restoreSession({ documents: ROUTING_LIBRARY, activeDocId: doc.id, viewerTab });
+
+describe('BG-01M7V0TD: the database explorer is left with no session open, and the rail names it while it is open', () => {
+  it('BG-01M7V0TD with no session ⌘[ and View › History › Back leave the explorer for the start screen', async () => {
+    const app = await mountApp();
+    try {
+      expect(railList(app), 'no session: no rail').toHaveLength(0);
+      await app.menu('tools:databases-explorer');
+      expect(explorerPane(app), 'the explorer opens over the start screen').toHaveLength(1);
+      await app.press('[', { mod: true });
+      expect(explorerPane(app), '⌘[ leaves the explorer').toHaveLength(0);
+      expect(railList(app), 'still no session').toHaveLength(0);
+
+      await app.menu('tools:databases-explorer');
+      expect(explorerPane(app)).toHaveLength(1);
+      const forward = await menuRow(app, ['View', 'History', 'Forward']);
+      expect(isDisabled(forward), 'Forward still needs a session').toBe(true);
+      await closeMenus(app);
+      const back = await menuRow(app, ['View', 'History', 'Back']);
+      expect(isDisabled(back), 'View › History › Back is enabled over the explorer').toBe(false);
+      await app.click(back);
+      await closeMenus(app);
+      expect(explorerPane(app), 'View › History › Back leaves the explorer').toHaveLength(0);
+      expect(statusText(app)).not.toMatch(/No active session/);
+
+      // With neither a session nor the explorer, View › History (Back and Forward) stays off.
+      const offHistory = await menuRow(app, ['View', 'History']);
+      expect(isDisabled(offHistory), 'View › History with nothing to leave').toBe(true);
+      await closeMenus(app);
+      await app.press('[', { mod: true });
+      expect(statusText(app), '⌘[ with nothing to leave is the disabled Back').toContain('Back is not available right now.');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7V0TD with no session the native View › Back is enabled over the explorer and leaves it', async () => {
+    const app = await mountApp(macHost());
+    try {
+      const backOn = () => {
+        const states = app.nativeMenuStates();
+        expect(states.length, 'the App sent a native menu state').toBeGreaterThan(0);
+        return resolveNativeMenuItemEnabled('view:back', states[states.length - 1]);
+      };
+      expect(backOn(), 'no session, no explorer: native Back is off').toBe(false);
+      expect(resolveNativeMenuItemEnabled('view:forward', app.nativeMenuStates().at(-1)!)).toBe(false);
+      await app.menu('tools:databases-explorer');
+      expect(backOn(), 'native Back is on over the explorer').toBe(true);
+      expect(resolveNativeMenuItemEnabled('view:forward', app.nativeMenuStates().at(-1)!), 'Forward stays off').toBe(false);
+      await app.menu('view:back');
+      expect(explorerPane(app), 'native view:back leaves the explorer').toHaveLength(0);
+      expect(statusText(app)).not.toMatch(/No active session/);
+      expect(backOn(), 'native Back is off again').toBe(false);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7V0TD with no session a new session started over the explorer leaves it, and the session shows', async () => {
+    const app = await mountApp();
+    try {
+      await app.menu('tools:databases-explorer');
+      expect(explorerPane(app)).toHaveLength(1);
+      await app.menu('new-session:sample-library');
+      expect(explorerPane(app), 'the new session is not covered by the explorer').toHaveLength(0);
+      expect(railList(app), 'the session shows its studio rail').toHaveLength(1);
+      expect(app.all('.mbc-center-stack').length, 'the session shows its document table and viewer').toBeGreaterThan(0);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7V0TD data-current-studio names the explorer while it is open, and the studio again once Back leaves it', async () => {
+    const app = await mountApp();
+    try {
+      await openRouted(app, DNA, 'annotations-table');
+      expect(railList(app)[0].getAttribute('data-current-studio')).toBe('annotations');
+      await app.menu('tools:databases-explorer');
+      expect(explorerPane(app)).toHaveLength(1);
+      expect(railList(app)[0].getAttribute('data-current-studio'), 'the explorer is what the main pane shows').toBe('database-explorer');
+      expect(studioTabs(app).filter((t) => t.current), 'no studio is marked current').toEqual([]);
+      await app.press('[', { mod: true });
+      expect(explorerPane(app)).toHaveLength(0);
+      expect(railList(app)[0].getAttribute('data-current-studio')).toBe('annotations');
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
+describe('BG-01M7V0TD: the studio routing branches Sprint 39 left untested', () => {
+  it('BG-01M7V0TD a DNA chain of a structure has the 3D view by its file or by its PDB name alone, and a plain DNA has none', () => {
+    const DNA_PDB_NAME = { ...DNA, id: 'sr-dna-pdbname', docMetadata: { 'PDB name': 'SR1D', Chain: 'D' } } as SequenceDocument;
+    const RNA_CHAIN = { ...RNA, id: 'sr-rna-chain', docMetadata: { PDBText: DNA_COMPLEX.docMetadata!.PDBText, Chain: 'R' } } as SequenceDocument;
+    expect(relevantViewerTabs(DNA_COMPLEX)).toContain('protein-3d');
+    expect(relevantViewerTabs(RNA_CHAIN)).toContain('protein-3d');
+    expect(relevantViewerTabs(DNA_PDB_NAME)).toContain('protein-3d');
+    expect(relevantViewerTabs(DNA)).not.toContain('protein-3d');
+    expect(relevantViewerTabs(RNA)).not.toContain('protein-3d');
+    // A chain with the structure file opens on it; the PDB name alone does not make it a structure to open on.
+    expect(preferredViewerTab(DNA_COMPLEX)).toBe('protein-3d');
+    expect(preferredViewerTab(RNA_CHAIN)).toBe('protein-3d');
+    expect(preferredViewerTab(DNA_PDB_NAME)).toBe('sequence-view');
+  });
+
+  it('BG-01M7V0TD the redirect names the studio of the tab asked for, which needs no genomics sub-view', async () => {
+    // Every genomics sub-view is Pipelines & NGS's, so the tab alone names the studio (the redirect passes no sub-view).
+    const ngs = (['ngs-assembly', 'genome-variants', 'genes-cpg-repeats', 'transform-submit'] as GenomicsSubTabId[])
+      .map((v) => studioForTab('genomics-ngs', DNA, v).id);
+    expect(new Set(ngs)).toEqual(new Set(['pipelines-ngs']));
+    expect(studioForTab('genomics-ngs', DNA).id).toBe('pipelines-ngs');
+    const app = await mountApp();
+    try {
+      await openRouted(app, PLAIN_PROTEIN, 'sequence-view');
+      // Cloning › Restriction Cloning › Agarose Digest asks for Cloning & Gel, which a protein cannot show.
+      await openRouted(app, PLAIN_PROTEIN, 'annotations-table');
+      const row = await menuRow(app, ['Cloning', 'Restriction Cloning', 'Agarose Digest']);
+      await app.click(row);
+      await closeMenus(app);
+      expect(app.activeTab(), 'a protein has no Cloning & Gel').not.toBe('cloning-gel');
+      expect(statusText(app)).toContain('Cloning & Gel needs a DNA sequence or an Enzyme Set: "SR_Plain" is a Protein sequence. Select a document it applies to.');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7V0TD the Enzymes view refuses an RNA and a protein, and opens in Sequence Map on a DNA', async () => {
+    const app = await mountApp();
+    try {
+      for (const doc of [RNA, PLAIN_PROTEIN]) {
+        await openRouted(app, doc, 'annotations-table');
+        await app.menu('view:enzymes');
+        expect(app.all('section.mbc-hosted-panel'), `${doc.moleculeType}: no Enzymes view`).toHaveLength(0);
+        expect(app.activeTab(), `${doc.moleculeType}: the view is unchanged`).toBe('annotations-table');
+        expect(statusText(app)).toContain(`The Enzymes view needs a DNA sequence: "${doc.name}" is a ${doc.moleculeType} sequence.`);
+      }
+      await openRouted(app, DNA, 'annotations-table');
+      await app.menu('view:enzymes');
+      expect(app.activeTab()).toBe('sequence-view');
+      expect(app.all('section.mbc-hosted-panel[aria-label="Enzymes view"]'), 'DNA: the Enzymes view shows').toHaveLength(1);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7V0TD Close Enzymes View and Close Folding close the panel and keep the host studio', async () => {
+    const app = await mountApp();
+    try {
+      const closeButton = (label: string) => {
+        const hits = app.all('section.mbc-hosted-panel button').filter((b) => words(b.textContent) === label);
+        expect(hits, label).toHaveLength(1);
+        return hits[0];
+      };
+      await openRouted(app, DNA, 'annotations-table');
+      await app.menu('view:enzymes');
+      expect(app.all('section.mbc-hosted-panel[aria-label="Enzymes view"]')).toHaveLength(1);
+      await app.click(closeButton('Close Enzymes View'));
+      expect(app.all('section.mbc-hosted-panel'), 'Close Enzymes View closes it').toHaveLength(0);
+      expect(app.activeTab(), 'Sequence Map stays open').toBe('sequence-view');
+
+      await app.menu('view:secondary-structure');
+      expect(app.activeTab(), 'a DNA folds in Primers & CRISPR').toBe('primers-pcr');
+      expect(app.all('section.mbc-hosted-panel[aria-label="Folding"]')).toHaveLength(1);
+      await app.click(closeButton('Close Folding'));
+      expect(app.all('section.mbc-hosted-panel'), 'Close Folding closes it').toHaveLength(0);
+      expect(app.activeTab(), 'Primers & CRISPR stays open').toBe('primers-pcr');
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7V0TD Back-Translate opens its dialog on a protein, and Protein Domains opens the Protein studio on one', async () => {
+    const app = await mountApp();
+    try {
+      await openRouted(app, PLAIN_PROTEIN, 'annotations-table');
+      await app.menu('annotate:protein-domains');
+      expect(app.activeTab(), 'Protein Domains on a protein opens the Protein studio').toBe('protein-3d');
+      expect(railList(app)[0].getAttribute('data-current-studio')).toBe('protein-3d');
+      expect(statusText(app)).toContain('Protein Domains: motif and domain scanning is available for DNA/RNA (JASPAR PSSM); showing protein analysis.');
+
+      await openRouted(app, PLAIN_PROTEIN, 'annotations-table');
+      await app.menu('sequence:back-translate-dialog');
+      const dialogs = app.all('[role="dialog"], dialog').filter((d) => /Back-Translate/.test(words(d.textContent)) || /Back-Translate/.test(d.getAttribute('aria-label') ?? ''));
+      expect(dialogs.length, 'the Back-Translate dialog opens').toBeGreaterThan(0);
+      expect(words(dialogs[0].textContent), 'on the active protein').toContain('1 protein sequence');
+      expect(app.activeTab(), 'the view stays').toBe('annotations-table');
+
+    } finally {
+      app.unmount();
+    }
   });
 });

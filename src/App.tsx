@@ -441,6 +441,7 @@ import {
   CommandId,
   CIRCULAR_ONLY_HINT,
   trackAvailability,
+  type NativeMenuStatePayload,
   type TrackId,
   type ViewCommandId,
   type WorkbenchCommandId,
@@ -499,6 +500,14 @@ import {
 
 /** Every native menu id and the registry command it runs (US-01M6Q159). */
 const NATIVE_MENU_TARGETS = nativeTargets(CLONING_ACTION_VECTOR_PRESETS);
+
+/**
+ * The native menu state with the Database Explorer open: View › Back leaves it, with a session or
+ * without one (BG-01M7V0TD), so it is enabled then whatever the session state says.
+ */
+function nativeMenuStateWithExplorer(state: NativeMenuStatePayload, explorerOpen: boolean): NativeMenuStatePayload {
+  return explorerOpen ? { ...state, overrides: { ...state.overrides, 'view:back': true } } : state;
+}
 import {
   addAttBSitesToSequence,
   annotateGatewayAttSites,
@@ -2619,10 +2628,8 @@ export const App: React.FC = () => {
     // back to Document Info there is expected, not a refused request.
     if (!activeDoc.id && requestedViewerTab === 'sequence-view') return;
     // The studio is named, and its reason given, by the studio registry (US-01M6Q16Q).
-    const availability = studioAvailability(
-      studioForTab(requestedViewerTab, activeDoc, requestedViewerTab === 'genomics-ngs' ? genomicsInitialSubTab : undefined),
-      activeDoc
-    );
+    // Every genomics sub-view is Pipelines & NGS's, so the tab alone names the studio (BG-01M7V0TD).
+    const availability = studioAvailability(studioForTab(requestedViewerTab, activeDoc), activeDoc);
     if (!availability.ok) setStatusBanner(`${availability.reason} Select a document it applies to.`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedViewerTab, viewerTab]);
@@ -4109,7 +4116,7 @@ export const App: React.FC = () => {
   // Keep the native macOS menu bar's enabled state in step with the same
   // rules (it was previously built with every item enabled, forever).
   const nativeMenuStateKey = JSON.stringify(
-    useNativeMacMenuBar && isTauriDesktopRuntime() ? buildNativeMenuState(buildCommandContext()) : null
+    useNativeMacMenuBar && isTauriDesktopRuntime() ? nativeMenuStateWithExplorer(buildNativeMenuState(buildCommandContext()), Boolean(dbExplorerCategory)) : null
   );
   useEffect(() => {
     const payload = JSON.parse(nativeMenuStateKey) as ReturnType<typeof buildNativeMenuState> | null;
@@ -4524,6 +4531,8 @@ export const App: React.FC = () => {
 
   const startNewSessionNow = (preset: NewSessionPreset) => {
     setHomeViewActive(false);
+    // A session started over the Database Explorer shows, rather than opening behind it (BG-01M7V0TD).
+    if (dbExplorerCategory) leaveDatabaseExplorer(false);
 
     switch (preset) {
       case 'blank': {
@@ -9342,7 +9351,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         kind: 'submenu',
         id: 'view-nav-sub',
         label: 'History',
-        disabled: !sessionActive,
+        // Back leaves the Database Explorer with no session open too (BG-01M7V0TD); Forward needs a session.
+        disabled: !sessionActive && !dbExplorerCategory,
         children: [
           {
             kind: 'command',
@@ -9356,6 +9366,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             id: 'view-fwd',
             label: registryCommand('view-fwd').label,
             shortcut: registryKey('view-fwd'),
+            disabled: !sessionActive,
             onSelect: () => requireActiveSession(() => handleGoForward()),
           },
         ],
@@ -12857,6 +12868,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         <StudioRail
           items={studioRail}
           currentView={viewerTab}
+          shownInstead={dbExplorerCategory ? 'database-explorer' : undefined}
           annotationCount={activeDoc.features.length + activeDoc.primers.length}
           onOpen={openStudioFromRail}
           onRefuse={(reason) => setStatusBanner(reason)}
