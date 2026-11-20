@@ -119,6 +119,9 @@ export function normalizeMsaPresetId(v: unknown): MsaPresetId {
  * computed and discarded, so none of their text may claim it.
  * src/__tests__/evolutionAnalyses.test.ts pins each description and identifier to that dispatch,
  * and src/components/AlignmentAndPhyloStudio.tsx describes the same presets — keep the two in step.
+ * The rebuilt sample alignments record the `consistency-nj` label as their `Alignment preset` and
+ * history operation (crates/molbiocraft-cloning/src/sample_alignments_data.rs, BG-01M6XCVP), and
+ * src/__tests__/sampleAlignmentProvenance.test.ts pins the two to the same text.
  */
 export const MSA_ALGORITHMS: { value: MsaPresetId; label: string; hint: string }[] = [
   { value: '', label: 'Center-star (fast)', hint: 'Aligns every sequence to the most central one and reports a Neighbor-Joining tree. Fastest; good for closely related sequences.' },

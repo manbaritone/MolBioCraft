@@ -199,6 +199,31 @@ describe('sample alignment members are public NCBI records', () => {
     }
   }, 180_000);
 
+  // BG-01M6XCVP AC1: the aligned samples were built with MolBioCraft's own consistency-nj preset, so
+  // their `Alignment preset`, their history operation and its description name it as the Align
+  // dialog does (PRD FR-5: a re-implementation is labelled 'MAFFT-style'). No sample alignment or
+  // tree credits MAFFT, FFT-NS-i or L-INS-i themselves for MolBioCraft's aligner.
+  it("each rebuilt sample names MolBioCraft's own MSA preset, labelled MAFFT-style", () => {
+    const own = MSA_ALGORITHMS.find((o) => o.value === 'consistency-nj')?.label;
+    expect(own, 'the Align dialog labels the consistency-nj preset').toBe('MAFFT-style consistency library (L-INS-i-like)');
+    const aligned = alignments.filter((d) => d.alignmentMeta?.isAligned);
+    expect(aligned.length, 'the aligned samples').toBe(4);
+    for (const d of aligned) {
+      const meta = d.docMetadata ?? {};
+      const method = String(meta['Alignment method']);
+      expect(meta['Alignment preset'], `${d.id} preset`).toBe(own);
+      expect(d.history.map((h) => h.operation), `${d.id} history operation`).toEqual([`${method} (${own})`]);
+      expect(d.history[0]?.description ?? '', `${d.id} history description`).toContain(`with MolBioCraft's ${own} preset`);
+    }
+    const toolName = /MAFFT(?!-style)|FFT-NS|L-INS-i(?!-like)/;
+    const samples = SAMPLE_LIBRARY.filter((d) => d.folder === 'Alignments' || d.folder === 'Tree Documents');
+    expect(samples.filter((d) => d.folder === 'Tree Documents').length, 'the sample trees').toBeGreaterThan(0);
+    for (const d of samples) {
+      const text = JSON.stringify({ name: d.name, description: d.description, meta: d.docMetadata, history: d.history });
+      expect(text, `${d.id} names no other aligner as MolBioCraft's`).not.toMatch(toolName);
+    }
+  });
+
   it('no sample alignment member keeps a placeholder accession', async () => {
     expect(SAMPLE_LIBRARY.some((d) => /fictitious/i.test(`${d.docMetadata?.Organism ?? ''} ${d.description}`)), 'the fictitious-character set is dropped').toBe(false);
     for (const d of alignments) expect(d.alignmentMeta?.sequences?.length ?? 0, `${d.id} keeps at least two members`).toBeGreaterThanOrEqual(2);

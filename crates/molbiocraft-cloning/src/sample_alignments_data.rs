@@ -5582,7 +5582,11 @@ const REBUILT_STAMP: &str = "2026-11-08 09:00";
 /// `Alignment preset` and `Alignment max residues` metadata name them. Aligning the members'
 /// fetched records with these (and, for a translation alignment, the frame and genetic code its
 /// metadata names) gives the stored rows exactly (src/__tests__/sampleAlignmentProvenance.test.ts).
-const SAMPLE_MSA_PRESET: &str = "MAFFT (FFT-NS-i / L-INS-i)";
+/// The preset is MolBioCraft's own `consistency-nj` route, named by the label the Align dialog
+/// gives it (`MSA_ALGORITHMS` in src/core/operationRunners.ts), so the metadata, the history
+/// operation and the dialog name one method and credit no other program for it (BG-01M6XCVP;
+/// PRD FR-5). `canonical_msa_preset_key` routes the label to `CONSISTENCY-NJ`.
+const SAMPLE_MSA_PRESET: &str = "MAFFT-style consistency library (L-INS-i-like)";
 const SAMPLE_MSA_MAX_RESIDUES: usize = 6000;
 
 /// One of the aligned samples: MolBioCraft's MSA of its members (`members` holds the rows), with
