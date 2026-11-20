@@ -579,3 +579,74 @@ fn low_complexity_fixture() -> Vec<u8> {
     s[7_500..8_300].copy_from_slice(&ca);
     s
 }
+
+/// BG-01M6SQYJ: the repeat scan reads U as T, so an RNA stem pairs A with U as a DNA one pairs A
+/// with T. A 2 kb sequence holds a 40-bp stem: arm 1 at bases 901-940, its reverse complement at
+/// 961-1000, 20 bases apart, with flanks that pair neither outwards (A before arm 1, C after arm 2)
+/// nor inwards (G after arm 1, G before arm 2), so the stem is exactly 40 bp. Written with T or with
+/// every T as U it gives the same 40-bp top inverted hit at the same coordinates. A record that
+/// mixes the two letters (U on one arm only, either one) pairs the same, and a direct repeat with
+/// one copy in T and the other in U is one repeat. G·U wobble pairs are not pairs: a stem whose
+/// G-C pairs past its outer 12 are written G·U is not found at 40 bp.
+#[test]
+fn repeat_scan_pairs_a_with_u_in_an_rna_hairpin() {
+    let to_u = |b: &[u8]| -> Vec<u8> { b.iter().map(|&c| if c == b'T' { b'U' } else { c }).collect() };
+    let arm = random_bases(40, 0x5eed_0a11);
+    let mut dna = random_bases(2_000, 0x2b1d_f00d);
+    dna[900..940].copy_from_slice(&arm);
+    dna[960..1_000].copy_from_slice(reverse_complement_iupac(std::str::from_utf8(&arm).unwrap(), false).as_bytes());
+    (dna[899], dna[940], dna[959], dna[1_000]) = (b'A', b'G', b'G', b'C');
+    let stem = |h: &GenomicRepeatHit| (h.repeat_type.clone(), h.arm1_start_bp, h.arm1_end_bp, h.arm2_start_bp, h.arm2_end_bp, h.arm_length_bp);
+    let expected = ("Inverted Repeat".to_string(), 901, 940, 961, 1_000, 40);
+    let top_inverted = |seq: &[u8], what: &str| -> GenomicRepeatHit {
+        let scan = scan_genomic_repeats(std::str::from_utf8(seq).unwrap(), 12, 200);
+        let top = scan.hits.iter().find(|h| h.repeat_type != "Direct Repeat").unwrap_or_else(|| panic!("{what}: no inverted hit"));
+        assert_eq!(stem(top), expected, "{what}: {:?}", scan.hits);
+        top.clone()
+    };
+
+    let as_dna = top_inverted(&dna, "written with T");
+    let rna = to_u(&dna);
+    assert!(!rna.contains(&b'T') && rna.contains(&b'U'));
+    let as_rna = top_inverted(&rna, "written with U");
+    // the whole list is the same, at the same coordinates; the motif is the record's own letters
+    let list = |seq: &[u8]| scan_genomic_repeats(std::str::from_utf8(seq).unwrap(), 12, 200).hits.iter().map(stem).collect::<Vec<_>>();
+    assert_eq!(list(&rna), list(&dna));
+    assert_eq!(as_rna.sequence_motif.as_bytes(), to_u(as_dna.sequence_motif.as_bytes()));
+
+    // a mixed record: U on arm 2 only, then on arm 1 only, the rest written with T
+    let mut u_on_arm2 = dna.clone();
+    u_on_arm2[960..1_000].copy_from_slice(&to_u(&dna[960..1_000]));
+    let mut u_on_arm1 = dna.clone();
+    u_on_arm1[900..940].copy_from_slice(&to_u(&dna[900..940]));
+    for (seq, what) in [(&u_on_arm2, "U on arm 2 only"), (&u_on_arm1, "U on arm 1 only")] {
+        assert!(seq[900..1_000].contains(&b'U') && seq[900..1_000].contains(&b'T'), "fixture: {what}");
+        top_inverted(seq, what);
+    }
+
+    // a direct repeat with one copy in T and the other in U is found at its whole 40 bp
+    let mut direct = random_bases(2_000, 0x2b1d_f00d);
+    direct[300..340].copy_from_slice(&arm);
+    direct[1_300..1_340].copy_from_slice(&to_u(&arm));
+    (direct[299], direct[1_299], direct[340], direct[1_340]) = (b'A', b'C', b'G', b'T');
+    let scan = scan_genomic_repeats(std::str::from_utf8(&direct).unwrap(), 12, 200);
+    let top = &scan.hits[0];
+    assert_eq!(stem(top), ("Direct Repeat".to_string(), 301, 340, 1_301, 1_340, 40), "{:?}", scan.hits);
+
+    // G·U wobble is not a pair: the stem with its G-C pairs past the outer 12 written G·U (U on arm
+    // 2 where its partner on arm 1 is G) is not a 40-bp inverted repeat. The outer 12 pairs stay
+    // Watson-Crick, so the stem still has a seed and a scan that let wobble extend an arm would
+    // report it at 40 bp.
+    let mut wobble = rna.clone();
+    let mut wobbles = 0;
+    for t in 12..40 {
+        if wobble[900 + t] == b'G' {
+            assert_eq!(wobble[999 - t], b'C');
+            wobble[999 - t] = b'U';
+            wobbles += 1;
+        }
+    }
+    assert!(wobbles >= 4, "fixture: {wobbles} G·U pairs");
+    let scan = scan_genomic_repeats(std::str::from_utf8(&wobble).unwrap(), 12, 200);
+    assert!(scan.hits.iter().all(|h| h.repeat_type == "Direct Repeat" || h.arm_length_bp < 40), "{:?}", scan.hits);
+}

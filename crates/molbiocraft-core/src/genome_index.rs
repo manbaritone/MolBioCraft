@@ -613,8 +613,12 @@ pub fn find_genomic_repeats(raw_seq: &str, min_arm_bp: usize, max_hits: usize) -
 /// sequence when shorter), with the scanned length and the number of repeats found: every pair of
 /// copies of every k-mer in the scanned length is considered (k is `min_arm_bp`, held to 8 to 32),
 /// so the number is every repeat there with arms of at least k bases, however many copies a k-mer
-/// has, up to [`REPEAT_SCAN_MAX_VISITS`] of them. Arms are made of A, C, G, T and U; N and the
-/// other ambiguity codes match nothing. When the cap stopped the scan short of the end, a warning
+/// has, up to [`REPEAT_SCAN_MAX_VISITS`] of them. Arms are made of A, C, G, T and U, and U is read
+/// as T: a base matches the same base, with T and U the same base, and pairs with its Watson-Crick
+/// partner, A with T or U and C with G, so an RNA stem pairs as its DNA form does and gives the
+/// same repeats at the same coordinates. A record that mixes T and U is read the same way (a T
+/// matches a U, and A pairs with either). G·U wobble is not a pair. N and the other ambiguity codes
+/// match nothing. Each repeat's motif is the record's own letters. When the cap stopped the scan short of the end, a warning
 /// names the scanned length. When the scan has compared that many copy pairs and has more to
 /// compare, it stops: the total is marked a lower bound, and a warning says so and that the list
 /// holds the longest repeats found before it stopped. Direct repeats are compared before inverted
@@ -700,7 +704,8 @@ struct RepeatCandidate {
     inverted: bool,
 }
 
-/// Whether a base can match or pair in a repeat arm: A, C, G, T and U. N and the other ambiguity
+/// Whether a base can match or pair in a repeat arm: A, C, G, T and U (which the scan reads as T,
+/// so [`repeats_in_prefix`] never meets one). N and the other ambiguity
 /// codes stand for a base that is not known, so they match nothing, not even themselves, and a run
 /// of N (an assembly gap) is not a repeat.
 fn is_known_base(b: u8) -> bool {
@@ -708,21 +713,20 @@ fn is_known_base(b: u8) -> bool {
 }
 
 /// The base beside a seed that decides whether its pair of arms could reach one base further out:
-/// 0 to 4 for A, C, G, T and U, or [`NO_BASE`] for an unknown base or the end of the scanned stretch,
-/// which never extends an arm.
+/// 0 to 3 for A, C, G and T (the scan reads U as T, so it meets no U), or [`NO_BASE`] for an
+/// unknown base or the end of the scanned stretch, which never extends an arm.
 fn flank_class(b: Option<u8>) -> u8 {
     match b {
         Some(b'A') => 0,
         Some(b'C') => 1,
         Some(b'G') => 2,
         Some(b'T') => 3,
-        Some(b'U') => 4,
         _ => NO_BASE,
     }
 }
 
 /// [`flank_class`] for no base that can extend an arm.
-const NO_BASE: u8 = 5;
+const NO_BASE: u8 = 4;
 
 /// How many leading bytes `a` and `b` share, compared eight at a time.
 fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
@@ -743,7 +747,9 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
 /// and how many were found, every copy pair of every k-mer considered (k is the minimum arm, 8 to
 /// 32 bases) until `max_visits` pairs have been visited. With a pair still to visit at that point
 /// the scan stops (direct repeats are visited first, in order of arm 1's start, then inverted
-/// ones), and the list is the longest of the pairs it visited. Direct and inverted repeats are found the same way and ranked together before the
+/// ones), and the list is the longest of the pairs it visited. U is read as T throughout, so a base
+/// matches the same base (T and U the same), A pairs with T or U and C with G, and G·U wobble is not
+/// a pair. Direct and inverted repeats are found the same way and ranked together before the
 /// list is cut: each is extended to its maximal arms and reported once, from the seed at its outer
 /// end, so an inverted repeat competes at its whole arm length, as a direct one does. A seed pair
 /// whose arms also match one base further out is the same repeat as the pair there, so each k-mer's
@@ -756,7 +762,9 @@ fn repeats_in_prefix(bytes: &[u8], scan_n: usize, min_arm_bp: usize, max_hits: u
     if scan_n < k * 2 {
         return PrefixRepeats { hits: Vec::new(), visits: 0, stopped: false, stopped_before_inverted: false, arm_bp: k };
     }
-    let s = &bytes[..scan_n];
+    // U read as T: an RNA arm matches and pairs as its DNA form does, and a T matches a U
+    let read_as_dna: Vec<u8> = bytes[..scan_n].iter().map(|&b| if b == b'U' { b'T' } else { b }).collect();
+    let s = &read_as_dna[..];
     let n = scan_n;
     let cap = max_hits.clamp(1, 200);
     let comp = |b: u8| iupac_complement_byte(b, false);
@@ -865,7 +873,9 @@ fn repeats_in_prefix(bytes: &[u8], scan_n: usize, min_arm_bp: usize, max_hits: u
     // towards each other while they still pair; a pair whose arms also pair one base further out
     // (the base before `i` with the base after `j`'s seed) is skipped, as the seed there reports
     // the same repeat, so the class after `j` that pairs with the base before `i` is not visited.
-    let letters = *b"ACGTU";
+    // Two bases pair when one is the other's Watson-Crick complement (`comp`): A with T, which an
+    // RNA's U was read as, and C with G; G with U (wobble) does not pair.
+    let letters = *b"ACGT";
     // a scan that stopped among the direct repeats visits no inverted one
     let inverted_seeds = if stopped { 0 } else { seeds };
     let direct_visits = visits;
