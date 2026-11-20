@@ -209,8 +209,8 @@ export interface MenuShortcutRow {
  * platform's command key (⌘K on macOS, Ctrl+K elsewhere); the others are the bare key.
  */
 export const EXPLICIT_SHORTCUT_ROWS: readonly { path: string; key: string; primary: boolean }[] = [
-  // App.tsx's Quick Command Palette listener; no menu item displays it.
-  { path: 'Quick Command Navigator', key: 'K', primary: true },
+  // App.tsx's Command Palette listener; no menu item displays it. ⌘K has one name everywhere (D0280, D0281).
+  { path: 'Command Palette', key: 'K', primary: true },
   // App.tsx's own F1 listener. Help > Guides shows "F1", but parseShortcutLabel binds no bare key.
   { path: 'Help > Guides > Show or Hide Help Panel', key: 'F1', primary: false },
 ];

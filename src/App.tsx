@@ -7654,7 +7654,7 @@ export const App: React.FC = () => {
   }, []);
 
   // Global keyboard shortcuts for Open Workbench (.mbc) [⌘O / Ctrl+O], Save Workbench As (.mbc) [⌥⇧⌘S / Ctrl+Alt+Shift+S],
-  // Expand Document View [⇧⌘O], Filter Current Folder [⌥⌘F], and Search Tools or Files [⇧⌘F]
+  // Expand Document View [⇧⌘O], Filter Current Folder [⌥⌘F], and ⇧⌘F, a second key that opens the Command Palette (D0017)
   const workspaceShortcutHandlerRef = useRef<(ev: KeyboardEvent) => void>(() => {});
   workspaceShortcutHandlerRef.current = (ev: KeyboardEvent) => {
     const mod = ev.metaKey || ev.ctrlKey;
@@ -12608,7 +12608,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             aria-haspopup="menu"
             aria-expanded={openToolbarDropdown === 'workflows'}
             className={`mbc-tool-btn ${
-              // Lit for its open dropdown, or for Pipelines & NGS; the rail alone shows History and Info (D0219).
+              // Lit for its open dropdown, or for Pipelines & NGS; the rail alone shows History and Info (D0243).
               (sessionActive && !homeViewActive && viewerStudio.id === 'pipelines-ngs') ||
               openToolbarDropdown === 'workflows'
                 ? 'active'
@@ -12645,7 +12645,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             aria-haspopup="menu"
             aria-expanded={openToolbarDropdown === 'align'}
             className={`mbc-tool-btn ${
-              // Lit only while its own dropdown is open: the rail shows the studio (D0219).
+              // Lit only while its own dropdown is open: the rail shows the studio (D0243).
               openToolbarDropdown === 'align'
                 ? 'active'
                 : ''
@@ -12681,7 +12681,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             aria-haspopup="menu"
             aria-expanded={openToolbarDropdown === 'tree'}
             className={`mbc-tool-btn ${
-              // Lit only while its own dropdown is open: the rail shows the studio (D0219).
+              // Lit only while its own dropdown is open: the rail shows the studio (D0243).
               openToolbarDropdown === 'tree'
                 ? 'active'
                 : ''
@@ -12719,7 +12719,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             disabled={!isDnaSequence}
             title={isDnaSequence ? 'Primer, PCR and CRISPR tools' : 'Select a DNA sequence to use primers tools'}
             className={`mbc-tool-btn ${
-              // Lit only while its own dropdown is open: the rail shows the studio (D0219).
+              // Lit only while its own dropdown is open: the rail shows the studio (D0243).
               openToolbarDropdown === 'primers'
                 ? 'active'
                 : ''
@@ -12756,7 +12756,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
             disabled={!isDnaSequence}
             title={isDnaSequence ? 'Cloning and assembly tools' : 'Select a DNA sequence to use cloning tools'}
             className={`mbc-tool-btn ${
-              // Lit only while its own dropdown is open: the rail shows the studio (D0219).
+              // Lit only while its own dropdown is open: the rail shows the studio (D0243).
               openToolbarDropdown === 'cloning'
                 ? 'active'
                 : ''
@@ -12787,7 +12787,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         {/* 11. Dedicated Vector Library & Design Studio Toolbar Action */}
         <button
           type="button"
-          // No dropdown, so it never lights: the rail shows the Vectors & Architect studio (D0219).
+          // No dropdown, so it never lights: the rail shows the Vectors & Architect studio (D0243).
           className="mbc-tool-btn"
           onClick={() => requireActiveSession(() => openVectorStudio('catalog'))}
           title={`Browse ${VECTOR_CATALOG.length} Twist, Modular Systems & ConductScience Vectors, Modular Vector Architect & Twist Onboarding`}
@@ -15651,9 +15651,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   setCommandPaletteIdx(0);
                   setCommandPaletteOpen(true);
                 }}
-                aria-label={`Open Quick Command Navigator (${sc('K')})`}
+                aria-label={`Open Command Palette (${sc('K')})`}
                 aria-keyshortcuts={ariaSc('K')}
-                title={`Quick Command Navigator (${sc('K')})`}
+                title={`Command Palette (${sc('K')})`}
               >
                 {sc('K')} Navigator
               </button>
@@ -15728,9 +15728,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   setCommandPaletteIdx(0);
                   setCommandPaletteOpen(true);
                 }}
-                aria-label={`Open Quick Command Navigator (${sc('K')})`}
+                aria-label={`Open Command Palette (${sc('K')})`}
                 aria-keyshortcuts={ariaSc('K')}
-                title={`Quick Command Navigator (${sc('K')})`}
+                title={`Command Palette (${sc('K')})`}
               >
                 {sc('K')} Navigator
               </button>

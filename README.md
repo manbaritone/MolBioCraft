@@ -168,7 +168,7 @@ The search box at the top of the window opens the command palette (`⌘K` / `Ctr
 
 | Menu path | macOS | Windows &amp; Linux |
 | :--- | :--- | :--- |
-| **Quick Command Navigator** | `⌘K` | `Ctrl+K` |
+| **Command Palette** | `⌘K` | `Ctrl+K` |
 | **Edit > Find & Navigate > Find in Sequence** | `⌘F` | `Ctrl+F` |
 | **File > New Session > Sequences & Vectors > New Sequence** | `⌘N` | `Ctrl+N` |
 | **File > New Session > Blank Session** | `⌥⌘N` | `Ctrl+Alt+N` |

@@ -20,8 +20,9 @@ import {
   registryShortcuts, type RegistryMenuNode, type ToolbarGroupId,
 } from '../core/commandRegistry';
 import { collectMenuShortcutBindings } from '../core/menuShortcuts';
-import { RESERVED_SHORTCUTS, setOperationShortcut } from '../core/operationShortcuts';
-import { STUDIOS } from '../core/studioRegistry';
+import { RESERVED_SHORTCUTS, readOperationShortcuts, releaseReservedOperationShortcuts, setOperationShortcut } from '../core/operationShortcuts';
+import { STUDIOS, studioAvailability } from '../core/studioRegistry';
+import { resolveMenuNodeFunctionDescription } from '../data/menuFunctionDescriptions';
 
 const probe = vi.hoisted(() => ({ trees: [] as unknown[], popups: new Map<string, unknown>() }));
 vi.mock('../core/menuShortcuts', async () => {
@@ -660,4 +661,166 @@ describe('US-01M7QCN2 AC4: View › Table Columns offers presets and opens the c
       ).toContain('Load Column State...');
     });
   }, 60_000);
+});
+
+// ─── BG-01M7V0W9: the registry's hidden second keys, the preset rows, the unknown-id message, ⌘K's own
+// guard, the studio keys' details and the leftovers Sprint 39 left behind ───
+
+const SRC = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
+/** Runs `fn` with a fresh in-memory localStorage, as the operation shortcut store reads it. */
+function withStore<T>(seed: Record<string, string>, fn: (store: Map<string, string>) => T): T {
+  const store = new Map<string, string>(Object.entries(seed));
+  const g = globalThis as unknown as { localStorage?: unknown };
+  const before = g.localStorage;
+  g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+  try {
+    return fn(store);
+  } finally {
+    g.localStorage = before;
+  }
+}
+
+describe('BG-01M7V0W9: the registry keys and the menu paths Sprint 39 left unpinned', () => {
+  it('BG-01M7V0W9 each hidden second key is the registry\'s, by name, and an operation is refused it', () => {
+    // Written out, not derived: a key dropped from SECOND_KEYS (Ctrl+Y, the redo listener's) must fail here.
+    expect(SECOND_KEYS.map((k) => [k.shortcut, k.commandId])).toEqual([
+      ['Mod+Alt+S', 'file-save-mbc'], ['Mod+Shift+F', 'view-search-tools'], ['Mod+Y', 'edit-redo-cmd'],
+      ['Mod+Shift+C', 'edit-copy-seq'], ['Mod+Shift+A', 'edit-sel-all'],
+    ]);
+    withStore({}, () => {
+      for (const k of ['Mod+Alt+S', 'Mod+Shift+F', 'Mod+Y', 'Mod+Shift+C', 'Mod+Shift+A']) {
+        expect(RESERVED_SHORTCUTS.has(k), `${k} is reserved`).toBe(true);
+        expect(setOperationShortcut('align-pairwise', k), k).toBe('That shortcut is already used by MolBioCraft.');
+      }
+    });
+  });
+
+  it('BG-01M7V0W9 the workbench releases every saved operation shortcut it now uses, and keeps a free one', () => {
+    const seed = { 'molbiocraft.operationShortcuts.v1': JSON.stringify({ shortcuts: { 'align-pairwise': 'Mod+9', 'build-tree': 'Mod+Alt+1', 'align-multiple': 'Mod+Alt+Shift+K' }, toolbar: [] }) };
+    withStore(seed, () => {
+      const released = releaseReservedOperationShortcuts();
+      expect(released.map((r) => [r.op, r.shortcut]).sort()).toEqual([['align-pairwise', 'Mod+9'], ['build-tree', 'Mod+Alt+1']]);
+      expect(readOperationShortcuts().shortcuts, 'both are gone from the store, the free key stays').toEqual({ 'align-multiple': 'Mod+Alt+Shift+K' });
+      expect(releaseReservedOperationShortcuts(), 'a second launch releases nothing').toEqual([]);
+    });
+  });
+
+  it('BG-01M7V0W9 each View › Table Columns preset applies its columns and says so', async () => {
+    await onRecords(PLASMID.id, async (app) => {
+      const heads = () => app.all('.doc-table-scroll th').map((th) => words(th.textContent)).join('|');
+      // The table opens on Standard Molecular Cloning, so each preset is told apart from the ones before it.
+      const seen = new Set<string>();
+      for (const preset of Object.values(DOC_TABLE_COLUMN_PRESETS)) {
+        await chooseMenu(app, 'View', ['Table Columns', preset.label]);
+        if (app.all('button.desktop-menu-row').length) await closeMenus(app, menubarButton(app, 'View'));
+        expect(toast(app), preset.label).toBe(`Applied Table Columns preset: ${preset.label}`);
+        expect(seen.has(heads()), `${preset.label} changes the table's columns`).toBe(false);
+        seen.add(heads());
+      }
+    });
+  }, 60_000);
+
+  it('BG-01M7V0W9 a menu id no command handles is named in the status bar and changes nothing', async () => {
+    await onRecords(PLASMID.id, async (app) => {
+      const before = state(app);
+      act(() => { app.win.dispatchEvent(new CustomEvent('mbc:native-menu', { detail: 'view:no-such-command' })); });
+      await app.settle();
+      expect(toast(app)).toBe('The menu sent "view:no-such-command", which no command handles.');
+      expect(state(app)).toEqual(before);
+    });
+  });
+
+  it('BG-01M7V0W9 a disabled ⌘K command says its own reason and does not run its handler', async () => {
+    const app = await mountApp();
+    try {
+      // With no session the handler would refuse in its own words (requireActiveSession); ⌘K's guard speaks first.
+      const item = await paletteCommand(app, 'Reverse Complement', 'seq-rc');
+      expect(item.disabled, 'Reverse Complement is disabled with no session').toBe(true);
+      expect(item.reason).not.toBe('');
+      await app.click(item.el);
+      expect(toast(app), 'the status bar gives the reason ⌘K listed').toBe(item.reason);
+      expect(app.all('.mbc-cmd-palette-input'), 'and the palette closes').toHaveLength(0);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7V0W9 a studio key leaves the Project First Page, and View › Studios greys the studios a protein cannot show', async () => {
+    await onRecords(PLASMID.id, async (app) => {
+      const home = () => app.one('button[aria-label="Project First Page"]', 'the Project First Page button');
+      await app.click(home());
+      expect(home().getAttribute('class') ?? '', 'the Project First Page shows').toMatch(/\bactive\b/);
+      await app.press('1', { mod: true });
+      expect(home().getAttribute('class') ?? '', `⌘1 leaves it for ${STUDIOS[0].name}`).not.toMatch(/\bactive\b/);
+      expect(app.activeTab()).toBe(STUDIOS[0].opens.tab);
+    });
+    await onRecords(PROTEIN.id, async () => {
+      const items = topSub('View', 'Studios').children ?? [];
+      const greyed = STUDIOS.filter((e) => !studioAvailability(e, PROTEIN).ok);
+      expect(greyed.length, 'a protein cannot show some studios').toBeGreaterThan(0);
+      for (const e of STUDIOS) {
+        const n = items.find((i) => i.id === `view-studio-${e.id}`)!;
+        const a = studioAvailability(e, PROTEIN);
+        expect(Boolean(n.disabled), `${e.name} on a protein`).toBe(!a.ok);
+        if (!a.ok) expect(n.description, `${e.name}'s reason`).toBe(a.reason);
+      }
+    });
+  });
+
+  it('BG-01M7V0W9 no other [Unreleased] entry says the ⌘-digit keys are unchanged, however it words it', () => {
+    const changelog = SRC('../../CHANGELOG.md');
+    const start = changelog.indexOf('## [Unreleased]');
+    const unreleased = changelog.slice(start, changelog.indexOf('\n## [', start + 5));
+    const entries = unreleased.split('\n').filter((l) => l.startsWith('- '));
+    const remap = entries.filter((l) => l.includes('⌘1') && l.includes('⌥⌘1'));
+    expect(remap, 'the remap entry').toHaveLength(1);
+    const digitKeys = /⌘-digit|digit keys?|number keys?|⌘[1-9]\b|Ctrl\+[1-9]\b/i;
+    const unchanged = /unchanged|as (?:they|it) (?:was|were)|stay|remain|still|same|kept|keep|untouched|as before|no change|not change/i;
+    const offending = entries.filter((l) => l !== remap[0])
+      // Clause by clause, so 'X stays available' beside a mention of the number keys is not read as one claim.
+      .flatMap((l) => l.split(/(?<=\.)\s+|[;,:]\s+/))
+      .filter((clause) => digitKeys.test(clause) && unchanged.test(clause));
+    expect(offending).toEqual([]);
+  });
+});
+
+describe('BG-01M7V0W9: the dead menu code and the stale names are gone', () => {
+  it('BG-01M7V0W9 ⌘K has one name, Command Palette, in the registry, the header button and the Keyboard tab (D0280, D0281)', async () => {
+    expect(COMMAND_BY_ID.get('view-search-tools')?.label, 'the registry').toBe('Command Palette');
+    expect(COMMAND_BY_ID.get('view-search-tools')?.shortcut).toBe('Mod+K');
+    await onRecords(PLASMID.id, async (app) => {
+      const button = app.all('button').filter((b) => /Command Palette|Navigator/.test(b.getAttribute('aria-label') ?? '') || /Command Palette|Navigator/.test(b.getAttribute('title') ?? ''));
+      expect(button.length, 'the header button').toBeGreaterThan(0);
+      for (const b of button) {
+        expect(b.getAttribute('aria-label')).toBe('Open Command Palette (Ctrl+K)');
+        expect(b.getAttribute('title')).toBe('Command Palette (Ctrl+K)');
+      }
+      await app.menu('app:preferences');
+      await app.click(app.one('#prefs-tab-keyboard', 'Preferences Keyboard tab'));
+      const rows = app.all('tr.mbc-menu-shortcut-row').map((r) => r.querySelectorAll('td').map((c) => words(c.textContent)));
+      expect(rows.filter((r) => r[1] === 'Ctrl+K').map((r) => r[0]), 'the Keyboard tab').toEqual(['Command Palette']);
+      expect(words(app.doc.body.textContent), 'no surface says the old name').not.toContain('Quick Command Navigator');
+    });
+    expect(SRC('../../README.md'), 'README').toContain('| **Command Palette** | `⌘K` | `Ctrl+K` |');
+    expect(SRC('../../README.md')).not.toContain('Quick Command Navigator');
+  }, 60_000);
+
+  it('BG-01M7V0W9 CascadingMenu imports no Info icon and has no Function Info toggle, and App.css styles nothing the app draws no more', () => {
+    const menu = SRC('../components/CascadingMenu.tsx');
+    expect(menu).not.toMatch(/import \{[^}]*\bInfo\b[^}]*\} from 'lucide-react'/);
+    expect(menu).not.toContain('onToggleFunctionInfo');
+    const css = SRC('../App.css');
+    for (const cls of ['mbc-header-search-', 'desktop-menu-info-', 'mbc-scroll-strip--header-tabs', 'mbc-vtab-group-divider']) {
+      expect(css, cls).not.toContain(cls);
+    }
+  });
+
+  it('BG-01M7V0W9 the Command Palette has its own description, and App.tsx cites the decisions it follows', () => {
+    const text = resolveMenuNodeFunctionDescription('view-search-tools', 'Command Palette');
+    expect(text).toBe('Find and run any menu command, studio or open document by its name or menu path; works with no session open');
+    expect(text, 'not the generic session text').not.toMatch(/session$/);
+    const app = SRC('../App.tsx');
+    expect(app, 'D0219 is superseded by D0243').not.toContain('(D0219)');
+    expect(app, '⇧⌘F opens the Command Palette').not.toContain('Search Tools or Files [⇧⌘F]');
+  });
 });

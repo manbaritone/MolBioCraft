@@ -2266,7 +2266,8 @@ describe('accessibility floor (US-01M6Q193)', () => {
       { name: 'zoom reset', re: /^Reset Zoom to 100% \(/, scope: header },
       { name: 'zoom in', re: /^Zoom In \(/, scope: header },
       { name: 'inspector', re: new RegExp(`${studioForTab('sequence-view').name} Controls Inspector \\(`), scope: header },
-      { name: 'Navigator', re: /^Quick Command Navigator \(/, scope: root },
+      // ⌘K is the Command Palette everywhere (D0281).
+      { name: 'Command Palette', re: /^Command Palette \(/, scope: root },
     ];
     for (const c of CONTROLS) {
       const found = titled(c.re, c.scope);

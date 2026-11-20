@@ -661,13 +661,13 @@ describe('the record bar (US-01M6Q10G)', () => {
     expectBarFor([openFromHome], puc19.name, 'a sample opened from the start page');
     expectBarFor([started, run('view:home'), openFromHome], puc19.name, 'a sample opened from the session\'s Home view');
 
-    // A document jumped to from the Quick Command Navigator, and from the toolbar's file search.
+    // A document jumped to from the Command Palette (its name since D0281), and from the toolbar's file search.
     const target = SAMPLE_LIBRARY[2];
     expectBarFor([
       started,
-      press('the Quick Command Navigator', (p) => String(p['aria-label'] ?? '').startsWith('Open Quick Command Navigator')),
+      press('the Command Palette', (p) => String(p['aria-label'] ?? '').startsWith('Open Command Palette')),
       press(`the navigator's ${target.name}`, (p) => hasClass(p, 'mbc-cmd-palette-item') && childText(p.children).includes(`${target.name} (${target.accession})`)),
-    ], target.name, 'the Quick Command Navigator');
+    ], target.name, 'the Command Palette');
     expectBarFor([
       started,
       {

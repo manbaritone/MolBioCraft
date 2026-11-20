@@ -3,12 +3,11 @@
 
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, Info } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import {
   MENU_FUNCTION_INFO_EVENT,
   readStoredShowMenuFunctionInfo,
   resolveMenuNodeFunctionDescription,
-  writeStoredShowMenuFunctionInfo,
 } from '../data/menuFunctionDescriptions';
 import {
   computeViewportClampedSubmenuPosition,
@@ -71,7 +70,6 @@ export interface CascadingMenuPopupProps {
   ariaLabel?: string;
   isContextMenu?: boolean;
   showFunctionInfo?: boolean;
-  onToggleFunctionInfo?: () => void;
   onCloseAll: () => void;
 }
 
@@ -103,7 +101,6 @@ interface MenuLevelProps {
   isContextMenu?: boolean;
   autoFocusFirstItem?: boolean;
   showFunctionInfo: boolean;
-  onToggleFunctionInfo: () => void;
   childMenuDomRef?: React.MutableRefObject<HTMLDivElement | null>;
   onCloseAll: () => void;
   onCloseThisLevel?: (restoreFocusToTrigger: boolean) => void;
@@ -158,7 +155,6 @@ const CascadingMenuLevel: React.FC<MenuLevelProps> = ({
   isContextMenu = false,
   autoFocusFirstItem = false,
   showFunctionInfo,
-  onToggleFunctionInfo,
   childMenuDomRef,
   onCloseAll,
   onCloseThisLevel,
@@ -837,7 +833,6 @@ const CascadingMenuLevel: React.FC<MenuLevelProps> = ({
           isContextMenu={isContextMenu}
           autoFocusFirstItem={openSubmenu.focusFirst}
           showFunctionInfo={showFunctionInfo}
-          onToggleFunctionInfo={onToggleFunctionInfo}
           childMenuDomRef={openChildRef}
           style={{
             top: openSubmenu.pos.top,
@@ -883,7 +878,6 @@ export const CascadingMenuPopup: React.FC<CascadingMenuPopupProps> = ({
   ariaLabel,
   isContextMenu = false,
   showFunctionInfo: controlledShowInfo,
-  onToggleFunctionInfo: controlledToggleInfo,
   onCloseAll,
 }) => {
   const [storedShowInfo, setStoredShowInfo] = useState<boolean>(() =>
@@ -903,15 +897,6 @@ export const CascadingMenuPopup: React.FC<CascadingMenuPopupProps> = ({
   }, []);
 
   const effectiveShowInfo = controlledShowInfo ?? storedShowInfo;
-  const handleToggleInfo = () => {
-    if (controlledToggleInfo) {
-      controlledToggleInfo();
-    } else {
-      const next = !effectiveShowInfo;
-      setStoredShowInfo(next);
-      writeStoredShowMenuFunctionInfo(next);
-    }
-  };
 
   const tree = (
     <CascadingMenuLevel
@@ -920,7 +905,6 @@ export const CascadingMenuPopup: React.FC<CascadingMenuPopupProps> = ({
       ariaLabel={ariaLabel}
       isContextMenu={isContextMenu}
       showFunctionInfo={effectiveShowInfo}
-      onToggleFunctionInfo={handleToggleInfo}
       style={{
         top: position.top,
         left: position.left,

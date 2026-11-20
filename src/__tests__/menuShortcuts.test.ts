@@ -169,7 +169,7 @@ describe('US-01M6P2G2 AC1: Keyboard rows come from the menu trees the shortcuts 
       ['File > Export Sequences > Export FASTA', 'Ctrl+Shift+S'],
       // A disabled submenu's item still has its shortcut; it is listed.
       ['View > Map Layout > Split Map & Sequence', 'Ctrl+1'],
-      ['Quick Command Navigator', 'Ctrl+K'],
+      ['Command Palette', 'Ctrl+K'], // ⌘K's one name (D0281)
       ['Help > Guides > Show or Hide Help Panel', 'F1'],
     ]);
     // The same walk and the same first-definition key as the dispatcher: the menu rows are the bindings, in order.
@@ -178,7 +178,7 @@ describe('US-01M6P2G2 AC1: Keyboard rows come from the menu trees the shortcuts 
     expect(rows.length).toBe(bindings.length + EXPLICIT_SHORTCUT_ROWS.length);
     // The explicit rows read the host's format; on macOS they are the glyph labels.
     const mac = menuShortcutRows([], { os: 'macos' });
-    expect(mac.map((r) => [r.path, r.label])).toEqual([['Quick Command Navigator', '⌘K'], ['Help > Guides > Show or Hide Help Panel', 'F1']]);
+    expect(mac.map((r) => [r.path, r.label])).toEqual([['Command Palette', '⌘K'], ['Help > Guides > Show or Hide Help Panel', 'F1']]);
     // Without top labels the path starts at the tree's own items; a label list of the wrong length is refused.
     expect(menuShortcutRows([fileTree], { os: 'linux' })[0].path).toBe('Export Sequences > Export GenBank');
     expect(() => menuShortcutRows([fileTree, viewTree], { topLabels: ['File'], os: 'linux' })).toThrow(/2 menu trees but 1 label/);
@@ -207,7 +207,7 @@ describe('US-01M6P2G2 AC1: Keyboard rows come from the menu trees the shortcuts 
         'Ctrl+Shift+I': byLabel('Ctrl+Shift+I'),
         'Ctrl+Q': byLabel('Ctrl+Q'),
       }).toEqual(FIRST_DEFINITIONS);
-      expect(rows.slice(-2)).toEqual([['Quick Command Navigator', 'Ctrl+K'], ['Help > Guides > Show or Hide Help Panel', 'F1']]);
+      expect(rows.slice(-2)).toEqual([['Command Palette', 'Ctrl+K'], ['Help > Guides > Show or Hide Help Panel', 'F1']]);
     } finally {
       app.unmount();
     }

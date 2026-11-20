@@ -318,7 +318,7 @@ const MENU_LABEL_DESCRIPTIONS: Record<string, string> = {
   'Actual Size (100%)': 'Reset sequence map magnification back to 100% default scale',
   'Back': 'Return to the previously viewed document in navigation history',
   'Forward': 'Advance to the next document in navigation history',
-  'Search Workspace': 'Focus the global search bar to filter documents, accessions, and menu commands',
+  'Command Palette': 'Find and run any menu command, studio or open document by its name or menu path; works with no session open',
   'Filter Folder': 'Open multi-rule column filters on the current folder document table',
   'Lock Column Order': 'Prevent accidental drag-and-drop rearrangement of document table columns',
   'Save Current State': 'Persist the current visible columns and column arrangement for this folder',
