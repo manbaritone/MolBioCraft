@@ -277,6 +277,59 @@ function deferredClipboard(): { finish: (write: number) => void; writes: () => s
   };
 }
 
+/**
+ * The clipboard-read permission the page is told (BG-01M7FGAF, D0265): a state for
+ * 'clipboard-read', a Permissions API with no such permission (the query rejects, as WebKit and
+ * Firefox reject a name they do not know), or no Permissions API at all. 'clipboard-write' is always
+ * 'granted', so a page asking about the wrong permission reads it as granted. Returns the names the
+ * page asked about.
+ */
+function clipboardReadPermission(answer: 'granted' | 'prompt' | 'denied' | 'rejects' | 'absent'): { asked: string[] } {
+  const asked: string[] = [];
+  const nav = globalThis.navigator as unknown as { permissions?: unknown };
+  if (answer === 'absent') {
+    nav.permissions = undefined;
+    return { asked };
+  }
+  nav.permissions = {
+    query: (d: { name: string }) => {
+      asked.push(d.name);
+      if (d.name === 'clipboard-write') return Promise.resolve({ state: 'granted' });
+      if (d.name !== 'clipboard-read' || answer === 'rejects') return Promise.reject(new TypeError(`'${d.name}' is not a valid permission name`));
+      return Promise.resolve({ state: answer });
+    },
+  };
+  return { asked };
+}
+
+/** The webview the page sees (BG-01M7FGAF): the macOS WebKit one or a Chromium (WebView2) one. */
+function webview(kind: 'webkit' | 'chromium'): void {
+  const nav = globalThis.navigator as unknown as { userAgent: string; platform: string };
+  nav.userAgent = kind === 'webkit'
+    ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)'
+    : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0';
+  nav.platform = kind === 'webkit' ? 'MacIntel' : 'Win32';
+}
+
+/**
+ * A clipboard that really writes and counts each read-back (BG-01M7FGAF). With `reads` 'reject' its
+ * readText rejects, as the macOS WebKit webview's commonly does; with 'hold' it gives back what it
+ * holds.
+ */
+function countingClipboard(reads: 'reject' | 'hold'): { held: () => string; readCount: () => number } {
+  let held = '';
+  let count = 0;
+  const nav = globalThis.navigator as unknown as { clipboard?: unknown };
+  nav.clipboard = {
+    writeText: (text: string) => { held = text; return Promise.resolve(); },
+    readText: () => {
+      count += 1;
+      return reads === 'hold' ? Promise.resolve(held) : Promise.reject(new DOMException('Read permission denied.', 'NotAllowedError'));
+    },
+  };
+  return { held: () => held, readCount: () => count };
+}
+
 /** The tab's report of the last copy: whether it copied, what it said and the text it left to read. */
 function copyReport(app: AppHarness): { status: string | null; words: string; text: string } {
   const panel = app.one('[data-crispr-copy-status]', 'the copy report');
@@ -365,6 +418,7 @@ describe('US-01M7DV5P AC1: Copy spacer puts the row\'s spacer bases alone on the
   it('US-01M7DV5P AC1 copies exactly the spacer bases, 5\'->3\', with no PAM and no label', async () => {
     await withApp(async (app) => {
       await onCrisprTab(app, PLASMID);
+      clipboardReadPermission('granted'); // BG-01M7FGAF AC3: the read-back these cases pin is the granted one
       const scan = await engineScan(PLASMID, SPCAS9);
       expect(scan.report?.candidateCount, 'the fixture holds the four planted sites and nothing else').toBe(4);
       const listed = listedGuideIds(app);
@@ -394,6 +448,7 @@ describe('US-01M7DV5P AC1: Copy spacer puts the row\'s spacer bases alone on the
   it('US-01M7DV5P AC1 copies a 5\'-PAM nuclease\'s spacer without its PAM either', async () => {
     await withApp(async (app) => {
       await onCrisprTab(app, DUAL);
+      clipboardReadPermission('granted'); // BG-01M7FGAF AC3: the read-back these cases pin is the granted one
       await chooseNuclease(app, CAS12A);
       const scan = await engineScan(DUAL, CAS12A);
       expect(scan.report?.candidateCount, 'one planted Cas12a site').toBe(1);
@@ -416,6 +471,7 @@ describe('US-01M7DV5P AC2: Copy spacer + PAM puts the parts in the nuclease\'s o
   it('US-01M7DV5P AC2 writes spacer then PAM for a 3\'-PAM nuclease and PAM then spacer for a 5\'-PAM one, each part marked 5\'->3\' and never one oligo', async () => {
     await withApp(async (app) => {
       await onCrisprTab(app, DUAL);
+      clipboardReadPermission('granted'); // BG-01M7FGAF AC3: the read-back these cases pin is the granted one
 
       for (const nuclease of [SPCAS9, CAS12A]) {
         await chooseNuclease(app, nuclease);
@@ -466,6 +522,7 @@ describe('US-01M7DV5P AC3: a refused copy says nothing was copied and leaves the
   it('US-01M7DV5P AC3 reports a clipboard that refuses and a build with no clipboard apart, and never reports a successful copy', async () => {
     await withApp(async (app) => {
       await onCrisprTab(app, PLASMID);
+      clipboardReadPermission('granted'); // BG-01M7FGAF AC3: the read-back these cases pin is the granted one
       const scan = await engineScan(PLASMID, SPCAS9);
       const listed = listedGuideIds(app);
       const guideId = listed[listed.length - 1];
@@ -906,6 +963,7 @@ describe('BG-01M7EZVV AC4: a copy is reported only as far as the page can tell',
   it('BG-01M7EZVV AC4 a write that resolves without writing is not reported as a copy, and the last click is the report on screen', async () => {
     await withApp(async (app) => {
       await onCrisprTab(app, PLASMID);
+      clipboardReadPermission('granted'); // BG-01M7FGAF AC3: the read-back these cases pin is the granted one
       const scan = await engineScan(PLASMID, SPCAS9);
       const listed = listedGuideIds(app);
       const first = scan.guides.find((g) => g.id === listed[1])!;
@@ -1552,4 +1610,91 @@ describe("BG-01M7FVBN AC2: the Top 5 note's no-length path is rendered", () => {
       vi.doUnmock('../core/bioEngine');
     }
   }, 600_000);
+});
+
+// ─── BG-01M7FGAF: the copy report follows the clipboard-read permission (D0265) ───
+//
+// D0265: "BG-01M7FGAF follows the clipboard-read permission: when the clipboard cannot be read back,
+// or reading would prompt, the status says 'Sent to the clipboard'; read-back is kept when access is
+// granted." The page decides by the permission state, never by the platform: AC1 runs as the macOS
+// WebKit webview, AC2 as a Chromium (WebView2) one and AC3 as WebKit again with the read granted, so
+// a page that sniffed the platform fails one of them.
+//
+// Wrong implementations these kill: 'Copy not confirmed' (or 'Copied') where the read is not
+// granted; readText called where reading would prompt, or before the permission is known; the
+// clipboard-write permission asked instead of clipboard-read; a rejected query read as granted; the
+// read-back dropped where it is granted; a platform test in place of the permission.
+
+describe('BG-01M7FGAF: a copy is confirmed only where reading the clipboard is granted', () => {
+  it('BG-01M7FGAF AC1 where the clipboard cannot be read back, an accepted write reads Sent to the clipboard, never Copy not confirmed', async () => {
+    await withApp(async (app) => {
+      await onCrisprTab(app, PLASMID);
+      const scan = await engineScan(PLASMID, SPCAS9);
+      const listed = listedGuideIds(app);
+      const guide = scan.guides.find((g) => g.id === listed[1])!;
+      webview('webkit');
+      for (const answer of ['absent', 'rejects', 'denied'] as const) {
+        clipboardReadPermission(answer);
+        const clipboard = countingClipboard('reject');
+        await app.click(copyButton(app, 'spacer', guide.id));
+        const sent = copyReport(app);
+        expect(clipboard.held(), `${answer}: the write landed`).toBe(guide.spacerSeq);
+        expect(sent.status, answer).toBe('sent');
+        expect(sent.words, answer).toMatch(/^Sent to the clipboard: /);
+        expect(sent.words, `${answer}: it says the page does not read the clipboard back`).toMatch(/does not read the clipboard back/);
+        expect(sent.words, answer).not.toMatch(/Copy not confirmed|Nothing was copied|^Copied/);
+        expect(sent.text, `${answer}: the text stays on screen`).toBe(guide.spacerSeq);
+        expect(clipboard.readCount(), `${answer}: the clipboard is not read`).toBe(0);
+        expect(app.doc.body.textContent, answer).not.toMatch(/Copy not confirmed|Copied [^.]*to the clipboard/);
+      }
+    });
+  });
+
+  it('BG-01M7FGAF AC2 where reading the clipboard would prompt, the panel never reads it and reports Sent to the clipboard', async () => {
+    await withApp(async (app) => {
+      await onCrisprTab(app, PLASMID);
+      const scan = await engineScan(PLASMID, SPCAS9);
+      const listed = listedGuideIds(app);
+      const guide = scan.guides.find((g) => g.id === listed[listed.length - 1])!;
+      webview('chromium');
+      const permission = clipboardReadPermission('prompt');
+      const clipboard = countingClipboard('hold');
+      await app.click(copyButton(app, 'spacer', guide.id));
+      await app.click(copyButton(app, 'spacer-pam', guide.id));
+      await app.click(copyButton(app, 'spacer', guide.id));
+      expect(clipboard.readCount(), 'no copy reads the clipboard, so none can raise a prompt').toBe(0);
+      expect(permission.asked, 'the page asks about reading, never only about writing').toContain('clipboard-read');
+      const sent = copyReport(app);
+      expect([sent.status, sent.text]).toEqual(['sent', guide.spacerSeq]);
+      expect(sent.words).toMatch(/^Sent to the clipboard: .*does not read the clipboard back/);
+      expect(app.doc.body.textContent).not.toMatch(/Copy not confirmed|Copied [^.]*to the clipboard/);
+    });
+  });
+
+  it('BG-01M7FGAF AC3 where the clipboard read is granted and silent, a copy is confirmed or refuted by reading it back', async () => {
+    await withApp(async (app) => {
+      await onCrisprTab(app, PLASMID);
+      const scan = await engineScan(PLASMID, SPCAS9);
+      const listed = listedGuideIds(app);
+      const guide = scan.guides.find((g) => g.id === listed[1])!;
+      webview('webkit');
+      const permission = clipboardReadPermission('granted');
+      // The same text read back: Copied.
+      const clipboard = countingClipboard('hold');
+      await app.click(copyButton(app, 'spacer', guide.id));
+      const copied = copyReport(app);
+      expect([copied.status, clipboard.readCount(), permission.asked]).toEqual(['copied', 1, ['clipboard-read']]);
+      expect(copied.words).toMatch(/^Copied: /);
+      // Other text read back: Nothing was copied.
+      droppingClipboard('WHATEVER THE CLIPBOARD HELD BEFORE', true);
+      await app.click(copyButton(app, 'spacer', guide.id));
+      const dropped = copyReport(app);
+      expect(dropped.status).toBe('not-copied');
+      expect(dropped.words).toMatch(/^Nothing was copied: .*other text/);
+      // Granted, but the read itself rejects: the page cannot read it back, so Sent to the clipboard.
+      countingClipboard('reject');
+      await app.click(copyButton(app, 'spacer', guide.id));
+      expect(copyReport(app).status).toBe('sent');
+    });
+  });
 });

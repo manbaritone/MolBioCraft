@@ -1151,20 +1151,21 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
    * `outcome` is three-valued because the page really has three answers, and collapsing them to a
    * boolean made the third read as the first: `copied` where the write was read back off the
    * clipboard, `not-copied` where it was refused, absent, or accepted and then not there, and
-   * `unconfirmed` where the write resolved but this build does not let the page read the clipboard
-   * back - a copy nobody can stand behind, and so never reported as one.
+   * `sent` where the clipboard accepted the write but the page does not read it back - because the
+   * clipboard-read permission is not granted (reading would prompt, is denied, or cannot be asked)
+   * or the read itself failed (BG-01M7FGAF, D0265). `sent` says what happened, never a copy.
    */
   const [crisprCopy, setCrisprCopy] = useState<{
-    outcome: 'copied' | 'unconfirmed' | 'not-copied';
+    outcome: 'copied' | 'sent' | 'not-copied';
     detail: string;
     text: string;
   } | null>(null);
   /** What a copy that did not land tells the reader to do with the text left on screen. */
   const COPY_BY_HAND = 'The text is below — select it and copy it by hand.';
   /** The word the copy panel leads with, one per outcome: only `copied` says a copy happened. */
-  const CRISPR_COPY_HEADINGS: Record<'copied' | 'unconfirmed' | 'not-copied', string> = {
+  const CRISPR_COPY_HEADINGS: Record<'copied' | 'sent' | 'not-copied', string> = {
     copied: 'Copied',
-    unconfirmed: 'Copy not confirmed',
+    sent: 'Sent to the clipboard',
     'not-copied': 'Nothing was copied',
   };
   /**
@@ -1182,14 +1183,16 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
    *
    * A `writeText` that resolved is not a write that landed: a clipboard can accept the call and
    * keep its own contents, and reporting the resolve as proof claimed a copy the page never made
-   * (BG-01M7EZVV AC4). Where the build lets the page read the clipboard back, the write is
-   * confirmed against what the clipboard now holds; where it does not, the panel says so instead.
+   * (BG-01M7EZVV AC4). Where the clipboard-read permission is granted, the write is confirmed
+   * against what the clipboard now holds. Otherwise the page never reads it - a read where the
+   * state is `prompt` raises a permission prompt on every copy in a Chromium webview - and says the
+   * write was sent (BG-01M7FGAF, D0265). The permission state decides, never the platform.
    */
   const copyCrisprText = async (what: string, text: string): Promise<void> => {
     const click = (crisprCopyClick.current += 1);
     /** Reports one outcome of this click, unless a later click has already started. */
     const report = (
-      outcome: 'copied' | 'unconfirmed' | 'not-copied',
+      outcome: 'copied' | 'sent' | 'not-copied',
       detail: string,
       notice: string
     ): void => {
@@ -1217,11 +1220,22 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       );
       return;
     }
-    // What the clipboard holds now, where the build permits the page to ask; `undefined` is "the
-    // page cannot tell", which is not "the clipboard is empty" and is never read as either
-    // outcome (LC-006).
+    // What the clipboard holds now, read only where the clipboard-read permission is granted, so
+    // no copy ever raises a prompt (D0265). A Permissions API that is missing, or that rejects the
+    // name (WebKit), leaves the state unknown, which is not granted. `undefined` is "the page cannot
+    // tell", which is not "the clipboard is empty" and is never read as either outcome (LC-006).
+    let readGranted = false;
+    try {
+      const permissions = typeof navigator === 'undefined' ? undefined : navigator.permissions;
+      if (permissions && typeof permissions.query === 'function') {
+        const status = await permissions.query({ name: 'clipboard-read' as PermissionName });
+        readGranted = status.state === 'granted';
+      }
+    } catch {
+      readGranted = false;
+    }
     let onClipboard: string | undefined;
-    if (typeof clipboard.readText === 'function') {
+    if (readGranted && typeof clipboard.readText === 'function') {
       try {
         onClipboard = await clipboard.readText();
       } catch {
@@ -1238,9 +1252,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
     }
     if (onClipboard === undefined) {
       report(
-        'unconfirmed',
-        `${what} was handed to the clipboard and the write was not refused, but this build does not let the page read the clipboard back, so the page cannot confirm the copy. ${COPY_BY_HAND}`,
-        `Copy not confirmed: ${what} was handed to the clipboard, but this build does not let the page read the clipboard back to confirm it; the text is shown in the CRISPR tab to take by hand.`
+        'sent',
+        `${what} was handed to the clipboard and the write was not refused. The page does not read the clipboard back without your permission, so it cannot confirm the copy beyond that; if it did not arrive, the text is below to copy by hand.`,
+        `Sent to the clipboard: ${what} was handed to the clipboard; the page does not read the clipboard back to confirm it, and the text is shown in the CRISPR tab.`
       );
       return;
     }
@@ -2250,9 +2264,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
 
           <ResultWarnings warnings={crisprScan?.warnings} label="CRISPR guide warnings" />
 
-          {/* The last copy, as it went (US-01M7DV5P AC3, BG-01M7EZVV AC4): a copy the environment
-              refused says nothing was copied, a write this build cannot confirm says that rather
-              than claiming a copy, and either way the text is here to take by hand. */}
+          {/* The last copy, as it went (US-01M7DV5P AC3, BG-01M7EZVV AC4, BG-01M7FGAF): a copy the
+              environment refused says nothing was copied, a write the page may not read back says
+              it was sent rather than claiming a copy, and either way the text is here to take by hand. */}
           {crisprCopy && (
             <div
               className="info-callout"
