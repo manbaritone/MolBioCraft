@@ -56,10 +56,11 @@ pub struct InsdcLocation {
     /// held on the plus strand with its parts in the listed order.
     pub mixed_strands: bool,
     /// A `complement()` is written around a part that is already complemented, as in
-    /// `complement(join(complement(11..40),complement(101..160)))`: a double complement, which
-    /// Biopython 1.88 rejects (it sets the feature's location to None). It is held as a mixed-strand
-    /// location is, on the plus strand with its parts in the listed order, never read as the plus
-    /// strand the two complements would cancel to.
+    /// `complement(join(complement(11..40),complement(101..160)))`: a double complement. Readers do
+    /// not agree on one: Biopython 1.88 rejects that join form (it sets the feature's location to
+    /// None), reads `complement(complement(11..40))` as `complement(11..40)`, and cannot parse a
+    /// triple complement (see [`biopython_on_double_complement`]). It is held as a mixed-strand
+    /// location is, on the plus strand with its parts in the listed order, and the Notes say so.
     pub double_complement: bool,
 }
 
@@ -133,11 +134,17 @@ fn part_reading_order(compact: &str) -> (Vec<(usize, bool)>, bool) {
 ///   1.88 reads each such pair as one location and extracts the same protein from it;
 /// - parts on both strands (`join(11..40,complement(101..160))`, a trans-spliced gene): strand 1,
 ///   the parts in the listed order, and `mixed_strands`, since a feature carries one strand;
-/// - a `complement()` around a part that is already complemented, which Biopython 1.88 rejects as
-///   a double complement (`complement(join(11..40,complement(101..160)))`, or
-///   `complement(join(complement(11..40),complement(101..160)))`, whose two complements would
-///   otherwise cancel to the plus strand): strand 1, the parts in the listed order, and
-///   `double_complement` (and `mixed_strands` too when its parts read on both strands).
+/// - a `complement()` around a part that is already complemented, a double complement
+///   (`complement(join(11..40,complement(101..160)))`,
+///   `complement(join(complement(11..40),complement(101..160)))`, `complement(complement(11..40))`
+///   or a triple complement): strand 1, the parts in the listed order, and `double_complement` (and
+///   `mixed_strands` too when its parts read on both strands). One rule holds for every such
+///   shape, whatever its count of complements, because no reading of one is agreed: counting the
+///   complements would read a triple as minus but the join forms as plus with their parts
+///   reversed, the silent reading of BG-01M6T954, while Biopython 1.88 rejects the join forms,
+///   reads a nested range as minus and cannot parse a triple. The importer keeps the feature
+///   rather than guess a strand per shape, and its Notes warning says what Biopython does with
+///   that shape ([`biopython_on_double_complement`]).
 ///
 /// A range written across the origin (`8569..276`, as some sequence editors write it) is the two parts
 /// `8569..` [`WRAP_TO_END`] and `1..276`, kept in that order inside its place. Remote references
@@ -191,10 +198,44 @@ pub fn parse_insdc_location_parts(loc: &str) -> Option<InsdcLocation> {
     Some(InsdcLocation { start, end, strand: if all_minus { -1 } else { 1 }, intervals, mixed_strands, double_complement })
 }
 
+/// What Biopython 1.88 (`SeqIO.read(text, "genbank")`) does with the double-complement location
+/// `compact` (its whitespace removed), as measured on 2026-11-20 on each shape named here:
+///
+/// - `complement(complement(R))`, R one range or base with no wrapper: reads it as
+///   `complement(R)`, on the minus strand, with no warning;
+/// - `complement(join(...))` or `complement(order(...))` whose every part is a range or a
+///   `complement()` of one: rejects it as a double complement ("double complement in ...?;
+///   setting feature location to None"), as for
+///   `complement(join(complement(11..40),complement(101..160)))`, its descending form,
+///   `complement(join(11..40,complement(101..160)))` and the `order()` forms;
+/// - any other (a triple complement, `join(complement(complement(11..40)),101..160)`,
+///   `complement(complement(join(11..40,101..160)))`, or a join form with a nested part): "Could
+///   not parse feature location", and the location set to None.
+fn biopython_on_double_complement(compact: &str) -> String {
+    let plain = |p: &str| !p.contains(['(', ')']);
+    if let Some(range) = compact.strip_prefix("complement(complement(").and_then(|r| r.strip_suffix("))")).filter(|r| plain(r)) {
+        return format!("which Biopython 1.88 reads as complement({range}), on the minus strand");
+    }
+    let parts = ["complement(join(", "complement(order("]
+        .iter()
+        .find_map(|w| compact.strip_prefix(w))
+        .and_then(|r| r.strip_suffix("))"));
+    let each_part_parses = |inner: &str| {
+        inner.split(',').all(|p| plain(p) || p.strip_prefix("complement(").and_then(|r| r.strip_suffix(')')).is_some_and(plain))
+    };
+    if parts.is_some_and(each_part_parses) {
+        "which Biopython 1.88 rejects as a double complement".into()
+    } else {
+        "which Biopython 1.88 cannot parse".into()
+    }
+}
+
 /// The D0005 warning for a feature whose location mixes strands (see
 /// [`InsdcLocation::mixed_strands`]) or is a double complement (see
 /// [`InsdcLocation::double_complement`]), naming it by its /gene, else its /locus_tag, else its
-/// name. A location that is both gets the mixed-strand warning.
+/// name. A location that is both gets the mixed-strand warning. A double complement's warning says
+/// what Biopython 1.88 does with its shape ([`biopython_on_double_complement`]), and that its strand
+/// and part order are this importer's rule rather than a reading the location settles.
 fn strand_warning(f: &SequenceFeature, location: &str, mixed_strands: bool) -> String {
     let first = |key: &str| {
         f.qualifiers
@@ -205,15 +246,19 @@ fn strand_warning(f: &SequenceFeature, location: &str, mixed_strands: bool) -> S
             .map(str::to_string)
     };
     let name = first("gene").or_else(|| first("locus_tag")).unwrap_or_else(|| f.name.clone());
-    let consequence = if f.feature_type == "CDS" { "its translation is not the annotated protein" } else { "its sequence is not the annotated one" };
-    let problem = if mixed_strands {
-        "mixes plus- and minus-strand parts, which one feature here cannot hold"
-    } else {
-        "is a double complement, a complement() around parts already complemented, which Biopython 1.88 rejects"
-    };
+    let cds = f.feature_type == "CDS";
+    if mixed_strands {
+        let consequence = if cds { "its translation is not the annotated protein" } else { "its sequence is not the annotated one" };
+        return format!(
+            "{} {name} {location} mixes plus- and minus-strand parts, which one feature here cannot hold; it was imported on the plus strand in the listed order, so {consequence}.",
+            f.feature_type
+        );
+    }
+    let consequence = if cds { "its translation may not be the annotated protein" } else { "its sequence may not be the annotated one" };
     format!(
-        "{} {name} {location} {problem}; it was imported on the plus strand in the listed order, so {consequence}.",
-        f.feature_type
+        "{} {name} {location} is a double complement, a complement() around parts already complemented, {}; it was imported on the plus strand in the listed order, so {consequence}.",
+        f.feature_type,
+        biopython_on_double_complement(location)
     )
 }
 
@@ -558,7 +603,8 @@ fn segments_from_intervals(name: &str, color: &str, intervals: &[(usize, usize)]
 /// complemented is stored as its `complement(join(...))` form is, on the minus strand with its
 /// parts in the reverse of the listed order, numbered 1..n in that order. A location that mixes
 /// plus- and minus-strand parts, or is a double complement (a `complement()` around parts already
-/// complemented, which Biopython 1.88 rejects), is kept, on the plus strand in the listed order,
+/// complemented, which Biopython 1.88 rejects, reads otherwise or cannot parse, by its shape), is
+/// kept, on the plus strand in the listed order,
 /// and the document's Notes (`doc_metadata["Notes"]`, shown on the Info tab) end with the D0005 block
 /// withWarningNotes writes, "Warnings:" and one "- " line per such feature (a repeated line once),
 /// naming it by its /gene, else its /locus_tag (BG-01M6SMBS). A record with no such feature gets no
