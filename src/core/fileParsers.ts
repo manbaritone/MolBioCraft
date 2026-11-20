@@ -105,8 +105,11 @@ const EXPORT_RECORDS = 'Export the records as GenBank and open those files.';
  * plasmid files (.dna/.prot/.rna), alignment file (.meg) and sequence-database archives
  * (.ma4/.pa4/.oa4) (CR-01M6T9MT), and any .xml file, since the importer reads no XML format
  * (BG-01M6W00X; the Microsatellite dialog reads an OSIRIS kit .xml through its own field, not
- * through the importer). The desktop shell passes a dropped file of these types through to the
- * importer, so this is the one place the message is written.
+ * through the importer). The desktop shell passes a dropped file of the proprietary types through
+ * to the importer, so for them this is the one place the message is written. A .xml is refused by
+ * type here when it reaches the importer (the import picker and the web window's drop); the desktop
+ * shell's drop reader refuses .xml on its own path, before the importer and without this hint
+ * (src-tauri fs_commands.rs require_workbench_file_type; filed as BG-01M7VFR5).
  */
 const REFUSED_FILE_TYPES: Record<string, string> = {
   dna: EXPORT_SEQUENCE,

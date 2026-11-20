@@ -25,6 +25,7 @@
  * - a count probe that cannot see an added document: a FASTA file must raise the count.
  */
 
+import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
 import { createZipArchiveBytes, extractZipArchiveEntries, serializeMbcFolderZip, type MbcWorkbenchSnapshot } from '../core/mbcSessionFormat';
@@ -194,6 +195,55 @@ function folderArchive(sessionName: string, names: string[]): Bytes {
   return asBytes(serializeMbcFolderZip(snapshot));
 }
 
+const unreadableCompressed = (name: string, hint: string) =>
+  `"${name}" is a MolBioCraft archive that MolBioCraft cannot read: its entries are stored compressed. ${hint}`;
+const COMPRESSED_WITH_WORKBENCH = 'Unzip it and open the workbench.mbc.json inside, or save the archive again from MolBioCraft.';
+const COMPRESSED_DOCUMENTS_ONLY = 'Save the archive again from MolBioCraft.';
+const unreadableCutShort = (name: string) =>
+  `"${name}" is a MolBioCraft archive that MolBioCraft cannot read: it is cut short (the file is incomplete or damaged). Open the original file, or save the archive again from MolBioCraft.`;
+const foreignCutShort = (name: string) =>
+  `"${name}" is a ZIP archive that is cut short (the file is incomplete or damaged), and the part that remains holds no MolBioCraft session or document. Open the original file.`;
+
+/** CRC-32 (IEEE), as a ZIP header carries it. */
+function crc32(data: Uint8Array): number {
+  let c = 0xffffffff;
+  for (const b of data) {
+    c ^= b;
+    for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1;
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * A ZIP whose entries are deflated (method 8), as `zip -9` or Finder's Compress write them; with
+ * `descriptor`, each local header leaves its sizes 0 and a data descriptor follows the data (bit 3),
+ * as a streamed ZIP does. A central directory and end record close it.
+ */
+function deflatedZip(entries: { path: string; data: Uint8Array }[], descriptor = false): Bytes {
+  const enc = new TextEncoder();
+  const parts: number[] = [];
+  const central: number[] = [];
+  const u16 = (n: number) => [n & 0xff, (n >>> 8) & 0xff];
+  const u32 = (n: number) => [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff];
+  for (const e of entries) {
+    const name = [...enc.encode(e.path)];
+    const packed = [...deflateRawSync(e.data, { level: 9 })];
+    const crc = crc32(e.data);
+    const offset = parts.length;
+    const flags = 0x0800 | (descriptor ? 0x0008 : 0);
+    const sizes = descriptor ? [...u32(0), ...u32(0), ...u32(0)] : [...u32(crc), ...u32(packed.length), ...u32(e.data.length)];
+    parts.push(0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(flags), ...u16(8), ...u16(0), ...u16(0), ...sizes, ...u16(name.length), ...u16(0), ...name, ...packed);
+    if (descriptor) parts.push(0x50, 0x4b, 0x07, 0x08, ...u32(crc), ...u32(packed.length), ...u32(e.data.length));
+    central.push(0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(flags), ...u16(8), ...u16(0), ...u16(0),
+      ...u32(crc), ...u32(packed.length), ...u32(e.data.length), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+      ...u32(0), ...u32(offset), ...name);
+  }
+  const cdOffset = parts.length;
+  parts.push(...central, 0x50, 0x4b, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(entries.length), ...u16(entries.length),
+    ...u32(central.length), ...u32(cdOffset), ...u16(0));
+  return new Uint8Array(parts);
+}
+
 describe('xml files and foreign ZIP archives (BG-01M6W00X)', () => {
   it('BG-01M6W00X AC1 an xml file is refused by its type with an export hint on both routes, never as a sequence symbol', async () => {
     const app = await mountApp();
@@ -235,6 +285,52 @@ describe('xml files and foreign ZIP archives (BG-01M6W00X)', () => {
         expect(shown, `${route}: ${name}`).toContain(zipNotArchive(name));
         expect(shown, `${route}: ${name}`).not.toContain('did not contain any valid JSON');
         expect(docCount(app), `${route}: ${name} adds no document`).toBe(1);
+      }
+
+      // Round 2 (D0274, LC-006): a MolBioCraft archive the reader cannot read is never called "not a
+      // MolBioCraft archive". Wrong implementations: compressed or cut-short entries dropped
+      // unseen (the round-1 sentence for both probes); every compressed ZIP called a MolBioCraft
+      // archive (the deflated foreign ZIPs must keep the not-an-archive sentence); the unzip hint
+      // given for a cut-short file (unzipping it does not help) or for an archive with no
+      // workbench entry to open (the documents-only probe); a stored but unreadable MolBioCraft
+      // entry called compressed (the broken probe).
+      const real = serializeMbcFolderZip({
+        sessionName: 'W00X_Probe',
+        documents: [archiveDoc('w00x-probe', 'pW00X_Probe', 'ATGGCCAAATTTGGGCCCACGTACGT')],
+        workspace: { activeDocId: 'w00x-probe' },
+      } as unknown as MbcWorkbenchSnapshot);
+      const realEntries = extractZipArchiveEntries(real);
+      expect(realEntries[0].path, 'the probe archive opens with its workbench entry').toMatch(/\/workbench\.mbc\.json$/);
+      const foreignEntries = [
+        { path: 'sampleDocuments/readme.txt', data: enc.encode('Sample documents for a course.\n'.repeat(20)) },
+        { path: 'sampleDocuments/seq.gb', data: enc.encode('LOCUS       seq 12 bp DNA linear\nORIGIN\n        1 acgtacgtac gt\n//\n') },
+      ];
+      const truncated = asBytes(real.slice(0, Math.floor(real.length * 0.3)));
+      // The foreign ZIP cut exactly after its first entry, before the next header and the central directory.
+      const head = new DataView(foreign.buffer);
+      const firstEntryEnd = 30 + head.getUint16(26, true) + head.getUint16(28, true) + head.getUint32(18, true);
+      const probes: [string, Bytes, string, typeof pick][] = [
+        ['rezipped.zip', deflatedZip(realEntries), unreadableCompressed('rezipped.zip', COMPRESSED_WITH_WORKBENCH), drop],
+        ['streamed.zip', deflatedZip(realEntries, true), unreadableCompressed('streamed.zip', COMPRESSED_WITH_WORKBENCH), pick],
+        ['documents.zip', deflatedZip(realEntries.filter((e) => !e.path.endsWith('/workbench.mbc.json'))),
+          unreadableCompressed('documents.zip', COMPRESSED_DOCUMENTS_ONLY), drop],
+        ['cut.zip', truncated, unreadableCutShort('cut.zip'), pick],
+        ['cut.mbc', truncated, unreadableCutShort('cut.mbc'), drop],
+        ['foreign-deflated.zip', deflatedZip(foreignEntries), zipNotArchive('foreign-deflated.zip'), pick],
+        ['foreign-streamed.zip', deflatedZip(foreignEntries, true), zipNotArchive('foreign-streamed.zip'), drop],
+        ['foreign-cut.zip', asBytes(foreign.slice(0, 60)), foreignCutShort('foreign-cut.zip'), drop],
+        ['foreign-cut-at-entry.zip', asBytes(foreign.slice(0, firstEntryEnd)), foreignCutShort('foreign-cut-at-entry.zip'), pick],
+        // A stored MolBioCraft-named entry that is no readable document is not called compressed.
+        ['broken.zip', asBytes(createZipArchiveBytes([{ path: 'W00X/pBroken.mbc.json', data: enc.encode('{"document": ') }])),
+          '"broken.zip" is a MolBioCraft archive that MolBioCraft cannot read: its MolBioCraft entries are not readable sessions or documents. Save the archive again from MolBioCraft.', pick],
+      ];
+      for (const [name, bytes, sentence, put] of probes) {
+        await put(app, new File([bytes], name));
+        const shown = notice(app);
+        expect(shown, name).toContain(sentence);
+        if (sentence !== zipNotArchive(name)) expect(shown, name).not.toContain('not a MolBioCraft archive');
+        if (/cut/.test(name) || name === 'documents.zip' || name === 'broken.zip') expect(shown, `${name}: no unzip hint`).not.toMatch(/Unzip/);
+        expect(docCount(app), `${name} adds no document`).toBe(1);
       }
     } finally {
       app.unmount();

@@ -511,19 +511,39 @@ export function createZipArchiveBytes(entries: MbcZipEntry[]): Uint8Array {
   return output;
 }
 
-export function extractZipArchiveEntries(input: Uint8Array | ArrayBuffer): MbcZipEntry[] {
+/** What a scan of a ZIP's local headers found: the entries it can read, and what it could not. */
+interface ZipArchiveScan {
+  /** Stored (uncompressed) file entries, read whole. */
+  entries: MbcZipEntry[];
+  /** Every file entry path whose local header was seen, read or not. */
+  seenPaths: string[];
+  /** File entries stored compressed (any method but 0), which this reader does not inflate. */
+  compressedPaths: string[];
+  /** The bytes end inside an entry, or before the central directory: the file is incomplete. */
+  cutShort: boolean;
+}
+
+function scanZipArchive(input: Uint8Array | ArrayBuffer): ZipArchiveScan {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (!isMbcZipArchiveBytes(bytes)) {
     throw new Error('Invalid MBC folder archive: missing PKZIP header');
   }
   const decoder = new TextDecoder('utf-8');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const entries: MbcZipEntry[] = [];
+  const scan: ZipArchiveScan = { entries: [], seenPaths: [], compressedPaths: [], cutShort: false };
   let offset = 0;
 
-  while (offset + 30 <= bytes.length) {
+  for (;;) {
+    if (offset + 30 > bytes.length) {
+      // No central directory after the last entry: the bytes stop early.
+      scan.cutShort = true;
+      break;
+    }
     const sig = view.getUint32(offset, true);
     if (sig !== 0x04034b50) {
+      // The central directory (or end record) follows the entries in a whole archive. Any other
+      // bytes also end the scan: for example the data of a streamed entry whose header left its
+      // sizes 0, which the scan cannot step over (a compressed one is already counted above).
       break;
     }
     const compressionMethod = view.getUint16(offset + 8, true);
@@ -532,17 +552,57 @@ export function extractZipArchiveEntries(input: Uint8Array | ArrayBuffer): MbcZi
     const extraLen = view.getUint16(offset + 28, true);
     const nameStart = offset + 30;
     const dataStart = nameStart + fileNameLen + extraLen;
+    const path = nameStart + fileNameLen <= bytes.length
+      ? decoder.decode(bytes.subarray(nameStart, nameStart + fileNameLen))
+      : '';
+    const isFile = path !== '' && !path.endsWith('/');
+    if (isFile) scan.seenPaths.push(path);
     if (dataStart + compressedSize > bytes.length) {
+      scan.cutShort = true;
       break;
     }
-    const path = decoder.decode(bytes.subarray(nameStart, nameStart + fileNameLen));
-    if (compressionMethod === 0 && !path.endsWith('/')) {
-      const data = bytes.slice(dataStart, dataStart + compressedSize);
-      entries.push({ path, data });
+    if (isFile && compressionMethod !== 0) scan.compressedPaths.push(path);
+    if (isFile && compressionMethod === 0) {
+      scan.entries.push({ path, data: bytes.slice(dataStart, dataStart + compressedSize) });
     }
     offset = dataStart + compressedSize;
   }
-  return entries;
+  return scan;
+}
+
+export function extractZipArchiveEntries(input: Uint8Array | ArrayBuffer): MbcZipEntry[] {
+  return scanZipArchive(input).entries;
+}
+
+/** A MolBioCraft session entry (workbench.mbc.json / workbench.json) or document entry (*.mbc.json). */
+const isMbcWorkbenchEntryPath = (path: string): boolean => /(^|\/)workbench(\.mbc)?\.json$/i.test(path);
+const isMbcEntryPath = (path: string): boolean => isMbcWorkbenchEntryPath(path) || /\.mbc\.json$/i.test(path);
+
+/**
+ * Why a ZIP gave no MolBioCraft session or document, told apart (LC-006): a MolBioCraft archive
+ * this reader cannot read (cut short, its entries stored compressed, or its MolBioCraft-named
+ * entries unreadable), a ZIP cut short before any MolBioCraft entry, or a whole ZIP that holds none.
+ */
+function noMbcContentReason(name: string, scan: ZipArchiveScan): string {
+  const mbcSeen = scan.seenPaths.filter(isMbcEntryPath);
+  if (mbcSeen.length > 0 && scan.cutShort) {
+    return `"${name}" is a MolBioCraft archive that MolBioCraft cannot read: it is cut short (the file is incomplete or damaged). Open the original file, or save the archive again from MolBioCraft.`;
+  }
+  const mbcCompressed = scan.compressedPaths.filter(isMbcEntryPath);
+  if (mbcCompressed.length > 0) {
+    const hint = mbcCompressed.some(isMbcWorkbenchEntryPath)
+      ? 'Unzip it and open the workbench.mbc.json inside, or save the archive again from MolBioCraft.'
+      : 'Save the archive again from MolBioCraft.';
+    return `"${name}" is a MolBioCraft archive that MolBioCraft cannot read: its entries are stored compressed. ${hint}`;
+  }
+  if (mbcSeen.length > 0) {
+    // Stored MolBioCraft-named entries that are not readable sessions or documents.
+    return `"${name}" is a MolBioCraft archive that MolBioCraft cannot read: its MolBioCraft entries are not readable sessions or documents. Save the archive again from MolBioCraft.`;
+  }
+  if (scan.cutShort) {
+    return `"${name}" is a ZIP archive that is cut short (the file is incomplete or damaged), and the part that remains holds no MolBioCraft session or document. Open the original file.`;
+  }
+  return `"${name}" is a ZIP archive, not a MolBioCraft archive: it holds no MolBioCraft session or document. Unzip it and open the files inside.`;
 }
 
 export function serializeMbcFolderZip(
@@ -604,7 +664,8 @@ export function parseMbcFolderZip(
   input: Uint8Array | ArrayBuffer,
   fallbackSessionName = 'Imported_Folder'
 ): ParsedMbcWorkbenchResult {
-  const entries = extractZipArchiveEntries(input);
+  const scan = scanZipArchive(input);
+  const { entries } = scan;
   const decoder = new TextDecoder('utf-8');
 
   // 1. Prefer root workbench.mbc.json or workbench.json if present
@@ -640,10 +701,9 @@ export function parseMbcFolderZip(
   }
 
   if (collectedDocs.length === 0) {
-    // A ZIP holding no session and no document JSON is someone else's archive (BG-01M6W00X).
-    throw new Error(
-      `"${fallbackSessionName}" is a ZIP archive, not a MolBioCraft archive: it holds no MolBioCraft session or document. Unzip it and open the files inside.`,
-    );
+    // No session and no document JSON was read: say whether this is a MolBioCraft archive the
+    // reader cannot read or someone else's ZIP (BG-01M6W00X, D0274).
+    throw new Error(noMbcContentReason(fallbackSessionName, scan));
   }
 
   const cleanName = fallbackSessionName.replace(/\.(mbc|mcb|zip)$/i, '') || 'Imported_Folder';
