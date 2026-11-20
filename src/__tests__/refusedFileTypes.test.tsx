@@ -508,8 +508,157 @@ describe('streamed and cut-short ZIP archives (BG-01M7VGHZ)', () => {
       await drop(app, new File([full], 'full_whole.zip'));
       expect(notice(app), 'full archive, whole').toContain('Restored workbench "VGHZ_Full.mbc" — 2 documents');
       expect(notice(app), 'full archive, whole').not.toContain('cut short');
+
+      // File > Merge Session with the cut archive: the merge says what was lost too.
+      await app.menu('file:merge-session');
+      const mergePicker = app.all('input[type="file"]').filter((i) => i.getAttribute('accept') === '.mbc,.mcb,application/json,application/zip');
+      expect(mergePicker, 'the one session picker').toHaveLength(1);
+      const React = await import('react');
+      Object.defineProperty(mergePicker[0], 'files', { configurable: true, value: [new File([fullCut], 'merge_cut.zip')] });
+      await React.act(async () => { dispatchLiveEvent(mergePicker[0], 'change'); });
+      await app.settle();
+      expect(notice(app), 'merged cut archive').toContain('Merged 2 sequence documents from "VGHZ_Full.mbc"');
+      expect(notice(app), 'merged cut archive').toContain(cutShortSession('merge_cut.zip'));
+      expect(docCount(app), 'the merge adds both documents').toBe(4);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7VGHZ AC1 a whole archive whose end record is found is never called cut short: ZIP64 opens, an unreadable directory is named', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({ documents: [ONLY], activeDocId: ONLY.id, viewerTab: 'sequence-view' });
+      const entries = probeEntries();
+      const docsOnly = entries.slice(0, 2);
+      // As `zip -fz` writes it (ZIP64 extra fields, the end record's own counts real), and with the
+      // end record's fields left 0xFFFF / 0xFFFFFFFF so only the ZIP64 end record holds them.
+      for (const [name, bytes] of [['zip64_stored.zip', zip64Zip(entries, 0, false)], ['zip64_sentinel.zip', zip64Zip(entries, 0, true)]] as const) {
+        expect(new DataView(bytes.buffer).getUint32(18, true), `${name}: ZIP64 sizes`).toBe(0xffffffff);
+        await drop(app, new File([bytes], name));
+        expect(notice(app), name).toContain('Restored workbench "R_Probe.mbc" — 1 documents');
+        expect(notice(app), name).not.toContain('cut short');
+        expect(words(app.one('.mbc-workbench', 'workbench root').textContent), name).toContain('pR_A');
+      }
+      // Deflated (`zip -9 -fz`): named a MolBioCraft archive stored compressed, never cut short.
+      for (const [name, sentinel] of [['zip64_deflated.zip', false], ['zip64_deflated_sentinel.zip', true]] as const) {
+        await pick(app, new File([zip64Zip(entries, 8, sentinel)], name));
+        expect(notice(app), name).toContain(unreadableCompressed(name, COMPRESSED_WITH_WORKBENCH));
+        expect(notice(app), name).not.toContain('cut short');
+        expect(docCount(app), `${name} adds no document`).toBe(1);
+      }
+      // Streamed ZIP64 (local sizes 0, unsigned descriptors): read only from the ZIP64 central directory.
+      for (const [name, sentinel] of [['zip64_streamed.zip', true], ['zip64_streamed_end.zip', false]] as const) {
+        await drop(app, new File([zip64Zip(entries, 0, sentinel, true)], name));
+        expect(notice(app), name).toContain('Restored workbench "R_Probe.mbc" — 1 documents');
+      }
+      await pick(app, new File([zip64Zip(entries, 8, true, true)], 'zip64_streamed_deflated.zip'));
+      expect(notice(app), 'zip64 streamed deflated').toContain(unreadableCompressed('zip64_streamed_deflated.zip', COMPRESSED_WITH_WORKBENCH));
+      await pick(app, new File([zip64Zip(docsOnly, 0, true)], 'zip64_docs.zip'));
+      expect(notice(app), 'zip64 documents only').toContain('Restored workbench "zip64_docs.mbc" — 1 documents');
+      expect(notice(app), 'zip64 documents only').not.toContain('cut short');
+
+      // A ZIP64 archive cut inside its central directory: the walk reads each local ZIP64 extra field.
+      const z64 = zip64Zip(docsOnly, 0, true);
+      await drop(app, new File([asBytes(z64.slice(0, pullAfter(z64, 0, [0x50, 0x4b, 0x01, 0x02]) + 40))], 'zip64_cut.zip'));
+      expect(docCount(app), 'the cut ZIP64 archive opens its document').toBe(1);
+      expect(notice(app), 'zip64 cut').toContain(cutShortDocuments('zip64_cut.zip', 1));
+
+      // A central record pointing at another entry's local header: the names differ, so the local walk reads every entry.
+      const three = extractZipArchiveEntries(folderArchive('VGHZ_Mismatch', ['pV_G', 'pV_H', 'pV_I'])).filter((e) => !e.path.endsWith('/workbench.mbc.json'));
+      const mismatch = asBytes(createZipArchiveBytes(three));
+      const mv = new DataView(mismatch.buffer);
+      const firstRecord = pullAfter(mismatch, 0, [0x50, 0x4b, 0x01, 0x02]);
+      const thirdRecord = pullAfter(mismatch, pullAfter(mismatch, firstRecord + 4, [0x50, 0x4b, 0x01, 0x02]) + 4, [0x50, 0x4b, 0x01, 0x02]);
+      expect(new TextDecoder().decode(mismatch.subarray(thirdRecord + 46, thirdRecord + 46 + mv.getUint16(thirdRecord + 28, true))), 'the third record').toMatch(/pV_H\.mbc\.json$/);
+      mv.setUint32(thirdRecord + 42, mv.getUint32(firstRecord + 42, true), true);
+      await pick(app, new File([mismatch], 'mismatch.zip'));
+      expect(docCount(app), 'every document opens despite the misdirected record').toBe(3);
+      expect(words(app.one('.mbc-workbench', 'workbench root').textContent), 'mismatch').toContain('pV_H');
+
+      // Whole archives whose central directory cannot be followed (its first record's signature broken).
+      const breakDirectory = (z: Bytes): Bytes => { const b = asBytes(z.slice()); b[pullAfter(b, 0, [0x50, 0x4b, 0x01, 0x02]) + 3] = 0x09; return b; };
+      const refused: [string, Bytes, string][] = [
+        ['bad_dir_foreign.zip', breakDirectory(deflatedZip(docsOnly, true, 8, false)), unreadableDirectory('bad_dir_foreign.zip')],
+        ['bad_dir_session.zip', breakDirectory(deflatedZip([entries[2], ...docsOnly], true, 0, false)),
+          '"bad_dir_session.zip" is a MolBioCraft archive that MolBioCraft cannot read: its central directory cannot be followed, and its entries cannot be read without it. Save the archive again from MolBioCraft.'],
+      ];
+      for (const [name, bytes, sentence] of refused) {
+        const before = docCount(app);
+        await drop(app, new File([bytes], name));
+        const shown = notice(app);
+        expect(shown, name).toContain(sentence);
+        expect(shown, name).not.toContain('cut short');
+        expect(shown, `${name}: never said to hold nothing`).not.toMatch(/holds no MolBioCraft|remains holds no/);
+        expect(docCount(app), `${name} adds no document`).toBe(before);
+      }
+      // The same broken directory on archives whose entries the walk reads: they open, and say the rest may be unread.
+      await pick(app, new File([breakDirectory(asBytes(createZipArchiveBytes(three)))], 'bad_dir_docs.zip'));
+      expect(docCount(app), 'bad directory, documents').toBe(3);
+      expect(notice(app), 'bad directory, documents').toContain(directoryDocuments('bad_dir_docs.zip', 3));
+      await drop(app, new File([breakDirectory(folderArchive('VGHZ_BadDir', ['pV_J']))], 'bad_dir_full.zip'));
+      expect(notice(app), 'bad directory, session').toContain('Restored workbench "VGHZ_BadDir.mbc" — 1 documents');
+      expect(notice(app), 'bad directory, session').toContain(directorySession('bad_dir_full.zip'));
+      expect(notice(app), 'bad directory, session').not.toContain('cut short');
     } finally {
       app.unmount();
     }
   });
 });
+
+/** The reviewer's probe entries, as unzipped from a serializeMbcFolderZip archive: .fasta, document, session. */
+function probeEntries(): { path: string; data: Uint8Array }[] {
+  const unzipped = extractZipArchiveEntries(serializeMbcFolderZip({
+    sessionName: 'R_Probe',
+    documents: [archiveDoc('vghz-probe', 'pR_A', 'ATGGCCAAATTTGGGCCCACGTACGTTTGA')],
+    workspace: { activeDocId: 'vghz-probe' },
+  } as unknown as MbcWorkbenchSnapshot)).map((e) => ({ path: e.path.replace(/^[^/]+\//, ''), data: e.data }));
+  return ['Local/pR_A.fasta', 'Local/pR_A.mbc.json', 'workbench.mbc.json'].map((p) => unzipped.find((e) => e.path === p)!);
+}
+
+/**
+ * A ZIP64 archive as `zip -fz` writes it: each local header and central record carries 0xFFFFFFFF
+ * sizes (and the record a 0xFFFFFFFF offset) with the real values in a ZIP64 extra field (id 0x0001),
+ * then a ZIP64 end record and its locator before the end record. With `sentinelEnd`, the end
+ * record's counts, size and offset are left 0xFFFF / 0xFFFFFFFF too. With `streamed`, as a streaming
+ * ZIP64 writer, each local header leaves its sizes 0 (bit 3) and an unsigned ZIP64 data descriptor
+ * follows the data, so only the central directory tells where each entry ends.
+ */
+function zip64Zip(entries: { path: string; data: Uint8Array }[], method: 0 | 8, sentinelEnd: boolean, streamed = false): Bytes {
+  const enc = new TextEncoder();
+  const u16 = (n: number) => [n & 0xff, (n >>> 8) & 0xff];
+  const u32 = (n: number) => [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff];
+  const u64 = (n: number) => [...u32(n), ...u32(0)];
+  const parts: number[] = [];
+  const central: number[] = [];
+  for (const e of entries) {
+    const name = [...enc.encode(e.path)];
+    const packed = method === 8 ? [...deflateRawSync(e.data, { level: 9 })] : [...e.data];
+    const crc = crc32(e.data);
+    const offset = parts.length;
+    const localSize = streamed ? 0 : 0xffffffff;
+    parts.push(0x50, 0x4b, 0x03, 0x04, ...u16(45), ...u16(streamed ? 0x0808 : 0x0800), ...u16(method), ...u16(0), ...u16(0), ...u32(streamed ? 0 : crc),
+      ...u32(localSize), ...u32(localSize), ...u16(name.length), ...u16(20), ...name,
+      ...u16(1), ...u16(16), ...u64(streamed ? 0 : e.data.length), ...u64(streamed ? 0 : packed.length), ...packed);
+    if (streamed) parts.push(...u32(crc), ...u64(packed.length), ...u64(e.data.length));
+    central.push(0x50, 0x4b, 0x01, 0x02, ...u16(45), ...u16(45), ...u16(streamed ? 0x0808 : 0x0800), ...u16(method), ...u16(0), ...u16(0), ...u32(crc),
+      ...u32(0xffffffff), ...u32(0xffffffff), ...u16(name.length), ...u16(28), ...u16(0), ...u16(0), ...u16(0), ...u32(0),
+      ...u32(0xffffffff), ...name, ...u16(1), ...u16(24), ...u64(e.data.length), ...u64(packed.length), ...u64(offset));
+  }
+  const cdOffset = parts.length;
+  parts.push(...central);
+  const z64End = parts.length;
+  parts.push(0x50, 0x4b, 0x06, 0x06, ...u64(44), ...u16(45), ...u16(45), ...u32(0), ...u32(0),
+    ...u64(entries.length), ...u64(entries.length), ...u64(central.length), ...u64(cdOffset));
+  parts.push(0x50, 0x4b, 0x06, 0x07, ...u32(0), ...u64(z64End), ...u32(1));
+  const count = sentinelEnd ? 0xffff : entries.length;
+  parts.push(0x50, 0x4b, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(count), ...u16(count),
+    ...u32(sentinelEnd ? 0xffffffff : central.length), ...u32(sentinelEnd ? 0xffffffff : cdOffset), ...u16(0));
+  return new Uint8Array(parts);
+}
+const unreadableDirectory = (name: string) =>
+  `"${name}" is a ZIP archive that MolBioCraft cannot read: its central directory cannot be followed, so MolBioCraft cannot tell whether it holds a MolBioCraft session or document. Open the original file, or unzip it and open the files inside.`;
+const directoryDocuments = (name: string, n: number) =>
+  `"${name}" has a central directory MolBioCraft cannot follow: it opened the ${n} ${n === 1 ? 'document' : 'documents'} read before it stopped, and any entries after them were not read. Save the archive again from MolBioCraft.`;
+const directorySession = (name: string) =>
+  `"${name}" has a central directory MolBioCraft cannot follow: its session entry was read whole, and any entries after it were not read. Save the archive again from MolBioCraft.`;

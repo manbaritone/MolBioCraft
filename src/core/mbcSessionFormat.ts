@@ -527,6 +527,11 @@ interface ZipArchiveScan {
    * entries after it, if any, are unseen. Null when nothing was left unread.
    */
   unreadPast: string | null;
+  /**
+   * The end record is there (the file is whole) but its central directory cannot be followed, and
+   * the walk of the local headers stopped before the end: the entries after that point are unread.
+   */
+  unreadableDirectory: boolean;
 }
 
 /** One central directory record: the entry's name, method and size, even for a streamed entry. */
@@ -537,10 +542,34 @@ interface ZipCentralRecord {
   localOffset: number;
 }
 
+const ZIP_MAX32 = 0xffffffff;
+
+/** A little-endian 8-byte value (exact below 2^53, far past any file MolBioCraft reads into memory). */
+function readUint64(view: DataView, at: number): number {
+  return view.getUint32(at + 4, true) * 0x100000000 + view.getUint32(at, true);
+}
+
 /**
- * The central directory, located from the end record that closes a whole ZIP: 'missing' when the
- * bytes carry no end record (the file is cut short or damaged), 'unreadable' when it cannot be followed
- * (ZIP64, or records that do not parse).
+ * The first `count` 8-byte values of a ZIP64 extra field (header id 0x0001) in the extra block at
+ * `start`: one for each field its header or record left 0xFFFFFFFF, in the order uncompressed size,
+ * compressed size, local header offset. Null when the block holds no such field.
+ */
+function zip64ExtraValues(view: DataView, start: number, length: number, count: number): number[] | null {
+  const end = start + length;
+  if (end > view.byteLength) return null;
+  for (let p = start; p + 4 <= end; p += 4 + view.getUint16(p + 2, true)) {
+    if (view.getUint16(p, true) !== 0x0001) continue;
+    if (view.getUint16(p + 2, true) < count * 8 || p + 4 + count * 8 > end) return null;
+    return Array.from({ length: count }, (_, i) => readUint64(view, p + 4 + i * 8));
+  }
+  return null;
+}
+
+/**
+ * The central directory, located from the end record that closes a whole ZIP (and, for ZIP64, the
+ * ZIP64 end record its locator names): 'missing' when the bytes carry no end record (the file is cut
+ * short or damaged), 'unreadable' when it cannot be followed (records that do not parse, or a ZIP64
+ * end record its locator does not lead to).
  */
 function readZipCentralDirectory(
   bytes: Uint8Array,
@@ -551,36 +580,69 @@ function readZipCentralDirectory(
   for (let eocd = bytes.length - 22; eocd >= lowest; eocd--) {
     if (view.getUint32(eocd, true) !== 0x06054b50) continue;
     if (eocd + 22 + view.getUint16(eocd + 20, true) !== bytes.length) continue;
-    const count = view.getUint16(eocd + 10, true);
-    const cdSize = view.getUint32(eocd + 12, true);
-    const cdOffset = view.getUint32(eocd + 16, true);
-    if (count === 0xffff || cdOffset === 0xffffffff || cdOffset + cdSize > eocd) return 'unreadable';
+    let count = view.getUint16(eocd + 10, true);
+    let cdSize = view.getUint32(eocd + 12, true);
+    let cdOffset = view.getUint32(eocd + 16, true);
+    if (count === 0xffff || cdSize === ZIP_MAX32 || cdOffset === ZIP_MAX32) {
+      // ZIP64: the ZIP64 end record, named by the locator just before the end record, holds them.
+      const locator = eocd - 20;
+      if (locator < 0 || view.getUint32(locator, true) !== 0x07064b50) return 'unreadable';
+      const z64 = readUint64(view, locator + 8);
+      if (z64 + 56 > locator || view.getUint32(z64, true) !== 0x06064b50) return 'unreadable';
+      count = readUint64(view, z64 + 32);
+      cdSize = readUint64(view, z64 + 40);
+      cdOffset = readUint64(view, z64 + 48);
+    }
+    if (cdOffset + cdSize > eocd) return 'unreadable';
     const records: ZipCentralRecord[] = [];
     let p = cdOffset;
     for (let i = 0; i < count; i++) {
       if (p + 46 > eocd || view.getUint32(p, true) !== 0x02014b50) return 'unreadable';
       const nameLen = view.getUint16(p + 28, true);
-      if (p + 46 + nameLen > eocd) return 'unreadable';
+      const extraLen = view.getUint16(p + 30, true);
+      if (p + 46 + nameLen + extraLen > eocd) return 'unreadable';
+      let compressedSize = view.getUint32(p + 20, true);
+      let localOffset = view.getUint32(p + 42, true);
+      const wide = [view.getUint32(p + 24, true) === ZIP_MAX32, compressedSize === ZIP_MAX32, localOffset === ZIP_MAX32];
+      const wideCount = wide.filter(Boolean).length;
+      if (wideCount > 0) {
+        // A ZIP64 record: the real values are in its ZIP64 extra field.
+        const values = zip64ExtraValues(view, p + 46 + nameLen, extraLen, wideCount);
+        if (!values) return 'unreadable';
+        let k = wide[0] ? 1 : 0;
+        if (wide[1]) compressedSize = values[k++];
+        if (wide[2]) localOffset = values[k++];
+      }
       records.push({
         path: decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen)),
         method: view.getUint16(p + 10, true),
-        compressedSize: view.getUint32(p + 20, true),
-        localOffset: view.getUint32(p + 42, true),
+        compressedSize,
+        localOffset,
       });
-      p += 46 + nameLen + view.getUint16(p + 30, true) + view.getUint16(p + 32, true);
+      p += 46 + nameLen + extraLen + view.getUint16(p + 32, true);
     }
     return records;
   }
   return 'missing';
 }
 
-/** Reads every entry the central directory lists from its local header; null if one does not match. */
-function scanFromCentralDirectory(bytes: Uint8Array, view: DataView, records: ZipCentralRecord[]): ZipArchiveScan | null {
-  const scan: ZipArchiveScan = { entries: [], seenPaths: [], compressedPaths: [], cutShort: false, unreadPast: null };
+/**
+ * Reads every entry the central directory lists from its local header; null if one does not match
+ * (no local header there, or one naming another entry), so the local headers are walked instead.
+ */
+function scanFromCentralDirectory(
+  bytes: Uint8Array,
+  view: DataView,
+  decoder: TextDecoder,
+  records: ZipCentralRecord[]
+): ZipArchiveScan | null {
+  const scan: ZipArchiveScan = { entries: [], seenPaths: [], compressedPaths: [], cutShort: false, unreadPast: null, unreadableDirectory: false };
   for (const record of records) {
     const at = record.localOffset;
     if (at + 30 > bytes.length || view.getUint32(at, true) !== 0x04034b50) return null;
-    const dataStart = at + 30 + view.getUint16(at + 26, true) + view.getUint16(at + 28, true);
+    const localNameLen = view.getUint16(at + 26, true);
+    if (decoder.decode(bytes.subarray(at + 30, at + 30 + localNameLen)) !== record.path) return null;
+    const dataStart = at + 30 + localNameLen + view.getUint16(at + 28, true);
     if (dataStart + record.compressedSize > bytes.length) return null;
     if (record.path === '' || record.path.endsWith('/')) continue;
     scan.seenPaths.push(record.path);
@@ -612,11 +674,11 @@ function scanZipArchive(input: Uint8Array | ArrayBuffer): ZipArchiveScan {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const central = readZipCentralDirectory(bytes, view, decoder);
   if (Array.isArray(central)) {
-    const fromCentral = scanFromCentralDirectory(bytes, view, central);
+    const fromCentral = scanFromCentralDirectory(bytes, view, decoder, central);
     if (fromCentral) return fromCentral;
   }
 
-  const scan: ZipArchiveScan = { entries: [], seenPaths: [], compressedPaths: [], cutShort: false, unreadPast: null };
+  const scan: ZipArchiveScan = { entries: [], seenPaths: [], compressedPaths: [], cutShort: false, unreadPast: null, unreadableDirectory: false };
   let offset = 0;
   let lastPath = '';
   for (;;) {
@@ -637,7 +699,7 @@ function scanZipArchive(input: Uint8Array | ArrayBuffer): ZipArchiveScan {
     }
     const flags = view.getUint16(offset + 6, true);
     const compressionMethod = view.getUint16(offset + 8, true);
-    const headerSize = view.getUint32(offset + 18, true);
+    let headerSize = view.getUint32(offset + 18, true);
     const fileNameLen = view.getUint16(offset + 26, true);
     const extraLen = view.getUint16(offset + 28, true);
     const nameStart = offset + 30;
@@ -651,6 +713,16 @@ function scanZipArchive(input: Uint8Array | ArrayBuffer): ZipArchiveScan {
     if (dataStart > bytes.length) {
       scan.cutShort = true;
       break;
+    }
+    if (headerSize === ZIP_MAX32) {
+      // A ZIP64 local header carries both sizes in its ZIP64 extra field.
+      const values = zip64ExtraValues(view, nameStart + fileNameLen, extraLen, 2);
+      if (!values) {
+        scan.cutShort = true;
+        scan.unreadPast = path;
+        break;
+      }
+      headerSize = values[1];
     }
     let compressedSize = headerSize;
     let next = dataStart + headerSize;
@@ -678,8 +750,14 @@ function scanZipArchive(input: Uint8Array | ArrayBuffer): ZipArchiveScan {
     }
     offset = next;
   }
-  // A whole ZIP ends with an end record; without one the file is cut short or damaged.
-  if (central === 'missing') scan.cutShort = true;
+  // A whole ZIP ends with an end record; without one the file is cut short or damaged. With one,
+  // the file's end is there: a walk that stopped early met a directory it cannot follow, not a cut.
+  if (central === 'missing') {
+    scan.cutShort = true;
+  } else if (scan.cutShort) {
+    scan.cutShort = false;
+    scan.unreadableDirectory = true;
+  }
   return scan;
 }
 
@@ -701,6 +779,9 @@ function noMbcContentReason(name: string, scan: ZipArchiveScan): string {
   if (mbcSeen.length > 0 && scan.cutShort) {
     return `"${name}" is a MolBioCraft archive that MolBioCraft cannot read: it is cut short (the file is incomplete or damaged). Open the original file, or save the archive again from MolBioCraft.`;
   }
+  if (mbcSeen.length > 0 && scan.unreadableDirectory) {
+    return `"${name}" is a MolBioCraft archive that MolBioCraft cannot read: its central directory cannot be followed, and its entries cannot be read without it. Save the archive again from MolBioCraft.`;
+  }
   const mbcCompressed = scan.compressedPaths.filter(isMbcEntryPath);
   if (mbcCompressed.length > 0) {
     const hint = mbcCompressed.some(isMbcWorkbenchEntryPath)
@@ -711,6 +792,10 @@ function noMbcContentReason(name: string, scan: ZipArchiveScan): string {
   if (mbcSeen.length > 0) {
     // Stored MolBioCraft-named entries that are not readable sessions or documents.
     return `"${name}" is a MolBioCraft archive that MolBioCraft cannot read: its MolBioCraft entries are not readable sessions or documents. Save the archive again from MolBioCraft.`;
+  }
+  if (scan.unreadableDirectory) {
+    // A whole file whose entries past the walk's stop are unread: neither cut short nor known empty.
+    return `"${name}" is a ZIP archive that MolBioCraft cannot read: its central directory cannot be followed, so MolBioCraft cannot tell whether it holds a MolBioCraft session or document. Open the original file, or unzip it and open the files inside.`;
   }
   if (scan.unreadPast !== null) {
     // Entries after the one the scan could not step past are unseen: do not say it holds none.
@@ -779,11 +864,25 @@ export function serializeMbcFolderZip(
 
 /** A folder archive's parse, with the note to show when the archive was cut short (D0005). */
 export interface ParsedMbcFolderZipResult extends ParsedMbcWorkbenchResult {
-  /** Set when the bytes end before the archive does: what was read opened, and any later entries were lost. */
+  /** Set when the archive was read only in part (cut short, or a directory not followed): what was read opened. */
   archiveNotice: string | null;
 }
 
 const CUT_SHORT_ADVICE = 'Open the original file, or save the archive again from MolBioCraft.';
+
+/** The note for an archive opened from part of its entries: cut short, or a directory not followed (D0005). */
+function partialArchiveNotice(name: string, scan: ZipArchiveScan, documentsRead: number | 'session'): string | null {
+  const what = documentsRead === 'session'
+    ? 'its session entry was read whole'
+    : `it opened the ${documentsRead} ${documentsRead === 1 ? 'document' : 'documents'} read before`;
+  if (scan.cutShort) {
+    return `"${name}" is cut short (the file is incomplete or damaged): ${what}${documentsRead === 'session' ? '' : ' the cut'}, and any entries after the cut were lost. ${CUT_SHORT_ADVICE}`;
+  }
+  if (scan.unreadableDirectory) {
+    return `"${name}" has a central directory MolBioCraft cannot follow: ${what}${documentsRead === 'session' ? '' : ' it stopped'}, and any entries after ${documentsRead === 'session' ? 'it' : 'them'} were not read. Save the archive again from MolBioCraft.`;
+  }
+  return null;
+}
 
 export function parseMbcFolderZip(
   input: Uint8Array | ArrayBuffer,
@@ -803,9 +902,7 @@ export function parseMbcFolderZip(
   );
   if (workbenchEntry) {
     const rawJson = decoder.decode(workbenchEntry.data);
-    const archiveNotice = scan.cutShort
-      ? `"${fallbackSessionName}" is cut short (the file is incomplete or damaged): its session entry was read whole, and any entries after the cut were lost. ${CUT_SHORT_ADVICE}`
-      : null;
+    const archiveNotice = partialArchiveNotice(fallbackSessionName, scan, 'session');
     return { ...parseMbcWorkbench(rawJson, fallbackSessionName), archiveNotice };
   }
 
@@ -816,9 +913,7 @@ export function parseMbcFolderZip(
     try {
       const parsedObj = JSON.parse(decoder.decode(entry.data)) as Record<string, unknown>;
       if (parsedObj.magic === MBC_FORMAT_MAGIC && Array.isArray(parsedObj.documents)) {
-        const archiveNotice = scan.cutShort
-          ? `"${fallbackSessionName}" is cut short (the file is incomplete or damaged): its session entry was read whole, and any entries after the cut were lost. ${CUT_SHORT_ADVICE}`
-          : null;
+        const archiveNotice = partialArchiveNotice(fallbackSessionName, scan, 'session');
         return { ...parseMbcWorkbench(decoder.decode(entry.data), fallbackSessionName), archiveNotice };
       }
       if (parsedObj.document && typeof parsedObj.document === 'object') {
@@ -868,11 +963,8 @@ export function parseMbcFolderZip(
     },
   };
   const serialized = serializeMbcWorkbench(syntheticSnapshot);
-  const n = collectedDocs.length;
-  // A cut-short archive opens the documents read before the cut, and says any after it were lost (D0005).
-  const archiveNotice = scan.cutShort
-    ? `"${fallbackSessionName}" is cut short (the file is incomplete or damaged): it opened the ${n} ${n === 1 ? 'document' : 'documents'} read before the cut, and any entries after the cut were lost. ${CUT_SHORT_ADVICE}`
-    : null;
+  // A partly read archive opens the documents read, and says any after them were lost or unread (D0005).
+  const archiveNotice = partialArchiveNotice(fallbackSessionName, scan, collectedDocs.length);
   return { ...parseMbcWorkbench(serialized, cleanName), archiveNotice };
 }
 
