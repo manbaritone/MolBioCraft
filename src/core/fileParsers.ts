@@ -61,7 +61,7 @@ export function parseGenBank(
   return doc.primers.length ? { ...doc, primers: doc.primers.map(withPrimerMetrics) } : doc;
 }
 
-/** A primer read from a GenBank file with the engine's numbers for its sequences. */
+/** A primer read from a GenBank or EMBL file with the engine's numbers for its sequences. */
 function withPrimerMetrics(p: PrimerRecord): PrimerRecord {
   const anneal = calculatePrimerMetrics(p.annealSequence);
   const full = calculatePrimerMetrics(p.sequence);
@@ -185,13 +185,19 @@ export function bamToSam(buffer: ArrayBuffer, maxRecords = 0): string {
   return invokeRustBioSync<string>('bam_to_sam', { bytes: Array.from(new Uint8Array(buffer)), maxRecords });
 }
 
-/** An EMBL record as a document made at `nowIso` (default: now), as parseGenBank dates one. */
+/**
+ * An EMBL record as a document made at `nowIso` (default: now), as parseGenBank dates one. The
+ * primers `exportToEMBL` wrote (D0201) get the engine's numbers here as parseGenBank gives them
+ * (`withPrimerMetrics`), so a primer imported from EMBL shows what one imported from GenBank shows
+ * (BG-01M7Q9BP).
+ */
 export function parseEMBL(
   text: string,
   fallbackName = 'Imported_EMBL',
   nowIso = new Date().toISOString()
 ): SequenceDocument {
-  return invokeRustBioSync<SequenceDocument>('parse_embl', { text, fallbackName, nowIso });
+  const doc = invokeRustBioSync<SequenceDocument>('parse_embl', { text, fallbackName, nowIso });
+  return doc.primers.length ? { ...doc, primers: doc.primers.map(withPrimerMetrics) } : doc;
 }
 
 /** True when the text is an EMBL record (first non-blank line is an `ID   ` line). */

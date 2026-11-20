@@ -2739,6 +2739,127 @@ fn genbank_round_trip_keeps_a_primer_across_the_origin() {
     assert!(!back.features.iter().any(|f| f.feature_type == "primer_bind"), "{gb}");
 }
 
+/// BG-01M7Q9BP AC1 (D0201): "a primer is exported to GenBank as a primer_bind feature with
+/// /label=<name> and /note="MolBioCraft primer: <full 5'->3' sequence>". Only a primer_bind
+/// carrying exactly that note form is read back as a PrimerRecord; every other primer_bind stays a
+/// feature." The EMBL export writes the same feature in its FT table and the EMBL import reads it
+/// back the same way: two primers (a forward one with a 5' tail, a reverse one on strand -1) come
+/// back whole, on the synthetic MCS record and on each ENA record of the reference data, whose
+/// features, third-party primer_bind features included, come back unchanged.
+#[test]
+fn embl_round_trip_keeps_primers() {
+    use molbiocraft_core::{PrimerRecord, SequenceDocument};
+    type FeatureView = (String, String, usize, usize, i8, Option<String>, Option<Vec<(String, String)>>, Option<Vec<(usize, usize)>>);
+    fn features(d: &SequenceDocument) -> Vec<FeatureView> {
+        d.features
+            .iter()
+            .map(|f| {
+                let mut q: Option<Vec<(String, String)>> =
+                    f.qualifiers.as_ref().map(|q| q.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                if let Some(q) = q.as_mut() {
+                    q.sort();
+                }
+                let parts = f.segments.as_ref().map(|s| s.iter().map(|s| (s.start, s.end)).collect());
+                (f.feature_type.clone(), f.name.clone(), f.start, f.end, f.strand, f.notes.clone(), q, parts)
+            })
+            .collect()
+    }
+    fn primers(d: &SequenceDocument) -> Vec<(String, String, String, String, usize, usize, i8, usize)> {
+        d.primers
+            .iter()
+            .map(|p| (p.name.clone(), p.sequence.clone(), p.anneal_sequence.clone(), p.tail5_prime.clone(), p.bind_start, p.bind_end, p.strand, p.length))
+            .collect()
+    }
+    /// A tailed forward primer on the first 20 bases and a reverse primer on the last 20.
+    fn two_primers(seq: &str) -> Vec<PrimerRecord> {
+        let n = seq.len();
+        let fwd = seq[0..20].to_ascii_uppercase();
+        let rev = revcomp(&seq[n - 20..n].to_ascii_uppercase());
+        vec![
+            PrimerRecord {
+                id: "p1".into(),
+                name: "fwd tailed".into(),
+                sequence: format!("GCGGCCGCTT{fwd}"),
+                anneal_sequence: fwd,
+                tail5_prime: "GCGGCCGCTT".into(),
+                bind_start: 1,
+                bind_end: 20,
+                strand: 1,
+                length: 30,
+                ..Default::default()
+            },
+            PrimerRecord {
+                id: "p2".into(),
+                name: "rev".into(),
+                sequence: rev.clone(),
+                anneal_sequence: rev,
+                bind_start: n - 19,
+                bind_end: n,
+                strand: -1,
+                length: 20,
+                ..Default::default()
+            },
+        ]
+    }
+    /// Third-party primer_bind features, none with the marker note in its exact form.
+    fn add_foreign(doc: &mut SequenceDocument) {
+        let mut foreign = doc.features[0].clone();
+        foreign.feature_type = "primer_bind".into();
+        foreign.qualifiers = None;
+        foreign.segments = None;
+        foreign.start = 2;
+        foreign.end = 12;
+        for (i, note) in [None, Some("M13 fwd"), Some("MolBioCraft primer ACGT"), Some("Primer: ACGT"), Some("MolBioCraft primer: 5'-ACGT-3'")]
+            .into_iter()
+            .enumerate()
+        {
+            let mut f = foreign.clone();
+            f.id = format!("foreign-{i}");
+            f.name = format!("foreign primer {i}");
+            f.notes = note.map(str::to_string);
+            // The qualifiers a parsed feature carries: its /label, then any /note.
+            let mut q = std::collections::HashMap::from([("label".to_string(), f.name.clone())]);
+            if let Some(n) = note {
+                q.insert("note".into(), n.into());
+            }
+            f.qualifiers = Some(q);
+            doc.features.push(f);
+        }
+    }
+    let round_trip = |doc: &SequenceDocument, via: &str| {
+        let embl = export_embl_flatfile(doc);
+        let back = parse_embl_flatfile(&embl, "fallback");
+        assert_eq!(primers(&back), primers(doc), "{via}: the primers");
+        assert_eq!(features(&back), features(doc), "{via}: the features");
+        assert_eq!(export_embl_flatfile(&back), embl, "{via}: a second export of what was read");
+        embl
+    };
+
+    let mut doc = mcs_doc("MCS60");
+    doc.primers = two_primers(MCS_60);
+    add_foreign(&mut doc);
+    let embl = round_trip(&doc, "MCS60");
+    assert!(embl.contains("FT   primer_bind     1..20\nFT                   /label=\"fwd tailed\"\n"), "{embl}");
+    assert!(embl.contains("FT                   /note=\"MolBioCraft primer: GCGGCCGCTTGAATTCGAGCTCGGTACCCG\"\n"), "{embl}");
+    assert!(embl.contains("FT   primer_bind     complement(41..60)\n"), "{embl}");
+
+    let mut read = 0;
+    for name in ["J01749", "J02459", "L09137", "V01555", "X02514"] {
+        let Some(text) = data_file(&format!("ena/{name}.embl")) else { continue };
+        let file = parse_embl_flatfile(&text, name);
+        assert!(file.primers.is_empty() && file.sequence.len() > 40 && !file.features.is_empty(), "{name}");
+        // The EMBL export writes a /label for every feature, which the ENA file does not hold, so
+        // the record is compared from its first export on: that one, with no primers, as read back.
+        let mut doc = parse_embl_flatfile(&export_embl_flatfile(&file), name);
+        assert_eq!(doc.features.len(), file.features.len(), "{name}");
+        doc.primers = two_primers(&doc.sequence);
+        add_foreign(&mut doc);
+        round_trip(&doc, name);
+        read += 1;
+    }
+    eprintln!("embl_round_trip_keeps_primers: {read} ENA records read");
+}
+
 /// US-01M7Q97X (D0203): each importer's dated variant stamps the caller's time into createdAt and
 /// updatedAt and that minute into the import history entry; the undated one leaves all three blank.
 #[test]

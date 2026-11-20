@@ -623,7 +623,8 @@ fn segments_from_intervals(name: &str, color: &str, intervals: &[(usize, usize)]
 /// the origin as a join of the record's end and its start), and its anneal sequence the last
 /// letters of the sequence, as many as the site holds bases; the letters before them are its 5'
 /// tail. Its Tm, ΔG and the other numbers are 0 here: the formats crate cannot compute them, and
-/// the app's `parseGenBank` fills them. EMBL import reads no primers (BG-01M7Q9BP).
+/// the app's `parseGenBank` fills them. [`parse_embl_flatfile`] reads them the same way, through
+/// this function (BG-01M7Q9BP).
 ///
 /// D0202: "the parser takes the record name from that line when present", the line being
 /// `COMMENT     MolBioCraft name: <name>`; the document id is still made from the LOCUS name.
@@ -1095,16 +1096,15 @@ fn parse_insdc_record(
     let record_len = if len > 0 { len } else { locus_length };
     resolve_wrapped_features(&mut features, record_len);
     // D0201: the user's primers, written as marked primer_bind features (see this function's doc).
+    // GenBank and EMBL records alike (BG-01M7Q9BP).
     let mut primers: Vec<PrimerRecord> = Vec::new();
-    if source == InsdcSource::GenBank {
-        features.retain(|f| match marked_primer(f, record_len, primers.len() + 1) {
-            Some(p) => {
-                primers.push(p);
-                false
-            }
-            None => true,
-        });
-    }
+    features.retain(|f| match marked_primer(f, record_len, primers.len() + 1) {
+        Some(p) => {
+            primers.push(p);
+            false
+        }
+        None => true,
+    });
     let id = format!("gb-{}-{}", name.to_ascii_lowercase(), len);
     if let Some(n) = comment_name {
         name = n;
@@ -1295,6 +1295,12 @@ fn primer_feature(p: &PrimerRecord, record_len: usize) -> Option<SequenceFeature
     })
 }
 
+/// The document's primers as the primer_bind features both flatfile exports write after its
+/// features, GenBank and EMBL alike (D0201, BG-01M7Q9BP; see [`primer_feature`]).
+fn primer_features(doc: &SequenceDocument, record_len: usize) -> Vec<SequenceFeature> {
+    doc.primers.iter().filter_map(|p| primer_feature(p, record_len)).collect()
+}
+
 /// Export a `SequenceDocument` to INSDC GenBank flatfile format, with the date part of `date_iso`,
 /// the export's own date, as its LOCUS date (see [`genbank_locus_date`]). D0200: "The
 /// export_genbank RPC op and the TS wrapper exportToGenBank always pass the export date." A
@@ -1388,7 +1394,7 @@ fn genbank_flatfile(doc: &SequenceDocument, date: &str) -> String {
     }
 
     const QUAL: &str = "                     ";
-    let primers: Vec<SequenceFeature> = doc.primers.iter().filter_map(|p| primer_feature(p, len)).collect();
+    let primers = primer_features(doc, len);
     for feat in doc.features.iter().chain(&primers) {
         let key = &feat.feature_type;
         out.push_str(&wrap_feature_line(&format!("     {:<15} ", key), QUAL, &format_insdc_location(feat), BreakAt::Comma));
@@ -1434,6 +1440,10 @@ fn genbank_flatfile(doc: &SequenceDocument, date: &str) -> String {
 /// reads as its first record alone, with that record's own ID, DE and features. Inside SQ it also
 /// ends at an indented "//", as Biopython 1.88's EMBL reader does, which strips a sequence line on
 /// both sides before it compares it with "//".
+///
+/// D0201: a primer_bind feature whose one /note is the marker [`export_embl_flatfile`] writes is
+/// read back as one of the document's primers, as [`parse_genbank_flatfile`] reads it; every other
+/// primer_bind stays a feature (BG-01M7Q9BP).
 ///
 /// The document carries no date: [`parse_embl_flatfile_at`] with a blank time (D0203).
 pub fn parse_embl_flatfile(text: &str, fallback_name: &str) -> SequenceDocument {
@@ -1558,6 +1568,10 @@ pub fn parse_embl_flatfile_at(text: &str, fallback_name: &str, now_iso: &str) ->
 
 /// Export a `SequenceDocument` to EMBL-EBI flatfile format (`.embl`). A line break in the
 /// description is written as one space on DE (see [`description_line`]).
+///
+/// D0201: each primer is written after the features as the primer_bind feature the GenBank export
+/// writes (see [`primer_features`]), and [`parse_embl_flatfile`] reads it back as a primer
+/// (BG-01M7Q9BP).
 pub fn export_embl_flatfile(doc: &SequenceDocument) -> String {
     let len = record_length(doc);
     let topo = match doc.topology {
@@ -1582,7 +1596,8 @@ pub fn export_embl_flatfile(doc: &SequenceDocument) -> String {
     out.push_str("FH   Key             Location/Qualifiers\n");
     out.push_str("FH\n");
     const FT_QUAL: &str = "FT                   ";
-    for feat in &doc.features {
+    let primers = primer_features(doc, len);
+    for feat in doc.features.iter().chain(&primers) {
         out.push_str(&wrap_feature_line(
             &format!("FT   {:<15} ", feat.feature_type),
             FT_QUAL,

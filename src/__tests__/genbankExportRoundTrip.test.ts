@@ -5,11 +5,14 @@
  * US-01M6P2KY AC3: GenBank export through the shipped wrappers. `exportToGenBank` writes the day it
  * runs as the LOCUS date (D0200), and `parseGenBank` of its text gives back the document's primers
  * (D0201), name (D0202) and primer numbers from the engine's `calculatePrimerMetrics`.
+ *
+ * BG-01M7Q9BP AC3: `parseEMBL` of `exportToEMBL`'s text gives back the same primers, with the same
+ * engine numbers `parseGenBank` gives them.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { calculatePrimerMetrics } from '../core/bioEngine';
-import { exportToGenBank, parseGenBank } from '../core/fileParsers';
+import { exportToEMBL, exportToGenBank, parseEMBL, parseGenBank } from '../core/fileParsers';
 import { invokeRustBioSync } from '../lib/rustBioEngine';
 import type { PrimerRecord, SequenceDocument } from '../types/bio';
 
@@ -114,5 +117,38 @@ describe('US-01M6P2KY AC3: GenBank export through the shipped wrappers', () => {
     expect(() => invokeRustBioSync<string>('export_genbank', { doc })).toThrow(/exportDate/);
     expect(() => invokeRustBioSync<string>('export_genbank', { doc, exportDate: '2027-02-30' })).toThrow(/exportDate/);
     expect(invokeRustBioSync<string>('export_genbank', { doc, exportDate: '2027-03-04' }).split('\n')[0]).toMatch(/ SYN 04-MAR-2027$/);
+  });
+});
+
+describe('BG-01M7Q9BP AC3: EMBL export through the shipped wrappers', () => {
+  it('BG-01M7Q9BP AC3 reads EMBL primers back with the engine Tm of their anneal sequence', () => {
+    // The two AC1 primers (a forward one with a 5' tail, a reverse one on strand -1) and one with N.
+    const doc = mcsDoc('MCS60', PRIMERS);
+    const back = parseEMBL(exportToEMBL(doc), 'fallback');
+    // The EMBL export adds no source feature; the primers become no feature.
+    expect(back.features.map((f) => f.type)).toEqual(doc.features.map((f) => f.type));
+    expect(back.primers.map((p) => [p.name, p.sequence, p.annealSequence, p.tail5Prime, p.bindStart, p.bindEnd, p.strand])).toEqual(
+      PRIMERS.map((p) => [p.name, p.sequence, p.annealSequence, p.tail5Prime, p.bindStart, p.bindEnd, p.strand])
+    );
+    for (const p of back.primers) {
+      const anneal = calculatePrimerMetrics(p.annealSequence);
+      const full = calculatePrimerMetrics(p.sequence);
+      expect(p.tmAnnealC, p.name).toBe(anneal.tmC);
+      expect(p.tmFullC, p.name).toBe(full.tmC);
+      expect([p.length, p.gcPercent, p.deltaG37, p.hairpinDeltaG, p.selfDimerDeltaG], p.name).toEqual([
+        p.sequence.length,
+        full.gcPercent,
+        full.deltaG37,
+        full.hairpinDeltaG,
+        full.selfDimerDeltaG,
+      ]);
+      expect(p.gcClamp3Prime, p.name).toBe(anneal.gcClamp3Prime);
+      expect(p.tmNoAnswerReason, p.name).toBe(anneal.tmNoAnswerReason);
+    }
+    // The tailed primer's two Tms differ, so the full Tm is not the anneal Tm copied.
+    expect(back.primers[0].tmFullC).not.toBe(back.primers[0].tmAnnealC);
+    expect(back.primers[2].tmNoAnswerReason).toMatch(/^Tm n\/a/);
+    // A primer imported from EMBL shows the numbers one imported from GenBank shows.
+    expect(back.primers).toEqual(parseGenBank(exportToGenBank(doc), 'fallback').primers);
   });
 });
