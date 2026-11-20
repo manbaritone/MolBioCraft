@@ -737,12 +737,22 @@ async function openPrimerStudio(app: AppHarness): Promise<void> {
   await app.settle();
   expect(app.activeTab()).toBe('primers-pcr');
 }
-/** The forward primer card's 5' tail, as the studio highlights it. */
-const forwardTail = (app: AppHarness) => {
-  const card = app.all('.primer-detail-card').find((c) => words(c.querySelectorAll('.primer-card-top strong')[0]?.textContent).startsWith('Forward Primer:'));
-  if (!card) throw new Error('the studio designed no forward primer');
+/** A designed primer card's 5' tail, as the studio highlights it ('' when it has none). */
+const primerTail = (app: AppHarness, which: 'Forward' | 'Reverse') => {
+  const card = app.all('.primer-detail-card').find((c) => words(c.querySelectorAll('.primer-card-top strong')[0]?.textContent).startsWith(`${which} Primer:`));
+  if (!card) throw new Error(`the studio designed no ${which.toLowerCase()} primer`);
   return words(card.querySelectorAll('.tail-highlight')[0]?.textContent);
 };
+const forwardTail = (app: AppHarness) => primerTail(app, 'Forward');
+const reverseTail = (app: AppHarness) => primerTail(app, 'Reverse');
+/** What the picker shows as chosen: the option its value selects, by its text. */
+const pickerShows = (app: AppHarness, label: string) => {
+  const select = tailPicker(app, label);
+  const value = (select as unknown as { value: string }).value;
+  return { value, text: words(select.querySelectorAll('option').find((o) => o.getAttribute('value') === value)?.textContent) };
+};
+const tailWarnings = (app: AppHarness) =>
+  app.all('[role="status"][aria-label="Primer tail warnings"] p').map((p) => words(p.textContent));
 const tailSummary = (app: AppHarness) =>
   app.all('.mbc-progressive-summary').filter((s) => words(s.textContent).startsWith("5' Cloning Adapter Tails"))
     .map((s) => words(s.querySelectorAll('.mbc-progressive-summary-meta')[0]?.textContent));
@@ -773,6 +783,70 @@ describe('BG-01M7DX96: the primer tail pickers list and resolve enzymes by id', 
       await app.settle();
       expect(forwardTail(app)).toBe('GCGGAATTC');
       expect(tailSummary(app)).toEqual(["5' EcoRI / None + 3-nt leader"]);
+      // The reverse tail is resolved by id too: the custom one's own motif behind CGC, then the built-in's site.
+      await app.change(tailPicker(app, TAIL_PICKERS[1]), 'custom:seed-1');
+      await app.settle();
+      expect(reverseTail(app)).toBe('CGCGGTACC');
+      expect(forwardTail(app)).toBe('GCGGAATTC');
+      expect(tailSummary(app)).toEqual(["5' EcoRI / EcoRI (custom) + 3-nt leader"]);
+      await app.change(tailPicker(app, TAIL_PICKERS[1]), 'EcoRI');
+      await app.settle();
+      expect(reverseTail(app)).toBe('CGCGAATTC');
+      expect(tailSummary(app)).toEqual(["5' EcoRI / EcoRI + 3-nt leader"]);
+    });
+  });
+
+  it('BG-01M7DX96 AC2 the amplified product\'s History entry names a custom tail by its label, never its id', async () => {
+    await withDoc(seeded([TAIL_ECO]), TAIL_DOC, async (app) => {
+      await openPrimerStudio(app);
+      await app.change(tailPicker(app, TAIL_PICKERS[0]), 'custom:seed-1');
+      await app.change(tailPicker(app, TAIL_PICKERS[1]), 'EcoRI');
+      await app.settle();
+      const amplify = app.all('button').find((b) => words(b.textContent).startsWith('Amplify & Save'));
+      if (!amplify) throw new Error('the studio offers no Amplify & Save');
+      await app.click(amplify);
+      await app.settle();
+      await app.clickStudio('history');
+      await app.settle();
+      const entries = app.all('p').map((p) => words(p.textContent)).filter((t) => t.includes('adapter tails'));
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatch(/^Amplified \d+ bp product \(\d+\.\.\d+\) with 5' EcoRI \(custom\)\/EcoRI adapter tails$/);
+      expect(words(app.all('body')[0]?.textContent)).not.toContain('custom:seed-1');
+    });
+  });
+
+  it('BG-01M7DX96 AC2 a chosen custom tail whose enzyme is no longer stored is set to None, and the studio says so by name', async () => {
+    const storage = seeded([TAIL_ECO]);
+    await withDoc(storage, TAIL_DOC, async (app) => {
+      await openPrimerStudio(app);
+      await app.change(tailPicker(app, TAIL_PICKERS[0]), 'custom:seed-1');
+      await app.change(tailPicker(app, TAIL_PICKERS[1]), 'custom:seed-1');
+      await app.settle();
+      expect([forwardTail(app), reverseTail(app)]).toEqual(['GCGGGTACC', 'CGCGGTACC']);
+      expect(tailWarnings(app)).toEqual([]);
+      // The store becomes unreadable and is discarded in Databases > Restriction Enzymes: the definition is gone.
+      storage.setItem(ENZ_KEY, '{"schema": 1, "definitions": [');
+      await app.menu('tools:enzyme-database');
+      await app.settle();
+      await app.click(button(win(app), 'Discard Unreadable Store…'));
+      await app.click(button(win(app), 'Discard and Start Empty'));
+      await app.settle();
+      await app.press('Escape');
+      await app.settle();
+      await openPrimerStudio(app);
+      // The picker, the choice, the summary and the primers agree: no tail; and the studio says why.
+      for (const label of TAIL_PICKERS) expect(pickerShows(app, label), label).toEqual({ value: 'None', text: 'None (Blunt PCR)' });
+      expect(tailSummary(app)).toEqual(['Blunt / Direct PCR']);
+      expect([forwardTail(app), reverseTail(app)]).toEqual(['', '']);
+      expect(tailWarnings(app)).toEqual([
+        "EcoRI (custom), the 5' forward and reverse tail enzyme, is no longer stored, so those tails are now None (Blunt PCR).",
+      ]);
+      expect(words(app.all('body')[0]?.textContent)).not.toContain('custom:seed-1');
+      // A new tail choice answers the notice, which then goes.
+      await app.change(tailPicker(app, TAIL_PICKERS[0]), 'EcoRI');
+      await app.settle();
+      expect(forwardTail(app)).toBe('GCGGAATTC');
+      expect(tailWarnings(app)).toEqual([]);
     });
   });
 

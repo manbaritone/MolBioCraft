@@ -16,6 +16,7 @@ import {
   databasePrimerCandidate,
   designPCRPrimers,
   documentPrimerCandidate as screeningCandidateOf,
+  CUSTOM_ENZYME_NO_LONGER_STORED,
   enzymeLabel,
   crisprNucleasePresets,
   scanCrisprGuidesAsync,
@@ -408,22 +409,46 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   );
   const chosenPreset = nucleasePresets.find((n) => n.id === crisprNuclease);
 
+  // A tail choice is an enzyme's key (BG-01M7DX96). A key the active list no longer holds (a custom
+  // definition discarded with the store) adds no tail at all, never a leader without its site.
+  const tailEnzyme = (key: string) => (key === 'None' ? undefined : enzymes.find((e) => enzymeKey(e) === key));
   const fwdTailSeq = useMemo(() => {
-    if (fwdTailEnz === 'None') return '';
-    const enz = enzymes.find((e) => enzymeKey(e) === fwdTailEnz);
-    return (includeClampTail ? 'GCG' : '') + (enz?.recognitionSeq ?? '');
+    const enz = fwdTailEnz === 'None' ? undefined : enzymes.find((e) => enzymeKey(e) === fwdTailEnz);
+    return enz ? (includeClampTail ? 'GCG' : '') + enz.recognitionSeq : '';
   }, [fwdTailEnz, includeClampTail, enzymes]);
 
   const revTailSeq = useMemo(() => {
-    if (revTailEnz === 'None') return '';
-    const enz = enzymes.find((e) => enzymeKey(e) === revTailEnz);
-    return (includeClampTail ? 'CGC' : '') + (enz?.recognitionSeq ?? '');
+    const enz = revTailEnz === 'None' ? undefined : enzymes.find((e) => enzymeKey(e) === revTailEnz);
+    return enz ? (includeClampTail ? 'CGC' : '') + enz.recognitionSeq : '';
   }, [revTailEnz, includeClampTail, enzymes]);
-  // A tail choice is an enzyme's key; the summary names it by its label, a custom one marked.
+  // The label each chosen tail enzyme was last shown with, so one that leaves the list is still named.
+  const knownTailLabels = useRef(new Map<string, string>());
+  for (const key of [fwdTailEnz, revTailEnz]) {
+    const enz = tailEnzyme(key);
+    if (enz) knownTailLabels.current.set(key, enzymeLabel(enz));
+  }
+  // The summary and the History entry name a tail by its label, a custom one marked.
   const tailLabel = (key: string) => {
-    const enz = key === 'None' ? undefined : enzymes.find((e) => enzymeKey(e) === key);
-    return enz ? enzymeLabel(enz) : key;
+    const enz = tailEnzyme(key);
+    if (enz) return enzymeLabel(enz);
+    return key === 'None' ? 'None' : knownTailLabels.current.get(key) ?? CUSTOM_ENZYME_NO_LONGER_STORED;
   };
+  // A chosen tail enzyme that leaves the active list is set to None, and the studio says so by name
+  // beside the primers (D0005), so the picker, the choice, the summary and the primers agree.
+  const [tailNotice, setTailNotice] = useState<string[]>([]);
+  useEffect(() => {
+    const gone = (key: string) => key !== 'None' && !enzymes.some((e) => enzymeKey(e) === key);
+    const sides = new Map<string, string[]>();
+    if (gone(fwdTailEnz)) sides.set(tailLabel(fwdTailEnz), ['forward']);
+    if (gone(revTailEnz)) sides.set(tailLabel(revTailEnz), [...(sides.get(tailLabel(revTailEnz)) ?? []), 'reverse']);
+    if (sides.size === 0) return;
+    if (gone(fwdTailEnz)) setFwdTailEnz('None');
+    if (gone(revTailEnz)) setRevTailEnz('None');
+    setTailNotice([...sides].map(([label, which]) =>
+      `${label}, the 5' ${which.join(' and ')} tail enzyme, is no longer stored, so ${which.length > 1 ? 'those tails are' : 'that tail is'} now None (Blunt PCR).`));
+    // tailLabel reads the same enzymes and choices this effect runs on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enzymes, fwdTailEnz, revTailEnz]);
 
   // Valid linear target: inside the sequence, start before end, long enough
   // for two primers. Reversed / out-of-range regions used to produce 0-bp or
@@ -1376,7 +1401,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
           id: `h-pcr-${Date.now()}`,
           timestamp: new Date().toISOString().slice(0, 16).replace('T', ' '),
           operation: `In Silico PCR Amplification`,
-          description: `Amplified ${designedPCR.ampliconLength} bp product (${regionStart}..${regionEnd}) with 5' ${fwdTailEnz}/${revTailEnz} adapter tails`,
+          description: `Amplified ${designedPCR.ampliconLength} bp product (${regionStart}..${regionEnd}) with 5' ${tailLabel(fwdTailEnz)}/${tailLabel(revTailEnz)} adapter tails`,
           parentIds: [doc.id],
           lengthBp: designedPCR.ampliconLength,
           topology: 'linear',
@@ -1419,7 +1444,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       <div className="form-grid-3col" style={{ marginTop: 8 }}>
         <label className="form-field">
           <span>5&apos; Forward Enzyme Tail:</span>
-          <select value={fwdTailEnz} onChange={(e) => setFwdTailEnz(e.target.value)}>
+          <select value={fwdTailEnz} onChange={(e) => { setFwdTailEnz(e.target.value); setTailNotice([]); }}>
             <option value="None">None (Blunt PCR)</option>
             {enzymes.map((e) => (
               <option key={enzymeKey(e)} value={enzymeKey(e)}>
@@ -1430,7 +1455,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
         </label>
         <label className="form-field">
           <span>5&apos; Reverse Enzyme Tail:</span>
-          <select value={revTailEnz} onChange={(e) => setRevTailEnz(e.target.value)}>
+          <select value={revTailEnz} onChange={(e) => { setRevTailEnz(e.target.value); setTailNotice([]); }}>
             <option value="None">None (Blunt PCR)</option>
             {enzymes.map((e) => (
               <option key={enzymeKey(e)} value={enzymeKey(e)}>
@@ -1655,6 +1680,8 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             </div>
 
             {!inWorkbench && adapterTailsDetails}
+
+            <ResultWarnings warnings={tailNotice} label="Primer tail warnings" />
 
             {/* Designed Forward & Reverse Primer Cards */}
             <div className="primer-pair-cards">
