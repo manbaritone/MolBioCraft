@@ -94,7 +94,7 @@ import {
 } from './AlignmentCanvas';
 import { AlignmentDotplot } from './AlignmentDotplot';
 import { AlignmentTraceViewer, ReadQcReport, TraceEntry } from './AlignmentReadViews';
-import { InspectorSection, useInWorkbench, useOwnInspector } from './WorkbenchInspector';
+import { InspectorSection, useInWorkbench, useOwnInspector, useRequestInspectorOpen } from './WorkbenchInspector';
 import {
   AlignmentColorScheme,
   colorSchemesFor,
@@ -3308,6 +3308,8 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
   // Cmd/Ctrl+Alt+I and View > Panels > Inspector open and close it, and App draws no column of its
   // own; the traces and read QC views claim nothing. Drawn outside the workbench, it is always open.
   const ownInspectorOpen = useOwnInspector(alignSubMode === 'msa' && shownMsaFigure === 'grid');
+  // The action bar's panel buttons open a closed inspector on their panel (BG01M6VZDX).
+  const requestInspectorOpen = useRequestInspectorOpen();
   // US-01M6TAA4: Pairwise Alignment's method, matrix and scores are settings, so in the workbench
   // each group is a section of App's inspector, while the sequences it compares stay beside the
   // result. Drawn on its own, each group is the fieldset beside the sequences it always was.
@@ -3534,14 +3536,20 @@ export const SequenceAlignmentStudio: React.FC<SequenceAlignmentStudioProps> = (
                     <button
                       type="button"
                       className={`mbc-aln-tool-btn ${inspectorTab === 'annotations-tracks' ? 'active' : ''}`}
-                      onClick={() => setInspectorTab('annotations-tracks')}
+                      onClick={() => {
+                        setInspectorTab('annotations-tracks');
+                        requestInspectorOpen();
+                      }}
                     >
                       Annotations
                     </button>
                     <button
                       type="button"
                       className={`mbc-aln-tool-btn ${inspectorTab === 'live-annotate' ? 'active' : ''}`}
-                      onClick={() => setInspectorTab('live-annotate')}
+                      onClick={() => {
+                        setInspectorTab('live-annotate');
+                        requestInspectorOpen();
+                      }}
                     >
                       Annotate &amp; Predict
                     </button>

@@ -547,3 +547,37 @@ describe('the traces and read QC views (AC4)', () => {
     });
   });
 });
+
+// ─── BG-01M6VZDX: the action bar's panel buttons open a closed inspector ───
+
+describe('the action bar opens the closed inspector on its panel (BG-01M6VZDX)', () => {
+  // Wrong implementations, and the check that catches each: the button only picks the panel (the
+  // bug: the inspector stays closed, ALIGNMENT_CLOSED); the button toggles rather than opens (the
+  // setup's first press, made while the inspector is open, would close it; pressed twice, it stays open); the inspector opened on
+  // another panel (the rail's selected tab is read); the other button's panel (each case names its own).
+  const selectedRailTabs = (app: AppHarness) =>
+    app.all(`${RAIL} button[role="tab"]`).filter((b) => b.getAttribute('aria-selected') === 'true').map(label);
+  const actionButton = (app: AppHarness, text: string) => byText(app.canvas(), '.mbc-aln-action-toolbar button', text);
+  const opensOn = async (button: string, railLabel: string, other: string) => {
+    const desk = { window: 1280 };
+    await withDesk(desk, memoryStorage(), async (app) => {
+      await onAlignment(app);
+      // Start on the other button's panel, so the panel the press shows is its own.
+      await app.click(actionButton(app, other));
+      await app.click(app.inspectorButton()!);
+      expect(inspector(app), 'closed with the shared toggle').toEqual(ALIGNMENT_CLOSED);
+      await app.click(actionButton(app, button));
+      expect(inspector(app), `${button} opens the inspector`).toEqual(ALIGNMENT_OPEN);
+      expect(selectedRailTabs(app), `on its ${railLabel} panel`).toEqual([railLabel]);
+      await app.click(actionButton(app, button));
+      expect(inspector(app), `${button} pressed again keeps it open`).toEqual(ALIGNMENT_OPEN);
+      expect(selectedRailTabs(app)).toEqual([railLabel]);
+    });
+  };
+  it('opens the closed inspector on Annotations from the action bar', async () => {
+    await opensOn('Annotations', 'Annotations and Tracks', 'Annotate & Predict');
+  });
+  it('opens the closed inspector on Annotate and Predict from the action bar', async () => {
+    await opensOn('Annotate & Predict', 'Live Annotate & Predict', 'Annotations');
+  });
+});

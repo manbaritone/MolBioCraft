@@ -14194,7 +14194,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 {!mapGalleryOpen && (
                 <ErrorBoundary label={viewerTabLabel(viewerTab, activeDoc, genomicsShownView)} resetKey={`${activeDoc.id}:${viewerTab}`}>
                 {/* The main view's studios reach the inspector; the split view's pane and the header stay outside. */}
-                <WorkbenchInspectorProvider open={rightPanelOpen} column={inspectorColumn} onClaimsChange={handleInspectorClaims}>
+                <WorkbenchInspectorProvider open={rightPanelOpen} column={inspectorColumn} onClaimsChange={handleInspectorClaims} onRequestOpen={() => setRightPanelOpen(true)}>
                 {viewerTab === 'sequence-view' && isContigSummaryRecord(activeDoc) && (
                   <ContigSummaryView
                     doc={activeDoc}

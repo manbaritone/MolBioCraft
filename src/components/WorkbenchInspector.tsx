@@ -48,6 +48,8 @@ export interface WorkbenchInspectorValue {
    * same owner counts once) and returns the release.
    */
   claim(owner: object, kind: InspectorClaimKind): () => void;
+  /** Asks App to open the inspector (a no-op where App passes no `onRequestOpen`); never closes it. */
+  requestOpen(): void;
 }
 
 export const WorkbenchInspectorContext = createContext<WorkbenchInspectorValue | null>(null);
@@ -57,18 +59,23 @@ export interface WorkbenchInspectorProviderProps {
   column: HTMLElement | null;
   /** Called only when the claims cross between none and some, of either kind. */
   onClaimsChange(claims: InspectorClaims): void;
+  /** Opens App's inspector, for a studio control that shows a panel of it (BG01M6VZDX). */
+  onRequestOpen?(): void;
   children?: React.ReactNode;
 }
 
 const sameClaims = (a: InspectorClaims, b: InspectorClaims) => a.shared === b.shared && a.own === b.own;
 
-export function WorkbenchInspectorProvider({ open, column, onClaimsChange, children }: WorkbenchInspectorProviderProps) {
+export function WorkbenchInspectorProvider({ open, column, onClaimsChange, onRequestOpen, children }: WorkbenchInspectorProviderProps) {
   // The claims live in a ref, so a claim or release re-renders nothing here; App re-renders only
   // on a crossing it is told of.
   const claims = useRef(new Map<object, InspectorClaimKind>());
   const reported = useRef<InspectorClaims>(NO_INSPECTOR_CLAIMS);
   const onChange = useRef(onClaimsChange);
   onChange.current = onClaimsChange;
+  const onOpen = useRef(onRequestOpen);
+  onOpen.current = onRequestOpen;
+  const requestOpen = useMemo(() => () => onOpen.current?.(), []);
 
   const claim = useMemo(() => {
     const current = (): InspectorClaims => {
@@ -100,9 +107,19 @@ export function WorkbenchInspectorProvider({ open, column, onClaimsChange, child
     };
   }, []);
 
-  const value = useMemo<WorkbenchInspectorValue>(() => ({ open, column, claim }), [open, column, claim]);
+  const value = useMemo<WorkbenchInspectorValue>(() => ({ open, column, claim, requestOpen }), [open, column, claim, requestOpen]);
   return <WorkbenchInspectorContext.Provider value={value}>{children}</WorkbenchInspectorContext.Provider>;
 }
+
+/**
+ * Opens the workbench's inspector, for a studio control that shows one of its panels. Outside the
+ * workbench (no provider) the studio's own panel is always drawn, so there is nothing to open.
+ */
+export function useRequestInspectorOpen(): () => void {
+  const ctx = useContext(WorkbenchInspectorContext);
+  return ctx ? ctx.requestOpen : noop;
+}
+const noop = () => {};
 
 /** Whether the caller is drawn inside the workbench (its provider), not standalone. */
 export function useInWorkbench(): boolean {
