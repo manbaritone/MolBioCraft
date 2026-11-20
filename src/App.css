@@ -9966,7 +9966,7 @@ dialog.prefs-modal-window:focus-visible,
   right: 10px !important;
 }
 
-/* Quick Command Palette (⌘K / Ctrl+K) — Static Top-Anchored Native Dialog */
+/* Command Palette (⌘K / Ctrl+K) — Static Top-Anchored Native Dialog */
 .mbc-cmd-palette-dialog {
   width: min(620px, calc(100vw - 32px));
 }

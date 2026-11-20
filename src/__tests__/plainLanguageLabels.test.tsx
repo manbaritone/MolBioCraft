@@ -674,8 +674,8 @@ describe('library and storage names', () => {
         onCreateDocument={noop} onUpdateActiveSequence={noop} onAppendFeatures={noop} />),
       'proteomics': renderToStaticMarkup(<ProteinStudio activeDoc={plasmid} />),
       'history': renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={plasmid} allDocuments={SAMPLE_LIBRARY} initialSubTab="lineage" />),
-      // The command palette opens from the status bar's Navigator pill.
-      'command palette': renderApp({ session: 'sample-library', clicks: [/Navigator$/] }),
+      // The command palette opens from the status bar's Command Palette pill (D0282).
+      'command palette': renderApp({ session: 'sample-library', clicks: [/K Command Palette$/] }),
     };
     for (const [view, html] of Object.entries(renders)) {
       const words = wordsOf(html);
@@ -721,12 +721,12 @@ describe('library and storage names', () => {
 
   it('keeps library and storage names out of studio headings, in the notices a run leaves', () => {
     // Loading the benchmark chromosome from the palette leaves a notice in the status bar.
-    const html = renderApp({ session: 'sample-library', clicks: [/Navigator$/, /^500 kbp Annotated Genome/] });
+    const html = renderApp({ session: 'sample-library', clicks: [/K Command Palette$/, /^500 kbp Annotated Genome/] });
     const banner = statusNotice(html);
     expect(banner).toMatch(/^Loaded ".+" \(500,000 bp, \d+ annotations; [\d,]+ KiB held in memory\)$/);
     expect(banner).not.toMatch(JARGON);
     // Choosing the polyprotein again switches to the one already loaded, with its own notice.
-    const again = renderApp({ session: 'sample-library', clicks: [/Navigator$/, /^10,000 aa Protein/, /Navigator$/, /^10,000 aa Protein/] });
+    const again = renderApp({ session: 'sample-library', clicks: [/K Command Palette$/, /^10,000 aa Protein/, /K Command Palette$/, /^10,000 aa Protein/] });
     const switched = statusNotice(again);
     expect(switched).toMatch(/^Switched to benchmark document ".+" \(10,000 aa\)$/);
 
@@ -880,8 +880,8 @@ describe('the status bar and the view tabs', () => {
         expect(words.toLowerCase(), where).not.toContain(`(${arch.toLowerCase()})`);
         // The shortcut hints follow the platform the App detected (⌘ on macOS, Ctrl elsewhere).
         expect(words, where).toContain(`${formatPlatformShortcut('O', os)} Open`);
-        // The Navigator pill, the licence pill and the shortcut hints stay.
-        expect(footer, where).toMatch(/<button[^>]*class="statusbar-engine-pill"[^>]*>[^<]*Navigator<\/button>/);
+        // The Command Palette pill (D0282), the licence pill and the shortcut hints stay.
+        expect(footer, where).toMatch(/<button[^>]*class="statusbar-engine-pill"[^>]*>[^<]*Command Palette<\/button>/);
         expect(footer, where).toMatch(/<button[^>]*class="statusbar-license-pill"/);
       }
       const sc = (key: string) => formatPlatformShortcut(key, os);

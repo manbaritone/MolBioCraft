@@ -665,7 +665,7 @@ describe('the record bar (US-01M6Q10G)', () => {
     const target = SAMPLE_LIBRARY[2];
     expectBarFor([
       started,
-      press('the Command Palette', (p) => String(p['aria-label'] ?? '').startsWith('Open Command Palette')),
+      press('the Command Palette', (p) => String(p['aria-label'] ?? '').endsWith('Command Palette, open it')),
       press(`the navigator's ${target.name}`, (p) => hasClass(p, 'mbc-cmd-palette-item') && childText(p.children).includes(`${target.name} (${target.accession})`)),
     ], target.name, 'the Command Palette');
     expectBarFor([

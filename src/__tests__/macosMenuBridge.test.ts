@@ -786,7 +786,8 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(footerHtml).toContain('CC BY-NC 4.0 Non-Commercial');
     expect(footerHtml).not.toContain('Rust WASM + C++17');
     expect(footerHtml).toContain('statusbar-engine-pill');
-    expect(footerHtml).toContain('Navigator</button>');
+    // ⌘K's pill shows its one name, Command Palette (D0282).
+    expect(footerHtml).toContain('Command Palette</button>');
 
     // Verify File -> Import Data parity across the in-window menu and the native spec (US-01M6Q159)
     expect(menuSrc).toContain("label: 'Import Data'");

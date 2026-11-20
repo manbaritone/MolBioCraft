@@ -785,24 +785,74 @@ describe('BG-01M7V0W9: the registry keys and the menu paths Sprint 39 left unpin
 });
 
 describe('BG-01M7V0W9: the dead menu code and the stale names are gone', () => {
-  it('BG-01M7V0W9 ⌘K has one name, Command Palette, in the registry, the header button and the Keyboard tab (D0280, D0281)', async () => {
+  it('BG-01M7V0W9 ⌘K is the Command Palette in the registry, both status-bar pills, the palette itself and the Keyboard tab (D0280, D0281)', async () => {
     expect(COMMAND_BY_ID.get('view-search-tools')?.label, 'the registry').toBe('Command Palette');
     expect(COMMAND_BY_ID.get('view-search-tools')?.shortcut).toBe('Mod+K');
+    const pills = (app: AppHarness) => app.all('button.statusbar-engine-pill').filter((b) => b.getAttribute('aria-keyshortcuts') === 'Control+K' || /Ctrl\+K/.test(b.textContent ?? ''));
+    /** One status-bar pill: its accessible name begins with its visible text (WCAG 2.5.3) and names the Command Palette. */
+    const expectPill = (b: LiveElement, where: string) => {
+      const visible = words(b.textContent);
+      expect(visible, `${where}: the pill's text (D0282)`).toBe('Ctrl+K Command Palette');
+      expect(b.getAttribute('aria-label'), `${where}: its name starts with what it shows`).toBe(`${visible}, open it`);
+      expect(b.getAttribute('title'), where).toBe('Command Palette (Ctrl+K)');
+    };
+    const noOldName = (app: AppHarness, where: string) => {
+      const named = [words(app.doc.body.textContent), ...app.all('[aria-label], [title]').flatMap((e) => [e.getAttribute('aria-label') ?? '', e.getAttribute('title') ?? ''])];
+      expect(named.filter((t) => /Quick Command/i.test(t)), `${where}: no surface says Quick Command`).toEqual([]);
+      // ⌘K's only name is Command Palette: no control that opens it says Navigator (D0282).
+      const k = app.all('button').filter((b) => /(⌘|Ctrl\+)K\b/.test(words(b.textContent)) || /Command Palette/.test(b.getAttribute('aria-label') ?? ''));
+      expect(k.filter((b) => /Navigator/i.test(`${b.textContent} ${b.getAttribute('aria-label') ?? ''} ${b.getAttribute('title') ?? ''}`)).map((b) => words(b.textContent)), `${where}: no ⌘K control says Navigator`).toEqual([]);
+      expect(words(app.doc.body.textContent), `${where}: no visible Navigator`).not.toMatch(/\bNavigator\b/);
+    };
+    // The start screen draws the second pill (no session), a session the first.
+    const start = await mountApp();
+    try {
+      const shown = pills(start);
+      expect(shown, 'the start screen draws one pill').toHaveLength(1);
+      expectPill(shown[0], 'the start screen');
+      noOldName(start, 'the start screen');
+    } finally {
+      start.unmount();
+    }
     await onRecords(PLASMID.id, async (app) => {
-      const button = app.all('button').filter((b) => /Command Palette|Navigator/.test(b.getAttribute('aria-label') ?? '') || /Command Palette|Navigator/.test(b.getAttribute('title') ?? ''));
-      expect(button.length, 'the header button').toBeGreaterThan(0);
-      for (const b of button) {
-        expect(b.getAttribute('aria-label')).toBe('Open Command Palette (Ctrl+K)');
-        expect(b.getAttribute('title')).toBe('Command Palette (Ctrl+K)');
-      }
+      const shown = pills(app);
+      expect(shown, 'a session draws one pill').toHaveLength(1);
+      expectPill(shown[0], 'a session');
+      await app.click(shown[0]);
+      expect(app.all('#mbc-cmd-palette-title').map((t) => words(t.textContent)), 'the palette heading').toEqual(['Command Palette (Ctrl+K)']);
+      expect(app.all('.mbc-cmd-palette-list').map((l) => l.getAttribute('aria-label')), 'its list').toEqual(['Command Palette results']);
+      noOldName(app, 'the open palette');
+      await closePalette(app);
       await app.menu('app:preferences');
       await app.click(app.one('#prefs-tab-keyboard', 'Preferences Keyboard tab'));
       const rows = app.all('tr.mbc-menu-shortcut-row').map((r) => r.querySelectorAll('td').map((c) => words(c.textContent)));
       expect(rows.filter((r) => r[1] === 'Ctrl+K').map((r) => r[0]), 'the Keyboard tab').toEqual(['Command Palette']);
-      expect(words(app.doc.body.textContent), 'no surface says the old name').not.toContain('Quick Command Navigator');
+      noOldName(app, 'Preferences');
     });
     expect(SRC('../../README.md'), 'README').toContain('| **Command Palette** | `⌘K` | `Ctrl+K` |');
-    expect(SRC('../../README.md')).not.toContain('Quick Command Navigator');
+    expect(SRC('../../README.md')).not.toMatch(/Quick Command/);
+  }, 60_000);
+
+  it('BG-01M7V0W9 on the start screen ⌘1, View › Studios and the native View › Studios item each start that studio\'s session (D0281)', async () => {
+    const studio = STUDIOS[0];
+    const routes: [string, (app: AppHarness) => Promise<void>][] = [
+      [`⌘1`, (app) => app.press('1', { mod: true })],
+      [`View › Studios › ${studio.name}`, (app) => chooseMenu(app, 'View', ['Studios', studio.name])],
+      [`native view:studio-${studio.id}`, (app) => app.menu(`view:studio-${studio.id}`)],
+    ];
+    for (const [route, run] of routes) {
+      const app = await mountApp();
+      try {
+        expect(app.all('.doc-table-scroll'), `${route}: no session at first`).toHaveLength(0);
+        await run(app);
+        await app.settle();
+        expect(toast(app), `${route}: a session starts`).toMatch(/^Started new session with /);
+        expect(app.all('.doc-table-scroll'), `${route}: the session's documents show`).toHaveLength(1);
+        expect(app.activeTab(), `${route}: in ${studio.name}`).toBe(studio.opens.tab);
+      } finally {
+        app.unmount();
+      }
+    }
   }, 60_000);
 
   it('BG-01M7V0W9 CascadingMenu imports no Info icon and has no Function Info toggle, and App.css styles nothing the app draws no more', () => {

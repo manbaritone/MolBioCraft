@@ -4710,7 +4710,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // Universal Quick Command Palette shortcut (⌘K on macOS; Ctrl+K on Windows/Linux)
+  // The Command Palette shortcut (⌘K on macOS; Ctrl+K on Windows/Linux)
   useEffect(() => {
     const onCmdK = (e: KeyboardEvent) => {
       if (!isPlatformPrimaryModifier(e, hostOs)) return;
@@ -15651,11 +15651,11 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   setCommandPaletteIdx(0);
                   setCommandPaletteOpen(true);
                 }}
-                aria-label={`Open Command Palette (${sc('K')})`}
+                aria-label={`${sc('K')} Command Palette, open it`}
                 aria-keyshortcuts={ariaSc('K')}
                 title={`Command Palette (${sc('K')})`}
               >
-                {sc('K')} Navigator
+                {sc('K')} Command Palette
               </button>
               <span>•</span>
               <span>
@@ -15728,11 +15728,11 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                   setCommandPaletteIdx(0);
                   setCommandPaletteOpen(true);
                 }}
-                aria-label={`Open Command Palette (${sc('K')})`}
+                aria-label={`${sc('K')} Command Palette, open it`}
                 aria-keyshortcuts={ariaSc('K')}
                 title={`Command Palette (${sc('K')})`}
               >
-                {sc('K')} Navigator
+                {sc('K')} Command Palette
               </button>
               <span>•</span>
               <span>
@@ -16271,11 +16271,11 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
         />
       )}
 
-      {/* Static Top-Anchored Modals: Quick Command Palette, 11-Category Preferences, BLAST Search Studio, Reference Databases, New Sequence, About */}
+      {/* Static Top-Anchored Modals: Command Palette, 11-Category Preferences, BLAST Search Studio, Reference Databases, New Sequence, About */}
       {commandPaletteOpen && (
         <StaticModalDialog
           titleId="mbc-cmd-palette-title"
-          title={`Quick Command & Construct Jump (${sc('K')})`}
+          title={`Command Palette (${sc('K')})`}
           sizeClass="modal-size-newseq"
           onClose={() => setCommandPaletteOpen(false)}
         >
@@ -16306,7 +16306,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                 }
               }}
             />
-            <div className="mbc-cmd-palette-list" role="listbox" aria-label="Quick Commands">
+            <div className="mbc-cmd-palette-list" role="listbox" aria-label="Command Palette results">
               {commandPaletteItems.map((it, idx) => (
                 <button
                   type="button"
