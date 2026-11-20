@@ -3828,6 +3828,9 @@ export const App: React.FC = () => {
   // True only while importIncomingFilesBatch runs; outside a batch the refs
   // above are ignored so a later track never targets a stale snapshot.
   const importBatchActiveRef = useRef(false);
+  // The skipped-chain sentences each structure file of a batch gives (BG-01M7V0ZH), so the batch's own
+  // banner, which replaces each file's, still names every skipped chain.
+  const importBatchWarningsRef = useRef<string[]>([]);
 
   /** Clear per-session history when the workbench contents are replaced. */
   const resetSessionScopedState = () => {
@@ -5957,6 +5960,7 @@ export const App: React.FC = () => {
     ) {
       const read = structureChainSequences(text);
       const skippedSentences = read.skipped.map((s) => `${stem} chain ${s.chainId} was not opened: ${s.reason}.`);
+      if (importBatchActiveRef.current) importBatchWarningsRef.current.push(...skippedSentences);
       if (read.chains.length === 0) {
         const refusal = `"${file.name}" has no protein or nucleic-acid chain to open`;
         throw new Error(skippedSentences.length ? `${refusal}. ${skippedSentences.join(' ')}` : refusal);
@@ -6188,6 +6192,8 @@ export const App: React.FC = () => {
     importBatchDocsRef.current = new Map();
     importTargetDocIdRef.current = null;
     importBatchActiveRef.current = true;
+    importBatchWarningsRef.current = [];
+    let warnings: string[] = [];
     try {
       for (const file of fileList) {
         try {
@@ -6200,24 +6206,32 @@ export const App: React.FC = () => {
         }
       }
     } finally {
+      warnings = importBatchWarningsRef.current;
+      importBatchWarningsRef.current = [];
       importBatchActiveRef.current = false;
       importBatchDocsRef.current = new Map();
       importTargetDocIdRef.current = null;
     }
     const prefix = sourceLabel === 'dropped' ? 'Drop import' : 'Import';
+    // A batch of more than one file names every chain its structure files skipped, opened or refused,
+    // after its summary (a sentence the summary already carries is not repeated).
+    const withWarnings = (summary: string) => {
+      const extra = fileList.length > 1 ? warnings.filter((w) => !summary.includes(w)) : [];
+      return extra.length ? `${summary}${/[.!?]$/.test(summary) ? '' : '.'} ${extra.join(' ')}` : summary;
+    };
     if (failed.length > 0) {
       const detail = failed.length === 1 ? failed[0].message : failed.map((f) => f.name).join(', ');
-      setStatusBanner(
+      setStatusBanner(withWarnings(
         imported > 0
           ? `${prefix}: ${imported} of ${fileList.length} files imported; failed: ${detail}`
           : `${prefix} error: ${detail}`
-      );
+      ));
     } else if (fileList.length > 1) {
-      setStatusBanner(
+      setStatusBanner(withWarnings(
         sourceLabel === 'dropped'
           ? `Imported ${fileList.length} dropped files into active session`
           : `Batch imported ${fileList.length} sequence files into active session`
-      );
+      ));
     }
     return { imported, failed };
   };
@@ -13611,6 +13625,9 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                               }}
                               onDrop={(e) => {
                                 e.preventDefault();
+                                // A column reorder ends here and never reaches the workbench's file drop
+                                // (BG-01M7V0ZH); a file dropped on a header still does.
+                                if (dragDocColId) e.stopPropagation();
                                 handleDropDocColumn(col.id);
                               }}
                               onDragEnd={() => setDragDocColId(null)}

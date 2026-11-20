@@ -21,7 +21,7 @@ import { studioForTab } from '../core/studioRegistry';
 /** The Sequence tab's studio name, which titles its inspector (D0237). */
 const SEQUENCE_MAP = studioForTab('sequence-view').name;
 import { appCssRules, cascaded, gridTracks, parseCss } from './cssCascade';
-import { blockedStorage, LiveDocument, LiveElement, LiveXMLSerializer, parseMarkup, SVG_NS } from './liveDom';
+import { blockedStorage, dispatchLiveEvent, LiveDocument, LiveElement, LiveXMLSerializer, parseMarkup, SVG_NS } from './liveDom';
 
 // A macOS host's Tauri runtime (AC5). vi.mock is hoisted above the imports, so the factory loads the
 // harness itself.
@@ -500,6 +500,98 @@ describe('recovers from a leaked mount (BG-01M6XTHE)', () => {
       app.unmount();
     } finally {
       warned.mockRestore();
+    }
+  });
+});
+
+// ─── BG-01M7V0ZH: a multi-file drop names every skipped chain; a column reorder is not a file drop ───
+
+/** A legacy PDB C-alpha record of chain `chain`. */
+const caRecord = (serial: number, res: string, chain: string, seq: number): string =>
+  `ATOM  ${String(serial).padStart(5)}  CA  ${res.padStart(3)} ${chain}${String(seq).padStart(4)}    `
+  + `${(3.8 * serial).toFixed(3).padStart(8)}${'0.000'.padStart(8)}${'0.000'.padStart(8)}  1.00 20.00           C  \n`;
+/** Chain A ALA GLY, and chain B one ATOM residue the table lacks, which the engine skips. */
+const withSkippedChain = (): string =>
+  `HEADER    SYNTHETIC\n${caRecord(1, 'ALA', 'A', 1)}${caRecord(2, 'GLY', 'A', 2)}${caRecord(3, 'XYZ', 'B', 1)}END\n`;
+/** Only chain B's residue, so the file has no chain to open. */
+const onlySkippedChain = (): string => `HEADER    SYNTHETIC\n${caRecord(1, 'XYZ', 'B', 1)}END\n`;
+const skipped = (stem: string) => `${stem} chain B was not opened: no amino-acid or nucleotide residues.`;
+
+const words = (text: string | undefined) => (text ?? '').replace(/\s+/g, ' ').trim();
+const toast = (app: AppHarness) => app.all('.statusbar-toast-text').map((n) => words(n.textContent)).join(' | ');
+const dataTransferOf = (files: [string, string][]) => ({
+  files: files.map(([name, text]) => new File([new TextEncoder().encode(text)], name)),
+  types: ['Files'], items: [], dropEffect: 'copy', effectAllowed: 'all',
+});
+async function dropOn(app: AppHarness, target: LiveElement, files: [string, string][]): Promise<void> {
+  const React = await import('react');
+  await React.act(async () => { dispatchLiveEvent(target, 'drop', { dataTransfer: dataTransferOf(files) }); });
+  await app.settle();
+}
+
+describe('BG-01M7V0ZH: drops onto the workbench', () => {
+  /**
+   * Wrong implementations, and the case that catches each:
+   * - the batch banner replacing each file's (the reader before this fix): no skipped chain is named;
+   * - only the last file's warnings kept: one.pdb's chain B is not named;
+   * - warnings kept only when every file opened: the drop with refused files names neither;
+   * - a refused file's sentences dropped because its refusal is shown by name only: gone1 and gone2;
+   * - a sentence the refusal already carries appended again: gone1's chain B named twice.
+   */
+  it('names every skipped chain of a multi-file drop, opened or refused', async () => {
+    const app = await mountApp();
+    try {
+      const workbench = app.one('.mbc-workbench', 'workbench root');
+      await dropOn(app, workbench, [['one.pdb', withSkippedChain()], ['two.pdb', withSkippedChain()]]);
+      expect(toast(app)).toBe(`Imported 2 dropped files into active session. ${skipped('one')} ${skipped('two')}`);
+
+      await dropOn(app, workbench, [['gone1.pdb', onlySkippedChain()], ['gone2.pdb', onlySkippedChain()], ['three.pdb', withSkippedChain()]]);
+      expect(toast(app)).toBe(
+        `Drop import: 1 of 3 files imported; failed: gone1.pdb, gone2.pdb. ${skipped('gone1')} ${skipped('gone2')} ${skipped('three')}`,
+      );
+
+      // One refused file shows its refusal, which already names its chain: that sentence is not repeated.
+      await dropOn(app, workbench, [['gone1.pdb', onlySkippedChain()], ['four.pdb', withSkippedChain()]]);
+      expect(toast(app)).toBe(
+        `Drop import: 1 of 2 files imported; failed: "gone1.pdb" has no protein or nucleic-acid chain to open. ${skipped('gone1')} ${skipped('four')}`,
+      );
+    } finally {
+      app.unmount();
+    }
+  });
+
+  /**
+   * Wrong implementations, and the case that catches each:
+   * - the header drop letting the event bubble (the reader before this fix): the probe file a
+   *   column-reorder drop carries is imported by the workbench's drop handler;
+   * - stopPropagation on every header drop: a file dropped on a header, with no column dragged, is
+   *   no longer imported.
+   */
+  it('keeps a column reorder from the workbench drop, and a file dropped on a header still opens', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({ documents: [PLASMID, INSERT], activeDocId: PLASMID.id, viewerTab: 'sequence-view' });
+      const rows = () => app.all('table.mbc-document-table tbody tr').filter((r) => r.querySelectorAll('input[type="checkbox"]').length === 1);
+      const headers = () => app.all('table.mbc-document-table thead th').filter((th) => th.getAttribute('draggable') === 'true');
+      expect(rows(), 'the two documents').toHaveLength(2);
+      expect(headers().length, 'columns that can be reordered').toBeGreaterThan(1);
+      const probe: [string, string][] = [['probe.fasta', '>probe_seq\nACGTACGT\n']];
+
+      const React = await import('react');
+      await React.act(async () => { dispatchLiveEvent(headers()[0], 'dragstart', {}); });
+      const opened = () => ({
+        toast: toast(app).includes('probe.fasta') ? toast(app) : 'no notice of probe.fasta',
+        probe: words(app.one('.mbc-workbench').textContent).includes('probe_seq'),
+      });
+      await dropOn(app, headers()[1], probe);
+      expect(rows(), 'a column reorder opens nothing: the table still lists the two documents').toHaveLength(2);
+      expect(opened(), 'a column reorder opens nothing').toEqual({ toast: 'no notice of probe.fasta', probe: false });
+
+      await dropOn(app, headers()[1], probe);
+      expect(opened(), 'a file dropped on a header with no column dragged opens')
+        .toEqual({ toast: 'Imported 1 sequence from "probe.fasta"', probe: true });
+    } finally {
+      app.unmount();
     }
   });
 });

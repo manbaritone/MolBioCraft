@@ -158,7 +158,9 @@ const STANDARD_RESIDUES: &[(&str, char, PolymerMolecule)] = &[
 /// Modified residues and the code of the standard residue each derives from: the parent its
 /// wwPDB Chemical Component Dictionary entry names (`_chem_comp.mon_nstd_parent_comp_id`). The
 /// pairs are those of Biopython 1.88's `Bio.Data.PDBData.protein_letters_3to1_extended` and
-/// `nucleic_letters_3to1_extended`, which are generated from that dictionary.
+/// `nucleic_letters_3to1_extended`, which are generated from that dictionary, except the last
+/// five, the modified nucleotides of tRNA-Phe (RCSB 1EHZ), taken from their dictionary entries
+/// (BG-01M7V0ZH).
 const MODIFIED_RESIDUES: &[(&str, char, PolymerMolecule)] = &[
     ("MSE", 'M', PolymerMolecule::Protein), // selenomethionine
     ("FME", 'M', PolymerMolecule::Protein), // N-formylmethionine
@@ -187,6 +189,11 @@ const MODIFIED_RESIDUES: &[(&str, char, PolymerMolecule)] = &[
     ("2MG", 'G', PolymerMolecule::Rna),     // 2-methylguanosine
     ("H2U", 'U', PolymerMolecule::Rna),     // 5,6-dihydrouridine
     ("OMC", 'C', PolymerMolecule::Rna),     // 2'-O-methylcytidine
+    ("M2G", 'G', PolymerMolecule::Rna),     // N2,N2-dimethylguanosine
+    ("OMG", 'G', PolymerMolecule::Rna),     // 2'-O-methylguanosine
+    ("YYG", 'G', PolymerMolecule::Rna),     // a modified guanosine (tRNA-Phe position 37)
+    ("7MG", 'G', PolymerMolecule::Rna),     // 7-methylguanosine
+    ("5MU", 'U', PolymerMolecule::Rna),     // 5-methyluridine (ribothymidine)
 ];
 
 /// The residue table's entry for a PDB / mmCIF residue name (`resName`, `label_comp_id`), read
