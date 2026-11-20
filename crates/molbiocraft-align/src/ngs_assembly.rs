@@ -1906,16 +1906,7 @@ fn chain_beside(query: &[u8], reference: &[u8], b: &Beyond) -> Option<Vec<(u32, 
 /// two cuts therefore keeps at most [`CALL_SEGMENT_MAX_BYTES`] of traceback.
 fn segment_seams(chain: &[(u32, u32)], qn: usize, rn: usize) -> Vec<(usize, usize)> {
     let (k, h) = (CALL_K, CALL_SEAM_FLANK_BP);
-    // stretches of equal bases along the chain: (query offset, reference offset, length); 11-mers on
-    // one diagonal that overlap or abut are one stretch
-    let mut runs: Vec<(usize, usize, usize)> = Vec::new();
-    for &(x, y) in chain {
-        let (x, y) = (x as usize, y as usize);
-        match runs.last_mut() {
-            Some((rx, ry, len)) if x - *rx == y - *ry && x <= *rx + *len => *len = (*len).max(x + k - *rx),
-            _ => runs.push((x, y, k)),
-        }
-    }
+    let mut runs = chain_stretches(chain);
     runs.retain(|r| r.2 >= 2 * h);
     let fits = |s: (usize, usize), e: (usize, usize)| traceback_bytes(e.0 - s.0, e.1 - s.1) <= CALL_SEGMENT_MAX_BYTES;
     let mut seams = Vec::new();
@@ -2025,6 +2016,20 @@ fn segment_seams(chain: &[(u32, u32)], qn: usize, rn: usize) -> Vec<(usize, usiz
     seams
 }
 
+/// The stretches of equal bases along `chain`: (query offset, reference offset, length). 11-mers on
+/// one diagonal that overlap or abut are one stretch.
+fn chain_stretches(chain: &[(u32, u32)]) -> Vec<(usize, usize, usize)> {
+    let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+    for &(x, y) in chain {
+        let (x, y) = (x as usize, y as usize);
+        match runs.last_mut() {
+            Some((rx, ry, len)) if x - *rx == y - *ry && x <= *rx + *len => *len = (*len).max(x + CALL_K - *rx),
+            _ => runs.push((x, y, CALL_K)),
+        }
+    }
+    runs
+}
+
 /// Aligns all of `query` to `reference` under the scoring of the caller's one-shot alignment (the
 /// whole query aligned, the reference before and after it free; match 2, mismatch -3, a gap of n
 /// bases -5 - 2n) with rust-bio's banded aligner at width 64, in segments that each keep at most
@@ -2032,7 +2037,7 @@ fn segment_seams(chain: &[(u32, u32)], qn: usize, rn: usize) -> Vec<(usize, usiz
 /// Returns the alignment columns (query row, reference row, `-` for a gap) and the offset in
 /// `reference` of the first reference base aligned.
 ///
-/// The 11-mer chain is found once over the whole pair ([`call_chain`]); while the pair has at most
+/// The 11-mer chain, `chain`, is found once over the whole pair ([`call_chain`]); while the pair has at most
 /// [`CALL_CHAIN_MAX_MATCHES`] 11-mer matches it is the chain the one-shot alignment bands along.
 /// The pair is cut where [`segment_seams`] says, and each segment is aligned end to end between its
 /// two cuts (only the first may start anywhere in the reference, and only the last end anywhere),
@@ -2044,10 +2049,9 @@ fn segment_seams(chain: &[(u32, u32)], qn: usize, rn: usize) -> Vec<(usize, usiz
 /// not pass through a cut, and in what each band holds near a cut. Every gap is then moved as far
 /// left as it goes without changing a base ([`left_align_gaps`]), so where a cut falls in a repeat
 /// does not decide where an indel in it is reported.
-fn align_sample_in_segments(query: &[u8], reference: &[u8]) -> (Vec<u8>, Vec<u8>, usize) {
-    let chain = call_chain(query, reference);
+fn align_sample_in_segments(query: &[u8], reference: &[u8], chain: &[(u32, u32)]) -> (Vec<u8>, Vec<u8>, usize) {
     let mut bounds = vec![(0usize, 0usize)];
-    bounds.extend(segment_seams(&chain, query.len(), reference.len()));
+    bounds.extend(segment_seams(chain, query.len(), reference.len()));
     bounds.push((query.len(), reference.len()));
     let last = bounds.len() - 2;
     let mut qa = Vec::with_capacity(query.len() + 64);
@@ -2147,6 +2151,117 @@ fn align_sample_in_one_piece(query: &[u8], reference: &[u8]) -> (Vec<u8>, Vec<u8
     (qa, ra, aln.ystart)
 }
 
+/// Whether `bases` hold a run of bases the caller does not know, with bases on both sides of it,
+/// that is longer than the bases on its shorter side. [`align_sample_in_one_piece`] bands along
+/// sdpkpp's own chain, which charges a gap 2 a base of its longer side and so ends short of an
+/// anchored stretch that scores less than the gap before it costs: past a run of N the wrong size,
+/// one shorter than the run's error. The band then ran on along the near stretch's diagonal and
+/// the far stretch was aligned off its own: 165 to 434 false calls on the test's draws of a sample
+/// run of 6,000 or 7,000 N between stretches of 800 to 3,000 bases (BG-01M6W0BZ). Such a pair is
+/// aligned in segments, whose chain reaches past the run ([`with_chains_beyond_its_ends`]). A run no
+/// longer than the bases on either side of it is aligned in one piece as before: a sample run's
+/// surplus is at most its length, so no longer than those bases. A run standing for many more
+/// bases than it holds is not caught by this length test.
+fn an_unknown_run_outlasts_its_flanks(bases: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i < bases.len() {
+        if call_known(bases[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bases.len() && !call_known(bases[i]) {
+            i += 1;
+        }
+        if start > 0 && i < bases.len() && i - start > start.min(bases.len() - i) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The fewest sample bases compared with known reference bases that a stretch must hold to be
+/// soft-clipped ([`soft_clipped_columns`]); shorter ones (a cluster of a few SNPs, an MNP) are
+/// read off the alignment as they lie.
+const CALL_SOFT_CLIP_BP: usize = 64;
+
+/// The alignment columns, as `[start, end)`, of each stretch of the sample that has no anchored
+/// match to the reference and is soft-clipped: the alignment pairs no base of it as a stretch of the
+/// chain of [`CALL_CHAIN_JOIN_SCORE`]'s 32 or more matched bases on one diagonal pairs it (`ra`'s
+/// first base is `reference[ystart]`), it pairs at least
+/// [`CALL_SOFT_CLIP_BP`] known sample bases with known reference bases, and its columns from the
+/// sample's first aligned base to its last score below zero as the alignment scores them
+/// ([`columns_score`]: bases that match the reference score 2 a base; unrelated ones lose, paired
+/// or gapped). The caller aligns the whole sample, so unrelated
+/// bases at a sample end, or in a stretch replaced by unrelated bases, were paired base by base
+/// with the reference opposite them and every chance mismatch was called: 622, 587 and 1,516 false
+/// calls on the test's draws of 2,000 unrelated bases before or after 60,000 and of 5,000 replaced
+/// (BG-01M6W0BZ). A
+/// deletion column belongs to a stretch where the sample bases on both sides of it do. A clipped
+/// stretch takes in the insertion or deletion columns that touch it: an indel there has no anchor
+/// on the clipped side, and was called beside the clip.
+fn soft_clipped_columns(qa: &[u8], ra: &[u8], ystart: usize, chain: &[(u32, u32)], qn: usize) -> Vec<(usize, usize)> {
+    // each query base's reference offset on the chain stretch that holds it
+    let mut on_chain: Vec<Option<usize>> = vec![None; qn];
+    for (x, y, len) in chain_stretches(chain).into_iter().filter(|r| r.2 >= 2 * CALL_SEAM_FLANK_BP) {
+        for (i, cell) in on_chain[x..(x + len).min(qn)].iter_mut().enumerate() {
+            *cell = Some(y + i);
+        }
+    }
+    let n = qa.len().min(ra.len());
+    let mut covered = vec![false; qn];
+    let mut unsupported = vec![false; n];
+    let (mut q, mut r) = (0usize, ystart);
+    for c in 0..n {
+        if qa[c] != b'-' {
+            covered[q] = ra[c] != b'-' && on_chain[q] == Some(r);
+            unsupported[c] = !covered[q];
+            q += 1;
+        }
+        if ra[c] != b'-' {
+            r += 1;
+        }
+    }
+    let mut q = 0usize;
+    for (c, cell) in unsupported.iter_mut().enumerate() {
+        if qa[c] != b'-' {
+            q += 1;
+        } else {
+            *cell = (q == 0 || !covered[q - 1]) && (q >= qn || !covered[q]);
+        }
+    }
+    let (Some(first), Some(last)) = (qa[..n].iter().position(|&b| b != b'-'), qa[..n].iter().rposition(|&b| b != b'-')) else {
+        return Vec::new();
+    };
+    let mut clipped = Vec::new();
+    let mut c = 0usize;
+    while c < n {
+        if !unsupported[c] {
+            c += 1;
+            continue;
+        }
+        let start = c;
+        while c < n && unsupported[c] {
+            c += 1;
+        }
+        let compared = (start..c).filter(|&i| call_known(qa[i]) && call_known(ra[i])).count();
+        let (from, to) = (start.max(first), c.min(last + 1));
+        if compared >= CALL_SOFT_CLIP_BP && from < to && columns_score(&qa[from..to], &ra[from..to]).0 < 0 {
+            let gap = |i: usize| qa[i] == b'-' || ra[i] == b'-';
+            let mut a = start;
+            while a > 0 && gap(a - 1) {
+                a -= 1;
+            }
+            let mut b = c;
+            while b < n && gap(b) {
+                b += 1;
+            }
+            clipped.push((a, b));
+        }
+    }
+    clipped
+}
+
 /// The most runs of unknown bases, and the most indels left out beside them, the caller's
 /// `warnings` name one by one. The rest of each are counted in one sentence after them, so a sample
 /// with an R every 20 bases does not give one sentence per base (BG-01M6TE8J).
@@ -2209,12 +2324,17 @@ fn counted(n: usize, one: &str, more: &str) -> String {
 /// may lie elsewhere among them, and the alignment column after its last.
 ///
 /// Indels of one kind with nothing between them but columns holding a base either sequence does not
-/// know are one indel the alignment split, and are named as one, with their whole length and every
-/// reference base the parts cover. A segment's band from the last chain 11-mer before a run of N to
-/// the first after it is a straight line, so the alignment holds a run's surplus as a staircase of
-/// insertions between pairings of N with reference bases: 12,000 N standing for 2,000 bases were
-/// twelve, eleven of about 900 bases, and named as twelve (BG-01M6VMNF). An indel apart from the run
-/// by a known base is not one of them.
+/// know, where one moves onto the other without pairing a known base with a different one
+/// ([`fitting_reach`]), are one indel the alignment split, and are named as one, with their whole
+/// length and every reference base the parts cover. A segment's band from the last chain 11-mer
+/// before a run of N to the first after it is a straight line, so the alignment holds a run's
+/// surplus as a staircase of insertions between pairings of N with reference bases: 12,000 N
+/// standing for 2,000 bases were twelve, eleven of about 900 bases, and named as twelve
+/// (BG-01M6VMNF). An indel apart from the run by a known base is not one of them, and neither are
+/// two deletions of known bases on either side of a reference run: such a deletion moves across the
+/// run only where each sample base opposite the run equals the deleted base it would then face, so
+/// 5 bases deleted before 50 N and 10 after them are two deletions, which were named as one 15-bp
+/// deletion (BG-01M6W0BZ).
 struct LeftOutIndel {
     is_del: bool,
     len: usize,
@@ -2222,6 +2342,9 @@ struct LeftOutIndel {
     hi: usize,
     moved: bool,
     end_col: usize,
+    /// the alignment column its last part reaches to the right without pairing a known base with
+    /// a different one ([`fitting_reach`])
+    reach_col: usize,
 }
 
 impl LeftOutIndel {
@@ -2242,7 +2365,10 @@ impl LeftOutIndel {
             };
             return ("deletion", sentence);
         }
-        let at = if lo == 0 {
+        let at = if lo == 0 && self.moved {
+            // it may lie anywhere before its farthest base, not just before that one
+            format!("somewhere before reference base {}", format_thousands(hi))
+        } else if lo == 0 {
             format!("before reference base {}", format_thousands(hi))
         } else if self.moved {
             format!("somewhere between reference bases {} and {}", format_thousands(lo), format_thousands(hi))
@@ -2279,13 +2405,27 @@ fn known_score(a: u8, b: u8) -> i32 {
 /// sequences at the same columns scores as it did. Stopped beside such a column, as it once was, a
 /// deletion the alignment put on the far side of N shared by both sequences was named over bases
 /// that missed it (BG-01M6W02V).
+///
+/// An insertion never moves past a column of two known bases by putting an unknown base of it
+/// opposite one of them: the sample holds and matches those bases where they are, and the move
+/// would read a base the sample holds as inserted and pair the reference base with one the sample
+/// does not know. Moved so, a sample run's surplus of N reached its own length into the known bases
+/// on each side: 30,000 N standing for 20,000 bases after 40,000 were named as an insertion
+/// somewhere between reference bases 30,000 and 70,001, where it lies between 40,000 and 60,001
+/// (BG-01M6W0BZ). A deletion keeps that reach: the alignment deletes a reference run's N where the
+/// sample lost the known bases beside the run, and its warning names those bases (BG-01M6W02V).
 fn fitting_reach(qa: &[u8], ra: &[u8], start: usize, end: usize, is_del: bool) -> (usize, usize) {
     let n = qa.len().min(ra.len());
     let (gap_row, indel_row) = if is_del { (qa, ra) } else { (ra, qa) };
-    let fits = |a: u8, b: u8| a == b || !call_known(a) || !call_known(b);
     let paired = |c: usize| qa[c] != b'-' && ra[c] != b'-';
-    let left = (1..=start).take_while(|&k| paired(start - k) && fits(gap_row[start - k], indel_row[end - k])).count();
-    let right = (1..=n - end).take_while(|&k| paired(end + k - 1) && fits(gap_row[end + k - 1], indel_row[start + k - 1])).count();
+    // the indel moved past column c, with base `moved` of it then facing the gap row's base there
+    let fits = |c: usize, moved: u8| {
+        let g = gap_row[c];
+        let clamped = !is_del && call_known(g) && call_known(indel_row[c]) && !call_known(moved);
+        paired(c) && !clamped && (g == moved || !call_known(g) || !call_known(moved))
+    };
+    let left = (1..=start).take_while(|&k| fits(start - k, indel_row[end - k])).count();
+    let right = (1..=n - end).take_while(|&k| fits(end + k - 1, indel_row[start + k - 1])).count();
     (left, right)
 }
 
@@ -2686,7 +2826,8 @@ pub fn call_freebayes_variants(
 }
 
 /// [`call_freebayes_variants`] with the one-shot limit chosen: a sample whose one-shot alignment
-/// would keep more than `one_shot_max_traceback_bytes` of traceback is aligned in segments. The
+/// would keep more than `one_shot_max_traceback_bytes` of traceback is aligned in segments, as is
+/// one where a run of unknown bases outlasts its flanks ([`an_unknown_run_outlasts_its_flanks`]). The
 /// variant caller's tests pass 0 to align a short sample in segments, so they can check the segment
 /// path against an exact alignment of a pair small enough to align exactly.
 #[doc(hidden)]
@@ -2745,15 +2886,29 @@ pub fn call_freebayes_variants_with_one_shot_limit(
         .collect();
     let (win_start, win_end) = call_window(rb, &query, mapping.ref_start_bp.saturating_sub(1));
     let reference = &rb[win_start..win_end];
-    let (mut qa, mut ra, ystart) = if traceback_bytes(query.len(), reference.len()) <= one_shot_max_traceback_bytes {
-        // one alignment of the whole sample, as the caller aligned every sample before BG-01M6S1QP
+    let chain = call_chain(&query, reference);
+    let one_piece = traceback_bytes(query.len(), reference.len()) <= one_shot_max_traceback_bytes
+        && !an_unknown_run_outlasts_its_flanks(&query)
+        && !an_unknown_run_outlasts_its_flanks(reference);
+    let (mut qa, mut ra, ystart) = if one_piece {
+        // one alignment of the whole sample, as the caller aligned every sample before BG-01M6S1QP,
+        // unless a run of N outlasts the bases beside it (BG-01M6W0BZ)
         align_sample_in_one_piece(&query, reference)
     } else {
-        align_sample_in_segments(&query, reference)
+        align_sample_in_segments(&query, reference, &chain)
     };
     part_deletions_from_unknown_runs(&mut qa, &mut ra);
     place_indels_on_known_bases(&mut qa, &mut ra);
     let together = deletions_left_out_together(&qa, &ra);
+    // the stretches of the sample soft-clipped as unrelated to the reference ([`soft_clipped_columns`])
+    let clips = soft_clipped_columns(&qa, &ra, ystart, &chain, query.len());
+    let mut clip_at = vec![false; qa.len().min(ra.len())];
+    for &(a, b) in &clips {
+        clip_at[a..b].fill(true);
+    }
+    // a clip that holds the sample's last aligned base: calling stops where it starts
+    let last_q_col = qa.iter().rposition(|&b| b != b'-');
+    let tail_clip = clips.iter().find(|&&(a, b)| last_q_col.is_some_and(|l| (a..b).contains(&l))).map(|&(a, _)| a);
 
     let mut variants = Vec::new();
     let mut transitions = 0usize;
@@ -2774,6 +2929,18 @@ pub fn call_freebayes_variants_with_one_shot_limit(
     let mut col = 0usize;
     while col < n {
         let (q, r) = (qa[col], ra[col]);
+        // A soft-clipped stretch: its reference bases are passed over and nothing is called there; one
+        // at the sample's end ends the call, and one at its start is passed over as the flank is.
+        if tail_clip == Some(col) {
+            break;
+        }
+        if clip_at[col] {
+            if r != b'-' {
+                ref_pos += 1;
+            }
+            col += 1;
+            continue;
+        }
         // Ignore the unaligned reference flanks before/after the sample.
         if q == b'-' && !started {
             if r != b'-' {
@@ -2844,6 +3011,7 @@ pub fn call_freebayes_variants_with_one_shot_limit(
         // ([`fitting_reach`]). No placement it reaches pairs a known base with a different one that
         // this placement does not.
         let (left, right) = fitting_reach(&qa, &ra, start_col, col, is_del);
+        let fitting = (left, right);
         // An indel is not called where any placement it reaches has a base either sequence does not
         // know in its bases, its anchor or its next column: where it lies against bases that are
         // not known is not known. It is named, with every reference base those placements cover.
@@ -2871,16 +3039,19 @@ pub fn call_freebayes_variants_with_one_shot_limit(
             let (left, right) = if joint { (left.max(joint_left), right.max(joint_right)) } else { (left, right) };
             let len = col - start_col;
             let (lo, hi) = if is_del { (ref_pos + 1 - left, ref_pos + len + right) } else { (ref_pos - left, ref_pos + right + 1) };
+            // whether one of them moves onto the other without pairing a known base with a different one
+            let meets = |prev: &LeftOutIndel| prev.reach_col >= start_col || start_col - fitting.0 <= prev.end_col;
             match left_out.last_mut() {
                 // the next step of a staircase the alignment split one indel into (LeftOutIndel)
-                Some(prev) if prev.is_del == is_del && (prev.end_col..start_col).all(unknown_at) => {
+                Some(prev) if prev.is_del == is_del && (prev.end_col..start_col).all(unknown_at) && meets(prev) => {
                     prev.len += len;
                     prev.lo = prev.lo.min(lo);
                     prev.hi = prev.hi.max(hi);
                     prev.moved = true;
                     prev.end_col = col;
+                    prev.reach_col = col + fitting.1;
                 }
-                _ => left_out.push(LeftOutIndel { is_del, len, lo, hi, moved: left + right > 0, end_col: col }),
+                _ => left_out.push(LeftOutIndel { is_del, len, lo, hi, moved: left + right > 0, end_col: col, reach_col: col + fitting.1 }),
             }
         } else {
             let anchor = anchor as char;
@@ -2989,6 +3160,45 @@ pub fn call_freebayes_variants_with_one_shot_limit(
             format_thousands(total),
             by.join(", ")
         )
+    }));
+    // Each soft-clipped stretch, by the sample bases it holds (numbered as the sample was given) and,
+    // where it lies between anchored bases, the reference bases it was aligned against.
+    let mut clip_sentences = Vec::new();
+    for &(a, b) in &clips {
+        let q_before = qa[..a].iter().filter(|&&c| c != b'-').count();
+        let q_in = qa[a..b].iter().filter(|&&c| c != b'-').count();
+        if q_in == 0 {
+            continue;
+        }
+        let (first, last) = (q_before, q_before + q_in - 1);
+        let (from, to) = if reverse { (samp_clean.len() - last, samp_clean.len() - first) } else { (first + 1, last + 1) };
+        let span = format!("{}-{}", format_thousands(from), format_thousands(to));
+        let end = if from == 1 {
+            Some("start")
+        } else if to == samp_clean.len() {
+            Some("end")
+        } else {
+            None
+        };
+        let r_before = win_start + ystart + ra[..a].iter().filter(|&&c| c != b'-').count();
+        let r_in = ra[a..b].iter().filter(|&&c| c != b'-').count();
+        clip_sentences.push((
+            "clip",
+            match end {
+                Some(end) => format!(
+                    "The sample's bases {span}, at its {end}, have no anchored match to the reference where they align, so they are soft-clipped and no variant is called there."
+                ),
+                None => format!(
+                    "The sample's bases {span} have no anchored match to reference bases {}-{}, which they align against, so they are soft-clipped and no variant is called there.",
+                    format_thousands(r_before + 1),
+                    format_thousands(r_before + r_in.max(1))
+                ),
+            },
+        ));
+    }
+    warnings.extend(listed_warnings(clip_sentences, |rest| {
+        let total = rest.iter().map(|&(_, n)| n).sum::<usize>();
+        format!("{} more soft-clipped {} of the sample {} not listed; no variant is called there.", format_thousands(total), if total == 1 { "stretch" } else { "stretches" }, if total == 1 { "is" } else { "are" })
     }));
 
     FreeBayesVariantReport {

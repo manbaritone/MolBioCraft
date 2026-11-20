@@ -1225,13 +1225,9 @@ fn covers_the_run(after: usize, next: usize, before: usize, stands_for: usize, s
     after <= before && next >= first_after && after + surplus + 100 >= before && next <= first_after + surplus + 100
 }
 
-#[test]
-fn no_false_calls_beside_a_long_wrong_sized_n_run_over_the_cap() {
-    // 101,000-bp samples: genome bases 1-40,000, then 30,000 N standing for the next 28,000 (or
-    // 20,000) genome bases, then the rest; and one with 25,000 bases before such a run, so that the
-    // bases before it are the shorter stretch and the bases after it the one the chain keeps. A SNP
-    // every 1,009 bases outside the run is the only truth: the run's surplus of N is an insertion
-    // beside bases that are not known, never called, and named once as one insertion of its length.
+/// The over-cap family of [`no_false_calls_beside_a_long_wrong_sized_n_run_over_the_cap`], each pair
+/// with the genome bases before its run and the bases the run stands for.
+fn wrong_sized_over_cap_family() -> Vec<(CapPair, usize, usize)> {
     let mut rng = SplitMix(0x0B6F_A11F);
     let mut pairs: Vec<(CapPair, usize, usize)> = [(40_000usize, 28_000usize), (40_000, 20_000), (25_000, 28_000)]
         .iter()
@@ -1260,6 +1256,17 @@ fn no_false_calls_beside_a_long_wrong_sized_n_run_over_the_cap() {
         65_000,
         20_000,
     ));
+    pairs
+}
+
+#[test]
+fn no_false_calls_beside_a_long_wrong_sized_n_run_over_the_cap() {
+    // 101,000-bp samples: genome bases 1-40,000, then 30,000 N standing for the next 28,000 (or
+    // 20,000) genome bases, then the rest; and one with 25,000 bases before such a run, so that the
+    // bases before it are the shorter stretch and the bases after it the one the chain keeps. A SNP
+    // every 1,009 bases outside the run is the only truth: the run's surplus of N is an insertion
+    // beside bases that are not known, never called, and named once as one insertion of its length.
+    let pairs = wrong_sized_over_cap_family();
     let mut wrong = Vec::new();
     for (p, before, stands_for) in &pairs {
         for (label, rep) in p.reports() {
@@ -1616,17 +1623,20 @@ fn an_exact_repeat_copy_does_not_capture_a_short_anchored_stretch() {
     // bases) keeps chance 11-mer matches out, both as the chain added and as one chosen over it.
     // The data seat's E1: 2,000 unrelated bases, then genome bases 30,001-90,000 of a 150 kb genome.
     // With no floor, a chain of chance matches put the unrelated bases 13 kb before the bases the
-    // sample copies, called there as a 1,722-bp insertion at 16,839. With it, every call lies
-    // within those 2,000 bases and the window's 200-base flank before them. (The unrelated bases
-    // are still compared base by base with the flank, which makes about 600 false calls there;
-    // that is filed apart from this unit.)
+    // sample copies, called there as a 1,722-bp insertion at 16,839. With it, no call lies before
+    // those 2,000 bases and the window's 200-base flank before them; and since BG-01M6W0BZ the
+    // unrelated bases are soft-clipped rather than compared base by base with the flank (about 600
+    // false calls there before), so the planted SNPs are the only calls.
     let mut rng = SplitMix(500);
     let g = rng.bases(150_000);
     let unrelated = rng.bases(2_000);
-    let (sample, _) = repeat_probe_sample(&g, &[Piece::Ins(unrelated), Piece::Copy(30_000..90_000)], 2_500, &mut rng);
+    let (sample, truth) = repeat_probe_sample(&g, &[Piece::Ins(unrelated), Piece::Copy(30_000..90_000)], 2_500, &mut rng);
     let rep = call_freebayes_variants("chr1", &text(&g), &text(&sample));
     let far: Vec<Call> = report_calls(&rep).into_iter().filter(|c| c.0 <= 30_000 - 2_000 - 200).take(3).collect();
     wrong.extend((!far.is_empty()).then(|| format!("E1 2,000 unrelated bases before 30,001: calls before 27,801 {far:?}")));
+    let mut calls = report_calls(&rep);
+    calls.sort();
+    wrong.extend((calls != truth).then(|| format!("E1 2,000 unrelated bases before 30,001: {} calls, {} true", calls.len(), truth.len())));
     // The data seat's F probe of 800 bases, 7,000 N for the next 9,500 and 2,000 more, in
     // segments: the 2,500-base deletion the run hides costs more than the 800 bases before it
     // score, so a chance match near the chain's diagonal, scored with no floor, was chosen over
@@ -1883,3 +1893,308 @@ fn a_left_out_deletion_beside_shared_n_columns_is_named_over_every_placement() {
     let wrong = wrong_reports(&probes, &|_, _| None);
     assert!(wrong.is_empty(), "{} of {} reports wrong:\n{}", wrong.len(), 2 * probes.len(), wrong.join("\n"));
 }
+
+// ---------------------------------------------------------------------------------------------
+// BG-01M6W0BZ: the data seat's residuals on BG-01M6VMNF round 1. Two real deletions on either side
+// of a reference N run were named as one deletion of both lengths; a left-out insertion's warning
+// reached its own length into each known flank, and one that may lie before reference base 1 was
+// named as lying before one base; a sample of 11 kb or less, aligned in one piece, was miscalled
+// beside a wrong-sized N run, and an 8-bp insertion directly before a right-sized run was called
+// as 7 bp; and unrelated bases at a sample end, or a replaced stretch, were compared base by base.
+// ---------------------------------------------------------------------------------------------
+
+/// A reference with `n` N standing for the genome bases `run` of `g`, and a sample of the genome's
+/// bases `from..to` with `first` bases deleted just before the run and `second` just after it.
+/// Returns the reference, the sample, and the 1-based reference bases of each deletion.
+fn deletions_around_a_run(g: &[u8], run: std::ops::Range<usize>, first: usize, second: usize, from: usize, to: usize) -> (Vec<u8>, Vec<u8>, [(usize, usize); 2]) {
+    let mut reference = g.to_vec();
+    reference[run.clone()].fill(b'N');
+    let (d1, d2) = (run.start - first..run.start, run.end..run.end + second);
+    let sample: Vec<u8> = (from..to).filter(|i| !d1.contains(i) && !d2.contains(i)).map(|i| g[i]).collect();
+    (reference, sample, [(d1.start + 1, d1.end), (d2.start + 1, d2.end)])
+}
+
+#[test]
+fn two_deletions_either_side_of_a_reference_n_run_stay_two_warnings() {
+    // The data seat's D1 (5 bp deleted at 9,996-10,000 and 10 bp at 10,051-10,060 around 50 N at
+    // 10,001-10,050) and D4 (20 bp and 30 bp around 400 N), in a 20 kb sample (aligned in segments)
+    // and a 10 kb one (aligned in one piece), eight genomes each, on both paths. The sample holds
+    // two deletions; each lies beside the run and is left out, and each is named apart, with its
+    // own length, over bases that hold it. Named as one, D1 was "A 15-bp deletion, somewhere in
+    // reference bases 9,994-10,058" (seed 1, 20 kb), and D4 one 50-bp deletion (seeds 1 and 2).
+    //
+    // D0268: where the sample's bases next to the run happen to equal the reference bases a
+    // deletion covers, deleting as many of the run's N instead and pairing those bases equal scores
+    // higher than the truth (a match 2, against 1 opposite an N), and the caller takes that
+    // reading: 6 bp and 9 bp, say. Such a draw is excused only where the best reading strictly
+    // outscores the true one, both scored here over the run and 100 bases each side; and even then
+    // the two are never named as one.
+    let (mut wrong, mut excused, mut reports, mut d1_reports) = (Vec::new(), Vec::new(), 0, 0);
+    for seed in 0..8u64 {
+        for &(n, first, second) in &[(50usize, 5usize, 10usize), (400, 20, 30)] {
+            for &(len, at) in &[(20_000usize, 10_000usize), (10_000, 5_000)] {
+                let g = SplitMix(0x0B_0001 + seed).bases(len);
+                let (reference, sample, dels) = deletions_around_a_run(&g, at..at + n, first, second, 0, len);
+                let label = format!("seed {seed}, {first} bp and {second} bp around {n} N at {}, {} kb", thousands(at + 1), len / 1_000);
+                // the true reading over the run and 100 bases each side: 200 matches, the run's N
+                // each 1, and the two gaps; and the best reading of the same bases
+                let w = 100;
+                let truth = 2 * 2 * w as i32 + n as i32 - (5 + 2 * first as i32) - (5 + 2 * second as i32);
+                let (x, y) = (&sample[at - first - w..at - first + n + w], &reference[at - first - w..at + n + second + w]);
+                let best = bio::alignment::pairwise::Aligner::with_capacity(x.len(), y.len(), -5, -2, d0268_score).global(x, y).score;
+                for (path, rep) in both_paths(&reference, &sample) {
+                    reports += 1;
+                    let warned = left_out_warnings(&rep);
+                    let named = |l: usize, (a, b): (usize, usize)| warned.iter().filter(|w| named_deletion(w, l).is_some_and(|(lo, hi)| lo <= a && hi >= b && hi < a + 2 * n + l)).count();
+                    let merged = warned.iter().any(|w| named_deletion(w, first + second).is_some()) || report_calls(&rep).iter().any(|c| c.1.len() == first + second + 1);
+                    let ok = rep.variants.is_empty() && warned.len() == 2 && named(first, dels[0]) == 1 && named(second, dels[1]) == 1;
+                    let line = format!("{label}, {path}: calls {:?}; left out {warned:?} [true reading {truth}, best {best}]", report_calls(&rep));
+                    // D0271: D1 (50 N) is held to exact naming; D4 (400 N), added beyond AC1's words,
+                    // is held to never merged into one warning. Its one exact-tie draw (seed 4, 20 kb:
+                    // true reading 690, best 690) is resolved by the pinned "known bases decide" tie
+                    // rule, not a merge, and belongs to BG-01M7V8FQ.
+                    let exact = n == 50;
+                    if exact {
+                        d1_reports += 1;
+                    }
+                    if merged || (exact && !ok && best <= truth) {
+                        wrong.push(line);
+                    } else if exact && !ok {
+                        excused.push(line);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!((reports, d1_reports), (64, 32), "fixture");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // most D1 draws have the truth as their best reading, and are named exactly
+    assert!(excused.len() < d1_reports / 2, "outscored (D0268) on too many draws:\n{}", excused.join("\n"));
+}
+
+#[test]
+fn a_left_out_insertion_is_named_within_its_known_flanks() {
+    // The over-cap family of no_false_calls_beside_a_long_wrong_sized_n_run_over_the_cap, and one
+    // with 10,000 bases before the run: the surplus of N is inserted somewhere among the reference
+    // bases the run stands for, never among the known bases on either side, which the sample holds
+    // and matches. Its warning names it between the last known base before the run and the first
+    // after it: 40,000 and 60,001 for 30,000 N standing for 20,000 bases after 40,000, where it was
+    // named between 30,000 and 70,001.
+    let mut pairs = wrong_sized_over_cap_family();
+    let mut rng = SplitMix(0x0B_0002);
+    let g = rng.bases(101_000 - 30_000 + 20_000);
+    pairs.push((CapPair::new("10,000 bases, then 30,000 N for 20,000 bases", &g, g.clone(), &[Piece::Copy(0..10_000), Piece::N(30_000), Piece::Copy(30_000..g.len())]), 10_000, 20_000));
+    let mut wrong = Vec::new();
+    for (p, before, stands_for) in &pairs {
+        for (label, rep) in p.reports() {
+            let surplus = 30_000 - stands_for;
+            let named: Vec<Option<(usize, usize)>> = left_out_warnings(&rep).iter().map(|w| named_insertion(w, surplus)).collect();
+            if named != [Some((*before, before + stands_for + 1))] {
+                wrong.push(format!("{label}: named {named:?}, not between {} and {}: {:?}", thousands(*before), thousands(before + stands_for + 1), left_out_warnings(&rep)));
+            }
+        }
+    }
+    // A sample that starts with 1,000 N standing for the reference's first 500 bases (and the
+    // bases after them): the 500 spare N are inserted somewhere before reference base 501, and the
+    // warning says so, rather than naming them as lying before one base.
+    for (seed, n, stands_for) in [(0x0B_0003u64, 1_000usize, 500usize), (0x0B_0004, 300, 120)] {
+        let g = SplitMix(seed).bases(6_000);
+        let mut sample = vec![b'N'; n];
+        sample.extend_from_slice(&g[stands_for..5_500]);
+        let want = format!(
+            "A {}-bp insertion, somewhere before reference base {}, lies beside bases that are not known and is not called.",
+            n - stands_for,
+            thousands(stands_for + 1)
+        );
+        for (path, rep) in both_paths(&g, &sample) {
+            if left_out_warnings(&rep) != [&want] || !rep.variants.is_empty() {
+                wrong.push(format!("{n} N for the first {stands_for} bases, {path}: calls {:?}; left out {:?}", report_calls(&rep), left_out_warnings(&rep)));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn the_one_piece_path_gives_no_miscall_beside_an_n_run() {
+    // The data seat's one-piece family: samples of 11 kb or less, which the caller aligned in one
+    // piece, with a sample N run of the wrong size (the data seat counted 65 to 457 false calls,
+    // these draws gave 228, 434, 165 and 237, where segments were clean), and two with the run in
+    // the reference. Every planted SNP is called and nothing else.
+    let mut wrong = Vec::new();
+    for (i, &(head, n, stands_for, tail)) in [(1_000usize, 7_000usize, 5_000usize, 2_000usize), (2_000, 6_000, 7_000, 1_500), (3_000, 6_000, 4_000, 800), (800, 7_000, 9_500, 2_000)].iter().enumerate() {
+        let mut rng = SplitMix(0x0B_0010 + i as u64);
+        let g = rng.bases(300 + head + stands_for + tail + 300);
+        let after = 300 + head + stands_for;
+        let (sample, truth) = repeat_probe_sample(&g, &[Piece::Copy(300..300 + head), Piece::N(n), Piece::Copy(after..after + tail)], 250, &mut rng);
+        let window = head + stands_for + tail + 2 * 200;
+        assert!((sample.len() + 1) * (window + 1) * 2 <= CALL_ONE_SHOT_MAX_BYTES, "fixture: aligned in one piece");
+        let rep = call_freebayes_variants("chr1", &text(&g), &text(&sample));
+        let mut calls = report_calls(&rep);
+        calls.sort();
+        if calls != truth {
+            let false_calls: Vec<&Call> = calls.iter().filter(|c| !truth.contains(c)).collect();
+            let missed = truth.iter().filter(|c| !calls.contains(c)).count();
+            wrong.push(format!("{head} + {n} N for {stands_for} + {tail}: {} false (first {:?}), {missed} missed", false_calls.len(), false_calls.first()));
+        }
+    }
+    // The same with the run in the reference: the sample holds the bases, and the reference a run of
+    // N the wrong size where they lie.
+    for (i, &(head, n, stands_for, tail)) in [(1_000usize, 7_000usize, 5_000usize, 2_000usize), (2_000, 4_000, 6_000, 1_500)].iter().enumerate() {
+        let mut rng = SplitMix(0x0B_0018 + i as u64);
+        let g = rng.bases(300 + head + stands_for + tail + 300);
+        let mut reference = g[..300 + head].to_vec();
+        reference.extend(std::iter::repeat_n(b'N', n));
+        reference.extend_from_slice(&g[300 + head + stands_for..]);
+        // the sample's bases and SNPs, numbered in the reference: past the run, n - stands_for on
+        let (sample, truth) = repeat_probe_sample(&g, &[Piece::Copy(300..300 + head), Piece::Copy(300 + head..300 + head + stands_for), Piece::Copy(300 + head + stands_for..g.len() - 300)], 250, &mut rng);
+        let at = |p: usize| if p > 300 + head + stands_for { p + n - stands_for } else { p };
+        let truth: Vec<Call> = truth.into_iter().filter(|c| c.0 <= 300 + head || c.0 > 300 + head + stands_for).map(|c| (at(c.0), c.1, c.2, c.3)).collect();
+        let window = sample.len() + 2 * 200 + n.saturating_sub(stands_for);
+        assert!((sample.len() + 1) * (window + 1) * 2 <= CALL_ONE_SHOT_MAX_BYTES, "fixture: aligned in one piece");
+        let rep = call_freebayes_variants("chr1", &text(&reference), &text(&sample));
+        let mut calls = report_calls(&rep);
+        calls.sort();
+        if calls != truth {
+            let false_calls: Vec<&Call> = calls.iter().filter(|c| !truth.contains(c)).collect();
+            let missed = truth.iter().filter(|c| !calls.contains(c)).count();
+            wrong.push(format!("reference {head} + {n} N for {stands_for} + {tail}: {} false (first {:?}), {missed} missed", false_calls.len(), false_calls.first()));
+        }
+    }
+    // The data seat's D2: an 8-bp insertion directly before a sample run of N standing for as many
+    // bases (10, 50 or 200), in a 10 kb sample, on both paths: called as 8 bp, or left out beside
+    // the run as 8 bp; never as 7 bp, and with no SNP. (It no longer reproduced before BG-01M6W0BZ's
+    // change: these 72 reports, and 1,920 wider draws, were right at 850d750.)
+    let mut reports = 0;
+    for seed in 0..12u64 {
+        for n in [10usize, 50, 200] {
+            let mut rng = SplitMix(0x0B_0020 + seed);
+            let g = rng.bases(10_000);
+            let mut ins = rng.bases(8);
+            ins[7] = rng.other(g[4_999]);
+            let mut sample = g[..5_000].to_vec();
+            sample.extend_from_slice(&ins);
+            sample.extend(std::iter::repeat_n(b'N', n));
+            sample.extend_from_slice(&g[5_000 + n..]);
+            let called = (5_000, text(&g[4_999..5_000]), text(&[&g[4_999..5_000], &ins[..]].concat()), "INS".to_string());
+            for (path, rep) in both_paths(&g, &sample) {
+                reports += 1;
+                let calls = report_calls(&rep);
+                let warned = left_out_warnings(&rep);
+                let ok = match (calls.as_slice(), warned.as_slice()) {
+                    ([one], []) => *one == called,
+                    ([], [w]) => w.starts_with("A 8-bp insertion"),
+                    _ => false,
+                };
+                if !ok {
+                    wrong.push(format!("seed {seed}, 8 bp before {n} N, {path}: calls {calls:?}; left out {warned:?}"));
+                }
+            }
+        }
+    }
+    assert_eq!(reports, 72, "fixture");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The sample bases (1-based, first and last) the warning for a soft-clipped stretch names: "The
+/// sample's bases 1-2,000 share no 11-base stretch with the reference ...".
+fn soft_clipped(warning: &str) -> Option<(usize, usize)> {
+    let rest = warning.strip_prefix("The sample's bases ")?;
+    if !warning.contains("soft-clipped") {
+        return None;
+    }
+    let span: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == ',' || *c == '-').collect();
+    let num = |s: &str| s.replace(',', "").parse::<usize>().ok();
+    let (a, b) = span.split_once('-')?;
+    Some((num(a)?, num(b)?))
+}
+
+#[test]
+fn novel_flanks_are_soft_clipped_with_a_warning_not_called() {
+    // The data seat's E1 (2,000 unrelated bases, then genome bases 30,001-90,000 of a 150 kb
+    // genome), E2 (those bases, then 2,000 unrelated ones) and E5 (genome bases 30,001-90,000 with
+    // 30,001 bases in, 5,000 replaced by unrelated ones): 608, 599 and 1,473 false calls by the
+    // data seat's count (622, 587 and 1,516 on these draws), each
+    // stretch compared base by base with the reference it was aligned against. And the same in a
+    // sample short enough to be aligned in one piece. The unrelated bases share no 11-base stretch
+    // with the reference there, so they are soft-clipped and a warning names them; the planted SNPs
+    // in the rest are the only calls.
+    let mut wrong = Vec::new();
+    let g = SplitMix(0x0B_0030).bases(150_000);
+    for (i, (label, copy_from, head, replaced, tail)) in [
+        ("E1 2,000 unrelated bases before", 30_000usize, 2_000usize, 0usize, 0usize),
+        ("E2 2,000 unrelated bases after", 30_000, 0, 0, 2_000),
+        ("E5 5,000 bases replaced", 30_000, 0, 5_000, 0),
+        ("one piece: 1,000 unrelated bases before", 70_000, 1_000, 0, 0),
+        ("one piece: 1,000 unrelated bases after", 70_000, 0, 0, 1_000),
+        ("one piece: 1,500 bases replaced", 70_000, 0, 1_500, 0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut rng = SplitMix(0x0B_0031 + i as u64);
+        let len = if label.starts_with("one piece") { 8_000 } else { 60_000 };
+        let mut pieces = Vec::new();
+        if head > 0 {
+            pieces.push(Piece::Ins(rng.bases(head)));
+        }
+        if replaced > 0 {
+            pieces.push(Piece::Copy(copy_from..copy_from + len / 2));
+            pieces.push(Piece::Ins(rng.bases(replaced)));
+            pieces.push(Piece::Copy(copy_from + len / 2 + replaced..copy_from + len));
+        } else {
+            pieces.push(Piece::Copy(copy_from..copy_from + len));
+        }
+        if tail > 0 {
+            pieces.push(Piece::Ins(rng.bases(tail)));
+        }
+        let (sample, truth) = repeat_probe_sample(&g, &pieces, 700, &mut rng);
+        // the 1-based sample bases that are unrelated
+        let novel = match (head, replaced, tail) {
+            (h, 0, 0) => (1, h),
+            (0, r, 0) => (len / 2 + 1, len / 2 + r),
+            (_, _, t) => (sample.len() - t + 1, sample.len()),
+        };
+        let rep = call_freebayes_variants("chr1", &text(&g), &text(&sample));
+        let mut calls = report_calls(&rep);
+        calls.sort();
+        let clipped: Vec<(usize, usize)> = rep.warnings.iter().filter_map(|w| soft_clipped(w)).collect();
+        let named = matches!(clipped[..], [(a, b)] if a.abs_diff(novel.0) <= 11 && b.abs_diff(novel.1) <= 11);
+        if calls != truth || !named {
+            let false_calls: Vec<&Call> = calls.iter().filter(|c| !truth.contains(c)).collect();
+            let missed = truth.iter().filter(|c| !calls.contains(c)).count();
+            let first: Vec<&&Call> = false_calls.iter().take(3).collect();
+            wrong.push(format!("{label}: {} false (first {first:?}), {missed} missed; sample bases {novel:?} named as soft-clipped {clipped:?}; warnings {:?}", false_calls.len(), rep.warnings));
+        }
+    }
+    // Controls: related bases with no 32-base matched stretch are still compared and called. A SNP
+    // every 16 bases over 600 bases (an 11-mer matches between them, no stretch of 32 does) scores
+    // above zero, and a 5-base MNP is fewer bases than a clip takes; both are called as they lie, on
+    // both paths, with no soft-clip warning.
+    for (label, dense) in [("a SNP every 16 bases over 600", true), ("a 5-base MNP", false)] {
+        let g = SplitMix(0x0B_0040).bases(9_000);
+        let mut sample = g[500..8_500].to_vec();
+        let mut truth = Vec::new();
+        let sites: Vec<usize> = if dense { (4_000..4_600).step_by(16).collect() } else { vec![4_000] };
+        for &i in &sites {
+            if dense {
+                let alt = transversion(g[i]);
+                sample[i - 500] = alt;
+                truth.push((i + 1, text(&g[i..i + 1]), text(&[alt]), "SNP".to_string()));
+            } else {
+                let alt: Vec<u8> = g[i..i + 5].iter().map(|&b| transversion(b)).collect();
+                sample[i - 500..i - 495].copy_from_slice(&alt);
+                truth.push((i + 1, text(&g[i..i + 5]), text(&alt), "MNP".to_string()));
+            }
+        }
+        for (path, rep) in both_paths(&g, &sample) {
+            let mut calls = report_calls(&rep);
+            calls.sort();
+            if calls != truth || rep.warnings.iter().any(|w| soft_clipped(w).is_some()) {
+                wrong.push(format!("{label}, {path}: {} calls, {} true; warnings {:?}", calls.len(), truth.len(), rep.warnings));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
