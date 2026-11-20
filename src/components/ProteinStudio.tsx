@@ -16,7 +16,7 @@ import { SequenceDocument, SequenceFeature, type ProteinAnalysisReport, type Tra
 import { analyzeProteinSequence } from '../core/bioEngine';
 import {
   alignPdbStructuresKabsch,
-  extractTargetProteinSequence,
+  targetProteinOf,
   parsePdbCaCoordinates,
   type PdbCaAtom,
   predictCoiledCoilsAndTransmembrane,
@@ -1130,7 +1130,9 @@ export const ProteinStudio: React.FC<ProteinStudioProps> = ({
 }) => {
   const inWorkbench = useInWorkbench();
   // 4. Coiled-Coils, Transmembrane Topology & 3D PDB Aligner
-  const targetProtein = useMemo(() => extractTargetProteinSequence(activeDoc), [activeDoc]);
+  // The protein they analyse, and which one it is and why (BG-01M6VZRS): the card names it.
+  const target = useMemo(() => targetProteinOf(activeDoc), [activeDoc]);
+  const targetProtein = target.protein;
 
   // 3D structures: only coordinates a structure file holds (an imported .pdb / .cif, or a file
   // loaded here) are drawn or compared. Model A is this document's own chain; Model B is empty until the
@@ -1310,6 +1312,7 @@ export const ProteinStudio: React.FC<ProteinStudioProps> = ({
       <div className="studio-card-header">
         <h3>Coiled-Coils (Lupas) &amp; Transmembrane Helix Topology</h3>
         <span className="badge-accent">{topologyReport.lengthAa} aa Analyzed</span>
+        <span className="mbc-summary-note" data-mbc-topology-source>from {target.source}</span>
       </div>
 
       <div className="thermo-kpi-grid">
@@ -1334,7 +1337,7 @@ export const ProteinStudio: React.FC<ProteinStudioProps> = ({
         <div className="plugin-list-box" style={{ maxHeight: 130, marginTop: 6 }}>
           {topologyReport.coiledCoils.length === 0 ? (
             <div className="plugin-row-item">
-              No extended heptad coiled-coil domains (P ≥ 0.64) detected in primary ORF.
+              No extended heptad coiled-coil domains (P ≥ 0.64) detected in {target.source}.
             </div>
           ) : (
             topologyReport.coiledCoils.map((cc) => (

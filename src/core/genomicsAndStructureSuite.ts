@@ -8,7 +8,7 @@
  */
 
 import { invokeRustBioSync } from '../lib/rustBioEngine';
-import type { SequenceDocument, SequenceFeature } from '../types/bio';
+import type { ORFRecord, SequenceDocument, SequenceFeature } from '../types/bio';
 import { findORFs, translateSequence } from './bioEngine';
 
 export function complementOnlySequence(seq: string, isRna = false): string {
@@ -518,9 +518,26 @@ export interface ProteinTopologyAndCoilsReport {
   transmembraneHelices: TransmembraneHelix[];
 }
 
-export function extractTargetProteinSequence(doc: SequenceDocument): string {
+/** The protein the coiled-coil and transmembrane predictions analyse, and which one it is and why. */
+export interface TargetProtein {
+  protein: string;
+  /**
+   * Where it came from, as the Coiled-Coils card names it: `the record's own residues`,
+   * `annotated CDS <name>`, `longest ORF, frame <f>, bases <a>-<b>`, or with no ORF of 15 aa the
+   * longest stop-free stretch of frame 1.
+   */
+  source: string;
+}
+
+/**
+ * The protein the coiled-coil and transmembrane predictions analyse (BG-01M6VZRS): a protein
+ * record's own residues; else the record's first CDS, translated up to its first stop, when that is
+ * 20 aa or more; else the longest ORF of 15 aa or more on either strand (the first-starting of two
+ * as long), whatever order the engine lists them in; else the longest stop-free stretch of frame 1.
+ */
+export function targetProteinOf(doc: SequenceDocument): TargetProtein {
   if (doc.moleculeType === 'Protein') {
-    return doc.sequence.toUpperCase().replace(/[^ACDEFGHIKLMNPQRSTVWY]/g, '');
+    return { protein: doc.sequence.toUpperCase().replace(/[^ACDEFGHIKLMNPQRSTVWY]/g, ''), source: "the record's own residues" };
   }
   const cds = doc.features.find((f) => f.type === 'CDS');
   if (cds) {
@@ -532,13 +549,27 @@ export function extractTargetProteinSequence(doc: SequenceDocument): string {
     // the bioEngine readers unwrap the `{ protein | orfs, warnings }` replies; with the Standard code
     // (table 1) they read, the warnings are always empty
     const aa = translateSequence(oriented, 0).replace(/\*.*$/, '');
-    if (aa.length >= 20) return aa;
+    if (aa.length >= 20) return { protein: aa, source: `annotated CDS ${cds.name}` };
   }
-  const orfs = findORFs(doc.sequence, 15, false);
-  if (orfs.length > 0) return orfs[0].proteinSeq;
-  return translateSequence(doc.sequence, 0)
+  const longest = findORFs(doc.sequence, 15, false).reduce<ORFRecord | null>(
+    (best, o) => (!best || o.lengthAa > best.lengthAa || (o.lengthAa === best.lengthAa && o.start < best.start) ? o : best),
+    null
+  );
+  if (longest) {
+    return {
+      protein: longest.proteinSeq,
+      source: `longest ORF, frame ${longest.frame > 0 ? '+' : ''}${longest.frame}, bases ${longest.start}-${longest.end}`,
+    };
+  }
+  const stretch = translateSequence(doc.sequence, 0)
     .split('*')
     .sort((a, b) => b.length - a.length)[0] ?? '';
+  return { protein: stretch, source: 'the longest stop-free stretch of frame 1 (no ORF of 15 aa or more)' };
+}
+
+/** The protein of {@link targetProteinOf} alone. */
+export function extractTargetProteinSequence(doc: SequenceDocument): string {
+  return targetProteinOf(doc).protein;
 }
 
 export function predictCoiledCoilsAndTransmembrane(

@@ -666,3 +666,66 @@ describe('US-01M7QC8Q AC5: workflows in Pipelines & NGS, genetic-code tables in 
     }
   }, 120_000);
 });
+
+// ─── BG-01M6VZRS ───
+
+/** Deterministic letters (LCG), so the fixture reads the same every run. */
+function seeded(seed: number, n: number, alphabet: string): string {
+  let st = seed >>> 0;
+  let out = '';
+  for (let i = 0; i < n; i++) {
+    st = (Math.imul(st, 1664525) + 1013904223) >>> 0;
+    out += alphabet[Math.floor((st / 2 ** 32) * alphabet.length)];
+  }
+  return out;
+}
+/**
+ * ATG, `codons` codons drawn from `sense`, TAA: one ORF of `codons + 1` aa. The G/P/S/T codons hold
+ * no ATG in any frame on either strand, and give a protein with no coiled coil (the empty state).
+ */
+const senseGene = (codons: number, seed: number, sense = ['GCT', 'GAA', 'CTG', 'AAA', 'GTT', 'TCC', 'CGT', 'GGC']) =>
+  `ATG${[...seeded(seed, codons, '01234567'.slice(0, sense.length))].map((k) => sense[Number(k)]).join('')}TAA`;
+const revComp = (s: string) => [...s].reverse().map((b) => ({ A: 'T', C: 'G', G: 'C', T: 'A' })[b]).join('');
+/** No CDS: 30 bases with no ATG on either strand, a 20-aa ORF (frame 1), 31 such bases, a 286-aa ORF (frame 2), 30 more. */
+const SHORT_ORF = senseGene(19, 0x2b1);
+const LONG_ORF = senseGene(285, 0x2b2, ['GGC', 'CCT', 'TCC', 'ACC']);
+const LONG_AT = 31 + SHORT_ORF.length + 31;
+const ORFS_ONLY = `${seeded(0x2b3, 30, 'CGT')}${SHORT_ORF}${seeded(0x2b4, 31, 'CGT')}${LONG_ORF}${seeded(0x2b5, 30, 'CGT')}`;
+const NO_CDS: SequenceDocument = { ...BASE, id: 'vzrs-orfs', name: 'Two_ORFs', sequence: ORFS_ONLY };
+
+describe('BG-01M6VZRS the Coiled-Coils card names the protein it analysed', () => {
+  it('BG-01M6VZRS AC3 the Coiled-Coils card names the protein it analysed: the annotated CDS or the longest ORF with its frame and bases', async () => {
+    const { genomics, translateSequence } = { ...(await load()), translateSequence: (await import('../core/bioEngine')).translateSequence };
+    const longProtein = translateSequence(LONG_ORF, 0).replace(/\*$/, '');
+    expect(longProtein).toHaveLength(286);
+    const minusEnd = ORFS_ONLY.length - LONG_AT + 1;
+    const minusFrame = (await import('../core/bioEngine')).findORFs(revComp(ORFS_ONLY), 15, false)[0];
+    expect([minusFrame.start, minusFrame.end, minusFrame.strand]).toEqual([minusEnd - LONG_ORF.length + 1, minusEnd, -1]);
+    // [what, record, the source named, the protein analysed, whether it has no coiled coil (the empty state)]
+    const cases: [string, SequenceDocument, string, string, boolean][] = [
+      ['an annotated CDS', DNA, 'annotated CDS GFP', translateSequence(CDS_DNA, 0).replace(/\*$/, ''), false],
+      ['the longest ORF', NO_CDS, `longest ORF, frame +2, bases ${LONG_AT}-${LONG_AT + LONG_ORF.length - 1}`, longProtein, true],
+      ['a minus-strand ORF', { ...NO_CDS, sequence: revComp(ORFS_ONLY) },
+        `longest ORF, frame ${minusFrame.frame}, bases ${minusEnd - LONG_ORF.length + 1}-${minusEnd}`, longProtein, true],
+      ['a protein record', PLAIN, "the record's own residues", PLAIN.sequence, false],
+    ];
+    expect(minusFrame.frame).toBeLessThan(0);
+    for (const [what, doc, source, analysed, empty] of cases) {
+      const topology = vi.spyOn(genomics, 'predictCoiledCoilsAndTransmembrane');
+      const html = await protein(doc);
+      expect(topology, `${what}: the card analyses that protein`).toHaveBeenCalledWith(analysed);
+      const report = topology.mock.results[0].value as { lengthAa: number; coiledCoils: unknown[] };
+      topology.mockRestore();
+      const header = /<h3>Coiled-Coils \(Lupas\)[\s\S]*?<\/div>/.exec(html)?.[0] ?? '';
+      // beside its aa count, which protein that was and why
+      expect(text(header), what).toContain(`${report.lengthAa} aa Analyzed from ${source}`);
+      expect(report.lengthAa).toBe(analysed.length);
+      // and its empty state names the same protein, not a 'primary ORF'
+      expect(report.coiledCoils.length === 0, `${what}: whether the protein has no coiled coil`).toBe(empty);
+      const emptyLine = `No extended heptad coiled-coil domains (P ≥ 0.64) detected in ${source}.`;
+      if (empty) expect(text(html), what).toContain(emptyLine);
+      else expect(text(html), what).not.toContain('No extended heptad coiled-coil domains');
+      expect(text(html), what).not.toContain('primary ORF');
+    }
+  }, 60_000);
+});

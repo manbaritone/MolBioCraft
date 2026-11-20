@@ -1,12 +1,13 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   alignPdbStructuresKabsch,
   callFreeBayesVariants,
   classifySequenceTaxonomy,
   complementOnlySequence,
+  extractTargetProteinSequence,
   findCpGIslands,
   findGenomicRepeats,
   mutateAndShuffleSequence,
@@ -23,7 +24,8 @@ import {
   synthesizeAlphaHelicalCaPdbFromProtein,
 } from '../core/genomicsAndStructureSuite';
 import { constructPhylogeneticTree } from '../core/phyloEvoEngine';
-import { reverseComplement, runMultipleSequenceAlignment } from '../core/bioEngine';
+import * as bioEngine from '../core/bioEngine';
+import { findORFs, reverseComplement, runMultipleSequenceAlignment, translateSequence } from '../core/bioEngine';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import {
   DE_NOVO_ASSEMBLER_METHODS, NGS_MAPPER_METHODS, SYNTENY_ENGINE_METHODS,
@@ -31,6 +33,7 @@ import {
   type NgsReferenceMappingReport, type DeNovoAssemblyReport,
 } from '../core/genomicsAndStructureSuite';
 import { invokeRustBioSync } from '../lib/rustBioEngine';
+import type { SequenceDocument } from '../types/bio';
 
 describe('Built-In Genomics, NGS, Gene/Repeat Prediction, Protein Topology & 3D PDB Suite', () => {
   const pet28 = SAMPLE_LIBRARY[0];
@@ -355,5 +358,76 @@ describe('US-01M6P23M mapping, assembly and synteny name their method', () => {
         `Unknown synteny engine "${unknown}"; aligned with the default, seed-13 (Built-in seed-and-extend synteny (13-mer seeds)).`,
       ]);
     }
+  });
+});
+
+// BG-01M6VZRS: the protein Coiled-Coils analyses. With no CDS that translates to 20 aa or more it
+// took the first ORF the engine listed, not the longest: a 20-aa ORF over a 286-aa one.
+
+/** A gene of `codons` sense codons after its ATG, then TAA: one ORF of `codons + 1` aa. */
+const orfGene = (codons: number, seed: number) => {
+  const sense = ['GCT', 'GAA', 'CTG', 'AAA', 'GTT', 'TCC', 'CGT', 'GGC'];
+  return `ATG${[...lettersFrom(seed, codons, '01234567')].map((k) => sense[Number(k)]).join('')}TAA`;
+};
+/** Bases from C, G and T only: no ATG on either strand (the reverse complement has no T). */
+const noAtg = (seed: number, n: number) => lettersFrom(seed, n, 'CGT');
+const SHORT_GENE = orfGene(19, 0x2a1);
+const LONG_GENE = orfGene(285, 0x2a2);
+/** 30 bases, the 20-aa ORF in frame 1, 31 bases, the 286-aa ORF in frame 2, 30 bases. */
+const SHORT_START = 31;
+const LONG_START = SHORT_START + SHORT_GENE.length + 31;
+const TWO_ORFS = `${noAtg(0x2a3, 30)}${SHORT_GENE}${noAtg(0x2a4, 31)}${LONG_GENE}${noAtg(0x2a5, 30)}`;
+const proteinOf = (gene: string) => translateSequence(gene, 0).replace(/\*$/, '');
+const dnaDoc = (sequence: string, features: SequenceDocument['features'] = []): SequenceDocument => ({
+  id: 'vzrs', name: 'Two_ORFs', accession: '', description: '', sequence, moleculeType: 'DNA', topology: 'linear', folder: 'Local',
+  createdAt: '2026-11-20T00:00:00Z', updatedAt: '2026-11-20T00:00:00Z', features, primers: [], history: [],
+});
+
+describe('BG-01M6VZRS the protein Coiled-Coils analyses', () => {
+  it('BG-01M6VZRS AC1 with no CDS the target protein is the longest ORF, not the first one found', () => {
+    expect(TWO_ORFS.slice(LONG_START - 1, LONG_START - 1 + LONG_GENE.length)).toBe(LONG_GENE);
+    expect((LONG_START - 1) % 3, 'the long ORF is in another frame').toBe(1);
+    // The engine finds both ORFs, and today lists the longest first (translation_orf.rs sorts by
+    // length), so its first ORF and its longest agree here.
+    const orfs = findORFs(TWO_ORFS, 15, false);
+    expect(orfs.map((o) => [o.frame, o.start, o.lengthAa])).toEqual([[2, LONG_START, 286], [1, SHORT_START, 20]]);
+    expect(orfs[1].proteinSeq).toBe(proteinOf(SHORT_GENE));
+    expect(extractTargetProteinSequence(dnaDoc(TWO_ORFS))).toBe(proteinOf(LONG_GENE));
+    expect(proteinOf(LONG_GENE)).toHaveLength(286);
+    // The rule is the longest ORF, not whichever the reply lists first: given the same ORFs with
+    // the 20-aa one first, as the engine listed them when the bug was filed, it is still the 286-aa one.
+    const real = bioEngine.findORFs;
+    const firstFound = vi.spyOn(bioEngine, 'findORFs').mockImplementation((...args) =>
+      [...real(...args)].sort((a, b) => a.start - b.start));
+    try {
+      expect(bioEngine.findORFs(TWO_ORFS, 15, false)[0].lengthAa, 'the reply lists the 20-aa ORF first').toBe(20);
+      expect(extractTargetProteinSequence(dnaDoc(TWO_ORFS))).toBe(proteinOf(LONG_GENE));
+      expect(firstFound).toHaveBeenCalledWith(TWO_ORFS, 15, false);
+      // of two as long, the first-starting, listed last here
+      const twin = orfGene(285, 0x2a6);
+      const tie = `${noAtg(0x2a3, 30)}${twin}${noAtg(0x2a4, 31)}${LONG_GENE}${noAtg(0x2a5, 30)}`;
+      firstFound.mockImplementation((...args) => [...real(...args)].sort((a, b) => b.start - a.start));
+      expect(bioEngine.findORFs(tie, 15, false).map((o) => [o.lengthAa, o.proteinSeq])).toEqual([[286, proteinOf(LONG_GENE)], [286, proteinOf(twin)]]);
+      expect(extractTargetProteinSequence(dnaDoc(tie))).toBe(proteinOf(twin));
+    } finally {
+      firstFound.mockRestore();
+    }
+    // listed the other way round, it is still the longest
+    const swapped = `${noAtg(0x2a3, 30)}${LONG_GENE}${noAtg(0x2a4, 31)}${SHORT_GENE}${noAtg(0x2a5, 30)}`;
+    expect(extractTargetProteinSequence(dnaDoc(swapped))).toBe(proteinOf(LONG_GENE));
+    // on the minus strand too: the reverse complement holds the same two ORFs
+    expect(extractTargetProteinSequence(dnaDoc(reverseComplement(TWO_ORFS)))).toBe(proteinOf(LONG_GENE));
+  });
+
+  it('BG-01M6VZRS AC2 an annotated CDS of 20 aa or more is analysed before a longer ORF', () => {
+    const cds = (end: number) => [{ id: 'c', name: 'short', type: 'CDS' as const, start: SHORT_START, end, strand: 1 as const, color: '#000' }];
+    // the 20-aa CDS is analysed although the 286-aa ORF is longer
+    expect(extractTargetProteinSequence(dnaDoc(TWO_ORFS, cds(SHORT_START + SHORT_GENE.length - 1)))).toBe(proteinOf(SHORT_GENE));
+    expect(proteinOf(SHORT_GENE)).toHaveLength(20);
+    // a CDS one codon short of that (19 aa) is not used: the longest ORF is
+    expect(extractTargetProteinSequence(dnaDoc(TWO_ORFS, cds(SHORT_START + SHORT_GENE.length - 7)))).toBe(proteinOf(LONG_GENE));
+    // a protein record is its own residues
+    const own = proteinOf(LONG_GENE);
+    expect(extractTargetProteinSequence({ ...dnaDoc(own), moleculeType: 'Protein' })).toBe(own);
   });
 });
