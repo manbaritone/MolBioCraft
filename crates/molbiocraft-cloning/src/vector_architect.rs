@@ -1177,25 +1177,49 @@ pub fn check_cotransformation_compatibility(
     vec_b: &CatalogVectorEntry,
 ) -> CoTransformationCompatibility {
     let groups = get_origin_compatibility_groups();
+    // The table's own code for a named replicon, so an alias (pACYC, CDF) and the canonical origin
+    // never resolve to two different labels for one and the same incompatibility group.
+    let group_code_for = |origin_key: &str| -> String {
+        groups
+            .iter()
+            .find(|g| g.origins.iter().any(|o| o.eq_ignore_ascii_case(origin_key)))
+            .map(|g| g.group_code.clone())
+            .unwrap_or_else(|| format!("Inc-{origin_key}"))
+    };
     let resolve_origin_group = |ori_text: &str| -> String {
         let t = ori_text.to_ascii_lowercase();
+        // The E. coli replicon is resolved first: a shuttle vector's yeast or mammalian element
+        // does not replicate in E. coli, so "pUC + CEN6/ARS4" competes with pUC19 for the same
+        // RNA I / RNA II copy-number control and the two cannot be co-maintained.
+        for key in ["pUC", "pMB1", "pBR322", "ColE1"] {
+            if t.contains(&key.to_ascii_lowercase()) {
+                return group_code_for(key);
+            }
+        }
         if t.contains("p15a") || t.contains("pacyc") {
-            return "IncP15A (p15A)".to_string();
+            return group_code_for("p15A");
         }
         if t.contains("psc101") {
-            return "IncX (pSC101)".to_string();
+            return group_code_for("pSC101");
         }
         if t.contains("clodf13") || t.contains("cdf") {
-            return "CloDF13 (CDF)".to_string();
+            return group_code_for("CloDF13");
         }
-        if t.contains("rsf1030") || t.contains("rsf") {
-            return "RSF1030 (RSF)".to_string();
+        if t.contains("rsf") {
+            return group_code_for("RSF1030");
         }
+        // Reached only when no E. coli replicon was named: a yeast-only vector.
         if t.contains("2μ") || t.contains("2-micron") {
             return "Yeast 2μ".to_string();
         }
         if t.contains("cen6") || t.contains("ars") {
             return "Yeast CEN/ARS".to_string();
+        }
+        // ΦX174 replicates by rolling-circle gpA nicking, under no ColE1 copy-number control, so it
+        // gets its own group rather than a ColE1 name. "x174" also matches phiX174 and φX174: Φ is
+        // not ASCII, so `to_ascii_lowercase` leaves its case alone.
+        if t.contains("x174") {
+            return "ΦX174 rolling-circle".to_string();
         }
         if let Some(matched) = groups
             .iter()
@@ -1203,7 +1227,9 @@ pub fn check_cotransformation_compatibility(
         {
             matched.group_code.clone()
         } else {
-            "IncG / ColE1 (pMB1/pUC/pBR322)".to_string()
+            // No replicon this table classifies: say so, rather than naming a group the plasmid may
+            // not belong to, and keep two unclassified origins conservatively incompatible.
+            "Unclassified replicon (not in the Inc compatibility table)".to_string()
         }
     };
 
