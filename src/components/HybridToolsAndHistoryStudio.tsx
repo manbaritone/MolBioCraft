@@ -36,7 +36,7 @@ import { proteinAnalysisTarget, type HybridSubTabId } from '../core/analysisCont
 // The protein KPIs' n/a strings, which the protein analysis (now the Protein studio's) reads.
 export { NO_RESIDUE_TRANSLATED, NO_STANDARD_RESIDUE } from '../core/analysisContext';
 import { cutSiteDisplayPosition, enzymeKey } from '../core/restrictionDisplay';
-import { openEnzymeCollections } from '../core/enzymeDatabase';
+import { cpgUntestedRuling, openEnzymeCollections } from '../core/enzymeDatabase';
 import { chosenRestrictionScope, CORE_CATALOG_LEN, restrictionScanEnzymes, restrictionScopeWords, type ChosenScanCollection } from './CircularPlasmidMap';
 import {
   arcDiagram,
@@ -53,6 +53,23 @@ const NOT_SCANNED = 'not scanned';
 /** An enzyme table CSV cell, RFC 4180-quoted only when it holds a comma, a double quote or a line break (D0155). */
 const csvCell = (text: string) => (/[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text);
 const isCustomEnzymeKey = (key: string) => key.startsWith('custom:');
+
+/**
+ * An enzyme's methylation tags in the Enzymes view, or 'None'. A built-in REBASE holds no CpG data
+ * for, whose isoschizomer REBASE reports blocked by CpG, is marked 'CpG?' with that ruling as the
+ * tooltip: not the 'CpG' tag, which means blocked or impaired per REBASE (D0116, BG-01M7DMDN).
+ */
+function MethylationCell({ enzyme }: { enzyme: RestrictionEnzyme }) {
+  const tags = enzyme.methylationSensitivity ?? [];
+  const untested = cpgUntestedRuling(enzyme);
+  if (untested === undefined) return <>{tags.length > 0 ? tags.join(', ') : 'None'}</>;
+  return (
+    <>
+      {tags.length > 0 ? `${tags.join(', ')}, ` : ''}
+      <span title={untested}>CpG?</span>
+    </>
+  );
+}
 /** The words an Enzyme Set action adds when it left custom rows out (US-01M7DV52). */
 const customRowsLeftOut = (n: number) =>
   n > 0 ? ` (${n} custom enzyme row(s) left out: an Enzyme Set holds built-in enzymes only)` : '';
@@ -1236,10 +1253,7 @@ const HistoryModule: React.FC<HybridToolsAndHistoryStudioProps & { module: Histo
                               : "3' Overhang"}
                           </td>
                           <td>
-                            {enzyme.methylationSensitivity &&
-                            enzyme.methylationSensitivity.length > 0
-                              ? enzyme.methylationSensitivity.join(', ')
-                              : 'None'}
+                            <MethylationCell enzyme={enzyme} />
                           </td>
                           <td>
                             <strong>{count === null ? NOT_SCANNED : count}</strong>

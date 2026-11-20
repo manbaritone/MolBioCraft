@@ -16,7 +16,7 @@
  * The module holds no state: tests inject the storage, the clock and the id source.
  */
 
-import type { CustomEnzymeDefinition, MethylationSensitivity } from '../types/bio';
+import type { CustomEnzymeDefinition, MethylationSensitivity, RestrictionEnzyme } from '../types/bio';
 import { REBASE_ENZYMES, builtInEnzymeNamed } from '../data/rebaseEnzymes';
 
 /** The localStorage key the store lives under. */
@@ -42,6 +42,27 @@ export const MAX_CUSTOM_MOTIF_LENGTH = 37;
 export const MOTIF_LETTERS = 'ACGTURYSWKMBDHVN';
 /** The methylation spellings the built-in catalogue's type allows. */
 export const METHYLATION_SENSITIVITIES: readonly MethylationSensitivity[] = ['Dam', 'Dcm', 'CpG', 'EcoKI'];
+
+/**
+ * Built-in enzymes REBASE holds no CpG data for whose isoschizomer REBASE reports blocked by CpG
+ * methylation, each with that ruling (BG-01M7DMDN, D0116). They carry no 'CpG' tag, which means
+ * blocked or impaired per REBASE; the Enzymes view marks them 'CpG?' instead, with the ruling as
+ * the tooltip, and no digest or methylation warning reads this list. Each ruling is the
+ * `cpg_no_data` text on the enzyme's entry in crates/molbiocraft-cloning/src/rebase_catalog.rs,
+ * and src/__tests__/enzymeCpgState.test.tsx holds the two equal.
+ */
+export const CPG_UNTESTED_ISOSCHIZOMER_BLOCKED: Readonly<Record<string, string>> = {
+  'BmtI-HF': 'no REBASE CpG data; isoschizomer NheI blocked on M.SssI-methylated pACYC184 (MS#810)',
+};
+
+/** The 'CpG?' ruling on a built-in enzyme, or undefined: a custom definition never has one. */
+export function cpgUntestedRuling(enzyme: Pick<RestrictionEnzyme, 'name' | 'id' | 'source'>): string | undefined {
+  // A custom definition as isCustomEnzyme (src/core/bioEngine.ts) reads one: its source, or with none a `custom:` id.
+  if (enzyme.source === 'custom' || (enzyme.source === undefined && (enzyme.id ?? '').startsWith('custom:'))) return undefined;
+  return Object.prototype.hasOwnProperty.call(CPG_UNTESTED_ISOSCHIZOMER_BLOCKED, enzyme.name)
+    ? CPG_UNTESTED_ISOSCHIZOMER_BLOCKED[enzyme.name]
+    : undefined;
+}
 
 const SINGLE_CUT = 'this schema holds a single cut per strand';
 
