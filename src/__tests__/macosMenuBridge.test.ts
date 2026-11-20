@@ -652,7 +652,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     );
   });
 
-  it('condenses top-level Main Menus to <= 9 menus (fitting cleanly left of MacBook notch) while preserving 100% Alignment, Phylogenetics, Cloning, and Sequence action parity across Web, macOS Cocoa, and Tauri v2', () => {
+  it('condenses top-level Main Menus to <= 9 menus (fitting cleanly left of MacBook notch) while preserving 100% Alignment, Phylogenetics, Cloning, and Sequence action parity between the in-window menubar and the Tauri v2 native menu, the one native shell a build script builds (BG-01M6Q1SJ, D0214)', () => {
     const appHtml = renderToStaticMarkup(React.createElement(App));
     expect(appHtml).toContain('role="menubar"');
     expect(appHtml).toContain('>File</button>');
@@ -1280,7 +1280,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(appCssText).toContain('.tm-pill');
   });
 
-  it('shortens long menu and tab labels and separates multi-topic compound submenus across Web, Tauri, and macOS Cocoa', async () => {
+  it('shortens long menu and tab labels and separates multi-topic compound submenus across the in-window menubar and the Tauri native menu', async () => {
     const nodeFsSpec: string = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ nodeFsSpec)) as {
       readFileSync: (path: URL, encoding: string) => string;
@@ -1593,7 +1593,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
       { cmd: 'cmd_app_exit', args: {} },
     ]);
 
-    // Verify native Rust Tauri v2 and macOS Cocoa intercept CloseRequested / ExitRequested / Cmd+Q
+    // Verify the Tauri v2 shell intercepts CloseRequested / ExitRequested / Cmd+Q (the one native shell built, D0214)
     expect(tauriMainRs).toContain('"app:request-quit"');
     expect(tauriMainRs).toContain('WindowEvent::CloseRequested');
     expect(tauriMainRs).toContain('RunEvent::ExitRequested');
@@ -1756,7 +1756,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
       'utf8'
     );
 
-    // 1. Zero trailing '...' in any menu label across Web/React, Tauri Rust, and macOS Cocoa
+    // 1. Zero trailing '...' in any menu label across the in-window menus and the Tauri native menu spec
     expect(menuSrc).not.toMatch(/label:\s*['"`][^'"`]*\.\.\.['"`]/);
     expect(homeTsxText).not.toMatch(/label:\s*['"`][^'"`]*\.\.\.['"`]/);
     expect(nativeMenuJson).not.toMatch(/"[^"\n]*\.\.\."/);

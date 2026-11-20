@@ -13,6 +13,11 @@
  *
  * The structures are synthetic mmCIF text built here (an ideal backbone placed residue by residue),
  * so these tests need no reference data.
+ *
+ * BG-01M6Q1SJ: every 3D viewer that shows a parsed structure receives it. The one check here that
+ * reads source text finds the viewer's hosts (each component under src/components whose markup
+ * draws <ProteinStructure3DViewer>), so a new host has to join the rendered check; History, which
+ * drew a measured-structure viewer before US-01M6Q164, draws none.
  */
 
 import React from 'react';
@@ -560,5 +565,72 @@ describe("the App's selection reaches the 3D viewer", () => {
     // The App's selection (residues 2-5 of chain B, named after the feature) is the viewer's
     // selected feature, placed on the chain's author numbers.
     expect(badges.map((b) => b.words)).toContain('Loop (misc_feature): 4 residues (H 102–105)');
+  });
+});
+
+// ─── BG-01M6Q1SJ: every 3D viewer that shows a parsed structure receives it ───
+
+interface ComponentFs { readdirSync: (p: URL) => string[]; readFileSync: (p: URL, enc: 'utf8') => string }
+const componentFs = await (import(/* @vite-ignore */ 'node:fs' as string) as Promise<ComponentFs>);
+const COMPONENTS_DIR = new URL('../components/', import.meta.url);
+
+/** Each component under src/components whose markup draws the 3D viewer, with how many times it does. Throws when the folder holds no component. */
+function viewerHosts(): Record<string, number> {
+  const files = componentFs.readdirSync(COMPONENTS_DIR).filter((f) => f.endsWith('.tsx')).sort();
+  if (files.length === 0) throw new Error('src/components holds no component');
+  const hosts: Record<string, number> = {};
+  for (const f of files) {
+    const sites = (componentFs.readFileSync(new URL(f, COMPONENTS_DIR), 'utf8').match(/<ProteinStructure3DViewer\b/g) ?? []).length;
+    if (sites > 0) hosts[f] = sites;
+  }
+  return hosts;
+}
+
+/** Where each 3D viewer of a render starts. */
+const viewerStages = (html: string): number[] => Array.from(html.matchAll(/protein-3d-viewer-stage/g), (m) => m.index!);
+
+const { HybridToolsAndHistoryStudio, EnzymesViewPanel, FoldingPanel, WorkflowsPanel, SequenceAlertsPanel } =
+  await import('../components/HybridToolsAndHistoryStudio');
+
+describe('BG-01M6Q1SJ: every 3D viewer that shows a parsed structure receives it', () => {
+  const cif = entryCif(1);
+  const docB = chainDoc(cif, CHAIN_B, 'mmCIF');
+  const docA = chainDoc(cif, CHAIN_A, 'mmCIF');
+  /** How each host is opened on chain B of the entry with residues 2-5 selected. */
+  const RENDER_HOST: Record<string, () => string> = {
+    'ProteinStudio.tsx': () => studio({ activeDoc: docB, proteinDocuments: [docA, docB], selectedRange: { start: 2, end: 5, label: 'Loop' } }),
+  };
+
+  it('every viewer gets the parsed structure: each component that draws the 3D viewer hands every viewer it draws the parsed model and the selection', () => {
+    const hosts = viewerHosts();
+    // The hosts today: the Protein studio's one viewer (US-01M6Q164). A new host fails here until it is rendered below.
+    expect(Object.keys(hosts)).toEqual(Object.keys(RENDER_HOST));
+    for (const [host, sites] of Object.entries(hosts)) {
+      const html = RENDER_HOST[host]();
+      const stages = viewerStages(html);
+      expect(stages, `${host} draws each viewer its markup holds`).toHaveLength(sites);
+      for (const at of stages) {
+        const badges = viewerBadges(html.slice(at));
+        // The parsed full-atom model: the file's own helix and the heme bound to chain B (author chain H).
+        expect(badges.map((b) => b.words), host).toContain('SS from file');
+        expect(badges.find((b) => /ligand/.test(b.words)), host).toEqual({ words: '1 ligand', title: 'HEM H201' });
+        // The selection, placed on the chain's author numbers.
+        expect(badges.map((b) => b.words), host).toContain('Loop: 4 residues (H 102–105)');
+      }
+    }
+  });
+
+  it('every viewer gets the parsed structure: History and the panels it once held draw no 3D viewer of their own', () => {
+    const panels = [
+      ['History', HybridToolsAndHistoryStudio], ['Enzymes view', EnzymesViewPanel], ['Folding', FoldingPanel],
+      ['Workflows', WorkflowsPanel], ['Sequence alerts', SequenceAlertsPanel],
+    ] as const;
+    for (const [name, Panel] of panels) {
+      const html = renderToStaticMarkup(<Panel doc={docB} allDocuments={[docA, docB]} />);
+      expect(html.length, `${name} renders`).toBeGreaterThan(0);
+      expect(viewerStages(html), name).toEqual([]);
+    }
+    expect(wordsOf(renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={docB} allDocuments={[docA, docB]} />))).toContain('History Tree');
+    expect(Object.keys(viewerHosts())).not.toContain('HybridToolsAndHistoryStudio.tsx');
   });
 });
