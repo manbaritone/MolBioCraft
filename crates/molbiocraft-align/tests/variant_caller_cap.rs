@@ -2366,3 +2366,169 @@ fn novel_flanks_are_soft_clipped_with_a_warning_not_called() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+
+/// A divergence probe: a sample of `len` bases copied from genome bases 1,001 on, in which the
+/// 1,000 bases from sample base `len / 2 - 499` each differ from the reference with probability
+/// `percent` in 100, by a transversion drawn at random. Returned with its true SNP sites (1-based
+/// reference position, alt base).
+fn divergent_sample(seed: u64, len: usize, percent: usize) -> (Vec<u8>, Vec<u8>, std::collections::BTreeMap<usize, u8>) {
+    let mut rng = SplitMix(0x0B_0070 + seed * 1_000 + percent as u64 + len as u64);
+    let g = rng.bases(len + 2_000);
+    let mut sample = g[1_000..1_000 + len].to_vec();
+    let mut truth = std::collections::BTreeMap::new();
+    for o in len / 2 - 500..len / 2 + 500 {
+        if rng.below(100) < percent {
+            let alt = match (g[1_000 + o], rng.below(2)) {
+                (b'A' | b'G', 0) => b'C',
+                (b'A' | b'G', _) => b'T',
+                (_, 0) => b'A',
+                _ => b'G',
+            };
+            sample[o] = alt;
+            truth.insert(1_000 + o + 1, alt);
+        }
+    }
+    (g, sample, truth)
+}
+
+/// The true SNP sites a report calls, and its other calls: each base a SNP or MNP changes counted
+/// as one site, true where `truth` holds that site with that base; an indel counted as one false
+/// call.
+fn sites_called(rep: &FreeBayesVariantReport, truth: &std::collections::BTreeMap<usize, u8>) -> (usize, usize) {
+    let (mut called, mut false_calls) = (0usize, 0usize);
+    for v in &rep.variants {
+        let (r, a) = (v.ref_allele.as_bytes(), v.alt_allele.as_bytes());
+        if r.len() != a.len() {
+            false_calls += 1;
+            continue;
+        }
+        for k in (0..r.len()).filter(|&k| r[k] != a[k]) {
+            if truth.get(&(v.position_bp + k)) == Some(&a[k]) {
+                called += 1;
+            } else {
+                false_calls += 1;
+            }
+        }
+    }
+    (called, false_calls)
+}
+
+#[test]
+fn homologous_bases_at_25_or_30_percent_divergence_are_compared_not_soft_clipped() {
+    // The data seat's round-2 family (BG-01M7VJPG): an otherwise identical sample with random
+    // transversions over 1,000 bases, at 25% and at 30%, 6 seeds, in a sample of 8,000 bases (on
+    // both paths) and of 60,000 (aligned in segments). At ffc4d16 the soft-clip took any stretch of
+    // 64 compared bases scoring below zero, which such bases hold by chance: on these draws 4 of the
+    // 18 reports at 25% and 17 of the 18 at 30% were clipped, losing 27 to 29 and 30 to 108 true
+    // SNPs a report.
+    // They score about +0.75 and +0.5 a base, above the ceiling of -5/8, so none is clipped and each
+    // is called as the caller called it before any soft-clip (850d750): (true SNP sites called,
+    // other calls) for seeds 0-5.
+    let mut wrong = Vec::new();
+    for (len, percent, base) in [
+        (8_000usize, 25usize, [(233usize, 0usize), (222, 0), (246, 0), (243, 2), (253, 0), (253, 6)]),
+        (8_000, 30, [(290, 2), (287, 3), (305, 3), (308, 4), (291, 10), (307, 3)]),
+        (60_000, 25, [(258, 0), (242, 5), (258, 0), (251, 0), (254, 2), (240, 0)]),
+        (60_000, 30, [(291, 11), (283, 12), (299, 2), (267, 4), (281, 5), (288, 0)]),
+    ] {
+        for (seed, &expected) in base.iter().enumerate() {
+            let (g, sample, truth) = divergent_sample(seed as u64, len, percent);
+            let reports = if len <= 11_000 { both_paths(&g, &sample).to_vec() } else { vec![("segments", call_freebayes_variants("chr1", &text(&g), &text(&sample)))] };
+            for (path, rep) in reports {
+                let clipped: Vec<(usize, usize)> = rep.warnings.iter().filter_map(|w| soft_clipped(w)).collect();
+                let got = sites_called(&rep, &truth);
+                if !clipped.is_empty() || got != expected {
+                    wrong.push(format!("{len} bases, 1,000 at {percent}%, seed {seed}, {path}: {got:?} of {} (before any clip {expected:?}); soft-clipped {clipped:?}", truth.len()));
+                }
+            }
+        }
+    }
+    // Where the ceiling lies. 1,000 bases at 35%, seeds 1 and 5, hold a stretch of 64 or more
+    // compared bases scoring between -5/8 and -1/2 a base: a ceiling of -1/2 clipped them and lost 34
+    // and 40 true SNPs, so they are compared, called as before (324 and 321 sites, 17 and 14 other
+    // calls; at ffc4d16, 204 and 186). Related bases with a SNP
+    // every 2 bases over 600 score -1/2 a base and were clipped at ffc4d16 (0 of 300); they are
+    // called, 300 of 300. And 100 unrelated bases at the end of a sample of 8,000 copied from genome
+    // bases 2,001-10,000 with a SNP every 500 (draw 19 of the probe family), which the alignment lines
+    // up to score -0.73 a base: a ceiling of -3/4 left them unclipped, with 37 false calls, so they
+    // are clipped, named from within 11 bases of sample base 8,001, and only the 16 SNPs called.
+    for (seed, expected) in [(1u64, (324usize, 17usize)), (5, (321, 14))] {
+        let (g, sample, truth) = divergent_sample(seed, 8_000, 35);
+        for (path, rep) in both_paths(&g, &sample) {
+            let clipped: Vec<(usize, usize)> = rep.warnings.iter().filter_map(|w| soft_clipped(w)).collect();
+            let got = sites_called(&rep, &truth);
+            if !clipped.is_empty() || got != expected {
+                wrong.push(format!("1,000 bases at 35%, seed {seed}, {path}: {got:?} (before any clip {expected:?}); soft-clipped {clipped:?}"));
+            }
+        }
+    }
+    {
+        let g = SplitMix(0x0B_0040).bases(9_000);
+        let mut sample = g[500..8_500].to_vec();
+        let mut truth = Vec::new();
+        for i in (4_000..4_600).step_by(2) {
+            let alt = transversion(g[i]);
+            sample[i - 500] = alt;
+            truth.push((i + 1, text(&g[i..i + 1]), text(&[alt]), "SNP".to_string()));
+        }
+        for (path, rep) in both_paths(&g, &sample) {
+            let mut calls = report_calls(&rep);
+            calls.sort();
+            let clipped: Vec<(usize, usize)> = rep.warnings.iter().filter_map(|w| soft_clipped(w)).collect();
+            if calls != truth || !clipped.is_empty() {
+                let called = truth.iter().filter(|c| calls.contains(c)).count();
+                wrong.push(format!("a SNP every 2 bases over 600, {path}: {called} of 300 called, {} calls; soft-clipped {clipped:?}", calls.len()));
+            }
+        }
+    }
+    {
+        let mut rng = SplitMix(0x0C_0000 + 19 * 7_919 + 100);
+        let g = rng.bases(12_000);
+        let mut sample = g[2_000..10_000].to_vec();
+        let mut truth = Vec::new();
+        for o in (250..7_800).step_by(500) {
+            let alt = if g[2_000 + o] == b'A' { b'C' } else { b'A' };
+            sample[o] = alt;
+            truth.push((2_000 + o + 1, text(&g[2_000 + o..2_000 + o + 1]), text(&[alt]), "SNP".to_string()));
+        }
+        sample.extend(rng.bases(100));
+        let rep = call_freebayes_variants("chr1", &text(&g), &text(&sample));
+        let mut calls = report_calls(&rep);
+        calls.sort();
+        let clipped: Vec<(usize, usize)> = rep.warnings.iter().filter_map(|w| soft_clipped(w)).collect();
+        let named = matches!(clipped[..], [(a, 8_100)] if a.abs_diff(8_001) <= 11);
+        if calls != truth || !named {
+            let false_calls = calls.iter().filter(|c| !truth.contains(c)).count();
+            wrong.push(format!("100 unrelated bases at the end, draw 19: {false_calls} false calls; soft-clipped {clipped:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn a_known_insertion_before_a_too_long_sample_n_run_is_named_as_one_insertion() {
+    // 10 inserted known bases directly before a sample run of 600 N standing for 300 reference
+    // bases: the sample holds 310 bases more than the reference there. The alignment puts the 10
+    // bases and the run's surplus in more than one insertion, with only N paired with reference
+    // bases between them. The surplus of N moves left onto the 10 bases without pairing a known base
+    // with a different one, though the 10 known bases do not move right onto it, so they are one
+    // insertion the alignment split, named as one of 310 bases (the left reach of the merge,
+    // LeftOutIndel). Merged only where the earlier piece reaches the later, they were named as two
+    // insertions of 197 and 113 bases, or 196 and 114.
+    let mut wrong = Vec::new();
+    for seed in 0..2u64 {
+        let mut rng = SplitMix(0x0D_0000 + seed);
+        let g = rng.bases(12_000);
+        let mut sample = g[1_000..5_000].to_vec();
+        sample.extend(rng.bases(10));
+        sample.extend(std::iter::repeat_n(b'N', 600));
+        sample.extend_from_slice(&g[5_300..9_000]);
+        for (path, rep) in both_paths(&g, &sample) {
+            let named: Vec<&String> = rep.warnings.iter().filter(|w| w.contains("-bp insertion")).collect();
+            if !rep.variants.is_empty() || !matches!(named[..], [w] if w.starts_with("A 310-bp insertion, somewhere between reference bases 5,00")) {
+                wrong.push(format!("seed {seed}, {path}: {} calls; insertions named {named:?}", rep.variants.len()));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
