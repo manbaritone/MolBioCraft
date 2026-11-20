@@ -18,7 +18,7 @@
 //!   chain of nothing but NAG must be named as skipped, not read as XX;
 //! - a missing, empty or unreadable text answered with an empty list: each is refused by name.
 
-use molbiocraft_formats::pdb_mmcif::parse_mmcif_structure;
+use molbiocraft_formats::pdb_mmcif::{parse_mmcif_structure, parse_pdb_structure};
 use molbiocraft_wasm::dispatch_bio_rpc;
 use serde_json::{json, Value};
 
@@ -508,4 +508,156 @@ fn chain_sequences_pin_model_chain_and_tie_rules() {
         sequences(text(nucleic("A", &["DA", "DC", "G", "U"]))),
         json!({ "chains": [chain("A", "RNA", "ACGU", 1, &[])], "skipped": [], "warnings": [] })
     );
+}
+
+/// PDB text of one blank chain from (alt id, residue, number, atom names) rows, one `ATOM` line
+/// per atom name, with `TER` after the row `ter_after` names (if any).
+fn blank_chain_atoms(rows: &[(char, &str, i32, &[&str])], ter_after: Option<usize>) -> String {
+    let mut out = String::from("HEADER    SYNTHETIC\n");
+    let mut serial = 0;
+    for (k, (alt, res, seq, names)) in rows.iter().enumerate() {
+        for name in names.iter() {
+            serial += 1;
+            let mut line = atom("ATOM", serial, name, res, *seq, 1.5 * serial as f64, &name.trim()[..1]).into_bytes();
+            line[16] = *alt as u8;
+            line[21] = b' ';
+            out.push_str(std::str::from_utf8(&line).unwrap());
+        }
+        if ter_after == Some(k) {
+            out.push_str("TER\n");
+        }
+    }
+    out.push_str("END\n");
+    out
+}
+
+/// The chains of a structure's first model: each chain's label id and its residues, each as
+/// (residue name, atom names).
+fn chains_of(s: Value) -> Vec<(String, Vec<(String, Vec<String>)>)> {
+    let str_of = |v: &Value| v.as_str().unwrap().to_string();
+    s["models"][0]["chains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            let residues = c["residues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| (str_of(&r["resName"]), r["atoms"].as_array().unwrap().iter().map(|a| str_of(&a["name"])).collect()))
+                .collect();
+            (str_of(&c["labelAsymId"]), residues)
+        })
+        .collect()
+}
+
+/// PDB text through the PDB model reader (D0285: the `parse_structure` op reads mmCIF only).
+fn pdb_model(text: &str) -> Vec<(String, Vec<(String, Vec<String>)>)> {
+    chains_of(serde_json::to_value(parse_pdb_structure(text).unwrap()).unwrap())
+}
+
+/// mmCIF text through the `parse_structure` op.
+fn cif_model(text: &str) -> Vec<(String, Vec<(String, Vec<String>)>)> {
+    chains_of(rpc("parse_structure", json!({ "text": text })))
+}
+
+const BACKBONE: &[&str] = &[" N", " CA", " C", " O"];
+
+/// BG-01M7QC16 AC1 (D0285): numbering that restarts and repeats a residue's name and number
+/// (ALA 1, GLY 2, ALA 1, GLY 2, as modelling and MD output write it) is four residues, not two: a
+/// residue key seen earlier in the chain names the earlier residue only while every residue listed
+/// since is at that same position. The PDB model is read by `parse_pdb_structure`, the mmCIF one
+/// by the `parse_structure` op, the sequence and C-alpha views through the dispatcher. Wrong implementations, and the case that catches each:
+/// - residues merged by key alone (the reader before this fix): two residues, AG;
+/// - a new residue only after `TER`: the no-TER case reads AG;
+/// - a repeated key never rejoining its residue: an interleaved microheterogeneous position (PRO
+///   22 alt A and SER 22 alt B, row by row) reads as four residues rather than two;
+/// - conformers listed back to back split: ALA 3 with CA alt A, CA alt B, or whole-residue alt A
+///   then alt B, is no longer one residue.
+#[test]
+fn a_restart_repeating_name_and_number_keeps_both_residues() {
+    let restart: [(char, &str, i32, &[&str]); 4] =
+        [(' ', "ALA", 1, BACKBONE), (' ', "GLY", 2, BACKBONE), (' ', "ALA", 1, BACKBONE), (' ', "GLY", 2, BACKBONE)];
+    let backbone = || BACKBONE.iter().map(|n| n.trim().to_string()).collect::<Vec<_>>();
+    for (what, ter) in [("no TER", None), ("TER after GLY 2", Some(1))] {
+        let text = blank_chain_atoms(&restart, ter);
+        let chains = pdb_model(&text);
+        // The one blank chain: the model keeps its id blank, the sequence view names it A.
+        assert_eq!(chains.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), [""], "{what}: one blank chain");
+        let read: Vec<(&str, &Vec<String>)> = chains[0].1.iter().map(|(n, a)| (n.as_str(), a)).collect();
+        let b = backbone();
+        assert_eq!(read, [("ALA", &b), ("GLY", &b), ("ALA", &b), ("GLY", &b)], "{what}: the PDB model");
+        assert_eq!(sequences(text.clone()), protein_a("AGAG", 1), "{what}: chain A reads AGAG, no warnings");
+        assert_eq!(c_alpha_names(text), ["ALA", "GLY", "ALA", "GLY"], "{what}: parse_pdb_ca");
+    }
+    // mmCIF whose label and author numbers both restart is read the same way.
+    let cif = alt_cif(&[(".", "ALA", 1), (".", "GLY", 2), (".", "ALA", 1), (".", "GLY", 2)]);
+    assert_eq!(cif_model(&cif)[0].1.len(), 4, "mmCIF through parse_structure: four residues");
+    assert_eq!(sequences(cif), protein_a("AGAG", 1), "mmCIF");
+
+    // Conformers listed back to back stay one residue: per atom (CA alt A, CA alt B) and per
+    // residue (ALA 3 alt A's backbone, then alt B's).
+    let per_atom = blank_chain_atoms(
+        &[(' ', "GLY", 2, &[" N"]), ('A', "ALA", 3, &[" CA"]), ('B', "ALA", 3, &[" CA"]), (' ', "ALA", 3, &[" C", " O"])],
+        None,
+    );
+    let read: Vec<(String, Vec<String>)> = pdb_model(&per_atom).remove(0).1;
+    assert_eq!(read.len(), 2, "per-atom conformers: {read:?}");
+    assert_eq!(read[1], ("ALA".to_string(), vec!["CA".to_string(), "C".to_string(), "O".to_string()]));
+    let per_residue = blank_chain_atoms(&[(' ', "GLY", 2, BACKBONE), ('A', "ALA", 3, BACKBONE), ('B', "ALA", 3, BACKBONE)], None);
+    let read = pdb_model(&per_residue).remove(0).1;
+    assert_eq!(read.iter().map(|(n, a)| (n.as_str(), a.len())).collect::<Vec<_>>(), [("GLY", 4), ("ALA", 4)], "per residue");
+    assert_eq!(sequences(per_residue), protein_a("GA", 2), "per residue");
+
+    // An interleaved microheterogeneous position keeps one residue per type.
+    let interleaved = blank_chain_atoms(
+        &[
+            (' ', "GLY", 21, BACKBONE),
+            ('A', "PRO", 22, &[" N"]),
+            ('B', "SER", 22, &[" N"]),
+            ('A', "PRO", 22, &[" CA"]),
+            ('B', "SER", 22, &[" CA"]),
+            (' ', "GLY", 23, BACKBONE),
+        ],
+        None,
+    );
+    let read = pdb_model(&interleaved).remove(0).1;
+    let shape: Vec<(&str, usize)> = read.iter().map(|(n, a)| (n.as_str(), a.len())).collect();
+    assert_eq!(shape, [("GLY", 4), ("PRO", 2), ("SER", 2), ("GLY", 4)], "interleaved PRO/SER 22");
+    assert_eq!(sequences(interleaved), protein_a("GPG", 21), "the run reads its alt-A residue");
+
+    // A restart onto an interleaved site: the restarted ALA 1 is the residue its later rows rejoin.
+    let restart_site = blank_chain_atoms(
+        &[
+            (' ', "ALA", 1, BACKBONE),
+            (' ', "GLY", 2, BACKBONE),
+            ('A', "ALA", 1, &[" N"]),
+            ('B', "SER", 1, &[" N"]),
+            ('A', "ALA", 1, &[" CA"]),
+            ('B', "SER", 1, &[" CA"]),
+        ],
+        None,
+    );
+    let read = pdb_model(&restart_site).remove(0).1;
+    let shape: Vec<(&str, usize)> = read.iter().map(|(n, a)| (n.as_str(), a.len())).collect();
+    assert_eq!(shape, [("ALA", 4), ("GLY", 4), ("ALA", 2), ("SER", 2)], "restart onto an interleaved site");
+
+    // A residue at the position among those listed since does not make it one site: ALA 1, GLY 2,
+    // SER 1, ALA 1 is four residues.
+    let through = blank_chain_atoms(
+        &[(' ', "ALA", 1, BACKBONE), (' ', "GLY", 2, BACKBONE), (' ', "SER", 1, BACKBONE), (' ', "ALA", 1, BACKBONE)],
+        None,
+    );
+    let names: Vec<String> = pdb_model(&through).remove(0).1.into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["ALA", "GLY", "SER", "ALA"], "ALA 1, GLY 2, SER 1, ALA 1");
+    assert_eq!(sequences(through), protein_a("AGSA", 1), "ALA 1, GLY 2, SER 1, ALA 1");
+
+    // An insertion code is a position of its own: GLY 1, SER 1A, GLY 1 is a restart.
+    let mut inserted = String::from("HEADER    SYNTHETIC\n");
+    inserted.push_str(&alt_pdb_atom(1, ' ', "GLY", 1, ' ', 0.0));
+    inserted.push_str(&alt_pdb_atom(2, ' ', "SER", 1, 'A', 3.8));
+    inserted.push_str(&alt_pdb_atom(3, ' ', "GLY", 1, ' ', 7.6));
+    inserted.push_str("END\n");
+    let names: Vec<String> = pdb_model(&inserted).remove(0).1.into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["GLY", "SER", "GLY"], "GLY 1, SER 1A, GLY 1");
 }

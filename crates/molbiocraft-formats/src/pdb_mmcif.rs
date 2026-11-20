@@ -522,8 +522,12 @@ pub const REQUIRED_ATOM_SITE_COLUMNS: [&str; 8] = [
 /// counts on each model still count every row read. A position modelled as two different residue
 /// types (microheterogeneity) keeps both residues, since they differ in `label_comp_id`.
 ///
-/// **Residues without a number:** rows of one residue share its `label_seq_id`, `auth_seq_id`,
-/// `pdbx_PDB_ins_code` and `label_comp_id` within a chain. A row with no residue number (a water
+/// **Residues and restarted numbering:** rows of one residue share its `label_seq_id`,
+/// `auth_seq_id`, `pdbx_PDB_ins_code` and `label_comp_id` within a chain. Rows of a residue seen
+/// earlier rejoin it only while every residue listed since is at its position (number and
+/// insertion code), as at a microheterogeneous site whose residue types are listed row by row;
+/// after a residue at any other position the numbering has restarted (ALA 1, GLY 2, ALA 1, GLY 2,
+/// with or without `TER`), and the row starts a new residue. A row with no residue number (a water
 /// or ligand, `label_seq_id` `.`, with no `auth_seq_id`) joins the residue listed just before it
 /// when that one has the same name and no number either, unless that residue already holds an
 /// atom of the row's name and neither row carries an alt id: the row then starts the next
@@ -672,8 +676,9 @@ pub const NO_SEQUENCE_RESIDUES: &str = "no amino-acid or nucleotide residues";
 /// alternate-location atoms. A run reads one letter, from its residue whose atoms carry alt id
 /// `A` (the residue the PDB $C_\alpha$ view keeps, as that view takes alt id `A` or none), else
 /// from its first listed. Numbering that restarts, with or without alternate conformers, drops
-/// no residue of the structure model (a restart that repeats a residue's name at its number is
-/// one residue in that model, so reads one letter). A chain is
+/// no residue of the structure model, and a restart that repeats a residue's name at its number
+/// is a residue of its own there, so reads its own letter (ALA 1, GLY 2, ALA 1, GLY 2 reads
+/// AGAG). A chain is
 /// `Protein` when its amino-acid residues are at least as many as its nucleotides, otherwise `DNA`
 /// when its deoxyribonucleotides outnumber its ribonucleotides, otherwise `RNA`. A residue the
 /// table lacks, or that is a nucleotide in a protein chain (or an amino acid in a nucleic-acid
@@ -1300,10 +1305,16 @@ impl ModelsBuilder {
         } else if same_as_last {
             cb.chain.residues.len() - 1
         } else {
+            // A key seen earlier names that residue only while every residue listed since is at
+            // its position (an interleaved microheterogeneous site); after any other position the
+            // numbering has restarted, and the row starts a new residue (BG-01M7QC16).
             let key: ResidueKey = (label_seq, auth_seq, ins_code.map(str::to_string), res_name.to_string());
+            let same_position = |r: &StructureResidue| {
+                r.label_seq_id == label_seq && r.auth_seq_id == auth_seq && r.ins_code.as_deref() == ins_code
+            };
             match cb.residue_index.get(&key) {
-                Some(&i) => i,
-                None => {
+                Some(&i) if cb.chain.residues[i + 1..].iter().all(same_position) => i,
+                _ => {
                     cb.chain.residues.push(new_residue());
                     let i = cb.chain.residues.len() - 1;
                     cb.residue_index.insert(key, i);
