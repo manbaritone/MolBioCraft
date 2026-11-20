@@ -493,7 +493,9 @@ impl std::error::Error for MmcifError {}
 /// without `id` an atom's serial is its row number, without `auth_asym_id` the author chain id is
 /// the label id, without `pdbx_PDB_model_num` every atom is in model 1, and an absent
 /// `type_symbol`, `label_alt_id`, `pdbx_PDB_ins_code`, `occupancy`, `B_iso_or_equiv` or
-/// `auth_seq_id` reads as no value.
+/// `auth_seq_id` reads as no value. A residue with neither residue number (a water or ligand,
+/// whose `label_seq_id` is `.`, with no `auth_seq_id`) is grouped by row order: see
+/// [`parse_mmcif_structure`].
 pub const REQUIRED_ATOM_SITE_COLUMNS: [&str; 8] = [
     "group_PDB",
     "label_atom_id",
@@ -514,9 +516,18 @@ pub const REQUIRED_ATOM_SITE_COLUMNS: [&str; 8] = [
 ///
 /// **Alternate locations:** an atom whose rows carry a `label_alt_id` keeps one conformer, the
 /// row with the highest occupancy; a row with no occupancy ranks below any row with one, and on
-/// a tie the row listed first is kept. The choice is made per atom name within a residue. Record
+/// a tie the row listed first is kept. The choice is made per atom name within a residue, among
+/// all its rows once any of them carries an alt id, so a row with a blank alt id (`.` or `?`) and
+/// one with a named alt id are one atom, as Biopython keeps them as one atom. Record
 /// counts on each model still count every row read. A position modelled as two different residue
 /// types (microheterogeneity) keeps both residues, since they differ in `label_comp_id`.
+///
+/// **Residues without a number:** rows of one residue share its `label_seq_id`, `auth_seq_id`,
+/// `pdbx_PDB_ins_code` and `label_comp_id` within a chain. A row with no residue number (a water
+/// or ligand, `label_seq_id` `.`, with no `auth_seq_id`) joins the residue listed just before it
+/// when that one has the same name and no number either, unless that residue already holds an
+/// atom of the row's name and neither row carries an alt id: the row then starts the next
+/// residue. So unnumbered waters stay one residue each, and a ligand's atoms one residue.
 ///
 /// Secondary structure is taken only from the file: `_struct_conf` helix rows and
 /// `_struct_sheet_range` strands, which set each residue's
@@ -589,8 +600,11 @@ pub fn try_parse_pdb_or_mmcif_ca_coordinates(text: &str) -> Result<Vec<PdbCaAtom
     Ok(parse_legacy_pdb_ca_coordinates(text))
 }
 
+/// Whether text is mmCIF: it holds an `_atom_site.` data name, in any letter case, as CIF data
+/// names are case-insensitive.
 fn is_mmcif_text(text: &str) -> bool {
-    text.contains("_atom_site.")
+    const TAG: &[u8] = b"_atom_site.";
+    text.as_bytes().windows(TAG.len()).any(|w| w.eq_ignore_ascii_case(TAG))
 }
 
 // ─── The sequence of each polymer chain ───
@@ -650,9 +664,10 @@ pub struct SkippedChain {
 pub const NO_SEQUENCE_RESIDUES: &str = "no amino-acid or nucleotide residues";
 
 /// The sequence of every polymer chain of the first model of PDB or mmCIF text (mmCIF when it
-/// holds `_atom_site.`), read by the residue table ([`residue_code_of`]). A chain with no polymer
-/// residue ([`is_polymer_residue`]), such as an ion's or a water's, is not a chain here. A chain
-/// reads one letter per polymer residue, except for a microheterogeneous run (D0211): polymer
+/// holds `_atom_site.` in any letter case), read by the residue table ([`residue_code_of`]). A
+/// chain with no polymer residue ([`is_polymer_residue`]), such as an ion's or a water's, is not
+/// a chain here. A chain reads one letter per polymer residue, except for a microheterogeneous run
+/// (D0211): polymer
 /// residues listed one after another at one residue number and insertion code, each carrying
 /// alternate-location atoms. A run reads one letter, from its residue whose atoms carry alt id
 /// `A` (the residue the PDB $C_\alpha$ view keeps, as that view takes alt id `A` or none), else
@@ -1111,6 +1126,12 @@ fn occupancy_rank(occupancy: Option<f64>) -> f64 {
     occupancy.unwrap_or(f64::NEG_INFINITY)
 }
 
+/// Two rows of one atom name, neither an alternate location: in an unnumbered residue, the second
+/// is the same atom of the next residue.
+fn same_atom_twice(kept: &StructureAtom, row: &StructureAtom) -> bool {
+    kept.name == row.name && kept.alt_loc.is_none() && row.alt_loc.is_none()
+}
+
 fn build_models(text: &str, t: &CifTable<'_>) -> Result<Vec<StructureModel>, MmcifError> {
     let mut required = [0usize; REQUIRED_ATOM_SITE_COLUMNS.len()];
     for (slot, item) in required.iter_mut().zip(REQUIRED_ATOM_SITE_COLUMNS) {
@@ -1256,23 +1277,34 @@ impl ModelsBuilder {
                 && r.ins_code.as_deref() == ins_code
                 && r.res_name == res_name
         });
-        let ri = if same_as_last {
+        let new_residue = || StructureResidue {
+            res_name: res_name.to_string(),
+            label_seq_id: label_seq,
+            auth_seq_id: auth_seq,
+            ins_code: ins_code.map(str::to_string),
+            secondary_structure: None,
+            atoms: Vec::new(),
+            code: None,
+            modified: false,
+        };
+        let ri = if label_seq.is_none() && auth_seq.is_none() {
+            // No residue number (a water or ligand with no `auth_seq_id`): row order is all there
+            // is, so the row joins the residue listed just before it unless that residue already
+            // holds this atom with neither row an alternate location; then it starts the next one.
+            let joins = same_as_last
+                && cb.chain.residues.last().is_some_and(|r| !r.atoms.iter().any(|a| same_atom_twice(a, &atom)));
+            if !joins {
+                cb.chain.residues.push(new_residue());
+            }
+            cb.chain.residues.len() - 1
+        } else if same_as_last {
             cb.chain.residues.len() - 1
         } else {
             let key: ResidueKey = (label_seq, auth_seq, ins_code.map(str::to_string), res_name.to_string());
             match cb.residue_index.get(&key) {
                 Some(&i) => i,
                 None => {
-                    cb.chain.residues.push(StructureResidue {
-                        res_name: res_name.to_string(),
-                        label_seq_id: label_seq,
-                        auth_seq_id: auth_seq,
-                        ins_code: ins_code.map(str::to_string),
-                        secondary_structure: None,
-                        atoms: Vec::new(),
-                        code: None,
-                        modified: false,
-                    });
+                    cb.chain.residues.push(new_residue());
                     let i = cb.chain.residues.len() - 1;
                     cb.residue_index.insert(key, i);
                     i
@@ -1280,17 +1312,17 @@ impl ModelsBuilder {
             }
         };
         let residue = &mut cb.chain.residues[ri];
-        if atom.alt_loc.is_some() {
-            if let Some(kept) = residue
-                .atoms
-                .iter_mut()
-                .find(|a| a.alt_loc.is_some() && a.name == atom.name)
-            {
-                if occupancy_rank(atom.occupancy) > occupancy_rank(kept.occupancy) {
-                    *kept = atom;
-                }
-                return;
+        // Alternate locations of one atom: rows of its name of which at least one carries an alt
+        // id. A blank alt id among named ones is one of them (Biopython keeps them as one atom).
+        if let Some(kept) = residue
+            .atoms
+            .iter_mut()
+            .find(|a| a.name == atom.name && (a.alt_loc.is_some() || atom.alt_loc.is_some()))
+        {
+            if occupancy_rank(atom.occupancy) > occupancy_rank(kept.occupancy) {
+                *kept = atom;
             }
+            return;
         }
         residue.atoms.push(atom);
     }
@@ -1627,10 +1659,10 @@ fn element_from_atom_name(name: &str) -> Option<String> {
 /// Parse PDB polymer `CA` records + `HELIX`/`SHEET` secondary-structure ranges,
 /// OR mmCIF `_atom_site` records into normalized `PdbCaAtom` coordinates.
 ///
-/// mmCIF text (anything containing `_atom_site.`) is read into the full-atom model and its
-/// $C_\alpha$ view returned ([`ca_atoms_of_structure`]); an mmCIF file that cannot be read gives
-/// an empty list here, and [`try_parse_pdb_or_mmcif_ca_coordinates`] says why. From either
-/// format only the first model is listed.
+/// mmCIF text (anything containing `_atom_site.`, in any letter case) is read into the full-atom
+/// model and its $C_\alpha$ view returned ([`ca_atoms_of_structure`]); an mmCIF file that cannot
+/// be read gives an empty list here, and [`try_parse_pdb_or_mmcif_ca_coordinates`] says why.
+/// From either format only the first model is listed.
 pub fn parse_pdb_or_mmcif_ca_coordinates(text: &str) -> Vec<PdbCaAtom> {
     try_parse_pdb_or_mmcif_ca_coordinates(text).unwrap_or_default()
 }
@@ -2070,6 +2102,202 @@ mod tests {
         assert_eq!(ca.len(), 5, "one C-alpha per residue that has one");
         assert_eq!((ca[1].res_name.as_str(), ca[1].x, ca[1].b_factor), ("SER", 2.0, 11.0));
         assert_eq!((ca[2].res_name.as_str(), ca[2].x), ("ALA", 9.0));
+    }
+
+    /// BG01M6PETK: a row with a blank alt id (`.` or `?` in mmCIF, a space in PDB column 17) and
+    /// rows with a named one, of the same atom, are one atom with alternate locations (Biopython
+    /// keeps them as one atom too); the occupancy rule chooses among all of them.
+    #[test]
+    fn blank_and_named_altloc_rows_merge_into_one_atom() {
+        // (alt id, x, occupancy, residue number), one CA row each; N rows have no alt id.
+        let ca_rows: [(&str, f64, f64, i32); 9] = [
+            // Blank listed first, the named row higher: the named row is kept.
+            (".", 1.0, 0.40, 1),
+            ("A", 2.0, 0.60, 1),
+            // Blank (`?`) listed first and higher: the blank row is kept.
+            ("?", 3.0, 0.70, 2),
+            ("A", 4.0, 0.30, 2),
+            // Named listed first, then blank, a tie: the row listed first.
+            ("A", 5.0, 0.50, 3),
+            (".", 6.0, 0.50, 3),
+            // Named, blank, named: the blank row between them has the highest occupancy.
+            ("A", 7.0, 0.25, 4),
+            (".", 8.0, 0.50, 4),
+            ("B", 9.0, 0.25, 4),
+        ];
+        let mut rows = Vec::new();
+        let mut serial = 0;
+        for seq in 1..=4 {
+            serial += 1;
+            rows.push(format!("ATOM {serial} N N . LYS A 1 {seq} ? 0.0 0.0 0.0 1.00 10.0 ? {seq} LYS A N 1"));
+            for &(alt, x, occ, _) in ca_rows.iter().filter(|r| r.3 == seq) {
+                serial += 1;
+                rows.push(format!("ATOM {serial} C CA {alt} LYS A 1 {seq} ? {x} 0.0 0.0 {occ} 10.0 ? {seq} LYS A CA 1"));
+            }
+        }
+        let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let text = atom_site_cif(&COLUMNS, &rows, &all_columns(), false);
+        let s = parse_mmcif_structure(&text).unwrap();
+        assert_eq!(s.models[0].atom_record_count, 13, "every row read is counted");
+        let kept: Vec<Vec<(&str, Option<&str>, f64)>> = s.models[0].chains[0]
+            .residues
+            .iter()
+            .map(|r| r.atoms.iter().map(|a| (a.name.as_str(), a.alt_loc.as_deref(), a.x)).collect())
+            .collect();
+        let want = [
+            [("N", None, 0.0), ("CA", Some("A"), 2.0)],
+            [("N", None, 0.0), ("CA", None, 3.0)],
+            [("N", None, 0.0), ("CA", Some("A"), 5.0)],
+            [("N", None, 0.0), ("CA", None, 8.0)],
+        ];
+        assert_eq!(kept, want, "one CA per residue, chosen by occupancy, ties to the first listed");
+        let ca: Vec<f64> = parse_pdb_or_mmcif_ca_coordinates(&text).iter().map(|a| a.x).collect();
+        assert_eq!(ca, [2.0, 3.0, 5.0, 8.0], "the C-alpha view lists the one atom kept");
+
+        // The legacy PDB reader groups atoms by the same rules: a blank altLoc is a space.
+        let mut pdb = String::new();
+        let mut serial = 0;
+        for seq in 1..=4 {
+            for &(alt, x, occ, _) in ca_rows.iter().filter(|r| r.3 == seq) {
+                serial += 1;
+                let alt = if alt == "." || alt == "?" { " " } else { alt };
+                pdb.push_str(&format!(
+                    "ATOM  {serial:>5}  CA {alt}LYS A{seq:>4}    {x:>8.3}{:>8.3}{:>8.3}{occ:>6.2} 10.00           C  \n",
+                    0.0, 0.0
+                ));
+            }
+        }
+        let p = parse_pdb_structure(&pdb).unwrap();
+        let kept: Vec<Vec<(Option<&str>, f64)>> = p.models[0].chains[0]
+            .residues
+            .iter()
+            .map(|r| r.atoms.iter().map(|a| (a.alt_loc.as_deref(), a.x)).collect())
+            .collect();
+        assert_eq!(kept, [[(Some("A"), 2.0)], [(None, 3.0)], [(Some("A"), 5.0)], [(None, 8.0)]]);
+    }
+
+    /// BG01M6PETK: waters have no `label_seq_id` (`.`), so without an `auth_seq_id` (no column, or
+    /// `?`) a residue has no number. Such a row joins the residue listed just before it, of the
+    /// same name and also unnumbered, unless that residue already holds an atom of the row's name
+    /// and neither row carries an alt id; then it is the next residue.
+    #[test]
+    fn unnumbered_waters_stay_separate_residues() {
+        let rows = [
+            "ATOM 1 C CA . ALA A 1 1 ? 0.0 0.0 0.0 1.00 10.0 ? 1 ALA A CA 1",
+            // Three waters, one oxygen each: three residues.
+            "HETATM 2 O O . HOH B 2 . ? 1.0 0.0 0.0 1.00 30.0 ? ? HOH A O 1",
+            "HETATM 3 O O . HOH B 2 . ? 2.0 0.0 0.0 1.00 30.0 ? ? HOH A O 1",
+            "HETATM 4 O O . HOH B 2 . ? 3.0 0.0 0.0 1.00 30.0 ? ? HOH A O 1",
+            // Two waters written with their hydrogens: two residues of three atoms.
+            "HETATM 5 O O . HOH C 2 . ? 4.0 0.0 0.0 1.00 30.0 ? ? HOH A O 1",
+            "HETATM 6 H H1 . HOH C 2 . ? 4.1 0.0 0.0 1.00 30.0 ? ? HOH A H1 1",
+            "HETATM 7 H H2 . HOH C 2 . ? 4.2 0.0 0.0 1.00 30.0 ? ? HOH A H2 1",
+            "HETATM 8 O O . HOH C 2 . ? 5.0 0.0 0.0 1.00 30.0 ? ? HOH A O 1",
+            "HETATM 9 H H1 . HOH C 2 . ? 5.1 0.0 0.0 1.00 30.0 ? ? HOH A H1 1",
+            "HETATM 10 H H2 . HOH C 2 . ? 5.2 0.0 0.0 1.00 30.0 ? ? HOH A H2 1",
+            // One water whose oxygen has two conformers: one residue, one atom.
+            "HETATM 11 O O A HOH E 2 . ? 6.0 0.0 0.0 0.60 30.0 ? ? HOH A O 1",
+            "HETATM 12 O O B HOH E 2 . ? 7.0 0.0 0.0 0.40 30.0 ? ? HOH A O 1",
+            // A ligand, its atoms named apart: one residue.
+            "HETATM 13 C C1 . LIG D 3 . ? 8.0 0.0 0.0 1.00 30.0 ? ? LIG A C1 1",
+            "HETATM 14 C C2 . LIG D 3 . ? 9.0 0.0 0.0 1.00 30.0 ? ? LIG A C2 1",
+            "HETATM 15 O O3 . LIG D 3 . ? 10.0 0.0 0.0 1.00 30.0 ? ? LIG A O3 1",
+        ];
+        let auth_seq = COLUMNS.iter().position(|c| *c == "auth_seq_id").unwrap();
+        let without_column: Vec<usize> = all_columns().into_iter().filter(|&i| i != auth_seq).collect();
+        let want: Vec<(&str, Vec<Vec<(&str, f64)>>)> = vec![
+            ("A", vec![vec![("CA", 0.0)]]),
+            ("B", vec![vec![("O", 1.0)], vec![("O", 2.0)], vec![("O", 3.0)]]),
+            (
+                "C",
+                vec![vec![("O", 4.0), ("H1", 4.1), ("H2", 4.2)], vec![("O", 5.0), ("H1", 5.1), ("H2", 5.2)]],
+            ),
+            ("E", vec![vec![("O", 6.0)]]),
+            ("D", vec![vec![("C1", 8.0), ("C2", 9.0), ("O3", 10.0)]]),
+        ];
+        for (what, order) in [("no auth_seq_id column", without_column), ("auth_seq_id ?", all_columns())] {
+            let s = parse_mmcif_structure(&atom_site_cif(&COLUMNS, &rows, &order, false)).unwrap();
+            let got: Vec<(&str, Vec<Vec<(&str, f64)>>)> = s.models[0]
+                .chains
+                .iter()
+                .map(|c| {
+                    let residues = c
+                        .residues
+                        .iter()
+                        .map(|r| r.atoms.iter().map(|a| (a.name.as_str(), a.x)).collect())
+                        .collect();
+                    (c.label_asym_id.as_str(), residues)
+                })
+                .collect();
+            assert_eq!(got, want, "{what}");
+        }
+    }
+
+    /// BG01M6PETK: CIF data names, and the `data_` and `loop_` words, are case-insensitive, so
+    /// `_ATOM_SITE.` text is mmCIF to each reader in this file that tells mmCIF from PDB.
+    #[test]
+    fn upper_case_atom_site_tags_are_read_as_mmcif() {
+        let lower = atom_site_cif(&COLUMNS, ROWS, &all_columns(), false);
+        let upper = lower
+            .lines()
+            .map(|l| {
+                let header = l.starts_with('_') || l.starts_with("data_") || l == "loop_";
+                if header { l.to_ascii_uppercase() } else { l.to_string() }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(upper.contains("_ATOM_SITE.LABEL_ASYM_ID\n") && !upper.contains("_atom_site."));
+        let mixed = lower.replace("_atom_site.", "_Atom_Site.");
+        let want = ca_summary(&lower);
+        assert_eq!(want.len(), 3, "the lower-case fixture has three C-alpha atoms");
+        for (what, text) in [("upper case", &upper), ("mixed case", &mixed)] {
+            assert_eq!(ca_summary(text), want, "{what}: C-alpha view");
+            assert_eq!(try_parse_pdb_or_mmcif_ca_coordinates(text).map(|a| a.len()), Ok(3), "{what}");
+            assert_eq!(structure_chain_sequences(text), structure_chain_sequences(&lower), "{what}: sequences");
+            assert_eq!(parse_mmcif_structure(text), parse_mmcif_structure(&lower), "{what}: model");
+        }
+    }
+
+    /// BG01M6PETK: `_struct_conf` lists turns (`TURN_TY1_P`, `TURN_P`) and strands (`STRN`) beside
+    /// helices; only `HELX*` rows (the dictionary's codes are case-insensitive) are helices.
+    #[test]
+    fn helix_count_ignores_non_helix_struct_conf_rows() {
+        let names = ["GLY", "ALA", "SER", "VAL", "LEU"];
+        let rows: Vec<String> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let seq = i + 1;
+                format!("ATOM {seq} C CA . {n} A 1 {seq} ? {seq}.0 0.0 0.0 1.00 10.0 ? {seq} {n} A CA 1")
+            })
+            .collect();
+        let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let mut text = atom_site_cif(&COLUMNS, &rows, &all_columns(), false);
+        text.push_str(concat!(
+            "loop_\n",
+            "_struct_conf.conf_type_id\n",
+            "_struct_conf.id\n",
+            "_struct_conf.beg_label_comp_id\n",
+            "_struct_conf.beg_label_asym_id\n",
+            "_struct_conf.beg_label_seq_id\n",
+            "_struct_conf.end_label_comp_id\n",
+            "_struct_conf.end_label_asym_id\n",
+            "_struct_conf.end_label_seq_id\n",
+            "HELX_P HELX_P1 GLY A 1 GLY A 1\n",
+            "TURN_TY1_P TURN_TY1_P1 ALA A 2 ALA A 2\n",
+            "STRN STRN1 SER A 3 SER A 3\n",
+            "helx_rh_al_p HELX_RH_AL_P1 VAL A 4 VAL A 4\n",
+            "TURN_P TURN_P1 LEU A 5 LEU A 5\n",
+            "#\n",
+        ));
+        let s = parse_mmcif_structure(&text).unwrap();
+        let helices: Vec<(&str, Option<&str>)> =
+            s.helices.iter().map(|h| (h.id.as_str(), h.conf_type_id.as_deref())).collect();
+        assert_eq!(helices, [("HELX_P1", Some("HELX_P")), ("HELX_RH_AL_P1", Some("helx_rh_al_p"))]);
+        let kinds: Vec<Option<SecondaryStructureKind>> =
+            s.models[0].chains[0].residues.iter().map(|r| r.secondary_structure).collect();
+        let h = Some(SecondaryStructureKind::Helix);
+        assert_eq!(kinds, [h, None, None, h, None], "a turn or a struct_conf strand row marks no helix");
     }
 
     #[test]
