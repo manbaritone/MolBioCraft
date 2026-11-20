@@ -792,7 +792,7 @@ describe('DNA calculator mass (BG-01M6SCYG)', () => {
       createElement(CloningAndGelStudio, {
         documents: [active, insert], activeDoc: active, onAddConstruct: () => undefined, initialSubTool: 'dna-calculations',
       })
-    ).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+    ).replace(/<[^>]+>/g, ' ').replace(/&#x27;/g, "'").replace(/\s+/g, ' ');
 
   it('weighs the active and insert records as Biopython 1.88 does', () => {
     const gc = computeDnaAndLigationCalculations(GC_RICH, 50, 20, 100, AT_RICH);
@@ -804,10 +804,10 @@ describe('DNA calculator mass (BG-01M6SCYG)', () => {
 
   it('shows the composition mass to the whole dalton, and the named error for a letter that is no nucleotide', () => {
     const gcText = studio(record('gc', GC_RICH), record('ins', AT_RICH, 'Cloning Inserts & PCR'));
-    expect(gcText).toContain('dsDNA Molecular Weight 37,139 Da');
+    expect(gcText).toContain("dsDNA Molecular Weight (linear, 5'-phosphate ends) 37,139 Da");
     expect(gcText).not.toMatch(/37\.1\d kDa|37113\.6/);
     const atText = studio(record('at', AT_RICH), record('ins', GC_RICH, 'Cloning Inserts & PCR'));
-    expect(atText).toContain('dsDNA Molecular Weight 37,080 Da');
+    expect(atText).toContain("dsDNA Molecular Weight (linear, 5'-phosphate ends) 37,080 Da");
     // The studio's 50 ng vector: the 1:1 insert is 50 x 37139.2926 / 37080.0126 (the length ratio gave 50 ng).
     expect(atText).toContain('50.08 ng');
     expect(gcText).toContain('49.92 ng');
@@ -818,5 +818,45 @@ describe('DNA calculator mass (BG-01M6SCYG)', () => {
     expect(bad).not.toContain('MolBioCraft Rust Engine');
     const badInsert = studio(record('gc', GC_RICH), record('ins', 'ACGTZ', 'Cloning Inserts & PCR'));
     expect(badInsert).toContain('The insert sequence holds letters that are no nucleotide (Z)');
+  });
+
+  // Biopython 1.88 refuses N ("'N' is not a valid unambiguous letter for DNA"), the other IUPAC
+  // codes, inosine, U and '-' for DNA. The calculator weighs N as the mean of the four (37134.3526 Da
+  // for GC_RICH with its last 10 bases N, by Biopython's own NMP weights) and marks it as the
+  // Statistics panel does: "≈" and the panel's note (massesApproximateNote, App.tsx).
+  const GC_RICH_10N = `${GC_RICH.slice(0, 50)}${'N'.repeat(10)}`;
+  const nNote = 'Masses are approximate: 10 bases are N or another IUPAC code, weighed as the mean of A, C, G and T.';
+
+  it('marks a mass Biopython 1.88 would refuse to weigh as approximate, with the note saying why', () => {
+    const n = computeDnaAndLigationCalculations(GC_RICH_10N, 50, 20, 100, AT_RICH);
+    expect([n.mwDsDnaDa, n.massesApproximate, n.massesApproximateNote, n.insertMassApproximate]).toEqual([37134, true, nNote, false]);
+    const exact = computeDnaAndLigationCalculations(GC_RICH, 50, 20, 100, AT_RICH);
+    expect([exact.massesApproximate, exact.massesApproximateNote, exact.insertMassApproximateNote]).toEqual([false, null, null]);
+    const nInsert = computeDnaAndLigationCalculations(GC_RICH, 50, 20, 100, GC_RICH_10N);
+    expect([nInsert.massesApproximate, nInsert.insertMassApproximate]).toEqual([false, true]);
+    expect(nInsert.insertMassApproximateNote).toBe(
+      "The insert's mass is approximate: 10 bases are N or another IUPAC code, weighed as the mean of A, C, G and T."
+    );
+  });
+
+  it('shows the estimate with "≈" and its note, and an exact record without either', () => {
+    const nText = studio(record('n', GC_RICH_10N), record('ins', AT_RICH, 'Cloning Inserts & PCR'));
+    expect(nText).toContain("dsDNA Molecular Weight (linear, 5'-phosphate ends) ≈ 37,134 Da");
+    expect(nText).toContain(nNote);
+    // The ligation rows read that mass, so they are estimates too.
+    expect(nText).toMatch(/≈ \d+\.\d+ ng/);
+
+    const exactText = studio(record('gc', GC_RICH), record('ins', AT_RICH, 'Cloning Inserts & PCR'));
+    expect(exactText).toContain("dsDNA Molecular Weight (linear, 5'-phosphate ends) 37,139 Da");
+    expect(exactText).not.toContain('≈');
+    expect(exactText).not.toContain('approximate');
+
+    const nInsertText = studio(record('gc', GC_RICH), record('ins', GC_RICH_10N, 'Cloning Inserts & PCR'));
+    expect(nInsertText).toContain("dsDNA Molecular Weight (linear, 5'-phosphate ends) 37,139 Da");
+    expect(nInsertText).toContain("The insert's mass is approximate: 10 bases are N or another IUPAC code");
+    expect(nInsertText).toMatch(/≈ \d+\.\d+ ng/);
+
+    const uText = studio(record('u', 'ACGUACGU'), record('ins', AT_RICH, 'Cloning Inserts & PCR'));
+    expect(uText).toContain('Masses are approximate: 2 bases are U, weighed as T.');
   });
 });

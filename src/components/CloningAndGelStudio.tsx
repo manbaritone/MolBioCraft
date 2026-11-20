@@ -297,6 +297,12 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
     }
   }, [activeDoc.sequence, calcConcNgUl, calcVolUl, calcVecMassNg, documents, insertId]);
   const dnaCalcs = 'calcs' in dnaCalcResult ? dnaCalcResult.calcs : null;
+  // A mass the engine estimated (N, the other IUPAC codes, inosine, U or a character that is no
+  // letter, none of which Biopython 1.88 weighs as DNA) reads "≈" with the engine's note, as the
+  // Statistics panel marks it, and so does each figure read from it: molarity, pmol and copies from the
+  // vector's mass, and the ligation rows from both masses.
+  const vectorMassMark = dnaCalcs?.massesApproximate ? '≈ ' : '';
+  const ligationMark = dnaCalcs?.massesApproximate || dnaCalcs?.insertMassApproximate ? '≈ ' : '';
 
   // The reaction's enzymes are held by KEY (US-01M7HRV4): a built-in's is its catalogue name, as
   // before, a custom definition's its `custom:` id, so a custom enzyme named like a built-in is its
@@ -1406,27 +1412,32 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
             {dnaCalcs && (<>
             <div className="thermo-kpi-grid">
               <div className="kpi-box">
-                <span className="kpi-label">dsDNA Molecular Weight</span>
-                {/* Biopython 1.88's average mass, to the whole dalton: its sub-dalton digits carry no information. */}
-                <strong className="kpi-val">{Math.round(dnaCalcs.mwDsDnaDa).toLocaleString('en-US')} Da</strong>
+                {/* The linear chain with a 5'-phosphate and a 3'-OH on each strand, as Biopython 1.88 weighs it; a
+                    circular record is weighed as that linear piece too. */}
+                <span className="kpi-label">dsDNA Molecular Weight (linear, 5&apos;-phosphate ends)</span>
+                {/* Biopython 1.88's average mass where it would weigh the record, to the whole dalton: its
+                    sub-dalton digits carry no information. An estimate reads "≈". */}
+                <strong className="kpi-val">{vectorMassMark}{Math.round(dnaCalcs.mwDsDnaDa).toLocaleString('en-US')} Da</strong>
               </div>
               <div className="kpi-box">
                 <span className="kpi-label">Molarity / pmol</span>
                 <strong className="kpi-val">
-                  {dnaCalcs.molarityNanomolar} nM ({dnaCalcs.pmolDsDna} pmol)
+                  {vectorMassMark}{dnaCalcs.molarityNanomolar} nM ({dnaCalcs.pmolDsDna} pmol)
                 </strong>
               </div>
               <div className="kpi-box">
                 <span className="kpi-label">Linear 5&apos;/3&apos; Ends</span>
-                <strong className="kpi-val">{dnaCalcs.pmolEndsLinear} pmol ends</strong>
+                <strong className="kpi-val">{vectorMassMark}{dnaCalcs.pmolEndsLinear} pmol ends</strong>
               </div>
               <div className="kpi-box">
                 <span className="kpi-label">Copy Number / OD260</span>
                 <strong className="kpi-val">
-                  {dnaCalcs.copyNumberPerUl}/µL ({dnaCalcs.od260Units} A260)
+                  {vectorMassMark}{dnaCalcs.copyNumberPerUl}/µL ({dnaCalcs.od260Units} A260)
                 </strong>
               </div>
             </div>
+            {dnaCalcs.massesApproximateNote && <p className="mbc-summary-note">{dnaCalcs.massesApproximateNote}</p>}
+            {dnaCalcs.insertMassApproximateNote && <p className="mbc-summary-note">{dnaCalcs.insertMassApproximateNote}</p>}
 
             <WorkbenchSmartTable
               tableId="cloning-ligation-molar-ratios"
@@ -1451,9 +1462,9 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
                     <td>{r.vectorMassNg} ng</td>
                     <td>{r.insertLengthBp} bp</td>
                     <td>
-                      <strong>{r.requiredInsertMassNg} ng</strong>
+                      <strong>{ligationMark}{r.requiredInsertMassNg} ng</strong>
                     </td>
-                    <td>{r.requiredInsertPmol} pmol</td>
+                    <td>{ligationMark}{r.requiredInsertPmol} pmol</td>
                   </tr>
                 ))}
               </tbody>

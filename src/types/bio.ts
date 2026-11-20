@@ -216,6 +216,16 @@ export interface DnaLigationCalculations {
     requiredInsertMassNg: number;
     requiredInsertPmol: number;
   }[];
+  /**
+   * The vector's masses are estimates (BG-01M6SCYG): it holds a letter Biopython 1.88 will not weigh
+   * as DNA (N, another IUPAC code, inosine, U, a character that is no letter), or they come from its
+   * length alone. `massesApproximateNote` says how, in the Statistics panel's words; null when exact.
+   */
+  massesApproximate: boolean;
+  massesApproximateNote: string | null;
+  /** The insert's mass, which the ligation rows read, is an estimate, as `massesApproximate`. */
+  insertMassApproximate: boolean;
+  insertMassApproximateNote: string | null;
 }
 
 export interface SequenceAlertItem {

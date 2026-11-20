@@ -117,6 +117,20 @@ pub struct DnaLigationCalculations {
     pub copy_number_per_ul: String,
     pub od260_units: f64,
     pub ligation_ratios: Vec<LigationRatioRow>,
+    /// The vector's masses are estimates (BG-01M6SCYG): it holds a letter Biopython 1.88's
+    /// `molecular_weight(seq_type="DNA")` refuses (N, another IUPAC code, inosine, U, or a character
+    /// that is no letter), or the masses come from its length alone.
+    #[serde(default)]
+    pub masses_approximate: bool,
+    /// The sentence saying how the vector's masses were estimated, or `None` when they are exact.
+    #[serde(default)]
+    pub masses_approximate_note: Option<String>,
+    /// The insert's mass, which the ligation rows read, is an estimate, as `masses_approximate`.
+    #[serde(default)]
+    pub insert_mass_approximate: bool,
+    /// The sentence saying how the insert's mass was estimated, or `None` when it is exact.
+    #[serde(default)]
+    pub insert_mass_approximate_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1138,7 +1152,8 @@ pub fn anneal_complementary_oligos_at(
 }
 
 /// Compute dsDNA / ssDNA / RNA molecular weights, molarity, Avogadro copy number,
-/// $\text{OD}_{260}$, and stoichiometric vector:insert ligation mass tables from LENGTHS alone.
+/// $\text{OD}_{260}$, and stoichiometric vector:insert ligation mass tables from LENGTHS alone,
+/// marked `masses_approximate` and `insert_mass_approximate`.
 /// Its masses are the composition-blind estimate `617.96 Da x bp + 36.04` (and the ssDNA / RNA
 /// analogues), which misses a sequence's own mass by up to about 0.6 Da per base pair (an A:T pair
 /// weighs 617.40 Da, a G:C pair 618.39 Da); [`compute_dna_and_ligation_calculations_for_sequences`]
@@ -1159,15 +1174,23 @@ pub fn compute_dna_and_ligation_calculations(
     let mw_ss_dna_da = round_to(lf * 308.98 + 18.02, 1);
     let mw_rna_da = round_to(lf * 321.47 + 18.02, 1);
     let ins_mw = ins_lf * 617.96 + 36.04;
-    dna_ligation_table(
-        l,
-        [mw_ds_dna_da, mw_ss_dna_da, mw_rna_da],
-        mw_ds_dna_da,
-        (conc_ng_per_ul, volume_ul, vector_mass_ng),
-        ins_l,
-        ins_mw,
-        ins_lf / lf,
-    )
+    DnaLigationCalculations {
+        masses_approximate: true,
+        masses_approximate_note: Some(
+            "Masses are estimates from the length alone (617.96 Da per base pair + 36.04), not from the bases.".to_string(),
+        ),
+        insert_mass_approximate: true,
+        insert_mass_approximate_note: Some("The insert's mass is an estimate from its length alone.".to_string()),
+        ..dna_ligation_table(
+            l,
+            [mw_ds_dna_da, mw_ss_dna_da, mw_rna_da],
+            mw_ds_dna_da,
+            (conc_ng_per_ul, volume_ul, vector_mass_ng),
+            ins_l,
+            ins_mw,
+            ins_lf / lf,
+        )
+    }
 }
 
 /// Biopython's average NMP masses in Da (`IUPACData.unambiguous_rna_weights`: A, C, G, U) and the
@@ -1175,9 +1198,18 @@ pub fn compute_dna_and_ligation_calculations(
 const RNA_NMP_DA: [f64; 4] = [347.2212, 323.1965, 363.2206, 324.1813];
 const WATER_DA: f64 = 18.0153;
 
-/// One sequence weighed for the calculator: (bases, dsDNA Da, ssDNA Da, RNA Da), or the sentence
-/// saying why `seq` has no mass. `role` names the input ("vector" or "insert") in that sentence.
-fn weigh_calculator_sequence(seq: &str, role: &str) -> Result<(usize, f64, f64, f64), String> {
+/// One sequence weighed for the calculator: its bases, dsDNA, ssDNA and RNA masses in Da, and the
+/// sentence saying they are estimates (`None` when exact). `Err` is the sentence saying why `seq`
+/// has no mass. `role` names the input ("vector" or "insert") in either sentence.
+struct CalculatorWeights {
+    bases: usize,
+    ds: f64,
+    ss: f64,
+    rna: f64,
+    approximate_note: Option<String>,
+}
+
+fn weigh_calculator_sequence(seq: &str, role: &str) -> Result<CalculatorWeights, String> {
     let comp = molbiocraft_core::analyze_sequence_composition(seq);
     if comp.counts.other > 0 {
         let letters: String = comp.other_letters.iter().map(char::to_string).collect::<Vec<_>>().join(", ");
@@ -1196,7 +1228,80 @@ fn weigh_calculator_sequence(seq: &str, role: &str) -> Result<(usize, f64, f64, 
     let rna = c.a as f64 * ra + c.c as f64 * rc + c.g as f64 * rg + c.t as f64 * ru
         + codes * (ra + rc + rg + ru) / 4.0
         - (comp.length - 1) as f64 * WATER_DA;
-    Ok((comp.length, comp.mw_ds_dna_da, comp.mw_ss_dna_da, rna))
+    let lead = if role == "insert" { "The insert's mass is approximate" } else { "Masses are approximate" };
+    Ok(CalculatorWeights {
+        bases: comp.length,
+        ds: comp.mw_ds_dna_da,
+        ss: comp.mw_ss_dna_da,
+        rna,
+        approximate_note: calculator_approximate_note(seq, c.n, c.ambiguity, c.inosine, lead),
+    })
+}
+
+/// "a", "a and b", "a, b and c".
+fn joined_with_and(parts: &[String]) -> String {
+    match parts.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The calculator's note for a sequence Biopython 1.88's `molecular_weight(seq_type="DNA")` refuses
+/// (BG-01M6SCYG), or `None` when it would weigh it (A, C, G and T in either case, and whitespace).
+/// N, the other IUPAC codes and inosine read the Statistics panel's sentence (massesApproximateNote,
+/// src/App.tsx: each weighed as the mean of A, C, G and T); a U, weighed as T, and a character that is
+/// no letter, left out, each add a sentence. `lead` opens the note.
+fn calculator_approximate_note(seq: &str, n: usize, ambiguity: usize, inosine: usize, lead: &str) -> Option<String> {
+    let u = seq.chars().filter(|ch| matches!(ch, 'U' | 'u')).count();
+    let not_letters: Vec<char> = seq.chars().filter(|ch| !ch.is_whitespace() && !ch.is_ascii_alphabetic()).collect();
+    let mut kinds: Vec<char> = Vec::new();
+    for &ch in &not_letters {
+        if !kinds.contains(&ch) {
+            kinds.push(ch);
+        }
+    }
+    let codes = n + ambiguity;
+    let fmt = molbiocraft_core::format_thousands;
+    let is_are = |k: usize, one: &str, many: &str| if k == 1 { one.to_string() } else { many.to_string() };
+    let mut sentences: Vec<String> = Vec::new();
+    if codes + inosine > 0 {
+        sentences.push(if inosine == 0 {
+            format!(
+                "{} {} N or another IUPAC code, weighed as the mean of A, C, G and T.",
+                fmt(codes),
+                is_are(codes, "base is", "bases are")
+            )
+        } else {
+            let mut parts: Vec<String> = Vec::new();
+            let mut push = |k: usize, what: String| {
+                let noun = if parts.is_empty() { is_are(k, "base is", "bases are") } else { is_are(k, "is", "are") };
+                parts.push(format!("{} {noun} {what}", fmt(k)));
+            };
+            if n > 0 {
+                push(n, "N".to_string());
+            }
+            if ambiguity > 0 {
+                push(ambiguity, is_are(ambiguity, "another IUPAC code", "other IUPAC codes"));
+            }
+            push(inosine, "inosine (I)".to_string());
+            format!("{}; each is weighed as the mean of A, C, G and T.", joined_with_and(&parts))
+        });
+    }
+    if u > 0 {
+        sentences.push(format!("{} {} U, weighed as T.", fmt(u), is_are(u, "base is", "bases are")));
+    }
+    if !not_letters.is_empty() {
+        let k = not_letters.len();
+        let list = kinds.iter().map(char::to_string).collect::<Vec<_>>().join(", ");
+        sentences.push(format!(
+            "{} {} no base ({list}) and {} left out.",
+            fmt(k),
+            is_are(k, "character is", "characters are"),
+            is_are(k, "is", "are")
+        ));
+    }
+    (!sentences.is_empty()).then(|| format!("{lead}: {}", sentences.join(" ")))
 }
 
 /// The DNA calculator on the sequences themselves (BG-01M6SCYG): the vector's and the insert's
@@ -1207,7 +1312,11 @@ fn weigh_calculator_sequence(seq: &str, role: &str) -> Result<(usize, f64, f64, 
 /// information. Molarity, pmol and copy number read the vector's mass; each ligation row gives the
 /// insert mass for that vector:insert MOLAR ratio (vector ng x insert Da / vector Da x ratio) and
 /// its pmol from the insert's own mass. An input with no DNA bases, or with a letter that is no
-/// nucleotide code, is an `Err` naming the input; IUPAC codes are weighed as the mean of the four.
+/// nucleotide code, is an `Err` naming the input. Biopython refuses N, the other IUPAC codes,
+/// inosine, U and any character that is no letter for DNA; the calculator weighs the codes and
+/// inosine as the mean of the four, U as T, and leaves the other characters out, and marks those
+/// masses `masses_approximate` (the insert's `insert_mass_approximate`) with a note saying how.
+/// A circular record is weighed as this linear chain too.
 pub fn compute_dna_and_ligation_calculations_for_sequences(
     vector_seq: &str,
     conc_ng_per_ul: f64,
@@ -1215,17 +1324,23 @@ pub fn compute_dna_and_ligation_calculations_for_sequences(
     vector_mass_ng: f64,
     insert_seq: &str,
 ) -> Result<DnaLigationCalculations, String> {
-    let (l, ds, ss, rna) = weigh_calculator_sequence(vector_seq, "vector")?;
-    let (ins_l, ins_ds, _, _) = weigh_calculator_sequence(insert_seq, "insert")?;
-    Ok(dna_ligation_table(
-        l,
-        [ds.round(), ss.round(), rna.round()],
-        ds,
-        (conc_ng_per_ul, volume_ul, vector_mass_ng),
-        ins_l,
-        ins_ds,
-        ins_ds / ds,
-    ))
+    let vector = weigh_calculator_sequence(vector_seq, "vector")?;
+    let insert = weigh_calculator_sequence(insert_seq, "insert")?;
+    Ok(DnaLigationCalculations {
+        masses_approximate: vector.approximate_note.is_some(),
+        masses_approximate_note: vector.approximate_note,
+        insert_mass_approximate: insert.approximate_note.is_some(),
+        insert_mass_approximate_note: insert.approximate_note,
+        ..dna_ligation_table(
+            vector.bases,
+            [vector.ds.round(), vector.ss.round(), vector.rna.round()],
+            vector.ds,
+            (conc_ng_per_ul, volume_ul, vector_mass_ng),
+            insert.bases,
+            insert.ds,
+            insert.ds / vector.ds,
+        )
+    })
 }
 
 /// The calculator's table from its masses: `shown` is (dsDNA, ssDNA, RNA) as reported, `ds_mw` the
@@ -1285,6 +1400,10 @@ fn dna_ligation_table(
         copy_number_per_ul,
         od260_units,
         ligation_ratios,
+        masses_approximate: false,
+        masses_approximate_note: None,
+        insert_mass_approximate: false,
+        insert_mass_approximate_note: None,
     }
 }
 
