@@ -461,3 +461,104 @@ fn chain_identity_reads_one_minus_the_divergence() {
     assert!((84.0..=86.0).contains(&main.estimated_identity_pct), "identity {} against {truth:.2}: {shown:?}", main.estimated_identity_pct);
     assert!((84.0..=86.0).contains(&report.weighted_identity_pct), "weighted identity {}", report.weighted_identity_pct);
 }
+
+/// `s` with `sub_per_mille` of its bases substituted and, at `indel_per_mille` of them, an indel
+/// of 1 to 10 bases: half insert random bases before the base, half delete it and those after.
+fn mutate_with_indels(s: &[u8], seed: u64, sub_per_mille: u64, indel_per_mille: u64) -> Vec<u8> {
+    let mut r = SplitMix(seed);
+    let mut out = Vec::with_capacity(s.len() + s.len() / 50);
+    let mut i = 0;
+    while i < s.len() {
+        let z = r.next();
+        if z % 1000 < indel_per_mille {
+            let len = 1 + ((z >> 20) % 10) as usize;
+            if (z >> 40) & 1 == 0 {
+                out.extend((0..len).map(|_| b"ACGT"[(r.next() % 4) as usize]));
+            } else {
+                i += len;
+                continue;
+            }
+        }
+        let b = s[i];
+        let u = r.next();
+        if u % 1000 < sub_per_mille {
+            let x = b"ACGT".iter().position(|&c| c == b).unwrap();
+            out.push(b"ACGT"[(x + 1 + ((u >> 32) % 3) as usize) % 4]);
+        } else {
+            out.push(b);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// BG-01M6T61T round 2: an indel shifts the diagonal by a few bases, inside a true chain, so a
+/// step that shifts it by no more than one anchor's gain pays for does not end a run. Round 1
+/// ended a run at every shift, and a pair about 80% alike holds few anchors between two indels,
+/// so the seeded, fully homologous 300 kb pairs below read 2-5 chains over 16-83% of the target
+/// instead of one chain over all of it. Each is one chain over at least 99% of both genomes.
+#[test]
+fn a_divergent_pair_with_indels_is_one_chain() {
+    let mut wrong = Vec::new();
+    for (sub, indel) in [(180, 20), (200, 10), (220, 10)] {
+        for seed in 0..3u64 {
+            let target = random_bases(300_000, 0x1de1_0000 + 16 * sub + seed);
+            let query = mutate_with_indels(&target, 0x1de2_0000 + 16 * sub + seed, sub, indel);
+            let report = chain(&target, &query);
+            let shown: Vec<_> = report.chains.iter().map(|c| (c.target_start_bp, c.target_end_bp, c.query_start_bp, c.query_end_bp, c.anchor_count)).collect();
+            let one = report.total_chains == 1 && {
+                let c = &report.chains[0];
+                (c.target_end_bp + 1 - c.target_start_bp) as f64 >= 0.99 * target.len() as f64
+                    && (c.query_end_bp + 1 - c.query_start_bp) as f64 >= 0.99 * query.len() as f64
+                    && c.structural_event == "colinear"
+            };
+            if !one {
+                wrong.push((sub, indel, seed, report.target_covered_pct, shown));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "not one chain over 99% of the pair (sub, indel per mille, seed, coverage, chains): {wrong:?}");
+}
+
+/// BG-01M6T61T round 2: a chain trimmed to its significant runs scores only the anchors it keeps.
+/// The pair shares a 60 kb block, then unrelated 5 kb, then 24 bases on the block's diagonal:
+/// the trace from those 24 bases' anchors runs back into the block, and the short run is left
+/// out. The chain's score is then the block's own, as when the 24 bases are unrelated too;
+/// without the recompute it kept the score of the whole trace.
+#[test]
+fn a_trimmed_chain_scores_only_the_anchors_it_keeps() {
+    let block = random_bases(60_000, 0x5c0e);
+    let (t_gap, q_gap) = (random_bases(5_000, 0x5c1e), random_bases(5_000, 0x5c2e));
+    let tail = random_bases(24, 0x5c3e);
+    let target = [block.clone(), t_gap.clone(), tail.clone(), random_bases(2_000, 0x5c4e)].concat();
+    let query = [block.clone(), q_gap.clone(), tail, random_bases(2_000, 0x5c5e)].concat();
+    let unrelated = [block, q_gap, random_bases(24, 0x5c6e), random_bases(2_000, 0x5c5e)].concat();
+    let (trimmed, alone) = (chain(&target, &query), chain(&target, &unrelated));
+    let show = |r: &LargeGenomeMinimizerChainReport| -> Vec<_> { r.chains.iter().map(|c| (c.target_start_bp, c.target_end_bp, c.anchor_count, c.chain_score)).collect() };
+    assert_eq!((trimmed.total_chains, alone.total_chains), (1, 1), "{:?} {:?}", show(&trimmed), show(&alone));
+    let (a, b) = (&trimmed.chains[0], &alone.chains[0]);
+    assert!(a.target_end_bp.abs_diff(60_000) <= 30, "the tail is left out: {:?} {:?}", show(&trimmed), show(&alone));
+    assert_eq!((a.target_start_bp, a.target_end_bp, a.anchor_count), (b.target_start_bp, b.target_end_bp, b.anchor_count));
+    assert_eq!(a.chain_score, b.chain_score, "the trimmed chain scores its own anchors: {:?} {:?}", show(&trimmed), show(&alone));
+}
+
+/// BG-01M6T61T round 2: a step that shifts the diagonal by more than one anchor's gain pays for
+/// (72 bp at k = 13) still crosses a gap, so a chain end does not reach across a query insertion
+/// on fewer anchors than a chain needs. Each pair shares a 60 kb block and then 30 bases, which
+/// the query holds 150 inserted bases later: the 30 bases' few anchors gain more than the shift
+/// costs, so the trace takes them, and the chain is left to end where the block ends, on both
+/// genomes. With no bound on the shift it ended 30 bases on in the target and 180 in the query.
+#[test]
+fn a_chain_end_does_not_cross_a_query_insertion_on_a_few_anchors() {
+    for s in 0..3u64 {
+        let block = random_bases(60_000, 0x1a5e + s);
+        let tail = random_bases(30, 0x1a6e + s);
+        let target = [block.clone(), tail.clone(), random_bases(2_000, 0x1a7e + s)].concat();
+        let query = [block, random_bases(150, 0x1a8e + s), tail, random_bases(2_000, 0x1a9e + s)].concat();
+        let report = chain(&target, &query);
+        let shown: Vec<_> = report.chains.iter().map(|c| (c.target_start_bp, c.target_end_bp, c.query_start_bp, c.query_end_bp, c.anchor_count)).collect();
+        assert_eq!(report.total_chains, 1, "seed {s}: {shown:?}");
+        let c = &report.chains[0];
+        assert!(c.target_end_bp.abs_diff(60_000) <= 10 && c.query_end_bp.abs_diff(60_000) <= 10, "seed {s}, the chain ends with the block: {shown:?}");
+    }
+}

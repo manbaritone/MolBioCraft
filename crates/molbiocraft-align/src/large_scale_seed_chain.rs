@@ -434,6 +434,7 @@ fn align_large_genomes_minimizer_chain_within(
     let mut extracted_chains: Vec<(i64, Vec<usize>)> = Vec::new();
     let score_floor = floor_anchors as i64 * (k_i64 / 2).max(2);
     let min_chain_anchors = min_chain_anchors(query_compared_bp);
+    let max_shift = chain_max_shift(k);
 
     for &end_idx in &order {
         if used[end_idx] || f_score[end_idx] < score_floor {
@@ -466,11 +467,13 @@ fn align_large_genomes_minimizer_chain_within(
         // could reach tens of kb on a handful of anchors the test never weighed apart from the
         // block's thousand; a long chain, whose score pays for any shift within D, could cross a
         // 790 kb inversion on chance anchors. The chain is cut into runs at each gap-crossing
-        // step and keeps, from its end, the runs that hold `min_chain_anchors` anchors, with the
-        // short runs between two of them only where those two lie within D of each other, the
-        // reach of one chain step (`significant_runs`); the anchors left out are
-        // free for chains of their own, which then pass the same test.
-        let Some((first_kept, last_kept)) = significant_runs(&anchors, &chain_indices, min_chain_anchors) else {
+        // step (one longer than 1,000 bp, or one shifting the diagonal by more than one anchor's
+        // gain pays for, so an indel stays inside a run: round 2, a cut at every shift split a
+        // pair 80% alike at its indels) and keeps, from its end, the runs that hold
+        // `min_chain_anchors` anchors, with the short runs between two of them only where those
+        // two lie within D of each other, the reach of one chain step (`significant_runs`); the
+        // anchors left out are free for chains of their own, which then pass the same test.
+        let Some((first_kept, last_kept)) = significant_runs(&anchors, &chain_indices, min_chain_anchors, max_shift) else {
             continue;
         };
         if (first_kept, last_kept) != (0, chain_indices.len()) {
@@ -653,32 +656,42 @@ fn align_large_genomes_minimizer_chain_within(
 /// The furthest a chain reaches back for an anchor's predecessor, on the target and on the query.
 const CHAIN_MAX_GAP_BP: u32 = 25_000;
 
-/// The longest step, on either genome, between two anchors of one run of a chain: a longer step,
-/// or one that shifts the diagonal, crosses a gap. A related 120 kb pair 15% diverged seeds an
-/// anchor about every 42 bases, so a step of 1,000 bases with none between is not expected.
+/// The longest target step between two anchors of one run of a chain: a longer step crosses a
+/// gap. A related 120 kb pair 15% diverged seeds an anchor about every 42 bases, so a step of
+/// 1,000 bases with none between is not expected.
 const CHAIN_RUN_MAX_STEP_BP: u32 = 1_000;
 
+/// The widest diagonal shift `G` that one anchor's gain of `k` pays the gap cost of: 72 bp at
+/// k = 13.
+fn chain_max_shift(k: usize) -> u32 {
+    (1..).take_while(|&g: &u32| chain_gap_cost(g, 0, k) < k as i64).last().unwrap_or(0)
+}
+
 /// Whether the chain step from anchor `earlier` to anchor `later` (same strand, sorted order)
-/// crosses a gap: it shifts the diagonal, or it is longer than [`CHAIN_RUN_MAX_STEP_BP`].
-fn crosses_gap(earlier: &SeedAnchor, later: &SeedAnchor) -> bool {
+/// crosses a gap: it is longer than [`CHAIN_RUN_MAX_STEP_BP`] on the target, or it shifts the
+/// diagonal by more than `max_shift` ([`chain_max_shift`]). A shift within that is an indel
+/// between two anchors of one block: a pair 80% alike with 1% of its bases starting an indel
+/// has one about every 100 bases its anchors span, and a run cut at each of them holds too few
+/// anchors to count (BG-01M6T61T round 2: cut at every shift, 300 kb pairs read 16-83%).
+fn crosses_gap(earlier: &SeedAnchor, later: &SeedAnchor, max_shift: u32) -> bool {
     let dx = later.target_pos.abs_diff(earlier.target_pos);
     let dy = later.query_diag_pos.abs_diff(earlier.query_diag_pos);
-    dx != dy || dx > CHAIN_RUN_MAX_STEP_BP
+    dx > CHAIN_RUN_MAX_STEP_BP || dx.abs_diff(dy) > max_shift
 }
 
 /// The part of a traced chain (`chain`, indices into `anchors`, last anchor first) that a
 /// chain keeps, as the range `first..last` of `chain`: runs are cut at every step that
-/// [`crosses_gap`], and a run is significant when it holds at least `min_anchors` anchors. The
-/// part runs from the first significant run to the last one reached through significant runs,
-/// each within [`CHAIN_MAX_GAP_BP`] on both genomes of the one before it: the short runs between
-/// two such runs stay (a detour of a few chance anchors inside a true chain), the short runs at
+/// [`crosses_gap`] (with `max_shift`), and a run is significant when it holds at least
+/// `min_anchors` anchors. The part runs from the first significant run to the last one reached
+/// through significant runs, each within [`CHAIN_MAX_GAP_BP`] on both genomes of the one before
+/// it: the short runs between two such runs stay (a detour of a few chance anchors inside a true chain), the short runs at
 /// either end are left out, and short runs bridging a longer gap end the part there. `None`
 /// when no run is significant.
-fn significant_runs(anchors: &[SeedAnchor], chain: &[usize], min_anchors: usize) -> Option<(usize, usize)> {
+fn significant_runs(anchors: &[SeedAnchor], chain: &[usize], min_anchors: usize, max_shift: u32) -> Option<(usize, usize)> {
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut from = 0;
     for x in 1..=chain.len() {
-        if x == chain.len() || crosses_gap(&anchors[chain[x]], &anchors[chain[x - 1]]) {
+        if x == chain.len() || crosses_gap(&anchors[chain[x]], &anchors[chain[x - 1]], max_shift) {
             runs.push((from, x));
             from = x;
         }
@@ -925,7 +938,7 @@ fn chance_chain_anchors(t_len: usize, q_len: usize, base_agree: f64, w: usize, k
     let density = sigma_w * base_agree.powi(k as i32);
     let chance_anchors = density * t_len as f64 * q_len as f64;
     // the widest diagonal shift one anchor's gain of k pays for
-    let max_shift = (1..).take_while(|&g: &u32| chain_gap_cost(g, 0, k) < k as i64).last().unwrap_or(0);
+    let max_shift = chain_max_shift(k);
     let reach = (CHAIN_MAX_GAP_BP as usize).min(t_len).min(q_len) as f64;
     let p = (density * reach * (2 * max_shift + 1) as f64).min(CHANCE_SUCCESSOR_MAX);
     let excess = 2.0 * chance_anchors / (CHANCE_CHAINS_ALLOWED * (1.0 - p));
@@ -1468,24 +1481,42 @@ mod tests {
         }
     }
 
-    /// BG-01M6T61T: a traced chain is cut into runs at each step that shifts the diagonal or
-    /// reaches past 1,000 bp; the runs at either end with fewer anchors than a chain needs are
-    /// left out; short runs between two that hold enough stay where those two lie within 25 kb
-    /// of each other and end the chain where they do not; a run of exactly that many stays.
+    /// BG-01M6T61T: a traced chain is cut into runs at each step that shifts the diagonal by
+    /// more than one anchor's gain pays for (72 bp at k = 13) or reaches past 1,000 bp; a shift of
+    /// up to 72 bp (an indel) stays inside a run; the runs at either end with fewer anchors than
+    /// a chain needs are left out; short runs between two that hold enough stay where those two
+    /// lie within 25 kb of each other and end the chain where they do not; a run of exactly that
+    /// many stays.
     #[test]
     fn significant_runs_leave_out_short_runs_at_either_end() {
         let at = |t: u32, shift: u32| SeedAnchor { strand: 1, target_pos: t, query_diag_pos: t - shift, raw_query_pos: t - shift };
-        // A: 3 anchors on the diagonal; B: 10 anchors 20 bp off it (a shift from A, 290 bp on);
+        let g = chain_max_shift(13);
+        assert_eq!(g, 72);
+        // A: 3 anchors on the diagonal; B: 10 anchors 73 bp off it (a shift from A, 290 bp on);
         // C: 2 anchors on B's diagonal, 1,500 bp past B's last (a long step, no shift)
-        let mut anchors: Vec<SeedAnchor> = [100, 105, 110].iter().map(|&t| at(t, 0)).collect();
-        anchors.extend((0..10).map(|i| at(400 + 5 * i, 20)));
-        anchors.extend([1_945, 1_950].iter().map(|&t| at(t, 20)));
+        let with_b_shift = |shift: u32| {
+            let mut v: Vec<SeedAnchor> = [100, 105, 110].iter().map(|&t| at(t, 0)).collect();
+            v.extend((0..10).map(|i| at(400 + 5 * i, shift)));
+            v.extend([1_945, 1_950].iter().map(|&t| at(t, shift)));
+            v
+        };
+        let anchors = with_b_shift(g + 1);
         // the trace lists the last anchor first: C (0..2), B (2..12), A (12..15)
         let chain: Vec<usize> = (0..anchors.len()).rev().collect();
-        assert_eq!(significant_runs(&anchors, &chain, 10), Some((2, 12)));
-        assert_eq!(significant_runs(&anchors, &chain, 11), None);
-        assert_eq!(significant_runs(&anchors, &chain, 2), Some((0, 15)));
-        assert_eq!(significant_runs(&anchors, &chain, 3), Some((2, 15)));
+        assert_eq!(significant_runs(&anchors, &chain, 10, g), Some((2, 12)));
+        assert_eq!(significant_runs(&anchors, &chain, 11, g), None);
+        assert_eq!(significant_runs(&anchors, &chain, 2, g), Some((0, 15)));
+        assert_eq!(significant_runs(&anchors, &chain, 3, g), Some((2, 15)));
+        // B 72 bp off A's diagonal: an indel, so A and B are one run of 13
+        let indel = with_b_shift(g);
+        assert_eq!(significant_runs(&indel, &chain, 10, g), Some((2, 15)), "a 72 bp shift stays in the run");
+        assert_eq!(significant_runs(&indel, &chain, 14, g), None);
+        // a step 290 bp on the target and 5,290 bp on the query (a 5 kb insertion) ends the run
+        let mut inserted = with_b_shift(0);
+        for a in inserted.iter_mut().skip(3) {
+            a.query_diag_pos += 5_000;
+        }
+        assert_eq!(significant_runs(&inserted, &chain, 10, g), Some((2, 12)), "a 5 kb shift ends the run");
         // 10 anchors (D), 2 more (X) and B's 10 starting `b_from`, each a long step from the one
         // before, then C 1,500 bp past B: the trace holds C (0..2), B (2..12), X (12..14), D (14..24)
         let bridged = |b_from: u32| {
@@ -1498,15 +1529,15 @@ mod tests {
         let chain: Vec<usize> = (0..24).rev().collect();
         // B's first anchor 25,855 bp past D's last: X bridges more than a chain step, so it ends
         // the chain at B; 4,855 bp: D and B would chain directly, so X stays as a detour
-        assert_eq!(significant_runs(&bridged(26_000), &chain, 10), Some((2, 12)), "X ends the chain before D");
-        assert_eq!(significant_runs(&bridged(5_000), &chain, 10), Some((2, 24)), "D joins B through X");
-        assert_eq!(significant_runs(&bridged(26_000), &chain, 2), Some((0, 24)));
+        assert_eq!(significant_runs(&bridged(26_000), &chain, 10, g), Some((2, 12)), "X ends the chain before D");
+        assert_eq!(significant_runs(&bridged(5_000), &chain, 10, g), Some((2, 24)), "D joins B through X");
+        assert_eq!(significant_runs(&bridged(26_000), &chain, 2, g), Some((0, 24)));
         // B 4,855 bp past D on the target but 29,855 bp on the query: no direct chain step
         let mut far = bridged(5_000);
         for (i, a) in far.iter_mut().enumerate().skip(10) {
             a.query_diag_pos += if i < 12 { 12_500 } else { 25_000 };
         }
-        assert_eq!(significant_runs(&far, &chain, 10), Some((2, 12)), "X ends the chain before D");
+        assert_eq!(significant_runs(&far, &chain, 10, g), Some((2, 12)), "X ends the chain before D");
     }
 
     /// The anchor count a chain needs, as `chance_chain_anchors` derives it: the numbers its
