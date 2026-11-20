@@ -2180,6 +2180,38 @@ fn an_unknown_run_outlasts_its_flanks(bases: &[u8]) -> bool {
     false
 }
 
+/// Whether two neighbouring matches of `chain` (the caller's chain, [`call_chain`]) lie on
+/// diagonals more than [`CALL_BAND_W`] apart: an insertion or deletion wider than the one-shot
+/// band. [`align_sample_in_one_piece`] bands along sdpkpp's own chain of the pair, which charges a
+/// gap 2 a base and so leaves out the matched stretch on the short side of such an indel when that
+/// stretch scores less than the gap costs: a 2,000-bp insertion 500 bases from either end of a
+/// 6,000-bp sample. The band then ran on along the long side's diagonal, the short side was
+/// aligned off its own, the insertion was lost, and the misaligned bases were soft-clipped, so 2
+/// of the 4 calls were made (BG-01M6T6X7). The caller's chain reaches past such an indel
+/// ([`with_chains_beyond_its_ends`]), so such a sample is also aligned in segments along it, and
+/// the reading that scores higher under the caller's own scoring ([`columns_score`]) is called; on
+/// a tie the one-piece reading is kept.
+fn chain_holds_an_indel_past_the_band(chain: &[(u32, u32)]) -> bool {
+    chain.windows(2).any(|w| {
+        let diagonal = |&(q, r): &(u32, u32)| i64::from(q) - i64::from(r);
+        (diagonal(&w[1]) - diagonal(&w[0])).unsigned_abs() > CALL_BAND_W as u64
+    })
+}
+
+/// Of a sample's one-piece reading and its segmented one (each its query row, reference row and
+/// first reference base), the one whose columns score higher under the caller's own scoring
+/// ([`columns_score`]'s first value, not its known-base count), as D0268 judges a reading; on a
+/// tie, the one-piece reading. The segmented reading can score lower: its chain takes in the
+/// matched stretch beyond a long indel near a sample end ([`with_chains_beyond_its_ends`]) even
+/// where pairing the bases there scores higher than the indel costs.
+fn higher_scoring_reading(piece: (Vec<u8>, Vec<u8>, usize), segments: (Vec<u8>, Vec<u8>, usize)) -> (Vec<u8>, Vec<u8>, usize) {
+    if columns_score(&segments.0, &segments.1).0 > columns_score(&piece.0, &piece.1).0 {
+        segments
+    } else {
+        piece
+    }
+}
+
 /// The fewest sample bases compared with known reference bases that a stretch must hold to be
 /// soft-clipped ([`soft_clipped_columns`]); shorter ones (a cluster of a few SNPs, an MNP) are
 /// read off the alignment as they lie.
@@ -3066,8 +3098,14 @@ pub fn call_freebayes_variants_with_one_shot_limit(
         && !an_unknown_run_outlasts_its_flanks(reference);
     let (mut qa, mut ra, ystart) = if one_piece {
         // one alignment of the whole sample, as the caller aligned every sample before BG-01M6S1QP,
-        // unless a run of N outlasts the bases beside it (BG-01M6W0BZ)
-        align_sample_in_one_piece(&query, reference)
+        // unless a run of N outlasts the bases beside it (BG-01M6W0BZ), or the chain holds an indel
+        // wider than the band and the segments' alignment scores higher (BG-01M6T6X7)
+        let piece = align_sample_in_one_piece(&query, reference);
+        if chain_holds_an_indel_past_the_band(&chain) {
+            higher_scoring_reading(piece, align_sample_in_segments(&query, reference, &chain))
+        } else {
+            piece
+        }
     } else {
         align_sample_in_segments(&query, reference, &chain)
     };
@@ -3389,6 +3427,39 @@ pub fn call_freebayes_variants_with_one_shot_limit(
         vcf_text,
         annotations,
         warnings,
+    }
+}
+
+#[cfg(test)]
+mod reading_choice_tests {
+    use super::*;
+
+    fn reading(q: &str, r: &str) -> (Vec<u8>, Vec<u8>, usize) {
+        (q.as_bytes().to_vec(), r.as_bytes().to_vec(), 0)
+    }
+
+    /// BG-01M6T6X7: two different readings that score the same (the gap on either side of a
+    /// repeated C, 2 + 2 - 7 + 2 + 2 = 1 each) keep the one-piece reading.
+    #[test]
+    fn a_tie_keeps_the_one_piece_reading() {
+        let (piece, segments) = (reading("AC-GT", "ACCGT"), reading("A-CGT", "ACCGT"));
+        assert_eq!(columns_score(&piece.0, &piece.1).0, columns_score(&segments.0, &segments.1).0);
+        assert_eq!(higher_scoring_reading(piece.clone(), segments.clone()), piece);
+        // and either reading wins by its score whichever side it is passed on
+        let better = reading("ACCGT", "ACCGT");
+        assert_eq!(higher_scoring_reading(piece.clone(), better.clone()), better);
+        assert_eq!(higher_scoring_reading(better.clone(), piece), better);
+    }
+
+    /// The alignment's own score decides, not the count of known bases matched: four sample N
+    /// against ACGT score 4 (1 a column) and match no known base; the gapped reading scores 2 + 2
+    /// - 9 = -5 with two known matches.
+    #[test]
+    fn the_alignment_score_decides_not_the_known_bases() {
+        let (piece, segments) = (reading("NNNN", "ACGT"), reading("A--T", "ACGT"));
+        let (ps, ss) = (columns_score(&piece.0, &piece.1), columns_score(&segments.0, &segments.1));
+        assert!(ps.0 > ss.0 && ps.1 < ss.1, "{ps:?} {ss:?}");
+        assert_eq!(higher_scoring_reading(piece.clone(), segments), piece);
     }
 }
 

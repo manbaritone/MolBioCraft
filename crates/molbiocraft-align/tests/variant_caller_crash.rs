@@ -553,6 +553,54 @@ fn calls_long_indels_below_the_one_shot_limit_as_an_exact_alignment_does() {
     assert!(differences.is_empty(), "{} of {} samples:\n{}", differences.len(), fixtures.len(), differences.join("\n"));
 }
 
+/// BG-01M6T6X7: a 6,000-bp sample of a 4,000-bp reference holding one 2,000-bp insertion, a third
+/// of the sample, 500 bp from its start or 500 bp from its end, with 3 SNPs, was called as 643 and
+/// 639 variants on the one-shot path. Each sample is within the one-shot limit, and is called as the
+/// exact semi-global alignment calls it: the insertion, all 2,000 inserted bases in its allele (none
+/// soft-clipped), and the 3 SNPs, 4 calls. The segmented alignment, which the caller now also
+/// runs on a sample whose chain holds an indel wider than the band, calls them so too.
+#[test]
+fn calls_a_2000_bp_insertion_at_the_head_or_tail_of_a_6kb_sample_as_an_exact_alignment_does() {
+    let fixtures = [
+        fixture("6 kb, 2,000-bp insertion 500 bp from the start".into(), 4_000, 0, 4_000, &[Edit::Snp(250), Edit::Ins(500, 2_000), Edit::Snp(1_800), Edit::Snp(3_200)], 0x5EB3),
+        fixture("6 kb, 2,000-bp insertion 500 bp from the end".into(), 4_000, 0, 4_000, &[Edit::Snp(800), Edit::Snp(2_200), Edit::Ins(3_500, 2_000), Edit::Snp(3_750)], 0x5EB4),
+    ];
+    for f in &fixtures {
+        assert_eq!(f.sample.len(), 6_000, "{}: a 6,000-bp sample", f.name);
+        assert_eq!(f.planted.len(), 4, "{}: the insertion and 3 SNPs", f.name);
+        assert!(f.planted.iter().any(|c| c.3 == "INS" && c.2.len() == 2_001), "{}: one 2,000-bp insertion", f.name);
+        assert!(
+            one_shot_traceback(f.sample.len(), f.reference.len()) <= CALL_ONE_SHOT_MAX_BYTES,
+            "{}: past the one-shot limit",
+            f.name
+        );
+    }
+    let differences = differences_from_exact(&fixtures, &[("as shipped", as_shipped), ("in segments", in_segments)]);
+    assert!(differences.is_empty(), "{} of {} samples:\n{}", differences.len(), fixtures.len(), differences.join("\n"));
+}
+
+/// BG-01M6T6X7: the caller takes the segmented reading only where it scores higher under the
+/// caller's own scoring (D0268). Here a 150-bp insertion 60 bases from the end of a 3,500-bp sample
+/// opens the gate (its chain shifts diagonal by 150), and the segments' chain takes in the 60
+/// matched bases after it, but that insertion reading scores 15 lower under the caller's scoring
+/// than pairing the last 210 bases with the reference (6,690 against 6,705, measured while the fix
+/// was built), and the exact alignment pairs them too, calling no long insertion. The caller keeps
+/// that one-piece reading, soft-clips the unrelated tail, and makes the exact alignment's call
+/// before it, the SNP; the segmented reading, called alone, holds the insertion.
+#[test]
+fn a_long_insertion_near_the_end_that_scores_lower_than_pairing_is_read_as_pairing() {
+    let _alongside = ALLOCATION_PROBE.read().unwrap_or_else(|e| e.into_inner());
+    let f = fixture("3.5 kb, 150-bp insertion 60 bp from the end".into(), 5_000, 500, 4_000, &[Edit::Snp(1_500), Edit::Ins(3_940, 150)], 0x7C50);
+    let (cols, offset) = exact_alignment(&f.sample, &f.reference);
+    let exact = calls_of(&cols, offset, &f.reference);
+    assert!(exact.iter().all(|c| c.3 != "INS" || c.2.len() < 100), "the exact alignment calls no long insertion: {:?}", short(&exact));
+    let before_tail: Vec<Call> = exact.iter().filter(|c| c.0 < 3_900).cloned().collect();
+    assert_eq!(before_tail, f.planted[..1].to_vec(), "the exact alignment's calls before the tail are the SNP");
+    let segmented = in_segments(&f);
+    assert!(segmented.iter().any(|c| c.3 == "INS" && c.2.len() == 151), "the segmented reading holds the insertion: {:?}", short(&segmented));
+    assert_eq!(as_shipped(&f), before_tail, "the caller keeps the higher-scoring one-piece reading");
+}
+
 #[test]
 fn calls_long_indels_past_the_one_shot_limit_as_an_exact_alignment_does() {
     let fixtures = [
