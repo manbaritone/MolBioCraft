@@ -613,7 +613,6 @@ describe('BG-01M7V0TD: the studio routing branches Sprint 39 left untested', () 
     expect(studioForTab('genomics-ngs', DNA).id).toBe('pipelines-ngs');
     const app = await mountApp();
     try {
-      await openRouted(app, PLAIN_PROTEIN, 'sequence-view');
       // Cloning › Restriction Cloning › Agarose Digest asks for Cloning & Gel, which a protein cannot show.
       await openRouted(app, PLAIN_PROTEIN, 'annotations-table');
       const row = await menuRow(app, ['Cloning', 'Restriction Cloning', 'Agarose Digest']);
@@ -671,7 +670,7 @@ describe('BG-01M7V0TD: the studio routing branches Sprint 39 left untested', () 
     }
   });
 
-  it('BG-01M7V0TD Back-Translate opens its dialog on a protein, and Protein Domains opens the Protein studio on one', async () => {
+  it('BG-01M7V0TD Back-Translate opens its dialog on a protein, and Back Translate and Protein Domains open the Protein studio on one', async () => {
     const app = await mountApp();
     try {
       await openRouted(app, PLAIN_PROTEIN, 'annotations-table');
@@ -680,13 +679,19 @@ describe('BG-01M7V0TD: the studio routing branches Sprint 39 left untested', () 
       expect(railList(app)[0].getAttribute('data-current-studio')).toBe('protein-3d');
       expect(statusText(app)).toContain('Protein Domains: motif and domain scanning is available for DNA/RNA (JASPAR PSSM); showing protein analysis.');
 
+      // Sequence › Translation › Back Translate (no dialog) opens the Protein studio on a protein with no structure,
+      // where no 3D fallback could stand in for the route.
+      await openRouted(app, PLAIN_PROTEIN, 'annotations-table');
+      await app.menu('sequence:back-translate');
+      expect(app.activeTab(), 'Back Translate on a plain protein opens the Protein studio').toBe('protein-3d');
+      expect(railList(app)[0].getAttribute('data-current-studio')).toBe('protein-3d');
+
       await openRouted(app, PLAIN_PROTEIN, 'annotations-table');
       await app.menu('sequence:back-translate-dialog');
       const dialogs = app.all('[role="dialog"], dialog').filter((d) => /Back-Translate/.test(words(d.textContent)) || /Back-Translate/.test(d.getAttribute('aria-label') ?? ''));
       expect(dialogs.length, 'the Back-Translate dialog opens').toBeGreaterThan(0);
       expect(words(dialogs[0].textContent), 'on the active protein').toContain('1 protein sequence');
       expect(app.activeTab(), 'the view stays').toBe('annotations-table');
-
     } finally {
       app.unmount();
     }
