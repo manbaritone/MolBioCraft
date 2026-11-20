@@ -260,8 +260,10 @@ export function runEvolutionAnalysis(inputs: SequenceDocument[], kind: EvoAnalys
     const r = inferAncestralSequences(names, seqs, method);
     const nodesListed = listedSentence(r.nodes.length, r.totalInternalNodes, 'internal nodes');
     out.push(`## ${r.method}`, '', nodesListed, '');
-    const header = ['Node', 'Descendants', 'Mean confidence'];
-    // The engine reports the confidence as a percent already, rounded to 0.1.
+    // The engine's per-node value is a percent already, rounded to 0.1. Under parsimony it is the
+    // share of sites whose Fitch set holds one state, not a confidence, so the column carries the
+    // studio's name for what each method computed (BG01M6S3X1).
+    const header = ['Node', 'Descendants', v.method === 'mp' ? 'Unambiguous sites' : 'Mean posterior of best state'];
     const body = r.nodes.map((n) => [n.nodeName, n.descendants, n.meanPosteriorConfidence === null ? 'n/a' : `${n.meanPosteriorConfidence.toFixed(1)}%`]);
     out.push(...table(header, body), '', '## Ancestral sequences (FASTA)', '', nodesListed, '',
       ...r.nodes.flatMap((n) => [`>${n.nodeName.replace(/\s+/g, '_')}`, ...(n.ancestralSequence.match(/.{1,70}/g) ?? [''])]));

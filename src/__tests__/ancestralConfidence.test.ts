@@ -21,10 +21,20 @@ const members: SequenceDocument[] = aln.alignmentMeta!.sequences!.slice(0, 12).m
 } as SequenceDocument));
 const ctx = { sourceLabel: 'COXII' };
 
-/** The "Mean confidence" cell of each row of the report's node table, in row order. */
+/** The column the report heads each method's per-node percent with, as the studio names it (BG01M6S3X1). */
+const COLUMN = { ml: 'Mean posterior of best state', mp: 'Unambiguous sites' } as const;
+
+/** The node table's header line: the one line that starts with "Node" and "Descendants". */
+function nodeTableHeader(notes: string): string {
+  const heads = notes.split('\n').filter((l) => /^Node\s+Descendants\s/.test(l));
+  expect(heads, 'the report has one node table').toHaveLength(1);
+  return heads[0];
+}
+
+/** The last cell (the per-node percent) of each row of the report's node table, in row order. */
 function confidenceCells(notes: string): string[] {
   const lines = notes.split('\n');
-  const head = lines.findIndex((l) => /^Node\s.*Mean confidence$/.test(l));
+  const head = lines.indexOf(nodeTableHeader(notes));
   expect(head, 'the report has a node table').toBeGreaterThanOrEqual(0);
   const rows: string[] = [];
   for (const l of lines.slice(head + 2)) {
@@ -77,5 +87,28 @@ describe('ancestral reconstruction report', () => {
       expect(v).toBeGreaterThanOrEqual(0);
       expect(v).toBeLessThanOrEqual(100);
     }
+  });
+
+  // BG01M6S3X1: under parsimony the engine's value is the share of sites whose Fitch set holds one
+  // state, not a confidence, so each method's column carries the studio's name for what it computed.
+  // Wrong implementations, and the case that catches each: one label for both methods (the two
+  // methods must differ); the labels swapped; the old "Mean confidence" kept anywhere in the report;
+  // a label keyed on something other than the method actually run (the default, no method given,
+  // runs likelihood and must carry its label).
+  it.each([
+    ['mp', { method: 'mp' }],
+    ['ml', { method: 'ml' }],
+    ['ml', {}],
+  ] as const)('names the ancestral column by method: %s with options %j', (method, opts) => {
+    engine.mockClear();
+    const r = runEvolutionAnalysis(members, 'ancestors', opts, ctx);
+    expect(engine).toHaveBeenCalledTimes(1);
+    expect(engine.mock.calls[0][2]).toBe(method === 'mp' ? 'Maximum Parsimony (Fitch)' : 'Maximum Likelihood (Empirical Bayes)');
+    const notes = String(r.created[0].docMetadata?.Notes);
+    const header = nodeTableHeader(notes).trim().split(/\s{2,}/);
+    expect(header).toEqual(['Node', 'Descendants', COLUMN[method]]);
+    const other = method === 'mp' ? COLUMN.ml : COLUMN.mp;
+    expect(notes, 'the other method\'s label is absent').not.toContain(other);
+    expect(notes, 'the old label is gone').not.toContain('Mean confidence');
   });
 });
