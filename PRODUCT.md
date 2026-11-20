@@ -41,7 +41,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 - Mol* 3D structure viewer for PDB/mmCIF (presets, colour schemes, ligands, sequence panel, Model B superposition), with its floating toolbar docked at the bottom of the view and full-window expand that stays inside the app window
 - 13 built-in Bioinformatics Plugins (eukaryotic and microbial gene prediction, CRISPR arrays, tandem repeats, haplotypes, taxonomic classification, species delimitation, protein domains/epitopes, TM topology, read trimming, synteny blocks, HPC phylogeny jobs, external CLI tools), reachable from the native and in-window Tools menus, the Workflows toolbar menu and search
 - Identical menu structure on the native macOS menu bar and the in-window (Windows, Linux, web) menu bar
-- Persisted, exportable Preferences (default folder, default Author, default export formats per molecule type, per-studio defaults, operation-window shortcuts; menu shortcuts are fixed)
+- Persisted, exportable Preferences (default folder, default Author, default export formats per molecule type, per-studio defaults, options-window shortcuts; menu shortcuts are fixed)
 - No network port: the interface reaches the engine only through Tauri IPC and WebAssembly
 - Non-commercial Creative Commons license (CC BY-NC 4.0, SPDX: CC-BY-NC-4.0) — no commercial use permitted
 

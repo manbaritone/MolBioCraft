@@ -8,6 +8,10 @@
  *   label) is a row of the Preferences Keyboard tab of the mounted App, read on a macOS host and on a
  *   Linux host (Windows formats its labels as Linux does, formatPlatformShortcut). Every shortcut
  *   PRODUCT.md names is the label of such a row. A planted row, label or shortcut fails the check.
+ * - BG-01M7V0BV: a PRODUCT.md range such as '⌘1–⌘9' is read key by key, not by its two ends; the words
+ *   PRODUCT.md writes beside a shortcut ('⌘O open session') name its command-registry row (a key: the
+ *   row's item; a range: the submenu every key of it sits in); and README and PRODUCT.md call the
+ *   Keyboard tab's second editor by the name its own heading gives it.
  * - AC2 (re-pointed by US-01M6Q16Q, D0237): README's "Scientific Studios" list names the studio
  *   registry's 11 studios, in rail order, by registry name, and names its 2 document panels apart;
  *   PRODUCT.md counts 11 studios and 2 panels and names the same. The mounted App's tab strip and
@@ -19,6 +23,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { viewerTabLabel, type ViewerTab } from '../core/documentViews';
 import { DOCUMENT_PANELS, STUDIOS, studioForTab } from '../core/studioRegistry';
+import { COMMAND_BY_ID, COMMANDS, SECOND_KEYS, formatCommandShortcut } from '../core/commandRegistry';
 import type { SequenceDocument } from '../types/bio';
 import type { GenomicsSubTabId } from '../core/analysisContext';
 import { macHost, mountApp, type AppHarness, type MountOptions } from './appHarness';
@@ -87,20 +92,90 @@ function shortcutTableMismatches(md: string, mac: readonly TabRow[], linux: read
   ]);
 }
 
-/** Every shortcut label PRODUCT.md names: a ⌘/⌥/⇧/⌃ chord, a Ctrl+ chord or a bare function key. */
+/** One shortcut key, as PRODUCT.md writes it: a ⌘/⌥/⇧/⌃ chord, a Ctrl+ chord or a bare function key. */
+const KEY = String.raw`[⌃⌥⇧⌘]+(?:F\d{1,2}|\S)|\bCtrl\+(?:(?:Alt|Shift)\+)*(?:F\d{1,2}|\S)|\bF\d{1,2}\b`;
+/** A key or a 'first–last' range of keys, then the words PRODUCT.md writes beside it, if any. */
+const CLAIM = new RegExp(`(${KEY})(?:–(${KEY}))?(?: ([a-z][^,.;:()\n⌃⌥⇧⌘]*))?`, 'g');
+
+/** Every key of a 'first–last' range ('⌘1–⌘9' is ⌘1, ⌘2, … ⌘9). Throws when the two ends are not one run of keys. */
+function expandRange(first: string, last: string): string[] {
+  const [head, lastHead] = [first.slice(0, -1), last.slice(0, -1)];
+  const [from, to] = [first.charCodeAt(first.length - 1), last.charCodeAt(last.length - 1)];
+  if (head !== lastHead || to <= from) throw new Error(`the range ${first}–${last} is not one run of keys`);
+  return Array.from({ length: to - from + 1 }, (_, i) => head + String.fromCharCode(from + i));
+}
+
+/** A shortcut PRODUCT.md names: its text, every key it covers and the words beside it (null when it has none). */
+interface ShortcutClaim { text: string; keys: string[]; description: string | null }
+
+/** Every shortcut PRODUCT.md names, with a range expanded to each of its keys. */
+function productShortcutClaims(md: string): ShortcutClaim[] {
+  return [...md.matchAll(CLAIM)].map((m) => ({
+    text: words(m[0]),
+    keys: m[2] ? expandRange(m[1], m[2]) : [m[1]],
+    description: m[3] ? words(m[3]) : null,
+  }));
+}
+
+/** Every shortcut label PRODUCT.md names, each key of a range on its own. */
 function productShortcuts(md: string): string[] {
-  const found = md.match(/[⌃⌥⇧⌘]+(?:F\d{1,2}|\S)|\bCtrl\+(?:(?:Alt|Shift)\+)*(?:F\d{1,2}|\S)|\bF\d{1,2}\b/g) ?? [];
+  const found = productShortcutClaims(md).flatMap((c) => c.keys);
   if (found.length === 0) throw new Error('PRODUCT.md names no shortcut');
   return found;
 }
 
-/** Each PRODUCT.md shortcut that is not the label of a Keyboard-tab row (a ⌘ form on macOS, any other on Linux). */
+/** The Keyboard-tab rows that show `key` (a ⌘ form on macOS, any other on Linux). */
+const rowsShowing = (key: string, mac: readonly TabRow[], linux: readonly TabRow[]) =>
+  (/[⌃⌥⇧⌘]/.test(key) ? mac : linux).filter(([, label]) => label === key);
+
+/** Each PRODUCT.md shortcut that is not the label of a Keyboard-tab row. */
 function productShortcutMismatches(md: string, mac: readonly TabRow[], linux: readonly TabRow[]): string[] {
-  return productShortcuts(md).filter((s) => !(/[⌃⌥⇧⌘]/.test(s) ? mac : linux).some(([, label]) => label === s));
+  return productShortcuts(md).filter((s) => rowsShowing(s, mac, linux).length === 0);
 }
 
-/** Opens Preferences by its own command, chooses the Keyboard tab and reads its rows as [path, label]. */
-async function keyboardTabRows(app: AppHarness): Promise<TabRow[]> {
+const wordsOf = (s: string): string[] => s.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+
+/**
+ * The command registry's keys on a host as [menu path > item, label]: each command's shortcut and
+ * each second key, under the path of the command it runs (the menubar's own source, D0017 (3)).
+ */
+function registryRows(os: 'macos' | 'linux'): TabRow[] {
+  const row = (id: string, key: string): TabRow => {
+    const c = COMMAND_BY_ID.get(id);
+    if (!c) throw new Error(`the command registry has no command "${id}"`);
+    return [[...c.path, c.label].join(' > '), formatCommandShortcut(key, os)!];
+  };
+  return [
+    ...COMMANDS.flatMap((c) => (c.shortcut ? [row(c.id, c.shortcut)] : [])),
+    ...SECOND_KEYS.map((k) => row(k.commandId, k.shortcut)),
+  ];
+}
+
+/**
+ * Each described PRODUCT.md shortcut whose words do not name its registry row (registryRows): a key's words hold
+ * every word of the item its row runs ('⌘O open session' and File > Open Session), a range's hold
+ * every word of the submenu each of its keys' rows sits in ('⌥⌘1–⌥⌘3 switch the map layout' and
+ * View > Map Layout). A key no row shows is a mismatch. Throws when PRODUCT.md describes no shortcut.
+ */
+function productDescriptionMismatches(md: string, mac: readonly TabRow[], linux: readonly TabRow[]): string[] {
+  const described = productShortcutClaims(md).filter((c) => c.description !== null);
+  if (described.length === 0) throw new Error('PRODUCT.md describes no shortcut');
+  return described.filter((c) => {
+    const said = new Set(wordsOf(c.description!));
+    const named = (row: TabRow) => {
+      const segments = row[0].split(' > ');
+      const name = segments[segments.length - (c.keys.length > 1 ? 2 : 1)];
+      return name !== undefined && wordsOf(name).every((w) => said.has(w));
+    };
+    return !c.keys.every((k) => rowsShowing(k, mac, linux).some(named));
+  }).map((c) => c.text);
+}
+
+/** What the Keyboard tab shows: its shortcut rows as [path, label], and the heading of its options-window editor. */
+interface KeyboardTab { rows: TabRow[]; editor: string }
+
+/** Opens Preferences by its own command, chooses the Keyboard tab and reads its rows and its editor's heading. */
+async function readKeyboardTab(app: AppHarness): Promise<KeyboardTab> {
   await app.menu('app:preferences');
   await app.click(app.one('#prefs-tab-keyboard', 'Preferences Keyboard tab'));
   const rows = app.all('tr.mbc-menu-shortcut-row').map((r): TabRow => {
@@ -108,24 +183,28 @@ async function keyboardTabRows(app: AppHarness): Promise<TabRow[]> {
     return [words(cells[0].textContent), words(cells[1].textContent)];
   });
   if (rows.length === 0) throw new Error('the Keyboard tab shows no row');
-  return rows;
+  const legend = app.one('table.mbc-op-shortcuts', 'Keyboard tab options-window editor').closest('fieldset')?.querySelector('legend');
+  if (!legend) throw new Error('the Keyboard tab\'s options-window editor has no heading');
+  return { rows, editor: words(legend.textContent ?? '') };
 }
 
-const tabRows = new Map<string, Promise<TabRow[]>>();
-/** The Keyboard tab's rows on a host, read once per host from a freshly mounted App. */
-function rowsOn(host: 'macos' | 'linux'): Promise<TabRow[]> {
-  if (!tabRows.has(host)) {
+const keyboardTabs = new Map<string, Promise<KeyboardTab>>();
+/** The Keyboard tab on a host, read once per host from a freshly mounted App. */
+function tabOn(host: 'macos' | 'linux'): Promise<KeyboardTab> {
+  if (!keyboardTabs.has(host)) {
     const opts: MountOptions = host === 'macos' ? macHost() : {};
-    tabRows.set(host, mountApp(opts).then(async (app) => {
+    keyboardTabs.set(host, mountApp(opts).then(async (app) => {
       try {
-        return await keyboardTabRows(app);
+        return await readKeyboardTab(app);
       } finally {
         app.unmount();
       }
     }));
   }
-  return tabRows.get(host)!;
+  return keyboardTabs.get(host)!;
 }
+/** The Keyboard tab's rows on a host. */
+const rowsOn = (host: 'macos' | 'linux'): Promise<TabRow[]> => tabOn(host).then((t) => t.rows);
 
 /** A label no Keyboard-tab row shows (⌃ with ⌘ is never formatted; the Linux form adds a modifier no row has). */
 const UNUSED_MAC = '⌃⌥⇧⌘J';
@@ -185,6 +264,70 @@ describe('US-01M6P23W AC1: README\'s Keyboard Shortcuts and PRODUCT.md\'s shortc
     expect(() => readmeShortcutRows('# MolBioCraft\n')).toThrow(/no "## Keyboard Shortcuts" heading/);
     expect(() => readmeShortcutRows('## Keyboard Shortcuts\n\nNone.\n')).toThrow(/has no row/);
     expect(() => productShortcuts('No keys here.')).toThrow(/names no shortcut/);
+  });
+});
+
+describe('BG-01M7V0BV PRODUCT.md\'s shortcut words and ranges, and the options-window editor\'s name', () => {
+  it('BG-01M7V0BV a range is read key by key: every key of ⌘1–⌘9 and ⌥⌘1–⌥⌘3 is a Keyboard-tab row', async () => {
+    const mac = await rowsOn('macos');
+    const linux = await rowsOn('linux');
+    expect(productShortcuts('⌘1–⌘9 and ⌥⌘1–⌥⌘3')).toEqual(
+      ['⌘1', '⌘2', '⌘3', '⌘4', '⌘5', '⌘6', '⌘7', '⌘8', '⌘9', '⌥⌘1', '⌥⌘2', '⌥⌘3']);
+    expect(productShortcuts('⌘1–⌘9, ⌥⌘1–⌥⌘3 switch the map layout')).toHaveLength(12);
+    expect(productShortcuts('Ctrl+1–Ctrl+3')).toEqual(['Ctrl+1', 'Ctrl+2', 'Ctrl+3']);
+    for (const k of ['⌘5', '⌥⌘2']) expect(productShortcuts(PRODUCT)).toContain(k);
+    // A middle key the app does not bind fails each check, though both ends are rows.
+    const [regMac, regLinux] = [registryRows('macos'), registryRows('linux')];
+    for (const k of ['⌘5', '⌥⌘2']) {
+      expect(productShortcutMismatches(PRODUCT, mac.filter((r) => r[1] !== k), linux)).toContain(k);
+      expect(productDescriptionMismatches(PRODUCT, regMac.filter((r) => r[1] !== k), regLinux).length).toBe(1);
+    }
+    // "the first nine studios in rail order": ⌘n runs the registry's n-th studio.
+    STUDIOS.slice(0, 9).forEach((s, i) =>
+      expect(mac.filter((r) => r[1] === `⌘${i + 1}`).map((r) => r[0])).toEqual([`View > Studios > ${s.name}`]));
+    expect(() => productShortcuts('⌘9–⌘1')).toThrow(/not one run of keys/);
+    expect(() => productShortcuts('⌘1–⌥⌘3')).toThrow(/not one run of keys/);
+  });
+
+  it('BG-01M7V0BV every shortcut PRODUCT.md describes is described by its command-registry row\'s item or submenu', () => {
+    const [mac, linux] = [registryRows('macos'), registryRows('linux')];
+    expect(mac.find((r) => r[1] === '⇧⌘E')?.[0]).toBe('File > Export Sequences > Export GenBank');
+    expect(linux.find((r) => r[1] === 'Ctrl+Shift+E')?.[0]).toBe('File > Export Sequences > Export GenBank');
+    const described = productShortcutClaims(PRODUCT).filter((c) => c.description !== null);
+    expect(described.map((c) => c.text)).toEqual(expect.arrayContaining(
+      ['⌘1–⌘9 open the first nine studios in rail order', '⌥⌘1–⌥⌘3 switch the map layout', '⌘O open session', '⇧⌘E export GenBank']));
+    expect(described.length).toBeGreaterThanOrEqual(7);
+    expect(productDescriptionMismatches(PRODUCT, mac, linux)).toEqual([]);
+  });
+
+  it('BG-01M7V0BV the M4 mutant and other wrong words beside a shortcut each fail the check', async () => {
+    const [mac, linux] = [registryRows('macos'), registryRows('linux')];
+    const swap = (from: string, to: string) => {
+      expect(PRODUCT).toContain(from);
+      return PRODUCT.replace(from, to);
+    };
+    // M4: the key is a real row, its words are not.
+    expect(productShortcutMismatches(swap('⌘O open session', '⌘O print the map'), await rowsOn('macos'), await rowsOn('linux'))).toEqual([]);
+    expect(productDescriptionMismatches(swap('⌘O open session', '⌘O print the map'), mac, linux)).toEqual(['⌘O print the map']);
+    expect(productDescriptionMismatches(swap('⌘S save session', '⌘S open session'), mac, linux)).toEqual(['⌘S open session']);
+    expect(productDescriptionMismatches(swap('⌥⌘1–⌥⌘3 switch the map layout', '⌥⌘1–⌥⌘3 switch the studio'), mac, linux))
+      .toEqual(['⌥⌘1–⌥⌘3 switch the studio']);
+    // A range is described by the submenu its keys share, not by one item's words.
+    expect(productDescriptionMismatches(swap('⌘1–⌘9 open the first nine studios', '⌘1–⌘9 open the first nine layouts'), mac, linux))
+      .toEqual(['⌘1–⌘9 open the first nine layouts in rail order']);
+    // A range spanning two submenus has no one submenu to name.
+    expect(productDescriptionMismatches(`${PRODUCT}\nKeys: ⌘8–⌘K studios.`, mac, linux)).toEqual(['⌘8–⌘K studios']);
+    expect(() => productDescriptionMismatches('Keys: ⌘K, ⌘O.', mac, linux)).toThrow(/describes no shortcut/);
+  });
+
+  it('BG-01M7V0BV README and PRODUCT.md call the options-window editor by the Keyboard tab\'s own heading', async () => {
+    const { editor } = await tabOn('macos');
+    const name = editor.split(' & ')[0];
+    expect(name).toMatch(/-window shortcuts$/);
+    for (const [doc, md] of [['README.md', README], ['PRODUCT.md', PRODUCT]] as const) {
+      expect(md.toLowerCase(), doc).toContain(name.toLowerCase());
+      expect(md.match(/operations?[- ]windows?/gi), doc).toBeNull();
+    }
   });
 });
 

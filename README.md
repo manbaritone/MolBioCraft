@@ -120,7 +120,7 @@ Open **Preferences** with `⌘,` / `Ctrl+,`. Every setting is saved, applied str
 - **Files & Tabs** — default folder for opening and saving files, default **Author** written into new files, tab restore, history depth and file-extension display.
 - **Export** — default export format for DNA, RNA, protein and alignments, LOCUS naming rules and feature qualifiers.
 - **DNA, RNA, Proteins, Agarose Gels, Traces & Alignment, Enzymes, Primers** — display and analysis defaults for each studio.
-- **Keyboard** — lists every menu shortcut by its menu path (menu shortcuts are fixed), and sets the shortcuts of operation windows.
+- **Keyboard** — lists every menu shortcut by its menu path (menu shortcuts are fixed), and sets the options-window shortcuts.
 
 
 ## Downloads &amp; Installation
@@ -200,7 +200,7 @@ The search box at the top of the window opens the command palette (`⌘K` / `Ctr
 | **MolBioCraft > Settings > Preferences** | `⌘,` | `Ctrl+,` |
 | **Help > Guides > Show or Hide Help Panel** | `F1` | `F1` |
 
-Each row is a row of **Preferences › Keyboard**, which lists the app's shortcuts, each under the menu path of the item it runs. Menu shortcuts are fixed; the shortcuts of operation windows are set on the same tab.
+Each row is a row of **Preferences › Keyboard**, which lists the app's shortcuts, each under the menu path of the item it runs. Menu shortcuts are fixed; the options-window shortcuts are set on the same tab.
 
 On macOS the commands live in the native menu bar; on Windows, Linux and the web build the same menus appear inside the window, with identical names and structure.
 
