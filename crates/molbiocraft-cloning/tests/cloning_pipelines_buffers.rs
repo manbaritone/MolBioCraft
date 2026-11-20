@@ -1462,7 +1462,19 @@ const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
     // and Open RNA/DNA Folding and the 5' mRNA leader fold zone target Primers & CRISPR (primers-pcr),
     // in place of History, which no longer hosts them (the pipelines run on DNA constructs); no
     // verdict, number or label moved.
-    ("multihost-protein-mrna", "15125162d055d9d5"),
+    // BG-01M7Q8GK then moved it, and only it, from 15125162d055d9d5: a 5' leader holding N is no
+    // longer folded, since N cannot pair. Three of its 79 reports moved (the other 76, and the 23
+    // records multihost refuses as too short, read exactly as before, and no other pipeline reads a
+    // 5' leader fold):
+    // - Pairwise protein (24 of its 60 leader bases N, at 1-3, 7-9, 25-30, 40-48, 52-54): step 3
+    //   PASS -> WARN and the verdict PASS 100 -> WARN 91, the bug's own case.
+    // - Receptor Kinase (N at 22-24) and Three Kingdoms (N at 49-51): step 3 was already a WARN on a
+    //   strong hairpin (dG -19.4 and -15.0 kcal/mol), so each verdict stays WARN 91.
+    // On all three the MFE and paired-base metrics read "not assessed (the leader holds N)", the
+    // step names the N positions in its summary, its warnings, its new "Unpairable Leader Bases (N)"
+    // metric and its Markdown export, its dot-bracket artifact is gone, its recommendation asks for
+    // the N bases to be resolved, and the leader zone's label drops its dG.
+    ("multihost-protein-mrna", "f7ec9de950845f9d"),
     ("viral-twist-onboarding", "b355cabe03450c44"),
 ];
 
@@ -1545,4 +1557,119 @@ fn pipeline_primer_steps_name_why_there_is_no_pair() {
         assert_eq!(step.artifacts.len(), 2, "{pipeline}: the two primers");
         assert!(step.artifacts.iter().all(|a| !a.sequence.is_empty() && a.sequence.bytes().all(|b| b"ACGT".contains(&b))));
     }
+}
+
+/// BG-01M7Q8GK: N cannot pair, so the fold of a 5' leader holding N is unknown, not weak. The
+/// leader-fold step reports it as not assessable, names the N positions, prints no MFE, paired-base
+/// figure or dot-bracket, and awards none of its points: neither the step nor the report's verdict
+/// reads as a PASS. The bug was found on the Pairwise protein consensus (110 X, back-translated as
+/// NNN), whose leader fold went from ΔG -22.4 to -4.2 kcal/mol and whose verdict went WARN 91 ->
+/// PASS 100 — a weaker fold reported for a leader that cannot be folded at all.
+#[test]
+fn leader_fold_with_n_is_not_assessed() {
+    let fold = |doc: &SequenceDocument| -> (BioPipelineExecutionReport, BioPipelineStepResult) {
+        let report =
+            execute_bio_pipeline_rust(doc, "multihost-protein-mrna", "macos", "2026-11-15T00:00:00Z")
+                .expect("multihost-protein-mrna runs on this record");
+        let step = report
+            .steps
+            .iter()
+            .find(|s| s.id == "mrna-5prime-folding")
+            .expect("the 5' leader fold step")
+            .clone();
+        (report, step)
+    };
+    let not_assessed = |label: &str,
+                        report: &BioPipelineExecutionReport,
+                        step: &BioPipelineStepResult,
+                        positions: &str| {
+        assert_ne!(step.status, "PASS", "{label}: a fold over N is unknown, not a pass");
+        assert_ne!(
+            report.overall_status, "PASS",
+            "{label}: the verdict counts the unassessed check as a pass"
+        );
+        assert!(
+            report.readiness_score < 100,
+            "{label}: readiness {} awards the unassessed check its points",
+            report.readiness_score
+        );
+        assert!(
+            step.finding_summary.contains("could not be assessed"),
+            "{label}: {}",
+            step.finding_summary
+        );
+        assert!(
+            step.finding_summary.contains(positions),
+            "{label}: {} does not name N at {positions}",
+            step.finding_summary
+        );
+        assert!(
+            step.warnings.iter().any(|w| w.contains("could not be assessed") && w.contains(positions)),
+            "{label}: {:?}",
+            step.warnings
+        );
+        // No ΔG, no paired-base percentage and no dot-bracket: each would be a fold claim over
+        // bases that cannot pair.
+        assert_eq!(
+            step_metric(step, "5' Leader MFE (ΔG)"),
+            "not assessed (the leader holds N)",
+            "{label}"
+        );
+        assert!(!step.finding_summary.contains("kcal/mol"), "{label}: {}", step.finding_summary);
+        assert!(
+            step_metric(step, "Unpairable Leader Bases (N)").contains(positions),
+            "{label}: {:?}",
+            step.metrics
+        );
+        assert!(
+            !step.artifacts.iter().any(|a| a.label == "Leader_DotBracket_Fold"),
+            "{label}: a dot-bracket over N"
+        );
+        let zone = report
+            .visual_zones
+            .iter()
+            .find(|z| z.id == "mrna-5prime-fold")
+            .unwrap_or_else(|| panic!("{label}: no 5' leader zone"));
+        assert!(
+            !zone.label.contains("kcal/mol") && zone.status != "PASS",
+            "{label}: {zone:?}"
+        );
+    };
+
+    // The record the bug was filed on: its 60-nt leader holds eight NNN codons.
+    let pairwise = sample_doc("Pairwise protein");
+    let (report, step) = fold(&pairwise);
+    not_assessed("Pairwise protein (110 X)", &report, &step, "1-3, 7-9, 25-30, 40-48, 52-54");
+
+    // One N, 11 bases in, is still one base that cannot pair: the check is not assessable, and the
+    // leader's other 59 definite bases do not make it one (a first-codon-only reading would miss it).
+    let clean = seeded_bases(300, 7, b"ACGT");
+    let mut with_n: Vec<u8> = clean.clone().into_bytes();
+    with_n[10] = b'N';
+    let one_n = pipeline_doc("one-n-leader", &String::from_utf8(with_n).unwrap(), Topology::Linear, Vec::new());
+    let (n_report, n_step) = fold(&one_n);
+    not_assessed("one N at position 11", &n_report, &n_step, "11");
+
+    // The same leader with A in place of that N is assessed as before: a ΔG, a paired-base figure,
+    // a dot-bracket, and no "could not be assessed" sentence anywhere.
+    let control = pipeline_doc("definite-leader", &clean, Topology::Linear, Vec::new());
+    let (c_report, c_step) = fold(&control);
+    assert!(step_metric(&c_step, "5' Leader MFE (ΔG)").ends_with("kcal/mol"), "{c_step:?}");
+    assert!(c_step.finding_summary.contains("kcal/mol"), "{}", c_step.finding_summary);
+    assert!(c_step.artifacts.iter().any(|a| a.label == "Leader_DotBracket_Fold"), "{c_step:?}");
+    assert!(!c_step.finding_summary.contains("could not be assessed"), "{}", c_step.finding_summary);
+    assert!(c_step.warnings.is_empty(), "{:?}", c_step.warnings);
+    assert!(
+        !c_step.metrics.iter().any(|m| m.label == "Unpairable Leader Bases (N)"),
+        "a leader of definite bases carries no N row: {:?}",
+        c_step.metrics
+    );
+    // The points the unassessed check does not award are the points the assessed one keeps.
+    assert_eq!(
+        (c_step.status.as_str(), c_report.readiness_score - n_report.readiness_score),
+        ("PASS", 9),
+        "the N leader keeps the points of a check that could not run: {} vs {}",
+        c_report.readiness_score,
+        n_report.readiness_score
+    );
 }

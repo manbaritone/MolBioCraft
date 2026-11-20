@@ -527,6 +527,28 @@ fn no_primer_pair_step(step_number: usize, id: &str, title: &str, rationale: &st
     }
 }
 
+/// 1-based positions written as the runs they form: `[1, 2, 3, 7, 8, 9]` reads `1-3, 7-9`, and a
+/// lone position reads `11`. A leader naming two dozen N positions one by one is unreadable.
+fn fmt_position_runs(positions: &[usize]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < positions.len() {
+        let start = positions[i];
+        let mut end = start;
+        while i + 1 < positions.len() && positions[i + 1] == end + 1 {
+            i += 1;
+            end = positions[i];
+        }
+        parts.push(if start == end {
+            start.to_string()
+        } else {
+            format!("{start}-{end}")
+        });
+        i += 1;
+    }
+    parts.join(", ")
+}
+
 fn derive_overall_status_and_score(steps: &[BioPipelineStepResult]) -> (String, i32) {
     let mut has_action = false;
     let mut warn_count = 0i32;
@@ -1797,20 +1819,50 @@ pub fn execute_bio_pipeline_rust(
         let fold5 = predict_secondary_structure(leader_window, "RNA");
         let has_kozak = leader_src.contains("GCCACCATGG") || leader_src.contains("GCCGCCATGG");
         let has_rbs = leader_src.contains("AGGAGG");
-        let strong_hairpin = fold5.minimum_free_energy_kcal_mol < -14.0;
-        let s3_status = if strong_hairpin { "WARN" } else { "PASS" };
+        // N cannot pair, so a leader holding one has an unknown fold rather than a weak one
+        // (BG-01M7Q8GK). An X codon-optimises to NNN, so a protein consensus written with X reaches
+        // here with N bases in its leader, and the loose structure the folder returns over them
+        // (ΔG -4.2 kcal/mol on the Pairwise protein consensus, against -22.4 before its X's were
+        // written) is no evidence of an open leader. Where any leader base is N the step reports no
+        // ΔG, no paired-base figure and no dot-bracket, names the N positions, and awards none of
+        // its points: the status vocabulary a report and the studio read is PASS / WARN /
+        // ACTION_REQUIRED, so a check that could not run reports the review state, WARN, with the
+        // text saying it could not be assessed — never the PASS it has not earned, and never the
+        // ACTION_REQUIRED of a construct whose leader is known to be bad.
+        let leader_n_positions: Vec<usize> = leader_window
+            .bytes()
+            .enumerate()
+            .filter(|(_, b)| *b == b'N')
+            .map(|(i, _)| i + 1)
+            .collect();
+        let fold_assessable = leader_n_positions.is_empty();
+        let leader_n_runs = fmt_position_runs(&leader_n_positions);
+        let n_note = format!(
+            "The 5' {}-nt mRNA leader fold could not be assessed: the leader holds N at position(s) {} ({} of {} bases), and N cannot pair, so its fold is unknown rather than weak and this check awards none of its points.",
+            leader_window.len(),
+            leader_n_runs,
+            leader_n_positions.len(),
+            leader_window.len()
+        );
+        let not_assessed_value = "not assessed (the leader holds N)";
+        let strong_hairpin = fold_assessable && fold5.minimum_free_energy_kcal_mol < -14.0;
+        let s3_status = if !fold_assessable || strong_hairpin { "WARN" } else { "PASS" };
 
         visual_zones.push(PipelineVisualZone {
             id: "mrna-5prime-fold".into(),
             track: "Regulatory & Backbone".into(),
-            label: format!(
-                "5' mRNA Leader (ΔG = {:.1} kcal/mol)",
-                fold5.minimum_free_energy_kcal_mol
-            ),
+            label: if fold_assessable {
+                format!(
+                    "5' mRNA Leader (ΔG = {:.1} kcal/mol)",
+                    fold5.minimum_free_energy_kcal_mol
+                )
+            } else {
+                "5' mRNA Leader (ΔG not assessed: the leader holds N)".to_string()
+            },
             start: 1,
             end: clean_seq.len().min(60),
             strand: None,
-            color: if strong_hairpin { "#d97706" } else { "#0d9488" }.into(),
+            color: if s3_status == "WARN" { "#d97706" } else { "#0d9488" }.into(),
             status: s3_status.into(),
             target_studio: "primers-pcr".into(),
         });
@@ -1821,48 +1873,92 @@ pub fn execute_bio_pipeline_rust(
             title: "5' Translation Initiation Motif & mRNA Ribosome Accessibility (MFE ΔG)".into(),
             status: s3_status.into(),
             biological_rationale: "Tight 5' mRNA secondary hairpins (ΔG < -14 kcal/mol) around the Shine-Dalgarno RBS or start AUG sequester the 30S/40S ribosomal subunit and suppress protein expression up to 50-fold.".into(),
-            finding_summary: format!(
-                "5' 60-nt mRNA leader folds with MFE ΔG = {:.1} kcal/mol ({} stem-loop(s), {:.1}% paired); Kozak={}, RBS={}.",
-                fold5.minimum_free_energy_kcal_mol,
-                fold5.stem_loops.len(),
-                fold5.paired_pct,
-                if has_kozak { "Yes" } else { "No" },
-                if has_rbs { "Yes" } else { "No" }
-            ),
-            metrics: vec![
-                PipelineMetricKV {
-                    label: "5' Leader MFE (ΔG)".into(),
-                    value: format!("{:.1} kcal/mol", fold5.minimum_free_energy_kcal_mol),
-                    tone: Some(if strong_hairpin { "warn" } else { "good" }.into()),
-                },
-                PipelineMetricKV {
-                    label: "Paired Bases / Stem-Loops".into(),
-                    value: format!("{:.1}% ({} stem-loops)", fold5.paired_pct, fold5.stem_loops.len()),
-                    tone: None,
-                },
-                PipelineMetricKV {
-                    label: "Kozak / Shine-Dalgarno Detected".into(),
-                    value: format!(
-                        "Kozak: {} | SD RBS: {}",
-                        if has_kozak { "✓" } else { "—" },
-                        if has_rbs { "✓" } else { "—" }
-                    ),
-                    tone: None,
-                },
-            ],
-            artifacts: vec![PipelineSequenceArtifact {
-                label: "Leader_DotBracket_Fold".into(),
-                sequence: fold5.dot_bracket,
-                note: "60-nt 5' RNA dot-bracket structure".into(),
-            }],
-            recommendations: if strong_hairpin {
+            finding_summary: if fold_assessable {
+                format!(
+                    "5' 60-nt mRNA leader folds with MFE ΔG = {:.1} kcal/mol ({} stem-loop(s), {:.1}% paired); Kozak={}, RBS={}.",
+                    fold5.minimum_free_energy_kcal_mol,
+                    fold5.stem_loops.len(),
+                    fold5.paired_pct,
+                    if has_kozak { "Yes" } else { "No" },
+                    if has_rbs { "Yes" } else { "No" }
+                )
+            } else {
+                format!(
+                    "{} Kozak={}, RBS={}.",
+                    n_note,
+                    if has_kozak { "Yes" } else { "No" },
+                    if has_rbs { "Yes" } else { "No" }
+                )
+            },
+            metrics: {
+                let mut metrics = vec![
+                    PipelineMetricKV {
+                        label: "5' Leader MFE (ΔG)".into(),
+                        value: if fold_assessable {
+                            format!("{:.1} kcal/mol", fold5.minimum_free_energy_kcal_mol)
+                        } else {
+                            not_assessed_value.to_string()
+                        },
+                        tone: if fold_assessable {
+                            Some(if strong_hairpin { "warn" } else { "good" }.into())
+                        } else {
+                            None
+                        },
+                    },
+                    PipelineMetricKV {
+                        label: "Paired Bases / Stem-Loops".into(),
+                        value: if fold_assessable {
+                            format!("{:.1}% ({} stem-loops)", fold5.paired_pct, fold5.stem_loops.len())
+                        } else {
+                            not_assessed_value.to_string()
+                        },
+                        tone: None,
+                    },
+                    PipelineMetricKV {
+                        label: "Kozak / Shine-Dalgarno Detected".into(),
+                        value: format!(
+                            "Kozak: {} | SD RBS: {}",
+                            if has_kozak { "✓" } else { "—" },
+                            if has_rbs { "✓" } else { "—" }
+                        ),
+                        tone: None,
+                    },
+                ];
+                // Only a leader that holds N carries this row: a fold read over definite bases
+                // reports its ΔG, and a row saying "none" on every other record would say nothing.
+                if !fold_assessable {
+                    metrics.push(PipelineMetricKV {
+                        label: "Unpairable Leader Bases (N)".into(),
+                        value: format!(
+                            "{} of {} bases are N (position(s) {})",
+                            leader_n_positions.len(),
+                            leader_window.len(),
+                            leader_n_runs
+                        ),
+                        tone: Some("warn".into()),
+                    });
+                }
+                metrics
+            },
+            artifacts: if fold_assessable {
+                vec![PipelineSequenceArtifact {
+                    label: "Leader_DotBracket_Fold".into(),
+                    sequence: fold5.dot_bracket,
+                    note: "60-nt 5' RNA dot-bracket structure".into(),
+                }]
+            } else {
+                Vec::new()
+            },
+            recommendations: if !fold_assessable {
+                vec!["Resolve the N bases in the first 60 nt — sequence them, or back-translate from definite residues — and re-run this check: no 5' fold can be read while the leader holds N.".into()]
+            } else if strong_hairpin {
                 vec!["Introduce AT-rich synonymous wobble bases in codons 2–8 to relax 5' mRNA hairpin stability above -10 kcal/mol.".into()]
             } else {
                 vec!["5' mRNA leader is thermodynamically open for efficient ribosomal scanning.".into()]
             },
             target_studio: "primers-pcr".into(),
             target_studio_label: "Open RNA/DNA Folding".into(),
-            warnings: Vec::new(),
+            warnings: if fold_assessable { Vec::new() } else { vec![n_note.clone()] },
             highlight_range: Some(PipelineHighlightRange {
                 start: 1,
                 end: clean_seq.len().min(60),
