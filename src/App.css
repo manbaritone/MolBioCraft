@@ -54,7 +54,7 @@
 
 @font-face {
   font-family: 'Google Sans Code Fallback';
-  src: local('Menlo'), local('Consolas');
+  src: local('Menlo Regular'), local('Menlo-Regular'), local('Menlo'), local('Consolas');
   size-adjust: 99.66%;
   ascent-override: 96.93%;
   descent-override: 28.70%;
@@ -371,6 +371,9 @@
   padding: 0;
 }
 
+/* from-font computes to Google Sans's aspect and is inherited, so every rule that sets the mono
+ * face turns it off: Google Sans Code would otherwise be rescaled per weight and stop advancing
+ * 0.6 em (BG-01M6VZNE). */
 body {
   font-family: var(--font-sans);
   font-size-adjust: from-font;
@@ -1408,6 +1411,7 @@ fieldset > legend,
 .mbc-record-bar-length {
   flex-shrink: 0;
   font-family: var(--font-mono);
+  font-size-adjust: none;
 }
 
 .mbc-record-bar-topology {
@@ -2977,6 +2981,7 @@ fieldset > legend,
   min-width: 0;
   font: inherit;
   font-family: var(--font-mono);
+  font-size-adjust: none;
 }
 
 .circular-rotation-refusal {
@@ -3319,6 +3324,7 @@ fieldset > legend,
   flex: 1;
   padding: 8px 10px;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   background: var(--mbc-bg-canvas);
   user-select: text;
   min-height: 0;
@@ -3487,6 +3493,7 @@ fieldset > legend,
 
 .mbc-flatfile-pre {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-label);
   line-height: 1.45;
   background: var(--mbc-bg-panel);
@@ -3728,6 +3735,7 @@ fieldset > legend,
 
 .junction-card code {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   color: var(--mbc-blue);
   font-weight: 700;
 }
@@ -3868,6 +3876,7 @@ fieldset > legend,
 
 .primer-seq-display {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-body);
   font-weight: 600;
   overflow-wrap: anywhere;
@@ -3918,6 +3927,7 @@ fieldset > legend,
 .mono-cell,
 .mono-input {
   font-family: var(--font-mono);
+  font-size-adjust: none;
 }
 
 .btn-secondary {
@@ -3981,6 +3991,7 @@ fieldset > legend,
   padding: 8px;
   border-radius: var(--mbc-radius-sm);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-label);
 }
 
@@ -4077,6 +4088,7 @@ fieldset > legend,
 
 .newick-box code {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   color: var(--mbc-teal);
   word-break: break-all;
 }
@@ -4388,6 +4400,7 @@ fieldset > legend,
   border-radius: var(--mbc-radius-sm);
   padding: 8px;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-label);
 }
 
@@ -4403,6 +4416,7 @@ fieldset > legend,
   max-height: 160px;
   overflow-y: auto;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
 }
 
@@ -5210,6 +5224,7 @@ hr.desktop-menu-sep,
 
 .mbc-home-sidebar-desc code {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   color: var(--mbc-blue);
 }
@@ -5989,6 +6004,7 @@ hr.desktop-menu-sep,
 .mbc-mini-tt-coords {
   font-size: var(--font-size-caption);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   color: var(--mbc-text-secondary);
 }
 
@@ -6409,6 +6425,7 @@ dialog.prefs-modal-window::backdrop {
   background: var(--mbc-bg-main, var(--mbc-bg-canvas));
   padding: 8px 6px;
   font-family: var(--font-mono, 'Google Sans Code', monospace);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   line-height: 1.48;
   color: var(--mbc-text-muted, #64748b);
@@ -6430,6 +6447,7 @@ dialog.prefs-modal-window::backdrop {
   resize: vertical;
   padding: 8px 10px;
   font-family: var(--font-mono, 'Google Sans Code', monospace);
+  font-size-adjust: none;
   font-size: var(--font-size-body);
   line-height: 1.48;
   color: var(--mbc-text-main);
@@ -7328,6 +7346,7 @@ dialog.prefs-modal-window:focus-visible,
   background: #f8fafd;
   color: var(--mbc-text-secondary);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-body);
   font-weight: 700;
   line-height: 1;
@@ -7355,6 +7374,7 @@ dialog.prefs-modal-window:focus-visible,
 
 .prefs-square-codon {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-body);
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -7560,6 +7580,7 @@ dialog.prefs-modal-window:focus-visible,
   display: inline-block;
   width: 24px;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   opacity: 0.78;
   flex-shrink: 0;
@@ -8080,6 +8101,7 @@ dialog.prefs-modal-window:focus-visible,
 
 .mbc-elapsed-tag {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   padding: 2px 7px;
   border-radius: var(--mbc-radius-pill);
@@ -8274,6 +8296,7 @@ dialog.prefs-modal-window:focus-visible,
 .mbc-metric-val {
   font-size: var(--font-size-label);
   font-family: var(--font-mono);
+  font-size-adjust: none;
 }
 
 .mbc-artifacts-block,
@@ -8330,6 +8353,7 @@ dialog.prefs-modal-window:focus-visible,
 
 .mbc-artifact-seq {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   color: #174ea6;
   word-break: break-all;
@@ -8546,6 +8570,7 @@ dialog.prefs-modal-window:focus-visible,
 
 .mbc-os-kv-list code {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   color: #174ea6;
   text-align: right;
@@ -8560,6 +8585,7 @@ dialog.prefs-modal-window:focus-visible,
   accent-color: var(--mbc-accent-dark);
   scrollbar-color: var(--mbc-scrollbar-thumb-dark) var(--mbc-scrollbar-track-dark);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   background: #131314;
   color: #e3e3e3;
@@ -11361,6 +11387,7 @@ progress.mbc-splash-progress::-moz-progress-bar {
   font-size: var(--font-size-caption);
   color: var(--mbc-text-muted);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-variant-numeric: tabular-nums;
 }
 
@@ -11374,6 +11401,7 @@ progress.mbc-splash-progress::-moz-progress-bar {
   position: relative;
   block-size: 18px;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   color: var(--mbc-text-muted);
   font-variant-numeric: tabular-nums;
@@ -11401,6 +11429,7 @@ progress.mbc-splash-progress::-moz-progress-bar {
   display: inline-flex;
   align-items: center;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   line-height: 1;
 }
@@ -11553,6 +11582,7 @@ progress.mbc-splash-progress::-moz-progress-bar {
 
 .mbc-aln-dist-val-cell {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   text-align: right;
 }
 
@@ -11565,6 +11595,7 @@ progress.mbc-splash-progress::-moz-progress-bar {
   border: 1px solid var(--mbc-border);
   border-radius: var(--mbc-radius-sm);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   line-height: 1.45;
 }
@@ -12644,6 +12675,7 @@ table,
 .mbc-aln-dir-badge {
   flex-shrink: 0;
   font-family: var(--font-mono);
+  font-size-adjust: none;
 }
 
 .mbc-aln-inline-ann-pills {
@@ -12877,6 +12909,7 @@ table,
   border: 1px solid var(--mbc-border-light);
   border-radius: var(--mbc-radius-sm);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
 }
 
@@ -13288,6 +13321,7 @@ table,
   block-size: clamp(260px, 52vh, 620px);
   background: var(--mbc-bg-canvas);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   outline: none;
 }
 
@@ -13568,6 +13602,7 @@ table,
   align-items: center;
   gap: 4px;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   font-weight: 700;
 }
@@ -13880,6 +13915,7 @@ table,
 
 .mbc-progressive-summary-meta {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   font-weight: 500;
   color: var(--mbc-text-secondary);
@@ -13895,6 +13931,7 @@ table,
   background: rgba(21, 88, 214, 0.06);
   color: #1558d6;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-label);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
@@ -13973,6 +14010,7 @@ table,
   padding: 2px 8px;
   border-radius: var(--mbc-radius-pill);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   font-weight: 600;
   color: #137333;
@@ -14000,6 +14038,7 @@ table,
   padding: 0 7px;
   border-radius: var(--mbc-radius-xs);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   font-weight: 700;
   color: var(--mbc-text-secondary);
@@ -14011,6 +14050,7 @@ table,
   display: inline-flex;
   align-items: center;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-label);
   font-weight: 700;
   color: var(--mbc-text-muted);
@@ -14038,6 +14078,7 @@ table,
 
 .mbc-sbol-part-role {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -14051,6 +14092,7 @@ table,
 
 .mbc-sbol-part-coords {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   font-variant-numeric: tabular-nums;
   color: var(--mbc-text-secondary);
@@ -14231,6 +14273,7 @@ table,
   border: 1px solid var(--mbc-border);
   color: var(--mbc-text-main);
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -14329,6 +14372,7 @@ table,
 
 .mbc-cockpit-step-idx {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-weight: 700;
   color: var(--mbc-blue);
 }
@@ -14397,6 +14441,7 @@ table,
 
 .mbc-cockpit-aa-preview {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
 }
 
@@ -14629,6 +14674,7 @@ table,
 
 .mbc-pw-meta code {
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   color: var(--mbc-teal);
   overflow-wrap: anywhere;
@@ -14669,6 +14715,7 @@ table,
   overflow: auto;
   padding: 10px 12px;
   font-family: var(--font-mono);
+  font-size-adjust: none;
   font-size: var(--font-size-body);
 }
 
@@ -15575,6 +15622,7 @@ table,
 
 .mbc-split-aln-pre {
   font-family: var(--font-mono, monospace);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   overflow-x: auto;
   margin: 0;
@@ -15657,6 +15705,7 @@ table,
 .mbc-figure-export-ext {
   min-inline-size: 34px;
   font-family: var(--font-mono, monospace);
+  font-size-adjust: none;
   font-size: var(--font-size-caption);
   font-weight: 700;
   letter-spacing: 0.04em;

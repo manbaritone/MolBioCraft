@@ -2040,6 +2040,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
               fontWeight="600"
               style={{
                 fontFamily: 'var(--font-mono)',
+                fontSizeAdjust: 'none',
                 paintOrder: 'stroke',
                 stroke: 'var(--mbc-bg-canvas)',
                 strokeWidth: (3 * tickLabelSize) / 10,
@@ -2341,7 +2342,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
                 style={
                   c.kind === 'feature'
                     ? undefined
-                    : { fontFamily: 'var(--font-mono)', letterSpacing: '-0.015em' }
+                    : { fontFamily: 'var(--font-mono)', fontSizeAdjust: 'none', letterSpacing: '-0.015em' }
                 }
               >
                 {c.displayLabel}
@@ -2382,7 +2383,7 @@ export const CircularPlasmidMap: React.FC<CircularPlasmidMapProps> = ({
               y="36"
               fill="var(--mbc-text-secondary)"
               fontSize="11"
-              style={{ fontFamily: 'var(--font-mono)' }}
+              style={{ fontFamily: 'var(--font-mono)', fontSizeAdjust: 'none' }}
             >
               {seqLen.toLocaleString()} {unitLabel} · {doc.topology}
             </text>

@@ -482,6 +482,123 @@ const percent = (v: string | undefined): number => {
   return Number(m[1]);
 };
 
+// ─── Where the mono face is set (BG-01M6VZNE) ───
+
+interface CssRule { selector: string; line: number; decls: { prop: string; value: string }[] }
+/**
+ * Every qualified rule of App.css with its own declarations in source order, at any depth of
+ * @media / @supports / nesting, and without the @font-face blocks. Comments are blanked rather
+ * than removed, so a rule's line is its line in the file.
+ */
+function cssRules(): CssRule[] {
+  const src = APP_CSS.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, ' '));
+  const out: CssRule[] = [];
+  const stack: { prelude: string; line: number; body: string }[] = [{ prelude: '', line: 0, body: '' }];
+  let quote = '';
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    const top = stack[stack.length - 1];
+    if (quote) {
+      if (ch === quote) quote = '';
+      top.body += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      top.body += ch;
+    } else if (ch === '{') {
+      // The prelude is the body text since the last declaration or nested block.
+      const cut = Math.max(top.body.lastIndexOf(';'), top.body.lastIndexOf('\u0000')) + 1;
+      const prelude = top.body.slice(cut);
+      top.body = `${top.body.slice(0, cut)}\u0000`;
+      const lead = prelude.length - prelude.trimStart().length;
+      const line = src.slice(0, i - prelude.length + lead).split('\n').length;
+      stack.push({ prelude: prelude.trim().replace(/\s+/g, ' '), line, body: '' });
+    } else if (ch === '}') {
+      const block = stack.pop();
+      if (!block || stack.length === 0) throw new Error(`App.css:${src.slice(0, i).split('\n').length}: an unmatched }`);
+      if (!block.prelude.startsWith('@')) {
+        const decls = block.body.split(/[;\u0000]/).map((d) => d.trim()).filter(Boolean).flatMap((d) => {
+          const c = d.indexOf(':');
+          return c > 0 ? [{ prop: d.slice(0, c).trim().toLowerCase(), value: d.slice(c + 1).trim().replace(/\s+/g, ' ') }] : [];
+        });
+        out.push({ selector: block.prelude, line: block.line, decls });
+      }
+    } else {
+      top.body += ch;
+    }
+  }
+  if (stack.length !== 1) throw new Error(`App.css: ${stack.length - 1} block(s) left open`);
+  return out;
+}
+
+/** Whether a font or font-family value names the mono face, directly or through a mono custom property. */
+function namesMono(value: string, props: Set<string>): boolean {
+  if (/Google Sans Code|\b(ui-)?monospace\b/.test(value)) return true;
+  return [...value.matchAll(/var\(\s*(--[\w-]+)/g)].some((m) => props.has(m[1]));
+}
+/**
+ * The custom properties that hold the mono face: those whose value names Google Sans Code or a
+ * monospace generic, and any property that refers to one of them, to a fixed point.
+ */
+function monoProps(): Set<string> {
+  const defs = [...CSS.matchAll(/(--[\w-]+)\s*:\s*([^;}]+)/g)].map((m) => [m[1], m[2]] as const);
+  const props = new Set<string>();
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [name, value] of defs) {
+      if (!props.has(name) && namesMono(value, props)) {
+        props.add(name);
+        grew = true;
+      }
+    }
+  }
+  return props;
+}
+const isFontDecl = (prop: string): boolean => prop === 'font' || prop === 'font-family';
+
+/** An inline font style in a component, read through the TypeScript parser. */
+interface InlineFont { where: string; value: string | null; adjust: string | null; adjustBeforeFont: boolean }
+/**
+ * Every `fontFamily` / `font` property of an object literal (a style object) and every
+ * `fontFamily` JSX attribute in a component, with the `fontSizeAdjust` beside it. A value that is
+ * not a string literal is returned as null, so the caller can refuse what it cannot read.
+ */
+function inlineFonts(file: string): InlineFont[] {
+  const sf = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const out: InlineFont[] = [];
+  const text = (e: ts.Node | undefined): string | null =>
+    e && (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) ? e.text : null;
+  const nameOf = (n: ts.Node): string => (ts.isPropertyAssignment(n) || ts.isJsxAttribute(n) ? n.name.getText(sf) : '');
+  const attrText = (a: ts.Node | undefined): string | null => {
+    const init = a && ts.isJsxAttribute(a) ? a.initializer : undefined;
+    return init && ts.isStringLiteral(init) ? init.text : init && ts.isJsxExpression(init) ? text(init.expression) : null;
+  };
+  const visit = (node: ts.Node): void => {
+    const where = `${file}:${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}`;
+    if (ts.isObjectLiteralExpression(node)) {
+      const props = node.properties;
+      const init = (p: ts.ObjectLiteralElementLike) => (ts.isPropertyAssignment(p) ? p.initializer : undefined);
+      const adjustAt = props.findIndex((p) => nameOf(p) === 'fontSizeAdjust');
+      props.forEach((p, fontAt) => {
+        if (nameOf(p) !== 'fontFamily' && nameOf(p) !== 'font') return;
+        out.push({
+          where,
+          value: text(init(p)),
+          adjust: adjustAt >= 0 ? text(init(props[adjustAt])) : null,
+          // React writes a style object's properties in order, so a `font` shorthand after it resets it.
+          adjustBeforeFont: nameOf(p) === 'font' && adjustAt >= 0 && adjustAt < fontAt,
+        });
+      });
+    }
+    if (ts.isJsxAttribute(node) && nameOf(node) === 'fontFamily') {
+      const sibling = (node.parent as ts.JsxAttributes).properties.find((p) => nameOf(p) === 'fontSizeAdjust');
+      out.push({ where, value: attrText(node), adjust: attrText(sibling), adjustBeforeFont: false });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return out;
+}
+
 describe('Google Sans and Google Sans Code (US-01M6V6VN)', () => {
   it('declares Google Sans and Google Sans Code as the UI and mono faces', () => {
     // Wrong implementations this catches: an italic rule that loads the upright file (or the other
@@ -595,6 +712,51 @@ describe('Google Sans and Google Sans Code (US-01M6V6VN)', () => {
     }
   });
 
+  it('turns font-size-adjust off wherever the mono face is set', () => {
+    // BG-01M6VZNE. The body's `font-size-adjust: from-font` computes to Google Sans's aspect and is
+    // inherited, so mono text was scaled to it: Google Sans Code's x-height varies with weight, the
+    // SemiBold and Regular strands drifted apart, and neither advanced the 0.6 em that
+    // RESIDUE_ADVANCE_PX and CALLOUT_CHAR_EM assume. Wrong implementations this catches: the fix on
+    // `.mono-bases` alone (it does not set the face; the rows inherit it from
+    // `.sequence-blocks-scroll`), any one mono rule left without it, `font-size-adjust: none`
+    // written before a `font` shorthand that resets it, and an inline SVG style in the map that sets
+    // the mono face with no fontSizeAdjust. The scan also follows a custom property that aliases
+    // --font-mono, though App.css defines none today.
+    const mono = monoProps();
+    expect([...mono].sort(), 'the custom properties that hold the mono face').toContain('--font-mono');
+
+    const rules = cssRules().filter((r) => r.decls.some((d) => isFontDecl(d.prop) && namesMono(d.value, mono)));
+    // The parser reaches every mono declaration a plain scan of the rules finds, at any depth.
+    const scanned = [...RULES_CSS.matchAll(/(?<![\w-])font(?:-family)?\s*:\s*([^;}]+)/g)].filter((m) => namesMono(m[1], mono)).length;
+    const parsed = rules.flatMap((r) => r.decls).filter((d) => isFontDecl(d.prop) && namesMono(d.value, mono)).length;
+    expect(parsed, 'mono font declarations the rule parser finds, against a plain scan').toBe(scanned);
+    // The residue rows' container is among them.
+    expect(rules.map((r) => r.selector)).toContain('.sequence-blocks-scroll');
+    expect(rules.length, 'App.css rules that set the mono face').toBeGreaterThan(40);
+
+    const cssFailures = rules.flatMap((r) => {
+      const at = `App.css:${r.line} ${r.selector}`;
+      const lastFont = r.decls.map((d) => d.prop).lastIndexOf('font');
+      const adjustAt = r.decls.map((d) => d.prop).lastIndexOf('font-size-adjust');
+      if (adjustAt < 0) return [`${at}: sets the mono face and no font-size-adjust`];
+      if (r.decls[adjustAt].value !== 'none') return [`${at}: font-size-adjust: ${r.decls[adjustAt].value}, not none`];
+      if (adjustAt < lastFont) return [`${at}: font-size-adjust: none comes before a font shorthand, which resets it`];
+      return [];
+    });
+    expect(cssFailures).toEqual([]);
+
+    const inline = ['src/components/LinearSequenceView.tsx', 'src/components/CircularPlasmidMap.tsx'].flatMap(inlineFonts);
+    const unreadable = inline.filter((f) => f.value === null).map((f) => `${f.where}: a font style that is not a string literal`);
+    const monoInline = inline.filter((f) => f.value !== null && namesMono(f.value, mono));
+    expect(monoInline.filter((f) => f.where.includes('CircularPlasmidMap')).length, 'the map sets the mono face inline').toBeGreaterThan(0);
+    const inlineFailures = monoInline.flatMap((f) => {
+      if (f.adjust !== 'none') return [`${f.where}: fontFamily ${f.value} with fontSizeAdjust ${f.adjust ?? 'unset'}`];
+      if (f.adjustBeforeFont) return [`${f.where}: fontSizeAdjust comes before a font shorthand, which resets it`];
+      return [];
+    });
+    expect([...unreadable, ...inlineFailures]).toEqual([]);
+  });
+
   it('sizes the fallback faces to the Google Sans metrics', () => {
     // Wrong implementations this catches: Inter's or IBM Plex Mono's overrides kept under the new
     // names (107.12% / 90.44% / 22.52%, or Plex's bare 100%), ascent and descent overrides not
@@ -621,7 +783,7 @@ describe('Google Sans and Google Sans Code (US-01M6V6VN)', () => {
 
     const code = metricsOf(readWoff2(GSC));
     expect(code.lineGap).toBe(0);
-    check('Google Sans Code Fallback', ['Menlo', 'Consolas'], code.advance(0x30) / code.upm / MENLO_ADVANCE_EM, code.ascent / code.upm, -code.descent / code.upm);
+    check('Google Sans Code Fallback', ['Menlo Regular', 'Menlo-Regular', 'Menlo', 'Consolas'], code.advance(0x30) / code.upm / MENLO_ADVANCE_EM, code.ascent / code.upm, -code.descent / code.upm);
 
     expect(FONT_FACES.filter((f) => /Inter|Plex/.test(f.family)).map((f) => f.family), 'the Inter and Plex fallbacks are gone').toEqual([]);
   });
