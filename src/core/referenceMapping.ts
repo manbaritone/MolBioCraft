@@ -25,14 +25,14 @@ export interface MappedRead {
 }
 
 export interface ContigVariant {
-  /** 1-based reference coordinate. */
+  /** 1-based reference coordinate (for a deletion, its VCF anchor: the base before the deleted bases). */
   refPosition: number;
   /** 1-based contig column (in the gapped contig). */
   column: number;
   type: 'SNP' | 'Insertion' | 'Deletion';
   refBase: string;
   altBase: string;
-  /** Reads showing this change / reads covering the position (for an insertion, the base before it). */
+  /** Reads showing this change / reads covering the position (for an insertion, the base before it; for a deletion, its anchor). */
   supporting: number;
   coverage: number;
   frequencyPct: number;
@@ -204,12 +204,17 @@ export function assembleReferenceContig(
   // The calls give each inserted base its own Insertion at the reference base it precedes, so the
   // bases one read inserts before one base are joined, in read order, into one allele. An
   // insertion is counted at its anchor, the reference base before it (VCF POS), as a pileup counts
-  // it: over the reads covering that base, from the carriers among them.
+  // it: over the reads covering that base, from the carriers among them. The calls give each deleted
+  // base its own Deletion too; the run of bases one read deletes back to back is one allele in VCF
+  // form, at its anchor (POS = the base before it, REF = that base and the deleted bases, ALT = that
+  // base), counted over the reads covering the anchor.
   const coverageAtRef = (pos: number) => mapped.filter((m) => pos >= m.refStart && pos <= m.refEnd).length;
   const groups = new Map<string, { v: VariantCall; n: number; q: number[] }>();
   for (const m of mapped) {
     const alleles: { v: VariantCall; q: number[] }[] = [];
     const insertionAt = new Map<number, { v: VariantCall; q: number[] }>();
+    // Deletion runs by the last base they delete.
+    const deletionEndingAt = new Map<number, { v: VariantCall; q: number[] }>();
     for (const v of m.variants) {
       const q = v.phredQuality > 0 ? [v.phredQuality] : [];
       const run = v.type === 'Insertion' ? insertionAt.get(v.position) : undefined;
@@ -218,14 +223,29 @@ export function assembleReferenceContig(
         run.q.push(...q);
         continue;
       }
+      if (v.type === 'Deletion') {
+        let del = deletionEndingAt.get(v.position - 1);
+        deletionEndingAt.delete(v.position - 1);
+        if (del) {
+          del.v.refBase += v.refBase;
+          del.q.push(...q);
+        } else {
+          const anchor = ref[v.position - 2] ?? 'N';
+          del = { v: { ...v, position: v.position - 1, refBase: anchor + v.refBase, altBase: anchor }, q };
+          alleles.push(del);
+        }
+        deletionEndingAt.set(v.position, del);
+        continue;
+      }
       const allele = { v: v.type === 'Insertion' ? { ...v } : v, q };
       if (v.type === 'Insertion') insertionAt.set(v.position, allele);
       alleles.push(allele);
     }
     for (const { v, q } of alleles) {
-      // An insertion leading the read's alignment has no anchor base in it.
+      // An insertion or a deletion leading the read's alignment has no anchor base in it.
       if (v.type === 'Insertion' && v.position - 1 < m.refStart) continue;
-      const key = `${v.position}|${v.type}|${v.altBase}`;
+      if (v.type === 'Deletion' && v.position < m.refStart) continue;
+      const key = `${v.position}|${v.type}|${v.refBase}|${v.altBase}`;
       const g = groups.get(key) ?? { v, n: 0, q: [] };
       g.n += 1;
       g.q.push(...q);

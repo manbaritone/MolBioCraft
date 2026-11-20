@@ -142,3 +142,84 @@ describe('map to reference', () => {
     ]);
   });
 });
+
+// Oracle for the rows below: pysam 0.24.1 (htslib pileup) over the SAM fixtures these tests write,
+// converted with pysam.view('-b') and indexed, then read with
+//   AlignmentFile(bam).pileup('ref', start, end, truncate=True, stepper='nofilter', min_base_quality=0)
+// The column's nsegments is the coverage; a read's PileupRead.indel at a base is the indel after
+// it (VCF POS), and its query base there is the SNP call. Every CIGAR is written by hand from how
+// the read is built, never from this engine's output.
+describe('variant table edge cases against a pysam pileup', () => {
+  const rec = (name: string, pos: number, cigar: string, seq: string) => [name, 0, 'ref', pos, 60, cigar, '*', 0, 0, seq, '*'].join('\t');
+  const sam = (...records: string[]) => ['@HD\tVN:1.6\tSO:coordinate', '@SQ\tSN:ref\tLN:1200', ...records].join('\n') + '\n';
+  const rows = (text: string) => samToContigs(text, 'fixture.sam', [doc('ref', ref)], opts).contigs[0].contig.variants;
+
+  it('reports a multi-base deletion as one allele', () => {
+    // 1-based 150-153 read ACCG; deleting CCG (151-153) has one placement: A150 is not G and
+    // C151 is not T154, so it neither shifts left nor right.
+    expect(ref.slice(149, 154)).toBe('ACCGT');
+    // pysam at A150: depth 2, 'del' carries indel -3 -> one allele, VCF POS 150, REF ACCG, ALT A.
+    expect(rows(sam(
+      rec('del', 101, '50M3D50M', ref.slice(100, 150) + ref.slice(153, 203)),
+      rec('plain', 101, '103M', ref.slice(100, 203)),
+    ))).toEqual([
+      { refPosition: 150, column: 150, type: 'Deletion', refBase: 'ACCG', altBase: 'A', supporting: 1, coverage: 2, frequencyPct: 50, meanQuality: null },
+    ]);
+    // A shorter deletion at the same anchor is its own allele, and two deletions one read carries
+    // apart are two alleles. pysam at A150: depth 4, indel -3 in 'del' and 'twoDel', -2 in 'del2';
+    // at G163: depth 4, indel -2 in 'twoDel' (it deletes 164-165, CG).
+    expect(ref.slice(162, 165)).toBe('GCG');
+    expect(rows(sam(
+      rec('del', 101, '50M3D50M', ref.slice(100, 150) + ref.slice(153, 203)),
+      rec('del2', 101, '50M2D51M', ref.slice(100, 150) + ref.slice(152, 203)),
+      rec('twoDel', 101, '50M3D10M2D40M', ref.slice(100, 150) + ref.slice(153, 163) + ref.slice(165, 205)),
+      rec('plain', 101, '103M', ref.slice(100, 203)),
+    ))).toEqual([
+      { refPosition: 150, column: 150, type: 'Deletion', refBase: 'ACCG', altBase: 'A', supporting: 2, coverage: 4, frequencyPct: 50, meanQuality: null },
+      { refPosition: 150, column: 150, type: 'Deletion', refBase: 'ACC', altBase: 'A', supporting: 1, coverage: 4, frequencyPct: 25, meanQuality: null },
+      { refPosition: 163, column: 163, type: 'Deletion', refBase: 'GCG', altBase: 'G', supporting: 1, coverage: 4, frequencyPct: 25, meanQuality: null },
+    ]);
+    // Map to Reference: the engine calls each deleted base on its own; the table joins them.
+    const m = mapReadsToReference(doc('ref', ref), [doc('del', ref.slice(100, 150) + ref.slice(153, 300)), doc('plain', ref.slice(100, 300))], opts);
+    expect(m.mapped.find((r) => r.doc.id === 'del')!.variants.map((v) => `${v.type}${v.position}${v.refBase}`)).toEqual(['Deletion151C', 'Deletion152C', 'Deletion153G']);
+    expect(m.variants).toEqual([
+      { refPosition: 150, column: 150, type: 'Deletion', refBase: 'ACCG', altBase: 'A', supporting: 1, coverage: 2, frequencyPct: 50, meanQuality: null },
+    ]);
+  });
+
+  it('read-edge coverage matches a pysam pileup', () => {
+    const a = [...ref.slice(300, 400)];
+    a[0] = 'C'; // A301 -> C, the read's first base
+    a[99] = 'A'; // G400 -> A, its last base
+    expect([ref[300], ref[399], ref.slice(610, 614), ref.slice(800, 802)]).toEqual(['A', 'G', 'CTTA', 'AA']);
+    const text = sam(
+      rec('before', 201, '100M', ref.slice(200, 300)), // ends at 300, beside snpEdges' first base
+      rec('coverFirst', 251, '100M', ref.slice(250, 350)),
+      rec('snpEdges', 301, '100M', a.join('')),
+      rec('coverLast', 351, '100M', ref.slice(350, 450)),
+      rec('after', 401, '100M', ref.slice(400, 500)), // starts at 401, beside snpEdges' last base
+      rec('beforeDel', 511, '100M', ref.slice(510, 610)), // ends at 610, beside the deletion's anchor
+      rec('endsAtAnchor', 512, '100M', ref.slice(511, 611)), // ends on the anchor: covers it, not the deleted bases
+      rec('coverDel', 561, '100M', ref.slice(560, 660)),
+      rec('delEdge', 611, '1M3D100M', ref[610] + ref.slice(614, 714)), // anchor C611 is its first base
+      rec('beforeIns', 701, '100M', ref.slice(700, 800)), // ends at 800, beside the insertion's anchor
+      rec('coverIns', 751, '100M', ref.slice(750, 850)),
+      rec('insEdge', 801, '1M3I100M', ref[800] + 'CAG' + ref.slice(801, 901)), // anchor A801 is its first base
+      rec('coverLead', 901, '100M', ref.slice(900, 1000)),
+      rec('leadIns', 951, '3I100M', 'TTT' + ref.slice(950, 1050)), // no anchor base in the read
+      rec('coverLeadDel', 1051, '100M', ref.slice(1050, 1150)),
+      rec('leadDel', 1101, '2D50M', ref.slice(1102, 1152)), // nor here: its first base is deleted
+    );
+    // pysam: 301 depth 2 (coverFirst A, snpEdges C); 400 depth 2 (coverLast G, snpEdges A);
+    // 611 depth 3 (coverDel C, delEdge C-3, endsAtAnchor C; 612 has depth 2); 801 depth 2 (coverIns A,
+    // insEdge A+CAG); 950 depth 1 (coverLead T, no indel) and 1100 depth 1 (coverLeadDel C, no indel):
+    // leadIns and leadDel are not in the pileup at the base before them, so neither is a call.
+    // The insertion's row keeps this table's convention: the base it precedes (802), counted at its anchor.
+    expect(rows(text)).toEqual([
+      { refPosition: 301, column: 301, type: 'SNP', refBase: 'A', altBase: 'C', supporting: 1, coverage: 2, frequencyPct: 50, meanQuality: null },
+      { refPosition: 400, column: 400, type: 'SNP', refBase: 'G', altBase: 'A', supporting: 1, coverage: 2, frequencyPct: 50, meanQuality: null },
+      { refPosition: 611, column: 611, type: 'Deletion', refBase: 'CTTA', altBase: 'C', supporting: 1, coverage: 3, frequencyPct: 33.3, meanQuality: null },
+      { refPosition: 802, column: 802, type: 'Insertion', refBase: '-', altBase: 'CAG', supporting: 1, coverage: 2, frequencyPct: 50, meanQuality: null },
+    ]);
+  });
+});
