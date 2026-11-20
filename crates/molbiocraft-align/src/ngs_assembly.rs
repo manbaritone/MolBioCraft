@@ -2185,19 +2185,65 @@ fn an_unknown_run_outlasts_its_flanks(bases: &[u8]) -> bool {
 /// read off the alignment as they lie.
 const CALL_SOFT_CLIP_BP: usize = 64;
 
-/// The alignment columns, as `[start, end)`, of each stretch of the sample that has no anchored
-/// match to the reference and is soft-clipped: the alignment pairs no base of it as a stretch of the
-/// chain of [`CALL_CHAIN_JOIN_SCORE`]'s 32 or more matched bases on one diagonal pairs it (`ra`'s
-/// first base is `reference[ystart]`), it pairs at least
-/// [`CALL_SOFT_CLIP_BP`] known sample bases with known reference bases, and its columns from the
-/// sample's first aligned base to its last score below zero as the alignment scores them
-/// ([`columns_score`]: bases that match the reference score 2 a base; unrelated ones lose, paired
-/// or gapped). The caller aligns the whole sample, so unrelated
-/// bases at a sample end, or in a stretch replaced by unrelated bases, were paired base by base
-/// with the reference opposite them and every chance mismatch was called: 622, 587 and 1,516 false
-/// calls on the test's draws of 2,000 unrelated bases before or after 60,000 and of 5,000 replaced
-/// (BG-01M6W0BZ). A
-/// deletion column belongs to a stretch where the sample bases on both sides of it do. A clipped
+/// What the bases at the edge of a soft-clipped stretch may gain back and still be clipped with it.
+/// Unrelated bases match the reference by chance one time in four, so a chance mismatch followed by
+/// three chance matches gains back 3 and is taken in, where it would be called; a related SNP gains
+/// 2 a matched base after it, so one with 4 or more matched bases between it and the unrelated bases
+/// gains 5 and is called. The alignment may open a gap there that leaves fewer: a SNP 7 bases before
+/// 2,000 unrelated bases, 4 of them matched before an insertion, was lost at an allowance of 5 or 6.
+const CALL_CLIP_EDGE_GAIN: i32 = 4;
+
+/// What the bases left between a soft-clipped stretch and an anchored one (or another clip) may gain
+/// back on their own and still be clipped: two mismatches' cost ([`call_score`]'s 3 each). The
+/// alignment is free to take the path that scores best through unrelated bases, so it lines up a
+/// few chance matches, around a chance mismatch or a short gap, just before the anchored bases. In
+/// BG-01M6W0BZ's second-round probe, 880 reports of 440 samples, such remnants and edges left 1 to
+/// 4 false calls beside a clip in 3 samples with [`CALL_CLIP_EDGE_GAIN`] alone (5 at an allowance
+/// of 3); taking in remnants that gain 6 or less left 1 (2 false calls after a 1-bp gap at 8%
+/// divergence). Related bases gain 2 a matched base, so a remnant of 5 or more matched bases and a
+/// SNP is kept.
+const CALL_CLIP_REMNANT_GAIN: i32 = 6;
+
+/// What a stretch inside the lowest-scoring stretch of a run must score more than to be kept out of
+/// the clip, as related bases: what a chain stretch of 32 matched bases scores (2 a base), the least
+/// that anchors bases. 100 bases with a SNP every 16 between two stretches of 300 unrelated bases
+/// score about +170, less than either side loses, and were clipped with them; inside the clips of
+/// unrelated bases in BG-01M6W0BZ's second-round probe (880 reports), no stretch scored above 28.
+/// A long gap is kept out of a clip the same way: beside the 10,000-bp deletion the alignment puts
+/// 700 bases before H1's sample run of N, the 65 matched bases after it score 130 and are kept,
+/// and the SNP before it is too few known bases to clip.
+const CALL_CLIP_KEEP_SCORE: i32 = 4 * CALL_SEAM_FLANK_BP as i32;
+
+/// The alignment columns, as `[start, end)`, of each stretch of the sample the alignment scores as
+/// unrelated to the reference, which is soft-clipped. Such a stretch lies in a run of the sample
+/// that no stretch of the chain of [`CALL_CHAIN_JOIN_SCORE`]'s 32 or more matched bases on one
+/// diagonal pairs (`ra`'s first base is `reference[ystart]`), compares at least
+/// [`CALL_SOFT_CLIP_BP`] known sample bases with known reference bases, and scores below zero as
+/// the alignment scores its bases ([`call_score`]: a base that matches scores 2 and one that does
+/// not -3, so related bases gain and unrelated ones, which match one time in four, lose about 1.75
+/// a base; a gap of n bases -5 - 2n). The caller aligns the whole sample, so unrelated bases at a
+/// sample end, or in a stretch replaced by unrelated bases, were paired base by base with the
+/// reference opposite them and every chance mismatch was called: 622, 587 and 1,516 false calls on
+/// the test's draws of 2,000 unrelated bases before or after 60,000 and of 5,000 replaced
+/// (BG-01M6W0BZ).
+///
+/// A run with no anchored stretch also holds related bases that differ too often for 32 of them to
+/// match in a row (a SNP every 16 bases, or 8-12% at random), so the whole run is not clipped: the
+/// related bases beside unrelated ones were lost with them, every true SNP among them (38 of 38 at
+/// one in 16 before 2,000 unrelated bases, in the data seat's round-2 review). The clip is the
+/// run's lowest-scoring stretch ([`lowest_scoring_stretch`]); where related bases are followed by
+/// unrelated ones to the sample's end, it starts near the highest point of the score's running sum,
+/// as the data seat proposed. It takes
+/// in the bases beside it that gain back little (chance matches of unrelated bases,
+/// [`CALL_CLIP_EDGE_GAIN`] and [`CALL_CLIP_REMNANT_GAIN`]), and at a sample end the few bases past
+/// it, but not a stretch inside it that scores as related bases do ([`CALL_CLIP_KEEP_SCORE`]); and
+/// what is left of the run on either side is looked at in the same way, for a second unrelated
+/// stretch. Related bases score above zero over any 64 compared bases unless 40% or more
+/// of them differ (a SNP every 3 bases still gains 1 every 3), so they are compared and called as
+/// they lie; a stretch where one base in two differs scores below zero, as unrelated bases do, and
+/// is clipped.
+///
+/// A deletion column belongs to a run where the sample bases on both sides of it do. A clipped
 /// stretch takes in the insertion or deletion columns that touch it: an indel there has no anchor
 /// on the clipped side, and was called beside the clip.
 fn soft_clipped_columns(qa: &[u8], ra: &[u8], ystart: usize, chain: &[(u32, u32)], qn: usize) -> Vec<(usize, usize)> {
@@ -2233,7 +2279,22 @@ fn soft_clipped_columns(qa: &[u8], ra: &[u8], ystart: usize, chain: &[(u32, u32)
     let (Some(first), Some(last)) = (qa[..n].iter().position(|&b| b != b'-'), qa[..n].iter().rposition(|&b| b != b'-')) else {
         return Vec::new();
     };
-    let mut clipped = Vec::new();
+    // the running sums of the columns' scores as [`columns_score`] scores them, and of the known
+    // bases compared: sum[c] and known[c] over columns 0..c
+    let gap = |i: usize| qa[i] == b'-' || ra[i] == b'-';
+    let (mut sum, mut known) = (vec![0i32; n + 1], vec![0usize; n + 1]);
+    for c in 0..n {
+        let score = if !gap(c) {
+            call_score(qa[c], ra[c])
+        } else if c > 0 && gap(c - 1) {
+            -2
+        } else {
+            -(CALL_GAP_OPEN + 2)
+        };
+        sum[c + 1] = sum[c] + score;
+        known[c + 1] = known[c] + usize::from(call_known(qa[c]) && call_known(ra[c]));
+    }
+    let mut clipped: Vec<(usize, usize)> = Vec::new();
     let mut c = 0usize;
     while c < n {
         if !unsupported[c] {
@@ -2244,22 +2305,106 @@ fn soft_clipped_columns(qa: &[u8], ra: &[u8], ystart: usize, chain: &[(u32, u32)
         while c < n && unsupported[c] {
             c += 1;
         }
-        let compared = (start..c).filter(|&i| call_known(qa[i]) && call_known(ra[i])).count();
-        let (from, to) = (start.max(first), c.min(last + 1));
-        if compared >= CALL_SOFT_CLIP_BP && from < to && columns_score(&qa[from..to], &ra[from..to]).0 < 0 {
-            let gap = |i: usize| qa[i] == b'-' || ra[i] == b'-';
-            let mut a = start;
+        // the run's columns from the sample's first aligned base to its last, with the indel columns
+        // that touch it: a gap the alignment opened beside the run, to put a chance match of the
+        // run's first or last unrelated base in place, is scored with it
+        let (mut from, mut to) = (start.max(first), c.min(last + 1));
+        while from > first && gap(from - 1) {
+            from -= 1;
+        }
+        while to <= last && gap(to) {
+            to += 1;
+        }
+        // (lo, hi, whether lo is the sample's first aligned base, whether hi follows its last)
+        let mut todo = vec![(from, to, start <= first, c > last)];
+        while let Some((lo, hi, head, tail)) = todo.pop() {
+            let Some((i, j)) = lowest_scoring_stretch(&sum, &known, lo, hi, head, tail) else {
+                continue;
+            };
+            // the highest-scoring stretch inside it: related bases kept out of the clip, and what
+            // lies on either side of them looked at again
+            let (mut low, mut kept) = (i, (0i32, i, i));
+            for q in i..=j {
+                if sum[q] < sum[low] {
+                    low = q;
+                }
+                if sum[q] - sum[low] > kept.0 {
+                    kept = (sum[q] - sum[low], low, q);
+                }
+            }
+            if kept.0 > CALL_CLIP_KEEP_SCORE {
+                todo.push((lo, kept.1, head, false));
+                todo.push((kept.2, hi, false, tail));
+                continue;
+            }
+            let mut a = if i == from { start.min(from) } else { i };
             while a > 0 && gap(a - 1) {
                 a -= 1;
             }
-            let mut b = c;
+            let mut b = if j == to { c.max(to) } else { j };
             while b < n && gap(b) {
                 b += 1;
             }
             clipped.push((a, b));
+            if lo < i {
+                todo.push((lo, i, head, false));
+            }
+            if j < hi {
+                todo.push((j, hi, false, tail));
+            }
         }
     }
-    clipped
+    clipped.sort_unstable();
+    let mut joined: Vec<(usize, usize)> = Vec::with_capacity(clipped.len());
+    for (a, b) in clipped {
+        match joined.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => joined.push((a, b)),
+        }
+    }
+    joined
+}
+
+/// The lowest-scoring stretch `[i, j)` of alignment columns `lo..hi` that compares at least
+/// [`CALL_SOFT_CLIP_BP`] known bases, if it scores below zero (`sum` and `known` are the running
+/// sums [`soft_clipped_columns`] keeps). It is widened over the bases beside it that gain back no
+/// more than [`CALL_CLIP_EDGE_GAIN`]: its start moved back to the first column from which the score
+/// never climbs more than that before it, its end on to the last at which the score has climbed no
+/// more than that since. The bases then left between it and `lo`, and between it and `hi`, are
+/// taken in with it where they gain back no more than [`CALL_CLIP_REMNANT_GAIN`]; but where `lo` is
+/// the sample's first aligned base (`head`), or `hi` follows its last (`tail`), those left at that
+/// end are taken in unless they compare [`CALL_SOFT_CLIP_BP`] known bases: no anchored base lies
+/// past them, and fewer are not enough to tell related bases from chance matches of unrelated ones.
+fn lowest_scoring_stretch(sum: &[i32], known: &[usize], lo: usize, hi: usize, head: bool, tail: bool) -> Option<(usize, usize)> {
+    // for each end j, the start at or before the last that leaves CALL_SOFT_CLIP_BP known bases with
+    // the highest running sum: the stretch from it to j scores lowest
+    let (mut next, mut top) = (lo, None::<usize>);
+    let mut best: Option<(i32, usize, usize)> = None;
+    for j in lo..=hi {
+        while next <= j && known[j] - known[next] >= CALL_SOFT_CLIP_BP {
+            if top.is_none_or(|t| sum[next] > sum[t]) {
+                top = Some(next);
+            }
+            next += 1;
+        }
+        if let Some(t) = top {
+            let score = sum[j] - sum[t];
+            if best.is_none_or(|(s, _, _)| score < s) {
+                best = Some((score, t, j));
+            }
+        }
+    }
+    let (score, i, j) = best?;
+    if score >= 0 {
+        return None;
+    }
+    let i = (lo..=i).find(|&k| sum[k] >= sum[i] - CALL_CLIP_EDGE_GAIN).unwrap_or(i);
+    let j = (j..=hi).rev().find(|&k| sum[k] <= sum[j] + CALL_CLIP_EDGE_GAIN).unwrap_or(j);
+    // what is left before lo or after hi: at a sample end, too few bases to judge; beside anchored
+    // bases or another clip, a remnant that gains back too little
+    let i = if if head { known[i] - known[lo] < CALL_SOFT_CLIP_BP } else { sum[i] - sum[lo] <= CALL_CLIP_REMNANT_GAIN } { lo } else { i };
+    let j = if if tail { known[hi] - known[j] < CALL_SOFT_CLIP_BP } else { sum[hi] - sum[j] <= CALL_CLIP_REMNANT_GAIN } { hi } else { j };
+    Some((i, j))
 }
 
 /// The most runs of unknown bases, and the most indels left out beside them, the caller's
@@ -3186,10 +3331,10 @@ pub fn call_freebayes_variants_with_one_shot_limit(
             "clip",
             match end {
                 Some(end) => format!(
-                    "The sample's bases {span}, at its {end}, have no anchored match to the reference where they align, so they are soft-clipped and no variant is called there."
+                    "The sample's bases {span}, at its {end}, score as unrelated bases where they align (no anchored stretch holds them), so they are soft-clipped and no variant is called there."
                 ),
                 None => format!(
-                    "The sample's bases {span} have no anchored match to reference bases {}-{}, which they align against, so they are soft-clipped and no variant is called there.",
+                    "The sample's bases {span}, aligned against reference bases {}-{}, score as unrelated bases there (no anchored stretch holds them), so they are soft-clipped and no variant is called there.",
                     format_thousands(r_before + 1),
                     format_thousands(r_before + r_in.max(1))
                 ),

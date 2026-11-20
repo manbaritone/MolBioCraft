@@ -2105,7 +2105,7 @@ fn the_one_piece_path_gives_no_miscall_beside_an_n_run() {
 }
 
 /// The sample bases (1-based, first and last) the warning for a soft-clipped stretch names: "The
-/// sample's bases 1-2,000 share no 11-base stretch with the reference ...".
+/// sample's bases 1-2,000, at its start, score as unrelated bases where they align ...".
 fn soft_clipped(warning: &str) -> Option<(usize, usize)> {
     let rest = warning.strip_prefix("The sample's bases ")?;
     if !warning.contains("soft-clipped") {
@@ -2124,9 +2124,9 @@ fn novel_flanks_are_soft_clipped_with_a_warning_not_called() {
     // 30,001 bases in, 5,000 replaced by unrelated ones): 608, 599 and 1,473 false calls by the
     // data seat's count (622, 587 and 1,516 on these draws), each
     // stretch compared base by base with the reference it was aligned against. And the same in a
-    // sample short enough to be aligned in one piece. The unrelated bases share no 11-base stretch
-    // with the reference there, so they are soft-clipped and a warning names them; the planted SNPs
-    // in the rest are the only calls.
+    // sample short enough to be aligned in one piece. No stretch of 32 matched bases anchors the
+    // unrelated bases and they score below zero where they align, so they are soft-clipped and a
+    // warning names them; the planted SNPs in the rest are the only calls.
     let mut wrong = Vec::new();
     let g = SplitMix(0x0B_0030).bases(150_000);
     for (i, (label, copy_from, head, replaced, tail)) in [
@@ -2175,17 +2175,19 @@ fn novel_flanks_are_soft_clipped_with_a_warning_not_called() {
             wrong.push(format!("{label}: {} false (first {first:?}), {missed} missed; sample bases {novel:?} named as soft-clipped {clipped:?}; warnings {:?}", false_calls.len(), rep.warnings));
         }
     }
-    // Controls: related bases with no 32-base matched stretch are still compared and called. A SNP
-    // every 16 bases over 600 bases (an 11-mer matches between them, no stretch of 32 does) scores
-    // above zero, and a 5-base MNP is fewer bases than a clip takes; both are called as they lie, on
-    // both paths, with no soft-clip warning.
-    for (label, dense) in [("a SNP every 16 bases over 600", true), ("a 5-base MNP", false)] {
+    // Controls: related bases between anchored ones, with no 32-base matched stretch, are still
+    // compared and called. A SNP every 16 bases over 600 bases (an 11-mer matches between them, no
+    // stretch of 32 does) scores about +1,000, and one every 3 bases about +200, any 64 of its
+    // compared bases about +20: neither scores below zero, so a clip that took a stretch scoring
+    // above zero would take them. A 5-base MNP is fewer bases than a clip takes. Each is called as it
+    // lies, on both paths, with no soft-clip warning.
+    for (label, step) in [("a SNP every 16 bases over 600", 16usize), ("a SNP every 3 bases over 600", 3), ("a 5-base MNP", 0)] {
         let g = SplitMix(0x0B_0040).bases(9_000);
         let mut sample = g[500..8_500].to_vec();
         let mut truth = Vec::new();
-        let sites: Vec<usize> = if dense { (4_000..4_600).step_by(16).collect() } else { vec![4_000] };
+        let sites: Vec<usize> = if step > 0 { (4_000..4_600).step_by(step).collect() } else { vec![4_000] };
         for &i in &sites {
-            if dense {
+            if step > 0 {
                 let alt = transversion(g[i]);
                 sample[i - 500] = alt;
                 truth.push((i + 1, text(&g[i..i + 1]), text(&[alt]), "SNP".to_string()));
@@ -2200,6 +2202,164 @@ fn novel_flanks_are_soft_clipped_with_a_warning_not_called() {
             calls.sort();
             if calls != truth || rep.warnings.iter().any(|w| soft_clipped(w).is_some()) {
                 wrong.push(format!("{label}, {path}: {} calls, {} true; warnings {:?}", calls.len(), truth.len(), rep.warnings));
+            }
+        }
+    }
+    // The data seat's round-2 family: related bases with no 32-base matched stretch directly before
+    // unrelated ones. Sample bases 1-8,000 copy genome bases 1,001-9,000 and its bases 8,001-10,000
+    // are unrelated; its bases 7,401-8,000 carry a SNP every 16 bases, or 48 (8%) or 72 (12%) SNPs
+    // placed at random, no two side by side (they would be one MNP) and none in the last 7 of those
+    // bases (a SNP with 3 or fewer matched bases after it, before the unrelated bases, gains no more
+    // than a chance mismatch and three chance matches do, so it reads as one of them). At e21b8d3 the whole stretch with no 32-base
+    // matched stretch was clipped with the unrelated bases, 7,401-10,000 at 1 in 16, and its SNPs
+    // were lost (38 of 38). Only the unrelated bases are clipped: every SNP is called, on both paths,
+    // and the clip is named from within 11 bases of sample base 8,001 to the sample's end.
+    for (label, density, draws) in [("a SNP every 16 bases", 0usize, 1u64), ("48 SNPs (8%)", 48, 4), ("72 SNPs (12%)", 72, 4)] {
+        for draw in 0..draws {
+            let mut rng = SplitMix(0x0B_0060 + density as u64 * 16 + draw);
+            let g = rng.bases(12_000);
+            let mut sample = g[1_000..9_000].to_vec();
+            let mut sites = std::collections::BTreeSet::new();
+            if density == 0 {
+                sites.extend((0..600).step_by(16));
+            }
+            while sites.len() < density {
+                let o = rng.below(593);
+                if !sites.contains(&o.wrapping_sub(1)) && !sites.contains(&(o + 1)) {
+                    sites.insert(o);
+                }
+            }
+            let mut truth = Vec::new();
+            for &o in &sites {
+                let i = 8_400 + o;
+                let alt = rng.other(g[i]);
+                sample[i - 1_000] = alt;
+                truth.push((i + 1, text(&g[i..i + 1]), text(&[alt]), "SNP".to_string()));
+            }
+            sample.extend(rng.bases(2_000));
+            for (path, rep) in both_paths(&g, &sample) {
+                let mut calls = report_calls(&rep);
+                calls.sort();
+                let clipped: Vec<(usize, usize)> = rep.warnings.iter().filter_map(|w| soft_clipped(w)).collect();
+                let named = matches!(clipped[..], [(a, 10_000)] if a.abs_diff(8_001) <= 11);
+                if calls != truth || !named {
+                    let false_calls = calls.iter().filter(|c| !truth.contains(c)).count();
+                    let called = truth.iter().filter(|c| calls.contains(c)).count();
+                    wrong.push(format!("{label}, draw {draw}, then 2,000 unrelated bases, {path}: {called} of {} SNPs called, {false_calls} false; named as soft-clipped {clipped:?}", truth.len()));
+                }
+            }
+        }
+    }
+    // Clean unrelated bases whose edge the alignment lines up with chance matches around a chance
+    // mismatch, just before the anchored bases: 1,000 before genome bases 2,001-10,000, and 100 in
+    // place of sample bases 4,001-4,100 (genome bases 6,001-6,100), each with a SNP every 500 bases.
+    // A clip that kept the bases it left before the anchored ones, which gain back 6 or less, left 4
+    // false calls (a DEL, two SNPs and an MNP) and 1 false SNP beside it. And 100 unrelated bases
+    // before them, draws 2 and 7: a clip that kept the chance matches it left at the sample's start
+    // left one or two false SNPs there.
+    for (label, seed, len, head) in [
+        ("1,000 unrelated bases before, draw 5", 5u64, 1_000usize, true),
+        ("100 bases replaced, draw 2", 2, 100, false),
+        ("100 unrelated bases before, draw 2", 2, 100, true),
+        ("100 unrelated bases before, draw 7", 7, 100, true),
+    ] {
+        let mut rng = SplitMix(0xA000 + seed * 100 + len as u64);
+        let g = rng.bases(14_000);
+        let mut sample = g[2_000..10_000].to_vec();
+        let mut truth = Vec::new();
+        for o in (250..7_800).step_by(500) {
+            let alt = rng.other(g[2_000 + o]);
+            sample[o] = alt;
+            truth.push((2_000 + o + 1, text(&g[2_000 + o..2_000 + o + 1]), text(&[alt]), "SNP".to_string()));
+        }
+        let unrelated = rng.bases(len);
+        let novel = if head {
+            sample = [unrelated, sample].concat();
+            (1, len)
+        } else {
+            sample[4_000..4_000 + len].copy_from_slice(&unrelated);
+            truth.retain(|c| c.0 <= 6_000 || c.0 > 6_000 + len);
+            (4_001, 4_000 + len)
+        };
+        for (path, rep) in both_paths(&g, &sample) {
+            let mut calls = report_calls(&rep);
+            calls.sort();
+            let clipped: Vec<(usize, usize)> = rep.warnings.iter().filter_map(|w| soft_clipped(w)).collect();
+            let named = matches!(clipped[..], [(a, b)] if a.abs_diff(novel.0) <= 11 && b.abs_diff(novel.1) <= 11);
+            if calls != truth || !named {
+                let false_calls: Vec<&Call> = calls.iter().filter(|c| !truth.contains(c)).collect();
+                wrong.push(format!("{label}, {path}: false calls {false_calls:?}; sample bases {novel:?} named as soft-clipped {clipped:?}"));
+            }
+        }
+    }
+    // The same family turned about, in a copy of genome bases 2,001-10,000: sample bases 1-600 with
+    // a SNP every 16 from base 1 (the last at 593), then bases 601-2,600 replaced by unrelated ones.
+    // Only the 2,000 are clipped and all 38 SNPs are called. Where the unrelated bases end, just
+    // before the anchored bases, the alignment opens a gap beside the run that lines chance matches
+    // up with the reference; scored without that gap, those matches seemed to gain, and a SNP and a
+    // deletion were called there.
+    {
+        let mut rng = SplitMix(0xD000 + 1 + 16 * 3);
+        let g = rng.bases(14_000);
+        let mut sample = g[2_000..10_000].to_vec();
+        let mut truth = Vec::new();
+        for o in (0..593).step_by(16) {
+            let alt = rng.other(g[2_000 + o]);
+            sample[o] = alt;
+            truth.push((2_000 + o + 1, text(&g[2_000 + o..2_000 + o + 1]), text(&[alt]), "SNP".to_string()));
+        }
+        sample[600..2_600].copy_from_slice(&rng.bases(2_000));
+        for (path, rep) in both_paths(&g, &sample) {
+            let mut calls = report_calls(&rep);
+            calls.sort();
+            let clipped: Vec<(usize, usize)> = rep.warnings.iter().filter_map(|w| soft_clipped(w)).collect();
+            let named = matches!(clipped[..], [(a, b)] if a.abs_diff(601) <= 11 && b.abs_diff(2_600) <= 11);
+            if calls != truth || !named {
+                let called = truth.iter().filter(|c| calls.contains(c)).count();
+                let false_calls: Vec<&Call> = calls.iter().filter(|c| !truth.contains(c)).take(3).collect();
+                wrong.push(format!("38 SNPs at the start, then 2,000 replaced, {path}: {called} of 38 called, false {false_calls:?}; named as soft-clipped {clipped:?}"));
+            }
+        }
+    }
+    // A stretch counts as anchored where a chain stretch of 32 or more matched bases pairs it. In
+    // sample bases 3,501-3,620, 50 unrelated bases, 20 matched and 50 unrelated: 20 matched bases
+    // anchor nothing, so the 120 are one stretch and soft-clipped together, where two of 50 would each
+    // be fewer than a clip takes and compared base by base. In sample bases 3,501-4,167, 300
+    // unrelated bases, 33 matched, a SNP, 33 matched and 300 unrelated: only the unrelated stretches
+    // are clipped, and the SNP between the matched bases is called. And
+    // related bases with no anchored stretch between two unrelated ones: 300 unrelated bases, 100
+    // with a SNP every 16 and 300 unrelated, in sample bases 3,501-4,200. The 100 score about +170,
+    // less than either side loses, so the lowest-scoring stretch is all 700; they score more than a
+    // 32-base anchored stretch, so they are kept and their 6 SNPs called. With 200 such bases before
+    // only 100 unrelated ones, the 300 alone score lowest; the 100 are found in what is left, and
+    // clipped too.
+    for (label, unrelated, snps, named_as) in [
+        ("50 unrelated, 20 matched, 50 unrelated", vec![4_000..4_050, 4_070..4_120], vec![], vec![(3_501usize, 3_620usize)]),
+        ("300 unrelated, 33 matched, a SNP, 33 matched, 300 unrelated", vec![4_000..4_300, 4_367..4_667], vec![4_333usize], vec![(3_501, 3_800), (3_868, 4_167)]),
+        ("300 unrelated, 100 with a SNP every 16, 300 unrelated", vec![4_000..4_300, 4_400..4_700], (4_308..4_393).step_by(16).collect(), vec![(3_501, 3_800), (3_901, 4_200)]),
+        ("300 unrelated, 200 with a SNP every 16, 100 unrelated", vec![4_000..4_300, 4_500..4_600], (4_308..4_493).step_by(16).collect(), vec![(3_501, 3_800), (4_001, 4_100)]),
+    ] {
+        let mut rng = SplitMix(0x0B_0050);
+        let g = rng.bases(9_000);
+        let mut sample = g[500..8_500].to_vec();
+        for r in &unrelated {
+            sample[r.start - 500..r.end - 500].copy_from_slice(&rng.bases(r.len()));
+        }
+        let mut truth = Vec::new();
+        for &i in &snps {
+            let alt = transversion(g[i]);
+            sample[i - 500] = alt;
+            truth.push((i + 1, text(&g[i..i + 1]), text(&[alt]), "SNP".to_string()));
+        }
+        for (path, rep) in both_paths(&g, &sample) {
+            let mut calls = report_calls(&rep);
+            calls.sort();
+            let clipped: Vec<(usize, usize)> = rep.warnings.iter().filter_map(|w| soft_clipped(w)).collect();
+            let named = clipped.len() == named_as.len() && clipped.iter().zip(&named_as).all(|(&(a, b), &(x, y))| a.abs_diff(x) <= 11 && b.abs_diff(y) <= 11);
+            if calls != truth || !named {
+                let called = truth.iter().filter(|c| calls.contains(c)).count();
+                let false_calls: Vec<&Call> = calls.iter().filter(|c| !truth.contains(c)).take(3).collect();
+                wrong.push(format!("{label}, {path}: {called} of {} true called, false {false_calls:?}; named as soft-clipped {clipped:?}", truth.len()));
             }
         }
     }
