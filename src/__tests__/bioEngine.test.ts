@@ -61,7 +61,10 @@ import {
   parseGenBank,
 } from '../core/fileParsers';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
-import type { CrisprGuideRecord } from '../types/bio';
+import type { CrisprGuideRecord, SequenceDocument } from '../types/bio';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { CloningAndGelStudio } from '../components/CloningAndGelStudio';
 import { BUILTIN_JS_PLUGINS, executeJavaScriptPlugin } from '../plugins/pluginEngine';
 import {
   analyzeUserTree,
@@ -554,13 +557,7 @@ describe('MolBioCraft Core Bioinformatics Engine & Hybrid Modules', () => {
     expect(fold.minimumFreeEnergyKcalMol).toBeLessThan(0);
 
     // 6. DNA Mass, Molarity, Copy Number & Ligation Molar Ratios (⇧⌘M)
-    const calc = computeDnaAndLigationCalculations(
-      pet28Doc.sequence.length,
-      150,
-      20,
-      50,
-      insertDoc.sequence.length
-    );
+    const calc = computeDnaAndLigationCalculations(pet28Doc.sequence, 150, 20, 50, insertDoc.sequence);
     expect(calc.mwDsDnaDa).toBeGreaterThan(3_500_000);
     expect(calc.ligationRatios.length).toBe(4);
     expect(calc.ligationRatios[1].ratioLabel).toContain('1 : 3');
@@ -773,5 +770,53 @@ describe('MolBioCraft Core Bioinformatics Engine & Hybrid Modules', () => {
     const refused = scanCrisprGuides(seq, 'SpCas9 (NGG)', 5, false, { start: 40, end: 10 }).report;
     expect(refused?.intervalRefusal, 'the refusal still reaches the reader').toBeDefined();
     expect(refused && 'seedLengthBp' in refused, 'and no length is filled in for it').toBe(false);
+  });
+});
+
+// BG-01M6SCYG: the DNA calculator weighed a dsDNA as 617.96 Da x bp + 36.04 and showed it to
+// 0.01 kDa, so a GC-rich and an AT-rich record of one length read one mass. It now weighs the active
+// and the insert records from their composition. Reference: a real Biopython 1.88 run,
+//   Bio.SeqUtils.molecular_weight(Seq(s), seq_type="DNA", double_stranded=True, circular=False,
+//                                 monoisotopic=False)
+// GC_RICH 37139.2926 Da, AT_RICH 37080.0126 Da (the length formula gave 37113.6 Da for both).
+describe('DNA calculator mass (BG-01M6SCYG)', () => {
+  const GC_RICH = 'GCGGCCGCGC'.repeat(6);
+  const AT_RICH = 'ATTAAATATT'.repeat(6);
+  const record = (id: string, sequence: string, folder = 'Sequences'): SequenceDocument =>
+    ({
+      id, name: id, accession: '', description: '', moleculeType: 'DNA', topology: 'linear', sequence,
+      features: [], primers: [], history: [], createdAt: '', updatedAt: '', folder,
+    }) as unknown as SequenceDocument;
+  const studio = (active: SequenceDocument, insert: SequenceDocument) =>
+    renderToStaticMarkup(
+      createElement(CloningAndGelStudio, {
+        documents: [active, insert], activeDoc: active, onAddConstruct: () => undefined, initialSubTool: 'dna-calculations',
+      })
+    ).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+  it('weighs the active and insert records as Biopython 1.88 does', () => {
+    const gc = computeDnaAndLigationCalculations(GC_RICH, 50, 20, 100, AT_RICH);
+    const at = computeDnaAndLigationCalculations(AT_RICH, 50, 20, 100, GC_RICH);
+    expect([gc.mwDsDnaDa, at.mwDsDnaDa]).toEqual([37139, 37080]);
+    // 1:1 molar: vector ng x insert Da / vector Da (100 x 37080.0126 / 37139.2926).
+    expect(gc.ligationRatios[0].requiredInsertMassNg).toBeCloseTo(99.84, 2);
+  });
+
+  it('shows the composition mass to the whole dalton, and the named error for a letter that is no nucleotide', () => {
+    const gcText = studio(record('gc', GC_RICH), record('ins', AT_RICH, 'Cloning Inserts & PCR'));
+    expect(gcText).toContain('dsDNA Molecular Weight 37,139 Da');
+    expect(gcText).not.toMatch(/37\.1\d kDa|37113\.6/);
+    const atText = studio(record('at', AT_RICH), record('ins', GC_RICH, 'Cloning Inserts & PCR'));
+    expect(atText).toContain('dsDNA Molecular Weight 37,080 Da');
+    // The studio's 50 ng vector: the 1:1 insert is 50 x 37139.2926 / 37080.0126 (the length ratio gave 50 ng).
+    expect(atText).toContain('50.08 ng');
+    expect(gcText).toContain('49.92 ng');
+
+    const bad = studio(record('bad', 'ACGTXACGTJ'), record('ins', AT_RICH, 'Cloning Inserts & PCR'));
+    expect(bad).toContain('The vector sequence holds letters that are no nucleotide (J, X): the DNA calculator weighs DNA only.');
+    expect(bad).not.toContain('dsDNA Molecular Weight');
+    expect(bad).not.toContain('MolBioCraft Rust Engine');
+    const badInsert = studio(record('gc', GC_RICH), record('ins', 'ACGTZ', 'Cloning Inserts & PCR'));
+    expect(badInsert).toContain('The insert sequence holds letters that are no nucleotide (Z)');
   });
 });

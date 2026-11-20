@@ -31,7 +31,7 @@ use molbiocraft_cloning::{
     batch_set_cds_translation_property, build_cloning_action_vector_document,
     build_construct_lineage_dag_rust, build_mcs_polylinker, calculate_primer_metrics,
     calculate_primer_thermodynamics_santalucia, check_cotransformation_compatibility,
-    compute_agarose_gel_band_physics, compute_dna_and_ligation_calculations,
+    compute_agarose_gel_band_physics,
     compute_document_table_metrics_rust, concatenate_sequence_documents,
     design_pcr_primers_with_slack, detect_common_features,
     evaluate_golden_gate_overhang_fidelity, evaluate_multi_digest_buffer_plan,
@@ -1170,14 +1170,16 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             to_val(thermodynamics::anneal_complementary_oligos_at(duplex_name, top, bottom, phos, now_iso))
         }
         "compute_dna_ligation_calcs" => {
-            let length_bp = usize_arg(&payload, "lengthBp", 3000);
+            // BG-01M6SCYG: the vector (`seq`) and the insert (`insertSeq`) are weighed from their
+            // composition; one with no DNA bases or a non-nucleotide letter is the engine's error.
+            let seq = str_arg(&payload, "seq", "");
             let conc = f64_arg(&payload, "concNgPerUl", 50.0);
             let vol = f64_arg(&payload, "volumeUl", 20.0);
             let vec_mass = f64_arg(&payload, "vectorMassNg", 50.0);
-            let ins_len = usize_arg(&payload, "insertLengthBp", 720);
-            to_val(compute_dna_and_ligation_calculations(
-                length_bp, conc, vol, vec_mass, ins_len,
-            ))
+            let insert_seq = str_arg(&payload, "insertSeq", "");
+            to_val(thermodynamics::compute_dna_and_ligation_calculations_for_sequences(
+                seq, conc, vol, vec_mass, insert_seq,
+            )?)
         }
         "predict_secondary_structure" => {
             let seq = str_arg(&payload, "seq", "");

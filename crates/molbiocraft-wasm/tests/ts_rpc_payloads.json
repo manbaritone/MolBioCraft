@@ -225,8 +225,8 @@
  ],
  "compute_dna_ligation_calcs": [
   "concNgPerUl",
-  "insertLengthBp",
-  "lengthBp",
+  "insertSeq",
+  "seq",
   "vectorMassNg",
   "volumeUl"
  ],

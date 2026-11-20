@@ -1318,18 +1318,18 @@ export function predictSecondaryStructure(
 }
 
 export function computeDnaAndLigationCalculations(
-  lengthBp: number,
-  concNgPerUl = 50,
-  volumeUl = 20,
-  vectorMassNg = 50,
-  insertLengthBp = 720
+  seq: string,
+  concNgPerUl: number,
+  volumeUl: number,
+  vectorMassNg: number,
+  insertSeq: string
 ): DnaLigationCalculations {
   return invokeRustBioSync<DnaLigationCalculations>('compute_dna_ligation_calcs', {
-    lengthBp,
+    seq,
     concNgPerUl,
     volumeUl,
     vectorMassNg,
-    insertLengthBp,
+    insertSeq,
   });
 }
 

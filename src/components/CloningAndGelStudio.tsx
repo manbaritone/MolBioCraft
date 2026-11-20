@@ -4,7 +4,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { TriangleAlert } from 'lucide-react';
-import { CloningMethodType, DigestFragment, GelBufferType, RestrictionEnzyme, SequenceDocument } from '../types/bio';
+import { CloningMethodType, DigestFragment, DnaLigationCalculations, GelBufferType, RestrictionEnzyme, SequenceDocument } from '../types/bio';
 import { enzymeKey } from '../core/restrictionDisplay';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { MolBioMenuGlyph, resolveMenuItemIcon } from './MolBioIcons';
@@ -278,18 +278,25 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
   const [insertId, setInsertId] = useState<string>(
     documents.find((d) => d.folder === 'Cloning Inserts & PCR')?.id ?? documents[0].id
   );
-  const dnaCalcs = useMemo(
-    () =>
-      computeDnaAndLigationCalculations(
-        activeDoc.sequence.length,
-        calcConcNgUl,
-        calcVolUl,
-        calcVecMassNg,
-        // Was a hard-coded 720 bp insert; use the selected insert document.
-        Math.max(1, documents.find((d) => d.id === insertId)?.sequence.length ?? 720)
-      ),
-    [activeDoc.sequence.length, calcConcNgUl, calcVolUl, calcVecMassNg, documents, insertId]
-  );
+  // The calculator weighs the active record and the selected insert from their composition
+  // (BG-01M6SCYG); a record the engine cannot weigh (no DNA bases, a letter that is no nucleotide)
+  // shows the engine's own sentence in place of the numbers.
+  const dnaCalcResult = useMemo((): { calcs: DnaLigationCalculations } | { error: string } => {
+    try {
+      return {
+        calcs: computeDnaAndLigationCalculations(
+          activeDoc.sequence,
+          calcConcNgUl,
+          calcVolUl,
+          calcVecMassNg,
+          documents.find((d) => d.id === insertId)?.sequence ?? ''
+        ),
+      };
+    } catch (e) {
+      return { error: (e instanceof Error ? e.message : String(e)).replace(/^\[MolBioCraft Rust Engine :: [^\]]+\]\s*/, '') };
+    }
+  }, [activeDoc.sequence, calcConcNgUl, calcVolUl, calcVecMassNg, documents, insertId]);
+  const dnaCalcs = 'calcs' in dnaCalcResult ? dnaCalcResult.calcs : null;
 
   // The reaction's enzymes are held by KEY (US-01M7HRV4): a built-in's is its catalogue name, as
   // before, a custom definition's its `custom:` id, so a custom enzyme named like a built-in is its
@@ -1391,10 +1398,17 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
               </label>
             </div>
 
+            {'error' in dnaCalcResult && (
+              <div className="cloning-warning-note" role="alert">
+                {dnaCalcResult.error}
+              </div>
+            )}
+            {dnaCalcs && (<>
             <div className="thermo-kpi-grid">
               <div className="kpi-box">
                 <span className="kpi-label">dsDNA Molecular Weight</span>
-                <strong className="kpi-val">{(dnaCalcs.mwDsDnaDa / 1000).toFixed(2)} kDa</strong>
+                {/* Biopython 1.88's average mass, to the whole dalton: its sub-dalton digits carry no information. */}
+                <strong className="kpi-val">{Math.round(dnaCalcs.mwDsDnaDa).toLocaleString('en-US')} Da</strong>
               </div>
               <div className="kpi-box">
                 <span className="kpi-label">Molarity / pmol</span>
@@ -1444,6 +1458,7 @@ export const CloningAndGelStudio: React.FC<CloningAndGelStudioProps> = ({
                 ))}
               </tbody>
             </WorkbenchSmartTable>
+            </>)}
           </div>
         )}
 

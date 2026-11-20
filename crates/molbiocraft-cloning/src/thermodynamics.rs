@@ -1088,8 +1088,12 @@ pub fn anneal_complementary_oligos_at(
     }
 }
 
-/// Compute comprehensive dsDNA / ssDNA / RNA molecular weights, molarity, Avogadro copy number,
-/// $\text{OD}_{260}$, and stoichiometric vector:insert ligation mass tables.
+/// Compute dsDNA / ssDNA / RNA molecular weights, molarity, Avogadro copy number,
+/// $\text{OD}_{260}$, and stoichiometric vector:insert ligation mass tables from LENGTHS alone.
+/// Its masses are the composition-blind estimate `617.96 Da x bp + 36.04` (and the ssDNA / RNA
+/// analogues), which misses a sequence's own mass by up to about 0.6 Da per base pair (an A:T pair
+/// weighs 617.40 Da, a G:C pair 618.39 Da); [`compute_dna_and_ligation_calculations_for_sequences`]
+/// weighs the sequences themselves (BG-01M6SCYG).
 pub fn compute_dna_and_ligation_calculations(
     length_bp: usize,
     conc_ng_per_ul: f64,
@@ -1105,12 +1109,94 @@ pub fn compute_dna_and_ligation_calculations(
     let mw_ds_dna_da = round_to(lf * 617.96 + 36.04, 1);
     let mw_ss_dna_da = round_to(lf * 308.98 + 18.02, 1);
     let mw_rna_da = round_to(lf * 321.47 + 18.02, 1);
+    let ins_mw = ins_lf * 617.96 + 36.04;
+    dna_ligation_table(
+        l,
+        [mw_ds_dna_da, mw_ss_dna_da, mw_rna_da],
+        mw_ds_dna_da,
+        (conc_ng_per_ul, volume_ul, vector_mass_ng),
+        ins_l,
+        ins_mw,
+        ins_lf / lf,
+    )
+}
 
+/// Biopython's average NMP masses in Da (`IUPACData.unambiguous_rna_weights`: A, C, G, U) and the
+/// water `molecular_weight(..., monoisotopic=False)` takes off for each bond.
+const RNA_NMP_DA: [f64; 4] = [347.2212, 323.1965, 363.2206, 324.1813];
+const WATER_DA: f64 = 18.0153;
+
+/// One sequence weighed for the calculator: (bases, dsDNA Da, ssDNA Da, RNA Da), or the sentence
+/// saying why `seq` has no mass. `role` names the input ("vector" or "insert") in that sentence.
+fn weigh_calculator_sequence(seq: &str, role: &str) -> Result<(usize, f64, f64, f64), String> {
+    let comp = molbiocraft_core::analyze_sequence_composition(seq);
+    if comp.counts.other > 0 {
+        let letters: String = comp.other_letters.iter().map(char::to_string).collect::<Vec<_>>().join(", ");
+        return Err(format!(
+            "The {role} sequence holds letters that are no nucleotide ({letters}): the DNA calculator weighs DNA only."
+        ));
+    }
+    if comp.length == 0 {
+        return Err(format!("The {role} sequence holds no DNA bases: there is no mass to weigh."));
+    }
+    let c = &comp.counts;
+    // The sense strand transcribed (T read as U); N, the other IUPAC codes and inosine each weigh
+    // the mean of the four, as the dsDNA and ssDNA masses weigh them (an estimate, as there).
+    let [ra, rc, rg, ru] = RNA_NMP_DA;
+    let codes = (comp.length - c.a - c.c - c.g - c.t) as f64;
+    let rna = c.a as f64 * ra + c.c as f64 * rc + c.g as f64 * rg + c.t as f64 * ru
+        + codes * (ra + rc + rg + ru) / 4.0
+        - (comp.length - 1) as f64 * WATER_DA;
+    Ok((comp.length, comp.mw_ds_dna_da, comp.mw_ss_dna_da, rna))
+}
+
+/// The DNA calculator on the sequences themselves (BG-01M6SCYG): the vector's and the insert's
+/// masses are Biopython 1.88's `molecular_weight(seq, seq_type="DNA", double_stranded=True,
+/// circular=False, monoisotopic=False)` (ssDNA with `double_stranded=False`; RNA is the sense strand
+/// transcribed, `seq_type="RNA"`), the linear pieces a ligation joins. A mass is given to the whole
+/// dalton: it is an average mass from standard atomic weights, whose sub-dalton digits carry no
+/// information. Molarity, pmol and copy number read the vector's mass; each ligation row gives the
+/// insert mass for that vector:insert MOLAR ratio (vector ng x insert Da / vector Da x ratio) and
+/// its pmol from the insert's own mass. An input with no DNA bases, or with a letter that is no
+/// nucleotide code, is an `Err` naming the input; IUPAC codes are weighed as the mean of the four.
+pub fn compute_dna_and_ligation_calculations_for_sequences(
+    vector_seq: &str,
+    conc_ng_per_ul: f64,
+    volume_ul: f64,
+    vector_mass_ng: f64,
+    insert_seq: &str,
+) -> Result<DnaLigationCalculations, String> {
+    let (l, ds, ss, rna) = weigh_calculator_sequence(vector_seq, "vector")?;
+    let (ins_l, ins_ds, _, _) = weigh_calculator_sequence(insert_seq, "insert")?;
+    Ok(dna_ligation_table(
+        l,
+        [ds.round(), ss.round(), rna.round()],
+        ds,
+        (conc_ng_per_ul, volume_ul, vector_mass_ng),
+        ins_l,
+        ins_ds,
+        ins_ds / ds,
+    ))
+}
+
+/// The calculator's table from its masses: `shown` is (dsDNA, ssDNA, RNA) as reported, `ds_mw` the
+/// vector dsDNA mass the derived quantities divide by, `ins_mw` the insert's, and `ins_ratio` the
+/// insert:vector mass ratio a 1:1 molar ligation takes.
+fn dna_ligation_table(
+    l: usize,
+    shown: [f64; 3],
+    ds_mw: f64,
+    (conc_ng_per_ul, volume_ul, vector_mass_ng): (f64, f64, f64),
+    ins_l: usize,
+    ins_mw: f64,
+    ins_ratio: f64,
+) -> DnaLigationCalculations {
+    let [mw_ds_dna_da, mw_ss_dna_da, mw_rna_da] = shown;
     let total_mass_ng = round_to(conc_ng_per_ul * volume_ul, 2);
-    let pmol_ds_dna = round_to((total_mass_ng * 1000.0) / mw_ds_dna_da, 3);
+    let pmol_ds_dna = round_to((total_mass_ng * 1000.0) / ds_mw, 3);
     let pmol_ends_linear = round_to(pmol_ds_dna * 2.0, 3);
-    let molarity_nanomolar = round_to((conc_ng_per_ul * 1e6) / mw_ds_dna_da, 2);
-    let copies = ((conc_ng_per_ul * 1e-9) / mw_ds_dna_da) * 6.022_140_76e23;
+    let molarity_nanomolar = round_to((conc_ng_per_ul * 1e6) / ds_mw, 2);
+    let copies = ((conc_ng_per_ul * 1e-9) / ds_mw) * 6.022_140_76e23;
     let copy_number_per_ul = format!("{:.2e}", copies);
     let od260_units = round_to(conc_ng_per_ul / 50.0, 3);
 
@@ -1121,11 +1207,10 @@ pub fn compute_dna_and_ligation_calculations(
         ("1 : 7 (Short Adapter / Linker)", 7.0),
     ];
 
-    let ins_mw = ins_lf * 617.96 + 36.04;
     let ligation_ratios = ratios
         .iter()
         .map(|(label, mult)| {
-            let req_ng = round_to(vector_mass_ng * (ins_lf / lf) * mult, 2);
+            let req_ng = round_to(vector_mass_ng * ins_ratio * mult, 2);
             let req_pmol = round_to((req_ng * 1000.0) / ins_mw, 3);
             LigationRatioRow {
                 ratio_label: (*label).to_string(),
@@ -1375,3 +1460,4 @@ mod primer_slack_tests {
         assert_eq!(legacy.reverse.bind_end, end);
     }
 }
+
