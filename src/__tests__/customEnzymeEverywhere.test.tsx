@@ -711,3 +711,78 @@ describe('US-01M7DV52 AC5: the Enzymes view ticks a custom "EcoRI" apart from th
     });
   });
 });
+
+// ─── BG-01M7DX96: the Primer & PCR studio's 5' tail pickers ───
+
+/** A custom "EcoRI" with KpnI's motif, confirmed against the built-in's name: its tail must be its own GGTACC. */
+const TAIL_ECO: CustomEnzymeInput = { name: 'EcoRI', recognitionSeq: 'GGTACC', cutFwd: 5, cutRev: 1 };
+/** A sample DNA record, whole, so the studio designs a pair over its default region. */
+const TAIL_DOC: SequenceDocument = { ...SAMPLE_LIBRARY.find((d) => d.moleculeType === 'DNA')!, id: 'pTail', name: 'pTail', primers: [] };
+const TAIL_PICKERS = ["5' Forward Enzyme Tail:", "5' Reverse Enzyme Tail:"];
+const tailPicker = (app: AppHarness, label: string): LiveElement => {
+  const field = app.all('label.form-field').find((l) => words(l.querySelectorAll('span')[0]?.textContent) === label);
+  const select = field?.querySelectorAll('select')[0];
+  if (!select) throw new Error(`the Primer & PCR studio shows no "${label}" picker`);
+  return select;
+};
+const pickerOptions = (app: AppHarness, label: string) =>
+  tailPicker(app, label).querySelectorAll('option').map((o) => ({ value: o.getAttribute('value') ?? '', text: words(o.textContent) }));
+/** The built-in catalogue as the pickers listed it before custom enzymes: by name, in catalogue order, unmarked. */
+const BUILT_IN_OPTIONS = [
+  { value: 'None', text: 'None (Blunt PCR)' },
+  ...REBASE_ENZYMES.map((e) => ({ value: e.name, text: `${e.name} (${e.recognitionSeq})` })),
+];
+async function openPrimerStudio(app: AppHarness): Promise<void> {
+  await app.clickStudio('primers-crispr');
+  await app.settle();
+  expect(app.activeTab()).toBe('primers-pcr');
+}
+/** The forward primer card's 5' tail, as the studio highlights it. */
+const forwardTail = (app: AppHarness) => {
+  const card = app.all('.primer-detail-card').find((c) => words(c.querySelectorAll('.primer-card-top strong')[0]?.textContent).startsWith('Forward Primer:'));
+  if (!card) throw new Error('the studio designed no forward primer');
+  return words(card.querySelectorAll('.tail-highlight')[0]?.textContent);
+};
+const tailSummary = (app: AppHarness) =>
+  app.all('.mbc-progressive-summary').filter((s) => words(s.textContent).startsWith("5' Cloning Adapter Tails"))
+    .map((s) => words(s.querySelectorAll('.mbc-progressive-summary-meta')[0]?.textContent));
+
+describe('BG-01M7DX96: the primer tail pickers list and resolve enzymes by id', () => {
+  it('BG-01M7DX96 AC1 the primer tail pickers list each stored custom enzyme marked custom beside the built-ins', async () => {
+    await withDoc(seeded([ADA, TAIL_ECO]), TAIL_DOC, async (app) => {
+      await openPrimerStudio(app);
+      for (const label of TAIL_PICKERS) {
+        expect(pickerOptions(app, label), label).toEqual([
+          ...BUILT_IN_OPTIONS,
+          { value: 'custom:seed-1', text: `AdaI (custom) (${ADA.recognitionSeq})` },
+          { value: 'custom:seed-2', text: 'EcoRI (custom) (GGTACC)' },
+        ]);
+      }
+    });
+  });
+
+  it('BG-01M7DX96 AC2 a custom enzyme sharing a built-in name adds its own motif to the primer tail, and the built-in adds the catalogue site', async () => {
+    await withDoc(seeded([TAIL_ECO]), TAIL_DOC, async (app) => {
+      await openPrimerStudio(app);
+      expect(tailSummary(app)).toEqual(['Blunt / Direct PCR']);
+      await app.change(tailPicker(app, TAIL_PICKERS[0]), 'custom:seed-1');
+      await app.settle();
+      expect(forwardTail(app)).toBe('GCGGGTACC');
+      expect(tailSummary(app)).toEqual(["5' EcoRI (custom) / None + 3-nt leader"]);
+      await app.change(tailPicker(app, TAIL_PICKERS[0]), 'EcoRI');
+      await app.settle();
+      expect(forwardTail(app)).toBe('GCGGAATTC');
+      expect(tailSummary(app)).toEqual(["5' EcoRI / None + 3-nt leader"]);
+    });
+  });
+
+  it('BG-01M7DX96 AC3 with no custom enzyme stored the tail pickers list the built-in catalogue as before', async () => {
+    await withDoc(memoryStorage(), TAIL_DOC, async (app) => {
+      await openPrimerStudio(app);
+      for (const label of TAIL_PICKERS) {
+        expect(pickerOptions(app, label), label).toEqual(BUILT_IN_OPTIONS);
+        expect(pickerOptions(app, label).filter((o) => o.text.includes('(custom)')), label).toEqual([]);
+      }
+    });
+  });
+});

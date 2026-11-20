@@ -14662,6 +14662,8 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                          Sites offers as the range to search beside the whole sequence
                          (US-01M7DVAS). */
                       selectedRange={selectedRange}
+                      /* The 5' tail pickers offer the catalogue and every stored custom enzyme, by key (BG-01M7DX96). */
+                      enzymes={activeEnzymes}
                       primerDatabaseRevision={primerDbRefresh}
                       onPrimerDatabaseChanged={() => setPrimerDbRefresh((n) => n + 1)}
                       allDocuments={documents}

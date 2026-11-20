@@ -6,6 +6,7 @@ import { ChevronRight } from 'lucide-react';
 import {
   CrisprGuideRecord,
   PrimerRecord,
+  RestrictionEnzyme,
   SequenceDocument,
   SequenceFeature,
 } from '../types/bio';
@@ -15,6 +16,7 @@ import {
   databasePrimerCandidate,
   designPCRPrimers,
   documentPrimerCandidate as screeningCandidateOf,
+  enzymeLabel,
   crisprNucleasePresets,
   scanCrisprGuidesAsync,
   findPrimerBindings,
@@ -25,7 +27,7 @@ import {
   type CrisprScanReport,
   type CrisprScanResult,
 } from '../core/bioEngine';
-import { sequenceRevision } from '../core/restrictionDisplay';
+import { enzymeKey, sequenceRevision } from '../core/restrictionDisplay';
 import {
   crisprGuideExportTable,
   crisprHeuristicRuleText,
@@ -334,6 +336,12 @@ interface PrimerAndPCRStudioProps {
    * interval guessed from a missing one.
    */
   selectedRange?: { start: number; end: number; label?: string } | null;
+  /**
+   * The active enzyme list the 5' tail pickers offer (BG-01M7DX96): the catalogue, then every stored
+   * custom definition, each chosen by its key, so a custom enzyme named like a built-in adds its own
+   * motif. The catalogue when not given.
+   */
+  enzymes?: readonly RestrictionEnzyme[];
 }
 
 export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
@@ -350,6 +358,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   primerDatabaseRevision = 0,
   onPrimerDatabaseChanged,
   selectedRange = null,
+  enzymes = REBASE_ENZYMES,
 }) => {
   // In the workbench the conditions of each sub-tab sit in App's inspector; drawn on its own, the
   // studio keeps every setting where it sits in its card (US-01M6TAKD).
@@ -401,15 +410,20 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
 
   const fwdTailSeq = useMemo(() => {
     if (fwdTailEnz === 'None') return '';
-    const enz = REBASE_ENZYMES.find((e) => e.name === fwdTailEnz);
+    const enz = enzymes.find((e) => enzymeKey(e) === fwdTailEnz);
     return (includeClampTail ? 'GCG' : '') + (enz?.recognitionSeq ?? '');
-  }, [fwdTailEnz, includeClampTail]);
+  }, [fwdTailEnz, includeClampTail, enzymes]);
 
   const revTailSeq = useMemo(() => {
     if (revTailEnz === 'None') return '';
-    const enz = REBASE_ENZYMES.find((e) => e.name === revTailEnz);
+    const enz = enzymes.find((e) => enzymeKey(e) === revTailEnz);
     return (includeClampTail ? 'CGC' : '') + (enz?.recognitionSeq ?? '');
-  }, [revTailEnz, includeClampTail]);
+  }, [revTailEnz, includeClampTail, enzymes]);
+  // A tail choice is an enzyme's key; the summary names it by its label, a custom one marked.
+  const tailLabel = (key: string) => {
+    const enz = key === 'None' ? undefined : enzymes.find((e) => enzymeKey(e) === key);
+    return enz ? enzymeLabel(enz) : key;
+  };
 
   // Valid linear target: inside the sequence, start before end, long enough
   // for two primers. Reversed / out-of-range regions used to produce 0-bp or
@@ -1399,7 +1413,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
         <span className="mbc-progressive-summary-meta">
           {fwdTailEnz === 'None' && revTailEnz === 'None'
             ? 'Blunt / Direct PCR'
-            : `5' ${fwdTailEnz} / ${revTailEnz}${includeClampTail ? ' + 3-nt leader' : ''}`}
+            : `5' ${tailLabel(fwdTailEnz)} / ${tailLabel(revTailEnz)}${includeClampTail ? ' + 3-nt leader' : ''}`}
         </span>
       </summary>
       <div className="form-grid-3col" style={{ marginTop: 8 }}>
@@ -1407,9 +1421,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
           <span>5&apos; Forward Enzyme Tail:</span>
           <select value={fwdTailEnz} onChange={(e) => setFwdTailEnz(e.target.value)}>
             <option value="None">None (Blunt PCR)</option>
-            {REBASE_ENZYMES.map((e) => (
-              <option key={e.name} value={e.name}>
-                {e.name} ({e.recognitionSeq})
+            {enzymes.map((e) => (
+              <option key={enzymeKey(e)} value={enzymeKey(e)}>
+                {enzymeLabel(e)} ({e.recognitionSeq})
               </option>
             ))}
           </select>
@@ -1418,9 +1432,9 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
           <span>5&apos; Reverse Enzyme Tail:</span>
           <select value={revTailEnz} onChange={(e) => setRevTailEnz(e.target.value)}>
             <option value="None">None (Blunt PCR)</option>
-            {REBASE_ENZYMES.map((e) => (
-              <option key={e.name} value={e.name}>
-                {e.name} ({e.recognitionSeq})
+            {enzymes.map((e) => (
+              <option key={enzymeKey(e)} value={enzymeKey(e)}>
+                {enzymeLabel(e)} ({e.recognitionSeq})
               </option>
             ))}
           </select>
