@@ -536,6 +536,12 @@ fn repeat_extent(seq: &[u8], from: usize, to: usize, p: usize) -> Option<(usize,
 /// outside it, not 1. Where no run of the repeat covers a side, all of that side's bases are
 /// outside it, counted once when neither side has one (BG-01M6VZNP).
 fn shared_flanks(draft: &[u8], read: &[u8], ov: &DraftOverlap, p: usize) -> (usize, usize) {
+    shared_flanks_agreeing(draft, read, ov, p, |alike, span| alike * 100 >= span * POA_MIN_OVERLAP_IDENTITY_PCT)
+}
+
+/// [`shared_flanks`], with the read's bases agreeing with the draft's over a flank of `span`
+/// columns when `agree(alike, span)`.
+fn shared_flanks_agreeing(draft: &[u8], read: &[u8], ov: &DraftOverlap, p: usize, agree: impl Fn(usize, usize) -> bool) -> (usize, usize) {
     let sides = |seq: &[u8], from: usize, to: usize| repeat_extent(seq, from, to, p).map(|(start, end)| (start - from, to - end));
     let (read_sides, draft_sides) = (sides(read, ov.read_from, ov.read_to), sides(draft, ov.draft_from, ov.draft_to));
     let (read_len, draft_len) = (ov.read_to - ov.read_from, ov.draft_to - ov.draft_from);
@@ -549,7 +555,7 @@ fn shared_flanks(draft: &[u8], read: &[u8], ov: &DraftOverlap, p: usize) -> (usi
     let shared = |(r, d): (usize, usize), pairs: &mut dyn Iterator<Item = (u8, u8)>| {
         let span = r.max(d).min(columns);
         let alike = pairs.take(span).filter(|(a, b)| a == b).count();
-        if alike * 100 >= span * POA_MIN_OVERLAP_IDENTITY_PCT {
+        if agree(alike, span) {
             r.min(d)
         } else {
             0
@@ -558,6 +564,28 @@ fn shared_flanks(draft: &[u8], read: &[u8], ov: &DraftOverlap, p: usize) -> (usi
     let before = shared((rb, db), &mut (0..).map(|k| (read[ov.read_from + k], draft[ov.draft_from + k])));
     let after = shared((ra, da), &mut (1..).map(|k| (read[ov.read_to - k], draft[ov.draft_to - k])));
     (before, after)
+}
+
+/// Whether `o`, an overlap within the drift of one placement of `best` on the same strand, departs
+/// from it only at ends where `best` ends on flank bases the read and the draft share, though
+/// fewer than the [`LAYOUT_K`] that fix it against every such overlap, adding or dropping there
+/// only bases outside the tandem repeat of unit `p` on each (BG-01M7X4HQ). Such an overlap is
+/// `best` with gap columns at that end, laying flank bases off the draft's: it adds or drops no
+/// copy of the unit, which a shift does only over bases the repeat holds. The flank is shared as
+/// in [`shared_flanks`], its columns agreeing but for at most one base in every [`LAYOUT_K`], a
+/// read error, where a flank laid a unit off disagrees in most of its bases. Reads over
+/// 1,001-1,400 starting inside a (CA)100 at 901-1,100 and ending on the 8 flank bases past it, the
+/// first 2 of them CA by chance or one miscalled, were left out by their overlaps ending 1 to 3
+/// bases off their end.
+fn departs_on_flank(draft: &[u8], read: &[u8], best: &DraftOverlap, o: &DraftOverlap, p: usize) -> bool {
+    let flanks = shared_flanks_agreeing(draft, read, best, p, |alike, span| (span - alike) * LAYOUT_K <= span);
+    let anchors = shared_flanks(draft, read, best, p);
+    let outside = |seq: &[u8], a: usize, b: usize| !repeat_cover(seq, a.min(b), a.max(b), p).contains(&true);
+    let ends = [
+        (flanks.0, anchors.0, (best.read_from, o.read_from), (best.draft_from, o.draft_from)),
+        (flanks.1, anchors.1, (best.read_to, o.read_to), (best.draft_to, o.draft_to)),
+    ];
+    ends.iter().all(|&(flank, anchor, (rb, ro), (db, dd))| (rb, db) == (ro, dd) || (flank > 0 && anchor < LAYOUT_K && outside(read, rb, ro) && outside(draft, db, dd)))
 }
 
 /// Whether a tandem repeat of unit `p` covers at least half of `seq[from..to]` (as
@@ -626,10 +654,11 @@ fn fixed_outside_repeat(draft: &[u8], read: &[u8], ov: &DraftOverlap, p: usize) 
 /// holds the whole overlap, an overlap shifted by a unit matches as well, and taking the longest
 /// silently drops copies (BG-01M6TD2N). Within those 2 bases, an overlap whose draft bases lie
 /// mostly in a tandem repeat of a unit of 2 or more bases, no longer than a base more than its
-/// shift, is a rival too, placing or not ([`shift_unit`]), unless the best starts on at least
-/// [`LAYOUT_K`] flank bases the read and the draft share ([`shared_flanks`]), which fix it: then
-/// such an overlap is the best with an indel inside the repeat, or lays those bases off the
-/// draft's (BG-01M6VZNP).
+/// shift, is a rival too, placing or not ([`shift_unit`]), unless the best starts or ends on at
+/// least [`LAYOUT_K`] flank bases the read and the draft share ([`shared_flanks`]), which fix it:
+/// then such an overlap is the best with an indel inside the repeat, or lays those bases off the
+/// draft's (BG-01M6VZNP, BG-01M7X4HQ). Nor is one that departs from the best only over flank bases
+/// at an end the best ends on fewer of them ([`departs_on_flank`]).
 ///
 /// An overlap whose draft bases lie in a tandem repeat, holding its unit at least twice, is no
 /// rival, on either strand, to a best that holds at least [`POA_MIN_OVERLAP_BP`] bases outside
@@ -663,15 +692,16 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
         fixed.borrow_mut().push((key, f));
         f
     };
-    // Whether a best starts on at least LAYOUT_K bases outside a repeat of unit p that the read and
-    // the draft share ([`shared_flanks`]), kept per best and unit like `fixed`.
+    // Whether a best starts or ends on at least LAYOUT_K bases outside a repeat of unit p that the
+    // read and the draft share ([`shared_flanks`]), kept per best and unit like `fixed`.
     let anchors: std::cell::RefCell<Vec<(Key, bool)>> = Default::default();
     let anchored = |ov: &DraftOverlap, strand: i8, p: usize| {
         let key = (ov.draft_from, ov.draft_to, ov.read_from, ov.read_to, strand, p);
         if let Some(&(_, a)) = anchors.borrow().iter().find(|(k, _)| *k == key) {
             return a;
         }
-        let a = shared_flanks(draft, seq_of(strand), ov, p).0 >= LAYOUT_K;
+        let (before, after) = shared_flanks(draft, seq_of(strand), ov, p);
+        let a = before >= LAYOUT_K || after >= LAYOUT_K;
         anchors.borrow_mut().push((key, a));
         a
     };
@@ -692,19 +722,21 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
             // that a short overlap holds keep them from repeating over half their pairs. A
             // homopolymer's shift stays the drift of one placement.
             let Some(p) = shift_unit(draft, &ov, &o) else { return false };
-            // A best that starts on at least LAYOUT_K bases outside the repeat that the read and the
-            // draft share has no such rival: those bases fix where the read's copies begin, and its
-            // own bases say how many it holds. An overlap starting where it does and ending a base
-            // or a unit on is the best with an indel inside the repeat; one starting elsewhere lays
-            // those bases off the draft's, matched only by chance. A read over the whole of a
-            // (CA)30 and 50 bases past it, the first 4 of them CACA by chance, was left out by its
-            // overlaps ending 1 to 4 bases off its end, though its start lies on the 46 flank bases
-            // past them (BG-01M6VZNP round 2). A start on the read's repeat bases, laid on the draft's flank by chance
-            // matches, fixes nothing, and its rivals stand. The best's end has no rule of its own:
-            // a band keeps one overlap per cell it can end in, the best path into it, so in the
-            // best's band no overlap ends where the best does but the best, and one ending
-            // elsewhere lays the bases the best ends on off the draft's.
-            if anchored(&ov, strand, p) {
+            // A best that starts or ends on at least LAYOUT_K bases outside the repeat that the read
+            // and the draft share has no such rival: those bases fix where the read's copies begin
+            // or end, and its own bases say how many it holds. At a start on them, an overlap
+            // starting where the best does and ending a base or a unit on is the best with an indel
+            // inside the repeat; one starting elsewhere lays those bases off the draft's, matched
+            // only by chance. An end on them is the mirror. A read over the whole of a (CA)30 and 50
+            // bases past it, the first 4 of them CACA by chance, was left out by its overlaps ending
+            // 1 to 4 bases off its end, though its start lies on the 46 flank bases past them
+            // (BG-01M6VZNP round 2); reads starting inside a (CA)100 and ending on 10 to 50 flank
+            // bases past it, by theirs, the anchor asked of the start alone (BG-01M7X4HQ). A start
+            // or an end on the read's repeat bases, laid on the draft's flank by chance matches,
+            // fixes nothing, and its rivals stand. A start or an end on fewer flank bases fixes the
+            // best against overlaps departing from it there over flank bases alone, gap columns
+            // that add or drop no copy ([`departs_on_flank`]).
+            if anchored(&ov, strand, p) || departs_on_flank(draft, seq_of(strand), &ov, &o, p) {
                 return false;
             }
             Some(p)

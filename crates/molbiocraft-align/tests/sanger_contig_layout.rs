@@ -764,7 +764,7 @@ fn assemble_all(cases: Vec<(String, Vec<PoaReadInput>)>) -> Vec<(String, PoaCont
 /// its bases lie outside the repeat; the read is fixed by the flank the read and the draft share.
 /// Where that flank starts the overlap, an overlap starting there and ending a base or a unit off
 /// is the best with an indel inside the repeat, no rival. Where it ends the overlap (the reads over
-/// 1-669 reverse), an overlap ending elsewhere lays it off the draft's. Wrong implementations, and
+/// 1-669 reverse), it fixes the read the same way, the mirror (BG-01M7X4HQ). Wrong implementations, and
 /// what catches each: an overlap ending a base or a unit off a rival ("841 bp (4 of 8 reads)", 46
 /// to 49 bases outside); 50 shared flank bases asked for (seed 1).
 #[test]
@@ -827,6 +827,95 @@ fn a_start_on_at_least_8_shared_flank_bases_fixes_the_read() {
     }
 }
 
+/// BG-01M7X4HQ: a read whose best overlap ends on at least 8 flank bases that it and the draft
+/// share is fixed by them, as one starting on them is, though it starts inside a long repeat.
+/// Reads over 1 to 1,100 + n x4 and 1,001-1,400 x4 at 1% noise across a (CA)100 at 901-1,100, so
+/// the reads over 1,001-1,400 start 100 bases inside the repeat and the overlap ends on the n flank
+/// bases past it; forward reads first, and the mirrored layout (the reads over 1,001-1,400 first,
+/// forward, so the reads over 1 to 1,100 + n are laid on their draft turned round, the overlap
+/// again ending on the n flank bases). With n 8, 10, 20 and 50, seeds 1-12: no contig differs from
+/// the amplicon over its span without naming the tandem repeat, and at least as many cases as the
+/// parent 551a20f placed give the whole 1,400 bp amplicon from all 8 reads with nothing to say: 34
+/// of 36 for n 8-20 and 12 of 12 for n 50, in each layout; and with every read on the amplicon's
+/// strand, so the reads over 1,001-1,400 are laid on the draft unturned. Wrong implementations, and
+/// what catches each: the anchor asked of the overlap's start only, as at dbc9865 ("1,108-1,150 bp
+/// (4 reads)", "18 of its bases lie outside the repeat"), 5 of 36 whole forward first, or at the
+/// end of one strand's reads only (forward first or one strand, 5 whole); 9 flank bases asked for
+/// (26 whole); overlaps ending 1 to 3 bases off over flank bases kept as rivals (31 whole: a flank
+/// begun by CA by chance, or holding a miscalled base), or the flank's bases asked to agree
+/// without that one error (33 whole).
+#[test]
+fn a_read_whose_overlap_ends_on_shared_flank_bases_past_a_long_repeat_is_placed() {
+    let mut cases = Vec::new();
+    for n in [8usize, 10, 20, 50] {
+        for layout in ["forward first", "mirrored", "one strand"] {
+            for seed in 1u32..=12 {
+                let (mut r, template) = block_amplicon(seed, &"CA".repeat(100), 901);
+                let (f, rv) = ([(1, 1100 + n); 4], [(1001, 1400); 4]);
+                let spans = match layout {
+                    "forward first" => alternate(f, rv),
+                    "mirrored" => alternate(rv, f),
+                    _ => alternate(f, rv).into_iter().map(|(a, b, _)| (a, b, true)).collect(),
+                };
+                let (reads, undecided) = noisy_reads(&mut r, &template, &spans);
+                let case = format!("(CA)100 at 901, 1-{} and 1001-1400, {layout}, seed {seed}", 1100 + n);
+                cases.push(((n, layout), case, reads, template, undecided.max(2)));
+            }
+        }
+    }
+    let meta: Vec<((usize, &str), String, usize)> = cases.iter().map(|(g, _, _, t, b)| (*g, t.clone(), *b)).collect();
+    let reports = assemble_all(cases.into_iter().map(|(_, c, reads, _, _)| (c, reads)).collect());
+    let (mut wrong, mut short) = (Vec::new(), Vec::new());
+    let mut whole = std::collections::BTreeMap::<(bool, &str), usize>::new();
+    for ((case, rep), ((n, layout), template, bound)) in reports.iter().zip(&meta) {
+        // On either strand: the contig reads along the longest read, turned round in the mirror.
+        let stretch = rep.consensus_length_bp < 1400;
+        let edits = [rep.consensus_sequence.clone(), rc(&rep.consensus_sequence)].iter().map(|c| align(c.as_bytes(), template.as_bytes(), stretch).0).min().unwrap();
+        let said = format!("{case}: {} bp ({} reads), {edits} edits; {:?}", rep.consensus_length_bp, rep.read_count, rep.warnings);
+        if !rep.warnings.iter().any(|w| w.contains("tandem repeat")) && edits > *bound {
+            wrong.push(said.clone());
+        }
+        if rep.warnings.is_empty() && rep.read_count == 8 && rep.consensus_length_bp == 1400 && edits <= *bound {
+            *whole.entry((*n == 50, *layout)).or_default() += 1;
+        } else {
+            short.push(said);
+        }
+    }
+    assert!(wrong.is_empty(), "silent contigs off the amplicon, {} of {} cases:\n{}", wrong.len(), reports.len(), wrong.join("\n"));
+    for layout in ["forward first", "mirrored", "one strand"] {
+        for (n50, floor) in [(false, 34), (true, 12)] {
+            let got = whole.get(&(n50, layout)).copied().unwrap_or(0);
+            assert!(got >= floor, "n {}, {layout}: {got} whole, the parent's {floor}; not whole:\n{}", if n50 { "50" } else { "8-20" }, short.join("\n"));
+        }
+    }
+    // The end on its own, the mirror of a_start_on_at_least_8_shared_flank_bases_fixes_the_read:
+    // four exact reads over 1,001-1,400 start inside the (CA)100; a probe over 801 to 1,100 + n,
+    // on either strand, holds 100 flank bases and 50 copies before them and ends on the n flank
+    // bases past the repeat. With n 8, 10 and 20 it is placed and the contig is the amplicon from
+    // 801; with n 1 and 2, too few to tell its overlaps ending a base or a unit off from gap
+    // columns, it is left out and named.
+    for seed in [1u32, 2, 3] {
+        for n in [1usize, 2, 8, 10, 20] {
+            for forward in [true, false] {
+                let (template, _) = draft_ending_in_a_repeat(seed, "CA", 100, &[], None);
+                let mut reads: Vec<PoaReadInput> = (0..4).map(|i| q40(&format!("rev{i}"), template[1000..1400].to_string())).collect();
+                let probe = template[800..1100 + n].to_string();
+                reads.push(q40("probe", if forward { probe } else { rc(&probe) }));
+                let rep = assemble_within(reads, 60);
+                let case = format!("probe over 801-{} {}, seed {seed}", 1100 + n, if forward { "forward" } else { "reverse" });
+                if n >= 8 {
+                    assert!(rep.warnings.is_empty(), "{case}: {:?}", rep.warnings);
+                    assert_eq!((rep.read_count, rep.consensus_sequence.as_str()), (5, &template[800..1400]), "{case}");
+                } else {
+                    let said = fits_twice(&rep);
+                    assert!(said.len() == 1 && said[0].starts_with("Read probe.ab1 ") && said[0].contains("a tandem repeat of a 2-bp unit ("), "{case}: {:?}", rep.warnings);
+                    assert_eq!((rep.read_count, rep.consensus_sequence.as_str()), (4, &template[1000..1400]), "{case}");
+                }
+            }
+        }
+    }
+}
+
 /// Homo sapiens huntingtin (HTT) RefSeqGene NG_009378.1 (NCBI RefSeq), bases 4,683-6,082: the
 /// CAG repeat of exon 1 at 515-579, (CAG)21 then CA, and the GC-rich CAACAGCCGCCA(CCG)n after it.
 const HTT_EXON1: &str = concat!(
@@ -878,3 +967,4 @@ fn reads_laid_by_chance_on_a_trinucleotide_repeat_a_base_or_two_off_are_named() 
         }
     }
 }
+
