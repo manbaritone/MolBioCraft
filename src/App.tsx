@@ -15596,7 +15596,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     aria-atomic="true"
                     data-no-window-drag
                   >
-                    <span className="statusbar-toast-text">{statusBanner}</span>
+                    <span className="statusbar-toast-text" title={statusBanner}>{statusBanner}</span>
                     <button
                       type="button"
                       className="statusbar-toast-dismiss"
@@ -15673,7 +15673,7 @@ requireActiveSession(() => handleCopySequenceToClipboard()),
                     aria-atomic="true"
                     data-no-window-drag
                   >
-                    <span className="statusbar-toast-text">{statusBanner}</span>
+                    <span className="statusbar-toast-text" title={statusBanner}>{statusBanner}</span>
                     <button
                       type="button"
                       className="statusbar-toast-dismiss"
