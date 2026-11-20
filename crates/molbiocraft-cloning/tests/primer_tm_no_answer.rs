@@ -325,6 +325,33 @@ fn designed_primers_hold_no_ambiguity_code_and_a_tail_n_names_its_reason() {
     }
     assert!(pcr.forward.anneal_sequence.len() <= 19 && pcr.reverse.anneal_sequence.len() <= 19);
 
+    // Not N alone: R, Y and the other IUPAC codes are rejected too, as primer3-py 2.4.0 refuses R
+    // ("only ACGTN allowed"; with PRIMER_LIBERAL_BASE=1 it reads R as N and rejects every candidate
+    // holding one, "too many Ns").
+    for (a, b) in [("RYR", "YRY"), ("SWK", "MBD"), ("HVR", "YHV")] {
+        let coded = format!("{at_rich}{a}{}{b}{}", acgt(356, 43), at_rich.chars().rev().collect::<String>());
+        let pcr = design_pcr_primers(&doc("pcr-code-runs", &coded, Topology::Linear), 1, 400, 60.0, "", "");
+        for p in [&pcr.forward, &pcr.reverse] {
+            assert!(acgt_only(&p.anneal_sequence), "{a}/{b} {}: {}", p.name, p.anneal_sequence);
+        }
+    }
+    // Every reverse candidate at the region's end holding an R or a Y: no reverse primer, no pair, and
+    // the warning names the region's end.
+    let tail: String = acgt(60, 49).chars().enumerate().map(|(i, c)| if i % 6 == 3 { if i % 12 == 3 { 'R' } else { 'Y' } } else { c }).collect();
+    let coded_end = format!("{}{tail}", acgt(340, 53));
+    let pcr = design_pcr_primers(&doc("pcr-coded-end", &coded_end, Topology::Linear), 1, 400, 60.0, "", "");
+    assert_eq!(
+        (pcr.forward.sequence.as_str(), pcr.reverse.sequence.as_str(), pcr.amplicon_length),
+        ("", "", 0),
+        "{:?}",
+        pcr.reverse.anneal_sequence
+    );
+    assert!(
+        pcr.warnings.iter().any(|w| w.starts_with("No reverse primer: every candidate at the region's end holds N or another base")),
+        "{:?}",
+        pcr.warnings
+    );
+
     // A 5' tail holding N: the anneal sequence is A/C/G/T, but the full primer is not, so the record
     // carries the full primer's reason (tmFullC has no answer); a clean tail carries none.
     let clean_doc = doc("pcr-clean", &acgt(400, 47), Topology::Linear);

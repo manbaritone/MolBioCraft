@@ -470,6 +470,18 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
       ),
     [doc, regionStart, regionEnd, targetTm, fwdTailSeq, revTailSeq]
   );
+  // Design Primers takes no candidate holding a base other than A/C/G/T, as Primer3 does
+  // (BG-01M6TB1R), so a region can give no pair: the engine then returns blank primers, a 0 bp
+  // amplicon and warnings saying why. The studio shows the warnings beside the design, and Bind and
+  // Amplify & Save stay disabled with them as the reason, as the Design Primers dialog refuses the pair.
+  const designWarnings = designedPCR.warnings ?? [];
+  const noPairReason =
+    designedPCR.forward?.sequence && designedPCR.reverse?.sequence && designedPCR.ampliconSeq
+      ? null
+      : designWarnings.join(' ') || 'No primer pair could be designed for this region.';
+  const pairActionReason = !pcrRegionValid
+    ? 'Choose a target region inside the sequence (start before end, at least 40 bp)'
+    : noPairReason;
 
   const customMetrics = useMemo(
     () => calculatePrimerMetrics(customOligo, naMm, mgMm, primerNm),
@@ -1127,6 +1139,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   };
 
   const handleSavePrimersToDoc = () => {
+    if (pairActionReason !== null) return;
     const updatedPrimers: PrimerRecord[] = [
       ...doc.primers,
       designedPCR.forward,
@@ -1386,6 +1399,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
   };
 
   const handleCreateAmpliconDocument = () => {
+    if (pairActionReason !== null) return;
     const ampDoc: SequenceDocument = {
       id: `doc-pcr-${Date.now()}`,
       name: `PCR_${doc.name}_${regionStart}_${regionEnd}`,
@@ -1696,6 +1710,7 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             {!inWorkbench && adapterTailsDetails}
 
             <ResultWarnings warnings={tailNotice} label="Primer tail warnings" />
+            <ResultWarnings warnings={designWarnings} label="Primer design warnings" />
 
             {/* Designed Forward & Reverse Primer Cards */}
             <div className="primer-pair-cards">
@@ -1740,13 +1755,18 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
             {dbSaveMessage && <p role="status">{dbSaveMessage}</p>}
 
             <div className="cloning-action-row">
-              <button className="btn-primary" disabled={!pcrRegionValid} onClick={handleSavePrimersToDoc}>
+              <button
+                className="btn-primary"
+                disabled={pairActionReason !== null}
+                title={pairActionReason ?? undefined}
+                onClick={handleSavePrimersToDoc}
+              >
                 + Bind Primer Pair to {doc.name}
               </button>
               <button
                 className="btn-success"
-                disabled={!pcrRegionValid}
-                title={pcrRegionValid ? undefined : 'Choose a target region inside the sequence (start before end, at least 40 bp)'}
+                disabled={pairActionReason !== null}
+                title={pairActionReason ?? undefined}
                 onClick={handleCreateAmpliconDocument}
               >
                 Amplify &amp; Save {designedPCR.ampliconLength} bp PCR Product to Workspace

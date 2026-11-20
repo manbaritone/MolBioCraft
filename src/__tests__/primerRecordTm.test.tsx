@@ -105,6 +105,7 @@ const { OperationDialog } = await import('../components/OperationDialog');
 const { designPCRPrimers } = await import('../core/bioEngine');
 const { convertSelectionToOligoPrimer } = await import('../core/workbenchBatchOperations');
 const { saveWorkbenchToLocalAutosave } = await import('../core/mbcSessionFormat');
+const { SAMPLE_LIBRARY } = await import('../data/sampleLibrary');
 type SequenceDocument = import('../types/bio').SequenceDocument;
 type PrimerRecord = import('../types/bio').PrimerRecord;
 
@@ -458,6 +459,72 @@ describe("a stored primer's Tm in the Primer studio (BG-01M6T6RZ)", () => {
     // before; the reason keeps its own words.
     const cellWords = (p: PrimerRecord) => (p === nPrimer ? ONE : p === wholePrimer ? `${wholePrimer.tmAnnealC}°C` : '57.65°C');
     expect(rows).toEqual(storedPrimers.map((p) => [p.name, cellWords(p)]));
+  });
+});
+
+// BG-01M6TB1R: Design Primers takes no candidate holding a base other than A/C/G/T, as Primer3 does,
+// so on sample COXII at the studio's default region (no CDS: 100..the record's end) every reverse
+// candidate holds an ambiguity code and the engine returns an empty pair (no sequence, no name, a 0 bp
+// amplicon) and warnings saying why (the region it adjusted, and no reverse primer). The studio offered to bind that pair and to save a 0 bp product,
+// showing no reason; it now shows the engine's warnings beside the design and keeps both buttons
+// disabled with the reason as their title, as the Design Primers dialog refuses an empty pair.
+describe('the Primer studio and an empty designed pair (BG-01M6TB1R)', () => {
+  const coxii = (id: string) => {
+    const doc = SAMPLE_LIBRARY.find((d) => d.id === id);
+    if (!doc) throw new Error(`the sample library no longer holds ${id}`);
+    return doc;
+  };
+  /** The studio's design tab on `doc`: its markup, and the props of the Bind and Amplify buttons. */
+  const mount = (doc: SequenceDocument) => {
+    const buttons: Record<string, Handlers> = {};
+    const updates: SequenceDocument[] = [];
+    const created: SequenceDocument[] = [];
+    probe.onElement = (type, props) => {
+      if (type !== 'button') return;
+      const words = ([] as unknown[]).concat(props.children).map(String).join('');
+      if (words.startsWith('+ Bind Primer Pair to')) buttons.bind = props;
+      if (words.startsWith('Amplify & Save')) buttons.amplify = props;
+    };
+    let root: El;
+    try {
+      root = parse(renderToStaticMarkup(
+        <PrimerAndPCRStudio doc={doc} onUpdateDocument={(d) => updates.push(d)} onAddConstruct={(d) => created.push(d)} />,
+      ));
+    } finally {
+      probe.onElement = null;
+    }
+    expect(Object.keys(buttons).sort(), `${doc.name}: the studio draws Bind and Amplify`).toEqual(['amplify', 'bind']);
+    return { root, buttons, updates, created };
+  };
+
+  it('shows the warning and keeps Bind and Amplify & Save disabled with the reason when no pair could be designed', () => {
+    for (const id of ['doc-tree-coxii', 'doc-aln-coxii-cds']) {
+      const doc = coxii(id);
+      const end = Math.min(doc.sequence.length, 820);
+      const pair = designPCRPrimers(doc, 100, end, 60, '', '', 0);
+      expect([pair.forward.sequence, pair.reverse.sequence, pair.ampliconLength], `${id}: the engine returns no pair`).toEqual(['', '', 0]);
+      const reason = (pair.warnings ?? []).join(' ');
+      expect(reason, `${id}: the engine says why`).toMatch(/No reverse primer: every candidate at the region's end holds /);
+
+      const { root, buttons, updates, created } = mount(doc);
+      const shown = one(root, (e) => e.attrs['aria-label'] === 'Primer design warnings', `${id}: the design's warnings`);
+      expect(findAll(shown, (e) => e.tag === 'p').map(wordsOf), `${id}: each warning the engine gave`).toEqual(pair.warnings);
+      for (const which of ['bind', 'amplify'] as const) {
+        expect(buttons[which].disabled, `${id}: ${which} is disabled`).toBe(true);
+        expect(buttons[which].title, `${id}: ${which} says why`).toBe(reason);
+        (buttons[which].onClick as () => void)();
+      }
+      expect([updates, created], `${id}: a click binds and saves nothing`).toEqual([[], []]);
+    }
+  });
+
+  it('keeps Bind and Amplify & Save enabled, with no design warning, for a designed pair', () => {
+    expect(designed.forward.sequence && designed.reverse.sequence, 'the template gives a pair').toBeTruthy();
+    const { root, buttons, updates } = mount(template);
+    expect(findAll(root, (e) => e.attrs['aria-label'] === 'Primer design warnings')).toEqual([]);
+    expect([buttons.bind.disabled, buttons.amplify.disabled, buttons.bind.title, buttons.amplify.title]).toEqual([false, false, undefined, undefined]);
+    (buttons.bind.onClick as () => void)();
+    expect(updates.map((d) => d.primers.length)).toEqual([template.primers.length + 2]);
   });
 });
 

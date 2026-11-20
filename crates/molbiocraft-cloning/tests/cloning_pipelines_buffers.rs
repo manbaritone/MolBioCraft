@@ -1411,14 +1411,27 @@ const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
     // US-01M6Q164 AC9 (D0246) then moved it, and only it of the two History-free pipelines, from
     // 4d07376a9b25b0c7: its step 2 (Open Protein Analysis) targets the Protein studio, protein-3d,
     // in place of History, which no longer hosts protein analysis; no verdict or number moved.
-    // BG-01M6TB1R (D0279) then moved both, from 2a1058a785d6deb7 and 48ee426c46530b6e: their primer
-    // steps (flanking-primers, t7e1-genotyping) handed protein records to primer design, which read
-    // protein letters as primers ("MVSKGEELF..." at Tm 58.8 °C, a 239-bp amplicon). Primer design now
-    // rejects every candidate holding a base other than A, C, G or T, as Primer3 does, and a protein
-    // record is no longer handed to it: on each protein record (14 in cloning-expression-qc, the
-    // structures and the protein alignments) the step is a WARN saying it holds no DNA, and on COXII
-    // and COXII CDS, whose genotyping region ends on ambiguity codes, t7e1-genotyping is a WARN naming
-    // the design's reason (16 records in crispr-hdr-knockout).
+    // BG-01M6TB1R (D0279) then moved both, from 2a1058a785d6deb7 and 48ee426c46530b6e, in their primer
+    // steps (flanking-primers, t7e1-genotyping), each moved record's step going from PASS to WARN and
+    // its readiness score down 9 (91 -> 82, 54 -> 45, 100 -> 91, ...). Counted record by record, the
+    // reader-visible report of each sample record before d29ef4a against after it: 33 of the 102
+    // records moved in cloning-expression-qc and 35 in crispr-hdr-knockout, of three kinds.
+    // - 15 protein records in each: eGFP (1EMA), SpCas9 HNH (4OO8), Klentaq1 (1TAQ), NanoLuc (5IBO),
+    //   IsPETase (5XJH), preproinsulin (1MSO), Receptor Kinase, Ferredoxin, NARH, the 1D66 and 1A4Y
+    //   complexes, LysR family, Pairwise protein and Three Kingdoms (in the library twice). Primer
+    //   design read their protein letters as primers ("MVSKGEELF..." at Tm 58.8 °C, a 239-bp
+    //   amplicon); a protein record is no longer handed to it, and the step says it holds no DNA.
+    // - 18 short DNA oligos in each (17 to 24 bp): CMV_IE_Enhancer_Fwd, EF1a_IntronA_Seq_Fwd,
+    //   bGH_PolyA_Reverse, WPRE_3Prime_Verify_Rev, 16S_rRNA_27F_Universal, 16S_rRNA_1492R_Universal,
+    //   M13-F (-20), (-40) and (-46), M13-R (-26) and (-46), T7, T3 (17, 20 and 24 bp), SP6, VF2 and
+    //   VR. The step was a PASS on no pair ("Designed 0-bp verification amplicon (... suggested Ta =
+    //   -2.0°C)", "Genotyping PCR yields 0 bp WT band ..."), and is now a WARN with the design's
+    //   reason ("The template is 17 bp; at least 34 bp are needed for a primer pair.").
+    // - COXII and COXII CDS, in crispr-hdr-knockout only: every reverse candidate at the genotyping
+    //   region's END holds an ambiguity code (the old reverse primer read TTATAGTATTAATGCRGATCAGTTTTCG),
+    //   which Primer3 rejects, so t7e1-genotyping is a WARN naming the design's reason ("No reverse
+    //   primer: every candidate at the region's end holds N or another base ...") in place of a 550 bp
+    //   amplicon.
     ("cloning-expression-qc", "e781403aa66221ba"),
     ("crispr-hdr-knockout", "e3fc8a8ec08080d6"),
     // US-01M6VF33 (D0198) moved multihost-protein-mrna, and only it, from b86e224078c60f5f, by
@@ -1510,8 +1523,8 @@ fn pipeline_primer_steps_name_why_there_is_no_pair() {
         assert!(!report.visual_zones.iter().any(|z| z.id == zone || z.id == "primer-rev"), "{pipeline}: a zone for no primer");
         assert_ne!(report.overall_status, "PASS", "{pipeline}: a step that could not run is no pass");
     }
-    // A DNA record whose genotyping region starts on ambiguity codes: no pair, and the design's own
-    // reason is named.
+    // A DNA record whose genotyping region ends on ambiguity codes (every reverse candidate at the
+    // region's end holds one): no pair, and the design's own reason is named.
     let coxii = by_name("COXII");
     let report = execute_bio_pipeline_rust(coxii, "crispr-hdr-knockout", "macos", "2026-11-15T00:00:00Z").unwrap();
     let step = report.steps.iter().find(|s| s.id == "t7e1-genotyping").unwrap();
