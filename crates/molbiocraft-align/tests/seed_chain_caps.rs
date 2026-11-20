@@ -355,3 +355,109 @@ fn every_copy_of_a_tandem_array_finds_its_unit() {
     // query coverage above), so no copy is left out
     assert!(report.total_chains >= 300, "{} chains", report.total_chains);
 }
+
+/// `s` with each base replaced, with chance `per_mille` in 1,000, by a different base.
+fn substitute_per_mille(s: &[u8], seed: u64, per_mille: u64) -> Vec<u8> {
+    let mut r = SplitMix(seed);
+    s.iter()
+        .map(|&b| {
+            let z = r.next();
+            if z % 1000 >= per_mille {
+                return b;
+            }
+            let i = b"ACGT".iter().position(|&c| c == b).unwrap();
+            b"ACGT"[(i + 1 + ((z >> 32) % 3) as usize) % 4]
+        })
+        .collect()
+}
+
+/// BG-01M6T61T: on skewed base composition a chance anchor beside a chain end, within 25 kb and
+/// a small diagonal shift, is a likely predecessor or successor, and a chain could reach it and
+/// the next chance anchor beyond, because the significance test judged only the whole chain. A
+/// gap-crossing extension now joins only when the anchors it brings pass that test on their own,
+/// so a 5 kb inversion planted at 40,001-45,000 in a 25%-GC 120 kb pair 1% apart is reported
+/// there, on both genomes, in every one of 40 seeds. Before the fix 7 of these 40 did not, as wide
+/// as 17,993-66,974 on both genomes.
+#[test]
+fn a_planted_inversion_on_skewed_composition_spans_only_its_block() {
+    let near = |got: usize, want: usize| got.abs_diff(want) <= 60;
+    let mut wrong = Vec::new();
+    for seed in 0..40u64 {
+        let target = bases_with_gc(120_000, 250, 0x7a25_0000 + seed);
+        let planted = [target[..40_000].to_vec(), revcomp(&target[40_000..45_000]), target[45_000..].to_vec()].concat();
+        let query = substitute(&planted, 0x7a26_0000 + seed, 100);
+        let report = chain(&target, &query);
+        let inversions: Vec<_> = report
+            .chains
+            .iter()
+            .filter(|c| c.strand == -1)
+            .map(|c| (c.target_start_bp, c.target_end_bp, c.query_start_bp, c.query_end_bp, c.anchor_count))
+            .collect();
+        let placed = report.inversion_chains == 1
+            && inversions.len() == 1
+            && {
+                let (ts, te, qs, qe, _) = inversions[0];
+                near(ts, 40_001) && near(te, 45_000) && near(qs, 40_001) && near(qe, 45_000)
+            };
+        if !placed {
+            wrong.push((seed, inversions));
+        }
+    }
+    assert!(wrong.is_empty(), "inversions not at 40,001-45,000 on both genomes: {wrong:?}");
+}
+
+/// BG-01M6T61T: a segment moved from between two co-linear blocks (target A-D-B-C, query
+/// A-B-C-D) lies in the gap of the A-B-C chain's span, where no A-B-C anchor falls, so it is a
+/// translocation, not a duplication; a block the query holds twice is still a duplication.
+#[test]
+fn a_moved_segment_is_labelled_translocation() {
+    let a = random_bases(30_000, 0xa0);
+    let d = random_bases(2_000, 0xd0);
+    let b = random_bases(130_000, 0xb0);
+    let c = random_bases(40_000, 0xc0);
+    let target = [a.clone(), d.clone(), b.clone(), c.clone()].concat();
+    let query = [a.clone(), b.clone(), c.clone(), d.clone()].concat();
+    let report = chain(&target, &query);
+    let shown: Vec<_> = report.chains.iter().map(|c| (c.target_start_bp, c.target_end_bp, c.query_start_bp, c.query_end_bp, c.structural_event.clone())).collect();
+    assert_eq!(report.total_chains, 2, "{shown:?}");
+    assert_eq!(report.chains[0].structural_event, "colinear", "{shown:?}");
+    let moved = &report.chains[1];
+    assert!(moved.target_start_bp.abs_diff(30_001) <= 30 && moved.query_start_bp.abs_diff(200_001) <= 30, "{shown:?}");
+    assert_eq!(moved.structural_event, "translocation", "{shown:?}");
+    assert!(moved.is_primary, "{shown:?}");
+
+    // D moved with a copy of B's first 200 bp: its chain overlaps A-B-C's anchors on 200 of its
+    // 2,200 target bases, so it is still a translocation
+    let report = chain(&target, &[a.clone(), b.clone(), c.clone(), d.clone(), b[..200].to_vec()].concat());
+    let shown: Vec<_> = report.chains.iter().map(|c| (c.target_start_bp, c.target_end_bp, c.query_start_bp, c.query_end_bp, c.structural_event.clone())).collect();
+    assert_eq!(report.total_chains, 2, "{shown:?}");
+    let moved = &report.chains[1];
+    assert!(moved.target_start_bp.abs_diff(30_001) <= 30 && moved.target_end_bp.abs_diff(32_200) <= 30, "{shown:?}");
+    assert_eq!(moved.structural_event, "translocation", "{shown:?}");
+
+    // A-D-B-C against A-D-B-C-D: the query holds D twice, so its second copy is a duplication
+    let doubled = [a, d.clone(), b, c, d].concat();
+    let report = chain(&target, &doubled);
+    let shown: Vec<_> = report.chains.iter().map(|c| (c.target_start_bp, c.target_end_bp, c.query_start_bp, c.query_end_bp, c.structural_event.clone())).collect();
+    assert_eq!(report.total_chains, 2, "{shown:?}");
+    let copy = &report.chains[1];
+    assert!(copy.target_start_bp.abs_diff(30_001) <= 30 && copy.query_start_bp.abs_diff(202_001) <= 30, "{shown:?}");
+    assert_eq!(copy.structural_event, "duplication", "{shown:?}");
+    assert!(!copy.is_primary, "{shown:?}");
+}
+
+/// BG-01M6T61T: a chain's identity is 1 - d for the share d of bases that differ. It read
+/// 1 + ln(1 - d) (the Mash distance taken for d), 82.5% on a colinear 120 kb pair 15% apart.
+#[test]
+fn chain_identity_reads_one_minus_the_divergence() {
+    let target = random_bases(120_000, 0x1d15);
+    let query = substitute_per_mille(&target, 0x1d16, 150);
+    let truth = ungapped_identity_pct(&target, &query);
+    assert!((84.5..85.5).contains(&truth), "fixture: 15% substituted, {truth}");
+    let report = chain(&target, &query);
+    let shown: Vec<_> = report.chains.iter().map(|c| (c.target_start_bp, c.target_end_bp, c.anchor_count, c.estimated_identity_pct, c.structural_event.clone())).collect();
+    let main = &report.chains[0];
+    assert!(main.target_start_bp <= 200 && main.target_end_bp + 200 >= 120_000, "one chain across the pair: {shown:?}");
+    assert!((84.0..=86.0).contains(&main.estimated_identity_pct), "identity {} against {truth:.2}: {shown:?}", main.estimated_identity_pct);
+    assert!((84.0..=86.0).contains(&report.weighted_identity_pct), "weighted identity {}", report.weighted_identity_pct);
+}
