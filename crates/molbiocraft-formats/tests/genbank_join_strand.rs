@@ -184,3 +184,45 @@ fn mixed_strand_join_keeps_its_listed_order_and_warns_in_notes() {
     assert_eq!(cds_shape(&wrapped), (1, 11, 160, vec![(1, 11, 40), (2, 101, 160)]));
     assert!(notes(&wrapped).unwrap().contains("- CDS mixOuter complement(join(11..40,complement(101..160))) mixes plus- and minus-strand parts"));
 }
+
+/// BG-01M6T954 AC1: complement() around a join whose every part is complemented is a double
+/// complement, which Biopython 1.88 rejects (it sets the location to None). The importer keeps the
+/// feature, and the document's Notes carry a warning naming the location as written. Its two
+/// complements are not read as cancelling to a plus-strand feature: it is held as a mixed-strand
+/// location is, on the plus strand in the listed order, and the warning says so.
+#[test]
+fn a_complement_around_a_join_of_complemented_parts_warns_in_notes() {
+    let seq = seeded_dna(600, 41);
+    let warning = |name: &str, location: &str| {
+        format!(
+            "Warnings:\n- CDS {name} {location} is a double complement, a complement() around parts already complemented, \
+             which Biopython 1.88 rejects; it was imported on the plus strand in the listed order, so its translation is not the annotated protein.\n"
+        )
+    };
+    let location = "complement(join(complement(11..40),complement(101..160)))";
+    let doc = parse_genbank_flatfile(&genbank_record("dblComp", &seq, "linear", location), "d");
+    assert_eq!(doc.sequence, seq, "the record's bases");
+    assert_eq!(cds_shape(&doc), (1, 11, 160, vec![(1, 11, 40), (2, 101, 160)]), "the feature is kept, its parts as listed");
+    let notes_text = notes(&doc).unwrap_or_default();
+    assert!(notes_text.contains(&format!("- CDS dblComp {location} ")), "the warning names the feature and its location: {notes_text:?}");
+    assert_eq!(notes_text, warning("dblComp", location));
+
+    // Listed in descending order, so sorting or reversing the parts would show: they stay as listed.
+    let descending = "complement(join(complement(101..160),complement(11..40)))";
+    let desc_doc = parse_genbank_flatfile(&genbank_record("dblDesc", &seq, "linear", descending), "d");
+    assert_eq!(cds_shape(&desc_doc), (1, 11, 160, vec![(1, 101, 160), (2, 11, 40)]));
+    assert_eq!(notes(&desc_doc), Some(warning("dblDesc", descending)));
+
+    // A complement() directly around a complemented range is a double complement too.
+    let nested = "complement(complement(11..40))";
+    let nested_doc = parse_genbank_flatfile(&genbank_record("dblRange", &seq, "linear", nested), "d");
+    assert_eq!(cds_shape(&nested_doc), (1, 11, 40, vec![]));
+    assert_eq!(notes(&nested_doc), Some(warning("dblRange", nested)));
+
+    // Three complements read the range on the minus strand, but the location is still a double
+    // complement, not a minus-strand range nor a mix of strands.
+    let triple = "complement(complement(complement(11..40)))";
+    let triple_doc = parse_genbank_flatfile(&genbank_record("tripleRange", &seq, "linear", triple), "d");
+    assert_eq!(cds_shape(&triple_doc), (1, 11, 40, vec![]));
+    assert_eq!(notes(&triple_doc), Some(warning("tripleRange", triple)));
+}

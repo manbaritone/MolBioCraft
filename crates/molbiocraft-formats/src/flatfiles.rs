@@ -55,6 +55,12 @@ pub struct InsdcLocation {
     /// The location joins plus- and minus-strand parts, which one strand cannot hold: it is then
     /// held on the plus strand with its parts in the listed order.
     pub mixed_strands: bool,
+    /// A `complement()` is written around a part that is already complemented, as in
+    /// `complement(join(complement(11..40),complement(101..160)))`: a double complement, which
+    /// Biopython 1.88 rejects (it sets the feature's location to None). It is held as a mixed-strand
+    /// location is, on the plus strand with its parts in the listed order, never read as the plus
+    /// strand the two complements would cancel to.
+    pub double_complement: bool,
 }
 
 /// Each part of a location, by its place in the comma-separated list, with whether it is on the
@@ -62,18 +68,24 @@ pub struct InsdcLocation {
 /// parts of `x` in reverse order, each on the other strand, and `join`, `order` and any other
 /// wrapper read theirs in the listed order. A part is placed by the wrapper around its first digit;
 /// a wrapper left open at the end of the text closes there, and a `)` with none open is ignored.
-fn part_reading_order(compact: &str) -> Vec<(usize, bool)> {
-    // The open wrappers, innermost last: whether each is complement(), and its parts so far.
-    let mut frames: Vec<(bool, Vec<(usize, bool)>)> = vec![(false, Vec::new())];
-    let close = |frames: &mut Vec<(bool, Vec<(usize, bool)>)>| {
+/// The flag is true when a `complement()` holds another `complement()` (a double complement).
+fn part_reading_order(compact: &str) -> (Vec<(usize, bool)>, bool) {
+    // The open wrappers, innermost last: whether each is complement(), its parts so far, and
+    // whether a complement() has closed inside it.
+    type Frame = (bool, Vec<(usize, bool)>, bool);
+    let mut frames: Vec<Frame> = vec![(false, Vec::new(), false)];
+    let mut double = false;
+    let mut close = |frames: &mut Vec<Frame>| {
         if frames.len() > 1 {
-            if let Some((complement, mut parts)) = frames.pop() {
+            if let Some((complement, mut parts, holds_complement)) = frames.pop() {
                 if complement {
+                    double |= holds_complement;
                     parts.reverse();
                     parts.iter_mut().for_each(|p| p.1 = !p.1);
                 }
                 if let Some(parent) = frames.last_mut() {
                     parent.1.extend(parts);
+                    parent.2 |= complement || holds_complement;
                 }
             }
         }
@@ -82,7 +94,7 @@ fn part_reading_order(compact: &str) -> Vec<(usize, bool)> {
     for (i, c) in compact.char_indices() {
         match c {
             '(' => {
-                frames.push((&compact[word_start..i] == "complement", Vec::new()));
+                frames.push((&compact[word_start..i] == "complement", Vec::new(), false));
                 word_start = i + 1;
             }
             ')' => {
@@ -106,7 +118,7 @@ fn part_reading_order(compact: &str) -> Vec<(usize, bool)> {
     while frames.len() > 1 {
         close(&mut frames);
     }
-    frames.pop().map(|f| f.1).unwrap_or_default()
+    (frames.pop().map(|f| f.1).unwrap_or_default(), double)
 }
 
 /// Parses an INSDC feature location, reading each part's own `complement()`, into the one strand
@@ -120,9 +132,12 @@ fn part_reading_order(compact: &str) -> Vec<(usize, bool)> {
 ///   `complement(join(101..160,11..40))`, with parts 101..160 then 11..40: never sorted. Biopython
 ///   1.88 reads each such pair as one location and extracts the same protein from it;
 /// - parts on both strands (`join(11..40,complement(101..160))`, a trans-spliced gene): strand 1,
-///   the parts in the listed order, and `mixed_strands`, since a feature carries one strand.
-///   A `complement()` around a join that holds a complemented part, which Biopython 1.88 rejects
-///   as a double complement, is read the same way.
+///   the parts in the listed order, and `mixed_strands`, since a feature carries one strand;
+/// - a `complement()` around a part that is already complemented, which Biopython 1.88 rejects as
+///   a double complement (`complement(join(11..40,complement(101..160)))`, or
+///   `complement(join(complement(11..40),complement(101..160)))`, whose two complements would
+///   otherwise cancel to the plus strand): strand 1, the parts in the listed order, and
+///   `double_complement` (and `mixed_strands` too when its parts read on both strands).
 ///
 /// A range written across the origin (`8569..276`, as some sequence editors write it) is the two parts
 /// `8569..` [`WRAP_TO_END`] and `1..276`, kept in that order inside its place. Remote references
@@ -156,15 +171,13 @@ pub fn parse_insdc_location_parts(loc: &str) -> Option<InsdcLocation> {
             }
         })
         .collect();
-    let read: Vec<(usize, bool)> = part_reading_order(&compact)
-        .into_iter()
-        .filter(|&(p, _)| pieces.get(p).is_some_and(|i| !i.is_empty()))
-        .collect();
-    let all_minus = !read.is_empty() && read.iter().all(|&(_, minus)| minus);
-    let mixed_strands = !all_minus && read.iter().any(|&(_, minus)| minus);
+    let (read, double_complement) = part_reading_order(&compact);
+    let read: Vec<(usize, bool)> = read.into_iter().filter(|&(p, _)| pieces.get(p).is_some_and(|i| !i.is_empty())).collect();
+    let all_minus = !double_complement && !read.is_empty() && read.iter().all(|&(_, minus)| minus);
+    let mixed_strands = read.iter().any(|&(_, minus)| minus) && read.iter().any(|&(_, minus)| !minus);
     let order: Vec<usize> = if all_minus {
         read.iter().rev().map(|&(p, _)| p).collect()
-    } else if mixed_strands {
+    } else if mixed_strands || double_complement {
         (0..pieces.len()).collect()
     } else {
         read.iter().map(|&(p, _)| p).collect()
@@ -175,12 +188,14 @@ pub fn parse_insdc_location_parts(loc: &str) -> Option<InsdcLocation> {
     }
     let start = intervals.iter().map(|i| i.0).min()?.max(1);
     let end = intervals.iter().map(|i| i.1).max()?.max(start);
-    Some(InsdcLocation { start, end, strand: if all_minus { -1 } else { 1 }, intervals, mixed_strands })
+    Some(InsdcLocation { start, end, strand: if all_minus { -1 } else { 1 }, intervals, mixed_strands, double_complement })
 }
 
 /// The D0005 warning for a feature whose location mixes strands (see
-/// [`InsdcLocation::mixed_strands`]), naming it by its /gene, else its /locus_tag, else its name.
-fn mixed_strand_warning(f: &SequenceFeature, location: &str) -> String {
+/// [`InsdcLocation::mixed_strands`]) or is a double complement (see
+/// [`InsdcLocation::double_complement`]), naming it by its /gene, else its /locus_tag, else its
+/// name. A location that is both gets the mixed-strand warning.
+fn strand_warning(f: &SequenceFeature, location: &str, mixed_strands: bool) -> String {
     let first = |key: &str| {
         f.qualifiers
             .as_ref()
@@ -191,8 +206,13 @@ fn mixed_strand_warning(f: &SequenceFeature, location: &str) -> String {
     };
     let name = first("gene").or_else(|| first("locus_tag")).unwrap_or_else(|| f.name.clone());
     let consequence = if f.feature_type == "CDS" { "its translation is not the annotated protein" } else { "its sequence is not the annotated one" };
+    let problem = if mixed_strands {
+        "mixes plus- and minus-strand parts, which one feature here cannot hold"
+    } else {
+        "is a double complement, a complement() around parts already complemented, which Biopython 1.88 rejects"
+    };
     format!(
-        "{} {name} {location} mixes plus- and minus-strand parts, which one feature here cannot hold; it was imported on the plus strand in the listed order, so {consequence}.",
+        "{} {name} {location} {problem}; it was imported on the plus strand in the listed order, so {consequence}.",
         f.feature_type
     )
 }
@@ -537,8 +557,9 @@ fn segments_from_intervals(name: &str, color: &str, intervals: &[(usize, usize)]
 /// A feature's location is read by [`parse_insdc_location_parts`]: a join whose parts are each
 /// complemented is stored as its `complement(join(...))` form is, on the minus strand with its
 /// parts in the reverse of the listed order, numbered 1..n in that order. A location that mixes
-/// plus- and minus-strand parts is kept, on the plus strand in the listed order, and the
-/// document's Notes (`doc_metadata["Notes"]`, shown on the Info tab) end with the D0005 block
+/// plus- and minus-strand parts, or is a double complement (a `complement()` around parts already
+/// complemented, which Biopython 1.88 rejects), is kept, on the plus strand in the listed order,
+/// and the document's Notes (`doc_metadata["Notes"]`, shown on the Info tab) end with the D0005 block
 /// withWarningNotes writes, "Warnings:" and one "- " line per such feature (a repeated line once),
 /// naming it by its /gene, else its /locus_tag (BG-01M6SMBS). A record with no such feature gets no
 /// Notes.
@@ -680,9 +701,9 @@ fn parse_insdc_record(
                 }
             }
         }
-        if location.is_some_and(|l| l.mixed_strands) {
+        if let Some(l) = location.as_ref().filter(|l| l.mixed_strands || l.double_complement) {
             let compact: String = loc.chars().filter(|c| !c.is_whitespace()).collect();
-            warnings.push(mixed_strand_warning(&f, &compact));
+            warnings.push(strand_warning(&f, &compact, l.mixed_strands));
         }
         f
     }
