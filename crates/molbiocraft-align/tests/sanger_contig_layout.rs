@@ -590,7 +590,11 @@ fn reads_are_placed_only_on_called_overlap_bases() {
 /// nothing to say, or names the reads it left out with the 2-bp unit and keeps a stretch of the
 /// amplicon. Wrong implementations, and what catches each: a unit shift kept inside the window
 /// (the silent 1,388-1,390 bp contigs); the window widened instead (h 41 and 45, whose reads then
-/// collapse); a unit named from no placement ("a repeat", refused by `kept_and_named`).
+/// collapse); a unit named from no placement ("a repeat", refused by `kept_and_named`). Every read
+/// named overlaps the others only inside the (CA)150, so every sentence says so, with no count of
+/// bases outside it (BG-01M6VZNP round 2): a read's substitutions near its end, as read0's at 591
+/// and 594 with h 52 and seed 7, counted as outside it ("10 of its bases lie outside the repeat"),
+/// and so did a read's repeat bases laid on the draft's flank.
 #[test]
 fn a_dinucleotide_repeat_ending_48_to_53_bases_into_the_reverse_reads_is_never_silently_collapsed() {
     let spans = alternate([(1, 600); 4], [(560, 1400); 4]);
@@ -627,7 +631,7 @@ fn a_dinucleotide_repeat_ending_48_to_53_bases_into_the_reverse_reads_is_never_s
             if edits > *bound {
                 wrong.push(format!("{case}: silent, {} bp ({} reads), {edits} edits; {:?}", rep.consensus_length_bp, rep.read_count, rep.warnings));
             }
-        } else if named.iter().any(|w| !w.contains("inside a tandem repeat of a 2-bp unit (")) {
+        } else if named.iter().any(|w| !w.contains("only inside a tandem repeat of a 2-bp unit (") || w.contains("outside the repeat")) {
             wrong.push(format!("{case}: {named:?}"));
         }
     }
@@ -690,23 +694,187 @@ fn the_unit_is_named_from_the_best_when_every_rival_is_on_the_other_strand() {
 /// catches each: the old sentence (every case); a fixed number (30 and 49 differ); a substitution
 /// inside the repeat, on the read and the draft, counted as outside it (30 with one at base 950:
 /// still 30, not 31); reads with bases outside grouped into one sentence (30 and 45 together).
+/// Round 2: 1 to 8 bases outside it are named as well, on seeds 1-3, where a stretch of up to 8
+/// bases at a read's end was counted inside the repeat ("only inside" for 1, 3, 5 and 8); and one
+/// base outside it "lies" there. Every case is assembled again with every read reversed, so the
+/// draft runs the other way and the probe's bases outside the repeat end its overlap rather than
+/// start it: a count of either end alone fails one of the two.
 #[test]
 fn a_read_with_few_unique_bases_names_how_many_lie_outside_the_repeat() {
-    for (outside, sub) in [(&[30usize][..], None), (&[49], None), (&[30], Some(950usize)), (&[30, 45], None)] {
-        for seed in [1u32, 2] {
-            let (template, reads) = draft_ending_in_a_repeat(seed, "AT", 60, outside, sub);
+    let few = [1usize, 2, 3, 4, 5, 6, 7, 8, 9];
+    let cases = few.iter().map(|n| (std::slice::from_ref(n), None, &[1u32, 2, 3][..]));
+    let cases = cases.chain([(&[30usize][..], None, &[1u32, 2][..]), (&[49], None, &[1, 2]), (&[30], Some(950usize), &[1, 2]), (&[30, 45], None, &[1, 2])]);
+    for (outside, sub, seeds) in cases {
+        for (&seed, reversed) in seeds.iter().flat_map(|s| [(s, false), (s, true)]) {
+            let (template, mut reads) = draft_ending_in_a_repeat(seed, "AT", 60, outside, sub);
+            if reversed {
+                for read in &mut reads {
+                    read.sequence = rc(&read.sequence);
+                }
+            }
             let rep = assemble_within(reads, 60);
-            let case = format!("{outside:?} outside, substituted at {sub:?}, seed {seed}");
+            let case = format!("{outside:?} outside, substituted at {sub:?}, seed {seed}, reversed {reversed}");
             let said = fits_twice(&rep);
             assert_eq!(said.len(), outside.len(), "{case}: {:?}", rep.warnings);
             for (k, &n) in outside.iter().enumerate() {
                 let name = if k == 0 { "probe.ab1".to_string() } else { format!("probe{}.ab1", k + 1) };
                 let w = said.iter().find(|w| w.starts_with(&format!("Read {name} "))).unwrap_or_else(|| panic!("{case}: {name} has a sentence of its own; {said:?}"));
-                assert!(w.contains(&format!(": {n} of its bases lie outside the repeat")), "{case}: {w}");
+                let verb = if n == 1 { "lies" } else { "lie" };
+                assert!(w.contains(&format!(": {n} of its bases {verb} outside the repeat")), "{case}: {w}");
                 assert!(!w.contains("only inside"), "{case}: {w}");
                 assert!(w.contains("a tandem repeat of a 2-bp unit ("), "{case}: {w}");
             }
-            assert_eq!((rep.read_count, rep.consensus_sequence.as_str()), (4, &template[..1000]), "{case}");
+            let contig = if reversed { rc(&rep.consensus_sequence) } else { rep.consensus_sequence.clone() };
+            assert_eq!((rep.read_count, contig.as_str()), (4, &template[..1000]), "{case}");
+        }
+    }
+}
+
+/// Each case's assembly, four at a time on threads of their own, under a 120 s deadline each.
+fn assemble_all(cases: Vec<(String, Vec<PoaReadInput>)>) -> Vec<(String, PoaContigAssemblyReport)> {
+    let mut done = Vec::new();
+    let mut cases = cases.into_iter().peekable();
+    while cases.peek().is_some() {
+        let runs: Vec<_> = cases
+            .by_ref()
+            .take(4)
+            .map(|(case, reads)| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(assemble_sanger_contig_poa(&reads, "contig", true));
+                });
+                (case, rx)
+            })
+            .collect();
+        for (case, rx) in runs {
+            let rep = rx.recv_timeout(Duration::from_secs(120)).unwrap_or_else(|_| panic!("{case}: the assembly did not finish within 120 s"));
+            done.push((case, rep));
+        }
+    }
+    done
+}
+
+/// BG-01M6VZNP round 2: a read over the whole of a dinucleotide repeat and 50 or more bases past it
+/// is placed, though its overlaps ending a base or a unit on, with a gap inside the repeat, lie
+/// within the drift of one placement. Reads over 1-669 x4 and 560-1,400 x4 at 1% noise across a
+/// (CA)30 at 560-619 overlap by 110 bases, 50 of them past the repeat by construction; (CA)29 over
+/// 110, (CA)30 over 112 and (CA)40 over 132 hold 52. Every seed 1-12, the reads over 1-669 forward
+/// or reverse, gives the whole 1,400 bp amplicon from all 8 reads with nothing to say, as before
+/// round 1. Its flank may continue the unit by chance (seed 1's begins CACA), so fewer than 50 of
+/// its bases lie outside the repeat; the read is fixed by the flank the read and the draft share.
+/// Where that flank starts the overlap, an overlap starting there and ending a base or a unit off
+/// is the best with an indel inside the repeat, no rival. Where it ends the overlap (the reads over
+/// 1-669 reverse), an overlap ending elsewhere lays it off the draft's. Wrong implementations, and
+/// what catches each: an overlap ending a base or a unit off a rival ("841 bp (4 of 8 reads)", 46
+/// to 49 bases outside); 50 shared flank bases asked for (seed 1).
+#[test]
+fn a_read_holding_50_bases_past_a_dinucleotide_repeat_is_placed() {
+    let mut cases = Vec::new();
+    for (copies, f_to) in [(30usize, 669usize), (29, 669), (30, 671), (40, 691)] {
+        for forward in [true, false] {
+            for seed in 1u32..=12 {
+                let (mut r, template) = block_amplicon(seed, &"CA".repeat(copies), 560);
+                let spans = if forward { alternate([(1, f_to); 4], [(560, 1400); 4]) } else { alternate([(560, 1400); 4], [(1, f_to); 4]) };
+                let (reads, undecided) = noisy_reads(&mut r, &template, &spans);
+                let outside = f_to - 559 - 2 * copies;
+                let case = format!("(CA){copies} at 560, 1-{f_to} {} ({outside} bases past it), seed {seed}", if forward { "forward" } else { "reverse" });
+                cases.push((case, reads, template, undecided.max(2)));
+            }
+        }
+    }
+    let bounds: Vec<(String, usize)> = cases.iter().map(|(_, _, t, b)| (t.clone(), *b)).collect();
+    let reports = assemble_all(cases.into_iter().map(|(c, reads, _, _)| (c, reads)).collect());
+    let wrong: Vec<String> = reports
+        .iter()
+        .zip(&bounds)
+        .filter_map(|((case, rep), (template, bound))| {
+            // The contig reads along the longest read, reverse when those over 1-669 are forward.
+            let edits = [rep.consensus_sequence.clone(), rc(&rep.consensus_sequence)].iter().map(|c| align(c.as_bytes(), template.as_bytes(), false).0).min().unwrap();
+            (!rep.warnings.is_empty() || rep.read_count != 8 || rep.consensus_length_bp != 1400 || edits > *bound)
+                .then(|| format!("{case}: {} bp ({} reads), {edits} edits; {:?}", rep.consensus_length_bp, rep.read_count, rep.warnings))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{} of {} cases:\n{}", wrong.len(), reports.len(), wrong.join("\n"));
+}
+
+
+/// BG-01M6VZNP round 2: a read whose best overlap starts on at least 8 flank bases that it and the
+/// draft share is fixed by them; on fewer it is not. Four exact reads over 1-1,000 end inside a
+/// (CA)100 at 901-1,100; a probe over `901 - n` to 1,400 holds n flank bases, the whole repeat and
+/// 300 bases past it, so its overlaps ending a unit off, with a gap inside the repeat, start where
+/// its best does. With n 8, 10 and 20 the probe is placed and the contig is the amplicon; with n 4
+/// and 7 it is left out and named with its n bases outside the repeat. Wrong implementations, and
+/// what catches each: one shared flank base fixing it (4 placed); 9 or more asked for (8 left
+/// out).
+#[test]
+fn a_start_on_at_least_8_shared_flank_bases_fixes_the_read() {
+    for seed in [1u32, 2, 3] {
+        for n in [4usize, 7, 8, 10, 20] {
+            let (template, mut reads) = draft_ending_in_a_repeat(seed, "CA", 100, &[], None);
+            reads.push(q40("probe", template[900 - n..1400].to_string()));
+            let rep = assemble_within(reads, 60);
+            let case = format!("{n} flank bases, seed {seed}");
+            if n >= 8 {
+                assert!(rep.warnings.is_empty(), "{case}: {:?}", rep.warnings);
+                assert_eq!((rep.read_count, rep.consensus_sequence.as_str()), (5, template.as_str()), "{case}");
+            } else {
+                let said = fits_twice(&rep);
+                assert_eq!(said.len(), 1, "{case}: {:?}", rep.warnings);
+                assert!(said[0].starts_with("Read probe.ab1 ") && said[0].contains(&format!(": {n} of its bases lie outside the repeat")), "{case}: {}", said[0]);
+                assert_eq!((rep.read_count, rep.consensus_sequence.as_str()), (4, &template[..1000]), "{case}");
+            }
+        }
+    }
+}
+
+/// Homo sapiens huntingtin (HTT) RefSeqGene NG_009378.1 (NCBI RefSeq), bases 4,683-6,082: the
+/// CAG repeat of exon 1 at 515-579, (CAG)21 then CA, and the GC-rich CAACAGCCGCCA(CCG)n after it.
+const HTT_EXON1: &str = concat!(
+    "GTCCCGCCCCGTCCCTTCCTCGTCCCGCCTCGCCGCGACACTTCACACACAGCTTCGCCTCACCCCATTACAGTCTCACCACGCCCCGTCCCCTCTCCGT",
+    "TGAGCCCCGCGCCTTCGCCCGGGTGGGGCGCTGCGCTGTCAGCGGCCTTGCTGTGTGAGGCAGAACCTGCGGGGGCAGGGGCGGGCTGGTTCCCTGGCCA",
+    "GCCATTGGCAGAGTCCGCAGGCTAGGGCTGTCAATCATGCTGGCCGGCGTGGCCCCGCCTCCGCCGGCGCGGCCCCGCCTCCGCCGGCGCAGCGTCTGGG",
+    "ACGCAAGGCGCCGTGGGGGCTGCCGGGACGGGTCCAAGATGGACGGCCGCTCAGGTTCTGCTTTTACCTGCGGCCCAGAGCCCCATTCATTGCCCCGGTG",
+    "CTGAGCGGCGCCGCGAGTCGGCCCGAGGCCTCCGGGGACTGCCGTGCCGGGCGGGAGACCGCCATGGCGACCCTGGAAAAGCTGATGAAGGCCTTCGAGT",
+    "CCCTCAAGTCCTTCCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAACAGCCGCCACCGCCGCCGCC",
+    "GCCGCCGCCGCCTCCTCAGCTTCCTCAGCCGCCGCCGCAGGCACAGCCGCTGCTGCCTCAGCCGCAGCCGCCCCCGCCGCCGCCCCCGCCGCCACCCGGC",
+    "CCGGCTGTGGCTGAGGAGCCGCTGCACCGACCGTGAGTTTGGGCCCGCTGCAGCTCCCTGTCCCGGCGGGTCCCAGGCTACGGCGGGGATGGCGGTAACC",
+    "CTGCAGCCTGCGGGCCGGCGACACGAACCCCCGGCCCCGCAGAGACAGAGTGACCCAGCAACCCAGAGCCCATGAGGGACACCCGCCCCCTCCTGGGGCG",
+    "AGGCCTTCCCCCACTTCAGCCCCGCTCCCTCACTTGGGTCTTCCCTTGTCCTCTCGCGAGGGGAGGCAGAGCCTTGTTGGGGCCTGTCCTGAATTCACCG",
+    "AGGGGAGTCACGGCCTCAGCCCTCTCGCCCTTCGCAGGATGCGAAGAGTTGGGGCGAGAACTTGTTTCTTTTTATTTGCGAGAAACCAGGGCGGGGGTTC",
+    "TTTTAACTGCGTTGTGAAGAGAACTTGGAGGAGCCGAGATTTGCTCAGTGCCACTTCCCTCTTCTAGTCTGAGAGGGAAGAGGGCTGGGGGCGCGGGACA",
+    "CTTCGAGAGGAGGCGGGGTTTGGAGCTGGAGAGATGTGGGGGCAGTGGATGACATAATGCTTTTAGGACGCCTCGGCGGGAGTGGCGGGGCAGGGGGGGG",
+    "GCGGGGAGTGAGGGCGCGTCCAATGGGAGATTTCTTTTCCTAGTGGCACTTAAAACAGCCTGAGATTTGAGGCTCTTCCTACATTGTCAGGACATTTCAT",
+);
+
+/// BG-01M6VZNP round 2: the unit of a shift within the drift of one placement may be a base longer
+/// than the shift. HTT's exon-1 CAG repeat ending 20 bases into reads over 560-1,400 at 1% noise,
+/// forward reads over 1-600: the two overlap by 41 bases, too few to place, and on seeds 3 and 8
+/// a forward read's end is laid 50 bases onto the reverse reads' GC-rich flank and CAG repeat by
+/// chance (seed 3: 45 of 50 alike), with rivals ending 2 bases off. They are named as fitting in more than one
+/// place, inside a tandem repeat of a 3-bp unit; every other seed 1-12 too, or keeps the reads
+/// apart, and no contig is silently wrong. Wrong implementation, and what catches it: a unit no
+/// longer than the shift (seeds 3 and 8: "1,391 bp (8 reads)", 10 edits, silent).
+#[test]
+fn reads_laid_by_chance_on_a_trinucleotide_repeat_a_base_or_two_off_are_named() {
+    let spans = alternate([(1, 600); 4], [(560, 1400); 4]);
+    let cases = (1u32..=12)
+        .map(|seed| {
+            let (reads, undecided) = noisy_reads(&mut Mulberry(seed), HTT_EXON1, &spans);
+            ((format!("HTT exon 1, seed {seed}"), reads), undecided.max(2))
+        })
+        .collect::<Vec<_>>();
+    let bounds: Vec<usize> = cases.iter().map(|(_, b)| *b).collect();
+    let reports = assemble_all(cases.into_iter().map(|(c, _)| c).collect());
+    for ((case, rep), bound) in reports.iter().zip(bounds) {
+        let named = fits_twice(rep);
+        let stretch = rep.consensus_length_bp < 1400;
+        let edits = [rep.consensus_sequence.clone(), rc(&rep.consensus_sequence)].iter().map(|c| align(c.as_bytes(), HTT_EXON1.as_bytes(), stretch || !named.is_empty()).0).min().unwrap();
+        assert!(edits <= bound, "{case}: {} bp ({} reads), {edits} edits; {:?}", rep.consensus_length_bp, rep.read_count, rep.warnings);
+        for w in &named {
+            assert!(w.contains("only inside a tandem repeat of a 3-bp unit ("), "{case}: {w}");
+        }
+        if case.ends_with(" 3") || case.ends_with(" 8") {
+            assert!(!named.is_empty() && rep.read_count == 4, "{case}: {} bp ({} reads); {:?}", rep.consensus_length_bp, rep.read_count, rep.warnings);
         }
     }
 }

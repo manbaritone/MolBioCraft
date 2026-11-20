@@ -183,12 +183,13 @@ const LAYOUT_OVERHANG: i32 = -3;
 const LAYOUT_KMER_MAX_OCCURRENCES: usize = 32;
 /// Two placements of a read whose diagonals come within this many bases of each other are one
 /// placement: the drift its own indels give, or the shift a short homopolymer allows, which moves
-/// the contig's bases by at most this many. Not when the shift is a whole number of units of a
-/// tandem repeat that holds the overlap's draft bases: a (CA)n shifted by one unit moves 2 bases
-/// and adds or drops a copy (BG-01M6VZNP).
+/// the contig's bases by at most this many. Not when the overlap's draft bases lie mostly in a
+/// tandem repeat of a unit of 2 or more bases that the shift spans, give or take a base
+/// ([`shift_unit`]), and the best does not start on flank bases that fix it: a (CA)n shifted by one
+/// unit moves 2 bases and adds or drops a copy (BG-01M6VZNP).
 const LAYOUT_SAME_PLACEMENT_BP: i64 = 2;
 /// A second placement of a read elsewhere (more than [`LAYOUT_SAME_PLACEMENT_BP`] off the best's
-/// diagonals or a whole number of repeat units off them, or on the other strand) with at most this
+/// diagonals or a repeat unit's shift off them, or on the other strand) with at most this
 /// many more errors than the best, that would
 /// give the draft different bases, leaves the read ambiguous: inside an exact tandem repeat a
 /// unit's shift matches as well as the best, so the reads cannot tell how many copies it holds.
@@ -432,10 +433,12 @@ struct Ambiguity {
     /// least period of the best's draft bases, else the least unit of a repeat covering most of
     /// a placement's draft bases (BG-01M6VZNP). None when no placement's bases repeat.
     unit: Option<usize>,
-    /// How many of the read's bases in its best overlap lie outside that repeat, before or after
-    /// it, on both the read and the draft (a substitution inside it is not outside it, and a
-    /// read's bases past the draft's repeat count only where the draft's run past it too); 0 when
-    /// there is no unit (BG-01M6VZNP).
+    /// How many of the read's bases in its best overlap lie outside that repeat on both the read
+    /// and the draft, before or after it ([`shared_flanks`]): a substitution inside the repeat is
+    /// not outside it, nor is a read's repeat base laid on the draft's flank, save one among a
+    /// read's last 4 bases, which too few bases past it carry into the repeat, where the draft
+    /// holds a flank that the read's bases there match at 90% or better; 0 when there is no unit
+    /// (BG-01M6VZNP).
     outside: usize,
     /// The draft bases that placement covers, or every placement when there is no unit:
     /// `draft_from..draft_to`.
@@ -486,19 +489,75 @@ fn outside_repeat(seq: &[u8], from: usize, to: usize, p: usize) -> usize {
     repeat_cover(seq, from, to, p).iter().filter(|c| !**c).count()
 }
 
-/// How many bases of `seq[from..to]` lie before or after every tandem repeat of unit `p` (as
-/// [`outside_repeat`] covers them), not between two of its runs: the bases of a read outside the
-/// repeat, a substitution inside it not among them; all of them when no repeat covers any. A
-/// stretch of at most [`LAYOUT_K`] bases at an end of `seq` counts as inside: there too few pairs
-/// are left past a substitution to cover the bases after it, which are not the flank.
-fn flanking_repeat(seq: &[u8], from: usize, to: usize, p: usize) -> usize {
+/// What a base that does not continue a tandem repeat's unit costs when [`repeat_extent`] carries
+/// the repeat past it, against 1 for each base that does: the repeat is carried over a stretch only
+/// where more than three in four of its bases continue the unit, as a repeat read at 1%
+/// substitutions does and a flank, which continues it about one base in four, does not.
+const REPEAT_EDGE_MISMATCH: i64 = 3;
+
+/// The stretch `start..end` of `seq[from..to]` that the tandem repeat of unit `p` it holds spans:
+/// from the first base to the last that [`outside_repeat`]'s runs cover, carried on over each end
+/// as far as the bases past it continue the unit best (each that does +1, each that does not
+/// -[`REPEAT_EDGE_MISMATCH`], to the end with the highest total, if above 0). So a substitution
+/// within [`LAYOUT_K`] bases of a read's end, which leaves too few alike pairs past it for a run,
+/// is inside the repeat when 4 or more bases past it continue the unit (more for two
+/// substitutions), and a base that does not continue it, as the first of a flank, is outside it
+/// however close to the end it lies unless 4 or more bases past it continue the unit by chance
+/// (BG-01M6VZNP). None when no run covers any base.
+fn repeat_extent(seq: &[u8], from: usize, to: usize, p: usize) -> Option<(usize, usize)> {
     let covered = repeat_cover(seq, from, to, p);
-    let (Some(first), Some(last)) = (covered.iter().position(|&c| c), covered.iter().rposition(|&c| c)) else {
-        return covered.len();
+    let first = from + covered.iter().position(|&c| c)?;
+    let last = from + covered.iter().rposition(|&c| c)? + 1;
+    // How many of `bases`, taken outward from the repeat, it is carried over: the unit's base each
+    // should be is the one a whole number of units inward, in the run's own bases.
+    let carried = |bases: &mut dyn Iterator<Item = (u8, u8)>| {
+        let (mut total, mut best, mut reach) = (0i64, 0i64, 0usize);
+        for (k, (base, unit)) in bases.enumerate() {
+            total += if base == unit { 1 } else { -REPEAT_EDGE_MISMATCH };
+            if total > best {
+                (best, reach) = (total, k + 1);
+            }
+        }
+        reach
     };
-    let after = covered.len() - 1 - last;
-    let edge = |n: usize, at_end: bool| if at_end && n <= LAYOUT_K { 0 } else { n };
-    edge(first, from == 0) + edge(after, to == seq.len())
+    let before = carried(&mut (from..first).rev().map(|x| (seq[x], seq[first + (p - (first - x) % p) % p])));
+    let after = carried(&mut (last..to).map(|x| (seq[x], seq[last - p + (x - last) % p])));
+    Some((first - before, last + after))
+}
+
+/// How many columns at the start and at the end of an overlap of `read` to `draft` lie outside the
+/// tandem repeat of unit `p` on both, counted along the diagonal of that end of the overlap: the
+/// fewer of the bases before (after) the repeat's [`repeat_extent`] on the read and on the draft,
+/// when the read's bases agree with the draft's at [`POA_MIN_OVERLAP_IDENTITY_PCT`]% or better over
+/// as many columns as the more of them, else none. So a flank counts where the repeat begins at
+/// about one column on both, and not where the read's repeat bases lie on the draft's flank,
+/// matched there by chance: a read whose first base, a substitution inside the repeat, matches the
+/// draft's first flank base by chance, its next 12 repeat bases on the draft's flank, has none
+/// outside it, not 1. Where no run of the repeat covers a side, all of that side's bases are
+/// outside it, counted once when neither side has one (BG-01M6VZNP).
+fn shared_flanks(draft: &[u8], read: &[u8], ov: &DraftOverlap, p: usize) -> (usize, usize) {
+    let sides = |seq: &[u8], from: usize, to: usize| repeat_extent(seq, from, to, p).map(|(start, end)| (start - from, to - end));
+    let (read_sides, draft_sides) = (sides(read, ov.read_from, ov.read_to), sides(draft, ov.draft_from, ov.draft_to));
+    let (read_len, draft_len) = (ov.read_to - ov.read_from, ov.draft_to - ov.draft_from);
+    // A side the repeat does not reach is outside it throughout; with neither reached, every
+    // column is, counted once, from the start.
+    let ((rb, ra), (db, da)) = match (read_sides, draft_sides) {
+        (None, None) => ((read_len, 0), (draft_len, 0)),
+        (r, d) => (r.unwrap_or((read_len, read_len)), d.unwrap_or((draft_len, draft_len))),
+    };
+    let columns = read_len.min(draft_len);
+    let shared = |(r, d): (usize, usize), pairs: &mut dyn Iterator<Item = (u8, u8)>| {
+        let span = r.max(d).min(columns);
+        let alike = pairs.take(span).filter(|(a, b)| a == b).count();
+        if alike * 100 >= span * POA_MIN_OVERLAP_IDENTITY_PCT {
+            r.min(d)
+        } else {
+            0
+        }
+    };
+    let before = shared((rb, db), &mut (0..).map(|k| (read[ov.read_from + k], draft[ov.draft_from + k])));
+    let after = shared((ra, da), &mut (1..).map(|k| (read[ov.read_to - k], draft[ov.draft_to - k])));
+    (before, after)
 }
 
 /// Whether a tandem repeat of unit `p` covers at least half of `seq[from..to]` (as
@@ -529,6 +588,24 @@ fn repeat_cover(seq: &[u8], from: usize, to: usize, p: usize) -> Vec<bool> {
     covered
 }
 
+/// The unit of the tandem repeat whose copies overlap `o`, within the drift of one placement of
+/// `best`, adds or drops: the least period with which a repeat covers at least half of `o`'s draft
+/// bases ([`mostly_repeat`]), no longer than a base more than the farther `o`'s least or greatest
+/// diagonal lies off `best`'s, when it is 2 or more (BG-01M6VZNP). The base more is for an indel of
+/// the best's own, which puts its ends a base apart, so that an overlap ending 2 bases off the
+/// best's end lies only 1 off its greatest diagonal; and it takes in an overlap a base or two off
+/// at one end, with a gap inside, of a repeat of a unit a base longer: F reads over the CAG repeat
+/// of HTT (NG_009378.1) whose 41-base overlap with the R reads is too short to place them, laid 50
+/// bases onto the R reads' GC-rich flank and CAG repeat by chance at 90%, have rivals 2 bases off
+/// their end that a 2-bp bound would miss, and joined silently 9 bases short. None for a
+/// homopolymer, whose length is what Sanger reads most often call wrong, and where no repeat holds
+/// the bases.
+fn shift_unit(draft: &[u8], best: &DraftOverlap, o: &DraftOverlap) -> Option<usize> {
+    let ((lo, hi), (olo, ohi)) = (best.diagonals(), o.diagonals());
+    let most = (olo - lo).unsigned_abs().max((ohi - hi).unsigned_abs()) as usize + 1;
+    (1..=most).find(|&p| mostly_repeat(draft, o.draft_from, o.draft_to, p)).filter(|&p| p >= 2)
+}
+
 /// Whether an overlap of `read` (on the strand it was aligned) to `draft` is fixed by bases outside
 /// a tandem repeat of unit `p`: at least [`POA_MIN_OVERLAP_BP`] of its bases lie outside it on
 /// both the read and the draft, enough to place the read at [`POA_MIN_OVERLAP_IDENTITY_PCT`]% were
@@ -547,7 +624,12 @@ fn fixed_outside_repeat(draft: &[u8], read: &[u8], ov: &DraftOverlap, p: usize) 
 /// [`LAYOUT_SAME_PLACEMENT_BP`] from the best's) with at most [`LAYOUT_RIVAL_EXTRA_ERRORS`] more
 /// errors, would put different bases before or after the draft: in an exact tandem repeat that
 /// holds the whole overlap, an overlap shifted by a unit matches as well, and taking the longest
-/// silently drops copies (BG-01M6TD2N).
+/// silently drops copies (BG-01M6TD2N). Within those 2 bases, an overlap whose draft bases lie
+/// mostly in a tandem repeat of a unit of 2 or more bases, no longer than a base more than its
+/// shift, is a rival too, placing or not ([`shift_unit`]), unless the best starts on at least
+/// [`LAYOUT_K`] flank bases the read and the draft share ([`shared_flanks`]), which fix it: then
+/// such an overlap is the best with an indel inside the repeat, or lays those bases off the
+/// draft's (BG-01M6VZNP).
 ///
 /// An overlap whose draft bases lie in a tandem repeat, holding its unit at least twice, is no
 /// rival, on either strand, to a best that holds at least [`POA_MIN_OVERLAP_BP`] bases outside
@@ -581,12 +663,23 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
         fixed.borrow_mut().push((key, f));
         f
     };
+    // Whether a best starts on at least LAYOUT_K bases outside a repeat of unit p that the read and
+    // the draft share ([`shared_flanks`]), kept per best and unit like `fixed`.
+    let anchors: std::cell::RefCell<Vec<(Key, bool)>> = Default::default();
+    let anchored = |ov: &DraftOverlap, strand: i8, p: usize| {
+        let key = (ov.draft_from, ov.draft_to, ov.read_from, ov.read_to, strand, p);
+        if let Some(&(_, a)) = anchors.borrow().iter().find(|(k, _)| *k == key) {
+            return a;
+        }
+        let a = shared_flanks(draft, seq_of(strand), ov, p).0 >= LAYOUT_K;
+        anchors.borrow_mut().push((key, a));
+        a
+    };
     let rival = |(o, s): (DraftOverlap, i8), (ov, strand): (DraftOverlap, i8)| {
         let (lo, hi) = ov.diagonals();
         let (olo, ohi) = o.diagonals();
         let near = s == strand && ohi >= lo - LAYOUT_SAME_PLACEMENT_BP && olo <= hi + LAYOUT_SAME_PLACEMENT_BP;
-        let (start_off, end_off) = ((olo - lo).unsigned_abs() as usize, (ohi - hi).unsigned_abs() as usize);
-        if (near && start_off + end_off == 0) || o.errors() > ov.errors() + LAYOUT_RIVAL_EXTRA_ERRORS || added(&o, s) == added(&ov, strand) {
+        if (near && (olo, ohi) == (lo, hi)) || o.errors() > ov.errors() + LAYOUT_RIVAL_EXTRA_ERRORS || added(&o, s) == added(&ov, strand) {
             return false;
         }
         // A placing overlap may be as short as POA_MIN_OVERLAP_BP, too short to compare that many
@@ -594,15 +687,27 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
         let len = o.draft_to - o.draft_from;
         let unit = if near {
             // Within the drift of one placement, a shift of an overlap whose draft bases lie mostly
-            // in a tandem repeat of a unit no longer than the shift (plus a base, for an indel of
-            // the best's own) is another placement: it adds or drops copies of the unit
-            // (BG-01M6VZNP). The bases past the repeat that a short overlap holds keep them from
-            // repeating over half their pairs. A homopolymer's shift stays the drift of one
-            // placement: its length is what Sanger reads most often call wrong.
-            match (1..=start_off.max(end_off) + 1).find(|&p| mostly_repeat(draft, o.draft_from, o.draft_to, p)) {
-                Some(p) if p >= 2 => Some(p),
-                _ => return false,
+            // in a tandem repeat of a unit no longer than a base more than the shift is another
+            // placement: it adds or drops copies of the unit ([`shift_unit`], BG-01M6VZNP). The bases past the repeat
+            // that a short overlap holds keep them from repeating over half their pairs. A
+            // homopolymer's shift stays the drift of one placement.
+            let Some(p) = shift_unit(draft, &ov, &o) else { return false };
+            // A best that starts on at least LAYOUT_K bases outside the repeat that the read and the
+            // draft share has no such rival: those bases fix where the read's copies begin, and its
+            // own bases say how many it holds. An overlap starting where it does and ending a base
+            // or a unit on is the best with an indel inside the repeat; one starting elsewhere lays
+            // those bases off the draft's, matched only by chance. A read over the whole of a
+            // (CA)30 and 50 bases past it, the first 4 of them CACA by chance, was left out by its
+            // overlaps ending 1 to 4 bases off its end, though its start lies on the 46 flank bases
+            // past them (BG-01M6VZNP round 2). A start on the read's repeat bases, laid on the draft's flank by chance
+            // matches, fixes nothing, and its rivals stand. The best's end has no rule of its own:
+            // a band keeps one overlap per cell it can end in, the best path into it, so in the
+            // best's band no overlap ends where the best does but the best, and one ending
+            // elsewhere lays the bases the best ends on off the draft's.
+            if anchored(&ov, strand, p) {
+                return false;
             }
+            Some(p)
         } else {
             period(draft, o.draft_from, o.draft_to, len, len.div_ceil(2))
         };
@@ -698,7 +803,10 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
             rivals.iter().map(|(o, _)| o.draft_to).fold(ov.draft_to, usize::max),
         ),
     };
-    let outside = unit.map_or(0, |p| flanking_repeat(seq_of(strand), ov.read_from, ov.read_to, p).min(flanking_repeat(draft, ov.draft_from, ov.draft_to, p)));
+    let outside = unit.map_or(0, |p| {
+        let (before, after) = shared_flanks(draft, seq_of(strand), &ov, p);
+        before + after
+    });
     Placement::Ambiguous(Ambiguity { strand, unit, outside, draft_from, draft_to })
 }
 
@@ -1285,7 +1393,11 @@ pub fn assemble_sanger_contig_poa_at(
             if *outside == 0 {
                 String::new()
             } else {
-                format!(": {} of its bases lie outside the repeat, which do not fix where it goes", format_thousands(*outside))
+                format!(
+                    ": {} of its bases {} outside the repeat, which do not fix where it goes",
+                    format_thousands(*outside),
+                    if *outside == 1 { "lies" } else { "lie" }
+                )
             },
             if one { "it was" } else { "they were" },
             format_thousands(layout.len()),
@@ -2608,6 +2720,121 @@ mod tests {
         // 40 unique bases then (AT)80, with no error at all: too few outside the repeat.
         let few = [unique(40), at(80)].concat();
         assert!(!fixed_outside_repeat(&few, &few, &whole(200, 0), 2));
+    }
+
+    /// An overlap over `read_from..read_to` of a read and `draft_from..draft_to` of the draft, its
+    /// columns all identities.
+    fn overlap(read_from: usize, read_to: usize, draft_from: usize, draft_to: usize) -> DraftOverlap {
+        let columns = (read_to - read_from).max(draft_to - draft_from);
+        DraftOverlap { score: 0, read_from, read_to, draft_from, draft_to, columns, identities: columns, unknown: 0 }
+    }
+
+    /// BG-01M6VZNP round 2: the repeat's extent is carried over a substitution near either end of a
+    /// stretch when more than three in four of the bases past it continue the unit, and not into a
+    /// flank. Wrong implementations, and what catches each: no carrying (the substitution 5 bases
+    /// from the end, which left the 5 outside); a mismatch costing 4 (the same, 4 matches after it
+    /// no longer carry it); costing 2, or a tie carrying it (the flank CACG, a mismatch then 3
+    /// bases that continue the unit, taken into the repeat).
+    #[test]
+    fn a_repeat_is_carried_over_a_substitution_near_its_end_and_not_into_a_flank() {
+        let ca = |n: usize| b"CA".repeat(n);
+        // A substitution at base 55 of a (CA)30: the 4 bases after it continue the unit.
+        let mut sub = ca(30);
+        sub[55] = b'G';
+        assert_eq!(repeat_extent(&sub, 0, 60, 2), Some((0, 60)));
+        // And at base 4 from the start, read from its end inward.
+        let mut start = ca(30);
+        start[4] = b'T';
+        assert_eq!(repeat_extent(&start, 0, 60, 2), Some((0, 60)));
+        // CACG before a (CA)30: its G does not continue the unit, and the 3 bases before it, which
+        // do, are not enough to carry the repeat over it.
+        let flanked = [b"CACG".to_vec(), ca(30)].concat();
+        assert_eq!(repeat_extent(&flanked, 0, 64, 2), Some((4, 64)));
+        // One flank base after the repeat, at the very end, is outside it.
+        let last = [ca(30), b"G".to_vec()].concat();
+        assert_eq!(repeat_extent(&last, 0, 61, 2), Some((0, 60)));
+        // No run of the unit, no extent.
+        assert_eq!(repeat_extent(b"ACGTTGCAAGTCCTAGGATC", 0, 20, 2), None);
+    }
+
+    /// BG-01M6VZNP round 2: a flank counts at an end of an overlap where the read and the draft
+    /// hold it, the repeat beginning at about one column on both, and nowhere else. Wrong
+    /// implementations, and what catches each: the agreement asked over the fewer bases (a read's
+    /// first base, a substitution matching the draft's flank base by chance, its next 12 repeat
+    /// bases on that flank: 1, not 0); no agreement asked (two unrelated flanks: 30, not 0); two
+    /// substitutions near the ends of a read and a draft that both hold them counted outside (6 and
+    /// 9 bases in, as read0's with h 52 and seed 7: 10, not 0); every column counted at both ends
+    /// when neither side has a run (60 twice).
+    #[test]
+    fn a_flank_counts_where_the_read_and_the_draft_both_hold_it() {
+        let mut x = 0x9e37_79b9_u32;
+        let mut unique = |n: usize| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    b"ACGT"[(x >> 30) as usize]
+                })
+                .collect()
+        };
+        let ca = |n: usize| b"CA".repeat(n);
+        // 30 flank bases, the one next to the repeat not continuing it, then (CA)30, on both.
+        let mut flank = unique(30);
+        flank[29] = b'G';
+        let both = [flank.clone(), ca(30)].concat();
+        assert_eq!(shared_flanks(&both, &both, &overlap(0, 60, 0, 60), 2), (30, 0));
+        // And after it: (CA)30, then the 30 flank bases turned round.
+        let mut after: Vec<u8> = flank.iter().rev().copied().collect();
+        after[0] = b'T';
+        let after = [ca(30), after].concat();
+        assert_eq!(shared_flanks(&after, &after, &overlap(0, 90, 0, 90), 2), (0, 30));
+        // The same draft against a read of another flank: no flank they share.
+        let mut other = unique(30);
+        other[29] = b'T';
+        let read = [other, ca(30)].concat();
+        assert_eq!(shared_flanks(&both, &read, &overlap(0, 60, 0, 60), 2), (0, 0));
+        // A read of (CA)n whose first base, a substitution, is the draft's first flank base, laid
+        // on the draft's 13 flank bases and its (CA)25.
+        let mut draft = [unique(13), ca(25)].concat();
+        draft[12] = b'G';
+        let mut read = ca(32)[1..64].to_vec();
+        read[0] = draft[0];
+        assert_ne!(read[0], b'A');
+        assert_eq!(shared_flanks(&draft, &read, &overlap(0, 63, 0, 63), 2), (0, 0));
+        // A read and a draft of (CA)n with the same substitutions 6 and 9 bases from their start.
+        let mut read = ca(32);
+        read[6] = b'G';
+        read[9] = b'T';
+        assert_eq!(shared_flanks(&read, &read, &overlap(0, 64, 0, 64), 2), (0, 0));
+        // Neither side holds the unit: its 60 bases are outside it once.
+        let plain = unique(60);
+        assert!(repeat_extent(&plain, 0, 60, 2).is_none());
+        assert_eq!(shared_flanks(&plain, &plain, &overlap(0, 60, 0, 60), 2), (60, 0));
+    }
+
+    /// BG-01M6VZNP round 2: the unit of a shift within the drift of one placement is the least of 2
+    /// or more no longer than a base more than the shift. Wrong implementations, and what catches
+    /// each: no base more (an overlap of a (CTG)n ending 2 bases off the best's end: no unit, and F
+    /// reads over HTT's CAG repeat laid by chance joined silently); a homopolymer's unit counted
+    /// (poly-A, 2 bases off); no repeat asked for (random bases).
+    #[test]
+    fn a_shift_names_a_unit_of_two_or_more_no_longer_than_a_base_more_than_it() {
+        let draft = [b"GATTGCCATG".to_vec(), b"CTG".repeat(30)].concat();
+        let best = overlap(0, 80, 10, 90);
+        assert_eq!(best.diagonals(), (10, 10));
+        // Ending on diagonal 12 (2 bases off) or 11: a 3-bp unit is a base more than 2.
+        assert_eq!(shift_unit(&draft, &best, &overlap(0, 78, 10, 90)), Some(3));
+        assert_eq!(shift_unit(&draft, &best, &overlap(0, 79, 10, 90)), None);
+        // A (CA)n 1 base off: a 2-bp unit.
+        let ca = [b"GATTGCCATG".to_vec(), b"CA".repeat(45)].concat();
+        assert_eq!(shift_unit(&ca, &best, &overlap(0, 79, 10, 90)), Some(2));
+        // A homopolymer's 2-base shift is its drift.
+        let poly = [b"GATTGCCATG".to_vec(), b"A".repeat(80)].concat();
+        assert_eq!(shift_unit(&poly, &best, &overlap(0, 78, 10, 90)), None);
+        // No repeat, no unit.
+        let plain = b"GATTGCCATGACGTTGCAAGTCCTAGGATCCATTGACGGTACCTTGAACGTCAGTTCAGGCATGCATCGATCGGATACCGTAGGTTA".to_vec();
+        assert_eq!(shift_unit(&plain, &best, &overlap(0, 78, 10, 90)), None);
     }
 
     /// BG-01M6XRYR: Each stable preset identifier selects its intended alignment route and guide
