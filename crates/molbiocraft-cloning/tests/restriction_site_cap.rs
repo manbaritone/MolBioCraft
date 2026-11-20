@@ -11,6 +11,8 @@
 //! lies inside the site letter's (D0181's subset rule, which US-01M6VF1T makes the scan's), with
 //! nothing taken from the engine's scanner.
 
+use molbiocraft_align::align_pairwise_standard;
+use molbiocraft_align::pairwise::PAIRWISE_ENGINE_LABEL;
 use molbiocraft_cloning::compute_document_table_metrics_rust;
 use molbiocraft_cloning::rebase_catalog::{
     find_non_cutting_enzymes_for_topology, find_restriction_cut_sites, get_rebase_enzymes,
@@ -618,12 +620,9 @@ fn a_stopped_scan_gives_no_all_clear_line() {
     assert_eq!(ids(audit_sequence_alerts_for_scan(&doc, &whole.sites, strain, false)), vec!["alert-clean".to_string()]);
 }
 
-/// US-01M6P2WJ AC3: every number the doc comment above `get_rebase_enzymes` gives is one of the
-/// catalogue's own counts - the whole catalogue, its core set (`CORE_CATALOG_LEN`) or the rest -
-/// read from the source text, so a count left behind when enzymes are added fails here. A site
-/// length written as `6-bp` is not a count and is passed over.
-#[test]
-fn catalogue_doc_count_matches() {
+/// The doc comment above `get_rebase_enzymes`, read from the source text, its lines joined and its
+/// whitespace collapsed.
+fn rebase_enzymes_doc() -> String {
     let source = include_str!("../src/rebase_catalog.rs");
     let fn_at = source.find("pub fn get_rebase_enzymes()").expect("get_rebase_enzymes is in the source");
     let doc: Vec<&str> = source[..fn_at]
@@ -634,9 +633,11 @@ fn catalogue_doc_count_matches() {
         .collect();
     assert!(!doc.is_empty(), "get_rebase_enzymes carries a doc comment");
     let doc = doc.into_iter().rev().map(|l| l.trim_start().trim_start_matches("///")).collect::<Vec<_>>().join(" ");
+    doc.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
-    let total = get_rebase_enzymes().len();
-    let allowed = [total, CORE_CATALOG_LEN, total - CORE_CATALOG_LEN];
+/// Every count `doc` gives, with its byte offset; a site length written as `6-bp` is not a count.
+fn doc_counts(doc: &str) -> Vec<(usize, usize)> {
     let bytes = doc.as_bytes();
     let mut numbers = Vec::new();
     let mut i = 0;
@@ -647,19 +648,111 @@ fn catalogue_doc_count_matches() {
                 i += 1;
             }
             if !doc[i..].starts_with("-bp") {
-                numbers.push(doc[start..i].parse::<usize>().unwrap());
+                numbers.push((start, doc[start..i].parse::<usize>().unwrap()));
             }
         } else {
             i += 1;
         }
     }
-    for n in &numbers {
-        assert!(
-            allowed.contains(n),
-            "the get_rebase_enzymes doc gives {n}, but the catalogue holds {total} enzymes ({CORE_CATALOG_LEN} core, {} more): {doc}",
-            total - CORE_CATALOG_LEN
-        );
+    numbers
+}
+
+/// What is wrong with the counts `doc` gives for a catalogue of `total` enzymes, `core` of them the
+/// core set; empty when every count is right. Each count is read by the phrase that names its role -
+/// `catalog of N enzymes` the whole catalogue, `` `CORE_CATALOG_LEN` (N) `` the core set, `the other N`
+/// the rest - each phrase is given once, and a count no phrase names is a finding, so a doc that swaps
+/// two counts fails although each number is one of the catalogue's.
+fn rebase_doc_count_findings(doc: &str, total: usize, core: usize) -> Vec<String> {
+    let roles = [
+        ("the whole catalogue", "catalog of ", " enzymes", total),
+        ("the core set", "`CORE_CATALOG_LEN` (", ")", core),
+        ("the rest", "the other ", "", total - core),
+    ];
+    let numbers = doc_counts(doc);
+    let mut placed = Vec::new();
+    let mut findings = Vec::new();
+    for (role, before, after, want) in roles {
+        let named: Vec<(usize, usize)> = numbers
+            .iter()
+            .copied()
+            .filter(|&(at, n)| doc[..at].ends_with(before) && doc[at + n.to_string().len()..].starts_with(after))
+            .collect();
+        match named.as_slice() {
+            [(at, n)] => {
+                placed.push(*at);
+                if *n != want {
+                    findings.push(format!("the doc gives {role} as {before}{n}{after}, but it holds {want}"));
+                }
+            }
+            [] => findings.push(format!("the doc does not give {role} as {before}{want}{after}")),
+            _ => findings.push(format!("the doc gives {role} {} times: {named:?}", named.len())),
+        }
     }
-    // the doc states the catalogue's size, so the check above has a count to hold
-    assert!(numbers.contains(&total), "the get_rebase_enzymes doc names the catalogue's {total} enzymes: {doc}");
+    for (at, n) in &numbers {
+        if !placed.contains(at) {
+            findings.push(format!("the doc gives {n} where no phrase names its role"));
+        }
+    }
+    findings
+}
+
+/// US-01M6P2WJ AC3, BG-01M7V0Z9: every number the doc comment above `get_rebase_enzymes` gives is
+/// the catalogue count its phrase names - the whole catalogue, its core set (`CORE_CATALOG_LEN`) or
+/// the rest - read from the source text, so a count left behind when enzymes are added fails here.
+/// A site length written as `6-bp` is not a count and is passed over.
+#[test]
+fn catalogue_doc_count_matches() {
+    let doc = rebase_enzymes_doc();
+    let total = get_rebase_enzymes().len();
+    let findings = rebase_doc_count_findings(&doc, total, CORE_CATALOG_LEN);
+    assert!(findings.is_empty(), "get_rebase_enzymes doc: {findings:?}: {doc}");
+}
+
+/// BG-01M7V0Z9: the count check reads each number by the role its phrase names, not against the
+/// set of the catalogue's counts. A copy of the doc with the core and the other counts swapped, with
+/// one count changed, or with no count of the whole catalogue fails it; the doc as written passes.
+#[test]
+fn bg_01m7v0z9_rebase_doc_counts_are_read_by_role() {
+    let doc = rebase_enzymes_doc();
+    let total = get_rebase_enzymes().len();
+    let (core, rest) = (CORE_CATALOG_LEN, total - CORE_CATALOG_LEN);
+    assert_ne!(core, rest, "the fixture: a swap of the two counts is visible");
+    assert_eq!(rebase_doc_count_findings(&doc, total, core), Vec::<String>::new(), "the doc as written: {doc}");
+
+    let core_phrase = format!("`CORE_CATALOG_LEN` ({core})");
+    let rest_phrase = format!("the other {rest}");
+    let total_phrase = format!("catalog of {total} enzymes");
+    for phrase in [&core_phrase, &rest_phrase, &total_phrase] {
+        assert_eq!(doc.matches(phrase.as_str()).count(), 1, "the doc names {phrase:?} once: {doc}");
+    }
+    let swapped = doc
+        .replace(&core_phrase, "\u{0}CORE\u{0}")
+        .replace(&rest_phrase, &format!("the other {core}"))
+        .replace("\u{0}CORE\u{0}", &format!("`CORE_CATALOG_LEN` ({rest})"));
+    let mutants = [
+        ("the core and the other counts swapped", swapped),
+        ("the core count off by one", doc.replace(&core_phrase, &format!("`CORE_CATALOG_LEN` ({})", core + 1))),
+        ("the other count off by one", doc.replace(&rest_phrase, &format!("the other {}", rest + 1))),
+        ("the other count given the catalogue's total", doc.replace(&rest_phrase, &format!("the other {total}"))),
+        ("the total off by one", doc.replace(&total_phrase, &format!("catalog of {} enzymes", total + 1))),
+        ("the total given the other count", doc.replace(&total_phrase, &format!("catalog of {rest} enzymes"))),
+        ("a count no phrase names", doc.replace(&rest_phrase, &format!("{rest_phrase} (of {core} more)"))),
+    ];
+    for (what, mutant) in &mutants {
+        assert_ne!(mutant, &doc, "{what}: the mutant differs from the doc");
+        assert!(!rebase_doc_count_findings(mutant, total, core).is_empty(), "{what}: the count check passes {mutant}");
+    }
+}
+
+/// BG-01M7V0Z9: a native (non-WebAssembly) build names its pairwise results "Rust engine (desktop)",
+/// the label `cmd_rust_bio_invoke` would carry back from the `align_pairwise` and
+/// `align_pairwise_gotoh` ops - global, local and the empty pair alike.
+#[test]
+fn bg_01m7v0z9_native_pairwise_label_names_the_desktop_build() {
+    assert!(!cfg!(target_arch = "wasm32"), "this test runs a native build");
+    assert_eq!(PAIRWISE_ENGINE_LABEL, "Rust engine (desktop)");
+    for (what, local, s1, s2) in [("global", false, "ACGTACGTAC", "ACGTTCGTAC"), ("local", true, "TTACGTACGT", "ACGTACG"), ("empty", false, "", "")] {
+        let r = align_pairwise_standard(s1, s2, local, 2, -1, -5, -1);
+        assert_eq!(r.engine_used, "Rust engine (desktop)", "{what}: {r:?}");
+    }
 }

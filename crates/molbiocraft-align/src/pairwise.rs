@@ -308,7 +308,11 @@ fn ambiguity_identity_warning(alignment: &PairwiseAlignmentResult) -> Option<Str
 /// The engine a pairwise result names (US-01M6P2WJ): this Rust code, by where it runs - the
 /// WebAssembly build the browser and the desktop webview load, or a native build such as the desktop
 /// shell's. The desktop's `cmd_pairwise_align` reply does not carry it; `invokePairwiseAlignHybrid`
-/// (src/lib/tauriIpc.ts) names that path "Rust engine (desktop)" itself.
+/// (src/lib/tauriIpc.ts) names that path "Rust engine (desktop)" itself. A native build's label
+/// reaches a reply only through `cmd_rust_bio_invoke`'s `align_pairwise` and `align_pairwise_gotoh`
+/// ops, which the App sends to the WebAssembly build instead; BG-01M7V0Z9's
+/// `bg_01m7v0z9_native_pairwise_label_names_the_desktop_build` (molbiocraft-cloning,
+/// tests/restriction_site_cap.rs) holds it to "Rust engine (desktop)".
 pub const PAIRWISE_ENGINE_LABEL: &str =
     if cfg!(target_arch = "wasm32") { "Rust engine (WebAssembly)" } else { "Rust engine (desktop)" };
 
