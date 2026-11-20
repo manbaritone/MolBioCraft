@@ -1702,9 +1702,20 @@ function annotateCapNote(c: BlastQueryCut): string {
   return `Searched only nt 1-${grouped(c.cap)} of this ${grouped(c.length)}-nt sequence: blastn's query cap is ${grouped(c.cap)} nt, so no hit past nt ${grouped(c.cap)} could be found.`;
 }
 
+/**
+ * The E-value annotate-by-BLAST keeps a hit at or below unless the run sets `maxEValue`: the
+ * conventional 1e-5, so a short chance match (an 18-nt exact piece of a record inside unrelated
+ * sequence, found at full identity and E above 1e-5) is not a top hit.
+ * No other BLAST window exposes an E-value threshold, so there is none to share.
+ */
+export const ANNOTATE_BLAST_MAX_EVALUE = 1e-5;
+
 export function runAnnotateByBlast(targets: SequenceDocument[], database: SequenceDocument[], v: OptionValues): OperationResult {
   const maxHits = Math.max(1, num(v.maxHits ?? 5));
   const minHitIdentity = num(v.minHitIdentity ?? 80);
+  const maxEValue = num(v.maxEValue ?? ANNOTATE_BLAST_MAX_EVALUE);
+  // the thresholds a hit must meet, named wherever the run reports its hits (BG01M6QHNT)
+  const kept = `≥ ${minHitIdentity}% identity with E ≤ ${maxEValue.toExponential()}`;
   const t = now();
   const updated: SequenceDocument[] = [];
   const lines: string[] = [];
@@ -1724,7 +1735,8 @@ export function runAnnotateByBlast(targets: SequenceDocument[], database: Sequen
     };
     const pool = database.filter((x) => x.id !== d.id && x.moleculeType !== 'Protein' && x.sequence.length > 0);
     const hits = runLocalBlastSearch(d.sequence, pool, 'blastn', 'Annotate by BLAST')
-      .filter((h) => h.identityPct >= minHitIdentity)
+      // an E-value the engine printed as "0.0" is 0; one that does not parse is not kept
+      .filter((h) => h.identityPct >= minHitIdentity && Number(h.eValue) <= maxEValue)
       .sort((a, b) => b.bitScore - a.bitScore);
     const byId = new Map(pool.map((x) => [x.id, x]));
     const refs: SequenceDocument[] = [];
@@ -1734,8 +1746,8 @@ export function runAnnotateByBlast(targets: SequenceDocument[], database: Sequen
       if (refs.length >= maxHits) break;
     }
     if (!refs.length) {
-      lines.push(`${label}: no annotated hits ≥ ${minHitIdentity}% identity`);
-      recordCut(`No annotated hits ≥ ${minHitIdentity}% identity`);
+      lines.push(`${label}: no annotated hits ${kept}`);
+      recordCut(`No annotated hits ${kept}`);
       continue;
     }
     const names = refs.map((x) => x.name).join(', ');
@@ -1745,10 +1757,10 @@ export function runAnnotateByBlast(targets: SequenceDocument[], database: Sequen
       const n = u.features.length - d.features.filter((f) => v.replace === false || !f.notes?.startsWith(TRANSFERRED_NOTE)).length;
       total += Math.max(0, n);
       annotated += 1;
-      const description = `${Math.max(0, n)} annotations from top hits: ${names}`;
+      const description = `${Math.max(0, n)} annotations from top hits with E ≤ ${maxEValue.toExponential()}: ${names}`;
       updated.push({ ...u, history: [...u.history.slice(0, -1), { ...u.history[u.history.length - 1], operation: 'Annotate by BLAST', description: cut ? `${description}. ${annotateCapNote(cut)}` : description }], updatedAt: t });
     } else {
-      recordCut(`0 annotations from top hits: ${names}`);
+      recordCut(`0 annotations from top hits with E ≤ ${maxEValue.toExponential()}: ${names}`);
     }
     lines.push(`${label}: hits ${names}`);
   }
@@ -1891,11 +1903,21 @@ export function runQueryCentricAlignment(query: SequenceDocument, querySeq: stri
     const kept = [...h.alignedQuery].filter((c) => c !== '-').length;
     return realigned || kept >= span ? [] : [queryCentricCutNote(`Row "${name}"`, `${kept.toLocaleString('en-US')} of the ${span.toLocaleString('en-US')} query positions its HSP spans`)];
   });
+  // A query past its program's cap was searched only up to the cap, so the document says which hits
+  // it can hold, in its Notes, description and History step (D0005).
+  const queryCut = blastQueryCut(querySeq, hits[0].program);
+  const queryNote = queryCut
+    ? queryCentricCutNote(`The ${queryCut.program} search`, `hits in query 1-${grouped(queryCut.cap)} of ${grouped(queryCut.length)} ${queryCut.unit} (${queryCut.program}'s query cap is ${grouped(queryCut.cap)} ${queryCut.unit})`)
+    : '';
   const doc = withWarningNotes(newAlignmentDoc(query, `${query.name} BLAST hits (query-centric)`,
     [{ name: `${query.name} (query)`, sequence: q }, ...rows.map((r) => ({ name: r.name, sequence: r.sequence, accession: r.hit.accession, description: r.hit.description }))],
-    'BLAST Query-Centric Alignment', `${hits.length} BLAST hits placed on the query (insertions relative to the query not shown)`,
-    [query.id, ...new Set(hits.map((h) => h.id.replace(/^blast-hit-/, '').replace(/~hsp\d+$/, '')))], ctx.folder, { 'BLAST program': hits[0].program }), cut);
-  const cutSummary = cut.length ? `; ${cut.length === 1 ? '1 row is' : `${cut.length} rows are`} truncated (see the document's Notes)` : '';
+    'BLAST Query-Centric Alignment', `${hits.length} BLAST hits placed on the query (insertions relative to the query not shown)${queryNote ? `. ${queryNote}` : ''}`,
+    [query.id, ...new Set(hits.map((h) => h.id.replace(/^blast-hit-/, '').replace(/~hsp\d+$/, '')))], ctx.folder, { 'BLAST program': hits[0].program }), queryNote ? [queryNote, ...cut] : cut);
+  const cutParts = [
+    ...(queryNote ? ['the query is truncated'] : []),
+    ...(cut.length ? [`${cut.length === 1 ? '1 row is' : `${cut.length} rows are`} truncated`] : []),
+  ];
+  const cutSummary = cutParts.length ? `; ${cutParts.join(' and ')} (see the document's Notes)` : '';
   return { created: [doc], updated: [], summary: `Query-centric alignment of ${hits.length} hits${cutSummary}` };
 }
 

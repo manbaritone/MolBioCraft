@@ -22,7 +22,7 @@ import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import { BlastSearchModal, blastDatabaseChoice } from '../components/MenusPreferencesAndBlastModal';
 import { HybridToolsAndHistoryStudio } from '../components/HybridToolsAndHistoryStudio';
 import { runLocalBlastSearch } from '../core/bioEngine';
-import { blastQueryCut, blastQueryLetters, blastQueryTextWarnings, runAnnotateByBlast } from '../core/operationRunners';
+import { ANNOTATE_BLAST_MAX_EVALUE, blastQueryCut, blastQueryLetters, blastQueryTextWarnings, queryCentricCutNote, runAnnotateByBlast, runQueryCentricAlignment } from '../core/operationRunners';
 import { saveLastUsed } from '../core/optionProfiles';
 import type { LocalSequenceDbEntry } from '../core/localBlastDb';
 import type { BlastHitRecord, SequenceDocument } from '../types/bio';
@@ -320,17 +320,17 @@ describe('annotate by BLAST', () => {
     // the full note lives in each truncated document's History, where it is not clipped and stays put
     const earlyStep = earlyU.history.at(-1)!;
     expect(earlyStep.operation).toBe('Annotate by BLAST');
-    expect(earlyStep.description).toBe(`${earlyU.features.length} annotations from top hits: ${puc.name}. ${capNote('15,000')}`);
+    expect(earlyStep.description).toBe(`${earlyU.features.length} annotations from top hits with E ≤ 1e-5: ${puc.name}. ${capNote('15,000')}`);
     expect(lateU.history).toHaveLength(1);
     expect(lateU.history[0]).toMatchObject({
       operation: 'Annotate by BLAST',
-      description: `No annotated hits ≥ 90% identity. ${capNote('14,686')}`,
+      description: `No annotated hits ≥ 90% identity with E ≤ 1e-5. ${capNote('14,686')}`,
       parentIds: ['late'], lengthBp: 14_686, topology: 'linear',
     });
     expect(lateU.features).toEqual([]);
     expect(lateU.sequence).toBe(late.sequence);
     // a target searched whole carries no note
-    expect(shortU.history.at(-1)!.description).toBe(`${shortU.features.length} annotations from top hits: ${puc.name}`);
+    expect(shortU.history.at(-1)!.description).toBe(`${shortU.features.length} annotations from top hits with E ≤ 1e-5: ${puc.name}`);
     // read where the researcher reads it: the document's History tab timeline, one step per entry
     for (const d of [earlyU, lateU]) {
       const steps = historySteps(renderToStaticMarkup(<HybridToolsAndHistoryStudio doc={d} allDocuments={[d]} />));
@@ -343,24 +343,100 @@ describe('annotate by BLAST', () => {
     // History inside them, ahead of the per-target lines
     expect(r.summary).toBe(
       `${added} annotations added to 2 sequences; 2 targets partly searched, see History — ` +
-      [`early-15kb (nt 1-10,000 of 15,000 searched): hits ${puc.name}`, 'late-14.7kb (nt 1-10,000 of 14,686 searched): no annotated hits ≥ 90% identity', `short-4.7kb: hits ${puc.name}`].join('; '),
+      [`early-15kb (nt 1-10,000 of 15,000 searched): hits ${puc.name}`, 'late-14.7kb (nt 1-10,000 of 14,686 searched): no annotated hits ≥ 90% identity with E ≤ 1e-5', `short-4.7kb: hits ${puc.name}`].join('; '),
     );
     expect(r.summary.indexOf('see History') + 'see History'.length).toBeLessThanOrEqual(77);
 
     // one cut target: singular, recorded in its History
     const one = runAnnotateByBlast([late], [puc], { maxHits: 3, minHitIdentity: 90 });
-    expect(one.summary).toBe('0 annotations added to 0 sequences; 1 target partly searched, see History — late-14.7kb (nt 1-10,000 of 14,686 searched): no annotated hits ≥ 90% identity');
-    expect(one.updated.map((d) => d.history.at(-1)!.description)).toEqual([`No annotated hits ≥ 90% identity. ${capNote('14,686')}`]);
+    expect(one.summary).toBe('0 annotations added to 0 sequences; 1 target partly searched, see History — late-14.7kb (nt 1-10,000 of 14,686 searched): no annotated hits ≥ 90% identity with E ≤ 1e-5');
+    expect(one.updated.map((d) => d.history.at(-1)!.description)).toEqual([`No annotated hits ≥ 90% identity with E ≤ 1e-5. ${capNote('14,686')}`]);
     // hits, but nothing new to transfer: the History still records the cut
     const again = runAnnotateByBlast([earlyU], [puc], { maxHits: 3, minHitIdentity: 90, minIdentity: 95, replace: false });
     expect(again.summary).toBe(`0 annotations added to 0 sequences; 1 target partly searched, see History — early-15kb (nt 1-10,000 of 15,000 searched): hits ${puc.name}`);
     expect(again.updated).toHaveLength(1);
     expect(again.updated[0].features).toEqual(earlyU.features);
-    expect(again.updated[0].history.map((h) => h.description)).toEqual([earlyStep.description, `0 annotations from top hits: ${puc.name}. ${capNote('15,000')}`]);
+    expect(again.updated[0].history.map((h) => h.description)).toEqual([earlyStep.description, `0 annotations from top hits with E ≤ 1e-5: ${puc.name}. ${capNote('15,000')}`]);
     // a run with no cut target carries no note
     const none = runAnnotateByBlast([short], [puc], { maxHits: 3, minHitIdentity: 90, minIdentity: 95 });
     expect(none.summary).toBe(`${shortU.features.length} annotations added to 1 sequence — short-4.7kb: hits ${puc.name}`);
-    expect(none.updated[0].history.at(-1)!.description).toBe(`${shortU.features.length} annotations from top hits: ${puc.name}`);
+    expect(none.updated[0].history.at(-1)!.description).toBe(`${shortU.features.length} annotations from top hits with E ≤ 1e-5: ${puc.name}`);
+  });
+});
+
+// ─── BG-01M6QHNT: the saved alignment of a cut query, and annotate-by-BLAST's E-value filter ───
+
+describe('BLAST results that leave the window (BG-01M6QHNT)', () => {
+  // AC1. A query past its program's cap is searched only up to the cap (D0005). The query-centric
+  // document saved from such a search says so in its Notes (the Warnings block), its description and
+  // History step, and the summary App shows on saving, in the one sentence the document uses for
+  // anything it shows cut (queryCentricCutNote); annotate-by-BLAST's History names the cap of a cut
+  // target. Wrong implementations, and the check that catches each: no note on the document (the
+  // Notes, the description and the History step are each read); a note on every saved document (an
+  // uncut query must carry none); the counts of another program (a blastp query is cut too, in
+  // residues); the summary silent (it is read).
+  it('the saved alignment and the history carry the truncation note', () => {
+    const protein = randomProtein(10_400, 43);
+    const cases = [
+      { program: 'blastn' as const, query: puc.sequence + randomDna(12_000 - puc.sequence.length, 41), db: [puc] },
+      { program: 'blastp' as const, query: protein, db: [doc('p300', 'p300', protein.slice(0, 300), 'Protein')] },
+    ];
+    for (const c of cases) {
+      const cut = blastQueryCut(c.query, c.program)!;
+      expect(cut, `${c.program}: the query is past its cap`).not.toBeNull();
+      const hits = runLocalBlastSearch(c.query, c.db, c.program, 'db');
+      expect(hits.length, `${c.program}: a hit`).toBeGreaterThan(0);
+      const r = runQueryCentricAlignment({ ...c.db[0], name: 'q' }, c.query, hits, { sourceLabel: 'q' }, c.db);
+      const saved = r.created[0];
+      const note = queryCentricCutNote(`The ${c.program} search`,
+        `hits in query 1-${cut.cap.toLocaleString('en-US')} of ${cut.length.toLocaleString('en-US')} ${cut.unit} (${c.program}'s query cap is ${cut.cap.toLocaleString('en-US')} ${cut.unit})`);
+      expect(String(saved.docMetadata?.Notes), `${c.program}: the Notes`).toContain(`Warnings:\n- ${note}`);
+      expect(saved.description, `${c.program}: the description`).toContain(note);
+      expect(saved.history.at(-1)!.description, `${c.program}: the History step`).toContain(note);
+      expect(r.summary, `${c.program}: the summary`).toContain("the query is truncated");
+      expect(r.summary).toMatch(/\(see the document's Notes\)$/);
+    }
+    // a query searched whole carries no note
+    const whole = runLocalBlastSearch(puc.sequence, [puc], 'blastn', 'db');
+    const plain = runQueryCentricAlignment({ ...puc, name: 'q' }, puc.sequence, whole, { sourceLabel: 'q' }, [puc]).created[0];
+    expect(String(plain.docMetadata?.Notes ?? '')).not.toContain('is truncated');
+    expect(plain.description).not.toContain('is truncated');
+    // the annotate History names the cap of a target it searched only in part
+    const late = doc('late2', 'late-12kb', randomDna(12_000, 47));
+    const a = runAnnotateByBlast([late], [puc], { maxHits: 3, minHitIdentity: 90 });
+    expect(a.updated.map((d) => d.history.at(-1)!.description)).toEqual([
+      `No annotated hits ≥ 90% identity with E ≤ 1e-5. Searched only nt 1-10,000 of this 12,000-nt sequence: blastn's query cap is 10,000 nt, so no hit past nt 10,000 could be found.`,
+    ]);
+  });
+
+  // AC2. A short exact piece of an annotated record inside random sequence is found by blastn with
+  // full identity but at an E-value no researcher would call a hit. Annotate-by-BLAST keeps only hits
+  // at or below its E-value threshold (1e-5 unless the run asks for another), and names it. Wrong
+  // implementations, and the check that catches each: no E-value filter (the chance match is used);
+  // a filter that drops every hit (the whole pUC19 copy is still annotated); a threshold the run
+  // cannot set (a loose maxEValue lets the chance match back in); the threshold unnamed (the summary
+  // line and the History step name it).
+  it('annotate-by-BLAST ignores chance matches', () => {
+    expect(ANNOTATE_BLAST_MAX_EVALUE).toBe(1e-5);
+    const feature = puc.features.find((f) => f.type !== 'source' && f.end - f.start > 100)!;
+    const piece = puc.sequence.slice(feature.start + 20, feature.start + 38);
+    const target = doc('chance', 'chance-3kb', randomDna(1_500, 51) + piece + randomDna(1_500, 53));
+    const chance = runLocalBlastSearch(target.sequence, [puc], 'blastn', 'Annotate by BLAST');
+    expect(chance.length, 'fixture: the chance match is found').toBeGreaterThan(0);
+    expect(chance.every((h) => h.identityPct >= 80 && Number(h.eValue) > 1e-5), 'fixture: full identity, a chance E-value').toBe(true);
+
+    const strict = runAnnotateByBlast([target], [puc], { maxHits: 3, minHitIdentity: 80 });
+    expect(strict.updated).toEqual([]);
+    expect(strict.summary).toBe('0 annotations added to 0 sequences — chance-3kb: no annotated hits ≥ 80% identity with E ≤ 1e-5');
+    const loose = runAnnotateByBlast([target], [puc], { maxHits: 3, minHitIdentity: 80, maxEValue: 10 });
+    expect(loose.summary, 'a looser threshold the run sets lets the chance match back in').toContain(`chance-3kb: hits ${puc.name}`);
+
+    const copy = doc('copy', 'copy-of-puc', puc.sequence);
+    const real = runAnnotateByBlast([copy], [puc], { maxHits: 3, minHitIdentity: 90, minIdentity: 95 });
+    expect(real.updated).toHaveLength(1);
+    const added = real.updated[0].features.length;
+    expect(added).toBeGreaterThan(3);
+    expect(real.updated[0].history.at(-1)!.description).toBe(`${added} annotations from top hits with E ≤ 1e-5: ${puc.name}`);
   });
 });
 
