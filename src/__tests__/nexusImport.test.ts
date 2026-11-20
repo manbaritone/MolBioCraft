@@ -127,5 +127,118 @@ END;`;
     expect(both.doc.documentKind).toBe('tree');
     expect(both.doc.docMetadata?.Newick).toBe("((Alpha:0.1,'Beta two':0.2):0.05,Gamma:0.3,Delta:0.4);");
     expect(both.doc.docMetadata?.['No. tips']).toBe(4);
+    // BG-01M6VZT1 AC1: and the matrix opens beside it, as an alignment; matrix-only and tree-only
+    // files carry no second document.
+    expect(both.kind === 'tree' && both.alignment?.doc.alignmentMeta?.sequences?.map((s) => s.name))
+      .toEqual(['Alpha', 'Beta two', 'Gamma', 'Delta']);
+    expect('alignment' in routed).toBe(false);
+    const treeOnly = importNexusOrNewickDocument(mrBayesNexus, 'run.nex');
+    expect(treeOnly.kind === 'tree' && treeOnly.alignment).toBeUndefined();
+  });
+});
+
+const twoTrees = `BEGIN TREES;
+  TREE best = ((Alpha:0.1,'Beta two':0.2):0.05,Gamma:0.3,Delta:0.4);
+  TREE second = ((Alpha:0.1,Gamma:0.2):0.05,'Beta two':0.3,Delta:0.4);
+END;`;
+
+describe('BG-01M6VZT1 a NEXUS file with a matrix and trees', () => {
+  it('BG-01M6VZT1 AC1 a NEXUS file with a matrix and a TREES block opens the tree and the matrix as an alignment beside it', () => {
+    // Wrong implementations: the matrix dropped (the old route); the alignment built from the tree's
+    // tips or from a re-read that ignores MATCHCHAR, MISSING, GAP or interleaving; the tree replaced
+    // by the alignment. Each fixture is compared row for row with its matrix-only import.
+    const cases: Array<[string, string, number]> = [
+      [sequentialNexus, 'both.nex', 4],
+      [`${interleavedNexus}
+begin trees;
+  tree t1 = ((A:0.1,B:0.2):0.05,C:0.3);
+end;`, 'prot.nexus', 3],
+    ];
+    for (const [text, fileName, count] of cases) {
+      const fileText = text.includes('begin trees') ? text : `${text}\n${twoTrees}`;
+      const matrixOnly = importNexusOrNewickDocument(text.split(/\nbegin trees;/i)[0], fileName);
+      expect(matrixOnly.kind, fileName).toBe('alignment');
+      const out = importNexusOrNewickDocument(fileText, fileName);
+      expect(out.kind, fileName).toBe('tree');
+      if (out.kind !== 'tree') continue;
+      expect(out.doc.documentKind).toBe('tree');
+      expect(out.doc.folder).toBe('Tree Documents');
+      expect(out.alignment, fileName).toBeDefined();
+      const aln = out.alignment!;
+      expect(aln.sequenceCount).toBe(count);
+      expect(aln.doc.documentKind).toBe('alignment');
+      expect(aln.doc.folder).toBe('Alignments');
+      const rows = (d: typeof aln.doc) => d.alignmentMeta?.sequences?.map((s) => [s.name, s.sequence]);
+      expect(rows(aln.doc), fileName).toEqual(rows(matrixOnly.doc));
+      expect(aln.doc.moleculeType).toBe(matrixOnly.doc.moleculeType);
+      expect(aln.doc.docMetadata?.['NEXUS Layout']).toBe(matrixOnly.doc.docMetadata?.['NEXUS Layout']);
+    }
+    // Not only equal to the matrix-only route: the rows the NEXUS reader reads (MATCHCHAR, MISSING,
+    // GAP, state sets and interleaving resolved; quoted names unquoted).
+    const sequential = importNexusOrNewickDocument(`${sequentialNexus}\n${twoTrees}`, 'both.nex');
+    expect(sequential.kind === 'tree' && sequential.alignment?.doc.alignmentMeta?.sequences?.map((s) => [s.name, s.sequence]))
+      .toEqual([['Alpha', 'ACGTACGTACGT'], ['Beta two', 'ACATACGT-CGN'], ['Gamma', 'ACGTRCGTA-GT'], ['Delta', 'ACGTACGTACGN']]);
+    // A matrix the reader does not read is named as not opened, in a sentence; the tree still opens.
+    const standard = `${sequentialNexus.replace('DATATYPE=DNA', 'DATATYPE=STANDARD')}\n${twoTrees}`;
+    const refused = importNexusOrNewickDocument(standard, 'morph.nex');
+    expect(refused.kind).toBe('tree');
+    if (refused.kind !== 'tree') return;
+    expect(refused.alignment).toBeUndefined();
+    const sentence = 'The character matrix was not opened: NEXUS DATATYPE=STANDARD is not a DNA, RNA or protein alignment.';
+    expect(refused.warnings).toContain(sentence);
+    expect(String(refused.doc.docMetadata?.Notes)).toContain(`- ${sentence}\n`);
+    expect(refused.doc.docMetadata?.Newick).toBe("((Alpha:0.1,'Beta two':0.2):0.05,Gamma:0.3,Delta:0.4);");
+  });
+
+  it('BG-01M6VZT1 AC2 a posterior or support comment on an internal node is kept as its label', () => {
+    expect(extractNewickTree('((A:1,B:1)[&posterior=0.95]:0.5,C:1,D:1);')).toBe('((A:1,B:1)0.95:0.5,C:1,D:1);');
+    // Every key the criterion names, in any case, and BEAST's many-key comment.
+    expect(extractNewickTree('((A:1,B:1)[&PROB=1.0]:0.5,C:1,D:1);')).toBe('((A:1,B:1)1.0:0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1)[&Probability=0.5],C:1,D:1);')).toBe('((A:1,B:1)0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1) [&support=87] :0.5,C:1,D:1);')).toBe('((A:1,B:1)87:0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1)[&height=1.2,height_95%_HPD={1.0,1.4},posterior=0.99]:0.5,C:1,D:1);'))
+      .toBe('((A:1,B:1)0.99:0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,(B:1,E:1)[&posterior=0.7]:1)[&posterior=1]:0.5,C:1,D:1)[&posterior=1];'))
+      .toBe('((A:1,(B:1,E:1)0.7:1)1:0.5,C:1,D:1)1;');
+    // Every other comment is still stripped: other keys, plain comments, a tip's comment, and a
+    // comment on a node that already has a label (its own label is kept).
+    expect(extractNewickTree('((A:1,B:1)[&height=1.2]:0.5,C:1,D:1);')).toBe('((A:1,B:1):0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1)[&prob="0.9"]:0.5,C:1,D:1);')).toBe('((A:1,B:1)0.9:0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1)[&prob_stddev=0.1]:0.5,C:1,D:1);')).toBe('((A:1,B:1):0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1)[&range={1,support=0.5,2}]:0.5,C:1,D:1);')).toBe('((A:1,B:1):0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1)[&posterior=high]:0.5,C:1,D:1);')).toBe('((A:1,B:1):0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1)[posterior=0.95]:0.5,C:1,D:1);')).toBe('((A:1,B:1):0.5,C:1,D:1);');
+    expect(extractNewickTree('((A[&posterior=0.5]:1,B:1):0.5,C:1,D:1);')).toBe('((A:1,B:1):0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1)0.8[&posterior=0.95]:0.5,C:1,D:1);')).toBe('((A:1,B:1)0.8:0.5,C:1,D:1);');
+    expect(extractNewickTree('((A:1,B:1)[&posterior=0.95]0.8:0.5,C:1,D:1);')).toBe('((A:1,B:1)0.8:0.5,C:1,D:1);');
+    expect(extractNewickTree("(('x)[&posterior=0.9]':1,B:1):0.5,C:1,D:1);")).toBe("(('x)[&posterior=0.9]':1,B:1):0.5,C:1,D:1);");
+    // The NEXUS TREES path (TRANSLATE applied to tips, never to the lifted label).
+    const nexus = `#NEXUS
+begin trees;
+  translate 1 Homo_sapiens, 2 Pan, 3 Gorilla;
+  tree con = [&U] ((1:0.1,2:0.1)[&prob=1]:0.05,3[&prob=1.0]:0.2,1:0.1);
+end;`;
+    expect(extractNewickTree(nexus)).toBe('((Homo_sapiens:0.1,Pan:0.1)1:0.05,Gorilla:0.2,Homo_sapiens:0.1);');
+  });
+
+  it('BG-01M6VZT1 AC3 a TREES block with two trees opens the first and records that one more was not opened', () => {
+    const text = `${sequentialNexus}\n${twoTrees}`;
+    const out = importNexusOrNewickDocument(text, 'both.nex');
+    expect(out.doc.docMetadata?.Newick).toBe("((Alpha:0.1,'Beta two':0.2):0.05,Gamma:0.3,Delta:0.4);");
+    expect(out.doc.docMetadata?.['Trees in file']).toBe(2);
+    expect(out.doc.docMetadata?.Notes).toBe('Warnings:\n- 1 more tree in the file was not opened; only the first is shown.\n');
+    expect(out.kind === 'tree' && out.warnings).toEqual(['1 more tree in the file was not opened; only the first is shown.']);
+    // Three trees over two TREES blocks, and a plain Newick file of three trees, count every tree.
+    const three = `${text}\nBEGIN TREES;\n  TREE third = (Alpha,Gamma,(Delta,'Beta two'));\nEND;`;
+    expect(createTreeDocument(three, 'three.nex').docMetadata?.['Trees in file']).toBe(3);
+    expect(String(createTreeDocument(three, 'three.nex').docMetadata?.Notes)).toContain('2 more trees in the file were not opened');
+    const nwk = createTreeDocument("(A:1,B:1,C:1);\n('x;y':1,B:1,C:1);\n[(D,E,F);]\n(A,C,B);\n", 'boot.nwk');
+    expect(nwk.docMetadata?.Newick).toBe('(A:1,B:1,C:1);');
+    expect(nwk.docMetadata?.['Trees in file']).toBe(3);
+    // One tree: no count and no note.
+    const one = createTreeDocument(`${sequentialNexus}\nBEGIN TREES;\n  TREE best = (Alpha,Gamma,Delta);\nEND;`, 'one.nex');
+    expect(one.docMetadata?.['Trees in file']).toBeUndefined();
+    expect(one.docMetadata?.Notes).toBeUndefined();
+    expect(createTreeDocument(mrBayesNexus, 'run.nex').docMetadata?.Notes).toBeUndefined();
   });
 });

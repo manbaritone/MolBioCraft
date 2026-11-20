@@ -5852,16 +5852,21 @@ export const App: React.FC = () => {
       return;
     }
 
-    // Newick and NEXUS: a TREES block opens as a tree; a NEXUS file with only
-    // a DATA / CHARACTERS matrix opens as an alignment.
+    // Newick and NEXUS: a TREES block opens as a tree, with the file's DATA / CHARACTERS matrix
+    // opened beside it as an alignment; a NEXUS file with only a matrix opens as an alignment. The
+    // banner names what the file holds that was not opened (more trees, an unreadable matrix).
     if (/\.(nex|nexus|nwk|newick)$/i.test(lowerName)) {
       const imported = importNexusOrNewickDocument(text, file.name);
-      activateImportedDocumentsInWorkspace([imported.doc]);
+      const besideTree = imported.kind === 'tree' ? imported.alignment : undefined;
+      activateImportedDocumentsInWorkspace(besideTree ? [imported.doc, besideTree.doc] : [imported.doc]);
       setViewerTab(imported.kind === 'tree' ? 'phylogenetics' : 'sequence-alignment');
       setHomeViewActive(false);
       setStatusBanner(
         imported.kind === 'tree'
-          ? `Opened phylogenetic tree "${imported.doc.name}"`
+          ? [
+              `Opened phylogenetic tree "${imported.doc.name}"${besideTree ? ` and NEXUS alignment "${besideTree.doc.name}" (${besideTree.sequenceCount} sequences)` : ''}.`,
+              ...imported.warnings,
+            ].join(' ')
           : `Opened NEXUS alignment "${imported.doc.name}" (${imported.sequenceCount} sequences)`
       );
       return;
