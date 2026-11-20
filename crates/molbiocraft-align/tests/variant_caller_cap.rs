@@ -1373,8 +1373,8 @@ fn over_the_cap_indels_are_kept_and_their_warnings_merged() {
 // sample's tail, the stretch was aligned on the copy: its SNPs were called at the copy's
 // coordinates, and the run was named as an insertion or deletion as long as the distance to the
 // copy. Conversely, charging only the diagonal shift without requiring the candidate chain to cover
-// the query span of sdpkpp's own chain let a partial or near repeat copy (H2, H11) capture the near
-// end of the short stretch and strand the rest off-diagonal.
+// the query span of sdpkpp's own chain let a partial or near repeat copy (H1, H2, H6, H10, H11)
+// capture the near end of the short stretch and strand the rest off-diagonal.
 // ---------------------------------------------------------------------------------------------
 
 /// A sample made of `pieces` of `genome` as the data seat's probe made it. Each copied stretch
@@ -1425,8 +1425,13 @@ struct RepeatCopy {
 /// - Partial or near repeat copies beside a wrong-sized run (BG-01M6VZXE AC1): H1 (the 8 kb head's
 ///   last 1 kb copied at 17,001 inside a deficit run's span), H2 (an 80 kb sample, 42 kb head,
 ///   30,000 N for 20,000 bases, 8 kb tail, and an exact copy of the tail's first 1 kb at 72,001),
-///   and H11 (a 101,000-bp sample over the cap, 65 kb head, 30,000 N for 20,000 bases, 6 kb tail,
-///   and a 97%-identical 300-bp copy of the tail's start at 95,001).
+///   H11 (a 101,000-bp sample over the cap, 65 kb head, 30,000 N for 20,000 bases, 6 kb tail, and
+///   a 97%-identical 300-bp copy of the tail's start at 95,001), and in H2's shape H6 (a
+///   97%-identical 300-bp copy of the tail's start at 72,001) and H10 (a (CA)25 microsatellite in
+///   the tail and another past it). Charging a candidate only for its diagonal shift (round 2's
+///   engine, `covers` dropped) makes 1,472 to 2,267 calls a path on H2, H6, H10 and H11, of 50 to
+///   69 true, and calls 7,301's SNP at 17,301 in H1.
+/// - Copy-free controls in H2's and H11's shapes (H8, H12).
 fn repeat_copy_fixtures() -> Vec<RepeatCopy> {
     let run = |from: usize, n: usize| format!("The sample holds {} N at {}-{}; no variant is called there.", thousands(n), thousands(from), thousands(from + n - 1));
     let mut out = Vec::new();
@@ -1513,6 +1518,39 @@ fn repeat_copy_fixtures() -> Vec<RepeatCopy> {
     }
     let (sample, truth) = repeat_probe_sample(&g, &[Piece::Copy(0..65_000), Piece::N(30_000), Piece::Copy(85_000..91_000)], 1_009, &mut rng);
     out.push(RepeatCopy { label: "H11 6 kb tail over the cap, 97% 300-bp copy at 95,001", reference: g, sample, truth, run: run(65_001, 30_000), left_out: Some("A 10000-bp insertion"), paired_200_allowed: false });
+    // H2's shape (80 kb genome, 42 kb head, 30,000 N for 20,000 bases, 8 kb tail at 62,001-70,000;
+    // the caller's window reaches 10,000 bases past the tail), with a change made to its genome
+    let h2_shape = |label: &'static str, seed: u64, change: &dyn Fn(&mut Vec<u8>, &mut SplitMix)| {
+        let mut rng = SplitMix(seed);
+        let mut g = rng.bases(80_000);
+        change(&mut g, &mut rng);
+        let (sample, truth) = repeat_probe_sample(&g, &[Piece::Copy(0..42_000), Piece::N(30_000), Piece::Copy(62_000..70_000)], 1_009, &mut rng);
+        RepeatCopy { label, reference: g, sample, truth, run: run(42_001, 30_000), left_out: Some("A 10000-bp insertion"), paired_200_allowed: false }
+    };
+    // H6 (BG-01M6VMNF round 2): H2's shape with a 97%-identical copy of the tail's first 300 bp at
+    // 72,001-72,300 (every 33rd base changed), an Alu-like near copy where H2's is exact
+    out.push(h2_shape("H6 8 kb tail, 97% 300-bp copy of its start at 72,001", 0x4832_0006, &|g, rng| {
+        for j in 0..300 {
+            g[72_000 + j] = if j % 33 == 16 { rng.other(g[62_000 + j]) } else { g[62_000 + j] };
+        }
+    }));
+    // H10 (BG-01M6VMNF round 2): H2's shape with a (CA)25 microsatellite at 62,501 (inside the
+    // tail) and another at 72,501 (in the window past it); charged only for its diagonal shift, the
+    // engine called a 10,000-bp deletion at 62,498 here, where the sample holds none
+    out.push(h2_shape("H10 8 kb tail, (CA)25 at 62,501 and 72,501", 0x4832_0010, &|g, _| {
+        for at in [62_500, 72_500] {
+            for j in 0..25 {
+                g[at + 2 * j] = b'C';
+                g[at + 2 * j + 1] = b'A';
+            }
+        }
+    }));
+    // H8 and H12, the copy-free controls: H2's and H11's shapes with no repeat at all
+    out.push(h2_shape("H8 8 kb tail, no copy (control)", 0x4832_0008, &|_, _| {}));
+    let mut rng = SplitMix(0x4832_0012);
+    let g = rng.bases(101_000);
+    let (sample, truth) = repeat_probe_sample(&g, &[Piece::Copy(0..65_000), Piece::N(30_000), Piece::Copy(85_000..91_000)], 1_009, &mut rng);
+    out.push(RepeatCopy { label: "H12 6 kb tail over the cap, no copy (control)", reference: g, sample, truth, run: run(65_001, 30_000), left_out: Some("A 10000-bp insertion"), paired_200_allowed: false });
     out
 }
 

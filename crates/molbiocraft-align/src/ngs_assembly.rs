@@ -1815,15 +1815,18 @@ fn unknown_between(query: &[u8], reference: &[u8], a: (u32, u32), b: (u32, u32))
 /// An exact repeat copy of the stretch beside the run scores as the stretch itself does, and
 /// sdpkpp's tie took the later copy, so a stretch beside a run of the right size was put on a copy
 /// inside the bases the run stands for, or just past the sample's tail: its SNPs were called at the
-/// copy, and the run was named as an indel as long as the copy's distance (BG-01M6VMNF). Requiring
-/// each candidate chain to cover sdpkpp's query span prevents a partial or near repeat copy that
-/// sits closer to `end`'s diagonal from taking only the near end of the stretch and stranding the
-/// rest off-diagonal (BG-01M6VZXE); only a chain that explains at least the same sample bases can
-/// replace sdpkpp's chain.
+/// copy, and the run was named as an indel as long as the copy's distance (BG-01M6VMNF). Charged
+/// only that indel, a partial or near repeat copy that sits closer to `end`'s diagonal (an exact
+/// copy of the stretch's first 1 kb, a 97%-identical copy of its first 300 bases, a (CA)25
+/// microsatellite) took the near end of the stretch, and the rest of it was aligned off its
+/// diagonal: 1,400 or more false calls a path. Its chain reaches only part of the stretch, and
+/// the bases it leaves out cost it nothing, so a candidate must span at least sdpkpp's query span
+/// (BG-01M6VZXE): a chain that reaches only the near end of the stretch is never weighed against
+/// sdpkpp's own, and neither is charged for bases it leaves out.
 ///
-/// With no unknown base between, the sample says nothing of how many reference bases lie between
-/// the two (a deletion of either length leaves the same sample), and sdpkpp's chain stands, as it
-/// did before: where the stretch has an exact copy there, its tie still takes the later copy.
+/// With no unknown base between, sdpkpp's chain stands, as it did before. Where the stretch has an
+/// exact copy there, a deletion of either length leaves the same sample, and sdpkpp's tie still
+/// takes the later copy.
 fn chain_beside(query: &[u8], reference: &[u8], b: &Beyond) -> Option<Vec<(u32, u32)>> {
     let ms = &b.matches;
     if ms.is_empty() {
