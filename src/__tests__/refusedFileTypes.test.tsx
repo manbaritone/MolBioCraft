@@ -217,9 +217,12 @@ function crc32(data: Uint8Array): number {
 /**
  * A ZIP whose entries are deflated (method 8), as `zip -9` or Finder's Compress write them; with
  * `descriptor`, each local header leaves its sizes 0 and a data descriptor follows the data (bit 3),
- * as a streamed ZIP does. A central directory and end record close it.
+ * as a streamed ZIP does (`zip - ... | cat`, Java ZipOutputStream, Go archive/zip); with 'sized', the
+ * header carries the sizes and the descriptor still follows, as Info-ZIP writes a stored entry to a
+ * pipe. `method` 0 stores the entries instead; `signed` false leaves out the descriptor's optional
+ * PK 07 08 signature. A central directory and end record close it.
  */
-function deflatedZip(entries: { path: string; data: Uint8Array }[], descriptor = false): Bytes {
+function deflatedZip(entries: { path: string; data: Uint8Array }[], descriptor: boolean | 'sized' = false, method: 0 | 8 = 8, signed = true): Bytes {
   const enc = new TextEncoder();
   const parts: number[] = [];
   const central: number[] = [];
@@ -227,14 +230,14 @@ function deflatedZip(entries: { path: string; data: Uint8Array }[], descriptor =
   const u32 = (n: number) => [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff];
   for (const e of entries) {
     const name = [...enc.encode(e.path)];
-    const packed = [...deflateRawSync(e.data, { level: 9 })];
+    const packed = method === 8 ? [...deflateRawSync(e.data, { level: 9 })] : [...e.data];
     const crc = crc32(e.data);
     const offset = parts.length;
     const flags = 0x0800 | (descriptor ? 0x0008 : 0);
-    const sizes = descriptor ? [...u32(0), ...u32(0), ...u32(0)] : [...u32(crc), ...u32(packed.length), ...u32(e.data.length)];
-    parts.push(0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(flags), ...u16(8), ...u16(0), ...u16(0), ...sizes, ...u16(name.length), ...u16(0), ...name, ...packed);
-    if (descriptor) parts.push(0x50, 0x4b, 0x07, 0x08, ...u32(crc), ...u32(packed.length), ...u32(e.data.length));
-    central.push(0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(flags), ...u16(8), ...u16(0), ...u16(0),
+    const sizes = descriptor === true ? [...u32(0), ...u32(0), ...u32(0)] : [...u32(crc), ...u32(packed.length), ...u32(e.data.length)];
+    parts.push(0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(flags), ...u16(method), ...u16(0), ...u16(0), ...sizes, ...u16(name.length), ...u16(0), ...name, ...packed);
+    if (descriptor) parts.push(...(signed ? [0x50, 0x4b, 0x07, 0x08] : []), ...u32(crc), ...u32(packed.length), ...u32(e.data.length));
+    central.push(0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(flags), ...u16(method), ...u16(0), ...u16(0),
       ...u32(crc), ...u32(packed.length), ...u32(e.data.length), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
       ...u32(0), ...u32(offset), ...name);
   }
@@ -359,6 +362,152 @@ describe('xml files and foreign ZIP archives (BG-01M6W00X)', () => {
       expect(docCount(app), 'a documents-only archive opens its two documents').toBe(2);
       expect(words(app.one('.mbc-workbench', 'workbench root').textContent), 'documents only').toContain('pW00X_F');
       expect(notice(app), 'documents only').not.toContain('not a MolBioCraft archive');
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
+/**
+ * BG-01M7VGHZ (the redelivery of BG-01M6W00X after its round-2 REJECT): a ZIP's entries are read from
+ * its central directory, so a streamed archive (bit 3: sizes 0 in each local header, a data
+ * descriptor after the data) whose first entry is not a MolBioCraft entry is still seen whole; an
+ * archive the reader cannot read past is never said to hold nothing (LC-006); and an archive cut
+ * short after some of its entries says so when it opens what it read (D0005).
+ *
+ * Wrong implementations, and the case that catches each:
+ * - the forward scan left to stop at the first streamed entry's data (round 2): the reviewer's
+ *   probe, Local/pR_A.fasta first, would be called "not a MolBioCraft archive", deflated or
+ *   documents-only alike, and the stored streamed archive would not open;
+ * - the central directory read but its sizes ignored (the local header's 0 used): the stored
+ *   streamed archives would open no document;
+ * - a streamed archive with no central directory (cut short) still said to hold nothing: the cut
+ *   inside its first entry must say MolBioCraft cannot read past it, and the cut after its
+ *   MolBioCraft entry's header must name it a MolBioCraft archive cut short (the scan steps over a
+ *   streamed entry by its data descriptor);
+ * - the cut-short note left out, or given for every archive: the documents-only and the session
+ *   archive cut after some entries carry it, and the same archives whole do not.
+ */
+const pullAfter = (bytes: Uint8Array, from: number, sig: number[]): number => {
+  for (let i = from; i + 4 <= bytes.length; i++) if (sig.every((b, k) => bytes[i + k] === b)) return i;
+  throw new Error(`signature ${sig.join(',')} not found after ${from}`);
+};
+const LOCAL_HEADER = [0x50, 0x4b, 0x03, 0x04];
+const cannotReadPast = (name: string, entry: string) =>
+  `"${name}" is a ZIP archive that is cut short (the file is incomplete or damaged), and MolBioCraft cannot read past its entry "${entry}" to tell whether it holds a MolBioCraft session or document. Open the original file.`;
+const cutShortDocuments = (name: string, n: number) =>
+  `"${name}" is cut short (the file is incomplete or damaged): it opened the ${n} ${n === 1 ? 'document' : 'documents'} read before the cut, and any entries after the cut were lost. Open the original file, or save the archive again from MolBioCraft.`;
+const cutShortSession = (name: string) =>
+  `"${name}" is cut short (the file is incomplete or damaged): its session entry was read whole, and any entries after the cut were lost. Open the original file, or save the archive again from MolBioCraft.`;
+
+describe('streamed and cut-short ZIP archives (BG-01M7VGHZ)', () => {
+  it('BG-01M7VGHZ AC1 a streamed zip whose first entry is not a MolBioCraft entry is read from its central directory', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({ documents: [ONLY], activeDocId: ONLY.id, viewerTab: 'sequence-view' });
+      // The reviewer's probe: a serializeMbcFolderZip archive unzipped and re-zipped to a pipe,
+      // `zip -q - Local/pR_A.fasta Local/pR_A.mbc.json workbench.mbc.json | cat`.
+      const unzipped = extractZipArchiveEntries(serializeMbcFolderZip({
+        sessionName: 'R_Probe',
+        documents: [archiveDoc('vghz-probe', 'pR_A', 'ATGGCCAAATTTGGGCCCACGTACGTTTGA')],
+        workspace: { activeDocId: 'vghz-probe' },
+      } as unknown as MbcWorkbenchSnapshot)).map((e) => ({ path: e.path.replace(/^[^/]+\//, ''), data: e.data }));
+      const byPath = (p: string) => unzipped.find((e) => e.path === p)!;
+      const fastaFirst = ['Local/pR_A.fasta', 'Local/pR_A.mbc.json', 'workbench.mbc.json'].map(byPath);
+      expect(fastaFirst.every(Boolean), 'the probe holds the three entries the reviewer re-zipped').toBe(true);
+      const docsFastaFirst = fastaFirst.slice(0, 2);
+      const streamed = deflatedZip(fastaFirst, true);
+      expect(streamed[6] & 0x08, 'the probe is streamed (bit 3)').toBe(0x08);
+      expect(new DataView(streamed.buffer).getUint32(18, true), 'its first local header leaves the size 0').toBe(0);
+
+      const refused: [string, Bytes, string, typeof pick][] = [
+        ['stream_fastafirst.zip', streamed, unreadableCompressed('stream_fastafirst.zip', COMPRESSED_WITH_WORKBENCH), drop],
+        ['stream_fastafirst_picked.zip', streamed, unreadableCompressed('stream_fastafirst_picked.zip', COMPRESSED_WITH_WORKBENCH), pick],
+        ['stream_docs.zip', deflatedZip(docsFastaFirst, true), unreadableCompressed('stream_docs.zip', COMPRESSED_DOCUMENTS_ONLY), pick],
+        // Descriptors without their optional signature: only the central directory tells where each entry ends.
+        ['stream_unsigned.zip', deflatedZip(fastaFirst, true, 8, false), unreadableCompressed('stream_unsigned.zip', COMPRESSED_WITH_WORKBENCH), drop],
+        // The same, header-sized and cut inside the central directory: past the first entry lie bytes
+        // that are no ZIP record, so what follows is unread.
+        ['stream_unsigned_cut.zip', (() => { const z = deflatedZip(docsFastaFirst, 'sized', 0, false); return asBytes(z.slice(0, pullAfter(z, 0, [0x50, 0x4b, 0x01, 0x02]) + 10)); })(),
+          cannotReadPast('stream_unsigned_cut.zip', 'Local/pR_A.fasta'), pick],
+        // Cut inside the first (streamed) entry: no central directory, and nothing past the entry to read.
+        ['stream_cut_first.zip', asBytes(streamed.slice(0, 30 + 'Local/pR_A.fasta'.length + 4)),
+          cannotReadPast('stream_cut_first.zip', 'Local/pR_A.fasta'), drop],
+        // Cut just after the MolBioCraft document's local header: the scan steps over the streamed
+        // .fasta by its data descriptor and sees the MolBioCraft entry.
+        ['stream_cut_second.zip', asBytes(streamed.slice(0, pullAfter(streamed, 4, LOCAL_HEADER) + 30 + 'Local/pR_A.mbc.json'.length + 3)),
+          unreadableCutShort('stream_cut_second.zip'), pick],
+      ];
+      for (const [name, bytes, sentence, put] of refused) {
+        await put(app, new File([bytes], name));
+        const shown = notice(app);
+        expect(shown, name).toContain(sentence);
+        expect(shown, name).not.toContain('not a MolBioCraft archive');
+        expect(shown, `${name}: never said to hold nothing`).not.toMatch(/holds no MolBioCraft|remains holds no/);
+        expect(docCount(app), `${name} adds no document`).toBe(1);
+      }
+
+      // The same streamed entries stored (method 0): the central directory's sizes read them, so it opens.
+      await drop(app, new File([deflatedZip(fastaFirst, true, 0)], 'stream_stored.zip'));
+      expect(notice(app), 'stored streamed session').toContain('Restored workbench "R_Probe.mbc" — 1 documents');
+      expect(docCount(app), 'the stored streamed session opens its document').toBe(1);
+      expect(words(app.one('.mbc-workbench', 'workbench root').textContent), 'stored streamed session').toContain('pR_A');
+      expect(notice(app), 'a whole streamed archive is not cut short').not.toContain('cut short');
+
+      await pick(app, new File([deflatedZip(docsFastaFirst, true, 0)], 'stream_stored_docs.zip'));
+      expect(notice(app), 'stored streamed documents').toContain('Restored workbench "stream_stored_docs.mbc" — 1 documents');
+      expect(docCount(app), 'the stored streamed documents open').toBe(1);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7VGHZ AC2 an archive cut short after some of its entries opens what it read and says the rest was lost', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({ documents: [ONLY], activeDocId: ONLY.id, viewerTab: 'sequence-view' });
+      // Documents only, three documents; the cut falls inside the third document entry's data.
+      const docsOnly = asBytes(createZipArchiveBytes(extractZipArchiveEntries(folderArchive('VGHZ_Docs', ['pV_A', 'pV_B', 'pV_C']))
+        .filter((e) => !e.path.endsWith('/workbench.mbc.json'))));
+      const thirdDoc = pullAfter(docsOnly, 0, [...new TextEncoder().encode('pV_C.mbc.json')]);
+      const docsCut = asBytes(docsOnly.slice(0, thirdDoc + 40));
+      await drop(app, new File([docsCut], 'docs_cut.zip'));
+      expect(docCount(app), 'the two documents read before the cut open').toBe(2);
+      expect(notice(app), 'documents only, cut').toContain(cutShortDocuments('docs_cut.zip', 2));
+
+      // Cut inside the central directory's first record (past the 30 bytes a local header needs): every
+      // entry was read, but with no end record the file is still incomplete.
+      const inCentral = asBytes(docsOnly.slice(0, pullAfter(docsOnly, 0, [0x50, 0x4b, 0x01, 0x02]) + 40));
+      await pick(app, new File([inCentral], 'docs_cut_central.zip'));
+      expect(docCount(app), 'every document before the central directory opens').toBe(3);
+      expect(notice(app), 'cut in the central directory').toContain(cutShortDocuments('docs_cut_central.zip', 3));
+
+      await pick(app, new File([docsOnly], 'docs_whole.zip'));
+      expect(docCount(app), 'the whole documents-only archive opens all three').toBe(3);
+      expect(notice(app), 'documents only, whole').not.toContain('cut short');
+
+      // A full archive (workbench entry first) cut after its session entry.
+      const full = folderArchive('VGHZ_Full', ['pV_D', 'pV_E']);
+      const second = pullAfter(full, 4, LOCAL_HEADER);
+      const fullCut = asBytes(full.slice(0, second + 40));
+      expect(fullCut.length, 'the cut falls inside the archive').toBeLessThan(full.length);
+      await pick(app, new File([fullCut], 'full_cut.zip'));
+      expect(notice(app), 'full archive, cut').toContain('Restored workbench "VGHZ_Full.mbc" — 2 documents');
+      expect(notice(app), 'full archive, cut').toContain(cutShortSession('full_cut.zip'));
+
+      // Info-ZIP's stored pipe output (sizes in each header, a descriptor after each entry's data), documents
+      // only with the .fasta first, cut inside its last entry's data descriptor: the scan steps over the first.
+      const piped = deflatedZip(extractZipArchiveEntries(folderArchive('VGHZ_Piped', ['pV_F']))
+        .filter((e) => !e.path.endsWith('/workbench.mbc.json')).reverse(), 'sized', 0);
+      expect(piped[6] & 0x08, 'the piped probe is streamed (bit 3)').toBe(0x08);
+      const pipedCut = asBytes(piped.slice(0, pullAfter(piped, 0, [0x50, 0x4b, 0x01, 0x02]) - 5));
+      await drop(app, new File([pipedCut], 'piped_cut.zip'));
+      expect(docCount(app), 'the piped document read before the cut opens').toBe(1);
+      expect(notice(app), 'piped, cut').toContain(cutShortDocuments('piped_cut.zip', 1));
+
+      await drop(app, new File([full], 'full_whole.zip'));
+      expect(notice(app), 'full archive, whole').toContain('Restored workbench "VGHZ_Full.mbc" — 2 documents');
+      expect(notice(app), 'full archive, whole').not.toContain('cut short');
     } finally {
       app.unmount();
     }

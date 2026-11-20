@@ -5310,7 +5310,7 @@ export const App: React.FC = () => {
     rawText: string,
     sourceLabel: string,
     mode: 'replace' | 'merge' = 'replace',
-    options: { isAutosaveRestore?: boolean; earlierWarnings?: readonly string[] } = {}
+    options: { isAutosaveRestore?: boolean; earlierWarnings?: readonly string[]; archiveNotice?: string | null } = {}
   ) => {
     if (mode === 'replace' || !sessionActiveRef.current) {
       // Validate before asking: a corrupt file must not cost the user a prompt
@@ -5330,7 +5330,7 @@ export const App: React.FC = () => {
     rawText: string,
     sourceLabel: string,
     mode: 'replace' | 'merge',
-    options: { isAutosaveRestore?: boolean; earlierWarnings?: readonly string[] }
+    options: { isAutosaveRestore?: boolean; earlierWarnings?: readonly string[]; archiveNotice?: string | null }
   ) => {
     const fallbackName = sourceLabel.replace(/\.mbc$/i, '') || 'MolBioCraft_Workbench';
     const parsed = parseMbcWorkbench(rawText, fallbackName);
@@ -5357,6 +5357,8 @@ export const App: React.FC = () => {
           mergedIncoming.length === 1 ? 'document' : 'documents'
         } from "${env.sessionName}.mbc"`
       );
+      // A folder archive cut short says what was lost (BG-01M7VGHZ, D0005).
+      if (options.archiveNotice) setStatusBanner(options.archiveNotice, { append: true, keep: true });
       return;
     }
 
@@ -5486,6 +5488,7 @@ export const App: React.FC = () => {
       )
     );
     if (unmatchedNotice) setStatusBanner(unmatchedNotice, { append: true, keep: true });
+    if (options.archiveNotice) setStatusBanner(options.archiveNotice, { append: true, keep: true });
     for (const doc of restoredRotation.unreadable) {
       setStatusBanner(unreadableMapRotationNotice(doc), { append: true, keep: true });
     }
@@ -5831,7 +5834,7 @@ export const App: React.FC = () => {
         const parsedZip = parseMbcFolderZip(buf, file.name);
         // The envelope holds an unreadable track setting already read as shown; hand in the
         // warnings that named it (US-01M7DV8W), as the autosave restore does.
-        applyParsedMbcSession(JSON.stringify(parsedZip.envelope), file.name, mbcMode, { earlierWarnings: parsedZip.warnings });
+        applyParsedMbcSession(JSON.stringify(parsedZip.envelope), file.name, mbcMode, { earlierWarnings: parsedZip.warnings, archiveNotice: parsedZip.archiveNotice });
         return;
       }
       if (!lowerName.endsWith('.zip') && isMbcGzipBytes(buf)) {
