@@ -321,8 +321,28 @@ export interface CrisprGuideRecord {
   offTargetCount: number;
 }
 
+/**
+ * Which bases of a DNA or RNA input the engine translated into the protein it analysed
+ * (biophysics_3d.rs `TranslatedSpan`): the longest forward ORF of at least 30 aa, or with none the
+ * forward frame with the fewest stops.
+ */
+export interface TranslatedSpan {
+  rule: 'longestForwardOrf' | 'fewestStopFrame';
+  /** 1-based first and last base of the input the engine was given; an ORF's span ends with its stop codon. */
+  start: number;
+  end: number;
+  /** Stop codons left out of the analysed protein: none for an ORF, whose stop ends it. */
+  stopsRemoved: number;
+}
+
 export interface ProteinAnalysisReport {
   lengthAa: number;
+  /**
+   * For a DNA or RNA input, the bases translated into the protein analysed; null for a protein
+   * input and when no residue was translated, and absent only from an engine build that does not
+   * report it.
+   */
+  translatedSpan?: TranslatedSpan | null;
   molecularWeightDa: number;
   molecularWeightKda: number;
   isoelectricPointPi: number;

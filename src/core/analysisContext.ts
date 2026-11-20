@@ -1,7 +1,7 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-import type { SequenceDocument } from '../types/bio';
+import type { SequenceDocument, TranslatedSpan } from '../types/bio';
 import { reverseComplement, translateSequence } from './bioEngine';
 
 export type GenomicsSubTabId =
@@ -75,8 +75,20 @@ export const NO_STANDARD_RESIDUE = 'n/a: no standard residue';
 
 /** The protein a document is analysed as: a protein itself (to its cap), or a DNA or RNA document's CDS, translated. */
 export interface ProteinAnalysisTarget {
+  /**
+   * The bases the target spans, read along its strand: the CDS from its start to its end (a joined
+   * CDS's introns included), or with no CDS the first NO_CDS_ANALYSIS_BP bases; a protein's
+   * residues. History folds these, and the codon optimiser reads them.
+   */
   dna: string;
-  proteinSeq: string;
+  /**
+   * What protein analysis is given (BG-01M6SQ1W): a protein's residues, or the bases its protein is
+   * translated from, read along the strand. A joined CDS is read from its segments alone, in the
+   * order the record lists them, as Translation Statistics reads one (BG-01M6S17C).
+   */
+  coding: string;
+  /** The document's bases `coding` reads, forward-strand ranges in the order they are joined. */
+  parts: [number, number][];
   startOffset: number;
   endOffset: number;
   minusStrand: boolean;
@@ -88,14 +100,15 @@ export interface ProteinAnalysisTarget {
 /**
  * What the Protein studio analyses for `doc` (moved from History's protein tab, US-01M6Q164): a
  * protein's own residues up to PROTEIN_ANALYSIS_CAP_AA; a DNA or RNA document's first CDS read along
- * its strand and translated, or with no CDS its first NO_CDS_ANALYSIS_BP bases.
+ * its strand (a joined one from its segments), or with no CDS its first NO_CDS_ANALYSIS_BP bases.
  */
 export function proteinAnalysisTarget(doc: SequenceDocument): ProteinAnalysisTarget {
   if (doc.moleculeType === 'Protein') {
     const { prefix: sliceAa, residues, total } = leadingResidues(doc.sequence, PROTEIN_ANALYSIS_CAP_AA);
     return {
       dna: sliceAa,
-      proteinSeq: sliceAa,
+      coding: sliceAa,
+      parts: [],
       startOffset: 1,
       endOffset: sliceAa.length,
       minusStrand: false,
@@ -104,6 +117,7 @@ export function proteinAnalysisTarget(doc: SequenceDocument): ProteinAnalysisTar
       cds: null,
     };
   }
+  const seqLen = doc.sequence.length;
   const cdsFeat = doc.features.find((f) => f.type === 'CDS');
   const forwardSlice = cdsFeat
     ? doc.sequence.slice(cdsFeat.start - 1, cdsFeat.end)
@@ -111,12 +125,24 @@ export function proteinAnalysisTarget(doc: SequenceDocument): ProteinAnalysisTar
   // A minus-strand CDS is read on the reverse complement (it was translated
   // from the wrong strand).
   const minusStrand = Boolean(cdsFeat && cdsFeat.strand < 0);
-  const dnaSlice = minusStrand
-    ? reverseComplement(forwardSlice, doc.moleculeType === 'RNA')
-    : forwardSlice;
+  const isRna = doc.moleculeType === 'RNA';
+  const dnaSlice = minusStrand ? reverseComplement(forwardSlice, isRna) : forwardSlice;
+  // The bases translated: a joined CDS's segments alone, as the record lists them; a CDS whose
+  // start is past its end runs across the origin; with no CDS, the bases analysed.
+  const joined = cdsFeat?.segments && cdsFeat.segments.length > 1 ? cdsFeat.segments : null;
+  const ranges: [number, number][] = joined
+    ? joined.map((g) => [g.start, g.end])
+    : cdsFeat
+      ? cdsFeat.start > cdsFeat.end ? [[cdsFeat.start, seqLen], [1, cdsFeat.end]] : [[cdsFeat.start, cdsFeat.end]]
+      : [[1, forwardSlice.length]];
+  const parts = ranges
+    .map(([a, b]): [number, number] => [Math.max(1, a), Math.min(seqLen, b)])
+    .filter(([a, b]) => a <= b);
+  const forwardCoding = parts.map(([a, b]) => doc.sequence.slice(a - 1, b)).join('');
   return {
     dna: dnaSlice,
-    proteinSeq: translateSequence(dnaSlice, 0).replace(/\*/g, ''),
+    coding: minusStrand ? reverseComplement(forwardCoding, isRna) : forwardCoding,
+    parts,
     startOffset: cdsFeat ? cdsFeat.start : 1,
     endOffset: cdsFeat ? cdsFeat.end : dnaSlice.length,
     minusStrand,
@@ -126,4 +152,65 @@ export function proteinAnalysisTarget(doc: SequenceDocument): ProteinAnalysisTar
     totalResidues: 0,
     cds: cdsFeat ? { name: cdsFeat.name, start: cdsFeat.start, end: cdsFeat.end, minus: minusStrand } : null,
   };
+}
+
+/** The document base that base `p` (1-based) of a DNA or RNA target's `coding` read is. */
+export function documentBaseOf(target: ProteinAnalysisTarget, p: number): number {
+  let q = target.minusStrand ? target.coding.length - p + 1 : p;
+  for (const [a, b] of target.parts) {
+    if (q <= b - a + 1) return a + q - 1;
+    q -= b - a + 1;
+  }
+  return Number.NaN;
+}
+
+/** The protein protein analysis analysed, and for a DNA or RNA target the base of `coding` each residue's codon starts at. */
+export interface AnalysedProtein {
+  protein: string;
+  codonStarts: number[];
+}
+
+/**
+ * The protein protein analysis analysed of `target` (BG-01M6SQ1W): a protein's own residues, or the
+ * engine's translation of the bases its `translatedSpan` names, stops left out (an ORF's closing
+ * one, a fewest-stop frame's every one). Null when there is no protein the analysis names: a
+ * protein with no residue, or a DNA or RNA target of which no residue was translated (`span` null)
+ * or whose analysis did not say which bases it translated (`span` absent).
+ */
+export function analysedProtein(
+  target: ProteinAnalysisTarget,
+  isProtein: boolean,
+  span: TranslatedSpan | null | undefined
+): AnalysedProtein | null {
+  if (isProtein) return RESIDUE.test(target.coding) ? { protein: target.coding, codonStarts: [] } : null;
+  if (!span) return null;
+  const read = translateSequence(target.coding.slice(span.start - 1, span.end), 0);
+  let protein = '';
+  const codonStarts: number[] = [];
+  for (let i = 0; i < read.length; i++) {
+    if (read[i] === '*') continue;
+    protein += read[i];
+    codonStarts.push(span.start + 3 * i);
+  }
+  return protein ? { protein, codonStarts } : null;
+}
+
+/**
+ * The document's bases residues `fromAa`..`toAa` (1-based) of the analysed protein were translated
+ * from, as ascending runs: one for a contiguous read, one per segment a joined CDS's residues
+ * cross into.
+ */
+export function residueBaseRuns(target: ProteinAnalysisTarget, analysed: AnalysedProtein, fromAa: number, toAa: number): [number, number][] {
+  const first = analysed.codonStarts[fromAa - 1];
+  const last = analysed.codonStarts[toAa - 1] + 2;
+  const bases: number[] = [];
+  for (let p = first; p <= last; p++) bases.push(documentBaseOf(target, p));
+  bases.sort((x, y) => x - y);
+  const runs: [number, number][] = [];
+  for (const b of bases) {
+    const run = runs[runs.length - 1];
+    if (run && b === run[1] + 1) run[1] = b;
+    else runs.push([b, b]);
+  }
+  return runs;
 }

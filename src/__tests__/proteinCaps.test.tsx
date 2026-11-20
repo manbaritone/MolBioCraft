@@ -27,6 +27,13 @@
  * threw on the engine's null charge. The tab now renders, says nothing was translated, and reads
  * each protein KPI with no answer as one shared n/a string, not as the empty protein's zeros and
  * nulls; a count of what was found in no residue stays its zero.
+ *
+ * BG-01M6SQ1W: the Digest, MS2 and PTM cards analysed frame 1 of the whole slice (with a GFP-like
+ * stand-in peptide when that was empty), not the ORF or frame the analysis card names; Annotate
+ * epitopes placed each epitope from the slice or CDS start, not from the analysed ORF's; and a
+ * joined CDS was translated across its introns. Each card now reads the engine's translation of
+ * the bases `translatedSpan` names, shows an empty state when there is none, and a joined CDS is
+ * read from its segments alone.
  */
 
 import React from 'react';
@@ -42,6 +49,7 @@ import { analyzeProteinSequence } from '../core/bioEngine';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
 import { alignPdbStructuresKabsch, type PdbCaAtom } from '../core/genomicsAndStructureSuite';
 import { resolveContactAtomIndices, type StructureContactLike } from '../core/structureContacts';
+import * as rust from '../lib/rustBioEngine';
 import type { SequenceDocument, SequenceFeature } from '../types/bio';
 
 /** Deterministic pseudo-random letters (LCG), so every run reads the same sequences. */
@@ -645,4 +653,204 @@ describe('3D contact overlay', () => {
     expect(ofSize(CONTACT_DRAW_LIMIT * 10 + 1)).toContain('every 11th in');
     expect(ofSize(CONTACT_DRAW_LIMIT * 20 + 1)).toContain('every 21st in');
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// BG-01M6SQ1W: the protein the Digest, MS2 and PTM cards and Annotate epitopes read
+
+/** The stand-in peptide the cards once fell back to. */
+const STAND_IN = 'MSKGEELFTGV';
+/** The protein tab, and what its digest, MS2 and PTM engine calls were given while it rendered. */
+function engineInputs(d: SequenceDocument) {
+  const digest = vi.spyOn(rust, 'simulateProteolyticDigestMsRust');
+  const ms2 = vi.spyOn(rust, 'simulatePeptideMs2SpectrumRust');
+  const ptm = vi.spyOn(rust, 'scanPostTranslationalModificationsRust');
+  try {
+    const html = proteinTab(d);
+    return { html, digest: digest.mock.calls.map((c) => c[0]), ms2: ms2.mock.calls.map((c) => c[0]), ptm: ptm.mock.calls.map((c) => c[0]) };
+  } finally {
+    digest.mockRestore();
+    ms2.mockRestore();
+    ptm.mockRestore();
+  }
+}
+/** The digest table's rows: span and peptide (the epitope table's spans are bold, its next cell plain). */
+const peptideRows = (html: string) =>
+  [...html.matchAll(/<td>aa (?:<!-- -->)?(\d+)(?:<!-- -->)?\.\.(?:<!-- -->)?(\d+)<\/td><td class="mono-cell">([A-Z]+)<\/td><td class="mono-cell">/g)]
+    .map((m) => ({ startAa: Number(m[1]), endAa: Number(m[2]), sequence: m[3] }));
+/** The empty states the proteomics region shows, by card. */
+const emptyStates = (html: string) =>
+  Object.fromEntries([...html.matchAll(/<p[^>]*data-mbc-empty-state="([a-z0-9]+)"[^>]*>([\s\S]*?)<\/p>/g)].map((m) => [m[1], text(m[2])]));
+
+/** The AC fixture: 5,000 bp, no CDS, its longest forward ORF (of the first 1,200 bp) starting at 595. */
+const contig = randomLetters(5_000, 0x13d04, 'ACGT');
+/**
+ * Another such fixture, built so its ORF holds epitopes (the seeded one's 67-aa ORF has none): 594
+ * bases with no ATG, a 151-aa gene from base 595, then random bases to 5,000.
+ */
+const epitopeGene = gene(150, 0x5a2);
+const contigWithEpitopes = `${randomLetters(594, 0x5a3, 'ACGT').replace(/ATG/g, 'ACG')}${epitopeGene}${randomLetters(5_000 - 594 - epitopeGene.length, 0x5a4, 'ACGT')}`;
+
+/**
+ * Mounts the protein tab with a document to annotate, clicks its Annotate button, and returns the
+ * features the click added.
+ */
+function annotateEpitopes(d: SequenceDocument): SequenceFeature[] {
+  const g = globalThis as { window?: unknown };
+  g.window = { HTMLIFrameElement: class {}, addEventListener() {}, removeEventListener() {}, devicePixelRatio: 1 };
+  let updated: SequenceDocument | null = null;
+  try {
+    const container = new TestDocument().createElement('div');
+    const root = createRoot(container as unknown as Element);
+    flushSync(() => root.render(<ProteinStudio activeDoc={d} onUpdateDocument={(u) => { updated = u; }} />));
+    const [button] = find(container, (e) => e.nodeName === 'BUTTON' && e.textContent.startsWith('+ Annotate'));
+    expect(button, 'the Annotate button').toBeDefined();
+    const click = { type: 'click', target: button, bubbles: true, cancelable: true, defaultPrevented: false, button: 0, timeStamp: 0, preventDefault() {}, stopPropagation() {} };
+    const handlers = container.listeners.filter((l) => l.type === 'click').sort((a, b) => Number(b.capture) - Number(a.capture));
+    flushSync(() => handlers.forEach((l) => l.fn(click)));
+    root.unmount();
+  } finally {
+    delete g.window;
+  }
+  expect(updated, 'the click saved the document').not.toBeNull();
+  return updated!.features.slice(d.features.length);
+}
+
+describe('the protein the digest, MS2, PTM and epitope cards analyse', () => {
+  it.each([['seeded', contig], ['built', contigWithEpitopes]])('feeds the digest, MS2 and PTM cards the protein the analysis names (%s fixture)', (_name, contig) => {
+    const orf = longestOrf(contig.slice(0, 1_200))!;
+    expect(orf.start).toBe(595);
+    const protein = namedProtein(contig, orf.start, orf.end, 'orf');
+    // the fixture reaches the old reading: frame 1 of the slice, stops removed, is another protein
+    const frame1 = translate(contig.slice(0, 1_200)).replace(/\*/g, '');
+    expect(frame1).not.toBe(protein);
+
+    const { html, digest, ms2, ptm } = engineInputs(doc('d5k', 'Contig', contig, 'DNA'));
+    // the analysis card names that ORF
+    expect(said(html)).toEqual([owedOrf(orf.start, orf.end, { of: 5_000, slice: 1_200 })]);
+    expect(molecularWeight(html)).toBe(kda(protein, false));
+    // the digest and the PTM scan read exactly its translation
+    expect(digest.length).toBeGreaterThan(0);
+    expect(new Set(digest)).toEqual(new Set([protein]));
+    expect(new Set(ptm)).toEqual(new Set([protein]));
+    // every peptide shown is that protein's residues at its span, and the uncleaved ones, joined in
+    // order, are runs of it with nothing between them but peptides outside the 400-4,500 Da window
+    const rows = peptideRows(html);
+    const report = rust.simulateProteolyticDigestMsRust(protein, 'Trypsin', 1, 400, 4500, true);
+    expect(rows).toEqual(report.peptides.slice(0, 24).map((p) => ({ startAa: p.startAa, endAa: p.endAa, sequence: p.sequence })));
+    expect(rows.length).toBeGreaterThan(1);
+    for (const r of report.peptides) expect(r.sequence).toBe(protein.slice(r.startAa - 1, r.endAa));
+    const uncleaved = report.peptides.filter((p) => p.missedCleavages === 0).sort((a, b) => a.startAa - b.startAa);
+    expect(uncleaved.map((p) => p.sequence).join('')).toBe(uncleaved.map((p) => protein.slice(p.startAa - 1, p.endAa)).join(''));
+    expect(report.proteinLengthAa).toBe(protein.length);
+    // the MS2 spectrum is of the first of those peptides
+    expect(ms2.length).toBeGreaterThan(0);
+    expect(new Set(ms2)).toEqual(new Set([report.peptides[0].sequence]));
+    expect(text(html)).not.toContain(STAND_IN);
+
+    // and on a document whose frame 1 is a lone stop ('TAAA' reads K in frame 2) the cards read K,
+    // not the stand-in: the digest finds no peptide in its window, so there is no MS2 spectrum
+    const k = engineInputs(doc('k1', 'Stub', 'TAAA', 'DNA'));
+    expect(new Set(k.digest)).toEqual(new Set(['K']));
+    expect(new Set(k.ptm)).toEqual(new Set(['K']));
+    expect(k.ms2).toEqual([]);
+    expect(text(k.html)).not.toContain(STAND_IN);
+    expect(emptyStates(k.html)).toEqual({ ms2: 'No MS2 spectrum: the Trypsin digest gives no peptide of 400–4,500 Da to fragment.' });
+
+    // a protein document is digested as itself
+    const own = randomLetters(300, 0x5a1, AA);
+    const p = engineInputs(doc('p1', 'Protein', own, 'Protein'));
+    expect(new Set(p.digest)).toEqual(new Set([own]));
+    expect(new Set(p.ptm)).toEqual(new Set([own]));
+  }, 60_000);
+
+  it('shows an empty digest, MS2 and PTM state, not a stand-in peptide, when no residue is translated', () => {
+    for (const [seq] of UNTRANSLATED) {
+      const { html, digest, ms2, ptm } = engineInputs(doc(`e${seq}`, 'Stub', seq, 'DNA'));
+      expect(text(html), `'${seq}'`).not.toContain(STAND_IN);
+      // nothing stands in for the protein: the engine is asked about no residue, and no peptide
+      expect(new Set([...digest, ...ptm])).toEqual(new Set(['']));
+      expect(ms2).toEqual([]);
+      expect(emptyStates(html), `'${seq}'`).toEqual({
+        digest: 'No peptide: no residue was translated, so there is nothing to digest.',
+        ms2: 'No MS2 spectrum: no residue was translated, so there is no peptide to fragment.',
+        ptm: 'No PTM, PEST or disulfide site: no residue was translated, so there is no residue to scan.',
+      });
+      expect(peptideRows(html)).toEqual([]);
+    }
+    // a translated protein shows none of them
+    expect(emptyStates(proteinTab(doc('d5k', 'Contig', contig, 'DNA')))).toEqual({});
+  });
+
+  it('annotates each epitope on the bases of the analysed ORF', () => {
+    const orf = longestOrf(contigWithEpitopes.slice(0, 1_200))!;
+    expect(orf).toEqual({ start: 595, end: 594 + epitopeGene.length });
+    const protein = namedProtein(contigWithEpitopes, orf.start, orf.end, 'orf');
+    const epitopes = analyzeProteinSequence(protein, false, 9).antigenicDeterminants;
+    expect(epitopes.length).toBeGreaterThan(1);
+    const added = annotateEpitopes(doc('d5k', 'Contig', contigWithEpitopes, 'DNA'));
+    expect(added.map((f) => f.notes?.match(/\(([A-Z]+),/)?.[1])).toEqual(epitopes.map((e) => e.peptide));
+    for (const [i, f] of added.entries()) {
+      const ep = epitopes[i];
+      expect(f.type).toBe('antigenic_epitope');
+      expect(f.strand).toBe(1);
+      // its bases translate to its peptide: the ORF's codons, 594 bp past the slice's
+      expect(translate(contigWithEpitopes.slice(f.start - 1, f.end)), f.name).toBe(ep.peptide);
+      expect(f.start).toBe(orf.start + (ep.startAa - 1) * 3);
+      expect(f.end).toBe(orf.start + ep.endAa * 3 - 1);
+    }
+
+    // a minus-strand CDS whose ORF starts inside it: each epitope's bases, read on the minus strand
+    const cds: SequenceFeature = { id: 'c1', name: 'orfR', type: 'CDS', start: 201, end: 4_800, strand: -1, color: '#000' };
+    const inMinus = longestOrf(revComp(contig.slice(200, 4_800)))!;
+    expect(inMinus.start).toBeGreaterThan(1);
+    const minusProtein = namedProtein(contig, 4_800 - inMinus.end + 1, 4_800 - inMinus.start + 1, 'orf', true);
+    const minusEpitopes = analyzeProteinSequence(minusProtein, false, 9).antigenicDeterminants;
+    const minusAdded = annotateEpitopes(doc('dm', 'Contig', contig, 'DNA', [cds]));
+    expect(minusAdded).toHaveLength(minusEpitopes.length);
+    for (const [i, f] of minusAdded.entries()) {
+      expect(f.strand).toBe(-1);
+      expect(translate(revComp(contig.slice(f.start - 1, f.end))), f.name).toBe(minusEpitopes[i].peptide);
+    }
+
+    // a CDS read in its fewest-stop frame: each epitope's bases, their stops left out, are its peptide
+    const noAtg = randomLetters(5_000, 0x13d10, 'ACGT').replace(/ATG/g, 'ACG');
+    const frameCds: SequenceFeature = { ...cds, name: 'orfF', start: 51, end: 3_050, strand: 1 };
+    const f = fewestStopFrame(noAtg.slice(50, 3_050));
+    expect(f.stops).toBeGreaterThan(0);
+    const frameProtein = namedProtein(noAtg, 50 + f.start, 50 + f.end, 'frame');
+    const frameEpitopes = analyzeProteinSequence(frameProtein, false, 9).antigenicDeterminants;
+    const frameAdded = annotateEpitopes(doc('df', 'Contig', noAtg, 'DNA', [frameCds]));
+    expect(frameAdded).toHaveLength(frameEpitopes.length);
+    let acrossStop = false;
+    for (const [i, a] of frameAdded.entries()) {
+      const read = translate(noAtg.slice(a.start - 1, a.end));
+      expect(read.replace(/\*/g, ''), a.name).toBe(frameEpitopes[i].peptide);
+      acrossStop ||= read.includes('*');
+    }
+    expect(acrossStop, 'an epitope spans a stop left out').toBe(true);
+  }, 60_000);
+
+  it('analyses a joined CDS from its segments only', () => {
+    // exons 11..40 and 101..160 and the intron between them hold no stop and no ATG in any frame
+    // ('CGT' only), so the 90 exon bases read as 30 aa and the whole span 11..160 as 50
+    const seq = randomLetters(200, 0x5b1, 'CGT');
+    const exons = seq.slice(10, 40) + seq.slice(100, 160);
+    const segments = [
+      { index: 0, name: 'exon 1', start: 11, end: 40, color: '#000' },
+      { index: 1, name: 'exon 2', start: 101, end: 160, color: '#000' },
+    ];
+    const joined: SequenceFeature = { id: 'j1', name: 'spliced', type: 'CDS', start: 11, end: 160, strand: 1, color: '#000', segments };
+    const { html, digest, ptm } = engineInputs(doc('dj', 'Gene', seq, 'DNA', [joined]));
+    expect(molecularWeight(html)).toBe(kda(exons, true));
+    expect(molecularWeight(html)).toContain('(30 aa)');
+    expect(new Set([...digest, ...ptm])).toEqual(new Set([translate(exons)]));
+    expect(translate(exons)).toHaveLength(30);
+    expect(text(html)).not.toContain(STAND_IN);
+
+    // on the minus strand: the reverse complement of the joined exons, as Biopython reads complement(join(...))
+    const minus = engineInputs(doc('djm', 'Gene', seq, 'DNA', [{ ...joined, strand: -1 }]));
+    expect(molecularWeight(minus.html)).toBe(kda(revComp(exons), true));
+    expect(new Set([...minus.digest, ...minus.ptm])).toEqual(new Set([translate(revComp(exons))]));
+  });
 });

@@ -12,7 +12,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
-import { SequenceDocument, SequenceFeature, type ProteinAnalysisReport } from '../types/bio';
+import { SequenceDocument, SequenceFeature, type ProteinAnalysisReport, type TranslatedSpan } from '../types/bio';
 import { analyzeProteinSequence } from '../core/bioEngine';
 import {
   alignPdbStructuresKabsch,
@@ -41,22 +41,18 @@ import { InspectorSection, useInWorkbench } from './WorkbenchInspector';
 import type { FigureTable } from '../core/figureExport';
 import { PK_SCALE_LABEL } from '../core/alignmentViewModel';
 import { CHART_FULL, chartMaxWidth, plotFrame, ticks } from '../core/chartLayout';
-import { NO_RESIDUE_TRANSLATED, NO_STANDARD_RESIDUE, PROTEIN_ANALYSIS_CAP_AA, proteinAnalysisTarget } from '../core/analysisContext';
+import {
+  NO_RESIDUE_TRANSLATED,
+  NO_STANDARD_RESIDUE,
+  PROTEIN_ANALYSIS_CAP_AA,
+  analysedProtein,
+  documentBaseOf,
+  proteinAnalysisTarget,
+  residueBaseRuns,
+  type ProteinAnalysisTarget,
+} from '../core/analysisContext';
 
 export { NO_RESIDUE_TRANSLATED, NO_STANDARD_RESIDUE };
-
-/**
- * Which bases of a DNA or RNA input the engine translated into the protein it analysed: the
- * `translatedSpan` of its protein analysis (biophysics_3d.rs `TranslatedSpan`), null when it
- * translated no residue. src/types/bio.ts does not declare it.
- */
-interface TranslatedSpan {
-  rule: 'longestForwardOrf' | 'fewestStopFrame';
-  /** 1-based first and last base of the analysed slice; an ORF's span ends with its stop codon. */
-  start: number;
-  end: number;
-  stopsRemoved: number;
-}
 
 const MS2_PLOT = plotFrame({ ...CHART_FULL, h: 280, padL: 52 });
 
@@ -69,12 +65,14 @@ const mzText = (mz: number | null, digits: number) => (typeof mz === 'number' &&
  * What the protein tab says of the bases it analysed from a DNA or RNA document, or null when it
  * analysed, as one ORF, exactly what its heading names: the whole CDS, or with no CDS feature the
  * whole molecule (BG-01M6S13D). `span` counts bases of the slice the engine was given (the CDS,
- * read along its own strand, or the first 1,200 bp); the sentence names them in the document's.
+ * read along its own strand and a joined one from its segments, or the first 1,200 bp); the
+ * sentence names them in the document's.
  */
 function translatedCoverage(
   span: TranslatedSpan | null | undefined,
   aa: number,
-  slice: { length: number; docLength: number; cds: { name: string; start: number; end: number; minus: boolean } | null }
+  slice: { length: number; docLength: number; cds: { name: string; start: number; end: number; minus: boolean } | null },
+  target: ProteinAnalysisTarget
 ): string | null {
   const n = groupDigits;
   const { cds } = slice;
@@ -89,11 +87,8 @@ function translatedCoverage(
   }
   const whole = span.rule === 'longestForwardOrf' && span.start === 1 && span.end === slice.length;
   if (whole && (cds || slice.length === slice.docLength)) return null;
-  const [from, to] = !cds
-    ? [span.start, span.end]
-    : cds.minus
-      ? [cds.end - span.end + 1, cds.end - span.start + 1]
-      : [cds.start + span.start - 1, cds.start + span.end - 1];
+  const ends = [documentBaseOf(target, span.start), documentBaseOf(target, span.end)];
+  const [from, to] = [Math.min(...ends), Math.max(...ends)];
   const bases = `${cds?.minus ? 'the minus-strand bases' : 'bases'} ${n(from)}–${n(to)} of ${n(slice.docLength)}${cds ? `, not the whole CDS ${cds.name}` : ''}`;
   const where = cds ? 'read along the CDS' : `on the forward strand of bases 1–${n(slice.length)}`;
   if (span.rule === 'longestForwardOrf') {
@@ -416,19 +411,32 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
 
   const proteinReport = useMemo(
     () =>
-      (analyzeProteinSequence(targetCdsSlice.dna, !isProteinDoc, hydroWindow) as ProteinAnalysisReport & {
-            translatedSpan?: TranslatedSpan | null;
+      (analyzeProteinSequence(targetCdsSlice.coding, !isProteinDoc, hydroWindow) as ProteinAnalysisReport & {
             /** What the analysis read other than the 20 standard residues (D0005). */
             warnings?: string[];
             /** Guruprasad's instability index (biophysics_3d.rs); null where the chain has no two standard residues. */
             instabilityIndex?: number | null;
           }),
-    [targetCdsSlice.dna, isProteinDoc, hydroWindow]
+    [targetCdsSlice.coding, isProteinDoc, hydroWindow]
   );
   // The engine translated no residue (a lone stop, part of a codon, an empty document): each
-  // protein KPI with no answer reads NO_RESIDUE_TRANSLATED, and the digest and the PTM scan read
-  // no residue rather than the stand-in protein they fall back to (BG-01M6SQXX).
+  // protein KPI with no answer reads NO_RESIDUE_TRANSLATED (BG-01M6SQXX).
   const noResidue = proteinReport !== null && proteinReport.lengthAa === 0;
+  // The protein the analysis card names, which the digest, MS2 and PTM cards and Annotate epitopes
+  // read (BG-01M6SQ1W): the engine's translation of the bases its translatedSpan names. With none,
+  // those cards say why they are empty; no stand-in protein is analysed in its place.
+  const analysed = useMemo(
+    () => (proteinReport ? analysedProtein(targetCdsSlice, isProteinDoc, proteinReport.translatedSpan) : null),
+    [proteinReport, targetCdsSlice, isProteinDoc]
+  );
+  const analysedSeq = analysed?.protein ?? '';
+  const noProteinWhy = analysed
+    ? null
+    : isProteinDoc
+      ? 'the protein holds no residue'
+      : noResidue || !proteinReport
+        ? 'no residue was translated'
+        : 'protein analysis did not report which bases it translated';
 
   // What protein analysis covered, said beside the result whenever it is not all the tab reads
   // from: a protein past the cap, or an ORF or frame short of the whole CDS (with no CDS, of the
@@ -442,33 +450,31 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
         : null;
     }
     return translatedCoverage(proteinReport.translatedSpan, proteinReport.lengthAa, {
-      length: targetCdsSlice.dna.length,
+      length: targetCdsSlice.coding.length,
       docLength: doc.sequence.length,
       cds: targetCdsSlice.cds,
-    });
+    }, targetCdsSlice);
   }, [proteinReport, isProteinDoc, targetCdsSlice, doc.sequence.length]);
 
-  const digestMsReport = useMemo(() => {
-    const cleanProt = noResidue ? '' : targetCdsSlice.proteinSeq || 'MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLK';
-    return simulateProteolyticDigestMsRust(cleanProt, proteaseEnzyme, 1, 400.0, 4500.0, true);
-  }, [noResidue, targetCdsSlice.proteinSeq, proteaseEnzyme]);
+  const digestMsReport = useMemo(
+    () => simulateProteolyticDigestMsRust(analysedSeq, proteaseEnzyme, 1, 400.0, 4500.0, true),
+    [analysedSeq, proteaseEnzyme]
+  );
 
+  // The spectrum of the peptide picked from the digest; with no peptide there is none to fragment.
   const activeMs2Peptide = useMemo(() => {
     const list = digestMsReport?.peptides ?? [];
-    if (list.length === 0) return 'MSKGEELFTGVVPILVELDGDVNGHK';
+    if (list.length === 0) return null;
     const clamped = Math.min(selectedMs2PeptideIdx, list.length - 1);
     return list[Math.max(0, clamped)].sequence;
   }, [digestMsReport?.peptides, selectedMs2PeptideIdx]);
 
   const ms2SpectrumReport = useMemo(
-    () => simulatePeptideMs2SpectrumRust(activeMs2Peptide, true),
+    () => (activeMs2Peptide ? simulatePeptideMs2SpectrumRust(activeMs2Peptide, true) : null),
     [activeMs2Peptide]
   );
 
-  const ptmDisulfideReport = useMemo(() => {
-    const cleanProt = noResidue ? '' : targetCdsSlice.proteinSeq || 'MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLK';
-    return scanPostTranslationalModificationsRust(cleanProt);
-  }, [noResidue, targetCdsSlice.proteinSeq]);
+  const ptmDisulfideReport = useMemo(() => scanPostTranslationalModificationsRust(analysedSeq), [analysedSeq]);
 
   useEffect(() => {
     if (!isProteinDoc) {
@@ -484,25 +490,29 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
   };
 
   const handleAnnotateEpitopes = () => {
-    if (!onUpdateDocument || !proteinReport) return;
+    if (!onUpdateDocument || !proteinReport || !analysed) return;
+    const { minusStrand } = targetCdsSlice;
     const newFeatures: SequenceFeature[] = proteinReport.antigenicDeterminants.map(
       (ep, idx) => {
-        // Codon span of the epitope in CDS coordinates, mapped back to the
-        // construct (mirrored for a minus-strand CDS).
-        const cdsFrom = (ep.startAa - 1) * 3 + 1;
-        const cdsTo = ep.endAa * 3;
-        const { startOffset, endOffset, minusStrand } = targetCdsSlice;
-        const start = isProteinDoc ? ep.startAa : minusStrand ? endOffset - cdsTo + 1 : startOffset + cdsFrom - 1;
-        const end = isProteinDoc ? ep.endAa : minusStrand ? endOffset - cdsFrom + 1 : startOffset + cdsTo - 1;
+        // A protein's epitope is its residues; a DNA or RNA document's is the codons of the analysed
+        // ORF or frame it was translated from (BG-01M6SQ1W), from translatedSpan.start, past any
+        // stop a fewest-stop frame left out, along the CDS's strand and through a joined CDS's segments.
+        const name = `Antigenic_Epitope_${ep.startAa}_${ep.endAa}`;
+        const runs: [number, number][] = isProteinDoc
+          ? [[ep.startAa, ep.endAa]]
+          : residueBaseRuns(targetCdsSlice, analysed, ep.startAa, ep.endAa);
         return {
         id: `feat-epitope-${Date.now()}-${idx}`,
-        name: `Antigenic_Epitope_${ep.startAa}_${ep.endAa}`,
+        name,
         type: 'antigenic_epitope',
-        start: Math.max(1, start),
-        end: Math.min(doc.sequence.length, end),
+        start: Math.max(1, runs[0][0]),
+        end: Math.min(doc.sequence.length, runs[runs.length - 1][1]),
         strand: (minusStrand ? -1 : 1) as 1 | -1,
         color: '#d97706',
         notes: `EMBOSS Kolaskar-Tongaonkar antigenic determinant (${ep.peptide}, score=${ep.maxScore})`,
+        ...(runs.length > 1
+          ? { segments: runs.map(([start, end], i) => ({ index: i + 1, name: `${name} part ${i + 1}`, start, end, color: '#d97706' })) }
+          : {}),
         };
       }
     );
@@ -569,7 +579,7 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
       {analysisCoverage && (
         <ResultWarnings warnings={[analysisCoverage]} label="Protein analysis coverage" />
       )}
-      {proteinReport && digestMsReport && ms2SpectrumReport && ptmDisulfideReport && (
+      {proteinReport && digestMsReport && ptmDisulfideReport && (
         <div className="studio-split-grid">
           {/* after the Structure section (order 1), as the 3D card leads the studio */}
           {inWorkbench && (
@@ -887,6 +897,23 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
               </div>
 
               <ResultWarnings warnings={digestMsReport.warnings} label="Digest warnings" />
+              {noProteinWhy && (
+                <>
+                  <p className="mbc-summary-note" data-mbc-empty-state="digest">
+                    No peptide: {noProteinWhy}, so there is nothing to digest.
+                  </p>
+                  <p className="mbc-summary-note" data-mbc-empty-state="ptm">
+                    No PTM, PEST or disulfide site: {noProteinWhy}, so there is no residue to scan.
+                  </p>
+                </>
+              )}
+              {!ms2SpectrumReport && (
+                <p className="mbc-summary-note" data-mbc-empty-state="ms2">
+                  {noProteinWhy
+                    ? `No MS2 spectrum: ${noProteinWhy}, so there is no peptide to fragment.`
+                    : `No MS2 spectrum: the ${proteaseEnzyme} digest gives no peptide of 400–4,500 Da to fragment.`}
+                </p>
+              )}
 
               <div className="thermo-kpi-grid">
                 <div className="kpi-box">
@@ -916,7 +943,7 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
                 </div>
               </div>
 
-              {digestMsReport.peptides.length > 0 && (
+              {digestMsReport.peptides.length > 0 && ms2SpectrumReport && (
                 <div style={{ marginTop: 6 }} data-mbc-figure>
                   <div className="studio-card-header" style={{ paddingTop: 0 }}>
                     <h4>b/y-Ion MS2 Spectrum</h4>
