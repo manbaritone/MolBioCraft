@@ -20,16 +20,28 @@ function loadSamples(): SequenceDocument[] {
  * Curated Molecular Biology, Genomics, Protein & Alignment Sample Library
  * synthesized directly by the Rust `molbiocraft-cloning` crate.
  *
- * An array that asks the engine for its documents on first use, not while this module loads, so
- * importing the module runs no engine call. Every read (an index, `length`, a method, iteration,
- * JSON) and every assignment (an index, `length`, `push`) goes to the engine's array.
+ * A Proxy over an empty array that asks the engine for its documents on first use, not while this
+ * module loads, so importing the module runs no engine call (BG-01M6QDEV). Reads (an index, `length`,
+ * `in`, a method, iteration, `Object.keys`, JSON) and writes (an index, `length`, `push`, `delete`,
+ * `Object.defineProperty` of a configurable property) go to the engine's array. It is still a Proxy:
+ * `structuredClone` and `postMessage` of it throw a DataCloneError, and `Object.freeze`, `Object.seal`,
+ * `Object.preventExtensions` or defining a non-configurable property throw a TypeError and change
+ * nothing. Copy it first (`[...SAMPLE_LIBRARY]`) for those; nothing in the app clones, posts or
+ * freezes the array itself.
  */
 export const SAMPLE_LIBRARY: SequenceDocument[] = new Proxy([] as SequenceDocument[], {
   get: (_t, key) => Reflect.get(loadSamples(), key),
+  set: (_t, key, value) => Reflect.set(loadSamples(), key, value),
   has: (_t, key) => Reflect.has(loadSamples(), key),
+  deleteProperty: (_t, key) => Reflect.deleteProperty(loadSamples(), key),
+  // A non-configurable property is refused before it reaches the array: the empty target lacks it, so
+  // the Proxy would throw after the array had already changed.
+  defineProperty: (_t, key, descriptor) =>
+    descriptor.configurable !== false && Reflect.defineProperty(loadSamples(), key, descriptor),
   ownKeys: () => Reflect.ownKeys(loadSamples()),
   getOwnPropertyDescriptor: (_t, key) => Reflect.getOwnPropertyDescriptor(loadSamples(), key),
-  set: (_t, key, value) => Reflect.set(loadSamples(), key, value),
+  // Refused, so a failed freeze or seal leaves the stand-in extensible and still working.
+  preventExtensions: () => false,
 });
 
 /**

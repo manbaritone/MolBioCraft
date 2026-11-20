@@ -1219,8 +1219,39 @@ export function convertDnaRna(rawSeq: string, toRna: boolean): string {
   });
 }
 
-export const COMMON_PLASMID_FEATURES: CommonFeatureTemplate[] =
-  invokeRustBioSync<CommonFeatureTemplate[]>('get_common_plasmid_features');
+let commonFeatures: CommonFeatureTemplate[] | null = null;
+
+/** The common plasmid feature templates, asked of the engine on the first call and kept. */
+function loadCommonFeatures(): CommonFeatureTemplate[] {
+  commonFeatures ??= invokeRustBioSync<CommonFeatureTemplate[]>('get_common_plasmid_features');
+  return commonFeatures;
+}
+
+/**
+ * The common plasmid feature templates, as the engine's `get_common_plasmid_features` gives them.
+ *
+ * Built like `SAMPLE_LIBRARY` (src/data/sampleLibrary.ts), with the same limits: a Proxy over an empty
+ * array that asks the engine on first use, not while this module loads (BG-01M6QDEV, D0276). Reads and
+ * writes, `delete` and `Object.defineProperty` of a configurable property included, go to the engine's
+ * array; `structuredClone` and `postMessage` of it throw a DataCloneError, and `Object.freeze`,
+ * `Object.seal`, `Object.preventExtensions` or defining a non-configurable property throw a TypeError
+ * and change nothing, so copy it first (`[...COMMON_PLASMID_FEATURES]`) for those. Nothing in the app clones, posts
+ * or freezes it.
+ */
+export const COMMON_PLASMID_FEATURES: CommonFeatureTemplate[] = new Proxy([] as CommonFeatureTemplate[], {
+  get: (_t, key) => Reflect.get(loadCommonFeatures(), key),
+  set: (_t, key, value) => Reflect.set(loadCommonFeatures(), key, value),
+  has: (_t, key) => Reflect.has(loadCommonFeatures(), key),
+  deleteProperty: (_t, key) => Reflect.deleteProperty(loadCommonFeatures(), key),
+  // A non-configurable property is refused before it reaches the array: the empty target lacks it, so
+  // the Proxy would throw after the array had already changed.
+  defineProperty: (_t, key, descriptor) =>
+    descriptor.configurable !== false && Reflect.defineProperty(loadCommonFeatures(), key, descriptor),
+  ownKeys: () => Reflect.ownKeys(loadCommonFeatures()),
+  getOwnPropertyDescriptor: (_t, key) => Reflect.getOwnPropertyDescriptor(loadCommonFeatures(), key),
+  // Refused, so a failed freeze or seal leaves the stand-in extensible and still working.
+  preventExtensions: () => false,
+});
 
 export function detectCommonFeatures(doc: SequenceDocument): SequenceFeature[] {
   return invokeRustBioSync<SequenceFeature[]>('detect_common_features', { doc });

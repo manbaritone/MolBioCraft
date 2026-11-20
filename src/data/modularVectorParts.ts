@@ -31,9 +31,37 @@ export interface ModularVectorPart {
   summary: string;
 }
 
+let parts: ModularVectorPart[] | null = null;
+
+/** The parts registry, asked of the engine on the first call and kept. */
+function loadParts(): ModularVectorPart[] {
+  parts ??= invokeRustBioSync<ModularVectorPart[]>('get_modular_vector_parts');
+  return parts;
+}
+
 /**
  * Modular Genetic Parts Registry (Promoters, Reporters, Markers, Origins, Tags, Linkers, Viral Elements)
- * loaded synchronously from the compiled Rust `molbiocraft-cloning` crate.
+ * from the compiled Rust `molbiocraft-cloning` crate.
+ *
+ * Built like `SAMPLE_LIBRARY` (src/data/sampleLibrary.ts), with the same limits: a Proxy over an empty
+ * array that asks the engine for the parts on first use, not while this module loads (BG-01M6QDEV).
+ * Reads and writes, `delete` and `Object.defineProperty` of a configurable property included, go to
+ * the engine's array; `structuredClone` and `postMessage` of it throw a DataCloneError, and
+ * `Object.freeze`, `Object.seal`, `Object.preventExtensions` or defining a non-configurable property
+ * throw a TypeError and change nothing, so copy it first (`[...MODULAR_VECTOR_PARTS]`) for those.
+ * Nothing in the app clones, posts or freezes it.
  */
-export const MODULAR_VECTOR_PARTS: ModularVectorPart[] =
-  invokeRustBioSync<ModularVectorPart[]>('get_modular_vector_parts');
+export const MODULAR_VECTOR_PARTS: ModularVectorPart[] = new Proxy([] as ModularVectorPart[], {
+  get: (_t, key) => Reflect.get(loadParts(), key),
+  set: (_t, key, value) => Reflect.set(loadParts(), key, value),
+  has: (_t, key) => Reflect.has(loadParts(), key),
+  deleteProperty: (_t, key) => Reflect.deleteProperty(loadParts(), key),
+  // A non-configurable property is refused before it reaches the array: the empty target lacks it, so
+  // the Proxy would throw after the array had already changed.
+  defineProperty: (_t, key, descriptor) =>
+    descriptor.configurable !== false && Reflect.defineProperty(loadParts(), key, descriptor),
+  ownKeys: () => Reflect.ownKeys(loadParts()),
+  getOwnPropertyDescriptor: (_t, key) => Reflect.getOwnPropertyDescriptor(loadParts(), key),
+  // Refused, so a failed freeze or seal leaves the stand-in extensible and still working.
+  preventExtensions: () => false,
+});

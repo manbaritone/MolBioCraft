@@ -202,3 +202,101 @@ describe('sample library', () => {
     }
   });
 });
+
+// BG-01M6QDEV round 2 (D0275). sampleScientificAccuracy once failed at collection with
+// 'invokeRustBioSync is not a function': the engine module's namespace reached a data module without
+// that binding while the data module loaded. The engine imports nothing back from src/ and Vite hoists
+// its export getters above its code, so no import cycle or load order hands out a half-built engine;
+// the registries below make collection independent of the binding by calling the engine on first use.
+describe('data registries with the engine unbound while they load', () => {
+  const docs = () => [{ id: 's1', name: 'one' }, { id: 's2', name: 'two' }];
+  const parts = () => [{ id: 'p1', name: 'lacZ' }, { id: 'p2', name: 'bla' }];
+  type Engine = { invokeRustBioSync: ((op: string) => unknown) | undefined; generateLargeGenomeBenchmarkRust: undefined; generateLargeProteinBenchmarkRust: undefined };
+  async function loadUnbound() {
+    vi.resetModules();
+    const engine: Engine = { invokeRustBioSync: undefined, generateLargeGenomeBenchmarkRust: undefined, generateLargeProteinBenchmarkRust: undefined };
+    vi.doMock('../lib/rustBioEngine', () => engine);
+    const { SAMPLE_LIBRARY } = await import('../data/sampleLibrary');
+    const { MODULAR_VECTOR_PARTS } = await import('../data/modularVectorParts');
+    const { REBASE_ENZYMES } = await import('../data/rebaseEnzymes');
+    const { COMMON_PLASMID_FEATURES } = await import('../core/bioEngine');
+    return { engine, SAMPLE_LIBRARY, MODULAR_VECTOR_PARTS, REBASE_ENZYMES, COMMON_PLASMID_FEATURES };
+  }
+  const unmock = () => {
+    vi.doUnmock('../lib/rustBioEngine');
+    vi.resetModules();
+  };
+
+  it('imports both registries while the engine binding is undefined, binds it on first use, and asks once each', async () => {
+    try {
+      const { engine, SAMPLE_LIBRARY, MODULAR_VECTOR_PARTS } = await loadUnbound();
+      // Still unbound: first use fails loudly, naming the missing binding, rather than reading as empty.
+      expect(() => MODULAR_VECTOR_PARTS.length).toThrow(/invokeRustBioSync is not a function/);
+      expect(() => SAMPLE_LIBRARY.length).toThrow(/invokeRustBioSync is not a function/);
+      const calls: string[] = [];
+      engine.invokeRustBioSync = (op) => {
+        calls.push(op);
+        return op === 'get_sample_library' ? docs() : op === 'get_modular_vector_parts' ? parts() : [];
+      };
+      expect(MODULAR_VECTOR_PARTS.map((p) => p.id)).toEqual(['p1', 'p2']);
+      expect(MODULAR_VECTOR_PARTS.find((p) => p.name === 'bla')?.id).toBe('p2');
+      expect(SAMPLE_LIBRARY.map((d) => d.id)).toEqual(['s1', 's2']);
+      expect([...MODULAR_VECTOR_PARTS, ...SAMPLE_LIBRARY]).toHaveLength(4);
+      expect(calls).toEqual(['get_modular_vector_parts', 'get_sample_library']);
+    } finally {
+      unmock();
+    }
+  });
+
+  it('sends delete and defineProperty to the loaded array, refuses structuredClone of the stand-in itself, and survives a refused freeze', async () => {
+    try {
+      const { engine, SAMPLE_LIBRARY, MODULAR_VECTOR_PARTS, REBASE_ENZYMES, COMMON_PLASMID_FEATURES } = await loadUnbound();
+      engine.invokeRustBioSync = (op) => (op === 'get_sample_library' ? docs() : parts());
+      for (const list of [SAMPLE_LIBRARY, MODULAR_VECTOR_PARTS, REBASE_ENZYMES, COMMON_PLASMID_FEATURES] as unknown as { id: string; name: string }[][]) {
+        delete list[0];
+        expect(list[0]).toBeUndefined();
+        expect(0 in list).toBe(false);
+        expect(list.length).toBe(2);
+        Object.defineProperty(list, 0, { value: { id: 'x', name: 'x' }, writable: true, enumerable: true, configurable: true });
+        expect(list.map((d) => d.id)).toEqual(['x', list[1].id]);
+        expect(() => structuredClone(list)).toThrow(/could not be cloned/);
+        expect(structuredClone([...list])).toEqual([{ id: 'x', name: 'x' }, list[1]]);
+        expect(() => Object.freeze(list)).toThrow(TypeError);
+        expect(() => Object.defineProperty(list, 5, { value: 1, configurable: false })).toThrow(TypeError);
+        expect(Object.isFrozen(list) || !Object.isExtensible(list)).toBe(false);
+        expect(Object.keys(list)).toEqual(['0', '1']);
+      }
+    } finally {
+      unmock();
+    }
+  });
+
+  it("imports sampleScientificAccuracy's whole import chain with every engine function unbound, and binds it on first use", async () => {
+    vi.resetModules();
+    const real = await vi.importActual<Record<string, unknown>>('../lib/rustBioEngine');
+    // Every function the engine module exports is undefined while the chain loads, so any import-time
+    // engine call (through invokeRustBioSync or any wrapper) fails the import.
+    const engine: Record<string, unknown> = Object.fromEntries(Object.entries(real).map(([k, v]) => [k, typeof v === 'function' ? undefined : v]));
+    vi.doMock('../lib/rustBioEngine', () => engine);
+    try {
+      const chain = ['../data/sampleLibrary', '../data/modularVectorParts', '../core/bioEngine', '../core/contigSummary', '../core/operationRunners', '../data/rebaseEnzymes'];
+      for (const m of chain) await expect(import(m), m).resolves.toBeDefined();
+      const { REBASE_ENZYMES, builtInEnzymeNamed } = await import('../data/rebaseEnzymes');
+      const { COMMON_PLASMID_FEATURES } = await import('../core/bioEngine');
+      expect(() => REBASE_ENZYMES.length).toThrow(/invokeRustBioSync is not a function/);
+      expect(() => COMMON_PLASMID_FEATURES.length).toThrow(/invokeRustBioSync is not a function/);
+      const calls: string[] = [];
+      engine.invokeRustBioSync = (op: string, payload?: unknown) => {
+        calls.push(op);
+        return (real.invokeRustBioSync as (o: string, p?: unknown) => unknown)(op, payload);
+      };
+      expect(builtInEnzymeNamed('ecori')?.name).toBe('EcoRI');
+      expect(REBASE_ENZYMES.length).toBeGreaterThan(100);
+      expect(COMMON_PLASMID_FEATURES.length).toBeGreaterThan(0);
+      expect(COMMON_PLASMID_FEATURES.every((f) => typeof f.name === 'string')).toBe(true);
+      expect(calls).toEqual(['get_rebase_enzymes', 'get_common_plasmid_features']);
+    } finally {
+      unmock();
+    }
+  });
+});
