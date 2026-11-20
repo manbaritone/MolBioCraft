@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 /**
- * RCSB PDB client (D0008): file downloads (coordinates, FASTA, ligands), the Data API REST v1 and
- * the Search API v2.
+ * RCSB PDB client (D0008): file downloads (coordinates, ligands), the Data API REST v1 (entry and
+ * entity objects, and the entity sequences and FASTA built from them) and the Search API v2.
  *
  * The client contacts RCSB only when a caller asks it to; nothing here runs at import. Requests go
- * to the four hosts in `RCSB_HOSTS` and nowhere else. What comes back is handed over as text or
+ * to the three hosts in `RCSB_HOSTS` and nowhere else. FASTA is not fetched from www.rcsb.org: its
+ * FASTA endpoints send no Access-Control-Allow-Origin, so a webview fetch of them fails CORS
+ * (BG-01M6PDXC); the sequences come from the Data API on data.rcsb.org, which sends one. What comes back is handed over as text or
  * JSON: the client parses no structure itself (D0008 has the Rust engine read it like an opened file).
  *
  * Every id is validated before a URL is built, so a malformed id never reaches the network. A
@@ -18,12 +20,11 @@
 
 import type { SequenceDocument } from '../types/bio';
 
-/** The only origins the client sends requests to; the Tauri CSP connect-src lists the same four. */
-export const RCSB_HOSTS = ['https://files.rcsb.org', 'https://data.rcsb.org', 'https://search.rcsb.org', 'https://www.rcsb.org'] as const;
+/** The only origins the client sends requests to; the Tauri CSP connect-src lists the same three. */
+export const RCSB_HOSTS = ['https://files.rcsb.org', 'https://data.rcsb.org', 'https://search.rcsb.org'] as const;
 
 const FILES = 'https://files.rcsb.org';
 const DATA = 'https://data.rcsb.org/rest/v1/core';
-const FASTA = 'https://www.rcsb.org/fasta';
 
 export type RcsbStructureFormat = 'cif' | 'pdb';
 export type RcsbLigandFormat = 'cif' | 'sdf';
@@ -82,17 +83,6 @@ export const entryFileUrl = (entry: string, format: RcsbStructureFormat = 'cif')
 /** A biological assembly's coordinates as mmCIF. */
 export const assemblyFileUrl = (entry: string, assembly: number | string): string =>
   `${FILES}/download/${normalizeEntryId(entry)}-assembly${positiveInteger(assembly, 'assembly id')}.cif`;
-
-/** FASTA of every polymer entity in the entry. */
-export const entryFastaUrl = (entry: string): string => `${FASTA}/entry/${normalizeEntryId(entry)}/download`;
-
-/** FASTA of one polymer entity. */
-export const entityFastaUrl = (entry: string, entity: number | string): string =>
-  `${FASTA}/entity/${normalizeEntryId(entry)}_${positiveInteger(entity, 'entity id')}/download`;
-
-/** FASTA of one chain, by its label_asym_id. */
-export const chainFastaUrl = (entry: string, asymId: string): string =>
-  `${FASTA}/chain/${normalizeEntryId(entry)}.${chainId(asymId)}/download`;
 
 /** A Chemical Component Dictionary ligand: the ideal-coordinate SDF (default) or its mmCIF definition. */
 export const ligandFileUrl = (ccd: string, format: RcsbLigandFormat = 'sdf'): string =>
@@ -228,28 +218,28 @@ type Json = Record<string, unknown>;
 const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** The value at `path`; undefined when any step is absent or null, an error when a step is not an object. */
-function at(root: Json, path: string): unknown {
+function at(root: Json, path: string, what = 'RCSB entry'): unknown {
   let node: unknown = root;
   for (const key of path.split('.')) {
     if (node === undefined || node === null) return undefined;
-    if (!isObject(node)) throw new Error(`RCSB entry: ${path} is malformed.`);
+    if (!isObject(node)) throw new Error(`${what}: ${path} is malformed.`);
     node = node[key];
   }
   return node ?? undefined;
 }
 
-function listAt<T>(root: Json, path: string, item: (v: unknown) => T | undefined): T[] {
-  const value = at(root, path);
+function listAt<T>(root: Json, path: string, item: (v: unknown) => T | undefined, what = 'RCSB entry'): T[] {
+  const value = at(root, path, what);
   if (value === undefined) return [];
   const items = Array.isArray(value) ? value.map(item) : undefined;
-  if (!items || items.some((v) => v === undefined)) throw new Error(`RCSB entry: ${path} is malformed.`);
+  if (!items || items.some((v) => v === undefined)) throw new Error(`${what}: ${path} is malformed.`);
   return items as T[];
 }
 
-function stringAt(root: Json, path: string): string | null {
-  const value = at(root, path);
+function stringAt(root: Json, path: string, what = 'RCSB entry'): string | null {
+  const value = at(root, path, what);
   if (value === undefined) return null;
-  if (typeof value !== 'string') throw new Error(`RCSB entry: ${path} is malformed.`);
+  if (typeof value !== 'string') throw new Error(`${what}: ${path} is malformed.`);
   return value;
 }
 
@@ -275,6 +265,127 @@ export function summarizeEntry(entry: unknown): RcsbEntrySummary {
 /** Fetches a Data API entry object and summarises it. */
 export async function fetchEntrySummary(entry: string, options?: RcsbFetchOptions): Promise<RcsbEntrySummary> {
   return summarizeEntry(await rcsbJson(entryDataUrl(entry), options));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Entity sequences and FASTA (from the Data API: BG-01M6PDXC)
+// ---------------------------------------------------------------------------------------------
+
+export interface RcsbEntitySequence {
+  /** rcsb_id, e.g. "4HHB_1". */
+  id: string;
+  entry: string;
+  entity: string;
+  /** The entity's chains by label_asym_id (rcsb_polymer_entity_container_identifiers.asym_ids). */
+  chains: string[];
+  /** The same chains by auth_asym_id, a list the Data API sorts on its own (auth_asym_ids). */
+  authChains: string[];
+  /** rcsb_polymer_entity.pdbx_description, or null when the entity has none. */
+  description: string | null;
+  /** rcsb_entity_source_organism[] as "scientific name (NCBI taxonomy id)", or the name alone. */
+  organisms: string[];
+  /** entity_poly.pdbx_seq_one_letter_code_can, the canonical one-letter sequence, whitespace removed. */
+  sequence: string;
+}
+
+const ENTITY = 'RCSB polymer entity';
+
+/** The sequence and identity of a Data API polymer_entity object; an absent or empty sequence is an error. */
+export function entitySequenceOf(polymerEntity: unknown): RcsbEntitySequence {
+  if (!isObject(polymerEntity)) throw new Error(`${ENTITY}: the response is not a JSON object.`);
+  const required = (path: string): string => {
+    const value = stringAt(polymerEntity, path, ENTITY);
+    if (value === null) throw new Error(`${ENTITY}: ${path} is missing.`);
+    return value;
+  };
+  const ids = (path: string): string[] => {
+    if (at(polymerEntity, path, ENTITY) === undefined) throw new Error(`${ENTITY}: ${path} is missing.`);
+    return listAt(polymerEntity, path, asString, ENTITY);
+  };
+  const id = required('rcsb_id');
+  const sequence = required('entity_poly.pdbx_seq_one_letter_code_can').replace(/\s+/g, '');
+  if (sequence === '') throw new Error(`${ENTITY} ${id}: entity_poly.pdbx_seq_one_letter_code_can is empty.`);
+  const organisms = listAt(polymerEntity, 'rcsb_entity_source_organism', (o) => {
+    if (!isObject(o) || typeof o.scientific_name !== 'string') return undefined;
+    return typeof o.ncbi_taxonomy_id === 'number' ? `${o.scientific_name} (${o.ncbi_taxonomy_id})` : o.scientific_name;
+  }, ENTITY);
+  return {
+    id,
+    entry: required('rcsb_polymer_entity_container_identifiers.entry_id'),
+    entity: required('rcsb_polymer_entity_container_identifiers.entity_id'),
+    chains: ids('rcsb_polymer_entity_container_identifiers.asym_ids'),
+    authChains: ids('rcsb_polymer_entity_container_identifiers.auth_asym_ids'),
+    description: stringAt(polymerEntity, 'rcsb_polymer_entity.pdbx_description', ENTITY),
+    organisms,
+    sequence,
+  };
+}
+
+const fastaRecord = (header: string[], sequence: string): string => `>${header.join('|')}\n${sequence}\n`;
+const describedBy = (seq: RcsbEntitySequence): string[] =>
+  [...(seq.description === null ? [] : [seq.description]), ...(seq.organisms.length ? [seq.organisms.join(', ')] : [])];
+
+/**
+ * An entity as a FASTA record headed the way RCSB's FASTA endpoints head one:
+ * `>4HHB_1|Chains A, C|Hemoglobin subunit alpha|Homo sapiens (9606)`, a chain whose author id
+ * differs written `A[auth Az]`. The entity object lists label and author ids in two separately
+ * sorted lists, so when two or more chains' ids differ they cannot be paired, and both lists are
+ * written out instead: `Chains A, B (auth Ag, Az)`. A missing description or organism is left out.
+ */
+export function entityFasta(seq: RcsbEntitySequence): string {
+  const same = seq.chains.length === seq.authChains.length && seq.chains.every((c, i) => c === seq.authChains[i]);
+  const word = seq.chains.length === 1 ? 'Chain' : 'Chains';
+  const chains = same
+    ? `${word} ${seq.chains.join(', ')}`
+    : seq.chains.length === 1 && seq.authChains.length === 1
+      ? `${word} ${seq.chains[0]}[auth ${seq.authChains[0]}]`
+      : `${word} ${seq.chains.join(', ')} (auth ${seq.authChains.join(', ')})`;
+  return fastaRecord([seq.id, chains, ...describedBy(seq)], seq.sequence);
+}
+
+/** Fetches one polymer entity's sequence from the Data API; a response for another entity is an error. */
+export async function fetchEntitySequence(entry: string, entity: number | string, options?: RcsbFetchOptions): Promise<RcsbEntitySequence> {
+  const url = polymerEntityDataUrl(entry, entity);
+  const seq = entitySequenceOf(await rcsbJson(url, options));
+  const asked = `${normalizeEntryId(entry)}_${positiveInteger(entity, 'entity id')}`;
+  if (seq.id !== asked) throw new Error(`${ENTITY}: ${url} answered for ${seq.id}, not ${asked}.`);
+  return seq;
+}
+
+/** Fetches the sequence of every polymer entity of an entry, in the order the entry object lists them. */
+export async function fetchEntrySequences(entry: string, options?: RcsbFetchOptions): Promise<RcsbEntitySequence[]> {
+  const summary = await fetchEntrySummary(entry, options);
+  if (summary.polymerEntityIds.length === 0) throw new Error(`RCSB entry ${summary.id} lists no polymer entity, so it has no sequence to fetch.`);
+  const out: RcsbEntitySequence[] = [];
+  // One request at a time, within RCSB's rate-limit guidance (D0008).
+  for (const id of summary.polymerEntityIds) out.push(await fetchEntitySequence(summary.id, id, options));
+  return out;
+}
+
+/** FASTA of every polymer entity in the entry, one record per entity. */
+export async function fetchEntryFasta(entry: string, options?: RcsbFetchOptions): Promise<string> {
+  return (await fetchEntrySequences(entry, options)).map(entityFasta).join('');
+}
+
+/** FASTA of one polymer entity. */
+export async function fetchEntityFasta(entry: string, entity: number | string, options?: RcsbFetchOptions): Promise<string> {
+  return entityFasta(await fetchEntitySequence(entry, entity, options));
+}
+
+/**
+ * FASTA of one chain, by its label_asym_id, headed as RCSB heads one:
+ * `>4HHB.A|Hemoglobin subunit alpha|Homo sapiens (9606)`. The chain's entity comes from its
+ * polymer_entity_instance object, the sequence from that entity.
+ */
+export async function fetchChainFasta(entry: string, asymId: string, options?: RcsbFetchOptions): Promise<string> {
+  const id = normalizeEntryId(entry);
+  const url = polymerEntityInstanceDataUrl(id, asymId);
+  const instance = await rcsbJson(url, options);
+  if (!isObject(instance)) throw new Error(`RCSB polymer entity instance: ${url} did not return a JSON object.`);
+  const entity = stringAt(instance, 'rcsb_polymer_entity_instance_container_identifiers.entity_id', 'RCSB polymer entity instance');
+  if (entity === null) throw new Error(`RCSB polymer entity instance ${id}.${asymId}: rcsb_polymer_entity_instance_container_identifiers.entity_id is missing.`);
+  const seq = await fetchEntitySequence(id, entity, options);
+  return fastaRecord([`${id}.${asymId}`, ...describedBy(seq)], seq.sequence);
 }
 
 // ---------------------------------------------------------------------------------------------

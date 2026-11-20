@@ -13,8 +13,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  RCSB_HOSTS, RcsbHttpError, assemblyDataUrl, assemblyFileUrl, chainFastaUrl, chemCompDataUrl, entityFastaUrl,
-  entryDataUrl, entryFastaUrl, entryFileUrl, fetchEntrySummary, ligandFileUrl, normalizeEntryId,
+  RCSB_HOSTS, RcsbHttpError, assemblyDataUrl, assemblyFileUrl, chemCompDataUrl, entityFasta, entitySequenceOf,
+  entryDataUrl, entryFileUrl, fetchChainFasta, fetchEntityFasta, fetchEntitySequence, fetchEntryFasta,
+  fetchEntrySequences, fetchEntrySummary, ligandFileUrl, normalizeEntryId,
   polymerEntityDataUrl, polymerEntityInstanceDataUrl, rcsbFetch, rcsbJson, rcsbText, summarizeEntry,
 } from '../core/rcsbClient';
 import { dataPath, haveTestData } from './testData';
@@ -61,10 +62,6 @@ describe('RCSB PDB client', () => {
     expect(entryFileUrl('1crn')).toBe('https://files.rcsb.org/download/1CRN.cif');
     expect(assemblyFileUrl('4hhb', 1)).toBe('https://files.rcsb.org/download/4HHB-assembly1.cif');
     expect(assemblyFileUrl('6vxx', '2')).toBe('https://files.rcsb.org/download/6VXX-assembly2.cif');
-    expect(entryFastaUrl('4hhb')).toBe('https://www.rcsb.org/fasta/entry/4HHB/download');
-    expect(entityFastaUrl('4hhb', 1)).toBe('https://www.rcsb.org/fasta/entity/4HHB_1/download');
-    expect(chainFastaUrl('4hhb', 'A')).toBe('https://www.rcsb.org/fasta/chain/4HHB.A/download');
-    expect(chainFastaUrl('4v6x', 'Ab')).toBe('https://www.rcsb.org/fasta/chain/4V6X.Ab/download');
     expect(ligandFileUrl('hem', 'sdf')).toBe('https://files.rcsb.org/ligands/download/HEM_ideal.sdf');
     expect(ligandFileUrl('HEM', 'cif')).toBe('https://files.rcsb.org/ligands/download/HEM.cif');
     expect(ligandFileUrl('atp')).toBe('https://files.rcsb.org/ligands/download/ATP_ideal.sdf');
@@ -215,7 +212,8 @@ describe('RCSB PDB client', () => {
     for (const id of malformed) {
       expect(() => normalizeEntryId(id), id).toThrow(/PDB entry id/);
       expect(() => entryFileUrl(id), id).toThrow(/PDB entry id/);
-      expect(() => chainFastaUrl(id, 'A'), id).toThrow(/PDB entry id/);
+      await expect(fetchChainFasta(id, 'A', { fetch }), id).rejects.toThrow(/PDB entry id/);
+      await expect(fetchEntryFasta(id, { fetch }), id).rejects.toThrow(/PDB entry id/);
       await expect(fetchEntrySummary(id, { fetch }), id).rejects.toThrow(/PDB entry id/);
     }
     expect(() => normalizeEntryId('pdb_00004hhb')).toThrow(/Extended PDB entry id .* is not supported/);
@@ -227,10 +225,10 @@ describe('RCSB PDB client', () => {
     expect(entryFileUrl(' 4hhb ')).toBe('https://files.rcsb.org/download/4HHB.cif');
   });
 
-  it('rejects malformed entity, chain, assembly and ligand ids, and URLs off the four RCSB hosts, before fetching', async () => {
+  it('rejects malformed entity, chain, assembly and ligand ids, and URLs off the three RCSB hosts, before fetching', async () => {
     const fetch = vi.fn<FetchFn>(async () => new Response('should not be fetched'));
     for (const entity of [0, -1, 1.5, '', 'A', '1/2', NaN]) {
-      expect(() => entityFastaUrl('4hhb', entity as number), String(entity)).toThrow(/entity id/);
+      await expect(fetchEntityFasta('4hhb', entity as number, { fetch }), String(entity)).rejects.toThrow(/entity id/);
       expect(() => polymerEntityDataUrl('4hhb', entity as number), String(entity)).toThrow(/entity id/);
     }
     for (const n of [0, -1, 2.5, '', 'x', '1;2']) {
@@ -238,14 +236,16 @@ describe('RCSB PDB client', () => {
       expect(() => assemblyDataUrl('4hhb', n as number), String(n)).toThrow(/assembly id/);
     }
     for (const asym of ['', 'A/B', 'A B', '../A', 'ABCDE', 'A.']) {
-      expect(() => chainFastaUrl('4hhb', asym), asym).toThrow(/chain id/);
+      await expect(fetchChainFasta('4hhb', asym, { fetch }), asym).rejects.toThrow(/chain id/);
       expect(() => polymerEntityInstanceDataUrl('4hhb', asym), asym).toThrow(/chain id/);
     }
     for (const ccd of ['', 'HEME00', 'HE M', 'HE/M', 'H.M']) {
       expect(() => ligandFileUrl(ccd), ccd).toThrow(/ligand id/);
       expect(() => chemCompDataUrl(ccd), ccd).toThrow(/ligand id/);
     }
-    for (const url of ['https://example.org/download/4HHB.cif', 'http://files.rcsb.org/download/4HHB.cif', 'https://files.rcsb.org.evil.example/x', 'https://rcsb.org/x', 'not a url']) {
+    // www.rcsb.org too (BG-01M6PDXC): its FASTA endpoints send no Access-Control-Allow-Origin, so a
+    // webview fetch of them fails CORS.
+    for (const url of ['https://example.org/download/4HHB.cif', 'http://files.rcsb.org/download/4HHB.cif', 'https://files.rcsb.org.evil.example/x', 'https://rcsb.org/x', 'not a url', 'https://www.rcsb.org/fasta/entry/4HHB/download']) {
       await expect(rcsbFetch(url, undefined, { fetch }), url).rejects.toThrow(/not one of the RCSB hosts/);
     }
     for (const format of ['mmcif', 'CIF', 'pdb1', '']) {
@@ -259,7 +259,7 @@ describe('RCSB PDB client', () => {
     expect(fetch).not.toHaveBeenCalled();
 
     // Neighbouring well-formed ids are accepted.
-    expect(entityFastaUrl('4hhb', '2')).toBe('https://www.rcsb.org/fasta/entity/4HHB_2/download');
+    expect(polymerEntityDataUrl('4hhb', '2')).toBe('https://data.rcsb.org/rest/v1/core/polymer_entity/4HHB/2');
     expect(polymerEntityInstanceDataUrl('4hhb', 'AAA')).toBe('https://data.rcsb.org/rest/v1/core/polymer_entity_instance/4HHB/AAA');
     expect(chemCompDataUrl('a1ab2')).toBe('https://data.rcsb.org/rest/v1/core/chemcomp/A1AB2');
     expect(ligandFileUrl('0', 'cif')).toBe('https://files.rcsb.org/ligands/download/0.cif');
@@ -307,9 +307,6 @@ describe('RCSB PDB client', () => {
     'https://files.rcsb.org/download/4HHB.cif': 'rcsb/4HHB.cif',
     'https://files.rcsb.org/download/4HHB.pdb': 'rcsb/4HHB.pdb',
     'https://files.rcsb.org/download/4HHB-assembly1.cif': 'rcsb/4HHB-assembly1.cif',
-    'https://www.rcsb.org/fasta/entry/4HHB/download': 'rcsb/fasta/4HHB.fasta',
-    'https://www.rcsb.org/fasta/entity/4HHB_1/download': 'rcsb/fasta/4HHB_1.fasta',
-    'https://www.rcsb.org/fasta/chain/4HHB.A/download': 'rcsb/fasta/4HHB.A.fasta',
     'https://files.rcsb.org/ligands/download/HEM.cif': 'rcsb/ligands/HEM.cif',
     'https://files.rcsb.org/ligands/download/HEM_ideal.sdf': 'rcsb/ligands/HEM_ideal.sdf',
     'https://data.rcsb.org/rest/v1/core/polymer_entity/4HHB/1': 'rcsb/api/polymer_entity_4HHB_1.json',
@@ -317,7 +314,7 @@ describe('RCSB PDB client', () => {
     'https://data.rcsb.org/rest/v1/core/assembly/4HHB/1': 'rcsb/api/assembly_4HHB_1.json',
     'https://data.rcsb.org/rest/v1/core/chemcomp/HEM': 'rcsb/api/chemcomp_HEM.json',
   };
-  it.skipIf(!haveTestData(...Object.values(FILES)))('downloads the recorded coordinates, FASTA, ligand files and Data API objects verbatim', async () => {
+  it.skipIf(!haveTestData(...Object.values(FILES)))('downloads the recorded coordinates, ligand files and Data API objects verbatim', async () => {
     const fetch = recordedFetch(FILES);
     const text = (url: string) => rcsbText(url, { fetch });
     const recorded = (url: keyof typeof FILES) => fs.readFileSync(dataPath(FILES[url]), 'utf8');
@@ -325,9 +322,6 @@ describe('RCSB PDB client', () => {
     expect(await text(entryFileUrl('4hhb', 'cif'))).toBe(recorded('https://files.rcsb.org/download/4HHB.cif'));
     expect(await text(entryFileUrl('4hhb', 'pdb'))).toBe(recorded('https://files.rcsb.org/download/4HHB.pdb'));
     expect(await text(assemblyFileUrl('4hhb', 1))).toBe(recorded('https://files.rcsb.org/download/4HHB-assembly1.cif'));
-    expect(fastaRecords(await text(entryFastaUrl('4hhb')))).toContainEqual(HBA_4HHB_1);
-    expect((await text(entityFastaUrl('4hhb', 1))).startsWith('>4HHB_1|')).toBe(true);
-    expect((await text(chainFastaUrl('4hhb', 'A'))).startsWith('>4HHB.A|')).toBe(true);
     expect((await text(ligandFileUrl('hem', 'cif'))).startsWith('data_HEM')).toBe(true);
     expect((await text(ligandFileUrl('hem', 'sdf'))).split('\n')[0]).toBe('HEM');
 
@@ -335,33 +329,117 @@ describe('RCSB PDB client', () => {
     expect(await rcsbJson(polymerEntityInstanceDataUrl('4hhb', 'A'), { fetch })).toMatchObject({ rcsb_id: '4HHB.A' });
     expect(await rcsbJson(assemblyDataUrl('4hhb', 1), { fetch })).toMatchObject({ rcsb_id: '4HHB-1' });
     expect(await rcsbJson(chemCompDataUrl('hem'), { fetch })).toMatchObject({ rcsb_id: 'HEM' });
-    expect(fetch).toHaveBeenCalledTimes(12);
+    expect(fetch).toHaveBeenCalledTimes(9);
   });
 
-  it.skipIf(!haveTestData('rcsb/fasta/4HHB.fasta'))('FASTA download contains the 4HHB_1 record in any order', async () => {
-    // The downloaded entry FASTA as recorded, and the same records in the opposite order: between them
-    // both orders RCSB has been seen to return (alpha first, beta first).
-    const downloaded = fs.readFileSync(dataPath('rcsb/fasta/4HHB.fasta'), 'utf8');
-    const records = fastaRecords(downloaded);
-    expect(records.map((r) => r.header.split('|')[0])).toEqual(expect.arrayContaining(['>4HHB_1', '>4HHB_2']));
-    const reversed = [...records].reverse().map((r) => `${r.header}\n${r.sequence}\n`).join('');
-    expect(fastaRecords(reversed)[0].header).not.toBe(records[0].header);
-    for (const body of [downloaded, reversed]) {
-      const fetch = queuedFetch(ok(body));
-      expect(fastaRecords(await rcsbText(entryFastaUrl('4hhb'), { fetch }))).toContainEqual(HBA_4HHB_1);
-      expect(urlOf(fetch.mock.calls[0][0])).toBe('https://www.rcsb.org/fasta/entry/4HHB/download');
+  /**
+   * A synthetic Data API polymer_entity object, shaped as data.rcsb.org/rest/v1/core/polymer_entity
+   * returns it (only the fields the client reads).
+   */
+  const polymerEntity = (entry: string, entity: string, labels: string[], auths: string[], sequence: string,
+    description: string | null = 'Test protein', organisms: Array<[string, number | null]> = [['Homo sapiens', 9606]]) => ({
+    rcsb_id: `${entry}_${entity}`,
+    entity_poly: { pdbx_seq_one_letter_code_can: sequence },
+    rcsb_polymer_entity: description === null ? {} : { pdbx_description: description },
+    rcsb_entity_source_organism: organisms.map(([scientific_name, ncbi_taxonomy_id]) =>
+      (ncbi_taxonomy_id === null ? { scientific_name } : { scientific_name, ncbi_taxonomy_id })),
+    rcsb_polymer_entity_container_identifiers: { entry_id: entry, entity_id: entity, asym_ids: labels, auth_asym_ids: auths },
+  });
+  const json = (body: unknown) => () => new Response(JSON.stringify(body), { status: 200 });
+
+  const ENTITY_1 = 'rcsb/api/polymer_entity_4HHB_1.json';
+  const CHAIN_A = 'rcsb/api/polymer_entity_instance_4HHB_A.json';
+  it.skipIf(!haveTestData(ENTITY_1, CHAIN_A, 'rcsb/fasta/4HHB_1.fasta', 'rcsb/fasta/4HHB.A.fasta'))("builds an entity's and a chain's FASTA from the Data API as RCSB's FASTA endpoints write them", async () => {
+    // Wrong implementations this catches: a header in another order or without the description, a
+    // chain FASTA headed with the entity id, and any request left on www.rcsb.org. (4HHB's label and
+    // author ids agree and it has no modified residue, so the next tests pin those.)
+    const fetch = recordedFetch({
+      'https://data.rcsb.org/rest/v1/core/polymer_entity/4HHB/1': ENTITY_1,
+      'https://data.rcsb.org/rest/v1/core/polymer_entity_instance/4HHB/A': CHAIN_A,
+    });
+    const recorded = (rel: string) => fs.readFileSync(dataPath(rel), 'utf8');
+    // The FASTA www.rcsb.org served (recorded 2026-11-08), rebuilt byte for byte from data.rcsb.org.
+    expect(await fetchEntityFasta('4hhb', 1, { fetch })).toBe(recorded('rcsb/fasta/4HHB_1.fasta'));
+    expect(await fetchChainFasta('4hhb', 'A', { fetch })).toBe(recorded('rcsb/fasta/4HHB.A.fasta'));
+    expect(await fetchEntitySequence('4HHB', '1', { fetch })).toEqual({
+      id: '4HHB_1', entry: '4HHB', entity: '1', chains: ['A', 'C'], authChains: ['A', 'C'],
+      description: 'Hemoglobin subunit alpha', organisms: ['Homo sapiens (9606)'], sequence: HBA_4HHB_1.sequence,
+    });
+    expect(fetch.mock.calls.map((c) => urlOf(c[0]))).toEqual([
+      'https://data.rcsb.org/rest/v1/core/polymer_entity/4HHB/1',
+      'https://data.rcsb.org/rest/v1/core/polymer_entity_instance/4HHB/A',
+      'https://data.rcsb.org/rest/v1/core/polymer_entity/4HHB/1',
+      'https://data.rcsb.org/rest/v1/core/polymer_entity/4HHB/1',
+    ]);
+  });
+
+  it.skipIf(!haveTestData(ENTRY, ENTITY_1))('FASTA download contains the 4HHB_1 record in any order', async () => {
+    // The entry's FASTA is one record per polymer entity, in the order the entry object lists them,
+    // all from data.rcsb.org (BG-01M6PDXC: www.rcsb.org's FASTA endpoints send no CORS header). Both
+    // orders of the 4HHB entities: the alpha record is found wherever it falls.
+    const entry = JSON.parse(fs.readFileSync(dataPath(ENTRY), 'utf8')) as Record<string, Record<string, unknown>>;
+    const alpha = JSON.parse(fs.readFileSync(dataPath(ENTITY_1), 'utf8')) as unknown;
+    const beta = polymerEntity('4HHB', '2', ['B', 'D'], ['B', 'D'], 'VHLTPEEKSAVTALWGKV', 'Hemoglobin subunit beta');
+    for (const ids of [['1', '2'], ['2', '1']]) {
+      const listed = { ...entry, rcsb_entry_container_identifiers: { ...entry.rcsb_entry_container_identifiers, polymer_entity_ids: ids } };
+      const byId: Record<string, unknown> = { 1: alpha, 2: beta };
+      const fetch = queuedFetch(json(listed), ...ids.map((id) => json(byId[id])));
+      const records = fastaRecords(await fetchEntryFasta('4hhb', { fetch }));
+      expect(records).toContainEqual(HBA_4HHB_1);
+      expect(records.map((r) => r.header.split('|')[0]), ids.join(',')).toEqual(ids.map((id) => `>4HHB_${id}`));
+      expect(fetch.mock.calls.map((c) => urlOf(c[0]))).toEqual([
+        'https://data.rcsb.org/rest/v1/core/entry/4HHB',
+        ...ids.map((id) => `https://data.rcsb.org/rest/v1/core/polymer_entity/4HHB/${id}`),
+      ]);
     }
   });
 
-  it('the Tauri CSP connect-src lists exactly the four RCSB hosts the client may contact', () => {
-    expect([...RCSB_HOSTS]).toEqual(['https://files.rcsb.org', 'https://data.rcsb.org', 'https://search.rcsb.org', 'https://www.rcsb.org']);
+  it("reads an entity's sequence from its Data API object, names its chains, and refuses one it cannot read", async () => {
+    // The canonical sequence (pdbx_seq_one_letter_code_can, not pdbx_seq_one_letter_code), and the
+    // label chain ids RCSB heads a record with. One chain whose label and author ids differ is named
+    // as RCSB names it (4V6X_1, live 2026-11-20: 'Chain A[auth Az]'); two or more chains
+    // whose ids differ cannot be paired from the entity object (its two id lists are sorted
+    // separately), so both lists are written out rather than paired by position.
+    const one = entitySequenceOf(polymerEntity('4V6X', '1', ['A'], ['Az'], 'MVNFT\nVDQIR ', 'Elongation factor 2'));
+    expect(one.sequence, 'whitespace in the sequence is dropped').toBe('MVNFTVDQIR');
+    expect(entityFasta(one)).toBe('>4V6X_1|Chain A[auth Az]|Elongation factor 2|Homo sapiens (9606)\nMVNFTVDQIR\n');
+    expect(entityFasta(entitySequenceOf(polymerEntity('1CRN', '1', ['A'], ['A'], 'TTCCPS', 'CRAMBIN', [['Crambe hispanica subsp. abyssinica', 3721]]))))
+      .toBe('>1CRN_1|Chain A|CRAMBIN|Crambe hispanica subsp. abyssinica (3721)\nTTCCPS\n');
+    expect(entityFasta(entitySequenceOf(polymerEntity('9ABC', '3', ['B', 'A'], ['Y', 'X'], 'ACGU', null, []))))
+      .toBe('>9ABC_3|Chains B, A (auth Y, X)\nACGU\n');
+    expect(entityFasta(entitySequenceOf(polymerEntity('9ABC', '4', ['C'], ['C'], 'MK', 'Chimera', [['Homo sapiens', 9606], ['Mus musculus', null]]))))
+      .toBe('>9ABC_4|Chain C|Chimera|Homo sapiens (9606), Mus musculus\nMK\n');
+
+    const good = polymerEntity('4HHB', '1', ['A'], ['A'], 'VLS');
+    const broken: Array<[string, unknown, RegExp]> = [
+      ['not an object', [good], /not a JSON object/],
+      ['no entity_poly', { ...good, entity_poly: undefined }, /entity_poly\.pdbx_seq_one_letter_code_can is missing/],
+      ['an empty sequence', { ...good, entity_poly: { pdbx_seq_one_letter_code_can: ' \n' } }, /entity_poly\.pdbx_seq_one_letter_code_can is empty/],
+      ['a sequence that is not a string', { ...good, entity_poly: { pdbx_seq_one_letter_code_can: 7 } }, /pdbx_seq_one_letter_code_can is malformed/],
+      ['no chain ids', { ...good, rcsb_polymer_entity_container_identifiers: { entry_id: '4HHB', entity_id: '1' } }, /asym_ids is missing/],
+      ['no rcsb_id', { ...good, rcsb_id: undefined }, /rcsb_id is missing/],
+    ];
+    for (const [what, body, error] of broken) expect(() => entitySequenceOf(body), what).toThrow(error);
+
+    // The Data API answered for another entity than the one asked for, or an instance names no entity.
+    await expect(fetchEntitySequence('4hhb', 2, { fetch: queuedFetch(json(good)) })).rejects.toThrow(/4HHB_1, not 4HHB_2/);
+    await expect(fetchChainFasta('4hhb', 'A', { fetch: queuedFetch(json({ rcsb_id: '4HHB.A', rcsb_polymer_entity_instance_container_identifiers: {} })) }))
+      .rejects.toThrow(/entity_id is missing/);
+    // An entry that lists no polymer entity is reported, not handed back as an empty FASTA.
+    const noPolymer = { rcsb_id: '9ABC', rcsb_entry_container_identifiers: { polymer_entity_ids: [] } };
+    await expect(fetchEntrySequences('9abc', { fetch: queuedFetch(json(noPolymer)) })).rejects.toThrow(/9ABC lists no polymer entity/);
+  });
+
+  it('the Tauri CSP connect-src lists exactly the three RCSB hosts the client may contact', () => {
+    // www.rcsb.org left with its FASTA endpoints (BG-01M6PDXC): they send no CORS header.
+    expect([...RCSB_HOSTS]).toEqual(['https://files.rcsb.org', 'https://data.rcsb.org', 'https://search.rcsb.org']);
     const conf = JSON.parse(fs.readFileSync(new URL('../../src-tauri/tauri.conf.json', import.meta.url), 'utf8')) as { app: { security: { csp: string } } };
     const connects = conf.app.security.csp.split(';').map((d) => d.trim().split(/\s+/)).filter((d) => d[0] === 'connect-src');
     expect(connects).toHaveLength(1);
     const sources = connects[0].slice(1);
     expect(sources.filter((source) => source.includes('rcsb')).sort()).toEqual([...RCSB_HOSTS].sort());
     // The whole source list: what connect-src allowed before D0008 less the two loopback sources of
-    // the REST server the UI no longer reaches (US-01M6P2QG, D0174), plus the four RCSB hosts and nothing else, so a
+    // the REST server the UI no longer reaches (US-01M6P2QG, D0174), plus the three RCSB hosts and nothing else, so a
     // scheme (`https:`), a wildcard (`*`, `https://*.rcsb.org`), a loopback source or any other added
     // host fails here.
     const beforeRcsb = [

@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https://eutils.ncbi.nlm.nih.gov https://rest.uniprot.org https://files.rcsb.org https://data.rcsb.org https://search.rcsb.org https://www.rcsb.org; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'",
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https://eutils.ncbi.nlm.nih.gov https://rest.uniprot.org https://files.rcsb.org https://data.rcsb.org https://search.rcsb.org; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'",
       "freezePrototype": false,
       "capabilities": ["default"]
     }
