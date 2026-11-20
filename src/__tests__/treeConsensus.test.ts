@@ -24,6 +24,37 @@ describe('newick', () => {
     expect(toNewick(t)).toBe("((A:0.1,'B c':0.2)95:0.3,(C:0.4,D:0.5)80:0.6);");
     expect(() => parseNewick('((A,B);')).toThrow(/Malformed/);
   });
+
+  // BG-01M6WFMR: in Newick a quote inside a quoted label is written twice, and square brackets are
+  // comments only outside quotes. Wrong implementations, and the check that catches each: a label
+  // ended at its first quote (the doubled quote then splits it, leaving "O" and a stray "Brien");
+  // both quotes kept ("O''Brien"); the escape read but not written back (the round-trip); comments
+  // stripped before quoted labels are read (the bracketed text vanishes from 'a [x] b'); comments
+  // no longer stripped outside quotes (a leaf comment and an internal-node comment, which would
+  // land in the name or the support label).
+  it('BG-01M6WFMR AC1 a doubled quote inside a quoted label is one quote and round-trips', () => {
+    const t = parseNewick("(('O''Brien',B),C);");
+    expect(leafNames(t)).toEqual(["O'Brien", 'B', 'C']);
+    expect(toNewick(t)).toBe("(('O''Brien',B),C);");
+    // A doubled quote at the start and at the end of a label, and a label that is only a quote.
+    const edge = parseNewick("('''a''',b,'''');");
+    expect(leafNames(edge)).toEqual(["'a'", 'b', "'"]);
+    expect(toNewick(edge)).toBe("('''a''',b,'''');");
+  });
+
+  it('BG-01M6WFMR AC2 brackets inside a quoted label are kept and comments outside quotes are stripped', () => {
+    const t = parseNewick("('a [x] b',B);");
+    expect(leafNames(t)).toEqual(['a [x] b', 'B']);
+    expect(toNewick(t)).toBe("('a [x] b',B);");
+    const c = parseNewick('((A[&x=1],B)[c],C);');
+    expect(leafNames(c)).toEqual(['A', 'B', 'C']);
+    expect(c.children[0].label, 'an internal-node comment is not a support label').toBeUndefined();
+    expect(toNewick(c)).toBe('((A,B),C);');
+    // A quoted label holding a doubled quote and a bracket, next to a comment holding a quote.
+    const mixed = parseNewick("('it''s [1]'[it's a comment],B:0.5[&rate=2]);");
+    expect(leafNames(mixed)).toEqual(["it's [1]", 'B']);
+    expect(mixed.children[1].length).toBe(0.5);
+  });
 });
 
 describe('outgroup rooting', () => {

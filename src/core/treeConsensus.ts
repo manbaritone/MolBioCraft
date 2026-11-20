@@ -15,14 +15,47 @@ export interface TreeNode {
   children: TreeNode[];
 }
 
+/**
+ * The text with its [comments] removed. Brackets inside a quoted label belong to the label, so the
+ * text is read quote by quote: a doubled quote inside a label closes and reopens it, which keeps
+ * both quotes in place for `parseNewick` to read as one. An unclosed bracket is left as written.
+ */
+function stripComments(text: string): string {
+  let out = '';
+  let quoted = false;
+  for (let k = 0; k < text.length; k++) {
+    const ch = text[k];
+    if (ch === "'") quoted = !quoted;
+    else if (ch === '[' && !quoted) {
+      const end = text.indexOf(']', k + 1);
+      if (end >= 0) {
+        k = end;
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
 export function parseNewick(text: string): TreeNode {
-  const s = text.replace(/\[[^\]]*\]/g, '').trim().replace(/;\s*$/, '');
+  const s = stripComments(text).trim().replace(/;\s*$/, '');
   let i = 0;
   const readName = () => {
     if (s[i] === "'") {
-      const end = s.indexOf("'", i + 1);
-      const n = s.slice(i + 1, end < 0 ? s.length : end);
-      i = end < 0 ? s.length : end + 1;
+      // A quoted label runs to its closing quote; a doubled quote inside it is one quote.
+      let n = '';
+      i++;
+      while (i < s.length) {
+        if (s[i] === "'") {
+          if (s[i + 1] !== "'") {
+            i++;
+            return n;
+          }
+          i++;
+        }
+        n += s[i++];
+      }
       return n;
     }
     const start = i;
