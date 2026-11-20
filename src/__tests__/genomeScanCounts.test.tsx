@@ -367,6 +367,15 @@ describe('genome scan counts', () => {
     const shortGenes = predictGlimmerMicrobialGenes(short.sequence, 45);
     const shortRepeats = findGenomicRepeats(short.sequence, 10);
     expect(shortGenes.totalPredictedCds, 'fixture').toBe(shortGenes.genes.length);
+    // BG-01M6SK22: the count is of CDS left after overlap resolution, so no two of the genes,
+    // listed here in full, share more than 50 bp (Glimmer3's default maximum overlap) on either strand
+    const sharedBp = (a: { startBp: number; endBp: number }, b: { startBp: number; endBp: number }) =>
+      Math.max(0, Math.min(a.endBp, b.endBp) - Math.max(a.startBp, b.startBp) + 1);
+    const overlapsOver50 = (gs: { startBp: number; endBp: number }[]) =>
+      gs.flatMap((a, i) => gs.slice(i + 1).filter((b) => sharedBp(a, b) > 50).map((b) => [a.startBp, a.endBp, b.startBp, b.endBp]));
+    expect(shortGenes.genes.length, 'fixture').toBeGreaterThan(1);
+    expect(overlapsOver50(shortGenes.genes)).toEqual([]);
+    expect(overlapsOver50(genes.genes)).toEqual([]);
     expect(shortRepeats.totalRepeats, 'fixture').toBe(shortRepeats.repeats.length);
     const shortHtml = await studio(short, [short], 'genes-cpg-repeats');
     expect(tableUnder(shortHtml, 'Glimmer Predicted Protein-Coding Genes').caption)

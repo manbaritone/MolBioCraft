@@ -263,7 +263,7 @@ pub struct GlimmerPredictionReport {
     pub genes: Vec<GlimmerPredictedGene>,
     /// One CDS feature for each gene listed.
     pub annotations: Vec<SequenceFeature>,
-    /// How many CDS the predictor found, listed or not.
+    /// How many CDS the predictor found, listed or not, after overlap resolution.
     #[serde(default)]
     pub total_predicted_cds: usize,
     /// What the list leaves out, one plain sentence (D0005): fewer genes listed than predicted.
@@ -279,9 +279,50 @@ const RBS_HEXAMERS: &[&str] = &[
     "AGGAGG", "GGAGGA", "AAGGAG", "AGGAGA", "GAGGTG", "GGAGGT",
 ];
 
-/// Predicts the CDS of a microbial sequence on both strands, scored by start codon, Shine-Dalgarno
-/// RBS, RNY codon bias and length; lists the [`GLIMMER_LISTED_GENES`] highest-scoring and reports
-/// how many were predicted, with a warning when the list holds fewer.
+/// Glimmer3's default maximum overlap (`-o 50`, D0265): two predicted CDS share at most this many bp.
+const GLIMMER_MAX_OVERLAP_BP: usize = 50;
+
+/// Overlap resolution (BG-01M6SK22, D0265): of two six-frame candidates sharing more than
+/// [`GLIMMER_MAX_OVERLAP_BP`] bp, on the same or opposite strands, only the higher-scoring is a
+/// predicted CDS, and the longer on a tie. The score is the predictor's own heuristic
+/// `coding_score` (start codon, Shine-Dalgarno RBS, RNY codon bias and length, capped at 99.5), not
+/// Glimmer's interpolated Markov model score. A greedy pass, best first: candidates are ranked by
+/// score, then length, then the earlier start, then the forward strand (a total order, so the result
+/// does not depend on scan order), and each is kept unless it shares more than 50 bp with one
+/// already kept. Returns the kept CDS in that rank order.
+fn resolve_glimmer_overlaps(mut candidates: Vec<GlimmerPredictedGene>) -> Vec<GlimmerPredictedGene> {
+    candidates.sort_by(|a, b| {
+        b.coding_score
+            .total_cmp(&a.coding_score)
+            .then_with(|| b.length_bp.cmp(&a.length_bp))
+            .then_with(|| a.start_bp.cmp(&b.start_bp))
+            .then_with(|| b.strand.cmp(&a.strand))
+    });
+    // The kept spans, start -> end. Every candidate spans at least 51 bp (ATG, 15 codons, stop), so
+    // no kept span lies inside another (that would share its whole length, over 50 bp): starts are
+    // distinct and ends rise with them, and the kept spans a candidate can touch are the run that
+    // starts at or before its end, walked back until one ends before its start.
+    let mut kept_spans = std::collections::BTreeMap::<usize, usize>::new();
+    let mut kept = Vec::new();
+    for c in candidates {
+        let clashes = kept_spans
+            .range(..=c.end_bp)
+            .rev()
+            .take_while(|&(_, &end)| end >= c.start_bp)
+            .any(|(&start, &end)| end.min(c.end_bp) + 1 - start.max(c.start_bp) > GLIMMER_MAX_OVERLAP_BP);
+        if !clashes {
+            kept_spans.insert(c.start_bp, c.end_bp);
+            kept.push(c);
+        }
+    }
+    kept
+}
+
+/// Predicts the CDS of a microbial sequence on both strands: every six-frame ORF candidate is
+/// scored by start codon, Shine-Dalgarno RBS, RNY codon bias and length, and overlaps of more than
+/// 50 bp are resolved to the higher-scoring candidate ([`resolve_glimmer_overlaps`]). Lists the
+/// [`GLIMMER_LISTED_GENES`] highest-scoring and reports how many were predicted, with a warning
+/// when the list holds fewer.
 pub fn predict_glimmer_microbial_genes(
     raw_seq: &str,
     min_aa_length: usize,
@@ -389,15 +430,9 @@ pub fn predict_glimmer_microbial_genes(
         }
     }
 
-    candidates.sort_by(|a, b| {
-        b.coding_score
-            .partial_cmp(&a.coding_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| b.length_bp.cmp(&a.length_bp))
-    });
-
-    let total_predicted_cds = candidates.len();
-    let genes: Vec<GlimmerPredictedGene> = candidates
+    let predicted = resolve_glimmer_overlaps(candidates);
+    let total_predicted_cds = predicted.len();
+    let genes: Vec<GlimmerPredictedGene> = predicted
         .into_iter()
         .take(GLIMMER_LISTED_GENES)
         .enumerate()
