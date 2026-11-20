@@ -845,16 +845,34 @@ describe('DNA calculator mass (BG-01M6SCYG)', () => {
     expect(nText).toContain(nNote);
     // The ligation rows read that mass, so they are estimates too.
     expect(nText).toMatch(/≈ \d+\.\d+ ng/);
+    // So is every figure computed from it: each box and the ligation pmol carry the mark (round-2 REJECT,
+    // LC-002 - only the Da and ng figures were pinned).
+    expect(nText).toContain('Molarity / pmol ≈ 1346.46 nM (26.929 pmol)');
+    expect(nText).toContain("Linear 5'/3' Ends ≈ 53.858 pmol ends");
+    expect(nText).toContain('Copy Number / OD260 ≈ 8.11e11/µL (1 A260)');
+    expect(nText).toContain('1 : 1 (Equimolar) 50 ng 60 bp ≈ 49.93 ng ≈ 1.347 pmol');
+    expect(nText).toContain('1 : 7 (Short Adapter / Linker) 50 ng 60 bp ≈ 349.49 ng ≈ 9.425 pmol');
 
     const exactText = studio(record('gc', GC_RICH), record('ins', AT_RICH, 'Cloning Inserts & PCR'));
     expect(exactText).toContain("dsDNA Molecular Weight (linear, 5'-phosphate ends) 37,139 Da");
     expect(exactText).not.toContain('≈');
+    // The same figures, unmarked, on the record Biopython 1.88 weighs exactly.
+    const exactFigures = [
+      'Molarity / pmol 1346.28 nM (26.926 pmol)',
+      "Linear 5'/3' Ends 53.852 pmol ends",
+      'Copy Number / OD260 8.11e11/µL (1 A260)',
+    ];
+    for (const figure of exactFigures) expect(exactText).toContain(figure);
+    expect(exactText).toContain('1 : 1 (Equimolar) 50 ng 60 bp 49.92 ng 1.346 pmol');
     expect(exactText).not.toContain('approximate');
 
     const nInsertText = studio(record('gc', GC_RICH), record('ins', GC_RICH_10N, 'Cloning Inserts & PCR'));
     expect(nInsertText).toContain("dsDNA Molecular Weight (linear, 5'-phosphate ends) 37,139 Da");
     expect(nInsertText).toContain("The insert's mass is approximate: 10 bases are N or another IUPAC code");
     expect(nInsertText).toMatch(/≈ \d+\.\d+ ng/);
+    // Only the ligation rows read the insert's mass: the vector's boxes stay unmarked, the rows' ng and pmol are marked.
+    for (const figure of exactFigures) expect(nInsertText).toContain(figure);
+    expect(nInsertText).toContain('1 : 1 (Equimolar) 50 ng 60 bp ≈ 49.99 ng ≈ 1.346 pmol');
 
     const uText = studio(record('u', 'ACGUACGU'), record('ins', AT_RICH, 'Cloning Inserts & PCR'));
     expect(uText).toContain('Masses are approximate: 2 bases are U, weighed as T.');
