@@ -140,6 +140,12 @@ async function check(app: AppHarness, d: SequenceDocument, on = true) {
   expect(boxes[0].getAttribute('aria-label')).toBe(`Select ${d.name}`);
   if (boxes[0].checked !== on) await app.change(boxes[0], on);
 }
+/** The document table's row of `d`, which a click selects (selectDocumentWithHistory). */
+const rowOf = (app: AppHarness, d: SequenceDocument) => {
+  const rows = tableRows(app).filter((r) => words(r.textContent).includes(d.accession));
+  expect(rows, `one row for ${d.accession}`).toHaveLength(1);
+  return rows[0];
+};
 async function checkAll(app: AppHarness, on = true) {
   await app.change(app.one('input[aria-label="Select or deselect all documents in current folder"]'), on);
 }
@@ -269,6 +275,26 @@ describe('US-01M7DVS2 AC1: Map Gallery opens from the table toolbar and View wit
       await closeGallery(app);
       await openByView(app);
       expect(cards(app).map(cardName)).toEqual(['Circ_A', 'Prot_Doc']);
+    });
+  });
+
+  it("US-01M7DVS2 AC1 the native Map Gallery and Compare Table ids, sent while the rule is off, open no gallery and say why", async () => {
+    // The native dispatcher runs the in-window item's handler whatever its disabled state, so openMapGallery's own check is what refuses.
+    await withApp(async (app) => {
+      await restore(app, [CA, CB, PROT], CA.id);
+      for (const [id, label] of [['view:map-gallery', 'Map Gallery'], ['view:compare-table', 'Compare Table']]) {
+        await app.menu(id);
+        expect(galleries(app), `${id} with one checked row opens no gallery`).toHaveLength(0);
+        expect(statusText(app), `${id} says why`).toContain(`${label}: ${reasonFor(1)}`);
+      }
+      await check(app, CA, false);
+      await app.menu('view:map-gallery');
+      expect(galleries(app), 'with none checked it opens none').toHaveLength(0);
+      expect(statusText(app)).toContain(`Map Gallery: ${reasonFor(0)}`);
+      await check(app, CA);
+      await check(app, CB);
+      await app.menu('view:map-gallery');
+      expect(galleries(app), 'with two checked the native id opens it').toHaveLength(1);
     });
   });
 
@@ -731,6 +757,77 @@ describe('US-01M7DVS2 AC8: View commands behind the gallery act on the focused p
       expect(galleries(app), 'Sequence View closes it').toHaveLength(0);
       expect(app.activeTab()).toBe('sequence-view');
       oneMap(app.canvas(), "the main view's circle, shown again");
+    });
+  });
+
+  it("US-01M7DVS2 AC8 View › Studio Views' Annotations Table, Flatfile View and Enzymes View close the gallery onto the panel they show, from the native menu and the in-app View menu", async () => {
+    // Each puts the main view on a tab; with the gallery left up, the rail would name a panel not shown.
+    const TAB_ITEMS: [string, string, string, string][] = [
+      ['Annotations Table', 'view:annotations', 'annotations-table', '.mbc-annotations-sheet'],
+      ['Flatfile View', 'view:text', 'text-view', '.mbc-text-view-pane'],
+      ['Enzymes View', 'view:enzymes', 'sequence-view', 'section.mbc-hosted-panel[aria-label="Enzymes view"]'],
+    ];
+    await withApp(async (app) => {
+      await restore(app, [CA, CB, LIN], CA.id);
+      await check(app, CB);
+      await check(app, CA);
+      const closesOnto = async (what: string, tab: string, panel: string | null, run: () => Promise<void>) => {
+        await app.clickTab('document-info');
+        await openByToolbar(app);
+        expect(galleries(app), `the gallery is shown before ${what}`).toHaveLength(1);
+        await run();
+        expect(galleries(app), `${what} closes the gallery`).toHaveLength(0);
+        expect(app.activeTab(), `${what} shows its tab`).toBe(tab);
+        if (panel) expect(app.canvas().querySelectorAll(panel), `${what} shows its panel`).toHaveLength(1);
+      };
+      for (const [label, id, tab, panel] of TAB_ITEMS) {
+        await closesOnto(`the native ${id}`, tab, panel, () => app.menu(id));
+        await closesOnto(`View › Studio Views › ${label}`, tab, panel, async () => {
+          await app.click(await viewRow(app, 'Studio Views'));
+          const row = menuButtons(app).filter((b) => rowLabel(b) === label);
+          expect(row, `one ${label} row`).toHaveLength(1);
+          await app.click(row[0]);
+          await closeMenus(app);
+        });
+      }
+      // Another menu's tab command, by its native id and by its shortcut, closes it the same way.
+      await closesOnto('the native primers:pcr', 'primers-pcr', null, () => app.menu('primers:pcr'));
+      await closesOnto('In-Silico PCR by ⌘D', 'primers-pcr', null, () => app.press('d', { mod: true }));
+    });
+  });
+
+  it("US-01M7DVS2 AC8 selecting a document that changes the main view's tab, by its table row or by Back, closes the gallery onto that tab", async () => {
+    await withApp(async (app) => {
+      await restore(app, [CA, CB, TREE], CA.id);
+      await check(app, CB);
+      await check(app, CA);
+      await openByToolbar(app);
+      expect(app.activeTab(), 'the tab behind the gallery').toBe('sequence-view');
+      await app.click(rowOf(app, TREE));
+      expect(galleries(app), "the tree's row, which opens Phylogenetics, closes the gallery").toHaveLength(0);
+      expect(app.activeTab()).toBe('phylogenetics');
+      await check(app, CA);
+      await check(app, CB);
+      await openByToolbar(app);
+      expect(app.activeTab(), 'the tab behind the gallery').toBe('phylogenetics');
+      await app.menu('view:back');
+      expect(galleries(app), 'Back to the circle, which opens the Sequence view, closes the gallery').toHaveLength(0);
+      expect(app.activeTab()).toBe('sequence-view');
+    });
+  });
+
+  it("US-01M7DVS2 AC8 selecting a document that keeps the main view's tab leaves the gallery shown", async () => {
+    await withApp(async (app) => {
+      await restore(app, [CA, CB, LIN], CA.id);
+      await check(app, CB);
+      await check(app, CA);
+      await openByToolbar(app);
+      await app.click(rowOf(app, CB));
+      expect(galleries(app), "another circle's row, on the same Sequence view, leaves the gallery").toHaveLength(1);
+      expect(app.activeTab()).toBe('sequence-view');
+      await app.click(rowOf(app, LIN));
+      expect(galleries(app), "a linear record's row, on the same Sequence view, leaves it too").toHaveLength(1);
+      expect(app.activeTab()).toBe('sequence-view');
     });
   });
 

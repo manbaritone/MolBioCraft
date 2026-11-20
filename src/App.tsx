@@ -1873,7 +1873,18 @@ export const App: React.FC = () => {
     onCancel?: () => void;
   } | null>(null);
 
-  const [requestedViewerTab, setViewerTab] = useState<ViewerTab>('sequence-view');
+  const [requestedViewerTab, setRequestedViewerTab] = useState<ViewerTab>('sequence-view');
+  /**
+   * Puts the main view on a viewer tab and closes the Map Gallery in its place (US-01M7DVS2): the one
+   * setter the studio rail, the menus (in-window and native), their shortcuts and every other command
+   * that opens a tab call, so the selected tab is the panel shown. Two callers set the tab without it:
+   * selecting a document (selectDocumentWithHistory), which closes the gallery only when the tab it
+   * shows changes, and Map Layout with the split pane focused, where the gallery stays shown.
+   */
+  const setViewerTab = (tab: ViewerTab) => {
+    setMapGalleryOpen(false);
+    setRequestedViewerTab(tab);
+  };
   /** Mirrors useNativeMacMenuBar for listeners registered before it is computed. */
   const nativeMacMenuBarRef = useRef(false);
   // Bumped by every studio-opening command so a studio re-applies the requested
@@ -2176,9 +2187,12 @@ export const App: React.FC = () => {
       const relevant = relevantViewerTabs(targetDoc, preserveMultiSelection
         ? documents.filter((d) => checkedDocIds.includes(d.id) || d.id === docId)
         : [targetDoc]);
-      setViewerTab((current) =>
-        preferred !== 'sequence-view' || !relevant.includes(current) ? preferred : current
-      );
+      const pick = (current: ViewerTab) =>
+        preferred !== 'sequence-view' || !relevant.includes(current) ? preferred : current;
+      // A selection that changes the main view's tab closes the Map Gallery onto it; one that keeps the
+      // tab leaves the gallery shown (US-01M7DVS2).
+      if (mapGalleryOpen && resolveViewerTab(targetDoc, pick(requestedViewerTab)) !== viewerTab) setMapGalleryOpen(false);
+      setRequestedViewerTab(pick);
     }
     if (!preserveMultiSelection) {
       setCheckedDocIds([docId]);
@@ -3946,10 +3960,7 @@ export const App: React.FC = () => {
    * The main view's Sequence view, shown for a command that acts on it (US-01M7DVEN, US-01M7DVG4): from
    * another viewer tab, or from the Map Gallery in its place, which closes (US-01M7DVS2).
    */
-  const showMainSequenceView = () => {
-    setMapGalleryOpen(false);
-    setViewerTab('sequence-view');
-  };
+  const showMainSequenceView = () => setViewerTab('sequence-view');
   /**
    * View › Rotate Circular Map… and View › Reset Rotation (US-01M7DVG4): on another viewer tab they
    * first switch to the Sequence view, as View › Map Layout's items do.
@@ -4014,7 +4025,7 @@ export const App: React.FC = () => {
   const chooseMapLayout = (mode: 'split' | 'circular' | 'linear') => {
     if (mode !== 'linear' && !ensureCommandAvailable('map-layout-circle', mode === 'split' ? 'Split Map & Sequence' : 'Circular Map')) return;
     // The main view's layout either way; with the split pane focused the Map Gallery stays (US-01M7DVS2).
-    if (secondPaneFocused) setViewerTab('sequence-view');
+    if (secondPaneFocused) setRequestedViewerTab('sequence-view');
     else showMainSequenceView();
     setMapLayoutMode(mode);
   };
@@ -4026,8 +4037,8 @@ export const App: React.FC = () => {
    * Table; an open gallery moves to the view asked for.
    */
   const openMapGallery = (view: MapGalleryView = 'maps') => {
-    // Every entry point is disabled under this rule, so no call reaches this check today; it stays, as the
-    // View › Tracks handlers keep theirs, so a caller that does not read the rule first still gets the reason.
+    // The toolbar buttons and the in-window items are disabled under this rule, but a native id runs its
+    // item's handler whatever the item's state (menubarCommands), so this check is what refuses it, with the reason.
     if (!ensureCommandAvailable('multi-record-view', view === 'compare-table' ? 'Compare Table' : 'Map Gallery')) return;
     setMapGalleryView(view);
     setMapGalleryOpen(true);
@@ -7730,8 +7741,7 @@ export const App: React.FC = () => {
     .map((item) => (dbExplorerCategory ? { ...item, current: false } : item));
   /** A rail entry opens the view its studio opens (the genomics studios in their own sub-view); History opens on its lineage, an enzyme set on its enzymes, as the header tab did. */
   const openStudioFromRail = (entry: StudioEntry) => {
-    // A studio chosen behind the Map Gallery closes it onto that studio (US-01M7DVS2).
-    setMapGalleryOpen(false);
+    // A studio chosen behind the Map Gallery closes it onto that studio through setViewerTab, which every branch calls (US-01M7DVS2).
     // A studio chosen over the main-pane Database Explorer leaves it for that studio (US-01M6Q1V9).
     if (dbExplorerCategory) leaveDatabaseExplorer(false);
     if (entry.id === 'history') openHybridSubTab('lineage');
