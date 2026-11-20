@@ -8,7 +8,7 @@
  * Nei-Gojobori dN/dS, Tajima's D, and Grantham / BLOSUM62 missense diagnostics).
  */
 
-import { invokeRustBioSync } from '../lib/rustBioEngine';
+import { invokeRustBioNativeAsync, invokeRustBioSync } from '../lib/rustBioEngine';
 
 export type SubstitutionModelName =
   | 'p-distance'
@@ -491,4 +491,15 @@ export interface MlSearchReport {
 /** Built-in ML tree search (NJ start, NNI with branch-length optimisation). Nucleotides only. */
 export function mlTreeSearch(names: string[], alignedSeqs: string[], model = 'GTR+G'): MlSearchReport {
   return invokeRustBioSync<MlSearchReport>('ml_tree_search', { names, alignedSeqs, model });
+}
+
+/**
+ * The same search as {@link mlTreeSearch}, asked for off the interface thread (BG-01M7RREM, as
+ * D0171 runs a CRISPR search): one `ml_tree_search` call with the same payload through
+ * `invokeRustBioNativeAsync`, which reaches the desktop's worker pool. Where there is no desktop
+ * shell (the browser and standalone builds) it falls back to the in-process WASM engine, which
+ * still runs the search on the interface thread. It rejects as the synchronous call throws.
+ */
+export function mlTreeSearchAsync(names: string[], alignedSeqs: string[], model = 'GTR+G'): Promise<MlSearchReport> {
+  return invokeRustBioNativeAsync<MlSearchReport>('ml_tree_search', { names, alignedSeqs, model });
 }

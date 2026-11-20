@@ -64,7 +64,7 @@ import {
   fmtP,
   fmtStat,
   inferAncestralSequences,
-  mlTreeSearch,
+  mlTreeSearchAsync,
   ModelSelectionRankingRow,
   PhyloTreeAlgorithm,
   runMolecularClockAndTimetree,
@@ -6617,25 +6617,36 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
     [taxaNames, alignedSeqs, builtInAlgorithm, treeModel, bootstrapReps, evoTab === 'phylogeny', extCanRun]
   );
   // The built-in maximum-likelihood search (D0205): run only from Run ML search, with Build Tree's
-  // default model, and kept for the rows it ran on. It runs on the interface thread, so the press
-  // first draws the running state and the search starts on the next task.
+  // default model, and kept for the rows it ran on. It runs off the interface thread on the desktop's
+  // worker pool (BG-01M7RREM); the in-process engine the browser falls back to runs it on the
+  // interface thread, so the press first draws the running state and the search starts on the next
+  // task. Cancel abandons the reply (as D0171 stops a CRISPR search): nothing it sends is shown.
   const mlAlgo = treeAlgorithm === 'Maximum Likelihood (ML)';
   const mlModel = mlSearchModel(isNucleotidePhyloAlignment);
   const mlKey = externalTreeCacheKey(`ML ${mlModel}`, taxaNames, alignedSeqs);
-  const [mlRun, setMlRun] = useState<{ key: string; status: 'running' | 'done' | 'error'; result?: MlSearchReport; error?: string } | null>(null);
+  const [mlRun, setMlRun] = useState<{ key: string; status: 'running' | 'done' | 'error' | 'cancelled'; result?: MlSearchReport; error?: string } | null>(null);
   const mlRunNow = mlRun && mlRun.key === mlKey ? mlRun : null;
   useEffect(() => {
     if (mlRun?.status !== 'running') return;
     const { key } = mlRun;
+    // Cleared when this run is cancelled, replaced or unmounted: its reply is then not read.
+    let live = true;
     const id = setTimeout(() => {
-      try {
-        setMlRun({ key, status: 'done', result: mlTreeSearch(taxaNames, alignedSeqs, mlModel) });
-      } catch (err) {
-        const message = (err instanceof Error ? err.message : String(err)).replace(/^\[MolBioCraft Rust Engine :: [^\]]+\]\s*/, '');
-        setMlRun({ key, status: 'error', error: message });
-      }
+      mlTreeSearchAsync(taxaNames, alignedSeqs, mlModel).then(
+        (result) => {
+          if (live) setMlRun({ key, status: 'done', result });
+        },
+        (err: unknown) => {
+          if (!live) return;
+          const message = (err instanceof Error ? err.message : String(err)).replace(/^\[MolBioCraft Rust Engine :: [^\]]+\]\s*/, '');
+          setMlRun({ key, status: 'error', error: message });
+        }
+      );
     }, 0);
-    return () => clearTimeout(id);
+    return () => {
+      live = false;
+      clearTimeout(id);
+    };
     // taxaNames/alignedSeqs (and the model they set) are captured by the run's key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mlRun]);
@@ -8005,7 +8016,16 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
               let body: React.ReactNode;
               let alert = false;
               if (mlRunNow?.status === 'running') {
-                body = `Running the maximum-likelihood search (${mlModel}) on ${taxaNames.length} sequences × ${(alignedSeqs[0]?.length ?? 0).toLocaleString()} sites… The Neighbor-Joining tree is shown until it finishes.`;
+                body = (
+                  <>
+                    {`Running the maximum-likelihood search (${mlModel}) on ${taxaNames.length} sequences × ${(alignedSeqs[0]?.length ?? 0).toLocaleString()} sites… The Neighbor-Joining tree is shown until it finishes.`}
+                    <button type="button" className="btn-secondary-sm" style={{ marginLeft: 10 }} onClick={() => setMlRun({ key: mlKey, status: 'cancelled' })}>
+                      Cancel
+                    </button>
+                  </>
+                );
+              } else if (mlRunNow?.status === 'cancelled') {
+                body = <>The maximum-likelihood search was cancelled; the Neighbor-Joining tree is shown.{runBtn}</>;
               } else if (mlRunNow?.status === 'error') {
                 alert = true;
                 body = <>{mlRunNow.error} The Neighbor-Joining tree is shown instead.{runBtn}</>;

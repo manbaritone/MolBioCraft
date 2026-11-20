@@ -4,7 +4,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import { runBuildTree } from '../core/operationRunners';
-import { leafNames, parseNewick } from '../core/treeConsensus';
+import { leafNames, parseNewick, toNewick } from '../core/treeConsensus';
+import { midpointRoot } from '../core/treeLayout';
 import { fromTreeNode, splitsOf } from '../core/treeSearch';
 import type { PhyloTreeInferenceReport } from '../core/phyloEvoEngine';
 import type { SequenceDocument } from '../types/bio';
@@ -187,7 +188,7 @@ describe('US-01M6P2HD AC2: the studio runs the ML search from Run ML search', ()
 
       // Pressed, the button says it is running before the search starts (on the next task).
       await app.click(runButtons(app)[0]);
-      expect(callouts(app).some((c) => /^Running the maximum-likelihood search \(GTR\+G\) on 8 sequences × 240 sites… The Neighbor-Joining tree is shown until it finishes\.$/.test(c)), `the running state: ${callouts(app).join(' | ')}`).toBe(true);
+      expect(callouts(app).some((c) => /^Running the maximum-likelihood search \(GTR\+G\) on 8 sequences × 240 sites… The Neighbor-Joining tree is shown until it finishes\.Cancel$/.test(c)), `the running state, with its Cancel (BG-01M7RREM): ${callouts(app).join(' | ')}`).toBe(true);
       expect(heading(app), 'while running').toBe('Neighbor-Joining tree');
       await searchRuns(app);
 
@@ -323,7 +324,7 @@ describe('BG-01M7RR52 AC1: the ML option and callouts name the model the engine 
       await app.change(methodSelect(app), 'Maximum Likelihood (ML)');
       expect(callouts(app), 'the idle callout').toContain('The maximum-likelihood search (LG+G) runs when you press Run ML search; the Neighbor-Joining tree is shown until then.Run ML search');
       await app.click(runButtons(app)[0]);
-      expect(callouts(app), 'the running callout').toContain(`Running the maximum-likelihood search (LG+G) on 5 sequences × ${GLOBINS[0][1].length} sites… The Neighbor-Joining tree is shown until it finishes.`);
+      expect(callouts(app), 'the running callout').toContain(`Running the maximum-likelihood search (LG+G) on 5 sequences × ${GLOBINS[0][1].length} sites… The Neighbor-Joining tree is shown until it finishes.Cancel`);
       await searchRuns(app);
       expect(heading(app)).toBe('Maximum-likelihood tree (built-in, LG+G)');
       expect(lnlCard(app).label).toBe('lnL (LG+G, ML search)');
@@ -390,4 +391,126 @@ describe('BG-01M7RR52 AC1: the ML tree is shown only for Maximum Likelihood and 
       expect(callouts(app)).toContain('The maximum-likelihood search (GTR+G) runs when you press Run ML search; the Neighbor-Joining tree is shown until then.Run ML search');
     });
   });
+});
+
+// ─── BG-01M7RREM: the studio's ML search runs off the interface thread, and Cancel stops it (D0171, D0005) ───
+
+const KINGDOMS = SAMPLE_LIBRARY.find((d) => d.id === 'doc-aln-three-kingdoms')!;
+type MlPayload = { names: string[]; alignedSeqs: string[]; model: string };
+type MlReport = import('../core/phyloEvoEngine').MlSearchReport;
+/**
+ * Holds every `ml_tree_search` the studio sends the desktop's worker pool (`cmd_rust_bio_invoke`)
+ * until the test replies, as the pool replies while the interface keeps running; any other command
+ * is refused, so it falls back to the in-process engine.
+ */
+function holdDesktopMlSearches() {
+  const g = globalThis as { __TAURI_INTERNALS__?: { invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown> } };
+  const pending: { payload: MlPayload; resolve: (v: unknown) => void }[] = [];
+  g.__TAURI_INTERNALS__ = {
+    invoke: (cmd, args) => {
+      if (cmd === 'cmd_rust_bio_invoke' && args.op === 'ml_tree_search') {
+        return new Promise((resolve) => pending.push({ payload: args.payload as MlPayload, resolve }));
+      }
+      return Promise.reject(new Error(`not held: ${cmd}`));
+    },
+  };
+  return { pending, release: () => { delete g.__TAURI_INTERNALS__; } };
+}
+/** Today's search: the synchronous call the studio made on the interface thread, on the same rows and model. */
+let todaysKingdoms: { payload: MlPayload; report: MlReport } | null = null;
+async function todaysSearch(payload: MlPayload): Promise<MlReport> {
+  const { mlTreeSearch } = await import('../core/phyloEvoEngine');
+  if (!todaysKingdoms) todaysKingdoms = { payload, report: mlTreeSearch(payload.names, payload.alignedSeqs, payload.model) };
+  expect(todaysKingdoms.payload, 'today\'s search ran on these rows').toEqual(payload);
+  return todaysKingdoms.report;
+}
+/** The press's search task: the time it holds the interface thread, in real milliseconds. */
+async function startSearchTask(): Promise<number> {
+  const React = await import('react');
+  const t0 = performance.now();
+  await React.act(async () => { vi.advanceTimersByTime(0); });
+  return performance.now() - t0;
+}
+const rowsOf = (d: SequenceDocument) => d.alignmentMeta!.sequences!;
+
+describe('BG-01M7RREM AC1: the ML search runs off the interface thread, can be cancelled, and finds today\'s tree', () => {
+  it('BG-01M7RREM AC1 keeps a timer firing while the three-kingdoms search runs on the desktop worker, and shows today\'s tree and lnL when it replies', async () => {
+    const { invokeRustBioSync } = await import('../lib/rustBioEngine');
+    const React = await import('react');
+    await withApp(async (app) => {
+      await onTree(app, KINGDOMS);
+      await app.change(methodSelect(app), 'Maximum Likelihood (ML)');
+      const held = holdDesktopMlSearches();
+      let ticks = 0;
+      const timer = setInterval(() => { ticks += 1; }, 100);
+      try {
+        await app.click(runButtons(app)[0]);
+        const heldMs = await startSearchTask();
+        expect(heldMs, `the search task held the interface thread for ${heldMs.toFixed(0)} ms`).toBeLessThan(1000);
+        expect(held.pending, 'the search was sent to the desktop worker pool as one ml_tree_search').toHaveLength(1);
+        const payload = held.pending[0].payload;
+        expect(payload.names, 'the 35 rows of the sample').toEqual(rowsOf(KINGDOMS).map((m) => m.name));
+        expect(payload.alignedSeqs.map((s) => s.length), 'each row its 1,168 columns').toEqual(rowsOf(KINGDOMS).map(() => 1168));
+        expect(payload.alignedSeqs, 'the rows as aligned').toEqual(rowsOf(KINGDOMS).map((m) => m.sequence));
+        // Today's model for the sample (mlSearchModel): GTR+G on nucleotides, LG+G on protein.
+        expect(payload.model, `the model for a ${KINGDOMS.moleculeType} alignment`).toBe(KINGDOMS.moleculeType === 'Protein' ? 'LG+G' : 'GTR+G');
+
+        // The interface runs while the worker searches: the timer fires, and the running state stays drawn.
+        await React.act(async () => { vi.advanceTimersByTime(1000); });
+        await app.settle();
+        expect(ticks, 'the timer kept firing during the search').toBeGreaterThanOrEqual(10);
+        expect(callouts(app).some((c) => /^Running the maximum-likelihood search \(/.test(c)), `still running: ${callouts(app).join(' | ')}`).toBe(true);
+        expect(heading(app), 'while running').toBe('Neighbor-Joining tree');
+
+        // The worker replies with the engine's own search on what it was sent.
+        const today = await todaysSearch(payload);
+        held.pending[0].resolve(invokeRustBioSync('ml_tree_search', payload));
+        await app.settle();
+        expect(heading(app)).toBe(`Maximum-likelihood tree (built-in, ${today.model})`);
+        expect(shownNewick(app), 'today\'s tree, midpoint-rooted as the studio roots it').toBe(toNewick(midpointRoot(parseNewick(today.newick))));
+        expect(lnlCard(app).value, 'today\'s lnL, to the bit').toBe(today.logLikelihood);
+        expect(lnlCard(app).label).toBe(`lnL (${today.model}, ML search)`);
+      } finally {
+        clearInterval(timer);
+        held.release();
+      }
+    });
+  }, 120000);
+
+  it('BG-01M7RREM AC1 stops the search on Cancel, says it was cancelled, and shows nothing from its late reply', async () => {
+    await withApp(async (app) => {
+      await onTree(app, KINGDOMS);
+      await app.change(methodSelect(app), 'Maximum Likelihood (ML)');
+      const njNewick = shownNewick(app);
+      const held = holdDesktopMlSearches();
+      try {
+        await app.click(runButtons(app)[0]);
+        await startSearchTask();
+        expect(held.pending, 'the search is running on the desktop worker').toHaveLength(1);
+        const cancel = app.all('button').filter((b) => words(b.textContent) === 'Cancel');
+        expect(cancel, `one Cancel beside the running search: ${callouts(app).join(' | ')}`).toHaveLength(1);
+        await app.click(cancel[0]);
+        const cancelled = 'The maximum-likelihood search was cancelled; the Neighbor-Joining tree is shown.Run ML search';
+        expect(callouts(app), 'it says it was cancelled').toContain(cancelled);
+        expect(callouts(app).join(' | '), 'no longer running').not.toMatch(/^Running the maximum-likelihood search|\| Running the maximum-likelihood search/);
+
+        // The search's reply, arriving after Cancel, is not read: no tree, lnL or note from it is shown.
+        const today = await todaysSearch(held.pending[0].payload);
+        held.pending[0].resolve(today);
+        await app.settle();
+        expect(heading(app), 'after the late reply').toBe('Neighbor-Joining tree');
+        expect(shownNewick(app), 'the Neighbor-Joining tree is kept').toBe(njNewick);
+        expect(lnlCard(app).label).toBe('lnL (JC69, this tree)');
+        expect(callouts(app), 'still says it was cancelled').toContain(cancelled);
+        expect(app.downloads(), 'nothing was saved').toEqual([]);
+
+        // Run ML search is offered again, and runs a new search.
+        await app.click(runButtons(app)[0]);
+        await startSearchTask();
+        expect(held.pending, 'a new search').toHaveLength(2);
+      } finally {
+        held.release();
+      }
+    });
+  }, 120000);
 });
