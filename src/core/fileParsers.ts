@@ -101,10 +101,12 @@ const EXPORT_SEQUENCE = 'Export the sequence as GenBank (.gb), EMBL or FASTA and
 const EXPORT_ALIGNMENT = 'Export the alignment as FASTA, NEXUS or PHYLIP and open that file.';
 const EXPORT_RECORDS = 'Export the records as GenBank and open those files.';
 /**
- * Proprietary file types MolBioCraft does not read (CR-01M6T9MT), each with the open format to
- * export to: the plasmid files (.dna/.prot/.rna), the alignment file (.meg) and the
- * sequence-database archives (.ma4/.pa4/.oa4). The desktop shell passes a dropped file of these
- * types through to the importer, so this is the one place the message is written.
+ * File types MolBioCraft does not read, each with the open format to export to: the proprietary
+ * plasmid files (.dna/.prot/.rna), alignment file (.meg) and sequence-database archives
+ * (.ma4/.pa4/.oa4) (CR-01M6T9MT), and any .xml file, since the importer reads no XML format
+ * (BG-01M6W00X; the Microsatellite dialog reads an OSIRIS kit .xml through its own field, not
+ * through the importer). The desktop shell passes a dropped file of these types through to the
+ * importer, so this is the one place the message is written.
  */
 const REFUSED_FILE_TYPES: Record<string, string> = {
   dna: EXPORT_SEQUENCE,
@@ -114,6 +116,7 @@ const REFUSED_FILE_TYPES: Record<string, string> = {
   ma4: EXPORT_RECORDS,
   pa4: EXPORT_RECORDS,
   oa4: EXPORT_RECORDS,
+  xml: EXPORT_SEQUENCE,
 };
 
 const extensionOf = (fileName: string): string | undefined => fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];

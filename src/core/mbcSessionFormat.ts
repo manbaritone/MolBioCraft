@@ -640,7 +640,10 @@ export function parseMbcFolderZip(
   }
 
   if (collectedDocs.length === 0) {
-    throw new Error('MBC folder archive did not contain any valid JSON sequence documents.');
+    // A ZIP holding no session and no document JSON is someone else's archive (BG-01M6W00X).
+    throw new Error(
+      `"${fallbackSessionName}" is a ZIP archive, not a MolBioCraft archive: it holds no MolBioCraft session or document. Unzip it and open the files inside.`,
+    );
   }
 
   const cleanName = fallbackSessionName.replace(/\.(mbc|mcb|zip)$/i, '') || 'Imported_Folder';

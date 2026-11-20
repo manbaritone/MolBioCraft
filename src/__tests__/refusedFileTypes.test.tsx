@@ -27,6 +27,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { SequenceDocument } from '../types/bio';
+import { createZipArchiveBytes, extractZipArchiveEntries, serializeMbcFolderZip, type MbcWorkbenchSnapshot } from '../core/mbcSessionFormat';
 import { mountApp, type AppHarness } from './appHarness';
 import { dispatchLiveEvent, type LiveElement } from './liveDom';
 
@@ -157,6 +158,111 @@ describe('refused proprietary file types (US-01M6TDCD AC2)', () => {
       await drop(app, new File([scfTrace()], 'tdcd_dropped.ab1'));
       expect(notice(app), '.ab1 dropped').toContain('Opened chromatogram trace "tdcd_dropped"');
       expect(docCount(app), 'the .ab1 trace is added').toBe(4);
+    } finally {
+      app.unmount();
+    }
+  });
+});
+
+/**
+ * BG-01M6W00X: an .xml file and a ZIP that is not a MolBioCraft archive are refused naming what they
+ * are, on both routes; a real MolBioCraft folder archive saved as .zip still opens.
+ *
+ * Wrong implementations, and the case that catches each:
+ * - .xml left to the raw-sequence check: contig_summary.xml would fail as "not a sequence symbol",
+ *   and bases.xml (only ACGT letters) would open as a sequence, so both must carry the type hint;
+ * - a refusal on one route only: every case runs through the picker and the drop;
+ * - the foreign ZIP still sent to the archive reader's old sentence, or refused only when it holds
+ *   no .json at all: the fixture holds readme.txt, seq.gb and a JSON file that is no MolBioCraft
+ *   document, and must be named as a ZIP archive with the unzip hint;
+ * - every .zip refused, or one without a workbench entry refused: a serializeMbcFolderZip archive,
+ *   and the same archive with its workbench entry taken out (documents only), still open.
+ */
+const XML_HINT = 'Export the sequence as GenBank (.gb), EMBL or FASTA and open that file.';
+const zipNotArchive = (name: string) =>
+  `"${name}" is a ZIP archive, not a MolBioCraft archive: it holds no MolBioCraft session or document. Unzip it and open the files inside.`;
+const asBytes = (u: Uint8Array): Bytes => { const b = new Uint8Array(new ArrayBuffer(u.length)); b.set(u); return b; };
+const archiveDoc = (id: string, name: string, sequence: string): SequenceDocument => ({
+  ...ONLY, id, name, sequence, history: [], description: '',
+});
+function folderArchive(sessionName: string, names: string[]): Bytes {
+  const snapshot = {
+    sessionName,
+    documents: names.map((n, i) => archiveDoc(`w00x-${n}`, n, `ATGGCCAAATTTGGGCCC${'ACGT'.repeat(i + 1)}`)),
+    workspace: { activeDocId: `w00x-${names[0]}` },
+  } as unknown as MbcWorkbenchSnapshot;
+  return asBytes(serializeMbcFolderZip(snapshot));
+}
+
+describe('xml files and foreign ZIP archives (BG-01M6W00X)', () => {
+  it('BG-01M6W00X AC1 an xml file is refused by its type with an export hint on both routes, never as a sequence symbol', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({ documents: [ONLY], activeDocId: ONLY.id, viewerTab: 'sequence-view' });
+      const cases: [string, Bytes][] = [
+        ['contig_summary.xml', text('<?xml version="1.0" encoding="UTF-8"?>\n<ContigSummary name="c1"><Read id="r1"/></ContigSummary>\n')],
+        ['bases.xml', text('ACGTACGTACGTACGTACGT\n')],
+      ];
+      for (const [route, put] of [['import picker', pick], ['drop', drop]] as const) {
+        for (const [name, bytes] of cases) {
+          await put(app, new File([bytes], name));
+          const shown = notice(app);
+          expect(shown, `${route}: ${name}`).toContain(hintFor(name, XML_HINT));
+          expect(shown, `${route}: ${name}`).not.toContain('not a sequence symbol');
+          expect(docCount(app), `${route}: ${name} adds no document`).toBe(1);
+        }
+      }
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M6W00X AC2 a zip that is not a MolBioCraft archive is refused as a zip archive with an unzip hint on both routes', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({ documents: [ONLY], activeDocId: ONLY.id, viewerTab: 'sequence-view' });
+      const enc = new TextEncoder();
+      const foreign = asBytes(createZipArchiveBytes([
+        { path: 'sampleDocuments/readme.txt', data: enc.encode('Sample documents for a course.\n') },
+        { path: 'sampleDocuments/seq.gb', data: enc.encode('LOCUS       seq 12 bp DNA linear\nORIGIN\n        1 acgtacgtac gt\n//\n') },
+        { path: 'sampleDocuments/settings.json', data: enc.encode('{"theme":"dark","items":[1,2]}') },
+      ]));
+      expect(extractZipArchiveEntries(foreign).map((e) => e.path), 'the fixture is a readable ZIP').toHaveLength(3);
+      for (const [route, put] of [['import picker', pick], ['drop', drop]] as const) {
+        const name = route === 'drop' ? 'sampleDocuments.zip' : 'course files.zip';
+        await put(app, new File([foreign], name));
+        const shown = notice(app);
+        expect(shown, `${route}: ${name}`).toContain(zipNotArchive(name));
+        expect(shown, `${route}: ${name}`).not.toContain('did not contain any valid JSON');
+        expect(docCount(app), `${route}: ${name} adds no document`).toBe(1);
+      }
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M6W00X AC3 a MolBioCraft folder archive saved as zip still opens its documents on both routes', async () => {
+    const app = await mountApp();
+    try {
+      await app.restoreSession({ documents: [ONLY], activeDocId: ONLY.id, viewerTab: 'sequence-view' });
+      await drop(app, new File([folderArchive('W00X_Dropped', ['pW00X_A', 'pW00X_B'])], 'dropped.zip'));
+      expect(notice(app), 'drop').toContain('Restored workbench "W00X_Dropped.mbc" — 2 documents');
+      expect(docCount(app), 'drop opens both documents').toBe(2);
+      expect(words(app.one('.mbc-workbench', 'workbench root').textContent), 'drop').toContain('pW00X_A');
+
+      await pick(app, new File([folderArchive('W00X_Picked', ['pW00X_C', 'pW00X_D', 'pW00X_E'])], 'picked.zip'));
+      expect(notice(app), 'picker').toContain('Restored workbench "W00X_Picked.mbc" — 3 documents');
+      expect(docCount(app), 'the picker opens all three documents').toBe(3);
+      expect(words(app.one('.mbc-workbench', 'workbench root').textContent), 'picker').toContain('pW00X_C');
+
+      // The same archive with its workbench entry taken out: the documents alone still open.
+      const docsOnly = extractZipArchiveEntries(folderArchive('W00X_Docs', ['pW00X_F', 'pW00X_G']))
+        .filter((e) => !e.path.endsWith('/workbench.mbc.json'));
+      expect(docsOnly.some((e) => e.path.endsWith('.mbc.json')), 'the fixture keeps document entries').toBe(true);
+      await drop(app, new File([asBytes(createZipArchiveBytes(docsOnly))], 'docs_only.zip'));
+      expect(docCount(app), 'a documents-only archive opens its two documents').toBe(2);
+      expect(words(app.one('.mbc-workbench', 'workbench root').textContent), 'documents only').toContain('pW00X_F');
+      expect(notice(app), 'documents only').not.toContain('not a MolBioCraft archive');
     } finally {
       app.unmount();
     }
