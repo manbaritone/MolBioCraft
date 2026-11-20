@@ -15,8 +15,9 @@
  * cataloged-primer column, headed "Tm (°C)", gives the number without "Tm" before it ("62°C").
  *
  * Every record comes from the real WASM engine (Selection to Oligo and Design Primers on a seeded
- * template holding one N; the Primer studio's designed pair both without 5′ tails and with its
- * BsaI-HFv2 tails, so the reverse primer's full Tm differs from its anneal Tm), except the
+ * template holding one N; the Primer studio's designed pair both without 5′ tails and with a BlpI
+ * forward tail and a BsaI-HFv2 reverse tail, so the forward primer takes an N from its tail and the
+ * reverse primer's full Tm differs from its anneal Tm), except the
  * degenerate primer, written here as Design Degenerate Primers stores one: ambiguity codes in its
  * sequence, the midpoint of its A/C/G/T versions' Tm range, and no reason, so it keeps its number.
  * Components are rendered with renderToStaticMarkup; a click, a key, a hover or a pick in a select is
@@ -194,6 +195,11 @@ const docOf = (name: string, sequence: string, more: Partial<SequenceDocument> =
 
 /** 1,200 seeded bases, circular, with one N at base 106: inside a primer placed at 101. */
 const REGION_START = 101;
+/**
+ * Where Design Primers' region starts: clear of the N, since Design Primers takes no candidate
+ * holding N, as Primer3 does (BG-01M6TB1R), so a designed primer holds an N only in its 5′ tail.
+ */
+const DESIGN_START = 301;
 const N_AT = 106;
 const plainBases = acgt(1_200, 21);
 const bare = docOf('Template', `${plainBases.slice(0, N_AT - 1)}N${plainBases.slice(N_AT)}`);
@@ -236,29 +242,33 @@ const tmWords = (p: PrimerRecord) =>
  * the reverse primer's full Tm (tail included) is a number, and not its anneal Tm.
  */
 const TAIL_ENZYME = 'BsaI-HFv2';
-const FWD_TAIL = 'GCGGGTCTC';
 const REV_TAIL = 'CGCGGTCTC';
+/** BlpI's site holds one N (GCTNAGC), so its forward tail, with the 3-nt leader, gives the N. */
+const FWD_N_ENZYME = 'BlpI';
+const FWD_N_TAIL = 'GCGGCTNAGC';
 
 /**
  * The first region end from base 700 at which Design Primers' reverse primer has a whole-number
- * anneal Tm, and a whole-number full Tm both without a tail and with REV_TAIL; the forward primer, at
- * 101, holds the N.
+ * anneal Tm, and a whole-number full Tm both without a tail and with REV_TAIL; the forward primer
+ * (at DESIGN_START) holds the N only with FWD_N_TAIL.
  */
 const REGION_END = (() => {
   for (let e = 700; e < 1_000; e++) {
-    const plain = designPCRPrimers(bare, REGION_START, e, 60, '', '', 0).reverse;
-    const tailed = designPCRPrimers(bare, REGION_START, e, 60, FWD_TAIL, REV_TAIL, 0).reverse;
+    const plain = designPCRPrimers(bare, DESIGN_START, e, 60, '', '', 0).reverse;
+    const tailed = designPCRPrimers(bare, DESIGN_START, e, 60, FWD_N_TAIL, REV_TAIL, 0).reverse;
     if ([plain.tmAnnealC, plain.tmFullC, tailed.tmFullC].every(Number.isInteger)) return e;
   }
   throw new Error('no region end gives a whole-number reverse Tm');
 })();
-const designed = designPCRPrimers(bare, REGION_START, REGION_END, 60, '', '', 0);
-/** The same pair with the studio's BsaI-HFv2 tails. */
-const designedTailed = designPCRPrimers(bare, REGION_START, REGION_END, 60, FWD_TAIL, REV_TAIL, 0);
+const designed = designPCRPrimers(bare, DESIGN_START, REGION_END, 60, '', '', 0);
+/** The same pair with the studio's BlpI forward and BsaI-HFv2 reverse tails. */
+const designedTailed = designPCRPrimers(bare, DESIGN_START, REGION_END, 60, FWD_N_TAIL, REV_TAIL, 0);
+/** The pair the Design Primers dialog makes with FWD_N_TAIL typed as its forward tail. */
+const dialogPair = designPCRPrimers(bare, DESIGN_START, REGION_END, 60, FWD_N_TAIL, '', 0);
 
 /** The template as a session holds it: a CDS over the region and the three stored primers. */
 const template = docOf('Template', bare.sequence, {
-  features: [{ id: 'feat-cds', name: 'orf', type: 'CDS', start: REGION_START, end: REGION_END, strand: 1, color: '#2e7d32' }],
+  features: [{ id: 'feat-cds', name: 'orf', type: 'CDS', start: DESIGN_START, end: REGION_END, strand: 1, color: '#2e7d32' }],
   primers: storedPrimers,
 });
 
@@ -269,12 +279,15 @@ describe('the fixtures', () => {
     expect(Number.isFinite(nPrimer.tmAnnealC), 'the number a wrong display shows').toBe(true);
     expect(wholePrimer.tmNoAnswerReason).toBeUndefined();
     expect(String(wholePrimer.tmAnnealC)).not.toBe(wholePrimer.tmAnnealC.toFixed(1));
-    expect(designed.forward.tmNoAnswerReason, 'the designed forward primer holds the N').toBe(ONE);
-    expect(Number.isFinite(designed.forward.tmFullC)).toBe(true);
+    expect(designed.forward.tmNoAnswerReason, 'the untailed designed pair holds no N').toBeUndefined();
+    expect(designed.forward.annealSequence, 'Design Primers takes no candidate holding N').toMatch(/^[ACGT]+$/);
     expect(designed.reverse.tmNoAnswerReason).toBeUndefined();
     expect(String(designed.reverse.tmAnnealC)).not.toBe(designed.reverse.tmAnnealC.toFixed(1));
-    expect([designedTailed.forward.tail5Prime, designedTailed.reverse.tail5Prime], 'the tails the design adds').toEqual([FWD_TAIL, REV_TAIL]);
-    expect(designedTailed.forward.tmNoAnswerReason, 'the tailed forward primer still holds the N').toBe(ONE);
+    expect([designedTailed.forward.tail5Prime, designedTailed.reverse.tail5Prime], 'the tails the design adds').toEqual([FWD_N_TAIL, REV_TAIL]);
+    expect(designedTailed.forward.tmNoAnswerReason, 'the forward primer takes the N from its tail').toBe(ONE);
+    expect(designedTailed.forward.annealSequence).toBe(designed.forward.annealSequence);
+    expect(Number.isFinite(designedTailed.forward.tmFullC)).toBe(true);
+    expect([dialogPair.forward.tmNoAnswerReason, dialogPair.reverse.tmNoAnswerReason]).toEqual([ONE, undefined]);
     expect(designedTailed.reverse.tmNoAnswerReason).toBeUndefined();
     expect(designedTailed.reverse.tmAnnealC, 'a tail leaves the anneal Tm as it was').toBe(designed.reverse.tmAnnealC);
     expect(designedTailed.reverse.tmFullC, 'the full Tm a pill reading the anneal Tm would not show').not.toBe(designedTailed.reverse.tmAnnealC);
@@ -387,19 +400,19 @@ describe("a stored primer's Tm on the circular map (BG-01M6T6RZ)", () => {
 // ─── The Primer studio (PrimerAndPCRStudio.tsx) ───
 
 /**
- * The Primer studio's design tab on the template (its region: the CDS, 101..REGION_END). With
- * `tailEnzyme`, the forward and reverse 5′ tail selects each pick it once while the studio renders,
- * so the render shows what the picks set.
+ * The Primer studio's design tab on the template (its region: the CDS, DESIGN_START..REGION_END).
+ * With `tails`, the forward and reverse 5′ tail selects each pick their enzyme once while the studio
+ * renders, so the render shows what the picks set.
  */
-function studio(tailEnzyme?: string): El {
+function studio(tails?: [string, string]): El {
   const picked: string[] = [];
   probe.onElement = (type, props) => {
-    if (!tailEnzyme || type !== 'label') return;
+    if (!tails || type !== 'label') return;
     const [caption, select] = ([] as unknown[]).concat(props.children) as ({ type?: unknown; props?: Handlers } | undefined)[];
     const which = String(caption?.props?.children ?? '');
     if (select?.type !== 'select' || !/^5' (Forward|Reverse) Enzyme Tail:$/.test(which) || picked.includes(which)) return;
     picked.push(which);
-    (select.props!.onChange as (e: { target: { value: string } }) => void)({ target: { value: tailEnzyme } });
+    (select.props!.onChange as (e: { target: { value: string } }) => void)({ target: { value: which.includes('Forward') ? tails[0] : tails[1] } });
   };
   let root: El;
   try {
@@ -407,7 +420,7 @@ function studio(tailEnzyme?: string): El {
   } finally {
     probe.onElement = null;
   }
-  expect(picked, 'the tail selects picked').toEqual(tailEnzyme ? ["5' Forward Enzyme Tail:", "5' Reverse Enzyme Tail:"] : []);
+  expect(picked, 'the tail selects picked').toEqual(tails ? ["5' Forward Enzyme Tail:", "5' Reverse Enzyme Tail:"] : []);
   return root;
 }
 
@@ -418,19 +431,20 @@ describe("a stored primer's Tm in the Primer studio (BG-01M6T6RZ)", () => {
       findAll(c, (e) => e.classes.has('tail-highlight')).map(wordsOf).join(''),
       wordsOf(one(c, (e) => e.classes.has('tm-pill'), 'Tm pill')),
     ]);
-    // Untailed, the reverse primer's full Tm is its anneal Tm; with BsaI-HFv2 tails it is the whole
-    // primer's Tm, another number, which a pill reading the anneal Tm for both would not show.
-    const cases = [
-      { tailEnzyme: undefined, pair: designed, tails: ['', ''] },
-      { tailEnzyme: TAIL_ENZYME, pair: designedTailed, tails: [FWD_TAIL, REV_TAIL] },
-    ];
-    for (const { tailEnzyme, pair: { forward, reverse }, tails } of cases) {
-      expect(pillsOf(studio(tailEnzyme)), tailEnzyme ?? 'no tails').toEqual([
-        // The whole forward primer holds the N its anneal sequence holds, so neither has a Tm.
-        [`Forward Primer: ${forward.name}`, tails[0], `Anneal ${ONE} | Full Tm n/a`],
-        [`Reverse Primer: ${reverse.name}`, tails[1], `Anneal Tm ${reverse.tmAnnealC}°C | Full Tm ${reverse.tmFullC}°C`],
-      ]);
-    }
+    // Untailed, each full Tm is its anneal Tm. With a BlpI forward tail the forward primer holds the
+    // tail's N, so the whole primer has no Tm, and the pill shows the record's reason; with the
+    // BsaI-HFv2 reverse tail the reverse full Tm is the whole primer's, another number, which a pill
+    // reading the anneal Tm for both would not show.
+    const { forward, reverse } = designed;
+    expect(pillsOf(studio()), 'no tails').toEqual([
+      [`Forward Primer: ${forward.name}`, '', `Anneal Tm ${forward.tmAnnealC}°C | Full Tm ${forward.tmFullC}°C`],
+      [`Reverse Primer: ${reverse.name}`, '', `Anneal Tm ${reverse.tmAnnealC}°C | Full Tm ${reverse.tmFullC}°C`],
+    ]);
+    const tailed = designedTailed;
+    expect(pillsOf(studio([FWD_N_ENZYME, TAIL_ENZYME])), 'BlpI / BsaI-HFv2 tails').toEqual([
+      [`Forward Primer: ${tailed.forward.name}`, FWD_N_TAIL, `Anneal ${ONE} | Full Tm n/a`],
+      [`Reverse Primer: ${tailed.reverse.name}`, REV_TAIL, `Anneal Tm ${tailed.reverse.tmAnnealC}°C | Full Tm ${tailed.reverse.tmFullC}°C`],
+    ]);
   });
 
   it("primer studio pair table: the cataloged primers' Tm column", () => {
@@ -462,8 +476,8 @@ describe("a stored primer's Tm in the Design Primers note (BG-01M6T6RZ)", () => 
     );
     probe.onElement = null;
     expect(run, 'the dialog hands its window a Design action').not.toBeNull();
-    run!({ regionStart: REGION_START, regionEnd: REGION_END, targetTm: 60, slack: 0, fwdTail: '', revTail: '', extractProduct: true });
-    const { forward, reverse, ampliconLength } = designed;
+    run!({ regionStart: DESIGN_START, regionEnd: REGION_END, targetTm: 60, slack: 0, fwdTail: FWD_N_TAIL, revTail: '', extractProduct: true });
+    const { forward, reverse, ampliconLength } = dialogPair;
     // The note's own precision: one decimal, so a whole-number Tm reads "64.0" where it is stored as 64.
     const note = `${ONE} / Tm ${reverse.tmAnnealC.toFixed(1)}°C, product ${ampliconLength.toLocaleString()} bp`;
     expect(created.map((d) => d.history[0].description), "the PCR product's history").toEqual([note]);

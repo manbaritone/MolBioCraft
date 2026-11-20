@@ -1461,6 +1461,24 @@ export async function runComputeTimetree(treeDoc: SequenceDocument, v: OptionVal
 
 export const DEGENERATE_PRIMER_NOTE = 'Degenerate primer from Design Degenerate Primers';
 
+const IUPAC_BASES: Record<string, string> = {
+  A: 'A', C: 'C', G: 'G', T: 'T', U: 'T', R: 'AG', Y: 'CT', S: 'CG', W: 'AT', K: 'GT', M: 'AC', B: 'CGT', D: 'AGT', H: 'ACT', V: 'ACG', N: 'ACGT',
+};
+
+/**
+ * A degenerate primer's dG37, hairpin and self-dimer dG (BG-01M6TB1R, D0265): each the most negative
+ * (the most stable, the conservative reading) over the A/C/G/T variants the primer expands to, each
+ * variant's from the engine (`calculatePrimerMetrics`). The primer's degeneracy is the variant count,
+ * which the design keeps at or under its `maxDegeneracy`.
+ */
+function degenerateVariantExtremes(seq: string): { deltaG37: number; hairpinDeltaG: number; selfDimerDeltaG: number } {
+  let variants = [''];
+  for (const c of seq.toUpperCase()) variants = variants.flatMap((v) => [...(IUPAC_BASES[c] ?? 'ACGT')].map((b) => v + b));
+  const all = variants.map((v) => calculatePrimerMetrics(v));
+  const most = (k: 'deltaG37' | 'hairpinDeltaG' | 'selfDimerDeltaG') => Math.min(...all.map((m) => m[k]));
+  return { deltaG37: most('deltaG37'), hairpinDeltaG: most('hairpinDeltaG'), selfDimerDeltaG: most('selfDimerDeltaG') };
+}
+
 export function runDesignDegeneratePrimers(doc: SequenceDocument, v: OptionValues, ctx: RunContext): OperationResult {
   const rows = alignmentRowsOf(doc);
   if (!rows) throw new Error(`${doc.name} is not an aligned document.`);
@@ -1478,7 +1496,7 @@ export function runDesignDegeneratePrimers(doc: SequenceDocument, v: OptionValue
   res.pairs.forEach((pair, i) => {
     for (const p of [pair.forward, pair.reverse]) {
       const name = `${base}_${p.strand === 1 ? 'F' : 'R'}${i + 1}`;
-      const m = calculatePrimerMetrics(p.sequence.replace(/[^ACGT]/g, 'A'));
+      const m = degenerateVariantExtremes(p.sequence);
       const note = `${DEGENERATE_PRIMER_NOTE}; pair ${i + 1}; degeneracy ${p.degeneracy}; Tm ${fmtT(p)} °C; product ${pair.productLength} columns`;
       records.push({
         id: uid(`dp${i}`), name, sequence: p.sequence, annealSequence: p.sequence, tail5Prime: '', bindStart: p.start, bindEnd: p.end, strand: p.strand,

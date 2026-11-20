@@ -117,6 +117,36 @@ describe('degenerate primers', () => {
   });
 });
 
+// BG-01M6TB1R AC3 (D0265): a degenerate primer record's dG37, hairpin and self-dimer dG are the
+// most negative (the most stable, the conservative reading) over the A/C/G/T variants the primer
+// expands to, each from the engine, not the values of the one oligo with every code written as A.
+describe('degenerate primer record thermodynamics', () => {
+  const EXPAND: Record<string, string> = {
+    A: 'A', C: 'C', G: 'G', T: 'T', R: 'AG', Y: 'CT', S: 'CG', W: 'AT', K: 'GT', M: 'AC', B: 'CGT', D: 'AGT', H: 'ACT', V: 'ACG', N: 'ACGT',
+  };
+  const variants = (seq: string) => [...seq].reduce<string[]>((acc, c) => acc.flatMap((v) => [...EXPAND[c]].map((b) => v + b)), ['']);
+  it('takes a degenerate primer record dG from its expanded variants', () => {
+    const aln = SAMPLE_LIBRARY.find((d) => d.id === 'doc-aln-coxii-cds')!;
+    const small = { ...aln, alignmentMeta: { ...aln.alignmentMeta!, sequences: aln.alignmentMeta!.sequences!.slice(0, 8) } };
+    const r = runDesignDegeneratePrimers(small, { maxDegeneracy: 256, tmMin: 45, tmMax: 65, exact3Prime: 2, pairs: 2 }, { sourceLabel: 'COXII' });
+    const records = r.updated[0].primers;
+    expect(records.length).toBeGreaterThan(0);
+    let degenerate = 0;
+    let differsFromAllA = 0;
+    for (const p of records) {
+      const all = variants(p.sequence).map((v) => calculatePrimerMetrics(v));
+      expect(all.length, p.sequence).toBe(Number(p.notes?.match(/degeneracy (\d+)/)?.[1]));
+      if (all.length > 1) degenerate += 1;
+      const most = (k: 'deltaG37' | 'hairpinDeltaG' | 'selfDimerDeltaG') => Math.min(...all.map((m) => m[k]));
+      expect([p.deltaG37, p.hairpinDeltaG, p.selfDimerDeltaG], p.sequence).toEqual([most('deltaG37'), most('hairpinDeltaG'), most('selfDimerDeltaG')]);
+      const allA = calculatePrimerMetrics(p.sequence.replace(/[^ACGT]/g, 'A'));
+      if (allA.deltaG37 !== p.deltaG37 || allA.hairpinDeltaG !== p.hairpinDeltaG || allA.selfDimerDeltaG !== p.selfDimerDeltaG) differsFromAllA += 1;
+    }
+    expect(degenerate, 'the fixture designs degenerate primers').toBeGreaterThan(0);
+    expect(differsFromAllA, 'and at least one reads differently from its all-A oligo').toBeGreaterThan(0);
+  });
+});
+
 describe('degenerate primer pairs are distinct', () => {
   it('no two pairs sit within 5 columns of each other at both ends', () => {
     const aln = SAMPLE_LIBRARY.find((d) => d.id === 'doc-aln-coxii-cds')!;

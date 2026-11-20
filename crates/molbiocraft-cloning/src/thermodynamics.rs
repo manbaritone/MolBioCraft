@@ -295,7 +295,10 @@ pub fn calculate_primer_metrics(
     // ΔG°37(salt) = ΔG°37(1 M) − 0.114 · ln[Na+eq] per phosphate (von Ahsen Na+ equivalent).
     let salt_dg_per_step = -0.114 * mono_equiv.ln();
 
-    // Antiparallel self-dimer & intramolecular stem-loop thermodynamic scan
+    // Antiparallel self-dimer & intramolecular stem-loop thermodynamic scan. Only A, C, G and T
+    // pair (BG-01M6TB1R): a pair involving N or another code adds nothing, as in primer3-py 2.4.0
+    // calc_hairpin / calc_homodimer, which find no structure on an all-N oligo.
+    let pairs = |a: u8, b: u8| a == b && matches!(a, b'A' | b'C' | b'G' | b'T');
     let rc = reverse_complement_iupac(&s, false);
     let rc_bytes = rc.as_bytes();
     let n_i = n as isize;
@@ -305,11 +308,11 @@ pub fn calculate_primer_metrics(
         let mut idx = 0usize;
         while idx < n {
             let j_i = (idx as isize) + shift;
-            if j_i >= 0 && (j_i as usize) < n && bytes[idx] == rc_bytes[j_i as usize] {
+            if j_i >= 0 && (j_i as usize) < n && pairs(bytes[idx], rc_bytes[j_i as usize]) {
                 let run_start = idx;
                 while idx < n {
                     let jj = (idx as isize) + shift;
-                    if jj >= 0 && (jj as usize) < n && bytes[idx] == rc_bytes[jj as usize] {
+                    if jj >= 0 && (jj as usize) < n && pairs(bytes[idx], rc_bytes[jj as usize]) {
                         idx += 1;
                     } else {
                         break;
@@ -339,7 +342,7 @@ pub fn calculate_primer_metrics(
             for j in (i + 6)..n {
                 let mut stem = 0usize;
                 while i + stem + 3 < j.saturating_sub(stem)
-                    && bytes[i + stem] == complement_dna_byte(bytes[j - stem])
+                    && pairs(bytes[i + stem], complement_dna_byte(bytes[j - stem]))
                 {
                     stem += 1;
                 }
@@ -374,15 +377,34 @@ pub fn calculate_primer_metrics(
     }
 }
 
+/// The reply of [`calculate_primer_thermodynamics_santalucia`]: the thermodynamics, written flat as
+/// before, and `tm_no_answer_reason` (BG-01M6TB1R), the sentence a reader shows in place of the Tm
+/// for an oligo holding a base that is not A, C, G or T; absent (no key) for an A/C/G/T oligo. Its
+/// key is snake_case (`tm_no_answer_reason`), as every key of this reply is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrimerThermodynamicsReport {
+    #[serde(flatten)]
+    pub thermodynamics: PrimerThermodynamics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tm_no_answer_reason: Option<String>,
+}
+
 /// Primer thermodynamics by SantaLucia (1998) nearest-neighbour, von Ahsen (2001) Mg2+ equivalence (Primer3 default): the
 /// summed nearest-neighbour enthalpy ($\Delta H^\circ$) and salt-adjusted entropy ($\Delta S^\circ$), with
-/// the Tm, $\Delta G^\circ_{37}$, hairpin and self-dimer values of `calculate_primer_metrics`.
+/// the Tm, $\Delta G^\circ_{37}$, hairpin and self-dimer values of `calculate_primer_metrics`, and its
+/// no-answer reason for the Tm.
 pub fn calculate_primer_thermodynamics_santalucia(
     raw_primer_seq: &str,
     na_mm: f64,
     mg_mm: f64,
     primer_nm: f64,
-) -> PrimerThermodynamics {
+) -> PrimerThermodynamicsReport {
+    let cleaned = clean_alpha_sequence(raw_primer_seq).replace('U', "T");
+    let thermodynamics = primer_thermodynamics_of(raw_primer_seq, na_mm, mg_mm, primer_nm);
+    PrimerThermodynamicsReport { thermodynamics, tm_no_answer_reason: tm_no_answer_reason_of(cleaned.as_bytes()) }
+}
+
+fn primer_thermodynamics_of(raw_primer_seq: &str, na_mm: f64, mg_mm: f64, primer_nm: f64) -> PrimerThermodynamics {
     let cleaned = clean_alpha_sequence(raw_primer_seq).replace('U', "T");
     let bytes = cleaned.as_bytes();
     let n = bytes.len();
@@ -511,6 +533,9 @@ pub fn design_pcr_primers_with_slack(
             + shift as f64 * SHIFT_COST_PER_BP
     };
 
+    // Primer3 rejects a candidate holding N or any base but A, C, G and T (BG-01M6TB1R), so the
+    // search does too; with none left on a side there is no primer there, and so no pair.
+    let acgt_only = |c: &str| c.bytes().all(|b| matches!(b, b'A' | b'C' | b'G' | b'T'));
     let original_start_idx = start_idx;
     let original_end_idx = end_idx;
     let mut best_fwd_anneal = s[start_idx..(start_idx + 20).min(seq_len)].to_string();
@@ -523,6 +548,9 @@ pub fn design_pcr_primers_with_slack(
                 break;
             }
             let cand = &s[p..p + len];
+            if !acgt_only(cand) {
+                continue;
+            }
             let penalty = score(cand, shift);
             if penalty < best_fwd_cost {
                 best_fwd_cost = penalty;
@@ -543,6 +571,9 @@ pub fn design_pcr_primers_with_slack(
                 break;
             }
             let cand = reverse_complement_iupac(&s[e - len..e], false);
+            if !acgt_only(&cand) {
+                continue;
+            }
             let penalty = score(&cand, shift);
             if penalty < best_rev_cost {
                 best_rev_cost = penalty;
@@ -550,6 +581,24 @@ pub fn design_pcr_primers_with_slack(
                 rev_end = e;
             }
         }
+    }
+    let no_candidate = |side: &str, at: &str| {
+        format!("No {side} primer: every candidate at the region's {at} holds N or another base that is not A, C, G or T, which Primer3 rejects.")
+    };
+    if best_fwd_cost.is_infinite() || best_rev_cost.is_infinite() {
+        if best_fwd_cost.is_infinite() {
+            warnings.push(no_candidate("forward", "start"));
+        }
+        if best_rev_cost.is_infinite() {
+            warnings.push(no_candidate("reverse", "end"));
+        }
+        return PcrPrimerDesignResult {
+            forward: PrimerRecord::default(),
+            reverse: PrimerRecord::default(),
+            amplicon_seq: String::new(),
+            amplicon_length: 0,
+            warnings,
+        };
     }
     let start_idx = fwd_start;
     let end_idx = rev_end;
@@ -575,11 +624,11 @@ pub fn design_pcr_primers_with_slack(
     let fwd_full_m = calculate_primer_metrics(&full_fwd_seq, 50.0, 1.5, 250.0);
     let rev_anneal_m = calculate_primer_metrics(&best_rev_anneal, 50.0, 1.5, 250.0);
     let rev_full_m = calculate_primer_metrics(&full_rev_seq, 50.0, 1.5, 250.0);
-    for (label, m) in [("Forward", &fwd_anneal_m), ("Reverse", &rev_anneal_m)] {
-        // A primer holding N has no Tm to set beside the target (BG-01M6SHQ0).
-        if let Some(reason) = &m.tm_no_answer_reason {
-            warnings.push(format!("{label} primer: {reason}."));
-            continue;
+    for (label, m, full) in [("Forward", &fwd_anneal_m, &fwd_full_m), ("Reverse", &rev_anneal_m, &rev_full_m)] {
+        // The anneal sequence is A/C/G/T (the search took no other), so a reason here is the 5'
+        // tail's: the full primer has no Tm (tm_full_c), and the record carries its reason.
+        if let Some(reason) = &full.tm_no_answer_reason {
+            warnings.push(format!("{label} primer (with its 5' tail): {reason}."));
         }
         let tm = m.tm_c;
         if (tm - tgt_tm).abs() > 3.0 {
@@ -617,7 +666,7 @@ pub fn design_pcr_primers_with_slack(
         self_dimer_delta_g: fwd_full_m.self_dimer_delta_g,
         gc_clamp3_prime: fwd_anneal_m.gc_clamp3_prime,
         notes: None,
-        tm_no_answer_reason: fwd_anneal_m.tm_no_answer_reason.clone(),
+        tm_no_answer_reason: fwd_full_m.tm_no_answer_reason.clone(),
         source: None,
     };
 
@@ -639,7 +688,7 @@ pub fn design_pcr_primers_with_slack(
         self_dimer_delta_g: rev_full_m.self_dimer_delta_g,
         gc_clamp3_prime: rev_anneal_m.gc_clamp3_prime,
         notes: None,
-        tm_no_answer_reason: rev_anneal_m.tm_no_answer_reason.clone(),
+        tm_no_answer_reason: rev_full_m.tm_no_answer_reason.clone(),
         source: None,
     };
 

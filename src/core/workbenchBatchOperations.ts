@@ -835,6 +835,9 @@ export function getDocumentColumnDisplayValue(
     case 'tm': {
       if (doc.docMetadata?.Tm !== undefined) return String(doc.docMetadata.Tm);
       const primer = documentPrimerRecord(doc);
+      // A primer holding a base that is not A, C, G or T has no Tm (BG-01M6TB1R): the cell reads its
+      // reason, which says "Tm n/a" itself, once.
+      if (primer?.tmNoAnswerReason) return primer.tmNoAnswerReason;
       if (primer) return `${primer.tmFullC.toFixed(1)} °C`;
       return '-';
     }

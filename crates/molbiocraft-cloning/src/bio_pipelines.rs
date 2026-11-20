@@ -27,6 +27,7 @@ use crate::rebase_catalog::{
     RestrictionPositionLimit, RESTRICTION_POSITIONS_PER_ENZYME,
 };
 use crate::thermodynamics::{
+    PcrPrimerDesignResult,
     anneal_complementary_oligos_at, compute_dna_and_ligation_calculations, design_pcr_primers,
     predict_secondary_structure,
 };
@@ -488,6 +489,42 @@ fn sanitize_portable_filename(raw: &str) -> String {
         out = format!("MBC_{}", out);
     }
     out
+}
+
+/// The primer pair a pipeline step amplifies with, or why there is none (BG-01M6TB1R): a protein
+/// record holds no DNA, so it is never handed to primer design; and `design_pcr_primers` returns no
+/// pair where every candidate on a side holds N or another base that is not A, C, G or T, as Primer3
+/// rejects them, which its warnings name.
+fn primer_pair_for_pipeline(doc: &SequenceDocument, start: usize, end: usize) -> Result<PcrPrimerDesignResult, String> {
+    if doc.molecule_type == MoleculeType::Protein {
+        return Err("A protein record holds no DNA to design PCR primers on, so this step designs none.".into());
+    }
+    let pair = design_pcr_primers(doc, start, end, 60.0, "", "");
+    if pair.forward.anneal_sequence.is_empty() || pair.reverse.anneal_sequence.is_empty() {
+        let why = if pair.warnings.is_empty() { "the design returned no primers.".to_string() } else { pair.warnings.join(" ") };
+        return Err(format!("No primer pair could be designed: {why}"));
+    }
+    Ok(pair)
+}
+
+/// The step a pipeline reports in place of its primer step when there is no pair: a WARN naming
+/// why, with no amplicon, Tm, zone or highlight, so nothing reads as a designed product.
+fn no_primer_pair_step(step_number: usize, id: &str, title: &str, rationale: &str, gap: &str) -> BioPipelineStepResult {
+    BioPipelineStepResult {
+        step_number,
+        id: id.into(),
+        title: title.into(),
+        status: "WARN".into(),
+        biological_rationale: rationale.into(),
+        finding_summary: gap.into(),
+        metrics: Vec::new(),
+        artifacts: Vec::new(),
+        recommendations: Vec::new(),
+        target_studio: "primers-pcr".into(),
+        target_studio_label: "Open Primers & PCR Studio".into(),
+        warnings: vec![gap.into()],
+        highlight_range: None,
+    }
 }
 
 fn derive_overall_status_and_score(steps: &[BioPipelineStepResult]) -> (String, i32) {
@@ -969,105 +1006,115 @@ pub fn execute_bio_pipeline_rust(
 
         let p_start = target_start.max(1);
         let p_end = target_end.max(p_start + 60).min(clean_seq.len());
-        let primer_pair = design_pcr_primers(doc, p_start, p_end, 60.0, "", "");
-        let tm_delta = (primer_pair.forward.tm_anneal_c - primer_pair.reverse.tm_anneal_c).abs();
-        let s4_status = if tm_delta <= 3.0 { "PASS" } else { "WARN" };
+        let primer_pair = primer_pair_for_pipeline(doc, p_start, p_end);
+        if let Err(gap) = &primer_pair {
+            steps.push(no_primer_pair_step(
+                4,
+                "flanking-primers",
+                "Automated Flanking PCR & Colony Verification Primer Synthesis",
+                "Matched annealing temperatures (ΔTm ≤ 2.5–3.0°C) and 3' G/C clamps maximize high-fidelity amplicon yield and eliminate non-specific primer-dimer bands.",
+                gap,
+            ));
+        } else if let Ok(primer_pair) = primer_pair {
+            let tm_delta = (primer_pair.forward.tm_anneal_c - primer_pair.reverse.tm_anneal_c).abs();
+            let s4_status = if tm_delta <= 3.0 { "PASS" } else { "WARN" };
 
-        visual_zones.push(PipelineVisualZone {
-            id: "primer-fwd".into(),
-            track: "Primers & Amplicon".into(),
-            label: format!("Fwd Primer (Tm {:.1}°C)", primer_pair.forward.tm_anneal_c),
-            start: primer_pair.forward.bind_start,
-            end: primer_pair.forward.bind_end,
-            strand: Some(1),
-            color: "#0284c7".into(),
-            status: s4_status.into(),
-            target_studio: "primers-pcr".into(),
-        });
-        visual_zones.push(PipelineVisualZone {
-            id: "primer-rev".into(),
-            track: "Primers & Amplicon".into(),
-            label: format!("Rev Primer (Tm {:.1}°C)", primer_pair.reverse.tm_anneal_c),
-            start: primer_pair.reverse.bind_start,
-            end: primer_pair.reverse.bind_end,
-            strand: Some(-1),
-            color: "#0d9488".into(),
-            status: s4_status.into(),
-            target_studio: "primers-pcr".into(),
-        });
-
-        let suggested_ta =
-            primer_pair.forward.tm_anneal_c.min(primer_pair.reverse.tm_anneal_c) - 2.0;
-
-        steps.push(BioPipelineStepResult {
-            step_number: 4,
-            id: "flanking-primers".into(),
-            title: "Automated Flanking PCR & Colony Verification Primer Synthesis".into(),
-            status: s4_status.into(),
-            biological_rationale: "Matched annealing temperatures (ΔTm ≤ 2.5–3.0°C) and 3' G/C clamps maximize high-fidelity amplicon yield and eliminate non-specific primer-dimer bands.".into(),
-            finding_summary: format!(
-                "Designed {}-bp verification amplicon (ΔTm = {:.1}°C; suggested Ta = {:.1}°C).",
-                fmt_num(primer_pair.amplicon_length),
-                tm_delta,
-                suggested_ta
-            ),
-            metrics: vec![
-                PipelineMetricKV {
-                    label: "Amplicon Size".into(),
-                    value: format!("{} bp", fmt_num(primer_pair.amplicon_length)),
-                    tone: None,
-                },
-                PipelineMetricKV {
-                    label: "Forward Primer Tm / GC".into(),
-                    value: format!("{:.1} °C ({:.0}% GC)", primer_pair.forward.tm_anneal_c, primer_pair.forward.gc_percent),
-                    tone: Some("good".into()),
-                },
-                PipelineMetricKV {
-                    label: "Reverse Primer Tm / GC".into(),
-                    value: format!("{:.1} °C ({:.0}% GC)", primer_pair.reverse.tm_anneal_c, primer_pair.reverse.gc_percent),
-                    tone: Some("good".into()),
-                },
-                PipelineMetricKV {
-                    label: "Pair ΔTm".into(),
-                    value: format!("{:.2} °C", tm_delta),
-                    tone: Some(if tm_delta <= 3.0 { "good" } else { "warn" }.into()),
-                },
-            ],
-            artifacts: vec![
-                PipelineSequenceArtifact {
-                    label: format!("{}_Verify_Fwd", doc.name),
-                    sequence: primer_pair.forward.sequence.clone(),
-                    note: format!(
-                        "{} nt | Tm {:.1}°C | ΔG37 {:.1} kcal/mol",
-                        primer_pair.forward.length,
-                        primer_pair.forward.tm_anneal_c,
-                        primer_pair.forward.delta_g37
-                    ),
-                },
-                PipelineSequenceArtifact {
-                    label: format!("{}_Verify_Rev", doc.name),
-                    sequence: primer_pair.reverse.sequence.clone(),
-                    note: format!(
-                        "{} nt | Tm {:.1}°C | ΔG37 {:.1} kcal/mol",
-                        primer_pair.reverse.length,
-                        primer_pair.reverse.tm_anneal_c,
-                        primer_pair.reverse.delta_g37
-                    ),
-                },
-            ],
-            recommendations: vec![format!(
-                "Run 30 cycles with 10–30 s/kb extension at 72°C and verify {} bp product on 1.0% agarose gel.",
-                primer_pair.amplicon_length
-            )],
-            target_studio: "primers-pcr".into(),
-            target_studio_label: "Open Primers & PCR Studio".into(),
-            warnings: Vec::new(),
-            highlight_range: Some(PipelineHighlightRange {
+            visual_zones.push(PipelineVisualZone {
+                id: "primer-fwd".into(),
+                track: "Primers & Amplicon".into(),
+                label: format!("Fwd Primer (Tm {:.1}°C)", primer_pair.forward.tm_anneal_c),
                 start: primer_pair.forward.bind_start,
+                end: primer_pair.forward.bind_end,
+                strand: Some(1),
+                color: "#0284c7".into(),
+                status: s4_status.into(),
+                target_studio: "primers-pcr".into(),
+            });
+            visual_zones.push(PipelineVisualZone {
+                id: "primer-rev".into(),
+                track: "Primers & Amplicon".into(),
+                label: format!("Rev Primer (Tm {:.1}°C)", primer_pair.reverse.tm_anneal_c),
+                start: primer_pair.reverse.bind_start,
                 end: primer_pair.reverse.bind_end,
-                label: "Verification Amplicon".into(),
-            }),
-        });
+                strand: Some(-1),
+                color: "#0d9488".into(),
+                status: s4_status.into(),
+                target_studio: "primers-pcr".into(),
+            });
+
+            let suggested_ta =
+                primer_pair.forward.tm_anneal_c.min(primer_pair.reverse.tm_anneal_c) - 2.0;
+
+            steps.push(BioPipelineStepResult {
+                step_number: 4,
+                id: "flanking-primers".into(),
+                title: "Automated Flanking PCR & Colony Verification Primer Synthesis".into(),
+                status: s4_status.into(),
+                biological_rationale: "Matched annealing temperatures (ΔTm ≤ 2.5–3.0°C) and 3' G/C clamps maximize high-fidelity amplicon yield and eliminate non-specific primer-dimer bands.".into(),
+                finding_summary: format!(
+                    "Designed {}-bp verification amplicon (ΔTm = {:.1}°C; suggested Ta = {:.1}°C).",
+                    fmt_num(primer_pair.amplicon_length),
+                    tm_delta,
+                    suggested_ta
+                ),
+                metrics: vec![
+                    PipelineMetricKV {
+                        label: "Amplicon Size".into(),
+                        value: format!("{} bp", fmt_num(primer_pair.amplicon_length)),
+                        tone: None,
+                    },
+                    PipelineMetricKV {
+                        label: "Forward Primer Tm / GC".into(),
+                        value: format!("{:.1} °C ({:.0}% GC)", primer_pair.forward.tm_anneal_c, primer_pair.forward.gc_percent),
+                        tone: Some("good".into()),
+                    },
+                    PipelineMetricKV {
+                        label: "Reverse Primer Tm / GC".into(),
+                        value: format!("{:.1} °C ({:.0}% GC)", primer_pair.reverse.tm_anneal_c, primer_pair.reverse.gc_percent),
+                        tone: Some("good".into()),
+                    },
+                    PipelineMetricKV {
+                        label: "Pair ΔTm".into(),
+                        value: format!("{:.2} °C", tm_delta),
+                        tone: Some(if tm_delta <= 3.0 { "good" } else { "warn" }.into()),
+                    },
+                ],
+                artifacts: vec![
+                    PipelineSequenceArtifact {
+                        label: format!("{}_Verify_Fwd", doc.name),
+                        sequence: primer_pair.forward.sequence.clone(),
+                        note: format!(
+                            "{} nt | Tm {:.1}°C | ΔG37 {:.1} kcal/mol",
+                            primer_pair.forward.length,
+                            primer_pair.forward.tm_anneal_c,
+                            primer_pair.forward.delta_g37
+                        ),
+                    },
+                    PipelineSequenceArtifact {
+                        label: format!("{}_Verify_Rev", doc.name),
+                        sequence: primer_pair.reverse.sequence.clone(),
+                        note: format!(
+                            "{} nt | Tm {:.1}°C | ΔG37 {:.1} kcal/mol",
+                            primer_pair.reverse.length,
+                            primer_pair.reverse.tm_anneal_c,
+                            primer_pair.reverse.delta_g37
+                        ),
+                    },
+                ],
+                recommendations: vec![format!(
+                    "Run 30 cycles with 10–30 s/kb extension at 72°C and verify {} bp product on 1.0% agarose gel.",
+                    primer_pair.amplicon_length
+                )],
+                target_studio: "primers-pcr".into(),
+                target_studio_label: "Open Primers & PCR Studio".into(),
+                warnings: Vec::new(),
+                highlight_range: Some(PipelineHighlightRange {
+                    start: primer_pair.forward.bind_start,
+                    end: primer_pair.reverse.bind_end,
+                    label: "Verification Amplicon".into(),
+                }),
+            });
+        }
 
         let diag_enzymes: Vec<String> = unique_cutters.iter().take(2).cloned().collect();
         let fragments = if !diag_enzymes.is_empty() {
@@ -1517,73 +1564,83 @@ pub fn execute_bio_pipeline_rust(
 
         let amp_start = cut_pos.saturating_sub(220).max(1);
         let amp_end = (cut_pos + 340).min(clean_seq.len());
-        let screen_primers = design_pcr_primers(doc, amp_start, amp_end, 60.0, "", "");
-        let band_a = cut_pos
-            .saturating_sub(screen_primers.forward.bind_start)
-            .max(20);
-        let band_b = screen_primers
-            .reverse
-            .bind_end
-            .saturating_sub(cut_pos)
-            .max(20);
+        match primer_pair_for_pipeline(doc, amp_start, amp_end) {
+            Err(gap) => steps.push(no_primer_pair_step(
+                5,
+                "t7e1-genotyping",
+                "Asymmetric T7 Endonuclease I & Sanger Genotyping Assay",
+                "Placing the DSB off-center (~220 bp vs ~340 bp) ensures T7 Endonuclease I heteroduplex cleavage produces two distinctly resolved bands on a 2% agarose gel.",
+                &gap,
+            )),
+            Ok(screen_primers) => {
+                let band_a = cut_pos
+                    .saturating_sub(screen_primers.forward.bind_start)
+                    .max(20);
+                let band_b = screen_primers
+                    .reverse
+                    .bind_end
+                    .saturating_sub(cut_pos)
+                    .max(20);
 
-        visual_zones.push(PipelineVisualZone {
-            id: "t7e1-amplicon".into(),
-            track: "Primers & Amplicon".into(),
-            label: format!(
-                "T7E1 Assay Amplicon ({} bp → {}+{} bp)",
-                screen_primers.amplicon_length, band_a, band_b
-            ),
-            start: screen_primers.forward.bind_start,
-            end: screen_primers.reverse.bind_end,
-            strand: None,
-            color: "#0284c7".into(),
-            status: "PASS".into(),
-            target_studio: "sanger-contig".into(),
-        });
+                visual_zones.push(PipelineVisualZone {
+                    id: "t7e1-amplicon".into(),
+                    track: "Primers & Amplicon".into(),
+                    label: format!(
+                        "T7E1 Assay Amplicon ({} bp → {}+{} bp)",
+                        screen_primers.amplicon_length, band_a, band_b
+                    ),
+                    start: screen_primers.forward.bind_start,
+                    end: screen_primers.reverse.bind_end,
+                    strand: None,
+                    color: "#0284c7".into(),
+                    status: "PASS".into(),
+                    target_studio: "sanger-contig".into(),
+                });
 
-        steps.push(BioPipelineStepResult {
-            step_number: 5,
-            id: "t7e1-genotyping".into(),
-            title: "Asymmetric T7 Endonuclease I & Sanger Genotyping Assay".into(),
-            status: "PASS".into(),
-            biological_rationale: "Placing the DSB off-center (~220 bp vs ~340 bp) ensures T7 Endonuclease I heteroduplex cleavage produces two distinctly resolved bands on a 2% agarose gel.".into(),
-            finding_summary: format!(
-                "Genotyping PCR yields {} bp WT band and {} bp + {} bp T7E1-cleaved heteroduplex fragments.",
-                screen_primers.amplicon_length, band_a, band_b
-            ),
-            metrics: vec![
-                PipelineMetricKV {
-                    label: "Uncut WT Amplicon".into(),
-                    value: format!("{} bp", screen_primers.amplicon_length),
-                    tone: None,
-                },
-                PipelineMetricKV {
-                    label: "T7E1 Cleaved Bands".into(),
-                    value: format!("{} bp + {} bp", band_a, band_b),
-                    tone: Some("good".into()),
-                },
-            ],
-            artifacts: vec![
-                PipelineSequenceArtifact {
-                    label: "Genotype_T7E1_Fwd".into(),
-                    sequence: screen_primers.forward.sequence,
-                    note: format!("Tm {:.1}°C | Also use as Sanger sequencing primer", screen_primers.forward.tm_anneal_c),
-                },
-                PipelineSequenceArtifact {
-                    label: "Genotype_T7E1_Rev".into(),
-                    sequence: screen_primers.reverse.sequence,
-                    note: format!("Tm {:.1}°C", screen_primers.reverse.tm_anneal_c),
-                },
-            ],
-            recommendations: vec![
-                "Verify edited polyclonal & monoclonal amplicons by Sanger .ab1 chromatogram alignment in Sanger / Contig Studio.".into(),
-            ],
-            target_studio: "sanger-contig".into(),
-            target_studio_label: "Open Sanger / Variant Studio".into(),
-            warnings: Vec::new(),
-            highlight_range: None,
-        });
+                steps.push(BioPipelineStepResult {
+                    step_number: 5,
+                    id: "t7e1-genotyping".into(),
+                    title: "Asymmetric T7 Endonuclease I & Sanger Genotyping Assay".into(),
+                    status: "PASS".into(),
+                    biological_rationale: "Placing the DSB off-center (~220 bp vs ~340 bp) ensures T7 Endonuclease I heteroduplex cleavage produces two distinctly resolved bands on a 2% agarose gel.".into(),
+                    finding_summary: format!(
+                        "Genotyping PCR yields {} bp WT band and {} bp + {} bp T7E1-cleaved heteroduplex fragments.",
+                        screen_primers.amplicon_length, band_a, band_b
+                    ),
+                    metrics: vec![
+                        PipelineMetricKV {
+                            label: "Uncut WT Amplicon".into(),
+                            value: format!("{} bp", screen_primers.amplicon_length),
+                            tone: None,
+                        },
+                        PipelineMetricKV {
+                            label: "T7E1 Cleaved Bands".into(),
+                            value: format!("{} bp + {} bp", band_a, band_b),
+                            tone: Some("good".into()),
+                        },
+                    ],
+                    artifacts: vec![
+                        PipelineSequenceArtifact {
+                            label: "Genotype_T7E1_Fwd".into(),
+                            sequence: screen_primers.forward.sequence,
+                            note: format!("Tm {:.1}°C | Also use as Sanger sequencing primer", screen_primers.forward.tm_anneal_c),
+                        },
+                        PipelineSequenceArtifact {
+                            label: "Genotype_T7E1_Rev".into(),
+                            sequence: screen_primers.reverse.sequence,
+                            note: format!("Tm {:.1}°C", screen_primers.reverse.tm_anneal_c),
+                        },
+                    ],
+                    recommendations: vec![
+                        "Verify edited polyclonal & monoclonal amplicons by Sanger .ab1 chromatogram alignment in Sanger / Contig Studio.".into(),
+                    ],
+                    target_studio: "sanger-contig".into(),
+                    target_studio_label: "Open Sanger / Variant Studio".into(),
+                    warnings: Vec::new(),
+                    highlight_range: None,
+                });
+            }
+        }
     } else if def.id == "multihost-protein-mrna" {
         let is_protein_doc = doc.molecule_type == MoleculeType::Protein;
         let prot = analyze_protein_sequence(&clean_seq, !is_protein_doc, 9);

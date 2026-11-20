@@ -1833,8 +1833,9 @@ describe('Folder-Aware Dynamic Columns, Universal Table Filter & Column Popover 
 
       const metrics = computeDocumentTableMetrics(doc);
       const record = primerRecordFromDoc(doc);
+      // A primer holding N has no Tm: the column reads its reason (BG-01M6TB1R).
       expect(getDocumentColumnDisplayValue(doc, metrics, 'tm')).toBe(
-        `${record.tmFullC.toFixed(1)} °C`
+        record.tmNoAnswerReason ? record.tmNoAnswerReason : `${record.tmFullC.toFixed(1)} °C`
       );
       expect(getDocumentColumnDisplayValue(doc, metrics, 'hairpin')).toBe(
         `${record.hairpinDeltaG.toFixed(1)} kcal/mol`
@@ -1844,11 +1845,20 @@ describe('Folder-Aware Dynamic Columns, Universal Table Filter & Column Popover 
       );
     }
 
+    let noTm = 0;
     for (const doc of samplePrimers) {
       const metrics = computeDocumentTableMetrics(doc);
       const tmCell = getDocumentColumnDisplayValue(doc, metrics, 'tm');
       const hairpinCell = getDocumentColumnDisplayValue(doc, metrics, 'hairpin');
       const dimerCell = getDocumentColumnDisplayValue(doc, metrics, 'primerDimer');
+      const reason = documentPrimerOf(doc)?.tmNoAnswerReason;
+      if (reason) {
+        noTm += 1;
+        expect(tmCell, doc.name).toBe(reason!);
+        expect(parseSortableNumericValue(tmCell), 'an n/a cell sorts as no number').toBeNull();
+        expect(parseSortableNumericValue(hairpinCell)).not.toBeNull();
+        continue;
+      }
       expect(tmCell).toMatch(/^-?\d+\.\d °C$/);
       expect(hairpinCell).toMatch(/^-?\d+\.\d kcal\/mol$/);
       expect(dimerCell).toMatch(/^-?\d+\.\d kcal\/mol$/);
@@ -1856,6 +1866,8 @@ describe('Folder-Aware Dynamic Columns, Universal Table Filter & Column Popover 
       expect(parseSortableNumericValue(hairpinCell)).not.toBeNull();
       expect(parseSortableNumericValue(dimerCell)).not.toBeNull();
     }
+
+    expect(noTm, 'the sample library holds a primer with N').toBeGreaterThan(0);
 
     const nonPrimer = makeTestDoc({
       id: 'doc-non-primer',
@@ -1897,3 +1909,29 @@ describe('Folder-Aware Dynamic Columns, Universal Table Filter & Column Popover 
     );
   });
 });
+
+// BG-01M6TB1R AC3: a primer holding N has no Tm (primer3-py 2.4.0 calc_tm refuses it), so the batch
+// table's Tm column reads n/a with the reason in its place, the reason's own "Tm n/a: <why>" once
+// (not "n/a: Tm n/a: ..."); an A/C/G/T primer keeps its number.
+describe('document table Tm column (BG-01M6TB1R)', () => {
+  it('reads n/a with the reason in the Tm column for a primer holding N', () => {
+    const base = SAMPLE_LIBRARY[0];
+    const withPrimer = (sequence: string): SequenceDocument => ({
+      ...base, id: `tm-${sequence}`, primers: [convertSelectionToOligoPrimer({ ...base, sequence: `${'A'.repeat(20)}${sequence}${'C'.repeat(20)}`, primers: [] }, { start: 21, end: 20 + sequence.length }, 1).primer],
+    });
+    const nDoc = withPrimer('ACGTACGTNACGTACGTAC');
+    const reason = nDoc.primers[0].tmNoAnswerReason;
+    expect(getDocumentColumnDisplayValue(nDoc, computeDocumentTableMetrics(nDoc), 'tm', false).match(/n\/a/g), 'n/a once').toHaveLength(1);
+    expect(reason).toBe('Tm n/a: the span holds 1 N or other ambiguity base; Tm is computed on A/C/G/T only, as Primer3 does');
+    expect(getDocumentColumnDisplayValue(nDoc, computeDocumentTableMetrics(nDoc), 'tm', false)).toBe(reason!);
+    expect(parseSortableNumericValue(reason!), 'and sorts as no number, not as its count').toBeNull();
+    const cleanDoc = withPrimer('ACGTACGTACGTACGTACG');
+    expect(cleanDoc.primers[0].tmNoAnswerReason).toBeUndefined();
+    expect(getDocumentColumnDisplayValue(cleanDoc, computeDocumentTableMetrics(cleanDoc), 'tm', false)).toBe(`${cleanDoc.primers[0].tmFullC.toFixed(1)} °C`);
+    // A primer document (no primer records) reads its reason from its own sequence.
+    const primerDoc: SequenceDocument = { ...base, id: 'tm-primer-doc', documentKind: 'primer', sequence: 'ACGTACGTNACGTACGTAC', primers: [], features: [] };
+    expect(getDocumentColumnDisplayValue(primerDoc, computeDocumentTableMetrics(primerDoc), 'tm', false)).toBe(reason!);
+  });
+});
+
+const documentPrimerOf = (doc: SequenceDocument) => (doc.primers.length ? doc.primers[0] : primerRecordFromDoc(doc));

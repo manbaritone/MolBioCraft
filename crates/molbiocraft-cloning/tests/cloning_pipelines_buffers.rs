@@ -1411,8 +1411,16 @@ const BG_01M7EGF6_AC4_READER_VISIBLE: [(&str, &str); 4] = [
     // US-01M6Q164 AC9 (D0246) then moved it, and only it of the two History-free pipelines, from
     // 4d07376a9b25b0c7: its step 2 (Open Protein Analysis) targets the Protein studio, protein-3d,
     // in place of History, which no longer hosts protein analysis; no verdict or number moved.
-    ("cloning-expression-qc", "2a1058a785d6deb7"),
-    ("crispr-hdr-knockout", "48ee426c46530b6e"),
+    // BG-01M6TB1R (D0279) then moved both, from 2a1058a785d6deb7 and 48ee426c46530b6e: their primer
+    // steps (flanking-primers, t7e1-genotyping) handed protein records to primer design, which read
+    // protein letters as primers ("MVSKGEELF..." at Tm 58.8 °C, a 239-bp amplicon). Primer design now
+    // rejects every candidate holding a base other than A, C, G or T, as Primer3 does, and a protein
+    // record is no longer handed to it: on each protein record (14 in cloning-expression-qc, the
+    // structures and the protein alignments) the step is a WARN saying it holds no DNA, and on COXII
+    // and COXII CDS, whose genotyping region ends on ambiguity codes, t7e1-genotyping is a WARN naming
+    // the design's reason (16 records in crispr-hdr-knockout).
+    ("cloning-expression-qc", "e781403aa66221ba"),
+    ("crispr-hdr-knockout", "e3fc8a8ec08080d6"),
     // US-01M6VF33 (D0198) moved multihost-protein-mrna, and only it, from b86e224078c60f5f, by
     // delta (d) alone: codon optimisation writes an X as NNN with a warning where it dropped it.
     // Four sample records hold an X the optimiser reads, and on each the three hosts' CDS grow by
@@ -1480,4 +1488,48 @@ fn cloning_pipelines_show_the_same_verdicts_and_numbers_as_before_bg_01m7egf6() 
         taken, expected,
         "a verdict or a number a user reads moved; regenerate with BG_01M7EGF6_AC4=print and say what moved"
     );
+}
+
+/// BG-01M6TB1R (D0279): a pipeline's primer step reports a pair only when it has one. A protein record
+/// is never handed to primer design (it held protein letters the design used to read as primers,
+/// "MVSKGEELF..." at Tm 58.8 °C), and a DNA record on which every candidate on a side holds a base
+/// other than A, C, G or T gets no pair, as Primer3 rejects them; either way the step is a WARN that
+/// names why, with no 0-bp amplicon, Tm, negative Ta, zone or highlight.
+#[test]
+fn pipeline_primer_steps_name_why_there_is_no_pair() {
+    let library = get_sample_library();
+    let by_name = |n: &str| library.iter().find(|d| d.name == n).unwrap_or_else(|| panic!("sample {n}"));
+    let protein = by_name("eGFP_Aequorea_Protein (1EMA)");
+    let protein_says = "A protein record holds no DNA to design PCR primers on, so this step designs none.";
+    for (pipeline, step_id, zone) in [("cloning-expression-qc", "flanking-primers", "primer-fwd"), ("crispr-hdr-knockout", "t7e1-genotyping", "t7e1-amplicon")] {
+        let report = execute_bio_pipeline_rust(protein, pipeline, "macos", "2026-11-15T00:00:00Z").unwrap();
+        let step = report.steps.iter().find(|s| s.id == step_id).unwrap_or_else(|| panic!("{pipeline}: no {step_id}"));
+        assert_eq!((step.status.as_str(), step.finding_summary.as_str()), ("WARN", protein_says), "{pipeline}");
+        assert_eq!(step.warnings, vec![protein_says.to_string()]);
+        assert!(step.artifacts.is_empty() && step.metrics.is_empty() && step.highlight_range.is_none(), "{pipeline}: {step:?}");
+        assert!(!report.visual_zones.iter().any(|z| z.id == zone || z.id == "primer-rev"), "{pipeline}: a zone for no primer");
+        assert_ne!(report.overall_status, "PASS", "{pipeline}: a step that could not run is no pass");
+    }
+    // A DNA record whose genotyping region starts on ambiguity codes: no pair, and the design's own
+    // reason is named.
+    let coxii = by_name("COXII");
+    let report = execute_bio_pipeline_rust(coxii, "crispr-hdr-knockout", "macos", "2026-11-15T00:00:00Z").unwrap();
+    let step = report.steps.iter().find(|s| s.id == "t7e1-genotyping").unwrap();
+    assert_eq!(step.status, "WARN");
+    assert!(step.finding_summary.starts_with("No primer pair could be designed: "), "{}", step.finding_summary);
+    assert!(
+        step.finding_summary.contains("No reverse primer: every candidate at the region's end holds N or another base that is not A, C, G or T, which Primer3 rejects."),
+        "{}",
+        step.finding_summary
+    );
+    assert!(!report.visual_zones.iter().any(|z| z.id == "t7e1-amplicon"));
+    // A clean DNA record still gets its pair, its amplicon and its zones.
+    let puc = library.iter().find(|d| d.id == "doc-puc19").expect("pUC19");
+    for (pipeline, step_id) in [("cloning-expression-qc", "flanking-primers"), ("crispr-hdr-knockout", "t7e1-genotyping")] {
+        let report = execute_bio_pipeline_rust(puc, pipeline, "macos", "2026-11-15T00:00:00Z").unwrap();
+        let step = report.steps.iter().find(|s| s.id == step_id).unwrap();
+        assert_ne!(step.status, "WARN", "{pipeline}: {}", step.finding_summary);
+        assert_eq!(step.artifacts.len(), 2, "{pipeline}: the two primers");
+        assert!(step.artifacts.iter().all(|a| !a.sequence.is_empty() && a.sequence.bytes().all(|b| b"ACGT".contains(&b))));
+    }
 }

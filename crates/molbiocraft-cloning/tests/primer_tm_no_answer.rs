@@ -10,7 +10,7 @@
 
 use molbiocraft_cloning::{
     analyze_gibson_overlap_junction, anneal_complementary_oligos, calculate_primer_metrics,
-    convert_selection_to_oligo_primer, design_pcr_primers, simulate_molecular_cloning,
+    calculate_primer_thermodynamics_santalucia, convert_selection_to_oligo_primer, design_pcr_primers, simulate_molecular_cloning,
     simulate_site_directed_mutagenesis, test_saved_primers_on_sequence, SelectionRange1Based,
 };
 use molbiocraft_core::{PrimerRecord, SequenceDocument, Topology};
@@ -189,42 +189,33 @@ fn cloning_tm_readers_say_n_a_for_an_ambiguity_code() {
     let clean_conv = convert_selection_to_oligo_primer(&tdoc, Some(SelectionRange1Based { start: 40, end: 61 }), 1);
     assert_eq!(clean_conv.primer.tm_no_answer_reason, None, "an A/C/G/T oligo: {}", clean_conv.primer.sequence);
 
-    // Design PCR primers where the region starts on an N: every forward candidate holds it.
+    // Design PCR primers where the region starts on an N: every forward candidate holds it, so
+    // there is no forward primer, as Primer3 rejects every one (BG-01M6TB1R), and so no pair.
     let pcr_doc = doc("pcr", &format!("N{}", acgt(399, 19)), Topology::Linear);
     let pcr = design_pcr_primers(&pcr_doc, 1, 400, 60.0, "", "");
-    assert_eq!(pcr.forward.tm_no_answer_reason.as_deref(), Some(one.as_str()), "{}", pcr.forward.anneal_sequence);
-    assert!(pcr.forward.tm_anneal_c.is_finite() && pcr.forward.tm_full_c.is_finite());
-    assert_eq!(pcr.reverse.tm_no_answer_reason, None, "the reverse primer is A/C/G/T: {}", pcr.reverse.anneal_sequence);
-    assert!(pcr.warnings.contains(&format!("Forward primer: {one}.")), "{:?}", pcr.warnings);
-    assert!(
-        !pcr.warnings.iter().any(|w| w.starts_with("Forward primer Tm is")),
-        "no Tm is set beside the target for it: {:?}",
-        pcr.warnings
-    );
-    // And where the region ends on an N: every reverse candidate holds it, as its 5′ base, and the
-    // forward primer is A/C/G/T. Wrong implementations, each caught by one of the two templates: the
-    // reverse record given no reason (`None`) or the forward primer's; and the forward record given
-    // the reverse primer's.
+    let no_fwd = "No forward primer: every candidate at the region's start holds N or another base that is not A, C, G or T, which Primer3 rejects.";
+    assert!(pcr.warnings.contains(&no_fwd.to_string()), "{:?}", pcr.warnings);
+    assert!(pcr.forward.anneal_sequence.is_empty() && pcr.reverse.anneal_sequence.is_empty(), "no pair: {:?}", pcr.forward);
+    assert_eq!((pcr.amplicon_seq.as_str(), pcr.amplicon_length), ("", 0));
+    assert!(!pcr.warnings.iter().any(|w| w.starts_with("Forward primer Tm is")), "{:?}", pcr.warnings);
+    // And where the region ends on an N: every reverse candidate holds it, as its 5′ base.
     let rev_doc = doc("pcr-rev", &format!("{}N", acgt(399, 19)), Topology::Linear);
     let rev = design_pcr_primers(&rev_doc, 1, 400, 60.0, "", "");
-    assert!(rev.reverse.anneal_sequence.starts_with('N'), "the reverse primer holds the N: {}", rev.reverse.anneal_sequence);
-    assert_eq!(rev.reverse.tm_no_answer_reason.as_deref(), Some(one.as_str()), "{}", rev.reverse.anneal_sequence);
-    assert!(rev.reverse.tm_anneal_c.is_finite() && rev.reverse.tm_full_c.is_finite());
-    assert_eq!(rev.forward.tm_no_answer_reason, None, "the forward primer is A/C/G/T: {}", rev.forward.anneal_sequence);
-    assert!(rev.warnings.contains(&format!("Reverse primer: {one}.")), "{:?}", rev.warnings);
-    assert!(
-        !rev.warnings.iter().any(|w| w.starts_with("Reverse primer Tm is")),
-        "no Tm is set beside the target for it: {:?}",
-        rev.warnings
-    );
-    assert_eq!(serde_json::to_value(&rev.reverse).unwrap()["tmNoAnswerReason"], serde_json::json!(one));
+    let no_rev = "No reverse primer: every candidate at the region's end holds N or another base that is not A, C, G or T, which Primer3 rejects.";
+    assert!(rev.warnings.contains(&no_rev.to_string()), "{:?}", rev.warnings);
+    assert!(!rev.warnings.contains(&no_fwd.to_string()), "the forward side has candidates: {:?}", rev.warnings);
+    assert!(rev.forward.anneal_sequence.is_empty() && rev.reverse.anneal_sequence.is_empty() && rev.amplicon_length == 0);
     // The field is serde default: a record saved without it reads as no reason, and an A/C/G/T
-    // record writes no key.
-    let mut saved = serde_json::to_value(&pcr.reverse).unwrap();
+    // record writes no key. A record with a 5' tail holding N carries it.
+    let tailed = design_pcr_primers(&doc("pcr-tail", &acgt(400, 19), Topology::Linear), 1, 400, 60.0, "", "GGNCC");
+    assert_eq!(serde_json::to_value(&tailed.reverse).unwrap()["tmNoAnswerReason"], serde_json::json!(one));
+    let mut saved = serde_json::to_value(&tailed.forward).unwrap();
     assert!(saved.get("tmNoAnswerReason").is_none());
-    assert_eq!(serde_json::to_value(&pcr.forward).unwrap()["tmNoAnswerReason"], serde_json::json!(one));
     saved.as_object_mut().unwrap().remove("tmNoAnswerReason");
     assert_eq!(serde_json::from_value::<PrimerRecord>(saved).unwrap().tm_no_answer_reason, None);
+    let mut with_reason = serde_json::to_value(&tailed.reverse).unwrap();
+    with_reason.as_object_mut().unwrap().remove("tmNoAnswerReason");
+    assert_eq!(serde_json::from_value::<PrimerRecord>(with_reason).unwrap().tm_no_answer_reason, None);
 
     // ── The other engine readers of the Tm ──
     // Site-directed mutagenesis with an N introduced: the history and the warnings say n/a.
@@ -263,4 +254,89 @@ fn cloning_tm_readers_say_n_a_for_an_ambiguity_code() {
         assert_eq!(h.primer.tm_no_answer_reason.as_deref(), Some(one.as_str()));
         assert!(h.effective_tm_c.is_finite());
     }
+}
+
+/// BG-01M6TB1R AC1. primer3-py 2.4.0 (calc_hairpin / calc_homodimer, mv 50 mM, dv 1.5 mM, dNTP 0,
+/// DNA 250 nM) pairs no ambiguity code: on 60 N both find no structure (structure_found False, dG
+/// 0); on GCGCGCGAAAAGCGCGCG followed by 12 N both give what the 18-mer alone gives (hairpin -7.99,
+/// homodimer -16.24 kcal/mol), so the N add nothing; and ACGTRRRRRRAAAAYYYYYYACGT has no hairpin (R
+/// and Y do not pair). The engine's own scans are not Primer3's, so the test pins the same relations
+/// on the engine's numbers rather than Primer3's values. Wrong implementations, each caught here: N
+/// pairing N (the 60 N, and the run of N beside the stem), R pairing Y in the dimer scan (the R/Y
+/// oligo against its N twin), and zeroing every oligo that holds a code (the stem beside the N).
+#[test]
+fn hairpin_and_dimer_scans_pair_no_ambiguity_code() {
+    let sixty_n = calculate_primer_metrics(&"N".repeat(60), 50.0, 1.5, 250.0);
+    assert_eq!((sixty_n.hairpin_delta_g, sixty_n.self_dimer_delta_g), (0.0, 0.0), "60 N: no structure, as primer3-py finds");
+    assert_eq!(sixty_n.tm_no_answer_reason.as_deref(), Some(reason("60", true).as_str()), "beside its reason");
+    let lower = calculate_primer_metrics(&"n".repeat(60), 50.0, 1.5, 250.0);
+    assert_eq!((lower.hairpin_delta_g, lower.self_dimer_delta_g), (0.0, 0.0), "lower-case n");
+
+    let stem = "GCGCGCGAAAAGCGCGCG";
+    let alone = calculate_primer_metrics(stem, 50.0, 1.5, 250.0);
+    assert!(alone.hairpin_delta_g < 0.0 && alone.self_dimer_delta_g < 0.0, "the stem folds and pairs: {alone:?}");
+    for tail in ["N".repeat(12), "NNNNNNRYKMSW".to_string()] {
+        let with_n = calculate_primer_metrics(&format!("{stem}{tail}"), 50.0, 1.5, 250.0);
+        assert_eq!(
+            (with_n.hairpin_delta_g, with_n.self_dimer_delta_g),
+            (alone.hairpin_delta_g, alone.self_dimer_delta_g),
+            "{stem}{tail}: the codes add nothing to the stem's structure"
+        );
+        assert!(with_n.tm_no_answer_reason.is_some());
+    }
+
+    let ry = calculate_primer_metrics("ACGTRRRRRRAAAAYYYYYYACGT", 50.0, 1.5, 250.0);
+    let n_twin = calculate_primer_metrics("ACGTNNNNNNAAAANNNNNNACGT", 50.0, 1.5, 250.0);
+    assert_eq!(ry.hairpin_delta_g, 0.0, "R and Y form no hairpin");
+    assert_eq!(ry.self_dimer_delta_g, n_twin.self_dimer_delta_g, "R pairs Y no more than N pairs N");
+
+    // The thermodynamics reply carries the reason too, and an A/C/G/T oligo carries none.
+    let thermo = calculate_primer_thermodynamics_santalucia("ACGTACGTNACGTACGTAC", 50.0, 1.5, 250.0);
+    assert_eq!(thermo.tm_no_answer_reason.as_deref(), Some(reason("1", false).as_str()));
+    let thermo_json = serde_json::to_value(&thermo).unwrap();
+    assert_eq!(thermo_json["tm_no_answer_reason"], serde_json::json!(reason("1", false)), "the reply's keys are snake_case");
+    assert!(thermo_json["tm_salt_corrected_c"].is_number(), "the thermodynamics stay flat: {thermo_json}");
+    assert!(thermo.thermodynamics.tm_salt_corrected_c.is_finite(), "the number stays, so no reader breaks");
+    let thermo_n = calculate_primer_thermodynamics_santalucia(&"N".repeat(60), 50.0, 1.5, 250.0);
+    assert_eq!((thermo_n.thermodynamics.hairpin_dg_kcal, thermo_n.thermodynamics.self_dimer_dg_kcal), (0.0, 0.0));
+    let clean = calculate_primer_thermodynamics_santalucia("ACGTACGTACGTACGTACG", 50.0, 1.5, 250.0);
+    assert_eq!(clean.tm_no_answer_reason, None);
+    let clean_json = serde_json::to_value(&clean).unwrap();
+    assert!(clean_json.get("tm_no_answer_reason").is_none(), "{clean_json}");
+    // primer3-py 2.4.0 calc_tm on this oligo at 50/1.5/250: santalucia 60.02, owczarzy 59.28 °C.
+    assert_eq!(clean_json["tm_salt_corrected_c"], serde_json::json!(60.0), "SantaLucia salt correction, as PROVENANCE says");
+}
+
+/// BG-01M6TB1R AC2. Primer3 rejects a candidate primer holding N; so does `design_pcr_primers`. The
+/// template's first and last 19 bases are A/T-rich, so the candidates that reach 60 °C are the
+/// longer ones, and those run into the N runs beside them: an engine that scores N candidates picks
+/// one of them.
+#[test]
+fn designed_primers_hold_no_ambiguity_code_and_a_tail_n_names_its_reason() {
+    let at_rich = "ATATTAATATATTAATATA";
+    let template = format!("{at_rich}NNN{}NNN{}", acgt(356, 43), at_rich.chars().rev().collect::<String>());
+    assert_eq!(template.len(), 400);
+    let pcr_doc = doc("pcr-n-runs", &template, Topology::Linear);
+    let acgt_only = |s: &str| !s.is_empty() && s.bytes().all(|b| b"ACGT".contains(&b));
+    let pcr = design_pcr_primers(&pcr_doc, 1, 400, 60.0, "", "");
+    for p in [&pcr.forward, &pcr.reverse] {
+        assert!(acgt_only(&p.anneal_sequence), "{}: {}", p.name, p.anneal_sequence);
+        assert_eq!(p.tm_no_answer_reason, None, "{}", p.anneal_sequence);
+    }
+    assert!(pcr.forward.anneal_sequence.len() <= 19 && pcr.reverse.anneal_sequence.len() <= 19);
+
+    // A 5' tail holding N: the anneal sequence is A/C/G/T, but the full primer is not, so the record
+    // carries the full primer's reason (tmFullC has no answer); a clean tail carries none.
+    let clean_doc = doc("pcr-clean", &acgt(400, 47), Topology::Linear);
+    let tailed = design_pcr_primers(&clean_doc, 1, 400, 60.0, "GGNNCC", "GAATTC");
+    assert!(acgt_only(&tailed.forward.anneal_sequence));
+    assert_eq!(tailed.forward.sequence, format!("GGNNCC{}", tailed.forward.anneal_sequence));
+    assert_eq!(tailed.forward.tm_no_answer_reason.as_deref(), Some(reason("2", true).as_str()));
+    assert!(tailed.forward.tm_full_c.is_finite());
+    assert_eq!(tailed.reverse.tm_no_answer_reason, None, "the clean reverse tail");
+    let warn = format!("Forward primer (with its 5' tail): {}.", reason("2", true));
+    assert!(tailed.warnings.contains(&warn), "{:?}", tailed.warnings);
+    let rev_tailed = design_pcr_primers(&clean_doc, 1, 400, 60.0, "", "GARTTC");
+    assert_eq!(rev_tailed.reverse.tm_no_answer_reason.as_deref(), Some(reason("1", false).as_str()));
+    assert_eq!(rev_tailed.forward.tm_no_answer_reason, None);
 }

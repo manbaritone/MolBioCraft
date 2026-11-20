@@ -83,14 +83,13 @@ pub struct PrimerRecord {
     pub gc_clamp3_prime: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
-    /// Why `tm_anneal_c` is no answer (BG-01M6SHQ0): the anneal sequence holds N or another base
-    /// that is not A, C, G or T, which Primer3 refuses; this is the sentence a reader shows, with
-    /// "n/a", in place of the Tm. The number stays in `tm_anneal_c` and `tm_full_c`, so no reader of
-    /// it breaks. The reason is the anneal sequence's only. `tm_full_c` is the Tm of the 5′ tail
-    /// followed by the anneal sequence, so it has no answer either where this is set; but the tail
-    /// is not read for it, so a primer whose 5′ tail holds N beside an A/C/G/T anneal sequence (a
-    /// tail given to `design_pcr_primers`) has no reason here although its `tm_full_c` has no
-    /// answer. Absent for an A/C/G/T primer, and for a record saved before it.
+    /// Why the primer has no Tm (BG-01M6SHQ0): it holds N or another base that is not A, C, G or T,
+    /// which Primer3 refuses; this is the sentence a reader shows, with "n/a", in place of the Tm.
+    /// The number stays in `tm_anneal_c` and `tm_full_c`, so no reader of it breaks. It is read over
+    /// the whole primer, the 5′ tail followed by the anneal sequence (BG-01M6TB1R): `design_pcr_primers`
+    /// takes only A/C/G/T anneal sequences, as Primer3 does, so on a designed primer it is set only by
+    /// a tail holding such a base, and then `tm_full_c` has no answer while `tm_anneal_c` does. Absent
+    /// for an A/C/G/T primer, and for a record saved before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tm_no_answer_reason: Option<String>,
     /// Where the primer came from when it was added from the Primer Database (US-01M7DQMY): the
