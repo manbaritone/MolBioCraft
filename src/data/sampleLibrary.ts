@@ -8,12 +8,29 @@ import {
 } from '../lib/rustBioEngine';
 import type { SequenceDocument } from '../types/bio';
 
+let samples: SequenceDocument[] | null = null;
+
+/** The sample library, asked of the engine on the first call and kept. */
+function loadSamples(): SequenceDocument[] {
+  samples ??= invokeRustBioSync<SequenceDocument[]>('get_sample_library');
+  return samples;
+}
+
 /**
  * Curated Molecular Biology, Genomics, Protein & Alignment Sample Library
  * synthesized directly by the Rust `molbiocraft-cloning` crate.
+ *
+ * An array that asks the engine for its documents on first use, not while this module loads, so
+ * importing the module runs no engine call. Every read (an index, `length`, a method, iteration,
+ * JSON) and every assignment (an index, `length`, `push`) goes to the engine's array.
  */
-export const SAMPLE_LIBRARY: SequenceDocument[] =
-  invokeRustBioSync<SequenceDocument[]>('get_sample_library');
+export const SAMPLE_LIBRARY: SequenceDocument[] = new Proxy([] as SequenceDocument[], {
+  get: (_t, key) => Reflect.get(loadSamples(), key),
+  has: (_t, key) => Reflect.has(loadSamples(), key),
+  ownKeys: () => Reflect.ownKeys(loadSamples()),
+  getOwnPropertyDescriptor: (_t, key) => Reflect.getOwnPropertyDescriptor(loadSamples(), key),
+  set: (_t, key, value) => Reflect.set(loadSamples(), key, value),
+});
 
 /**
  * Synthesize a deterministic large bacterial chromosome / eukaryotic genomic contig benchmark
