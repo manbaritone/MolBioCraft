@@ -183,10 +183,13 @@ const LAYOUT_OVERHANG: i32 = -3;
 const LAYOUT_KMER_MAX_OCCURRENCES: usize = 32;
 /// Two placements of a read whose diagonals come within this many bases of each other are one
 /// placement: the drift its own indels give, or the shift a short homopolymer allows, which moves
-/// the contig's bases by at most this many.
+/// the contig's bases by at most this many. Not when the shift is a whole number of units of a
+/// tandem repeat that holds the overlap's draft bases: a (CA)n shifted by one unit moves 2 bases
+/// and adds or drops a copy (BG-01M6VZNP).
 const LAYOUT_SAME_PLACEMENT_BP: i64 = 2;
 /// A second placement of a read elsewhere (more than [`LAYOUT_SAME_PLACEMENT_BP`] off the best's
-/// diagonals, or on the other strand) with at most this many more errors than the best, that would
+/// diagonals or a whole number of repeat units off them, or on the other strand) with at most this
+/// many more errors than the best, that would
 /// give the draft different bases, leaves the read ambiguous: inside an exact tandem repeat a
 /// unit's shift matches as well as the best, so the reads cannot tell how many copies it holds.
 /// A placement inside a tandem repeat is no rival to a best fixed by bases outside that repeat
@@ -426,8 +429,14 @@ struct Ambiguity {
     /// The repeat's unit, in bases: when a rival lies on the best's strand, the least period no
     /// longer than that rival's shift (plus [`LAYOUT_SAME_PLACEMENT_BP`]) with which the draft
     /// bases of one of its placements repeat; when the rivals all lie on the other strand, the
-    /// least period of the best's draft bases. None when no placement's bases repeat.
+    /// least period of the best's draft bases, else the least unit of a repeat covering most of
+    /// a placement's draft bases (BG-01M6VZNP). None when no placement's bases repeat.
     unit: Option<usize>,
+    /// How many of the read's bases in its best overlap lie outside that repeat, before or after
+    /// it, on both the read and the draft (a substitution inside it is not outside it, and a
+    /// read's bases past the draft's repeat count only where the draft's run past it too); 0 when
+    /// there is no unit (BG-01M6VZNP).
+    outside: usize,
     /// The draft bases that placement covers, or every placement when there is no unit:
     /// `draft_from..draft_to`.
     draft_from: usize,
@@ -454,12 +463,6 @@ impl Placement {
     }
 }
 
-/// The least period of `draft[from..to]` up to `most`, over at least [`POA_MIN_OVERLAP_BP`] pairs
-/// of bases a period apart, at most one pair in ten unlike (a tandem repeat's unit), if any.
-fn repeat_unit(draft: &[u8], from: usize, to: usize, most: usize) -> Option<usize> {
-    period(draft, from, to, most, POA_MIN_OVERLAP_BP)
-}
-
 /// The least period of `draft[from..to]` up to `most` over at least `pairs` pairs of bases a
 /// period apart, at most one pair in ten unlike, if any.
 fn period(draft: &[u8], from: usize, to: usize, most: usize, pairs: usize) -> Option<usize> {
@@ -480,6 +483,34 @@ fn period(draft: &[u8], from: usize, to: usize, most: usize, pairs: usize) -> Op
 /// so a substitution breaks a repeat only where it lies, and a chance run of that length is about
 /// 1 in 4^8 a base.
 fn outside_repeat(seq: &[u8], from: usize, to: usize, p: usize) -> usize {
+    repeat_cover(seq, from, to, p).iter().filter(|c| !**c).count()
+}
+
+/// How many bases of `seq[from..to]` lie before or after every tandem repeat of unit `p` (as
+/// [`outside_repeat`] covers them), not between two of its runs: the bases of a read outside the
+/// repeat, a substitution inside it not among them; all of them when no repeat covers any. A
+/// stretch of at most [`LAYOUT_K`] bases at an end of `seq` counts as inside: there too few pairs
+/// are left past a substitution to cover the bases after it, which are not the flank.
+fn flanking_repeat(seq: &[u8], from: usize, to: usize, p: usize) -> usize {
+    let covered = repeat_cover(seq, from, to, p);
+    let (Some(first), Some(last)) = (covered.iter().position(|&c| c), covered.iter().rposition(|&c| c)) else {
+        return covered.len();
+    };
+    let after = covered.len() - 1 - last;
+    let edge = |n: usize, at_end: bool| if at_end && n <= LAYOUT_K { 0 } else { n };
+    edge(first, from == 0) + edge(after, to == seq.len())
+}
+
+/// Whether a tandem repeat of unit `p` covers at least half of `seq[from..to]` (as
+/// [`outside_repeat`] covers it), and more than one unit of it: the stretch lies mostly in that
+/// repeat, though some of its bases run past it into the flank (BG-01M6VZNP).
+fn mostly_repeat(seq: &[u8], from: usize, to: usize, p: usize) -> bool {
+    let covered = to - from - outside_repeat(seq, from, to, p);
+    2 * covered >= to - from && covered > p
+}
+
+/// Which bases of `seq[from..to]` a tandem repeat of unit `p` covers (see [`outside_repeat`]).
+fn repeat_cover(seq: &[u8], from: usize, to: usize, p: usize) -> Vec<bool> {
     let mut covered = vec![false; to - from];
     let end = (to + LAYOUT_K).min(seq.len().saturating_sub(p));
     let mut x = from.saturating_sub(p + LAYOUT_K);
@@ -495,7 +526,7 @@ fn outside_repeat(seq: &[u8], from: usize, to: usize, p: usize) -> usize {
         }
         x += usize::from(x == run);
     }
-    covered.iter().filter(|c| !**c).count()
+    covered
 }
 
 /// Whether an overlap of `read` (on the strand it was aligned) to `draft` is fixed by bases outside
@@ -553,18 +584,35 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
     let rival = |(o, s): (DraftOverlap, i8), (ov, strand): (DraftOverlap, i8)| {
         let (lo, hi) = ov.diagonals();
         let (olo, ohi) = o.diagonals();
-        let elsewhere = s != strand || ohi < lo - LAYOUT_SAME_PLACEMENT_BP || olo > hi + LAYOUT_SAME_PLACEMENT_BP;
+        let near = s == strand && ohi >= lo - LAYOUT_SAME_PLACEMENT_BP && olo <= hi + LAYOUT_SAME_PLACEMENT_BP;
+        let (start_off, end_off) = ((olo - lo).unsigned_abs() as usize, (ohi - hi).unsigned_abs() as usize);
+        if (near && start_off + end_off == 0) || o.errors() > ov.errors() + LAYOUT_RIVAL_EXTRA_ERRORS || added(&o, s) == added(&ov, strand) {
+            return false;
+        }
         // A placing overlap may be as short as POA_MIN_OVERLAP_BP, too short to compare that many
         // pairs a unit apart, so its unit need only fit twice.
         let len = o.draft_to - o.draft_from;
-        elsewhere
-            && o.errors() <= ov.errors() + LAYOUT_RIVAL_EXTRA_ERRORS
-            && added(&o, s) != added(&ov, strand)
-            && !period(draft, o.draft_from, o.draft_to, len, len.div_ceil(2)).is_some_and(|p| fixed_outside(&ov, strand, p))
+        let unit = if near {
+            // Within the drift of one placement, a shift of an overlap whose draft bases lie mostly
+            // in a tandem repeat of a unit no longer than the shift (plus a base, for an indel of
+            // the best's own) is another placement: it adds or drops copies of the unit
+            // (BG-01M6VZNP). The bases past the repeat that a short overlap holds keep them from
+            // repeating over half their pairs. A homopolymer's shift stays the drift of one
+            // placement: its length is what Sanger reads most often call wrong.
+            match (1..=start_off.max(end_off) + 1).find(|&p| mostly_repeat(draft, o.draft_from, o.draft_to, p)) {
+                Some(p) if p >= 2 => Some(p),
+                _ => return false,
+            }
+        } else {
+            period(draft, o.draft_from, o.draft_to, len, len.div_ceil(2))
+        };
+        !unit.is_some_and(|p| fixed_outside(&ov, strand, p))
     };
     let reach = |o: &DraftOverlap| (o.score, o.read_to + o.draft_to);
     let mut placing: Vec<(DraftOverlap, i8)> = Vec::new();
     let mut best: Option<(DraftOverlap, i8)> = None;
+    // Every overlap of the band holding the best, placing or not.
+    let mut best_band: Vec<DraftOverlap> = Vec::new();
     'bands: for (seq, strand) in [(fwd, 1i8), (rc, -1i8)] {
         for diag in candidate_diagonals(index, draft.len(), seq) {
             let ends = dovetail_overlaps(draft, seq, diag);
@@ -572,6 +620,7 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
             if let Some(o) = band_best.filter(DraftOverlap::places) {
                 if best.is_none_or(|(b, _)| o.score > b.score) {
                     best = Some((o, strand));
+                    best_band.clone_from(&ends);
                 }
             }
             placing.extend(ends.into_iter().filter(DraftOverlap::places).map(|o| (o, strand)));
@@ -581,7 +630,21 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
         }
     }
     let Some((ov, strand)) = best else { return Placement::Unplaced };
-    let rivals: Vec<(DraftOverlap, i8)> = placing.iter().copied().filter(|&o| rival(o, (ov, strand))).collect();
+    // A placement a whole number of units off the best within the drift of one placement is its
+    // rival whether or not it meets the 50-base rule itself: a read whose end lies in a (CA)n laid
+    // 51 bases onto the draft's 48 bases of it fits as well 49 bases on, and the 3 bases past the
+    // repeat that the 51 hold, matched by chance, do not fix it (BG-01M6VZNP).
+    let (lo, hi) = ov.diagonals();
+    let near = |o: &DraftOverlap| {
+        let (olo, ohi) = o.diagonals();
+        ohi >= lo - LAYOUT_SAME_PLACEMENT_BP && olo <= hi + LAYOUT_SAME_PLACEMENT_BP
+    };
+    let rivals: Vec<(DraftOverlap, i8)> = placing
+        .iter()
+        .copied()
+        .chain(best_band.iter().filter(|o| !o.places() && near(o)).map(|&o| (o, strand)))
+        .filter(|&o| rival(o, (ov, strand)))
+        .collect();
     if rivals.is_empty() {
         return Placement::Placed(ov, strand);
     }
@@ -589,16 +652,43 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
     // take an end gap, and the unit is the least period of a placement's draft bases (one of
     // them may run into the flank past the repeat by chance matches). With rivals on the other
     // strand only, no shift bounds the unit, and it is the least period of the best's draft
-    // bases, if they have one. The bases named are that placement's, or every placement's when
+    // bases, if they have one, else the repeat that covers a placement. The bases named are that placement's, or every placement's when
     // no unit is found: two copies of a longer sequence, or a sequence and its reverse complement.
-    let lo = ov.diagonals().0;
     let shift = rivals.iter().filter(|(_, s)| *s == strand).map(|(o, _)| (o.diagonals().0 - lo).unsigned_abs() as usize).max();
+    // The least period over POA_MIN_OVERLAP_BP pairs of a placement's draft bases. A placement
+    // too short, or running too far into the flank, to hold the unit over that many pairs is named
+    // by the repeat that covers it instead (BG-01M6VZNP: (CA)n placements of 50-55 bases, a few of
+    // them flank, were named "a repeat").
+    let least = |placements: &mut dyn Iterator<Item = DraftOverlap>, most: usize| {
+        placements
+            .filter_map(|o| period(draft, o.draft_from, o.draft_to, most, POA_MIN_OVERLAP_BP).map(|p| (p, o.draft_from, o.draft_to)))
+            .min_by_key(|&(p, from, to)| (p, std::cmp::Reverse(to - from)))
+    };
+    let all = || std::iter::once(ov).chain(rivals.iter().map(|(o, _)| *o));
+    // Failing that, the least of `units` whose repeat covers at least half of a placement's draft
+    // bases (as [`outside_repeat`] covers them), the placement it covers most named.
+    let covering = |units: Vec<usize>| {
+        units.into_iter().find_map(|p| {
+            all()
+                .filter(|o| mostly_repeat(draft, o.draft_from, o.draft_to, p))
+                .max_by_key(|o| o.draft_to - o.draft_from - outside_repeat(draft, o.draft_from, o.draft_to, p))
+                .map(|o| (p, o.draft_from, o.draft_to))
+        })
+    };
     let periodic = match shift {
-        Some(d) => std::iter::once(ov)
-            .chain(rivals.iter().map(|(o, _)| *o))
-            .filter_map(|o| repeat_unit(draft, o.draft_from, o.draft_to, d + LAYOUT_SAME_PLACEMENT_BP as usize).map(|p| (p, o.draft_from, o.draft_to)))
-            .min_by_key(|&(p, from, to)| (p, std::cmp::Reverse(to - from))),
-        None => repeat_unit(draft, ov.draft_from, ov.draft_to, ov.draft_to - ov.draft_from).map(|p| (p, ov.draft_from, ov.draft_to)),
+        Some(d) => {
+            let most = d + LAYOUT_SAME_PLACEMENT_BP as usize;
+            // A period over POA_MIN_OVERLAP_BP pairs may be a multiple of the unit that covers the
+            // placements, which a few flank bases keep from that many pairs: a (CA)n named as a
+            // 6-bp unit. So a divisor of it that covers them is named instead.
+            match least(&mut all(), most) {
+                Some((p, from, to)) => covering((1..p).filter(|q| p % q == 0).collect()).or(Some((p, from, to))),
+                None => covering((1..=most.min(draft.len())).collect()),
+            }
+        }
+        // The best's own bases first; then, when they run too far past the repeat to hold its
+        // unit, the repeat that covers a placement's (BG-01M6VZNP).
+        None => least(&mut std::iter::once(ov), ov.draft_to - ov.draft_from).or_else(|| covering((1..=ov.draft_to - ov.draft_from).collect())),
     };
     let (unit, draft_from, draft_to) = match periodic {
         Some((p, from, to)) => (Some(p), from, to),
@@ -608,7 +698,8 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
             rivals.iter().map(|(o, _)| o.draft_to).fold(ov.draft_to, usize::max),
         ),
     };
-    Placement::Ambiguous(Ambiguity { strand, unit, draft_from, draft_to })
+    let outside = unit.map_or(0, |p| flanking_repeat(seq_of(strand), ov.read_from, ov.read_to, p).min(flanking_repeat(draft, ov.draft_from, ov.draft_to, p)));
+    Placement::Ambiguous(Ambiguity { strand, unit, outside, draft_from, draft_to })
 }
 
 /// A read placed in the layout: which read, on which strand, and the draft column of its first
@@ -1155,8 +1246,9 @@ pub fn assemble_sanger_contig_poa_at(
     // The reads left out because they fit in more than one place, one sentence per repeat, which
     // is named by its unit and the contig bases it covers: those its placements cover, widened
     // while the consensus repeats with that unit; reads with one unit whose bases meet share a
-    // sentence (BG-01M6TD2N).
-    let mut repeats: Vec<(Option<usize>, usize, usize, Vec<usize>)> = Vec::new();
+    // sentence (BG-01M6TD2N). A read with bases outside the repeat has a sentence of its own,
+    // which says how many (BG-01M6VZNP).
+    let mut repeats: Vec<(Option<usize>, usize, usize, usize, Vec<usize>)> = Vec::new();
     ambiguous.sort_by_key(|(i, _)| prepared[*i].4);
     for (i, a) in &ambiguous {
         let mut from = consensus.partition_point(|&(_, col)| col < a.draft_from);
@@ -1169,26 +1261,32 @@ pub fn assemble_sanger_contig_poa_at(
                 to += 1;
             }
         }
-        match repeats.iter_mut().find(|r| r.0 == a.unit && r.1 <= to && from <= r.2) {
+        match repeats.iter_mut().find(|r| a.outside == 0 && r.3 == 0 && r.0 == a.unit && r.1 <= to && from <= r.2) {
             Some(r) => {
                 (r.1, r.2) = (r.1.min(from), r.2.max(to));
-                r.3.push(*i);
+                r.4.push(*i);
             }
-            None => repeats.push((a.unit, from, to, vec![*i])),
+            None => repeats.push((a.unit, from, to, a.outside, vec![*i])),
         }
     }
-    for (unit, from, to, reads) in &repeats {
+    for (unit, from, to, outside, reads) in &repeats {
         let names: Vec<String> = reads.iter().map(|&i| label(i)).collect();
         let one = reads.len() == 1;
         warnings.push(format!(
-            "{} {} {} the other reads only inside {} (contig bases {}-{}), where {} fits in more than one place, so how many copies the contig holds there cannot be told from these reads; {} left out and the contig is built from the other {} read{}.",
+            "{} {} {} the other reads {} inside {} (contig bases {}-{}), where {} fits in more than one place{}, so how many copies the contig holds there cannot be told from these reads; {} left out and the contig is built from the other {} read{}.",
             if one { "Read" } else { "Reads" },
             names.join(", "),
             if one { "overlaps" } else { "overlap" },
+            if *outside == 0 { "only" } else { "mostly" },
             unit.map_or("a repeat".to_string(), |p| format!("a tandem repeat of a {}-bp unit", format_thousands(p))),
             format_thousands(from + 1),
             format_thousands(*to),
             if one { "it" } else { "each" },
+            if *outside == 0 {
+                String::new()
+            } else {
+                format!(": {} of its bases lie outside the repeat, which do not fix where it goes", format_thousands(*outside))
+            },
             if one { "it was" } else { "they were" },
             format_thousands(layout.len()),
             if layout.len() == 1 { "" } else { "s" }
