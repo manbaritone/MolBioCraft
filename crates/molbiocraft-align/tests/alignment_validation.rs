@@ -1258,3 +1258,95 @@ fn banded_global_25kb_profile_holds_one_traceback() {
     assert!(r.algorithm.starts_with("Banded") && r.algorithm.contains("k=6, w=24"), "{} x {}: {}", a.len(), b.len(), r.algorithm);
     println!("{} x {}: traceback {:.2} GB; {}", a.len(), b.len(), ((a.len() + 1) * (b.len() + 1) * 2) as f64 / 1e9, r.algorithm);
 }
+
+/// Sorted (x, y, strand, score) dotplot hits at PRD F11's window 11, minimum 9.
+fn f11_dotplot(a: &str, b: &str) -> Vec<(usize, usize, i8, usize)> {
+    let mut hits: Vec<_> = compute_dotplot_hits(a, b, 11, 9).iter().map(|h| (h.x, h.y, h.strand, h.score)).collect();
+    hits.sort();
+    hits
+}
+
+#[test]
+fn dotplot_hits_below_the_sampling_threshold_equal_a_brute_force_count() {
+    // BG-01M6Q35A: while the longer sequence is shorter than 560 letters the windowed scan compares
+    // every window pair on both strands, so its hits are the brute-force set, scores included.
+    let random = lcg_seq(559, b"ACGT", 0x35a1);
+    let other = lcg_seq(559, b"ACGT", 0x35a2);
+    let tandem = "ACGTTGCAG".repeat(63)[..559].to_string();
+    let block = lcg_seq(120, b"ACGT", 0x35a3);
+    // a 120 nt block on the forward strand of one sequence and as its reverse complement in the other
+    let with_block = format!("{}{}{}", lcg_seq(150, b"ACGT", 0x35a4), block, lcg_seq(289, b"ACGT", 0x35a5));
+    let with_rc_block = format!("{}{}{}", lcg_seq(200, b"ACGT", 0x35a6), reverse_complement_iupac(&block, false), lcg_seq(239, b"ACGT", 0x35a7));
+    let diverged = mutate(&random, b"ACGT", 0x35a8);
+    let cases: [(&str, &str, &str); 8] = [
+        ("random 100 x its letters 40-139", &random[..100], &random[40..140]),
+        ("random 559 x 559", &random, &other),
+        ("random self 559", &random, &random),
+        ("random 559 x diverged copy", &random, &diverged[..diverged.len().min(559)]),
+        ("tandem repeat 559", &tandem, &tandem),
+        ("tandem 300 x random 450", &tandem[..300], &random[..450]),
+        ("reverse-complement block 559", &with_rc_block, &with_block),
+        ("random 559 x 100", &random, &other[..100]),
+    ];
+    let (mut reverse, mut scores) = (0usize, std::collections::BTreeSet::new());
+    for (name, a, b) in cases {
+        assert!(a.len().max(b.len()) < 560 && a.len().min(b.len()) >= 100, "{name}: {} x {}", a.len(), b.len());
+        let expected = brute_force_dotplot(a.as_bytes(), b.as_bytes(), 11, 9);
+        assert!(!expected.is_empty(), "{name}: the fixture holds no hit");
+        reverse += expected.iter().filter(|h| h.2 == -1).count();
+        if name.starts_with("reverse-complement block") {
+            // the 120 nt block lays a reverse diagonal of 120 - 11 + 1 = 110 full-score windows
+            let full = expected.iter().filter(|h| h.2 == -1 && h.3 == 11).count();
+            assert!(full >= 110, "{name}: {full} full-score reverse windows");
+        }
+        scores.extend(expected.iter().map(|h| h.3));
+        let got = f11_dotplot(a, b);
+        assert_eq!(got.len(), expected.len(), "{name}: {} engine hits, {} by brute force", got.len(), expected.len());
+        assert_eq!(got, expected, "{name}");
+    }
+    assert!(reverse >= 110, "only {reverse} reverse-strand hits across the fixtures");
+    assert_eq!(scores.into_iter().collect::<Vec<_>>(), vec![9, 10, 11], "the fixtures reach every score from 9 to 11");
+}
+
+#[test]
+fn dotplot_ui_thresholds_are_the_engine_s() {
+    use molbiocraft_align::search_blast::{DOTPLOT_HIT_CAP, DOTPLOT_SAMPLES_FROM, DOTPLOT_SEEDS_ABOVE};
+    // BG-01M6Q35A: AlignmentDotplot.tsx mirrors the engine's thresholds to say when windows are
+    // sampled and where a seeded scan stopped, so each mirror must equal the engine's constant.
+    assert_eq!((DOTPLOT_SAMPLES_FROM, DOTPLOT_SEEDS_ABOVE, DOTPLOT_HIT_CAP), (560, 4000, 4000));
+    let ui = include_str!("../../../src/components/AlignmentDotplot.tsx");
+    let ui_const = |name: &str| -> usize {
+        let head = format!("const {name} = ");
+        let line = ui.lines().map(str::trim).find(|l| l.starts_with(&head)).unwrap_or_else(|| panic!("AlignmentDotplot.tsx declares no {name}"));
+        let value = line[head.len()..].trim_end_matches(';').trim().replace('_', "");
+        value.parse().unwrap_or_else(|_| panic!("AlignmentDotplot.tsx: {name} = {value:?} is not a number"))
+    };
+    assert_eq!(ui_const("ENGINE_SAMPLES_FROM"), DOTPLOT_SAMPLES_FROM, "ENGINE_SAMPLES_FROM");
+    assert_eq!(ui_const("ENGINE_SEEDS_ABOVE"), DOTPLOT_SEEDS_ABOVE, "ENGINE_SEEDS_ABOVE");
+    assert_eq!(ui_const("ENGINE_HIT_CAP"), DOTPLOT_HIT_CAP, "ENGINE_HIT_CAP");
+
+    // The windowed scan samples from DOTPLOT_SAMPLES_FROM letters and not before: a self-dotplot one
+    // letter short is the brute-force set, while at the constant the scan strides by 2, so the
+    // forward diagonal keeps only odd windows.
+    let seq = lcg_seq(DOTPLOT_SAMPLES_FROM, b"ACGT", 0x35a9);
+    let short = &seq[..DOTPLOT_SAMPLES_FROM - 1];
+    assert_eq!(f11_dotplot(short, short), brute_force_dotplot(short.as_bytes(), short.as_bytes(), 11, 9), "{} nt is exact", short.len());
+    let at = f11_dotplot(&seq, &seq);
+    let all = brute_force_dotplot(seq.as_bytes(), seq.as_bytes(), 11, 9);
+    assert!(at.iter().all(|h| all.contains(h)), "a sampled hit the brute force lacks");
+    assert!(at.iter().all(|h| h.0 % 2 == 1 && h.1 % 2 == 1), "{} nt strides by 2", seq.len());
+    assert!(at.contains(&(1, 1, 1, 11)) && !at.contains(&(2, 2, 1, 11)), "{} nt samples the diagonal", seq.len());
+
+    // Up to DOTPLOT_SEEDS_ABOVE letters the scan is windowed (stride 4000 / 280 = 14); one letter
+    // more and it seeds every window of X, until it holds DOTPLOT_HIT_CAP hits.
+    let long = lcg_seq(DOTPLOT_SEEDS_ABOVE + 1, b"ACGT", 0x35aa);
+    let windowed = f11_dotplot(&long[..DOTPLOT_SEEDS_ABOVE], &long[..DOTPLOT_SEEDS_ABOVE]);
+    assert!(windowed.contains(&(15, 15, 1, 11)) && !windowed.contains(&(2, 2, 1, 11)), "{} nt is windowed", DOTPLOT_SEEDS_ABOVE);
+    let seeded = f11_dotplot(&long, &long);
+    assert!(seeded.contains(&(2, 2, 1, 11)), "{} nt is seeded", long.len());
+    let repeat = "ACGTTGCAG".repeat(DOTPLOT_SEEDS_ABOVE / 9 + 100);
+    let capped = compute_dotplot_hits(&repeat, &repeat, 11, 9);
+    // the cap is checked once per window of X, and one window adds at most 12 seed hits per strand
+    assert!((DOTPLOT_HIT_CAP..DOTPLOT_HIT_CAP + 24).contains(&capped.len()), "{} hits at a {}-hit cap", capped.len(), DOTPLOT_HIT_CAP);
+    assert!(capped.last().unwrap().x < repeat.len() / 2, "the capped scan stopped at window {}", capped.last().unwrap().x);
+}

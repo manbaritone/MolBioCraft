@@ -90,6 +90,18 @@ pub struct DotplotHit {
     pub score: usize,
 }
 
+/// The length (letters only, the longer sequence) from which `compute_dotplot_hits`' windowed scan
+/// samples window pairs: below it every pair is compared, from it the scan strides by
+/// `length / (DOTPLOT_SAMPLES_FROM / 2)`, 2 at 560. AlignmentDotplot.tsx mirrors it as
+/// `ENGINE_SAMPLES_FROM` to say its windows are sampled (BG-01M6Q35A).
+pub const DOTPLOT_SAMPLES_FROM: usize = 560;
+/// Above this length (letters only, the longer sequence) `compute_dotplot_hits` seeds its scan by
+/// k-mer lookup instead of comparing windows; AlignmentDotplot.tsx mirrors it as `ENGINE_SEEDS_ABOVE`.
+pub const DOTPLOT_SEEDS_ABOVE: usize = 4000;
+/// The seeded scan stops along X once it holds this many hits (checked once per window of X);
+/// AlignmentDotplot.tsx mirrors it as `ENGINE_HIT_CAP` to say where the scan stopped.
+pub const DOTPLOT_HIT_CAP: usize = 4000;
+
 /// High-throughput sliding-window & k-mer seed dotplot engine supporting both small plasmids
 /// and multi-megabase chromosomes via adaptive striding + seed lookup.
 pub fn compute_dotplot_hits(
@@ -112,8 +124,10 @@ pub fn compute_dotplot_hits(
     let rc2_str = reverse_complement_iupac(&s2, false);
     let rc2 = rc2_str.as_bytes();
 
-    // For sequences > 4,000 bp, use a fast FxHashMap seed index; for smaller sequences, use strided exact window scan.
-    if b1.len().max(b2.len()) > 4000 {
+    // Above DOTPLOT_SEEDS_ABOVE letters, use a fast FxHashMap seed index; up to it, a windowed scan that
+    // compares every window pair below DOTPLOT_SAMPLES_FROM letters and strides from it.
+    let longer = b1.len().max(b2.len());
+    if longer > DOTPLOT_SEEDS_ABOVE {
         let seed_k = (min_m / 2).clamp(6, 13).min(w);
         let stride2 = (b2.len() / 2400).max(1);
         let stride1 = (b1.len() / 2400).max(1);
@@ -136,7 +150,7 @@ pub fn compute_dotplot_hits(
 
         let mut hits = Vec::new();
         let mut i = 0usize;
-        while i + w <= b1.len() && hits.len() < 4000 {
+        while i + w <= b1.len() && hits.len() < DOTPLOT_HIT_CAP {
             let seed = &b1[i..i + seed_k];
             if let Some(js) = fwd_idx.get(seed) {
                 for &j_pos in js {
@@ -179,7 +193,7 @@ pub fn compute_dotplot_hits(
         return hits;
     }
 
-    let step = (b1.len().max(b2.len()) / 280).max(1);
+    let step = if longer < DOTPLOT_SAMPLES_FROM { 1 } else { longer / (DOTPLOT_SAMPLES_FROM / 2) };
     let mut hits = Vec::new();
     let mut i = 0usize;
     while i + w <= b1.len() {
