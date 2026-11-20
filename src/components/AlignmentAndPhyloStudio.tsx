@@ -35,7 +35,8 @@ import { SequenceDocument, SequenceFeature } from '../types/bio';
 import { MolBioMenuGlyph, MolBioMenuGlyphKind } from './MolBioIcons';
 import { FigureExportButton } from './FigureExportButton';
 import { ScrollableMenuStrip } from './ScrollableMenuStrip';
-import { WorkbenchSmartTable } from './WorkbenchSmartTable';
+import { WorkbenchSmartTable, type SmartTableExportView } from './WorkbenchSmartTable';
+import type { FigureTable } from '../core/figureExport';
 import {
   alignPairwiseTypeScript,
   runMultipleSequenceAlignment,
@@ -72,6 +73,9 @@ import {
   type DistanceAnalysisReport,
   type MlSearchReport,
   type PhyloTreeInferenceReport,
+  type AncestralReconstructionReport,
+  type SelectionAndNeutralityReport,
+  type SiteRatesReport,
 } from '../core/phyloEvoEngine';
 import {
   cachedExternalTree,
@@ -524,6 +528,54 @@ function rowsLeftOut(shown: number, total: number | undefined, noun: string, whe
   if (typeof total !== 'number' || !Number.isFinite(total)) return [`${where} ${n(shown)} ${noun}; the engine did not report how many there are.`];
   return shown < total ? [`${where} the first ${n(shown)} of ${n(total)} ${noun}.`] : [];
 }
+
+/**
+ * The export of a table cut at PHYLO_TABLE_ROWS_SHOWN (BG-01M6T6XF, D0265): every row the result
+ * holds, not only the rows drawn. The rows the table hands over (those it draws and its filter
+ * keeps, in its on-screen order) come first, then the rows past the cut in the result's order;
+ * under a filter in force only those the table's own predicate keeps, tested over the same cell
+ * text the table draws (D0209). The header is the visible columns in on-screen order. When the
+ * result holds fewer rows than the engine's total for them, or the engine sent no total, the
+ * caption says so (D0005); the caption is written above the table in the `.txt` form.
+ */
+function phyloTableExport<T>(
+  all: readonly T[],
+  idOf: (row: T) => string,
+  cellsOf: (row: T) => string[],
+  label: string,
+  total: number | undefined,
+  noun: string
+): (shownRowIds: string[], view: SmartTableExportView) => FigureTable {
+  return (shownRowIds, view) => {
+    const byId = new Map(all.map((r) => [idOf(r), r]));
+    const listed = shownRowIds.map((id) => byId.get(id)).filter((r): r is T => r !== undefined);
+    const indexOf = new Map(view.allColumns.map((c) => [c.id, c.index]));
+    const keeps = (r: T) => {
+      const cells = cellsOf(r);
+      return view.keeps((colId) => cells[indexOf.get(colId) ?? -1] ?? '');
+    };
+    const pastCut = all.slice(PHYLO_TABLE_ROWS_SHOWN);
+    const rows = [...listed, ...(view.filterActive ? pastCut.filter(keeps) : pastCut)];
+    return {
+      headers: view.columns.map((c) => c.label),
+      rows: rows.map((r) => {
+        const cells = cellsOf(r);
+        return view.columns.map((c) => cells[c.index] ?? '');
+      }),
+      caption: [label, ...rowsLeftOut(all.length, total, noun, 'The file lists')].join('\n'),
+    };
+  };
+}
+
+type SiteProbabilityRow = AncestralReconstructionReport['siteEvolutionaryProbabilities'][number];
+type CodonSelectionRow = SelectionAndNeutralityReport['codonSiteSelection'][number];
+type SiteRateRow = SiteRatesReport['siteRates'][number];
+/** Each capped table's cell text, one entry per column: what it draws and what its export writes. */
+const siteProbabilityCells = (sp: SiteProbabilityRow) =>
+  [`#${sp.position}`, sp.ancestralStateRoot, sp.consensusState, String(sp.probA), String(sp.probC), String(sp.probG), String(sp.probT)];
+const codonSelectionCells = (cs: CodonSelectionRow) =>
+  [`#${cs.codonIndex}`, cs.codonsObserved, cs.aminoAcidsObserved, String(cs.dNMinusDS), cs.selectionRegime];
+const siteRateCells = (sr: SiteRateRow) => [`Site #${sr.position}`, String(sr.relativeRate), String(sr.entropyBits), `Category ${sr.rateCategory}`];
 
 const PHYLO_MODULE_META: Record<
   PhyloModuleTab,
@@ -8470,6 +8522,14 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
               tableLabel="Per-Site Evolutionary Probabilities"
               className="bio-table"
               regionMaxHeight={310}
+              exportTable={phyloTableExport(
+                ancestralRep.siteEvolutionaryProbabilities,
+                (sp) => String(sp.position),
+                siteProbabilityCells,
+                'Per-Site Evolutionary Probabilities',
+                ancestralRep.totalSites,
+                'sites'
+              )}
             >
               <thead>
                 <tr>
@@ -8483,21 +8543,24 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {ancestralRep.siteEvolutionaryProbabilities.slice(0, PHYLO_TABLE_ROWS_SHOWN).map((sp) => (
-                  <tr key={sp.position}>
-                    <td>#{sp.position}</td>
-                    <td>
-                      <strong className={`base-ch base-${sp.ancestralStateRoot}`}>
-                        {sp.ancestralStateRoot}
-                      </strong>
-                    </td>
-                    <td>{sp.consensusState}</td>
-                    <td>{sp.probA}</td>
-                    <td>{sp.probC}</td>
-                    <td>{sp.probG}</td>
-                    <td>{sp.probT}</td>
-                  </tr>
-                ))}
+                {ancestralRep.siteEvolutionaryProbabilities.slice(0, PHYLO_TABLE_ROWS_SHOWN).map((sp) => {
+                  const cells = siteProbabilityCells(sp);
+                  return (
+                    <tr key={sp.position} data-mbc-row-id={sp.position}>
+                      <td>{cells[0]}</td>
+                      <td>
+                        <strong className={`base-ch base-${sp.ancestralStateRoot}`}>
+                          {cells[1]}
+                        </strong>
+                      </td>
+                      <td>{cells[2]}</td>
+                      <td>{cells[3]}</td>
+                      <td>{cells[4]}</td>
+                      <td>{cells[5]}</td>
+                      <td>{cells[6]}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </WorkbenchSmartTable>
           </div>
@@ -8644,6 +8707,14 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
               tableLabel="Site-by-Site Codon Selection Profile"
               className="bio-table"
               regionMaxHeight={320}
+              exportTable={phyloTableExport(
+                selectionRep.codonSiteSelection,
+                (cs) => String(cs.codonIndex),
+                codonSelectionCells,
+                'Site-by-Site Codon Selection Profile',
+                selectionRep.totalVariableCodons,
+                'variable codons'
+              )}
             >
               <thead>
                 <tr>
@@ -8655,16 +8726,18 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {selectionRep.codonSiteSelection.slice(0, PHYLO_TABLE_ROWS_SHOWN).map((cs) => (
-                  <tr key={cs.codonIndex}>
-                    <td>#{cs.codonIndex}</td>
+                {selectionRep.codonSiteSelection.slice(0, PHYLO_TABLE_ROWS_SHOWN).map((cs) => {
+                  const cells = codonSelectionCells(cs);
+                  return (
+                  <tr key={cs.codonIndex} data-mbc-row-id={cs.codonIndex}>
+                    <td>{cells[0]}</td>
                     <td>
-                      <code>{cs.codonsObserved}</code>
+                      <code>{cells[1]}</code>
                     </td>
                     <td>
-                      <strong>{cs.aminoAcidsObserved}</strong>
+                      <strong>{cells[2]}</strong>
                     </td>
-                    <td>{cs.dNMinusDS}</td>
+                    <td>{cells[3]}</td>
                     <td>
                       <span
                         style={{
@@ -8677,11 +8750,12 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
                           fontWeight: 700,
                         }}
                       >
-                        {cs.selectionRegime}
+                        {cells[4]}
                       </span>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </WorkbenchSmartTable>
           </div>
@@ -8796,6 +8870,14 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
               tableLabel="Position-by-Position Evolutionary Rates"
               className="bio-table"
               regionMaxHeight={190}
+              exportTable={phyloTableExport(
+                siteRatesRep.siteRates,
+                (sr) => String(sr.position),
+                siteRateCells,
+                'Position-by-Position Evolutionary Rates',
+                siteRatesRep.totalSites,
+                'sites'
+              )}
             >
               <thead>
                 <tr>
@@ -8806,16 +8888,19 @@ export const PhylogeneticsStudio: React.FC<PhylogeneticsStudioProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {siteRatesRep.siteRates.slice(0, PHYLO_TABLE_ROWS_SHOWN).map((sr) => (
-                  <tr key={sr.position}>
-                    <td>Site #{sr.position}</td>
-                    <td>
-                      <strong>{sr.relativeRate}</strong>
-                    </td>
-                    <td>{sr.entropyBits}</td>
-                    <td>Category {sr.rateCategory}</td>
-                  </tr>
-                ))}
+                {siteRatesRep.siteRates.slice(0, PHYLO_TABLE_ROWS_SHOWN).map((sr) => {
+                  const cells = siteRateCells(sr);
+                  return (
+                    <tr key={sr.position} data-mbc-row-id={sr.position}>
+                      <td>{cells[0]}</td>
+                      <td>
+                        <strong>{cells[1]}</strong>
+                      </td>
+                      <td>{cells[2]}</td>
+                      <td>{cells[3]}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </WorkbenchSmartTable>
           </div>

@@ -28,6 +28,43 @@ import {
   type AncestralReconstructionReport, type MolecularClockAndTimetreeReport, type SelectionAndNeutralityReport, type SiteRatesReport,
 } from '../core/phyloEvoEngine';
 import type { SequenceDocument } from '../types/bio';
+import type { FigureTable } from '../core/figureExport';
+import { evaluateTableRowFilters, type SmartTableExportView } from '../components/WorkbenchSmartTable';
+
+/**
+ * BG-01M6T6XF: what each smart table's export button would write. The export button and the table
+ * render as they ship; these pass-throughs only keep, by table label, the button's `table` closure
+ * (the shared export path: the table's rows on screen, handed to its host's exportTable), the
+ * host's exportTable, and the view the table last handed it.
+ */
+const tables = vi.hoisted(() => ({
+  exportOf: new Map<string, () => FigureTable | null>(),
+  hostOf: new Map<string, (ids: string[], view: SmartTableExportView) => FigureTable | null>(),
+  viewOf: new Map<string, SmartTableExportView>(),
+}));
+vi.mock('../components/FigureExportButton', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../components/FigureExportButton')>();
+  const { createElement } = await import('react');
+  const FigureExportButton = (props: Parameters<typeof actual.FigureExportButton>[0]) => {
+    if (typeof props.table === 'function') tables.exportOf.set(props.title ?? props.baseName, props.table);
+    return createElement(actual.FigureExportButton, props);
+  };
+  return { ...actual, FigureExportButton };
+});
+vi.mock('../components/WorkbenchSmartTable', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../components/WorkbenchSmartTable')>();
+  const { createElement } = await import('react');
+  const WorkbenchSmartTable = (props: Parameters<typeof actual.WorkbenchSmartTable>[0]) => {
+    const label = props.tableLabel ?? props.tableId;
+    const host = props.exportTable;
+    if (host) tables.hostOf.set(label, host);
+    return createElement(actual.WorkbenchSmartTable, {
+      ...props,
+      ...(host ? { exportTable: (ids: string[], view: SmartTableExportView) => { tables.viewOf.set(label, view); return host(ids, view); } } : {}),
+    });
+  };
+  return { ...actual, WorkbenchSmartTable };
+});
 
 vi.mock('../core/phyloEvoEngine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../core/phyloEvoEngine')>();
@@ -308,4 +345,114 @@ describe('the evolution-analysis reports', () => {
     const stale = reportOf(TREE, 'ancestors', { method: 'ml' });
     expect(lineAfter(stale.text, /^## Maximum Likelihood marginal reconstruction/)).toBe(`${nodes} internal nodes are listed; the engine did not report how many there are.`);
   });
+});
+
+// ─── BG-01M6T6XF: the export of a capped table ───
+
+/** What the export button of the table labelled `label` writes, as it would on a click now. */
+function exported(label: string): FigureTable {
+  const table = tables.exportOf.get(label);
+  expect(table, `the ${label} table has an export button`).toBeDefined();
+  const file = table!();
+  expect(file, `the ${label} export`).not.toBeNull();
+  return file!;
+}
+
+describe('the export of a capped phylogenetics table', () => {
+  it('exports every site of a capped evolutionary-rates table', () => {
+    const label = 'Position-by-Position Evolutionary Rates';
+    rates.mockClear();
+    const html = studio(LONG, 'rates');
+    const report = rates.mock.results.at(-1)!.value as SiteRatesReport;
+    expect(report.siteRates).toHaveLength(30_150);
+    expect(rowsIn(html, label), 'the table draws 10,000').toHaveLength(10_000);
+    const cells = (r: SiteRatesReport['siteRates'][number]) => [`Site #${r.position}`, String(r.relativeRate), String(r.entropyBits), `Category ${r.rateCategory}`];
+
+    // the header and one row per site the result holds, not the 10,000 drawn
+    const file = exported(label);
+    expect(file.headers).toEqual(['Site Position', 'Relative Rate (r_i)', 'Shannon Entropy (bits)', 'Gamma Category']);
+    expect(file.rows).toHaveLength(30_150);
+    expect(file.rows).toEqual(report.siteRates.map(cells));
+    expect(file.caption, 'nothing is left out, so the caption says nothing more').toBe(label);
+
+    // With a filter in force: every row it keeps, the drawn ones the table hands over, then those
+    // past the cut. The quick filter 'Category 1' (the table's own predicate) keeps the category-1 sites.
+    expect(report.numCategories).toBeLessThan(10);
+    const view = tables.viewOf.get(label)!;
+    expect(view.filterActive).toBe(false);
+    const keepsCat1 = (textOf: (colId: string) => string) => evaluateTableRowFilters(textOf, view.columns.map((c) => c.id), 'Category 1', [], 'all');
+    const wanted = report.siteRates.filter((r) => r.rateCategory === 1);
+    const drawnKept = wanted.filter((r) => r.position <= 10_000);
+    expect(drawnKept.length, 'the filter keeps some drawn rows').toBeGreaterThan(0);
+    expect(wanted.length - drawnKept.length, 'and some past the cut').toBeGreaterThan(0);
+    expect(wanted.length, 'and hides some').toBeLessThan(30_150);
+    const filtered = tables.hostOf.get(label)!(drawnKept.map((r) => String(r.position)), { ...view, filterActive: true, keeps: keepsCat1 });
+    expect(filtered!.rows).toEqual(wanted.map(cells));
+    // the rows the table hands over keep its on-screen order (here sorted by site, descending),
+    // then the rows past the cut follow in the result's order
+    const sortedDown = report.siteRates.slice(0, 10_000).reverse();
+    const sorted = tables.hostOf.get(label)!(sortedDown.map((r) => String(r.position)), view);
+    expect(sorted!.rows).toEqual([...sortedDown, ...report.siteRates.slice(10_000)].map(cells));
+    // a hidden column is left out of the header and of every row, and the filter still reads it
+    const noEntropy = { ...view, columns: view.columns.filter((c) => c.index !== 2) };
+    const hidden = tables.hostOf.get(label)!(report.siteRates.slice(0, 10_000).map((r) => String(r.position)), noEntropy);
+    expect(hidden!.headers).toEqual(['Site Position', 'Relative Rate (r_i)', 'Gamma Category']);
+    expect(hidden!.rows).toEqual(report.siteRates.map((r) => [cells(r)[0], cells(r)[1], cells(r)[3]]));
+    const entropyCol = view.allColumns.find((c) => c.index === 2)!.id;
+    const byEntropy = (textOf: (colId: string) => string) => evaluateTableRowFilters(textOf, [], '', [{ id: 'r', colId: entropyCol, operator: 'equals', value: cells(report.siteRates[10_002])[2] }], 'all');
+    const sameEntropy = report.siteRates.filter((r) => String(r.entropyBits) === String(report.siteRates[10_002].entropyBits));
+    expect(sameEntropy.length).toBeLessThan(30_150);
+    const onHidden = tables.hostOf.get(label)!([], { ...noEntropy, filterActive: true, keeps: byEntropy });
+    expect(onHidden!.rows).toEqual(sameEntropy.filter((r) => r.position > 10_000).map((r) => [cells(r)[0], cells(r)[1], cells(r)[3]]));
+
+    // A result that holds fewer sites than the engine's total, or no total: the file says so.
+    const names = TREE.map((_, i) => `t${String(i).padStart(2, '0')}`);
+    const full = realReport<SiteRatesReport>(rates, [TREE, 5]);
+    rates.mockReturnValueOnce({ ...full, siteRates: full.siteRates.slice(0, 2_000) });
+    studio(TREE, 'rates');
+    const short = exported(label);
+    expect(short.rows).toHaveLength(2_000);
+    expect(short.caption).toBe(`${label}\nThe file lists the first 2,000 of ${fmt(TREE[0].length)} sites.`);
+    rates.mockReturnValueOnce({ ...full, totalSites: undefined as unknown as number });
+    studio(TREE, 'rates');
+    expect(exported(label).caption).toBe(`${label}\nThe file lists ${fmt(TREE[0].length)} sites; the engine did not report how many there are.`);
+    expect(names).toHaveLength(TREE.length);
+  }, 120_000);
+
+  it('exports every row of the capped ancestral-site and codon-selection tables', () => {
+    const ancLabel = 'Per-Site Evolutionary Probabilities';
+    ancestors.mockClear();
+    const anc = studio(LONG, 'ancestors');
+    const ancReport = ancestors.mock.results.at(-1)!.value as AncestralReconstructionReport;
+    expect(ancReport.siteEvolutionaryProbabilities).toHaveLength(30_150);
+    expect(rowsIn(anc, ancLabel)).toHaveLength(10_000);
+    const ancFile = exported(ancLabel);
+    expect(ancFile.headers).toEqual(['Site', 'Root State', 'Majority (tips)', 'P(A)', 'P(C)', 'P(G)', 'P(T)']);
+    expect(ancFile.rows).toEqual(ancReport.siteEvolutionaryProbabilities.map((p) =>
+      [`#${p.position}`, p.ancestralStateRoot, p.consensusState, String(p.probA), String(p.probC), String(p.probG), String(p.probT)]));
+    expect(ancFile.caption).toBe(ancLabel);
+
+    const selLabel = 'Site-by-Site Codon Selection Profile';
+    selection.mockClear();
+    const sel = studio(LONG, 'selection');
+    const selReport = selection.mock.results.at(-1)!.value as SelectionAndNeutralityReport;
+    expect(selReport.codonSiteSelection).toHaveLength(10_050);
+    expect(rowsIn(sel, selLabel)).toHaveLength(10_000);
+    const selFile = exported(selLabel);
+    expect(selFile.headers).toEqual(['Codon #', 'Observed Codons', 'Residues', 'p_N − p_S', 'Pattern']);
+    expect(selFile.rows).toEqual(selReport.codonSiteSelection.map((c) =>
+      [`#${c.codonIndex}`, c.codonsObserved, c.aminoAcidsObserved, String(c.dNMinusDS), c.selectionRegime]));
+    expect(selFile.caption).toBe(selLabel);
+
+    // a result cut short of the engine's total says so in the file
+    const fullSel = realReport<SelectionAndNeutralityReport>(selection, [CODING]);
+    selection.mockReturnValueOnce({ ...fullSel, codonSiteSelection: fullSel.codonSiteSelection.slice(0, 500) });
+    studio(CODING, 'selection');
+    expect(exported(selLabel).caption).toBe(`${selLabel}\nThe file lists the first 500 of ${fmt(variableCodons(CODING))} variable codons.`);
+    const names = TREE.map((_, i) => `t${String(i).padStart(2, '0')}`);
+    const fullAnc = realReport<AncestralReconstructionReport>(ancestors, [names, TREE, 'Maximum Likelihood (Empirical Bayes)']);
+    ancestors.mockReturnValueOnce({ ...fullAnc, siteEvolutionaryProbabilities: fullAnc.siteEvolutionaryProbabilities.slice(0, 2_000) });
+    studio(TREE, 'ancestors');
+    expect(exported(ancLabel).caption).toBe(`${ancLabel}\nThe file lists the first 2,000 of ${fmt(TREE[0].length)} sites.`);
+  }, 120_000);
 });
