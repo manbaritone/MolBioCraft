@@ -2273,14 +2273,16 @@ fn known_score(a: u8, b: u8) -> i32 {
 /// How far an indel at alignment columns `start..end` (a deletion when `is_del`) moves left and
 /// right without pairing a known base with a different one: it moves one column at a time while
 /// the base it moves past, in the row that holds its gap, fits the base of the indel it then faces,
-/// the last (first) one. Two bases fit when they are the same base, or when one of them is a base
-/// the caller does not know (which may be any base) and the other is one it knows. Two unknown
-/// bases never fit, as no column of two of them is a match (the sample's are aligned in lower
-/// case), so the indel stops beside such a column.
+/// the last (first) one. Two bases fit when they are the same base, or when either is a base the
+/// caller does not know (which may be any base). Two unknown bases fit too: the alignment scores a
+/// column holding one 1 whatever faces it ([`call_score`]), so an indel moved past N in both
+/// sequences at the same columns scores as it did. Stopped beside such a column, as it once was, a
+/// deletion the alignment put on the far side of N shared by both sequences was named over bases
+/// that missed it (BG-01M6W02V).
 fn fitting_reach(qa: &[u8], ra: &[u8], start: usize, end: usize, is_del: bool) -> (usize, usize) {
     let n = qa.len().min(ra.len());
     let (gap_row, indel_row) = if is_del { (qa, ra) } else { (ra, qa) };
-    let fits = |a: u8, b: u8| a == b || call_known(a) != call_known(b);
+    let fits = |a: u8, b: u8| a == b || !call_known(a) || !call_known(b);
     let paired = |c: usize| qa[c] != b'-' && ra[c] != b'-';
     let left = (1..=start).take_while(|&k| paired(start - k) && fits(gap_row[start - k], indel_row[end - k])).count();
     let right = (1..=n - end).take_while(|&k| paired(end + k - 1) && fits(gap_row[end + k - 1], indel_row[start + k - 1])).count();
@@ -2405,6 +2407,153 @@ fn place_indels_on_known_bases(qa: &mut [u8], ra: &mut [u8]) {
             gap_row[start - j..end].rotate_right(len);
         }
     }
+}
+
+/// What the caller's alignment charges to open a gap, on top of 2 a base of its length
+/// ([`align_sample_in_one_piece`]'s scoring, -5 - 2n for a gap of n bases).
+const CALL_GAP_OPEN: i32 = 5;
+
+/// The score of alignment columns `qa` and `ra` under [`call_score`] (each gap -5 - 2 a base), and
+/// counting the known bases only ([`known_score`]).
+fn columns_score(qa: &[u8], ra: &[u8]) -> (i32, i32) {
+    let (mut aligned, mut known, mut in_gap) = (0i32, 0i32, false);
+    for (&q, &r) in qa.iter().zip(ra) {
+        if q == b'-' || r == b'-' {
+            aligned -= if in_gap { 2 } else { CALL_GAP_OPEN + 2 };
+            in_gap = true;
+        } else {
+            (aligned, known, in_gap) = (aligned + call_score(q, r), known + known_score(q, r), false);
+        }
+    }
+    (aligned, known)
+}
+
+/// Parts a deletion the alignment merged with the spare N of a reference run beside it. Beside a
+/// run of more N than the bases it stands for, a deletion a few bases from the run can be joined
+/// to the run's surplus: the sample bases between them are paired with spare N instead of their own
+/// reference bases, and the two gaps become one. Each base so moved loses 1 and the gap opened once
+/// less gains 5, so a deletion 5 bases from such a run ties with its merged reading, and one of 4
+/// or fewer loses to it; the merged gap was named, or called, as one deletion of both lengths (a
+/// 9-bp deletion 6 bases before 15 N standing for 10 was called as a 14-bp deletion, its repeat
+/// letting it lie a base nearer the run). Where the sample bases paired with
+/// the run next to such a gap, with any matched between, can be paired equal with the gap's known
+/// bases and those after it, the gap shortened by as many and as many more of the run's N deleted,
+/// and the alignment scores that reading no lower, the most of them that can are paired so, the
+/// shortened gap wherever the bases around it are equal (a repeat lets it lie a base along)
+/// (BG-01M6W02V). Only a deletion of known bases beside a reference run is parted, and one the
+/// alignment scores higher merged (4 bases or fewer from the run, or nearer through a repeat) stays
+/// merged.
+fn part_deletions_from_unknown_runs(qa: &mut [u8], ra: &mut [u8]) {
+    part_deletions_before_unknown_runs(qa, ra);
+    qa.reverse();
+    ra.reverse();
+    part_deletions_before_unknown_runs(qa, ra);
+    qa.reverse();
+    ra.reverse();
+}
+
+/// [`part_deletions_from_unknown_runs`] for each deletion before a reference run (a gap of known
+/// reference bases, perhaps ending in unknown ones, then any matched known bases, then sample bases
+/// paired with unknown reference bases).
+fn part_deletions_before_unknown_runs(qa: &mut [u8], ra: &mut [u8]) {
+    let n = qa.len().min(ra.len());
+    let known_pair = |q: u8, r: u8| q != b'-' && r != b'-';
+    for (start, end, is_del) in interior_indels(qa, ra) {
+        if !is_del {
+            continue;
+        }
+        // the gap's unknown reference bases at its end (j), its known ones before them (m)
+        let j = ra[start..end].iter().rev().take_while(|&&b| !call_known(b)).count();
+        let m = end - start - j;
+        if m < 2 || ra[start..start + m].iter().any(|&b| !call_known(b)) {
+            continue;
+        }
+        // matched known columns after the gap (t), then sample bases paired with unknown reference bases (p)
+        let t = if j > 0 { 0 } else { (end..n).take_while(|&c| known_pair(qa[c], ra[c]) && call_known(qa[c]) && qa[c] == ra[c]).count() };
+        let p = (end + t..n).take_while(|&c| known_pair(qa[c], ra[c]) && call_known(qa[c]) && !call_known(ra[c])).count();
+        let region = start..end + t + p;
+        let (old_aligned, old_known) = columns_score(&qa[region.clone()], &ra[region.clone()]);
+        // k more N deleted, and the shortened gap after the first o of the sample bases moved
+        let parted = |k: usize, o: usize| -> Vec<u8> {
+            let mut q = qa[end..end + o].to_vec();
+            q.extend(std::iter::repeat_n(b'-', m - k));
+            q.extend_from_slice(&qa[end + o..end + t + k]);
+            q.extend(std::iter::repeat_n(b'-', j + k));
+            q.extend_from_slice(&qa[end + t + k..end + t + p]);
+            q
+        };
+        let fits = |k: usize, o: usize| {
+            let q = parted(k, o);
+            let equal = (start..start + m + t).all(|c| q[c - start] == b'-' || (call_known(ra[c]) && q[c - start] == ra[c]));
+            let (aligned, known) = columns_score(&q, &ra[region.clone()]);
+            (equal && aligned >= old_aligned && known > old_known).then_some(q)
+        };
+        if let Some(q) = (1..m.min(p)).rev().find_map(|k| (0..=t + k).find_map(|o| fits(k, o))) {
+            qa[region].copy_from_slice(&q);
+        }
+    }
+}
+
+/// The deletions the caller leaves out because a deletion it leaves out beside bases it does not
+/// know may be the same deletion (BG-01M6W02V), by first column, with how many more columns each
+/// one's warning names to the left and right. A deletion beside unknown bases, moved past the
+/// bases between it and another deletion, joins it, and one gap is opened less: where the alignment
+/// scores that no lower, the sample does not say which reading holds, and the other deletion is left
+/// out too, with its own length, each warning naming the bases of both. Beside a run of 10 N
+/// standing for 10 bases, a 7-bp deletion just after the run was aligned as 5 of the run's N
+/// deleted, 5 sample bases matched by chance to the 5 reference bases after the run, and a 2-bp
+/// deletion after them, which was called though the sample does not hold it.
+///
+/// The deletion is moved one column at a time while the column it moves past holds a base in both
+/// rows, as [`indel_placements`] moves it, but on past a run of unknown bases: N deleted from a run
+/// lie anywhere in it.
+fn deletions_left_out_together(qa: &[u8], ra: &[u8]) -> std::collections::HashMap<usize, (usize, usize)> {
+    let n = qa.len().min(ra.len());
+    let unknown_at = |c: usize| c < n && [qa[c], ra[c]].iter().any(|&b| b != b'-' && !call_known(b));
+    let paired = |c: usize| qa[c] != b'-' && ra[c] != b'-';
+    let deletions: Vec<(usize, usize)> = interior_indels(qa, ra).into_iter().filter(|d| d.2).map(|(s, e, _)| (s, e)).collect();
+    let mut out: std::collections::HashMap<usize, (usize, usize)> = std::collections::HashMap::new();
+    for &(start, end) in &deletions {
+        let (left, right) = fitting_reach(qa, ra, start, end, true);
+        if !(start.saturating_sub(left + 1)..=end + right).any(unknown_at) {
+            continue;
+        }
+        let scan = end - start + CALL_REACH_SCAN;
+        // right: moved j columns, its first base faces the sample base of column end + j - 1
+        let (mut j, mut aligned) = (0usize, 0i32);
+        while j < scan && end + j < n && paired(end + j) {
+            let c = end + j;
+            aligned += call_score(qa[c], ra[start + j]) - call_score(qa[c], ra[c]);
+            j += 1;
+        }
+        let met_right = (j > 0 && end + j < n && qa[end + j] == b'-' && ra[end + j] != b'-' && aligned + CALL_GAP_OPEN >= 0).then_some(j);
+        // left: moved j columns, its last base faces the sample base of column start - j
+        let (mut j, mut aligned) = (0usize, 0i32);
+        while j < scan && j < start && paired(start - j - 1) {
+            let c = start - j - 1;
+            aligned += call_score(qa[c], ra[end - j - 1]) - call_score(qa[c], ra[c]);
+            j += 1;
+        }
+        let met_left = (j > 0 && j < start && qa[start - j - 1] == b'-' && ra[start - j - 1] != b'-' && aligned + CALL_GAP_OPEN >= 0).then_some(j);
+        for (met, to_right) in [(met_right, true), (met_left, false)] {
+            let Some(j) = met else { continue };
+            let next = if to_right { end + j } else { start - j - 1 };
+            let Some(&(os, oe)) = deletions.iter().find(|&&(s, e)| (s..e).contains(&next)) else { continue };
+            let mine = out.entry(start).or_insert((0, 0));
+            if to_right {
+                mine.1 = mine.1.max(j + oe - os);
+            } else {
+                mine.0 = mine.0.max(j + oe - os);
+            }
+            let theirs = out.entry(os).or_insert((0, 0));
+            if to_right {
+                theirs.0 = theirs.0.max(j + end - start);
+            } else {
+                theirs.1 = theirs.1.max(j + end - start);
+            }
+        }
+    }
+    out
 }
 
 /// Moves every insertion and deletion in the alignment columns as far left as it goes without
@@ -2602,7 +2751,9 @@ pub fn call_freebayes_variants_with_one_shot_limit(
     } else {
         align_sample_in_segments(&query, reference)
     };
+    part_deletions_from_unknown_runs(&mut qa, &mut ra);
     place_indels_on_known_bases(&mut qa, &mut ra);
+    let together = deletions_left_out_together(&qa, &ra);
 
     let mut variants = Vec::new();
     let mut transitions = 0usize;
@@ -2697,6 +2848,10 @@ pub fn call_freebayes_variants_with_one_shot_limit(
         // know in its bases, its anchor or its next column: where it lies against bases that are
         // not known is not known. It is named, with every reference base those placements cover.
         let beside_unknown = !call_known(anchor) || (start_col.saturating_sub(left + 1)..=col + right).any(unknown_at);
+        // a deletion that may be one with another left out beside unknown bases ([`deletions_left_out_together`])
+        let together_with = if is_del { together.get(&start_col).copied() } else { None };
+        let beside_unknown = beside_unknown || together_with.is_some();
+        let (left, right) = together_with.map_or((left, right), |(l, r)| (left.max(l), right.max(r)));
         // Nor is it called where, moved past bases that then differ, it lies against such bases in
         // a placement the known bases score no lower ([`indel_placements`]): the known bases do not
         // say where it lies (BG-01M6TE8J). It is named with every reference base it moves past to

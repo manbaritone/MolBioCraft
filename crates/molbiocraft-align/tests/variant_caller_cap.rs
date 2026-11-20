@@ -781,10 +781,10 @@ fn other_ambiguity_codes_and_shared_n_columns_keep_coordinates() {
     sample[SNP_AT - 3] = alt;
     let snp = (SNP_AT + 1, text(&reference[SNP_AT..SNP_AT + 1]), text(&[alt]), "SNP".to_string());
     assert_eq!((text(&sample[3_000..3_004]), text(&sample[6_000..6_001])), ("NNNN".into(), "N".into()), "fixture");
-    let one_placement = [
-        "A 3-bp deletion of reference bases 6,001-6,003 lies beside bases that are not known and is not called.",
-        "A 3-bp deletion of reference bases 6,002-6,004 lies beside bases that are not known and is not called.",
-    ];
+    // The deletion may be reference bases 6,001-6,003 or 6,002-6,004, which score alike, and the
+    // warning names both: a column of two unknown bases scores as any column holding one does
+    // (BG-01M6W02V AC4, D0268, which re-pinned this from either single placement).
+    let covering = "A 3-bp deletion, somewhere in reference bases 6,001-6,004, lies beside bases that are not known and is not called.";
     for (label, rep) in both_paths(&reference, &sample) {
         assert_eq!(report_calls(&rep), vec![snp.clone()], "shared N, {label}");
         assert_nothing_called_over(&rep, 3_001, 3_004, label);
@@ -798,7 +798,7 @@ fn other_ambiguity_codes_and_shared_n_columns_keep_coordinates() {
         ];
         assert_eq!(rep.warnings[..runs.len()], runs[..], "shared N, {label}");
         assert_eq!(rep.warnings.len(), runs.len() + 1, "shared N, {label}: {:?}", rep.warnings);
-        assert!(one_placement.contains(&rep.warnings[runs.len()].as_str()), "shared N, {label}: {:?}", rep.warnings);    }
+        assert_eq!(rep.warnings[runs.len()], covering, "shared N, {label}: {:?}", rep.warnings);    }
 }
 
 /// A 6 kb reference (seed `seed`) with an N at each of `ref_n` (1-based) and the sample copied from
@@ -1639,4 +1639,247 @@ fn an_exact_repeat_copy_does_not_capture_a_short_anchored_stretch() {
     calls.sort();
     wrong.extend((calls != truth).then(|| format!("F 800 bases, 7,000 N for 9,500, in segments: {} calls, {} true", calls.len(), truth.len())));
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// BG-01M6W02V: the data seat's findings on BG-01M6TE8J's round 2. Beside a 10-N run a 4- or 7-bp
+// deletion 0-2 bases away still gave a false call on a few draws; beside a run of more N than the
+// bases it stands for, a deletion a few bases away was merged with the run's spare N and named as
+// one deletion of both lengths; the leave-out check's tie arm (a placement the known bases score
+// equal) was untested; and with N at the same columns of both sequences, a left-out deletion was
+// named over bases that missed it.
+// ---------------------------------------------------------------------------------------------
+
+/// The caller's alignment score for a column pair (BG-01M6W02V, D0268): match 2, mismatch -3, and 1
+/// where either base is not A, C, G or T; a gap of n bases scores -5 - 2n.
+fn d0268_score(a: u8, b: u8) -> i32 {
+    let known = |c: u8| matches!(c, b'A' | b'C' | b'G' | b'T');
+    if !known(a) || !known(b) {
+        1
+    } else if a == b {
+        2
+    } else {
+        -3
+    }
+}
+
+/// The score of a gap probe's true reading under [`d0268_score`]: every sample base paired with the
+/// reference base it was copied from, the planted deletion's bases deleted, and the N a run holds
+/// past the bases it stands for deleted at the end of the run nearer the deletion (where a deletion
+/// touching the run then joins them, as one gap).
+fn true_reading_score(p: &GapProbe) -> i32 {
+    let (del_from, del_len) = p
+        .truth
+        .iter()
+        .find_map(|t| match t {
+            Truth::Del(c, ..) => Some((c.0 + 1, c.1.len() - 1)),
+            Truth::Snp(..) => None,
+        })
+        .unwrap_or((0, 0));
+    let spare = (p.run.1 + 1 - p.run.0).saturating_sub(GAP_TRUE.len());
+    let after = del_from > p.run.1;
+    let spare_at = if after { p.run.1 + 1 - spare..p.run.1 + 1 } else { p.run.0..p.run.0 + spare };
+    let last = p.reference.len() - (GAP_GENOME_BP - GAP_SAMPLE.end);
+    let (mut score, mut q, mut in_gap) = (0i32, 0usize, false);
+    for r in GAP_SAMPLE.start + 1..=last {
+        if (del_from..del_from + del_len).contains(&r) || spare_at.contains(&r) {
+            score -= if in_gap { 2 } else { 7 };
+            in_gap = true;
+        } else {
+            score += d0268_score(p.sample[q], p.reference[r - 1]);
+            (q, in_gap) = (q + 1, false);
+        }
+    }
+    assert_eq!(q, p.sample.len(), "{}: the true reading pairs every sample base", p.label);
+    score
+}
+
+/// The best score any reading of the probe's sample against its reference reaches under
+/// [`d0268_score`]: the whole sample aligned, the reference's flanks free, as the caller aligns it.
+fn best_reading_score(p: &GapProbe) -> i32 {
+    let mut aligner = bio::alignment::pairwise::Aligner::with_capacity(p.sample.len(), p.reference.len(), -5, -2, d0268_score);
+    aligner.semiglobal(&p.sample, &p.reference).score
+}
+
+/// Each probe read against its truth ([`read_against_truth`]) on both paths, four probes at a time,
+/// with `also` checked on each report; the reports that are wrong. Where `outscored` holds, a wrong
+/// report of a probe whose best reading outscores its true one is not a defect of the caller
+/// (D0268): it is returned apart, with both scores, and every other wrong report stays wrong.
+fn wrong_reports(probes: &[GapProbe], also: &(dyn Fn(&GapProbe, &FreeBayesVariantReport) -> Option<String> + Sync)) -> Vec<String> {
+    let (wrong, outscored) = wrong_reports_scored(probes, also, false);
+    assert!(outscored.is_empty());
+    wrong
+}
+
+/// [`wrong_reports`], with the reports of outscored probes apart when `excuse_outscored`.
+fn wrong_reports_scored(
+    probes: &[GapProbe],
+    also: &(dyn Fn(&GapProbe, &FreeBayesVariantReport) -> Option<String> + Sync),
+    excuse_outscored: bool,
+) -> (Vec<String>, Vec<String>) {
+    let chunk = probes.len().div_ceil(4).max(1);
+    std::thread::scope(|s| {
+        let handles: Vec<_> = probes
+            .chunks(chunk)
+            .map(|ps| {
+                s.spawn(move || {
+                    let (mut wrong, mut outscored) = (Vec::new(), Vec::new());
+                    for p in ps {
+                        let mut scores = None;
+                        for (path, rep) in both_paths(&p.reference, &p.sample) {
+                            let mut errors: Vec<String> = read_against_truth(p, &rep).err().into_iter().collect();
+                            errors.extend(also(p, &rep));
+                            if errors.is_empty() {
+                                continue;
+                            }
+                            let line = format!("{}, {path}: {}", p.label, errors.join("; "));
+                            let (truth, best) = *scores.get_or_insert_with(|| (true_reading_score(p), best_reading_score(p)));
+                            if excuse_outscored && best > truth {
+                                outscored.push(format!("{line} [true reading {truth}, best {best}]"));
+                            } else {
+                                wrong.push(format!("{line} [true reading {truth}, best {best}]"));
+                            }
+                        }
+                    }
+                    (wrong, outscored)
+                })
+            })
+            .collect();
+        let (mut wrong, mut outscored) = (Vec::new(), Vec::new());
+        for h in handles {
+            let (w, o) = h.join().unwrap();
+            wrong.extend(w);
+            outscored.extend(o);
+        }
+        (wrong, outscored)
+    })
+}
+
+/// The planted deletion's reference bases, 1-based (first, last), and its length.
+fn planted_deletion(p: &GapProbe) -> Option<(usize, usize, usize)> {
+    p.truth.iter().find_map(|t| match t {
+        Truth::Del(c, first, last) => Some((*first, *last, c.1.len() - 1)),
+        Truth::Snp(..) => None,
+    })
+}
+
+#[test]
+fn a_short_deletion_near_a_ten_n_run_gives_no_false_call() {
+    // The data seat's family F6t: a 4- or 7-bp deletion 0, 1 or 2 bases before or after a run of
+    // 10 N standing for 10 bases, 250 genomes, 3,000 draws a path. No call the truth does not hold,
+    // and every warning for a deletion left out beside the run names bases that cover the planted
+    // one. On seed 19, a 7-bp deletion just after the run was aligned as 5 of the run's N deleted, 5
+    // of the sample's bases opposite the run matched by chance to the 5 reference bases after it,
+    // and a 2-bp deletion after them, which was called.
+    let mut probes = Vec::new();
+    for seed in 0..250 {
+        for after in [false, true] {
+            for gap in 0..=2 {
+                for len in [4, 7] {
+                    let mut p = gap_probe(&mut SplitMix(seed), 10, GapEdit::Del { after, gap, len });
+                    p.label = format!("seed {seed}, {}", p.label);
+                    probes.push(p);
+                }
+            }
+        }
+    }
+    assert_eq!(probes.len(), 3_000, "fixture");
+    let every_warning_covers = |p: &GapProbe, rep: &FreeBayesVariantReport| {
+        let (first, last, _) = planted_deletion(p)?;
+        let misses: Vec<(usize, usize)> = left_out_spans(rep).into_iter().filter(|&(a, b)| !(a <= first && last <= b)).collect();
+        (!misses.is_empty()).then(|| format!("warnings name {misses:?}, not all of {first}-{last}"))
+    };
+    // A draw whose best reading outscores its true one under the alignment's own scoring is not a
+    // defect of the caller (D0268): seed 89, a 7-bp deletion just after the run, where 7 of the
+    // run's N deleted, 6 chance matches and a false SNP score 2 more than the truth.
+    let (wrong, outscored) = wrong_reports_scored(&probes, &every_warning_covers, true);
+    println!("outscored (D0268):\n{}", outscored.join("\n"));
+    assert!(wrong.is_empty(), "{} of 6,000 reports wrong:\n{}", wrong.len(), wrong.join("\n"));
+    assert!(outscored.len() <= 4, "outscored draws, more than the family has held:\n{}", outscored.join("\n"));
+}
+
+#[test]
+fn a_deletion_beside_a_too_long_n_run_keeps_its_own_length() {
+    // The data seat's family F8 at 5-7 bases from the run: a 5-, 6-, 7- or 9-bp deletion 5, 6 or 7
+    // bases before or after a run of 13, 15 or 20 N standing for 10 bases, 72 draws. It is called
+    // at its VCF placement, or left out with a warning naming its own length over bases that cover
+    // it; no warning names a deletion of any length but its own and the run's spare N. Before
+    // BG-01M6W02V, a 6-bp deletion 5 bases before 15 N was named as one 11-bp deletion: the sample
+    // bases between were paired with the spare N and the two gaps were one.
+    let mut probes = Vec::new();
+    for run_n in [13, 15, 20] {
+        for after in [false, true] {
+            for gap in 5..=7 {
+                for len in [5, 6, 7, 9] {
+                    let seed = 0x0E02_0000 + (run_n * 1_000 + gap * 10 + len) as u64 + if after { 500 } else { 0 };
+                    probes.push(gap_probe(&mut SplitMix(seed), run_n, GapEdit::Del { after, gap, len }));
+                }
+            }
+        }
+    }
+    assert_eq!(probes.len(), 72, "fixture");
+    let own_length = |p: &GapProbe, rep: &FreeBayesVariantReport| {
+        let (first, last, len) = planted_deletion(p)?;
+        let called = p.truth.iter().any(|t| matches!(t, Truth::Del(c, ..) if report_calls(rep).contains(c)));
+        let spare = p.run.1 + 1 - p.run.0 - GAP_TRUE.len();
+        let lengths: Vec<usize> = rep.warnings.iter().filter_map(|w| w.strip_prefix("A ")?.split_once("-bp deletion")?.0.parse().ok()).collect();
+        let named = rep.warnings.iter().any(|w| named_deletion(w, len).is_some_and(|(a, b)| a <= first && last <= b));
+        let mut errors = Vec::new();
+        if !called && !named {
+            errors.push(format!("neither called nor named as {len} bp over {first}-{last}"));
+        }
+        if let Some(other) = lengths.iter().find(|&&l| l != len && l != spare) {
+            errors.push(format!("a {other}-bp deletion named (own {len}, spare {spare})"));
+        }
+        (!errors.is_empty()).then(|| errors.join(", "))
+    };
+    let (wrong, outscored) = wrong_reports_scored(&probes, &own_length, true);
+    println!("outscored (D0268):\n{}", outscored.join("\n"));
+    assert!(wrong.is_empty(), "{} of 144 reports wrong:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+#[test]
+fn an_equal_score_placement_against_unknown_bases_leaves_the_indel_out() {
+    // A SNP just before a run of 3 N standing for 10 bases: the alignment pairs the 3 N and inserts
+    // the other 7 sample bases a base or two before the run, among known bases. Moved past those
+    // bases, the insertion lies against the run in a placement the known bases score exactly as
+    // they score this one, so where it lies is not known, and it is left out with a warning rather
+    // than called. With the tie arm taken out (`p.known > 0`), each of these 5 draws called a 7-bp
+    // insertion before the run that the sample does not hold.
+    let probes: Vec<GapProbe> = [1_030u64, 1_130, 1_330, 1_430, 1_530].iter().map(|&seed| gap_probe(&mut SplitMix(seed), 3, GapEdit::Snp { after: false, k: 0 })).collect();
+    let left_out_insertion = |_: &GapProbe, rep: &FreeBayesVariantReport| {
+        let indels: Vec<Call> = report_calls(rep).into_iter().filter(|c| c.3 != "SNP").collect();
+        let warned = rep.warnings.iter().any(|w| w.starts_with("A 7-bp insertion") && w.ends_with("lies beside bases that are not known and is not called."));
+        (!indels.is_empty() || !warned).then(|| format!("indels called {indels:?}; warnings {:?}", rep.warnings))
+    };
+    let wrong = wrong_reports(&probes, &left_out_insertion);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn a_left_out_deletion_beside_shared_n_columns_is_named_over_every_placement() {
+    // A run of 10 N at the same columns of the reference and the sample, and a 1- to 10-bp deletion
+    // 0-30 bases before or after it, 124 draws. A column of two unknown bases scores as any column
+    // holding one does, so a deletion touching the run may lie on either side of it: the warning
+    // names every such placement. It stopped beside the shared N, and a deletion just after the run
+    // was named over the bases before it (an 8-bp deletion of 611-618 as "somewhere in reference
+    // bases 593-608").
+    let mut probes = Vec::new();
+    for seed in 0..2u64 {
+        for after in [false, true] {
+            for gap in 0..=30 {
+                let len = 1 + (seed as usize * 7 + gap) % 10;
+                let mut p = gap_probe(&mut SplitMix(0x0E02_4000 + seed * 1_000 + gap as u64), 10, GapEdit::Del { after, gap, len });
+                let sample_offset = GAP_SAMPLE.start + if after { 0 } else { len };
+                for i in GAP_TRUE {
+                    p.sample[i - sample_offset] = b'N';
+                }
+                p.label = format!("shared N, {}", p.label);
+                probes.push(p);
+            }
+        }
+    }
+    let wrong = wrong_reports(&probes, &|_, _| None);
+    assert!(wrong.is_empty(), "{} of {} reports wrong:\n{}", wrong.len(), 2 * probes.len(), wrong.join("\n"));
 }
