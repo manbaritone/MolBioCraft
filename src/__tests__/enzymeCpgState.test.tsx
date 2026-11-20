@@ -2,23 +2,22 @@
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
 /**
- * BG-01M7DMDN AC3 (D0116): the 'CpG' tag means blocked or impaired per REBASE, so BmtI-HF, which
- * REBASE holds no CpG data for, carries none; but its isoschizomer NheI is not cut on M.SssI-methylated
- * pACYC184 (REBASE msget?NheI, MS#810), so the Enzymes view marks BmtI-HF 'CpG?' with that ruling as
- * the tooltip, NheI 'CpG', and BsmFI (no CpG data, no isoschizomer evidence) neither. No digest or
- * methylation warning treats BmtI-HF as blocked.
+ * BG-01M7DMDN AC3 (D0288, amending the D0265 reading): an enzyme's own REBASE m5C record outranks its
+ * isoschizomer's. REBASE (msget?BmtI) shows BmtI cut with m5C on its site's last C on both strands
+ * (MS#2393) and on one strand (MS#3612), where an overlapping CpG (GCTAGCG) methylates, though NheI on
+ * the same site is not cut (MS#810). So the Enzymes view gives BmtI-HF no CpG state at all, NheI its
+ * 'CpG' tag (D0116), and BsmFI its Dcm tag only; and no 'CpG?' state, nor its TS copy of a catalogue
+ * ruling, is left anywhere in src/. The ruling itself lives on BmtI-HF's Rust catalogue entry, where
+ * rebase_catalog::tests reads it.
  *
  * The view is drawn in the live page beside a mounted App (customEnzymeExport.test.tsx's pattern),
  * from the engine's own catalogue; the restriction engine is not replaced.
  */
 
 import React, { act } from 'react';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { scanRestrictionSites } from '../core/bioEngine';
-import { CPG_UNTESTED_ISOSCHIZOMER_BLOCKED, cpgUntestedRuling } from '../core/enzymeDatabase';
-import { cleavagePicture } from '../core/restrictionDisplay';
 import { REBASE_ENZYMES } from '../data/rebaseEnzymes';
 import { SAMPLE_LIBRARY } from '../data/sampleLibrary';
 import type { RestrictionEnzyme, SequenceDocument } from '../types/bio';
@@ -34,7 +33,6 @@ beforeAll(async () => {
   EnzymesViewPanel = (await import('../components/HybridToolsAndHistoryStudio')).EnzymesViewPanel;
 });
 
-const RULING = 'no REBASE CpG data; isoschizomer NheI blocked on M.SssI-methylated pACYC184 (MS#810)';
 const words = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 const builtIn = (name: string): RestrictionEnzyme => {
   const e = REBASE_ENZYMES.find((x) => x.name === name);
@@ -42,12 +40,12 @@ const builtIn = (name: string): RestrictionEnzyme => {
   return e;
 };
 
-/** Each `.cpg_no_data("...")` ruling on a catalogue entry in the engine's source, by enzyme name. */
-function engineNoDataRulings(): Map<string, string> {
-  const source = readFileSync(resolve(process.cwd(), 'crates/molbiocraft-cloning/src/rebase_catalog.rs'), 'utf8');
-  const out = new Map<string, string>();
-  for (const m of source.matchAll(/enz\("([^"]+)"[^\n]*\n\s*\.cpg_no_data\("([^"]*)"\)/g)) out.set(m[1], m[2]);
-  return out;
+/** Every file under `dir`, recursively. */
+function filesUnder(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name);
+    return statSync(path).isDirectory() ? filesUnder(path) : [path];
+  });
 }
 
 /** A small circular construct: GCTAGC flanked by G on both sides (GCTAGCG, so CpG overlaps it), and GGGAC. */
@@ -57,39 +55,29 @@ const doc: SequenceDocument = {
   id: 'pCpg', name: 'pCpg', sequence: SEQ, topology: 'circular', features: [], primers: [],
 };
 
-describe('BG-01M7DMDN the CpG? state', () => {
-  it('BG-01M7DMDN AC3 the Enzymes view marks BmtI-HF as no CpG data with a blocked isoschizomer, and NheI as CpG', async () => {
-    // The engine's catalogue: BmtI-HF and NheI share GCTAGC; NheI carries the CpG tag, BmtI-HF and BsmFI do not.
+describe('BG-01M7DMDN CpG states in the Enzymes view', () => {
+  it('BG-01M7DMDN AC3 the Enzymes view gives BmtI-HF no CpG state, as REBASE shows it cut with m5C where NheI is not, and marks NheI CpG', async () => {
+    // The engine's catalogue: BmtI-HF and NheI share GCTAGC; NheI carries the CpG tag, BmtI-HF none,
+    // and BsmFI only Dcm.
     const bmti = builtIn('BmtI-HF');
     const nhei = builtIn('NheI');
     const bsmfi = builtIn('BsmFI');
     expect(bmti.recognitionSeq).toBe(nhei.recognitionSeq);
     expect(nhei.methylationSensitivity).toContain('CpG');
-    expect(bmti.methylationSensitivity).not.toContain('CpG');
-    expect(bsmfi.methylationSensitivity).not.toContain('CpG');
+    expect(bmti.methylationSensitivity).toEqual([]);
+    expect(bsmfi.methylationSensitivity).toEqual(['Dcm']);
 
-    // The 'CpG?' ruling: BmtI-HF's, and nobody else's in the catalogue; a custom "BmtI-HF" has none.
-    expect(cpgUntestedRuling(bmti)).toBe(RULING);
-    expect(REBASE_ENZYMES.filter((e) => cpgUntestedRuling(e) !== undefined).map((e) => e.name)).toEqual(['BmtI-HF']);
-    expect(cpgUntestedRuling({ ...bmti, id: 'custom:mine-1', source: 'custom' })).toBeUndefined();
-    // A payload with no source is custom by its `custom:` id, as isCustomEnzyme reads it.
-    expect(cpgUntestedRuling({ name: 'BmtI-HF', id: 'custom:mine-2', source: undefined })).toBeUndefined();
-
-    // The list is the engine's: each ruling is the `cpg_no_data` text on that enzyme's catalogue entry,
-    // and every no-data ruling there naming an isoschizomer is in the list.
-    const engine = engineNoDataRulings();
-    expect(engine.get('BmtI-HF')).toBe(RULING);
-    expect(engine.has('BsmFI')).toBe(true);
-    expect(Object.entries(CPG_UNTESTED_ISOSCHIZOMER_BLOCKED)).toEqual(
-      [...engine].filter(([, ruling]) => ruling.includes('isoschizomer')),
-    );
-
-    // No digest or methylation warning treats BmtI-HF as blocked: its site with CpG overlapping it cuts.
-    const scan = scanRestrictionSites(SEQ, 'circular', [bmti]);
-    const sites = scan.sites.filter((s) => s.enzyme.name === 'BmtI-HF');
-    expect(sites.length).toBe(1);
-    expect(sites.every((s) => !s.methylationBlocked)).toBe(true);
-    expect(cleavagePicture(sites[0], SEQ, true, 8).cleavage).toBe('cuts');
+    // No 'CpG?' state and no TS copy of a catalogue CpG ruling remain in src/, this file aside.
+    const gone = ['CpG?', 'CPG_UNTESTED_ISOSCHIZOMER_BLOCKED', 'cpgUntestedRuling'];
+    const src = resolve(process.cwd(), 'src');
+    const self = resolve(src, '__tests__/enzymeCpgState.test.tsx');
+    const holders = filesUnder(src)
+      .filter((path) => path !== self && /\.(tsx?|css|html|json)$/.test(path))
+      .flatMap((path) => {
+        const text = readFileSync(path, 'utf8');
+        return gone.filter((name) => text.includes(name)).map((name) => `${relative(src, path)}: ${name}`);
+      });
+    expect(holders).toEqual([]);
 
     // The Enzymes view, over the whole catalogue.
     const app = await mountApp({ storage: memoryStorage() });
@@ -117,14 +105,22 @@ describe('BG-01M7DMDN the CpG? state', () => {
           if (!row) throw new Error(`no row for ${name}`);
           return row.querySelectorAll('td')[col];
         };
-        expect(words(cell('BmtI-HF').textContent)).toBe('CpG?');
-        const marked = cell('BmtI-HF').querySelectorAll('[title]');
-        expect(marked.map((m) => [words(m.textContent), m.getAttribute('title')])).toEqual([['CpG?', RULING]]);
+        // BmtI-HF: no CpG state of any kind, and nothing hovering over the cell.
+        expect(words(cell('BmtI-HF').textContent)).toBe('None');
+        expect(cell('BmtI-HF').querySelectorAll('[title]')).toHaveLength(0);
+        // NheI: its CpG tag.
         expect(words(cell('NheI').textContent)).toBe('CpG');
         expect(cell('NheI').querySelectorAll('[title]')).toHaveLength(0);
-        // BsmFI keeps its Dcm tag and shows no CpG state at all.
-        expect(words(cell('BsmFI').textContent)).toBe(bsmfi.methylationSensitivity.length > 0 ? bsmfi.methylationSensitivity.join(', ') : 'None');
-        expect(words(cell('BsmFI').textContent)).not.toMatch(/CpG/);
+        // BsmFI: its Dcm tag only.
+        expect(words(cell('BsmFI').textContent)).toBe('Dcm');
+        expect(cell('BsmFI').querySelectorAll('[title]')).toHaveLength(0);
+        // No row in the view shows a 'CpG?' state.
+        const states = (host as unknown as LiveElement).querySelectorAll('tr')
+          .map((tr) => tr.querySelectorAll('td')[col])
+          .filter((td) => td !== undefined)
+          .map((td) => words(td.textContent));
+        expect(states.length).toBeGreaterThan(100);
+        expect(states.filter((s) => s.includes('CpG?'))).toEqual([]);
       } finally {
         await act(async () => root.unmount());
         host.remove();

@@ -123,6 +123,10 @@ enum CpgRuling {
     Overlap(&'static str),
     /// REBASE holds no CpG data for the enzyme: it carries no tag, and the text says what is known.
     NoData(&'static str),
+    /// REBASE records the enzyme itself cut with m5C at the base an overlapping CpG methylates: it
+    /// carries no tag, though an isoschizomer may, since an enzyme's own record outranks an
+    /// isoschizomer's (D0288).
+    CutWithM5c(&'static str),
 }
 
 /// One catalogue entry: the enzyme, and REBASE's CpG ruling where its site holds no CG.
@@ -141,6 +145,12 @@ impl CatalogueEntry {
     /// Records that REBASE holds no CpG data for this enzyme, and what is known instead.
     fn cpg_no_data(mut self, ruling: &'static str) -> Self {
         self.cpg_ruling = Some(CpgRuling::NoData(ruling));
+        self
+    }
+
+    /// Records REBASE's ruling that this enzyme is cut with m5C where an overlapping CpG methylates.
+    fn cpg_cut_with_m5c(mut self, ruling: &'static str) -> Self {
+        self.cpg_ruling = Some(CpgRuling::CutWithM5c(ruling));
         self
     }
 }
@@ -294,7 +304,10 @@ fn catalogue_entries() -> Vec<CatalogueEntry> {
         enz("BlpI", "GCTNAGC", 2, 5, false, &["NEB"], &[], "rCutSmart", 37),
         enz("BmgBI", "CACGTC", 3, 3, false, &["NEB"], &["CpG"], "NEBuffer r3.1 (Blunt)", 37),
         enz("BmtI-HF", "GCTAGC", 5, 1, false, &["NEB"], &[], "rCutSmart (3'-overhang NheI neoschizomer)", 37)
-            .cpg_no_data("no REBASE CpG data; isoschizomer NheI blocked on M.SssI-methylated pACYC184 (MS#810)"),
+            .cpg_cut_with_m5c(
+                "no CG inside GCTAGC, msget?BmtI: cut with m5C on the site's last C on both strands (REBASE MS#2393) and on one \
+                 strand (MS#3612); NheI on the same site is not cut (MS#810).",
+            ),
         enz("Bpu10I", "CCTNAGC", 2, 5, false, &["NEB", "Thermo"], &[], "NEBuffer r3.1", 37),
         enz("BsaAI", "YACGTR", 3, 3, false, &["NEB"], &["CpG"], "rCutSmart (Blunt)", 37),
         enz("BsaBI", "GATNNNNATC", 5, 5, false, &["NEB"], &["Dam"], "rCutSmart (Blunt)", 60),
@@ -2346,7 +2359,8 @@ mod tests {
     /// BG-01M7DHG2 (D0116): the "CpG" tag, like Dam and Dcm, covers methylation in the site or
     /// overlapping it. An enzyme whose site can hold no CG (no adjacent pair of IUPAC codes allowing
     /// C then G) may carry it only with a recorded REBASE ruling that an overlapping CpG blocks or
-    /// impairs it; one REBASE holds no CpG data for carries none.
+    /// impairs it; one REBASE holds no CpG data for carries none, and so does one REBASE records cut
+    /// with m5C where an overlapping CpG methylates, whatever its isoschizomer's record (D0288).
     #[test]
     fn a_cpg_tag_on_a_site_without_cg_is_backed_by_a_rebase_overlap_ruling() {
         fn bases(code: u8) -> &'static [u8] {
@@ -2371,7 +2385,8 @@ mod tests {
             .collect();
         assert!(unbacked.is_empty(), "tagged CpG with no CG in the site and no REBASE overlap ruling: {unbacked:?}");
         // A ruling is recorded only for a site that holds no CG, names its REBASE page, and agrees
-        // with the tag: an overlap ruling keeps it (D0116), no CpG data carries none.
+        // with the tag: an overlap ruling keeps it (D0116); no CpG data, or a record of the enzyme cut
+        // with m5C where an overlapping CpG methylates (D0288), carries none.
         for c in &entries {
             let (e, ruling) = match c.cpg_ruling {
                 Some(r) => (&c.enzyme, r),
@@ -2387,24 +2402,78 @@ mod tests {
                     assert!(!tagged(e), "{} is tagged CpG with no REBASE CpG data", e.name);
                     assert!(text.starts_with("no REBASE CpG data"), "{}'s ruling does not say REBASE holds no CpG data: {text}", e.name);
                 }
+                CpgRuling::CutWithM5c(text) => {
+                    assert!(!tagged(e), "{} is tagged CpG though REBASE records it cut with m5C where an overlapping CpG methylates", e.name);
+                    assert!(text.contains("msget?"), "{}'s cut-with-m5C ruling names no REBASE page: {text}", e.name);
+                }
             }
         }
+        let entry = |name: &str| &entries.iter().find(|c| c.enzyme.name == name).unwrap_or_else(|| panic!("the catalogue holds {name}")).enzyme;
         let ruling = |name: &str| entries.iter().find(|c| c.enzyme.name == name).unwrap_or_else(|| panic!("the catalogue holds {name}")).cpg_ruling;
-        // The five the review named keep the tag; the two REBASE holds no CpG data for carry none.
-        for name in ["EcoRI", "HpaI", "ApaLI", "BstZ17I-HF", "Sau3AI"] {
+        // The five the review named, and NheI, keep the tag; BsmFI, which REBASE holds no CpG data for, carries none.
+        for name in ["EcoRI", "HpaI", "ApaLI", "BstZ17I-HF", "Sau3AI", "NheI"] {
             assert!(matches!(ruling(name), Some(CpgRuling::Overlap(_))), "{name} lost its REBASE overlap ruling");
         }
-        for name in ["BsmFI", "BmtI-HF"] {
-            assert!(matches!(ruling(name), Some(CpgRuling::NoData(_))), "{name} lost its no-CpG-data ruling");
-        }
+        assert!(matches!(ruling("BsmFI"), Some(CpgRuling::NoData(_))), "BsmFI lost its no-CpG-data ruling");
+        // BG-01M7DMDN AC3 (D0288): BmtI-HF shares NheI's site, and its own REBASE record (msget?BmtI,
+        // read 2026-11-21) shows it cut with m5C on the site's last C, where an overlapping CpG
+        // (GCTAGCG) methylates; that outranks NheI's not-cut MS#810, so it carries no tag. The whole
+        // text is pinned, so no citation can change its direction.
+        assert_eq!(entry("BmtI-HF").recognition_seq, entry("NheI").recognition_seq);
+        assert!(!tagged(entry("BmtI-HF")), "BmtI-HF is tagged CpG");
+        assert_eq!(
+            ruling("BmtI-HF"),
+            Some(CpgRuling::CutWithM5c(
+                "no CG inside GCTAGC, msget?BmtI: cut with m5C on the site's last C on both strands (REBASE MS#2393) and on one \
+                 strand (MS#3612); NheI on the same site is not cut (MS#810)."
+            )),
+            "BmtI-HF does not carry its own REBASE cut-with-m5C ruling"
+        );
         // The entries are the catalogue, one for one.
         let names: Vec<String> = get_rebase_enzymes().into_iter().map(|e| e.name).collect();
         assert_eq!(names, entries.iter().map(|c| c.enzyme.name.clone()).collect::<Vec<_>>());
     }
 
+    /// What a REBASE record found, as a ruling's clause words it.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Found {
+        Cut,
+        Impaired(u32),
+        NotCut,
+    }
+
+    /// Each `(MS#n)` a ruling cites, with what its clause says REBASE found and on what: the clause is
+    /// the text back to the last `:`, `,` or `;` before the citation, and it must open with "cut",
+    /// "not cut" or "N% cleaved" (under 100%, or it is cut in full). A clause opening any other way
+    /// is a ruling the direction cannot be read from, and fails.
+    fn citations(text: &str) -> Vec<(String, Found, String)> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(at) = rest.find("(MS#") {
+            let close = rest[at..].find(')').expect("a closed citation") + at;
+            let record = rest[at + 1..close].to_string();
+            let before = rest[..at].trim_end();
+            let start = before.rfind([':', ',', ';']).map_or(0, |i| i + 1);
+            let clause = before[start..].trim().trim_start_matches("and ").to_string();
+            let found = if let Some(on) = clause.strip_prefix("not cut ") {
+                (Found::NotCut, on)
+            } else if let Some(on) = clause.strip_prefix("cut ") {
+                (Found::Cut, on)
+            } else if let Some((pct, on)) = clause.split_once("% cleaved ") {
+                let pct: u32 = pct.parse().unwrap_or_else(|_| panic!("{record}: no percentage in {clause:?}"));
+                (if pct >= 100 { Found::Cut } else { Found::Impaired(pct) }, on)
+            } else {
+                panic!("{record}: the clause {clause:?} says neither cut, not cut nor N% cleaved");
+            };
+            out.push((record, found.0, found.1.to_string()));
+            rest = &rest[close + 1..];
+        }
+        out
+    }
+
     /// BG-01M7DMDN AC1: EcoRI's ruling cites both sides of its REBASE record (msget?EcoRI, read
-    /// 2026-11-21): MS#927, cut on M.SssI-methylated lambda with one internal mC, and the impaired
-    /// MS#1207, 1208 and 2539.
+    /// 2026-11-21), each in its direction: MS#927 cut on M.SssI-methylated lambda with one internal
+    /// mC, and MS#1207 (50%), 1208 (5%) and 2539 (50%) impaired, none cut in full.
     #[test]
     fn ecori_cpg_ruling_cites_both_sides() {
         let entry = catalogue_entries().into_iter().find(|c| c.enzyme.name == "EcoRI").expect("the catalogue holds EcoRI");
@@ -2412,10 +2481,23 @@ mod tests {
             Some(CpgRuling::Overlap(text)) => text,
             other => panic!("EcoRI carries no REBASE overlap ruling: {other:?}"),
         };
-        for record in ["MS#927", "MS#1207", "MS#1208", "MS#2539"] {
-            assert!(text.contains(record), "EcoRI's ruling does not cite {record}: {text}");
-        }
-        assert!(text.contains("cut on M.SssI-methylated lambda with one internal mC (MS#927)"), "EcoRI's ruling does not say what MS#927 found: {text}");
-        assert!(text.contains("impaired"), "EcoRI's ruling does not say it is impaired: {text}");
+        let found: Vec<(String, Found, String)> = citations(text);
+        let expected = [
+            ("MS#927", Found::Cut, "on M.SssI-methylated lambda with one internal mC"),
+            ("MS#1207", Found::Impaired(50), "with one internal mC on CpG-methylated Herpes DNA"),
+            ("MS#1208", Found::Impaired(5), "with an internal mC on both strands of it"),
+            ("MS#2539", Found::Impaired(50), "with both on M.SssI-methylated M13mp18"),
+        ];
+        assert_eq!(
+            found,
+            expected.map(|(r, f, on)| (r.to_string(), f, on.to_string())),
+            "EcoRI's ruling does not cite each REBASE record in its direction: {text}"
+        );
+        // The reader itself: each direction is told apart, and a clause it cannot read fails.
+        assert_eq!(citations("x: not cut on DNA (MS#1)")[0].1, Found::NotCut);
+        assert_eq!(citations("x: cut on DNA (MS#1)")[0].1, Found::Cut);
+        assert_eq!(citations("x, 100% cleaved on DNA (MS#1)")[0].1, Found::Cut);
+        assert_eq!(citations("x; 20% cleaved on DNA (MS#1)")[0].1, Found::Impaired(20));
+        assert!(std::panic::catch_unwind(|| citations("x: blocked on DNA (MS#1)")).is_err());
     }
 }
