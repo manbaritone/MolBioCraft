@@ -180,6 +180,29 @@ fn gotoh_global_score(a: &[u8], b: &[u8], (m, mm, open, extend): LocalScoring) -
     h_prev[b.len()]
 }
 
+/// Textbook Gotoh (1982) affine-gap semi-global score in linear memory, in the banded entry point's
+/// semi-global mode: all of `a` is aligned, and `b`'s unaligned ends are free (a gap in `a` before
+/// its first or after its last residue costs nothing; every other gap costs `open + L * extend`).
+fn gotoh_semiglobal_score(a: &[u8], b: &[u8], (m, mm, open, extend): LocalScoring) -> i32 {
+    const NEG: i32 = i32::MIN / 4;
+    let mut h_prev = vec![0; b.len() + 1]; // any prefix of `b` skipped for free
+    let mut h_row = vec![0; b.len() + 1];
+    let mut f = vec![NEG; b.len() + 1]; // best score ending in a gap that consumes a[i - 1]
+    for i in 1..=a.len() {
+        h_row[0] = open + i as i32 * extend;
+        let mut e = NEG; // best score ending in a gap that consumes b[j - 1]
+        for j in 1..=b.len() {
+            e = (e + extend).max(h_row[j - 1] + open + extend);
+            f[j] = (f[j] + extend).max(h_prev[j] + open + extend);
+            let s = if a[i - 1] == b[j - 1] { m } else { mm };
+            h_row[j] = (h_prev[j - 1] + s).max(e).max(f[j]);
+        }
+        std::mem::swap(&mut h_prev, &mut h_row);
+    }
+    // any suffix of `b` left for free
+    h_prev.into_iter().max().unwrap()
+}
+
 /// AC1's scoring: match 2, mismatch -1, a gap of length L scoring -3 - L (rust-bio open -3, extend
 /// -1; Biopython 1.88 `PairwiseAligner` match 2, mismatch -1, open_gap_score -4, extend_gap_score -1).
 const AC1_SCORING: LocalScoring = (2, -1, -3, -1);
@@ -1056,6 +1079,96 @@ fn banded_global_is_exact_within_the_cell_budget() {
 }
 
 #[test]
+fn banded_semiglobal_is_exact_within_the_cell_budget() {
+    use bio::alignment::pairwise::banded::Aligner;
+    // the k-mer band banded semi-global used at every size before BG-01M6QKBP: rust-bio's banded
+    // semiglobal(), all of the first sequence aligned and the second's ends free
+    let chain_band = |a: &[u8], b: &[u8], (m, mm, open, extend): LocalScoring, k: usize, w: usize| {
+        Aligner::new(open, extend, move |x: u8, y: u8| if x == y { m } else { mm }, k, w).semiglobal(a, b).score
+    };
+    // A semi-global result within the budget: a real alignment of all of `a` against the part of `b`
+    // it reports, scored at the oracle's optimum, and labelled exact.
+    let assert_exact = |a: &[u8], b: &[u8], r: &molbiocraft_align::PairwiseAlignmentResult, sc: LocalScoring, what: &str| {
+        assert_eq!((r.xstart, r.xend), (0, a.len()), "{what}: all of sequence 1 must be aligned ({})", r.algorithm);
+        assert_real_alignment(r, (a, &b[r.ystart..r.yend]), sc, what);
+        assert_eq!(r.score, gotoh_semiglobal_score(a, b, sc), "{what}: {}", r.algorithm);
+        assert!(r.algorithm.contains("full matrix") && !r.algorithm.contains("heuristic"), "{what}: {}", r.algorithm);
+    };
+
+    // 1. The bug's 500 seeded short pairs at k = 3, w = 24 (LENIENT_DNA), and again at the studio's
+    // call (STUDIO_DNA, k = 6): every third pair unrelated 5-60 nt DNA, the rest a diverged 8-40 nt
+    // segment inside independent random flanks, 0-15 nt around the first sequence and 0-40 nt
+    // around the second, so the free ends of the second and the costed ends of the first both count.
+    let mut rng = PairRng(0x0B2F_5E31);
+    let mut band_misses = 0;
+    for p in 0..500 {
+        let (a, b) = if p % 3 == 0 {
+            let n = rng.between(5, 60);
+            let a = rng.dna(n);
+            let n = rng.between(5, 60);
+            (a, rng.dna(n))
+        } else {
+            let n = rng.between(8, 40);
+            let seg = rng.dna(n);
+            (rng.embed(&seg, 0, 15, 60, 20), rng.embed(&seg, 0, 40, 60, 20))
+        };
+        for (k, w, sc) in [(3, 24, LENIENT_DNA), (6, 24, STUDIO_DNA)] {
+            let what = format!("short pair {p} ({} x {}), k = {k}, w = {w}, scoring {sc:?}", a.len(), b.len());
+            let r = align_pairwise_banded_sparse(text(&a), text(&b), "semiglobal", k, w, sc.0, sc.1, sc.2, sc.3, 100);
+            assert_exact(&a, &b, &r, sc, &what);
+            if chain_band(&a, &b, sc, k.min(a.len().min(b.len())), w) < r.score {
+                band_misses += 1;
+            }
+        }
+    }
+    // the fixture must reach the pairs a k-mer band misses, or it proves nothing (14 of the 1,000)
+    assert!(band_misses >= 10, "the k-mer band missed the optimum on only {band_misses} of 1,000 short cases");
+
+    // 2. The medium pairs of `banded_global_is_exact_within_the_cell_budget` (1.2-1.9 kb homologs in
+    // 0-200 nt flanks, and unrelated 0.3-2 kb DNA) at the studio's call.
+    let pairs = medium_pairs(12);
+    let mut medium_misses = 0;
+    for (p, (a, b)) in pairs.iter().enumerate() {
+        assert!((a.len() + 1) * (b.len() + 1) <= EXACT_BUDGET, "medium pair {p} must be within the budget");
+        let what = format!("medium pair {p} ({} x {}), semi-global", a.len(), b.len());
+        let r = align_pairwise_banded_sparse(text(a), text(b), "semiglobal", 6, 24, 2, -3, -5, -2, 25_000);
+        assert_exact(a, b, &r, STUDIO_DNA, &what);
+        if chain_band(a, b, STUDIO_DNA, 6, 24) < r.score {
+            medium_misses += 1;
+        }
+    }
+    assert!(medium_misses >= 3, "the k-mer band missed the optimum on only {medium_misses} of 12 medium pairs");
+
+    // 3. The semi-global oracle pinned to Biopython 1.88 PairwiseAligner(mode="global") with the
+    // first sequence as target: target_end_gap_score 0 (the second's ends free; 1.88 warns that it
+    // is renamed end_insertion_score), every other gap open_gap_score open + extend, extend_gap_score
+    // extend.
+    // The same cross-check agreed with this oracle on all 1,000 short cases of part 1.
+    let pins = [(0, STUDIO_DNA, 1951), (3, STUDIO_DNA, -371), (6, STUDIO_DNA, 285), (7, LENIENT_DNA, 320), (11, STUDIO_DNA, -366)];
+    for (p, sc, score) in pins {
+        assert_eq!(gotoh_semiglobal_score(&pairs[p].0, &pairs[p].1, sc), score, "medium pair {p}: semi-global oracle vs Biopython");
+    }
+
+    // 4. The edge of the budget, as for global and local: a 1,999 x 2,499 pair (5,000,000 cells with
+    // the empty row and column) is aligned in full; a 2,000 x 2,500 pair (5,004,501 cells) is banded.
+    let mut rng = PairRng(0x0B2F_ED6E);
+    let core = rng.dna(2600);
+    let copy = rng.diverge(&core, 60, 10);
+    for (n1, n2, exact) in [(1999, 2499, true), (2000, 2500, false)] {
+        let (a, b) = (&core[..n1], &copy[..n2]);
+        let what = format!("{n1} x {n2} semi-global");
+        let r = align_pairwise_banded_sparse(text(a), text(b), "semiglobal", 6, 24, 2, -3, -5, -2, 25_000);
+        if exact {
+            assert_exact(a, b, &r, STUDIO_DNA, &what);
+        } else {
+            assert_real_alignment(&r, (&a[r.xstart..r.xend], &b[r.ystart..r.yend]), STUDIO_DNA, &what);
+            assert!(r.score <= gotoh_semiglobal_score(a, b, STUDIO_DNA), "{what}: scored above the optimum");
+            assert!(r.algorithm.starts_with("Banded") && r.algorithm.contains(HEURISTIC_NOTE), "{what}: {}", r.algorithm);
+        }
+    }
+}
+
+#[test]
 fn banded_results_above_budget_are_labelled_heuristic() {
     use molbiocraft_align::pairwise::{align_pairwise_gotoh, PairwiseMode};
     // 1. The banded entry point above the budget, every mode, at the studio's call (STUDIO_DNA, k = 6,
@@ -1087,17 +1200,13 @@ fn banded_results_above_budget_are_labelled_heuristic() {
         }
     }
 
-    // 2. Semi-global is banded at every size, so it carries the note within the budget too; global
-    // and local within the budget are exact and do not.
+    // 2. Within the budget every mode is exact and carries no note, semi-global included since
+    // BG-01M6QKBP.
     let (a, b) = &medium_pairs(2)[1];
     for mode in ["global", "local", "semiglobal"] {
         let r = align_pairwise_banded_sparse(text(a), text(b), mode, 6, 24, 2, -3, -5, -2, 25_000);
         let what = format!("medium pair 1, banded {mode}");
-        if mode == "semiglobal" {
-            assert!(r.algorithm.starts_with("Banded") && r.algorithm.contains(HEURISTIC_NOTE), "{what}: {}", r.algorithm);
-        } else {
-            assert!(r.algorithm.contains("full matrix") && !r.algorithm.contains("heuristic"), "{what}: {}", r.algorithm);
-        }
+        assert!(r.algorithm.contains("full matrix") && !r.algorithm.contains("heuristic"), "{what}: {}", r.algorithm);
     }
 
     // 3. Over rust-bio's band limit with a matrix small enough to align in full (BG-01M6Q0K7's
@@ -1129,4 +1238,23 @@ fn banded_results_above_budget_are_labelled_heuristic() {
         let r = align_pairwise_gotoh(text(a), text(b), mode, None, 2, -3, -5, -2, 0);
         assert!(!r.algorithm.contains("banded") && !r.algorithm.contains("heuristic"), "medium pair 1, {mode:?}: {}", r.algorithm);
     }
+}
+
+/// BG-01M6QKBP AC2, a profile rather than a check (its AC is manual): banded global on two ~25 kb
+/// homologs, above the budget, runs the sdpkpp chain band and then the LCSk++-extended band. Each
+/// band's rust-bio traceback is (|x| + 1) x (|y| + 1) two-byte cells, about 1.2 GB here. Run alone
+/// under a memory profiler, the peak resident size should stay near one traceback, not two:
+/// `cargo test -p molbiocraft-align --test alignment_validation banded_global_25kb_profile -- --ignored`
+/// with the test binary under `/usr/bin/time -l` (macOS) or `/usr/bin/time -v` (Linux).
+#[test]
+#[ignore = "memory profile: about 1.3 GB peak; run it alone under /usr/bin/time"]
+fn banded_global_25kb_profile_holds_one_traceback() {
+    let mut rng = PairRng(0x25_0000);
+    let core = rng.dna(24_000);
+    let (a, b) = (rng.embed(&core, 300, 500, 20, 10), rng.embed(&core, 300, 500, 20, 10));
+    assert!((a.len() + 1) * (b.len() + 1) > EXACT_BUDGET && a.len().max(b.len()) <= 25_000, "{} x {}", a.len(), b.len());
+    let r = align_pairwise_banded_sparse(text(&a), text(&b), "global", 6, 24, 2, -3, -5, -2, 25_000);
+    assert_real_alignment(&r, (&a, &b), STUDIO_DNA, "25 kb homologs, banded global");
+    assert!(r.algorithm.starts_with("Banded") && r.algorithm.contains("k=6, w=24"), "{} x {}: {}", a.len(), b.len(), r.algorithm);
+    println!("{} x {}: traceback {:.2} GB; {}", a.len(), b.len(), ((a.len() + 1) * (b.len() + 1) * 2) as f64 / 1e9, r.algorithm);
 }

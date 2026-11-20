@@ -1428,10 +1428,10 @@ pub fn assemble_sanger_contig_poa_at(
     }
 }
 
-/// Largest full matrix, `(|x| + 1) * (|y| + 1)` cells, that local and global mode align exactly
-/// rather than banding (local since BG-01M6PX3B, global since BG-01M6Q2R6). rust-bio's banded aligner
-/// returns an empty alignment for a band larger than this (`MAX_CELLS` in bio 2.3 `banded.rs`), so
-/// the full matrix is never more cells than the largest band it would fill.
+/// Largest full matrix, `(|x| + 1) * (|y| + 1)` cells, that every mode aligns exactly rather than
+/// banding (local since BG-01M6PX3B, global since BG-01M6Q2R6, semi-global since BG-01M6QKBP).
+/// rust-bio's banded aligner returns an empty alignment for a band larger than this (`MAX_CELLS` in
+/// bio 2.3 `banded.rs`), so the full matrix is never more cells than the largest band it would fill.
 const EXACT_CELL_BUDGET: usize = 5_000_000;
 
 /// What a banded result's label says when its band may have missed the optimum.
@@ -1681,9 +1681,8 @@ pub fn align_pairwise_banded_sparse_with_warnings(
 
 /// Pairwise alignment for multi-kilobase / large-construct sequences: dynamic programming in a band
 /// of width `w` around a sparse k-mer backbone (`bio::alignment::pairwise::banded::Aligner`), except
-/// that local and global mode align a matrix within [`EXACT_CELL_BUDGET`] in full. Semi-global mode
-/// bands at every size. Every banded result is labelled a heuristic that can score below the
-/// optimum; a full-matrix result is labelled as exact.
+/// that every mode aligns a matrix within [`EXACT_CELL_BUDGET`] in full. Every banded result is
+/// labelled a heuristic that can score below the optimum; a full-matrix result is labelled as exact.
 ///
 /// Local mode (BG-01M6PX3B): the band covers only the chain of shared k-mers ±`w` (and `2k` past
 /// its ends), and a local optimum may lie on another diagonal or run past the chain's ends, so any
@@ -1699,7 +1698,15 @@ pub fn align_pairwise_banded_sparse_with_warnings(
 /// divergent homologs, so global mode runs full-matrix Needleman-Wunsch-Gotoh (exact) within the same
 /// budget. Above it, when the sdpkpp chain's band fits it also aligns in the LCSk++-extended band and
 /// keeps the better alignment: on long homologs between random flanks the extension rescues some
-/// pairs the chain band loses and loses others the chain band gets right.
+/// pairs the chain band loses and loses others the chain band gets right. The two bands run one
+/// after the other: each band's rust-bio aligner, with its (|x| + 1) x (|y| + 1) traceback, is
+/// dropped inside [`align_within_band_ceiling`] before it returns, so the extended band's traceback
+/// is allocated only after the chain band's has been freed.
+///
+/// Semi-global mode (BG-01M6QKBP): a k-mer band misses the semi-global optimum on short pairs too,
+/// so semi-global mode runs the full matrix (rust-bio's `semiglobal()`: all of the first sequence
+/// aligned, the second sequence's end gaps free) within the same budget, and bands along the sdpkpp
+/// chain above it.
 ///
 /// In every mode a band larger than rust-bio's 5,000,000-cell limit goes through the fallbacks of
 /// [`align_within_band_ceiling`] (BG-01M6Q0K7) instead of returning rust-bio's empty sentinel; a pair
@@ -1783,10 +1790,17 @@ pub fn align_pairwise_banded_sparse(
     let mode_lower = mode.to_ascii_lowercase();
     let is_local = mode_lower.contains("local") || mode_lower.contains("sw");
     let is_semi = !is_local && mode_lower.contains("semi");
-    let exact = !is_semi && (x.len() + 1).saturating_mul(y.len() + 1) <= EXACT_CELL_BUDGET;
+    let exact = (x.len() + 1).saturating_mul(y.len() + 1) <= EXACT_CELL_BUDGET;
     let (aln, band_run) = if exact {
         let mut full = FullAligner::with_capacity(x.len(), y.len(), go, ge, match_fn);
-        (if is_local { full.local(x, y) } else { full.global(x, y) }, None)
+        let aln = if is_local {
+            full.local(x, y)
+        } else if is_semi {
+            full.semiglobal(x, y)
+        } else {
+            full.global(x, y)
+        };
+        (aln, None)
     } else {
         // The clip penalties rust-bio's own `local()`, `semiglobal()` and `global()` set: free clips
         // of both sequences, free clips of the second only (all of the first is aligned), no free
