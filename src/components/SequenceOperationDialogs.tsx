@@ -236,6 +236,10 @@ export const DigestOperationDialog: React.FC<DigestOperationDialogProps> = ({ do
           if (on) next.add(key); else next.delete(key);
           set('enzymes', Array.from(next).join(','));
         };
+        // A chosen key no checklist row holds (a custom definition no longer stored, a name the
+        // catalogue lacks, an enzyme that does not cut here) gets its own ticked entry, so it can be
+        // unticked here rather than only by Reset to defaults (BG-01M7J3DP).
+        const noRow = Array.from(chosen).filter((k) => !cutters.some((c) => c.key === k));
         return (
           <>
             <OptionRow label="Enzymes:" hint={countLine}>
@@ -251,6 +255,17 @@ export const DigestOperationDialog: React.FC<DigestOperationDialogProps> = ({ do
                 ))}
                 {shown.length === 0 && <span className="mbc-opdlg-muted">No matching enzymes.</span>}
               </div>
+              {noRow.length > 0 && (
+                <div className="mbc-opdlg-checklist" role="group" aria-label="Chosen enzymes not listed above">
+                  {noRow.map((k) => (
+                    <label key={k} className="mbc-check-row">
+                      <input type="checkbox" checked onChange={(e) => toggle(k, e.target.checked)} />
+                      <span>{labelOfKey(k)}</span>
+                      <span className="mbc-opdlg-muted">chosen, not listed above · untick to remove</span>
+                    </label>
+                  ))}
+                </div>
+              )}
               {chosen.size > 0 && <span className="mbc-opdlg-muted">Selected: {Array.from(chosen).map(labelOfKey).join(', ')}</span>}
             </OptionRow>
             <OptionRow label="Annotations:">

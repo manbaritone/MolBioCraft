@@ -595,3 +595,57 @@ describe('US-01M7HRCD AC5: a saved workflow\'s digest step digests with a custom
   });
 });
 
+
+// ─── BG-01M7J3DP: a chosen key with no row is removable in the dialog ───
+
+/** The dialog's entries for chosen keys that have no row in the checklist, by their labels. */
+const NOT_LISTED = '[role="group"][aria-label="Chosen enzymes not listed above"]';
+const notListed = (app: AppHarness) => app.all(`${NOT_LISTED} label.mbc-check-row`).map((r) => words(r.querySelectorAll('span')[0]?.textContent));
+async function untickNotListed(app: AppHarness, label: string): Promise<void> {
+  const row = app.all(`${NOT_LISTED} label.mbc-check-row`).find((r) => words(r.querySelectorAll('span')[0]?.textContent) === label);
+  if (!row) throw new Error(`the Digest dialog offers no "${label}" entry to untick; it offers ${notListed(app).join(' | ') || 'none'}`);
+  const box = row.querySelectorAll('input')[0];
+  expect(box.checked).toBe(true);
+  await app.click(box);
+  await app.settle();
+}
+const lastUsedEnzymes = (storage: LiveStorage) => JSON.parse(storage.getItem(OPTIONS_KEY) ?? '{}')?.lastUsed?.['digest-fragments']?.enzymes;
+
+describe('BG-01M7J3DP AC1: a chosen key with no row can be removed in the dialog, which then digests with the rest', () => {
+  for (const [why, chosen, storage, labels] of [
+    ['a custom enzyme no longer stored', 'custom:seed-1', unreadableStore, ['A custom enzyme no longer stored']],
+    ['a name the catalogue does not hold', 'NotAnEnzyme', () => memoryStorage(), ['NotAnEnzyme']],
+    ['a built-in that does not cut this document', 'NotI', () => memoryStorage(), ['NotI']],
+    ['both at once', 'custom:seed-1,NotAnEnzyme', unreadableStore, ['A custom enzyme no longer stored', 'NotAnEnzyme']],
+  ] as const) {
+    it(`BG-01M7J3DP AC1 a chosen key with no row can be removed: ${why}, then EcoRI digests and is the last-used choice`, async () => {
+      const store = lastUsed(storage(), chosen);
+      await withDoc(store, docOf('pMine', TWO_ECO), async (app) => {
+        await openDigest(app);
+        expect(selectedLine(app)).toEqual([`Selected: ${labels.join(', ')}`]);
+        expect(notListed(app)).toEqual([...labels]);
+        await tick(app, 'EcoRI');
+        expect(selectedLine(app)).toEqual([`Selected: ${[...labels, 'EcoRI'].join(', ')}`]);
+        for (const label of labels) await untickNotListed(app, label);
+        expect(notListed(app)).toEqual([]);
+        expect(selectedLine(app)).toEqual(['Selected: EcoRI']);
+        expect(words(dialogOf(app).textContent)).not.toContain('custom:');
+        await digest(app);
+        expect(alerts(app)).toEqual([]);
+        expect(created()).toEqual(BUILTIN_ECO_FRAGMENTS);
+        expect(fragmentsInWorkspace(app, 'pMine')).toHaveLength(BUILTIN_ECO_FRAGMENTS.length);
+        expect(lastUsedEnzymes(store)).toBe('EcoRI');
+      });
+    });
+  }
+
+  it('BG-01M7J3DP AC1 a chosen key with no row can be removed, and left in place it is still refused by name (AC3 of US-01M7HRCD kept)', async () => {
+    await withDoc(lastUsed(unreadableStore(), 'custom:seed-1'), docOf('pKept', TWO_ECO), async (app) => {
+      await openDigest(app);
+      await tick(app, 'EcoRI');
+      await digest(app);
+      expect(alerts(app)).toEqual([GONE_REFUSAL]);
+      expect(fragmentsInWorkspace(app, 'pKept')).toEqual([]);
+    });
+  });
+});
