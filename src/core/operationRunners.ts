@@ -1858,6 +1858,12 @@ export function runExpressionAnalysis(table: CountTable, v: OptionValues, ctx: R
 
 // ───────────────────────────── BLAST query-centric alignment ─────────────────────────────
 
+/**
+ * The one sentence a query-centric BLAST document uses for anything it shows cut (D0005): `what` is
+ * truncated and shows only `shown`. A row the document cannot fill and a cut query both say it this way.
+ */
+export const queryCentricCutNote = (what: string, shown: string) => `${what} is truncated; it shows only ${shown}.`;
+
 export function runQueryCentricAlignment(query: SequenceDocument, querySeq: string, hits: BlastHitRecord[], ctx: RunContext, subjects: SequenceDocument[] = []): OperationResult {
   if (!hits.length) throw new Error('No BLAST hits to align.');
   const q = querySeq.toUpperCase().replace(/[^A-Z*]/g, '');
@@ -1878,11 +1884,19 @@ export function runQueryCentricAlignment(query: SequenceDocument, querySeq: stri
     return { alignedQuery: r.alignedSeq1, alignedSubject: r.alignedSeq2 };
   };
   const rows = queryCentricRows(q, hits, realign);
-  const doc = newAlignmentDoc(query, `${query.name} BLAST hits (query-centric)`,
+  // A row the document did not realign keeps the engine's first 120 display columns, so a hit whose
+  // HSP spans more query positions than that is shown cut: its Notes and the summary say so (D0005).
+  const cut = rows.flatMap(({ name, hit: h, realigned }) => {
+    const span = Math.abs(h.queryEnd - h.queryStart) + 1;
+    const kept = [...h.alignedQuery].filter((c) => c !== '-').length;
+    return realigned || kept >= span ? [] : [queryCentricCutNote(`Row "${name}"`, `${kept.toLocaleString('en-US')} of the ${span.toLocaleString('en-US')} query positions its HSP spans`)];
+  });
+  const doc = withWarningNotes(newAlignmentDoc(query, `${query.name} BLAST hits (query-centric)`,
     [{ name: `${query.name} (query)`, sequence: q }, ...rows.map((r) => ({ name: r.name, sequence: r.sequence, accession: r.hit.accession, description: r.hit.description }))],
     'BLAST Query-Centric Alignment', `${hits.length} BLAST hits placed on the query (insertions relative to the query not shown)`,
-    [query.id, ...new Set(hits.map((h) => h.id.replace(/^blast-hit-/, '').replace(/~hsp\d+$/, '')))], ctx.folder, { 'BLAST program': hits[0].program });
-  return { created: [doc], updated: [], summary: `Query-centric alignment of ${hits.length} hits` };
+    [query.id, ...new Set(hits.map((h) => h.id.replace(/^blast-hit-/, '').replace(/~hsp\d+$/, '')))], ctx.folder, { 'BLAST program': hits[0].program }), cut);
+  const cutSummary = cut.length ? `; ${cut.length === 1 ? '1 row is' : `${cut.length} rows are`} truncated (see the document's Notes)` : '';
+  return { created: [doc], updated: [], summary: `Query-centric alignment of ${hits.length} hits${cutSummary}` };
 }
 
 const DNA_COMP: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A', U: 'A', N: 'N' };
