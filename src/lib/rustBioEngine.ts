@@ -1873,6 +1873,8 @@ export interface CodonOptimizationResult {
   gcPercent: number;
   caiScore: number;
   removedForbiddenSites: number;
+  /** The engine's warnings, one sentence each (D0005): a residue no host codon writes, e.g. X as NNN (BG-01M7Q785). */
+  warnings: string[];
   engine: 'Rust Bioinformatics Engine';
 }
 
@@ -1884,6 +1886,7 @@ interface RustCodonOptReport {
   gcPercent: number;
   caiScore: number;
   removedForbiddenSites?: number;
+  warnings?: string[];
 }
 
 export function optimizeCodonsRust(
@@ -1903,6 +1906,7 @@ export function optimizeCodonsRust(
     gcPercent: res.gcPercent,
     caiScore: res.caiScore,
     removedForbiddenSites: res.removedForbiddenSites ?? 0,
+    warnings: res.warnings ?? [],
     engine: 'Rust Bioinformatics Engine',
   };
 }

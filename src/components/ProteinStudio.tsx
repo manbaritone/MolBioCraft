@@ -840,6 +840,7 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
                   <span>Back-Translated / Codon-Optimized DNA (5&apos;→3&apos;):</span>
                   <code>{codonResult.optimizedDna.slice(0, 210)}...</code>
                 </div>
+                <ResultWarnings warnings={codonResult.warnings} label="Codon optimisation warnings" />
               </div>
             )}
 
