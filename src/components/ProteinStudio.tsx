@@ -505,8 +505,9 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
         id: `feat-epitope-${Date.now()}-${idx}`,
         name,
         type: 'antigenic_epitope',
-        start: Math.max(1, runs[0][0]),
-        end: Math.min(doc.sequence.length, runs[runs.length - 1][1]),
+        // its span is its lowest to its highest base, as the GenBank reader stores a join
+        start: Math.max(1, Math.min(...runs.map((r) => r[0]))),
+        end: Math.min(doc.sequence.length, Math.max(...runs.map((r) => r[1]))),
         strand: (minusStrand ? -1 : 1) as 1 | -1,
         color: '#d97706',
         notes: `EMBOSS Kolaskar-Tongaonkar antigenic determinant (${ep.peptide}, score=${ep.maxScore})`,

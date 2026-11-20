@@ -197,15 +197,18 @@ export function analysedProtein(
 
 /**
  * The document's bases residues `fromAa`..`toAa` (1-based) of the analysed protein were translated
- * from, as ascending runs: one for a contiguous read, one per segment a joined CDS's residues
- * cross into.
+ * from, as runs in the order the record stores a feature's parts (the GenBank reader's order, which
+ * its writer exports): one for a contiguous read, one per segment a joined CDS's residues cross
+ * into, and two for a read across a circular record's origin. That is the reading order on the
+ * plus strand and its reverse on the minus strand, never sorted: `2995..51` is (2995..3000) then
+ * (1..51) on either strand.
  */
 export function residueBaseRuns(target: ProteinAnalysisTarget, analysed: AnalysedProtein, fromAa: number, toAa: number): [number, number][] {
   const first = analysed.codonStarts[fromAa - 1];
   const last = analysed.codonStarts[toAa - 1] + 2;
   const bases: number[] = [];
   for (let p = first; p <= last; p++) bases.push(documentBaseOf(target, p));
-  bases.sort((x, y) => x - y);
+  if (target.minusStrand) bases.reverse();
   const runs: [number, number][] = [];
   for (const b of bases) {
     const run = runs[runs.length - 1];

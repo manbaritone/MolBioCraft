@@ -33,7 +33,10 @@
  * epitopes placed each epitope from the slice or CDS start, not from the analysed ORF's; and a
  * joined CDS was translated across its introns. Each card now reads the engine's translation of
  * the bases `translatedSpan` names, shows an empty state when there is none, and a joined CDS is
- * read from its segments alone.
+ * read from its segments alone. An epitope across a circular record's origin, or across a joined
+ * CDS's exon boundary, is saved with its parts in the order the GenBank reader stores and its
+ * writer exports them (reading order on the plus strand, its reverse on the minus strand), so its
+ * bases translate to its peptide before and after a GenBank round trip.
  */
 
 import React from 'react';
@@ -47,6 +50,7 @@ import { CONTACT_DRAW_LIMIT, ProteinStructure3DViewer, contactOverlay } from '..
 import * as bio from '../core/bioEngine';
 import { analyzeProteinSequence } from '../core/bioEngine';
 import { EMPTY_WORKSPACE_DOCUMENT } from '../core/emptyWorkspace';
+import { exportToGenBank, parseGenBank } from '../core/fileParsers';
 import { alignPdbStructuresKabsch, type PdbCaAtom } from '../core/genomicsAndStructureSuite';
 import { resolveContactAtomIndices, type StructureContactLike } from '../core/structureContacts';
 import * as rust from '../lib/rustBioEngine';
@@ -852,5 +856,119 @@ describe('the protein the digest, MS2, PTM and epitope cards analyse', () => {
     const minus = engineInputs(doc('djm', 'Gene', seq, 'DNA', [{ ...joined, strand: -1 }]));
     expect(molecularWeight(minus.html)).toBe(kda(revComp(exons), true));
     expect(new Set([...minus.digest, ...minus.ptm])).toEqual(new Set([translate(revComp(exons))]));
+  });
+
+  // Round 2 (the data seat's REJECT): an epitope across a circular record's origin, or across a
+  // joined CDS's exon boundary, is saved with its parts in the order the record stores a
+  // feature's parts, the order the GenBank reader gives `2801..256` and Find ORFs writes
+  // join(start..len,1..end): the plus-strand reading order, on the minus strand its reverse.
+
+  /** A feature's bases, its parts read in stored (index) order, then on the minus strand reverse-complemented. */
+  const featureRead = (seq: string, f: SequenceFeature) => {
+    const parts = f.segments && f.segments.length > 1 ? [...f.segments].sort((a, b) => a.index - b.index) : [f];
+    const bases = parts.map((g) => seq.slice(g.start - 1, g.end)).join('');
+    return f.strand < 0 ? revComp(bases) : bases;
+  };
+  /** A GenBank flat file of `seq` with one CDS at `location`. */
+  const genBankText = (seq: string, location: string, topology: 'circular' | 'linear') => [
+    `LOCUS       Gene                    ${seq.length} bp    DNA     ${topology} SYN 01-JAN-2000`,
+    'FEATURES             Location/Qualifiers',
+    `     CDS             ${location}`,
+    '                     /label="gene"',
+    'ORIGIN',
+    ...(seq.toLowerCase().match(/.{1,60}/g) ?? []).map((line, i) => `${String(i * 60 + 1).padStart(9)} ${line.match(/.{1,10}/g)!.join(' ')}`),
+    '//',
+    '',
+  ].join('\n');
+  /** The gene the origin and exon cases hold (151 aa and its stop: one ORF), its protein and the engine's epitopes. */
+  const splitGene = epitopeGene;
+  const splitProtein = translate(splitGene).slice(0, -1);
+  const splitEpitopes = analyzeProteinSequence(splitProtein, false, 9).antigenicDeterminants;
+  /** Where the gene is cut (by the origin, or by an intron): inside a codon of its first epitope. */
+  const cut = (splitEpitopes[0].startAa - 1) * 3 + 4;
+  /**
+   * Annotates `d`'s epitopes and checks that each one's bases, read in stored part order, translate
+   * to its peptide, on the document and again after a GenBank export and re-import; returns how
+   * many have more than one part.
+   */
+  function checkEpitopeOrder(d: SequenceDocument, what: string): number {
+    const added = annotateEpitopes(d);
+    expect(added.map((f) => f.notes?.match(/\(([A-Z]+),/)?.[1]), what).toEqual(splitEpitopes.map((e) => e.peptide));
+    const back = parseGenBank(exportToGenBank({ ...d, features: [...d.features, ...added] }), 'Gene');
+    let multiPart = 0;
+    for (const [i, f] of added.entries()) {
+      const peptide = splitEpitopes[i].peptide;
+      expect(translate(featureRead(d.sequence, f)), `${what}: ${f.name}`).toBe(peptide);
+      // a feature's span is its lowest to its highest base, as the GenBank reader stores a join
+      const bases = (f.segments ?? [f]).flatMap((g) => [g.start, g.end]);
+      expect([f.start, f.end], `${what}: ${f.name} span`).toEqual([Math.min(...bases), Math.max(...bases)]);
+      const again = back.features.filter((g) => g.name === f.name);
+      expect(again, `${what}: ${f.name} re-imported`).toHaveLength(1);
+      expect(translate(featureRead(back.sequence, again[0])), `${what}: ${f.name} after a GenBank round trip`).toBe(peptide);
+      if ((f.segments?.length ?? 0) > 1) multiPart++;
+    }
+    return multiPart;
+  }
+
+  it('saves an epitope across a circular record\'s origin with its parts in reading order, both strands, both ways of writing the CDS', () => {
+    expect(splitEpitopes.length).toBeGreaterThan(1);
+    expect(cut % 3, 'the cut falls inside a codon').not.toBe(0);
+    const L = 3_000;
+    const filler = randomLetters(L - splitGene.length, 0x5c1, 'ACGT');
+    for (const minus of [false, true]) {
+      // the gene's bases on the forward strand: its first `cut` reading bases end the record on
+      // the plus strand, and begin it on the minus strand
+      const forward = minus ? revComp(splitGene) : splitGene;
+      const before = minus ? splitGene.length - cut : cut;
+      const seq = `${forward.slice(before)}${filler}${forward.slice(0, before)}`;
+      expect(seq).toHaveLength(L);
+      const [from, to] = [L - before + 1, splitGene.length - before];
+      const location = `${from}..${to}`;
+      // the GenBank reader's form: start 1, end L, the parts (from..L),(1..to)
+      const parsed = { ...parseGenBank(genBankText(seq, minus ? `complement(${location})` : location, 'circular'), 'Gene'), topology: 'circular' as const };
+      const [cds] = parsed.features.filter((f) => f.type === 'CDS');
+      expect([cds.start, cds.end, cds.strand, cds.segments?.map((g) => [g.start, g.end])]).toEqual([1, L, minus ? -1 : 1, [[from, L], [1, to]]]);
+      expect(translate(featureRead(seq, cds))).toBe(translate(splitGene));
+      const strand = minus ? 'minus' : 'plus';
+      expect(checkEpitopeOrder(parsed, `${strand}, parser form`), 'an epitope crosses the origin').toBeGreaterThan(0);
+      // a CDS whose start is past its end, which runs across the origin
+      const wrapped: SequenceFeature = { id: 'w1', name: 'gene', type: 'CDS', start: from, end: to, strand: minus ? -1 : 1, color: '#000' };
+      const wrappedDoc = { ...doc('dw', 'Gene', seq, 'DNA', [wrapped]), topology: 'circular' as const };
+      expect(checkEpitopeOrder(wrappedDoc, `${strand}, start > end`), 'an epitope crosses the origin').toBeGreaterThan(0);
+    }
+  }, 60_000);
+
+  it('saves an epitope across a joined CDS\'s exon boundary as its parts on each exon, both strands', () => {
+    const [left, intron, right] = [randomLetters(100, 0x5c2, 'ACGT'), randomLetters(80, 0x5c3, 'ACGT'), randomLetters(100, 0x5c4, 'ACGT')];
+    for (const minus of [false, true]) {
+      const forward = minus ? revComp(splitGene) : splitGene;
+      const first = minus ? splitGene.length - cut : cut;
+      const seq = `${left}${forward.slice(0, first)}${intron}${forward.slice(first)}${right}`;
+      const exon1 = { start: 101, end: 100 + first };
+      const exon2 = { start: exon1.end + intron.length + 1, end: exon1.end + intron.length + splitGene.length - first };
+      const segments = [exon1, exon2].map((g, i) => ({ index: i + 1, name: `exon ${i + 1}`, ...g, color: '#000' }));
+      const joined: SequenceFeature = { id: 'j1', name: 'gene', type: 'CDS', start: exon1.start, end: exon2.end, strand: minus ? -1 : 1, color: '#000', segments };
+      expect(translate(featureRead(seq, joined))).toBe(translate(splitGene));
+      expect(checkEpitopeOrder(doc('dj', 'Gene', seq, 'DNA', [joined]), minus ? 'minus' : 'plus'), 'an epitope crosses the exon boundary').toBeGreaterThan(0);
+    }
+  }, 60_000);
+
+  it('says the analysis did not report which bases it translated when it does not', () => {
+    const real = bio.analyzeProteinSequence;
+    const stale = vi.spyOn(bio, 'analyzeProteinSequence').mockImplementation((...args) => {
+      const { translatedSpan: _dropped, ...rest } = real(...args) as ReturnType<typeof real> & { translatedSpan?: unknown };
+      return rest;
+    });
+    try {
+      const { html, digest, ptm } = engineInputs(doc('d5k', 'Contig', contigWithEpitopes, 'DNA'));
+      expect(new Set([...digest, ...ptm])).toEqual(new Set(['']));
+      expect(emptyStates(html)).toEqual({
+        digest: 'No peptide: protein analysis did not report which bases it translated, so there is nothing to digest.',
+        ms2: 'No MS2 spectrum: protein analysis did not report which bases it translated, so there is no peptide to fragment.',
+        ptm: 'No PTM, PEST or disulfide site: protein analysis did not report which bases it translated, so there is no residue to scan.',
+      });
+    } finally {
+      stale.mockRestore();
+    }
   });
 });
