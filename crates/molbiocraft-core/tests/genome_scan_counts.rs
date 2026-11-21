@@ -7,12 +7,14 @@
 //! BG-01M6SQ9T: the repeat scan stops after comparing 10,000,000 copy pairs (D0055), so it no
 //! longer compares the more than a hundred million that 250 kb of a diverged simple satellite,
 //! such as HSat3's (GGAAT)n, holds; past that bound its total is a lower bound and it says so, and
-//! under it the scan is exact. The bound is checked on
-//! the scan's own count of the pairs it visited, and on which pairs its list came from, not on wall
-//! time.
+//! under it the scan is exact. BG-01M6W0ZE: the bound counts work, one unit per copy pair visited
+//! and one per base compared while extending a pair's arms, 25,000,000 units in all, so a long run
+//! of identical copies (a poly-A, a perfect (GGAAT)n), whose few pairs each extend thousands of
+//! bases, stops at it too. The bound is checked on the scan's own count of the work it did, and on
+//! which pairs its list came from, not on wall time.
 //! Every sequence is generated here from a fixed seed.
 
-use molbiocraft_core::genome_index::scan_genomic_repeats_with_visit_bound;
+use molbiocraft_core::genome_index::scan_genomic_repeats_with_work_bound;
 use molbiocraft_core::{
     reverse_complement_iupac, scan_genomic_repeats, scan_microsatellite_strs, GenomicRepeatHit,
     GenomicRepeatScan,
@@ -326,17 +328,28 @@ fn high_copy_fixture() -> Vec<u8> {
     s
 }
 
-/// The visit bound the studio's scan runs under (D0055), a number of copy pairs compared. It was set
-/// from a 250 ms budget at the 46.5 million pairs per second the Sprint 5 goal-review seats
-/// measured on the HSat3-like array; it bounds pairs, not time.
-const STUDIO_VISIT_BOUND: usize = 10_000_000;
+/// The work bound the studio's scan runs under (D0055, BG-01M6W0ZE): one unit per copy pair visited
+/// and one per base compared while extending a pair's arms. It is a counter, not a clock: set just
+/// above the 22,696,049 units the alpha-satellite-like HOR array below takes to scan whole.
+const STUDIO_WORK_BOUND: usize = 25_000_000;
 
-/// The sentence a scan that stopped at `visits` copy pairs, at arms of `arm` bases, warns with.
-fn stop_sentence(visits: usize, arm: usize) -> String {
+/// The sentence a scan that stopped after comparing `pairs` copy pairs and `bases` bases, at arms
+/// of `arm` bases, warns with.
+fn stop_sentence(pairs: usize, bases: usize, arm: usize) -> String {
     format!(
-        "The repeat scan stopped after comparing {} copy pairs at arms of {arm} bp; the total is a lower bound and the list holds the longest repeats found before it stopped.",
-        grouped(visits)
+        "The repeat scan stopped at its work bound after comparing {} copy pairs and {} bases at arms of {arm} bp; the total is a lower bound and the list holds the longest repeats found before it stopped.",
+        grouped(pairs),
+        grouped(bases)
     )
+}
+
+/// The bases the scan compares extending the direct repeat (`len`, `i`, `j`) of an `n`-base sequence
+/// of known bases past its `k`-base seed, as [`direct_repeats_by_arm1`] gives it: each base that
+/// matched and the first that did not, or, when the arms reach as far as they may (arm 1 to arm 2's
+/// start, arm 2 to the end), every base there.
+fn direct_bases_compared((len, i, j): (usize, usize, usize), n: usize, k: usize) -> usize {
+    let span = (j - i).min(n - j) - k;
+    if len - k < span { len - k + 1 } else { span }
 }
 
 /// The sentence that follows the stop sentence when the scan stopped before it compared any
@@ -435,45 +448,59 @@ fn holds_repeat(s: &[u8], h: &GenomicRepeatHit) -> bool {
     }
 }
 
-/// BG-01M6SQ9T AC1: on satellite arrays whose copy pairs number over a hundred million the scan
-/// stops at the bound, counted as it visits each pair, and says that its total is a lower
-/// bound and its list the longest found before it stopped. The bound is enforced in the pair loops:
-/// lowered to 1,000, the list is the best of the first 1,000 pairs the scan visits, found here
-/// without the scan, not the best of every pair. A scan that visited every pair and only cut the
-/// number it reports afterwards lists the best of every pair, and fails here.
+/// BG-01M6SQ9T AC1, BG-01M6W0ZE AC2: on satellite arrays whose copy pairs number over a hundred
+/// million the scan stops at the bound, counted in work units as it visits each pair and extends its
+/// arms, and says that its total is a lower bound and its list the longest found before it stopped.
+/// The bound is enforced in the pair loops: lowered to the work of the first 1,000 pairs the scan
+/// visits, found here without the scan, it visits exactly those 1,000 and its list is their best,
+/// not the best of every pair. A scan that visited every pair and only cut the number it reports
+/// afterwards lists the best of every pair, and one that did not count the bases it compared visits
+/// more than 1,000 pairs: each fails here.
 #[test]
 fn repeat_scan_bounds_its_visits_on_satellite_arrays() {
     // the bound is enforced as the scan counts, on any sequence: lowered to 1,000 on 60 kb of
     // random bases, which hold more than 2,000 repeats of a 10-bp arm, the count stops at 1,000
     let random = random_bases(60_000, 0x60_0000_5eed);
     let text = std::str::from_utf8(&random).unwrap();
-    let (whole, all_visits) = scan_genomic_repeats_with_visit_bound(text, 10, 80, usize::MAX);
-    assert!(!whole.total_is_lower_bound && whole.total_hits == all_visits, "{}", whole.total_hits);
-    assert!(all_visits > 2_000, "fixture: {all_visits} repeats");
-    let (low, visits) = scan_genomic_repeats_with_visit_bound(text, 10, 80, 1_000);
-    assert_eq!((visits, low.total_hits, low.total_is_lower_bound), (1_000, 1_000, true));
-    assert_eq!(low.warnings, [stop_sentence(1_000, 10), NOT_COMPARED.to_string()]);
-    assert_eq!(low.hits.len(), 80);
-    assert!(low.hits.iter().all(|h| holds_repeat(&random, h)), "{:?}", low.hits);
+    let (whole, all) = scan_genomic_repeats_with_work_bound(text, 10, 80, usize::MAX);
+    assert!(!whole.total_is_lower_bound && whole.total_hits == all.pairs, "{}", whole.total_hits);
+    assert!(all.pairs > 2_000, "fixture: {} repeats", all.pairs);
     // which pairs the list came from: the scan visits direct repeats first, in order of arm 1's
     // start, and the 1,000th and 1,001st of them start at different bases, so the first 1,000 it
-    // visits are these, whatever order it takes among the pairs of one arm 1. Its list is their
-    // best 80, every repeat in it among them, not the best 80 of the whole sequence
+    // visits are these, whatever order it takes among the pairs of one arm 1. The work they take is
+    // a unit each and the bases their extensions compare
     let direct = direct_repeats_by_arm1(&random, 10);
     assert!(direct.len() > 1_000 && direct[999].1 != direct[1_000].1, "fixture: {} direct repeats", direct.len());
     let first = &direct[..1_000];
+    let first_bases: usize = first.iter().map(|&r| direct_bases_compared(r, random.len(), 10)).sum();
+    assert!(first_bases > 1_000, "fixture: {first_bases} bases compared");
+    let bound = 1_000 + first_bases;
+    let (low, work) = scan_genomic_repeats_with_work_bound(text, 10, 80, bound);
+    assert_eq!((work.pairs, work.bases, low.total_hits, low.total_is_lower_bound), (1_000, first_bases, 1_000, true));
+    assert_eq!(low.warnings, [stop_sentence(1_000, first_bases, 10), NOT_COMPARED.to_string()]);
+    assert_eq!(low.hits.len(), 80);
+    assert!(low.hits.iter().all(|h| holds_repeat(&random, h)), "{:?}", low.hits);
+    // its list is their best 80, every repeat in it among them, not the best 80 of the whole sequence
     assert_eq!(listed(&low), best_direct(first, 80), "the list is not the best 80 of the first 1,000 pairs visited");
     assert!(low.hits.iter().all(|h| first.iter().any(|&(len, i, j)| (len, i, j) == (h.arm_length_bp, h.arm1_start_bp - 1, h.arm2_start_bp - 1))));
     assert_ne!(listed(&low), listed(&whole), "the bounded list is the unbounded one");
-    // a bound the scan reaches exactly, with no pair left to compare, leaves the total exact; one
-    // pair short of it, the scan stops among the inverted repeats, having compared some of them
-    let (exact, visits) = scan_genomic_repeats_with_visit_bound(text, 10, 80, all_visits);
+    // one unit more lets the scan visit the 1,001st pair, a repeat, so it is counted, but leaves it
+    // no base to extend it by, so its arm length is not known and it is not listed
+    let (cut, work) = scan_genomic_repeats_with_work_bound(text, 10, 80, bound + 1);
+    assert_eq!((work.pairs, work.bases, cut.total_hits, cut.total_is_lower_bound), (1_001, first_bases, 1_001, true));
+    assert_eq!(cut.warnings, [stop_sentence(1_001, first_bases, 10), NOT_COMPARED.to_string()]);
+    assert_eq!(listed(&cut), listed(&low));
+    // a bound the scan reaches exactly, with no work left to do, leaves the total exact; one unit
+    // short of it, the scan stops among the inverted repeats, having compared some of them
+    let all_work = all.pairs + all.bases;
+    let (exact, work) = scan_genomic_repeats_with_work_bound(text, 10, 80, all_work);
     assert_eq!(json(&exact), json(&whole));
-    assert_eq!(visits, all_visits);
+    assert_eq!(work, all);
     assert!(!json(&exact).as_object().unwrap().contains_key("totalIsLowerBound"), "an exact reply keeps its five fields");
-    let (short, visits) = scan_genomic_repeats_with_visit_bound(text, 10, 80, all_visits - 1);
-    assert_eq!((visits, short.total_hits, short.total_is_lower_bound), (all_visits - 1, all_visits - 1, true));
-    assert_eq!(short.warnings, [stop_sentence(all_visits - 1, 10)]);
+    let (short, work) = scan_genomic_repeats_with_work_bound(text, 10, 80, all_work - 1);
+    assert_eq!((work.pairs + work.bases, short.total_hits, short.total_is_lower_bound), (all_work - 1, work.pairs, true));
+    assert!(work.pairs > direct.len(), "{} pairs visited, {} direct", work.pairs, direct.len());
+    assert_eq!(short.warnings, [stop_sentence(work.pairs, work.bases, 10)]);
 
     let hsat3 = satellite_array(b"GGAAT", 250_000, 100, 0x45a7_3000);
     let ca = satellite_array(b"CA", 250_000, 50, 0x0ca0_0005);
@@ -484,13 +511,15 @@ fn repeat_scan_bounds_its_visits_on_satellite_arrays() {
     let capped = "Repeat list capped";
     for (what, seq, arm) in [("HSat3-like", &hsat3, 10), ("HSat3-like", &hsat3, 8), ("(CA)n", &ca, 10)] {
         let text = std::str::from_utf8(seq).unwrap();
-        let (scan, visits) = scan_genomic_repeats_with_visit_bound(text, arm, 80, STUDIO_VISIT_BOUND);
-        assert_eq!(visits, STUDIO_VISIT_BOUND, "{what}, {arm} bp: copy pairs visited");
-        assert_eq!(scan.total_hits, STUDIO_VISIT_BOUND, "{what}, {arm} bp: total");
+        let (scan, work) = scan_genomic_repeats_with_work_bound(text, arm, 80, STUDIO_WORK_BOUND);
+        assert_eq!(work.pairs + work.bases, STUDIO_WORK_BOUND, "{what}, {arm} bp: work done");
+        // fixture: a diverged array's pairs extend a few bases each, so both kinds of work count
+        assert!(work.pairs > 1_000_000 && work.bases > work.pairs, "{what}, {arm} bp: {work:?}");
+        assert_eq!(scan.total_hits, work.pairs, "{what}, {arm} bp: total");
         assert!(scan.total_is_lower_bound, "{what}, {arm} bp: the total is not marked a lower bound");
         // it stops among the direct repeats, which it compares first, so it says it compared no
         // inverted ones, and lists none
-        assert_eq!(scan.warnings, [stop_sentence(STUDIO_VISIT_BOUND, arm), NOT_COMPARED.to_string()], "{what}, {arm} bp");
+        assert_eq!(scan.warnings, [stop_sentence(work.pairs, work.bases, arm), NOT_COMPARED.to_string()], "{what}, {arm} bp");
         assert!(scan.warnings.iter().all(|w| !w.contains(capped)), "{what}, {arm} bp: {:?}", scan.warnings);
         assert!(scan.hits.iter().all(|h| h.repeat_type == "Direct Repeat"), "{what}, {arm} bp: {:?}", scan.hits);
         // the list still holds 80 repeats, longest first, each one the array holds at its whole arm
@@ -507,37 +536,39 @@ fn repeat_scan_bounds_its_visits_on_satellite_arrays() {
 /// BG-01M6SQ9T: the scan compares every direct repeat before any inverted one, so a scan that stops
 /// first lists no inverted or palindromic repeat, under a caption that names all three kinds. It
 /// then says that it compared none, and only then: on 60 kb of random bases, a bound of exactly
-/// the direct repeats' number stops it before its first inverted pair, and one more lets it compare
-/// that pair.
+/// the direct repeats' work stops it before its first inverted pair, and one unit more lets it
+/// visit that pair.
 #[test]
 fn repeat_scan_says_when_it_compared_no_inverted_repeat() {
     let random = random_bases(60_000, 0x60_0000_5eed);
     let text = std::str::from_utf8(&random).unwrap();
     let direct = direct_repeats_by_arm1(&random, 10);
     let d = direct.len();
-    let (whole, all_visits) = scan_genomic_repeats_with_visit_bound(text, 10, 80, usize::MAX);
+    let direct_bases: usize = direct.iter().map(|&r| direct_bases_compared(r, random.len(), 10)).sum();
+    let (whole, all) = scan_genomic_repeats_with_work_bound(text, 10, 80, usize::MAX);
     // fixture: inverted repeats follow the direct ones, and some are among the 80 longest, so a
     // list of direct repeats only is not the sequence's list
-    assert!(all_visits > d + 1, "fixture: {all_visits} repeats, {d} direct");
+    assert!(all.pairs > d + 1, "fixture: {} repeats, {d} direct", all.pairs);
     assert!(whole.hits.iter().any(|h| h.repeat_type != "Direct Repeat"), "fixture: {:?}", whole.hits);
 
     // every direct pair compared and no inverted one: the list is the best 80 direct repeats, and
     // the scan says it compared no inverted repeat
-    let (all_direct, visits) = scan_genomic_repeats_with_visit_bound(text, 10, 80, d);
-    assert_eq!((visits, all_direct.total_is_lower_bound), (d, true));
-    assert_eq!(all_direct.warnings, [stop_sentence(d, 10), NOT_COMPARED.to_string()]);
+    let (all_direct, work) = scan_genomic_repeats_with_work_bound(text, 10, 80, d + direct_bases);
+    assert_eq!((work.pairs, work.bases, all_direct.total_is_lower_bound), (d, direct_bases, true));
+    assert_eq!(all_direct.warnings, [stop_sentence(d, direct_bases, 10), NOT_COMPARED.to_string()]);
     assert_eq!(listed(&all_direct), best_direct(&direct, 80));
-    // one inverted pair compared: the scan no longer says it compared none
-    let (one_inverted, visits) = scan_genomic_repeats_with_visit_bound(text, 10, 80, d + 1);
-    assert_eq!((visits, one_inverted.total_is_lower_bound), (d + 1, true));
-    assert_eq!(one_inverted.warnings, [stop_sentence(d + 1, 10)]);
+    // one inverted pair visited: the scan no longer says it compared none
+    let (one_inverted, work) = scan_genomic_repeats_with_work_bound(text, 10, 80, d + direct_bases + 1);
+    assert_eq!((work.pairs, work.bases, one_inverted.total_is_lower_bound), (d + 1, direct_bases, true));
+    assert_eq!(one_inverted.warnings, [stop_sentence(d + 1, direct_bases, 10)]);
     // an exact scan says neither
     assert!(whole.warnings.iter().all(|w| w != NOT_COMPARED && !w.starts_with("The repeat scan stopped")), "{:?}", whole.warnings);
 }
 
-/// BG-01M6SQ9T AC2: an alpha-satellite-like higher-order-repeat array, the satellite class the data
-/// seat measured as interactive (120 ms), compares fewer copy pairs than the bound, so its total and
-/// list are those of the scan with no bound at all.
+/// BG-01M6SQ9T AC2, BG-01M6W0ZE AC2: an alpha-satellite-like higher-order-repeat array, the satellite
+/// class the data seat measured as interactive (120 ms), takes less work than the bound, its copy
+/// pairs and the bases their extensions compare counted, so its total and list are those of the scan
+/// with no bound at all.
 #[test]
 fn alpha_satellite_hor_array_stays_exact_under_the_visit_bound() {
     // a 12-monomer HOR of 171-bp monomers: each monomer 14% substituted from one consensus, so two
@@ -554,15 +585,85 @@ fn alpha_satellite_hor_array_stays_exact_under_the_visit_bound() {
     assert!((0.01..0.03).contains(&copy_gap), "fixture: HOR copies {copy_gap} apart");
 
     let text = std::str::from_utf8(&array).unwrap();
-    let (lifted, visits) = scan_genomic_repeats_with_visit_bound(text, 10, 80, usize::MAX);
+    let (lifted, work) = scan_genomic_repeats_with_work_bound(text, 10, 80, usize::MAX);
+    let visits = work.pairs;
     let studio = scan_genomic_repeats(text, 10, 80);
-    // fixture: a satellite array, millions of copy pairs, but fewer than the bound
-    assert!(visits > 1_000_000 && visits < STUDIO_VISIT_BOUND, "fixture: {visits} copy pairs");
+    // fixture: a satellite array, millions of copy pairs and over 20 million bases compared
+    // extending them, but less work than the bound
+    assert!(visits > 1_000_000 && work.bases > 20_000_000, "fixture: {work:?}");
+    assert!(visits + work.bases < STUDIO_WORK_BOUND, "fixture: {work:?}");
     assert_eq!(lifted.total_hits, visits);
     assert_eq!(json(&studio), json(&lifted), "the bounded scan differs from the scan with no bound");
     assert!(!studio.total_is_lower_bound);
     assert_eq!(studio.warnings, [format!("Repeat list capped: it shows the 80 longest of the {} repeats found.", grouped(visits))]);
     assert_eq!(studio.hits.len(), 80);
+}
+
+/// The work a scan bounded at `bound` does on an array whose only repeats are the copy pairs
+/// (0, j), for each j of `arm2_starts` in turn, every one of them extending as far as it may reach:
+/// `min(j, n - j)` bases, arm 1 stopping where arm 2 starts and arm 2 at the end of the `n` bases.
+/// Each pair costs one unit, and one per base its extension compares past the `k`-base seed. A pair
+/// the bound leaves too little for is still visited, its extension compared only as far as the bound
+/// lets it, and the scan stops there. Returns the copy pairs visited, the bases compared, and the
+/// arm lengths of the pairs extended to their end, as (arm length, arm 2 start).
+fn work_on_one_arm1(arm2_starts: impl Iterator<Item = usize>, n: usize, k: usize, bound: usize) -> (usize, usize, Vec<(usize, usize)>) {
+    let (mut pairs, mut bases, mut whole) = (0usize, 0usize, Vec::new());
+    for j in arm2_starts {
+        let used = pairs + bases;
+        if used == bound {
+            break;
+        }
+        let span = j.min(n - j) - k;
+        pairs += 1;
+        let room = bound - used - 1;
+        bases += span.min(room);
+        if span > room {
+            break;
+        }
+        whole.push((k + span, j));
+    }
+    (pairs, bases, whole)
+}
+
+/// BG-01M6W0ZE AC1: the repeat scan's bound counts work, one unit per copy pair it visits and one per
+/// base it compares while extending a pair's arms, so a long run of identical copies, whose pairs
+/// are few but whose arms reach thousands of bases, stops at the bound as a diverged satellite does.
+/// On 250 kb of poly-A and of perfect (GGAAT)n at a 10-bp arm the only repeats are the pairs of the
+/// first seed with each later copy of it (the bases before every other pair match), each arm reaching
+/// as far as the other's start or the end: 249,980 and 49,996 pairs whose arms sum to billions of
+/// bases. The scan stops with its work at the bound, never past it, and its total is a lower bound.
+#[test]
+fn repeat_scan_counts_extension_bases_against_its_bound() {
+    let n = 250_000;
+    let poly_a = vec![b'A'; n];
+    let ggaat: Vec<u8> = b"GGAAT".iter().copied().cycle().take(n).collect();
+    for (what, seq, arm2_starts) in [
+        ("poly-A", &poly_a, (11..=n - 10).step_by(1)),
+        ("(GGAAT)n", &ggaat, (15..=n - 10).step_by(5)),
+    ] {
+        let text = std::str::from_utf8(seq).unwrap();
+        // fixture: unbounded, every one of these pairs is visited and extended to its end
+        let (all_pairs, all_bases, _) = work_on_one_arm1(arm2_starts.clone(), n, 10, usize::MAX);
+        assert!(all_bases > 1_000_000_000, "{what}, fixture: {all_pairs} pairs, {all_bases} bases");
+        let (pairs, bases, whole) = work_on_one_arm1(arm2_starts, n, 10, STUDIO_WORK_BOUND);
+        assert!(pairs < all_pairs, "{what}: the bound does not stop the scan");
+        let scan = scan_genomic_repeats(text, 10, 80);
+        assert!(scan.total_is_lower_bound, "{what}: the total is not marked a lower bound ({} repeats)", scan.total_hits);
+        assert_eq!(scan.total_hits, pairs, "{what}: total");
+        assert_eq!(scan.warnings, [stop_sentence(pairs, bases, 10), NOT_COMPARED.to_string()], "{what}");
+        // the list is the longest of the pairs extended to their end before the scan stopped
+        let mut best = whole.clone();
+        best.sort_unstable_by_key(|&(len, j)| (std::cmp::Reverse(len), j));
+        best.truncate(80);
+        let got: Vec<(usize, usize)> = scan.hits.iter().map(|h| (h.arm_length_bp, h.arm2_start_bp - 1)).collect();
+        assert_eq!(got, best, "{what}: the list");
+        assert!(scan.hits.iter().all(|h| h.arm1_start_bp == 1 && holds_repeat(seq, h)), "{what}: {:?}", scan.hits);
+        // the work the scan counted is the model's, at the bound and never past it
+        let (bounded, work) = scan_genomic_repeats_with_work_bound(text, 10, 80, STUDIO_WORK_BOUND);
+        assert_eq!(json(&bounded), json(&scan), "{what}: the studio's scan runs under the default bound");
+        assert_eq!((work.pairs, work.bases), (pairs, bases), "{what}: work counted");
+        assert_eq!(work.pairs + work.bases, STUDIO_WORK_BOUND, "{what}: work");
+    }
 }
 
 /// 10,000 random bases holding a 2,500-bp poly-A, a 1,200-bp (AT)n (its own reverse complement,
@@ -650,3 +751,4 @@ fn repeat_scan_pairs_a_with_u_in_an_rna_hairpin() {
     let scan = scan_genomic_repeats(std::str::from_utf8(&wobble).unwrap(), 12, 200);
     assert!(scan.hits.iter().all(|h| h.repeat_type == "Direct Repeat" || h.arm_length_bp < 40), "{:?}", scan.hits);
 }
+

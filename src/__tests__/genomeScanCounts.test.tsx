@@ -8,9 +8,11 @@
  * repeat scan's own warnings (the 250 kb scan cap, US-01M6P244 AC4, and the list cap) are shown
  * beside the repeat list, through the shared ResultWarnings component.
  *
- * BG-01M6SQ9T: the repeat scan stops after comparing 10,000,000 copy pairs (D0055). On a satellite
- * array, which holds far more, the badge and the caption read the total as "at least" that many and
- * the list as the longest found before the scan stopped, and the engine's stop sentence sits beside
+ * BG-01M6SQ9T: the repeat scan stops at a bound (D0055). BG-01M6W0ZE: the bound counts work, one
+ * unit per copy pair visited and one per base compared while extending a pair's arms, 25,000,000
+ * units, so a 250 kb poly-A, whose few pairs extend thousands of bases each, stops at it as a
+ * diverged satellite array does. When it stops, the badge and the caption read the total as "at
+ * least" the pairs it visited and the list as the longest found before the scan stopped, and the engine's stop sentence sits beside
  * the list, with its sentence that no inverted or palindromic repeat was compared when the scan
  * stopped among the direct ones. Every repeat caption names the arm length its scan was run at.
  *
@@ -286,6 +288,29 @@ function highCopyGenome(): string {
 }
 
 /**
+ * BG-01M6W0ZE: the repeat scan's work bound (D0055), a unit per copy pair visited and one per base
+ * compared while extending a pair's arms.
+ */
+const WORK_BOUND = 25_000_000;
+
+/** The sentence the repeat scan stops with, after comparing `pairs` copy pairs and `bases` bases. */
+const stopSentence = (pairs: number, bases: number, arm: number) =>
+  `The repeat scan stopped at its work bound after comparing ${n(pairs)} copy pairs and ${n(bases)} bases at arms of ${arm} bp; the total is a lower bound and the list holds the longest repeats found before it stopped.`;
+
+/** The copy pairs and bases a stop sentence names, or a failure when it is not one. */
+function stopWork(sentence: string | undefined): [number, number] {
+  const m = /^The repeat scan stopped at its work bound after comparing ([\d,]+) copy pairs and ([\d,]+) bases at arms of \d+ bp;/.exec(sentence ?? '');
+  expect(m, `not a stop sentence: ${sentence}`).not.toBeNull();
+  return [Number(m![1].replace(/,/g, '')), Number(m![2].replace(/,/g, ''))];
+}
+
+/**
+ * The sentence that follows the stop sentence when the scan stopped among the direct repeats, which
+ * it compares first.
+ */
+const NOT_COMPARED = 'Inverted and palindromic repeats were not compared: the scan compares direct repeats first and stopped before it reached them, so the list holds direct repeats only.';
+
+/**
  * `n` bases of `unit` copied end to end, with each base at the given rate replaced by one of the
  * other three (LCG): a satellite array, such as HSat3's diverged (GGAAT)n.
  */
@@ -438,31 +463,34 @@ describe('genome scan counts', () => {
 
   it('labels a bounded repeat total as a lower bound', async () => {
     // BG-01M6SQ9T: 250 kb of (GGAAT)n with 10% of its bases substituted, as HSat3 is diverged. Its
-    // copy pairs at a 10-bp arm number more than the 10,000,000 the scan compares, so the scan
-    // stops there; the 80 listed are the longest of the pairs compared, not of the whole array
+    // copy pairs at a 10-bp arm number over a hundred million, so the scan stops at its work bound
+    // (BG-01M6W0ZE: 25,000,000 units, a unit per copy pair visited and per base compared extending
+    // one); the 80 listed are the longest of the pairs compared, not of the whole array
     const hsat3 = doc('h', 'HSat3-like 250 kb', satelliteArray('GGAAT', 250_000, 0.1, 0x5eed_0008));
-    const stop = 'The repeat scan stopped after comparing 10,000,000 copy pairs at arms of 10 bp; the total is a lower bound and the list holds the longest repeats found before it stopped.';
-    // the scan compares direct repeats first and stops among them, so the list, captioned with all
-    // three kinds, holds no inverted or palindromic repeat, and the engine says none was compared
-    const notCompared = 'Inverted and palindromic repeats were not compared: the scan compares direct repeats first and stopped before it reached them, so the list holds direct repeats only.';
     const scan = findGenomicRepeats(hsat3.sequence, 10);
-    expect([scan.totalRepeats, scan.totalIsLowerBound, scan.minArmBp, scan.repeats.length]).toEqual([10_000_000, true, 10, 80]);
-    expect(scan.warnings).toEqual([stop, notCompared]);
+    const [pairs, bases] = stopWork(scan.warnings[0]);
+    expect(pairs + bases, 'the work done is the bound').toBe(WORK_BOUND);
+    // fixture: both kinds of work count, a few bases compared per pair
+    expect(pairs).toBeGreaterThan(1_000_000);
+    expect(bases).toBeGreaterThan(pairs);
+    const stop = stopSentence(pairs, bases, 10);
+    expect([scan.totalRepeats, scan.totalIsLowerBound, scan.minArmBp, scan.repeats.length]).toEqual([pairs, true, 10, 80]);
+    expect(scan.warnings).toEqual([stop, NOT_COMPARED]);
     expect(scan.repeats.every((r) => r.repeatType === 'Direct Repeat')).toBe(true);
 
     const html = await studio(hsat3, [hsat3], 'genes-cpg-repeats');
     const words = wordsOf(html);
     const islands = findCpGIslands(hsat3.sequence, 200).islands.length;
-    expect(words).toContain(`CpG Islands & Genomic Repeat Finder ${islands} CpG Islands • at least 10,000,000 Repeats`);
+    expect(words).toContain(`CpG Islands & Genomic Repeat Finder ${islands} CpG Islands • at least ${n(pairs)} Repeats`);
     const table = tableUnder(html, 'Direct, Inverted & Palindromic Repeats');
     expect(table.caption).toBe(
-      'Direct, Inverted & Palindromic Repeats (arms ≥ 10 bp, 80 of at least 10,000,000, the longest found before the scan stopped)'
+      `Direct, Inverted & Palindromic Repeats (arms ≥ 10 bp, 80 of at least ${n(pairs)}, the longest found before the scan stopped)`
     );
     expect(table.rows).toBe(80);
     // the stop sentence and that no inverted repeat was compared, and no claim that the list is the
     // top or the longest of a total
     const regions = warningRegions(html).filter((r) => r.label === 'Repeat scan warnings');
-    expect(regions.map((r) => r.sentences)).toEqual([[stop, notCompared]]);
+    expect(regions.map((r) => r.sentences)).toEqual([[stop, NOT_COMPARED]]);
     expect(words).not.toContain('top 80 of');
     expect(words).not.toContain('Repeat list capped');
     // beside the list it qualifies: after its caption, before its table
@@ -487,6 +515,49 @@ describe('genome scan counts', () => {
     expect(warningRegions(exactHtml).filter((r) => r.label === 'Repeat scan warnings').map((r) => r.sentences)).toEqual([
       [`Repeat list capped: it shows the 80 longest of the ${n(exact.totalRepeats)} repeats found.`],
     ]);
+  }, 60_000);
+
+  it('BG-01M6W0ZE AC3 a 250 kb poly-A document shows the work-bound stop sentence and the total as a lower bound', async () => {
+    // 250 kb of A at a 10-bp arm: the only repeats are the first seed's pairs with each later copy
+    // of it, at 11 to 249,990 (the base before every other pair matches), each arm reaching as far
+    // as the other's start or the end, so 249,980 pairs whose arms run to 15 billion bases. Counted
+    // as the bound counts them, a unit per pair and one per base compared past the seed, the scan
+    // stops part way: a pair the bound leaves too little for is visited, compared as far as the
+    // bound lets it, and the scan stops there
+    const len = 250_000;
+    let pairs = 0;
+    let bases = 0;
+    for (let j = 11; j <= len - 10; j++) {
+      if (pairs + bases === WORK_BOUND) break;
+      const span = Math.min(j, len - j) - 10;
+      pairs += 1;
+      const room = WORK_BOUND - pairs - bases;
+      bases += Math.min(span, room);
+      if (span > room) break;
+    }
+    expect(pairs, 'fixture: the bound stops the scan').toBeLessThan(249_980);
+    expect(pairs + bases).toBe(WORK_BOUND);
+    const polyA = doc('a', 'Poly-A 250 kb', 'A'.repeat(len));
+    const stop = stopSentence(pairs, bases, 10);
+    expect(stop).toBe(
+      `The repeat scan stopped at its work bound after comparing ${n(pairs)} copy pairs and ${n(bases)} bases at arms of 10 bp; the total is a lower bound and the list holds the longest repeats found before it stopped.`
+    );
+    const scan = findGenomicRepeats(polyA.sequence, 10);
+    expect([scan.totalRepeats, scan.totalIsLowerBound, scan.minArmBp, scan.repeats.length]).toEqual([pairs, true, 10, 80]);
+    expect(scan.warnings).toEqual([stop, NOT_COMPARED]);
+
+    const html = await studio(polyA, [polyA], 'genes-cpg-repeats');
+    const words = wordsOf(html);
+    expect(words).toContain(` CpG Islands • at least ${n(pairs)} Repeats`);
+    expect(tableUnder(html, 'Direct, Inverted & Palindromic Repeats').caption).toBe(
+      `Direct, Inverted & Palindromic Repeats (arms ≥ 10 bp, 80 of at least ${n(pairs)}, the longest found before the scan stopped)`
+    );
+    // the stop sentence beside the list, naming the copy pairs and bases compared and the total a
+    // lower bound
+    const regions = warningRegions(html).filter((r) => r.label === 'Repeat scan warnings');
+    expect(regions.map((r) => r.sentences)).toEqual([[stop, NOT_COMPARED]]);
+    expect(regions[0].sentences[0]).toMatch(/copy pairs and [\d,]+ bases .*the total is a lower bound/);
+    expect(words).not.toContain('Repeat list capped');
   }, 60_000);
 
   it('shows the synteny warnings beside the coverage', async () => {

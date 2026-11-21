@@ -577,31 +577,44 @@ pub struct GenomicRepeatScan {
     /// The length of the sequence given, in residues after cleaning.
     pub sequence_length_bp: usize,
     /// How many repeats the scan found in the scanned length, before `hits` was cut to `max_hits`:
-    /// every one there, or, when `total_is_lower_bound`, the copy pairs it compared before it stopped.
+    /// every one there, or, when `total_is_lower_bound`, the copy pairs it visited before it stopped.
     pub total_hits: usize,
-    /// Whether the scan stopped at its visit bound ([`REPEAT_SCAN_MAX_VISITS`] copy pairs for
-    /// [`scan_genomic_repeats`]) with pairs left to compare, so `total_hits` is a lower bound and
-    /// `hits` the longest of the pairs it compared (BG-01M6SQ9T). Serialised only when true, so an exact scan's reply keeps the five
-    /// fields it has always had.
+    /// Whether the scan stopped at its work bound ([`REPEAT_SCAN_MAX_WORK`] units for
+    /// [`scan_genomic_repeats`], one per copy pair visited and one per base compared while
+    /// extending a pair's arms) with work left to do, so `total_hits` is a lower bound and `hits`
+    /// the longest of the pairs it extended to their end (BG-01M6SQ9T, BG-01M6W0ZE). Serialised only
+    /// when true, so an exact scan's reply keeps the five fields it has always had.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub total_is_lower_bound: bool,
     /// What the scan left out of its input or its list, one plain sentence per event: the scan cap
-    /// stopping it short of the end, the visit bound stopping it before every copy pair was
+    /// stopping it short of the end, the work bound stopping it before every copy pair was
     /// compared, the bound stopping it before it compared any inverted pair, or the list holding
     /// fewer repeats than were found. Always serialised, as an empty list when nothing was left out.
     #[serde(default)]
     pub warnings: Vec<String>,
 }
 
-/// The most copy pairs a repeat scan compares (D0055). Every pair it visits is a repeat, so on a
-/// satellite array, whose pairs can number over a hundred million, the scan stops here. It bounds
-/// the number of pairs, not the time a scan takes. It was set from the studio's 250 ms budget at
-/// the 46.5 million pairs per second the Sprint 5 goal-review seats measured in the WASM engine on
-/// a 10%-diverged HSat3-like array. It does not bound the work of extending a pair's arms, which
-/// can run to as many bases as lie between the starts of its two arms, nor that of indexing the
-/// sequence's k-mers. So a long run of identical copies compares fewer pairs and still takes
-/// longer: a 250 kb poly-A, 249,980 pairs, took the data seat 646 to 877 ms in WASM (D0067).
-pub const REPEAT_SCAN_MAX_VISITS: usize = 10_000_000;
+/// The most work a repeat scan does (D0055, BG-01M6W0ZE): one unit per copy pair it visits and
+/// one per base it compares while extending a pair's arms past the seed. Every pair it visits is a
+/// repeat, so on a satellite array, whose pairs can number over a hundred million, the scan stops
+/// here; and a long run of identical copies, whose pairs are fewer but whose arms each run to as
+/// many bases as lie between the starts of the two (a 250 kb poly-A: 249,980 pairs and over 15
+/// billion bases), stops here too. It is a counter, not a clock, so the scan's tests read it
+/// exactly; it does not count the work of indexing the sequence's k-mers. It is the round figure
+/// just above the 22,696,049 units an alpha-satellite-like higher-order-repeat array of 250 kb
+/// takes to scan whole, so that array's total stays exact.
+pub const REPEAT_SCAN_MAX_WORK: usize = 25_000_000;
+
+/// The work [`scan_genomic_repeats_with_work_bound`] did: the copy pairs it visited, and the bases
+/// it compared while extending their arms past the seed: every base that matched and the first that
+/// did not, counted as a base-by-base comparison would count them, though the comparison runs eight
+/// bases at a time. Their sum is the work [`REPEAT_SCAN_MAX_WORK`] bounds.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RepeatScanWork {
+    pub pairs: usize,
+    pub bases: usize,
+}
 
 /// Fast k-mer seed-and-extend Direct, Inverted, and Palindromic repeat finder using `FxHashMap`.
 /// The hits of [`scan_genomic_repeats`].
@@ -613,34 +626,35 @@ pub fn find_genomic_repeats(raw_seq: &str, min_arm_bp: usize, max_hits: usize) -
 /// sequence when shorter), with the scanned length and the number of repeats found: every pair of
 /// copies of every k-mer in the scanned length is considered (k is `min_arm_bp`, held to 8 to 32),
 /// so the number is every repeat there with arms of at least k bases, however many copies a k-mer
-/// has, up to [`REPEAT_SCAN_MAX_VISITS`] of them. Arms are made of A, C, G, T and U, and U is read
+/// has, until the scan has done [`REPEAT_SCAN_MAX_WORK`] units of work. Arms are made of A, C, G, T and U, and U is read
 /// as T: a base matches the same base, with T and U the same base, and pairs with its Watson-Crick
 /// partner, A with T or U and C with G, so an RNA stem pairs as its DNA form does and gives the
 /// same repeats at the same coordinates. A record that mixes T and U is read the same way (a T
 /// matches a U, and A pairs with either). G·U wobble is not a pair. N and the other ambiguity codes
 /// match nothing. Each repeat's motif is the record's own letters. When the cap stopped the scan short of the end, a warning
-/// names the scanned length. When the scan has compared that many copy pairs and has more to
-/// compare, it stops: the total is marked a lower bound, and a warning says so and that the list
-/// holds the longest repeats found before it stopped. Direct repeats are compared before inverted
+/// names the scanned length. When the scan has done that much work (a unit per copy pair visited
+/// and per base compared while extending one) and has more to do, it stops: the total is marked a
+/// lower bound, and a warning names the copy pairs and bases it compared, says the total is a lower
+/// bound and that the list holds the longest repeats found before it stopped. Direct repeats are compared before inverted
 /// ones, so when it stopped before it compared any inverted pair, a further warning says inverted
 /// and palindromic repeats were not compared. Otherwise, when more repeats were found than
 /// `max_hits` (1 to 200) lets the list hold, the list keeps the longest and a warning says how many
 /// were found.
 pub fn scan_genomic_repeats(raw_seq: &str, min_arm_bp: usize, max_hits: usize) -> GenomicRepeatScan {
-    scan_genomic_repeats_with_visit_bound(raw_seq, min_arm_bp, max_hits, REPEAT_SCAN_MAX_VISITS).0
+    scan_genomic_repeats_with_work_bound(raw_seq, min_arm_bp, max_hits, REPEAT_SCAN_MAX_WORK).0
 }
 
-/// [`scan_genomic_repeats`] with the visit bound chosen, and the number of copy pairs the scan
-/// visited, counted in its pair loops as it visits each one. The repeat scan's tests read the count
-/// to check that the bound holds while the scan runs, and lift the bound (`usize::MAX`) to check
-/// that a scan under it is exact.
+/// [`scan_genomic_repeats`] with the work bound chosen, and the work the scan did, counted in its
+/// pair loops as it visits each pair and extends its arms. The repeat scan's tests read the count to
+/// check that the bound holds while the scan runs, and lift the bound (`usize::MAX`) to check that a
+/// scan under it is exact.
 #[doc(hidden)]
-pub fn scan_genomic_repeats_with_visit_bound(
+pub fn scan_genomic_repeats_with_work_bound(
     raw_seq: &str,
     min_arm_bp: usize,
     max_hits: usize,
-    max_visits: usize,
-) -> (GenomicRepeatScan, usize) {
+    max_work: usize,
+) -> (GenomicRepeatScan, RepeatScanWork) {
     let seq = clean_alpha_sequence(raw_seq);
     let bytes = seq.as_bytes();
     let n = bytes.len();
@@ -653,11 +667,13 @@ pub fn scan_genomic_repeats_with_visit_bound(
             "Repeat scan covered only the first {scanned} bp of the {whole}-bp sequence; repeats past base {scanned} are not reported."
         ));
     }
-    let found = repeats_in_prefix(bytes, scan_n, min_arm_bp, max_hits, max_visits);
+    let found = repeats_in_prefix(bytes, scan_n, min_arm_bp, max_hits, max_work);
+    let visits = found.work.pairs;
     if found.stopped {
         warnings.push(format!(
-            "The repeat scan stopped after comparing {} copy pairs at arms of {} bp; the total is a lower bound and the list holds the longest repeats found before it stopped.",
-            crate::format_thousands(found.visits),
+            "The repeat scan stopped at its work bound after comparing {} copy pairs and {} bases at arms of {} bp; the total is a lower bound and the list holds the longest repeats found before it stopped.",
+            crate::format_thousands(visits),
+            crate::format_thousands(found.work.bases),
             found.arm_bp
         ));
         if found.stopped_before_inverted {
@@ -666,28 +682,28 @@ pub fn scan_genomic_repeats_with_visit_bound(
                     .to_string(),
             );
         }
-    } else if found.visits > found.hits.len() {
-        let (listed, total) = (crate::format_thousands(found.hits.len()), crate::format_thousands(found.visits));
+    } else if visits > found.hits.len() {
+        let (listed, total) = (crate::format_thousands(found.hits.len()), crate::format_thousands(visits));
         warnings.push(format!("Repeat list capped: it shows the {listed} longest of the {total} repeats found."));
     }
     let scan = GenomicRepeatScan {
         hits: found.hits,
         scanned_length_bp: scan_n,
         sequence_length_bp: n,
-        total_hits: found.visits,
+        total_hits: visits,
         total_is_lower_bound: found.stopped,
         warnings,
     };
-    (scan, found.visits)
+    (scan, found.work)
 }
 
-/// What [`repeats_in_prefix`] found: the repeats listed; the copy pairs it visited, each one a
-/// repeat; whether it stopped at its visit bound with a pair left to visit; whether it stopped
+/// What [`repeats_in_prefix`] found: the repeats listed; the work it did, its copy pairs visited
+/// each one a repeat; whether it stopped at its work bound with work left to do; whether it stopped
 /// before it visited any inverted pair, so the list holds direct repeats only; and the arm length
 /// it seeded at.
 struct PrefixRepeats {
     hits: Vec<GenomicRepeatHit>,
-    visits: usize,
+    work: RepeatScanWork,
     stopped: bool,
     stopped_before_inverted: bool,
     arm_bp: usize,
@@ -728,6 +744,20 @@ fn flank_class(b: Option<u8>) -> u8 {
 /// [`flank_class`] for no base that can extend an arm.
 const NO_BASE: u8 = 4;
 
+/// Visit a copy pair whose arms may extend `span` bases past the seed, `matched(m)` telling how many
+/// of the first `m` of those bases match, and count its work against `max_work`: one unit for the
+/// pair and one per base read, each that matched and the first that did not, the extension read no
+/// further than the bound leaves room for. The bases it matched, or None when the bound cut the
+/// extension before its end, so the pair's arm length is not known and the scan stops. The caller
+/// visits a pair only while `work` is under `max_work`.
+fn visit_pair(work: &mut RepeatScanWork, max_work: usize, span: usize, matched: impl FnOnce(usize) -> usize) -> Option<usize> {
+    work.pairs += 1;
+    let limit = span.min(max_work - (work.pairs + work.bases));
+    let e = matched(limit);
+    work.bases += if e < limit { e + 1 } else { limit };
+    (e < limit || limit == span).then_some(e)
+}
+
 /// How many leading bytes `a` and `b` share, compared eight at a time.
 fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
     let n = a.len().min(b.len());
@@ -745,9 +775,11 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
 
 /// The repeats of `bytes[..scan_n]`, for [`scan_genomic_repeats`]: the longest `max_hits` (1 to 200)
 /// and how many were found, every copy pair of every k-mer considered (k is the minimum arm, 8 to
-/// 32 bases) until `max_visits` pairs have been visited. With a pair still to visit at that point
-/// the scan stops (direct repeats are visited first, in order of arm 1's start, then inverted
-/// ones), and the list is the longest of the pairs it visited. U is read as T throughout, so a base
+/// 32 bases) until `max_work` units of work are done, one per pair visited and one per base
+/// compared while extending a pair's arms. With work still to do at that point the scan stops
+/// (direct repeats are visited first, in order of arm 1's start, then inverted ones): a pair whose
+/// extension the bound cut short is counted, as every pair visited is a repeat, but not listed, as
+/// its arm length is not known, and the list is the longest of the pairs extended to their end. U is read as T throughout, so a base
 /// matches the same base (T and U the same), A pairs with T or U and C with G, and G·U wobble is not
 /// a pair. Direct and inverted repeats are found the same way and ranked together before the
 /// list is cut: each is extended to its maximal arms and reported once, from the seed at its outer
@@ -757,10 +789,10 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
 /// ones) and only pairs that differ there are visited: every pair visited is a repeat, and a long
 /// low-complexity run is not walked once per pair of its positions. Arms hold known bases only
 /// ([`is_known_base`]).
-fn repeats_in_prefix(bytes: &[u8], scan_n: usize, min_arm_bp: usize, max_hits: usize, max_visits: usize) -> PrefixRepeats {
+fn repeats_in_prefix(bytes: &[u8], scan_n: usize, min_arm_bp: usize, max_hits: usize, max_work: usize) -> PrefixRepeats {
     let k = min_arm_bp.clamp(8, 32);
     if scan_n < k * 2 {
-        return PrefixRepeats { hits: Vec::new(), visits: 0, stopped: false, stopped_before_inverted: false, arm_bp: k };
+        return PrefixRepeats { hits: Vec::new(), work: RepeatScanWork::default(), stopped: false, stopped_before_inverted: false, arm_bp: k };
     }
     // U read as T: an RNA arm matches and pairs as its DNA form does, and a T matches a U
     let read_as_dna: Vec<u8> = bytes[..scan_n].iter().map(|&b| if b == b'U' { b'T' } else { b }).collect();
@@ -821,11 +853,12 @@ fn repeats_in_prefix(bytes: &[u8], scan_n: usize, min_arm_bp: usize, max_hits: u
     }
     let group = |g: u32| starts[g as usize] as usize..starts[g as usize + 1] as usize;
 
-    // The `cap` best repeats so far, the worst of them on top; how many copy pairs were visited
-    // (every one a repeat); and whether a pair was left unvisited at the bound.
+    // The `cap` best repeats so far, the worst of them on top; the work done, its copy pairs visited
+    // (every one a repeat); and whether work was left undone at the bound.
     let mut kept: std::collections::BinaryHeap<RepeatCandidate> = std::collections::BinaryHeap::with_capacity(cap + 1);
-    let mut visits = 0usize;
+    let mut work = RepeatScanWork::default();
     let mut stopped = false;
+
     let mut offer = |c: RepeatCandidate| {
         if kept.len() < cap {
             kept.push(c);
@@ -852,15 +885,18 @@ fn repeats_in_prefix(bytes: &[u8], scan_n: usize, min_arm_bp: usize, max_hits: u
             if class != skip || class == NO_BASE {
                 let same = &positions[lo..hi];
                 for &j in &same[same.partition_point(|&j| j as usize <= i + k)..] {
-                    if visits == max_visits {
+                    if work.pairs + work.bases == max_work {
                         stopped = true;
                         break 'direct;
                     }
-                    visits += 1;
                     let j = j as usize;
                     // arm 1 is `i..i + ext`, arm 2 `j..j + ext`: they may meet, never overlap
                     let reach = (j - i).min(known_from[i] as usize).min(known_from[j] as usize);
-                    let ext = k + common_prefix_len(&s[i + k..i + reach], &s[j + k..j + reach]);
+                    let Some(e) = visit_pair(&mut work, max_work, reach - k, |m| common_prefix_len(&s[i + k..i + k + m], &s[j + k..j + k + m])) else {
+                        stopped = true;
+                        break 'direct;
+                    };
+                    let ext = k + e;
                     offer(RepeatCandidate { shorter_arm: std::cmp::Reverse(ext), arm1_start: i, arm2_start: j, inverted: false });
                 }
             }
@@ -878,7 +914,7 @@ fn repeats_in_prefix(bytes: &[u8], scan_n: usize, min_arm_bp: usize, max_hits: u
     let letters = *b"ACGT";
     // a scan that stopped among the direct repeats visits no inverted one
     let inverted_seeds = if stopped { 0 } else { seeds };
-    let direct_visits = visits;
+    let direct_visits = work.pairs;
     'inverted: for i in 0..inverted_seeds {
         if group_of[i] == u32::MAX {
             continue;
@@ -893,17 +929,19 @@ fn repeats_in_prefix(bytes: &[u8], scan_n: usize, min_arm_bp: usize, max_hits: u
             if !pairs_outward {
                 let same = &positions[lo..hi];
                 for &j in &same[same.partition_point(|&j| (j as usize) < i + k)..] {
-                    if visits == max_visits {
+                    if work.pairs + work.bases == max_work {
                         stopped = true;
                         break 'inverted;
                     }
-                    visits += 1;
                     let j = j as usize;
                     // arm 1 grows from `i + k` onwards, arm 2 from `j - 1` backwards (`rc` from
                     // `n - j`); arm 1 is `i..i + k + e`, arm 2 `j - e..j + k`: they may meet, never
                     // overlap
                     let reach = (j - i - k) / 2;
-                    let e = common_prefix_len(&s[i + k..i + k + reach], &rc[n - j..n - j + reach]);
+                    let Some(e) = visit_pair(&mut work, max_work, reach, |m| common_prefix_len(&s[i + k..i + k + m], &rc[n - j..n - j + m])) else {
+                        stopped = true;
+                        break 'inverted;
+                    };
                     offer(RepeatCandidate { shorter_arm: std::cmp::Reverse(k + e), arm1_start: i, arm2_start: j - e, inverted: true });
                 }
             }
@@ -935,6 +973,6 @@ fn repeats_in_prefix(bytes: &[u8], scan_n: usize, min_arm_bp: usize, max_hits: u
         })
         .collect();
     // stopped with no inverted pair visited: in the direct pass, or at the inverted pass's first pair
-    let stopped_before_inverted = stopped && visits == direct_visits;
-    PrefixRepeats { hits, visits, stopped, stopped_before_inverted, arm_bp: k }
+    let stopped_before_inverted = stopped && work.pairs == direct_visits;
+    PrefixRepeats { hits, work, stopped, stopped_before_inverted, arm_bp: k }
 }
