@@ -499,7 +499,9 @@ fn bg_01m7v098_an_organism_line_of_a_full_stop_is_no_part_of_the_name() {
 }
 
 #[test]
-fn bg_01m7v098_a_strand_0_location_is_written_with_a_question_mark_as_biopython_writes_it() {
+// D0289: a MolBioCraft strand-0 feature is unstranded (the GFF3 export writes '.'), which is
+// Biopython's strand None, so its location is the unmarked text Biopython 1.88 prints for None.
+fn bg_01m7v098_a_strand_0_location_is_written_unmarked_as_biopython_writes_strand_none() {
     let features = "     CDS             1..9\n     CDS             join(1..9,13..21)\n";
     let mut doc = bg_doc(&bg_gbk("R1", "VERSION     R1.1\n", features));
     for f in &mut doc.features {
@@ -508,13 +510,13 @@ fn bg_01m7v098_a_strand_0_location_is_written_with_a_question_mark_as_biopython_
     let out = genbank_to_functions(&[doc.clone()], &GenbankToOptions::default());
     assert_eq!(
         out.text,
-        "R1.1\tR1.1.[0:9](?)\tHypothetical protein\nR1.1\tR1.1.join{[0:9](?), [12:21](?)}\tHypothetical protein\n"
+        "R1.1\tR1.1.[0:9]\tHypothetical protein\nR1.1\tR1.1.join{[0:9], [12:21]}\tHypothetical protein\n"
     );
     // the ptt gene column falls back to the same text
     let ptt = genbank_to_ptt(&[doc], &GenbankToOptions::default()).text;
     assert_eq!(
         ptt.lines().next().unwrap().split('\t').nth(4),
-        Some("[0:9](?)")
+        Some("[0:9]")
     );
 }
 
