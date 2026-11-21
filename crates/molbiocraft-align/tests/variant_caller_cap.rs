@@ -661,7 +661,7 @@ fn no_false_call_beside_a_reference_n_run_with_a_real_deletion() {
     // that hold both that placement and the planted deletion. The planted SNP is called in every
     // probe at 5,501, its reference position, and nothing else is.
     let run = "The reference holds 10 N at 4,990-4,999; no variant is called there.".to_string();
-    let (mut called, mut left_out) = (0, 0);
+    let (mut called, mut left_out, mut snp_named) = (0, 0, 0);
     for (i, p) in deletion_beside_reference_n_probes(PROBE_SEED).iter().enumerate() {
         let r = &p.reference;
         // 0-based: the planted deletion's first base, and its VCF placement's
@@ -679,7 +679,16 @@ fn no_false_call_beside_a_reference_n_run_with_a_real_deletion() {
                 assert_eq!(rep.warnings, vec![run.clone()], "{label}, {path}");
             } else {
                 assert_eq!(report_calls(&rep), vec![p.snp.clone()], "{label}, {path}: left out");
-                assert_eq!(rep.warnings.len(), 2, "{label}, {path}: {:?}", rep.warnings);
+                // besides the run and the deletion, a warning may name bases where a reading within
+                // less than one mismatch reads a SNP the caller's does not (D0299), inside the
+                // deletion's span and beside the run
+                let (snps, warnings): (Vec<&String>, Vec<&String>) = rep.warnings.iter().partition(|w| w.starts_with("No SNP or MNP is called at "));
+                assert_eq!(warnings.len(), 2, "{label}, {path}: {:?}", rep.warnings);
+                let span = named_deletion(warnings[1], p.len);
+                for (x, y, a, b) in snps_left_out_named(&rep) {
+                    snp_named += 1;
+                    assert!(span.is_some_and(|(f, l)| f <= x && y <= l) && (a, b) == (4_990, 4_999), "{label}, {path}: {x}-{y} beside {a}-{b}: {snps:?}");
+                }
                 assert_eq!(rep.warnings[0], run, "{label}, {path}");
                 let (first, last) = named_deletion(&rep.warnings[1], p.len).unwrap_or_else(|| panic!("{label}, {path}: {:?}", rep.warnings));                // 1-based: the VCF placement deletes s+1..=s+len, the planted one planted+1..=planted+len
                 assert!(first <= s + 1 && last >= planted + p.len, "{label}, {path}: {first}-{last} misses its span: {:?}", rep.warnings);
@@ -695,6 +704,9 @@ fn no_false_call_beside_a_reference_n_run_with_a_real_deletion() {
     }
     // the fixture holds deletions of both kinds
     assert!(called > 0 && left_out > 0, "fixture: {called} callable, {left_out} touching the run");
+    // and a deletion whose reading within less than one mismatch reads a SNP the caller's does not
+    // hold (probe 8's at 5,007): D0299 names it though the caller's reading never called it
+    assert!(snp_named > 0, "fixture: no reading within the margin reads a SNP the caller's does not");
 }
 
 /// 1-based thousands, as the caller writes positions in its warnings.
@@ -928,7 +940,10 @@ const GAP_TRUE: std::ops::Range<usize> = 600..610;
 const GAP_SAMPLE: std::ops::Range<usize> = 100..1_300;
 /// A control SNP in every gap probe, 540 bases past the run: genome base 1,151.
 const GAP_CONTROL_AT: usize = 1_150;
-/// How far from the run (in known bases between them) a SNP is always called (AC5).
+/// How far from the run (in known bases between them) a SNP is called unless a near tie leaves it
+/// out (AC5): a reading within less than one mismatch of the caller's own may pair a SNP 5 or 6 bases
+/// from the run, and the bases between, with the run's spare N, and then the SNP is left out
+/// (D0298) and named in a warning (D0299), so it is not always called.
 const GAP_CALLED_FROM: usize = 5;
 /// The most reports of W02V AC2's family excused under D0268 ([`a_deletion_beside_a_too_long_n_run_keeps_its_own_length`]).
 /// Measured at BG-01M7V8FQ: 2 (13 N, a 9-bp deletion 6 bases after, best 3 above the truth), where
@@ -944,7 +959,8 @@ enum GapEdit {
 
 /// One planted variant, in the reference's own numbering.
 enum Truth {
-    /// A SNP's call, and whether it must be called (at least [`GAP_CALLED_FROM`] bases from the run).
+    /// A SNP's call, and whether it lies at least [`GAP_CALLED_FROM`] bases from the run, where it is
+    /// called unless a near tie leaves it out inside a warning that names it (D0298, D0299).
     Snp(Call, bool),
     /// A deletion: its call at its VCF placement (as far left as it moves without changing a base;
     /// an N equals no base, so it stops at the run), and the 1-based reference bases from that
@@ -2981,3 +2997,97 @@ fn bg_01m7_a_near_tie_beside_an_n_run_is_left_out_and_no_snp_sits_inside_it() {
     assert!(errors.is_empty(), "{} near-tie reports wrong:\n{}", errors.len(), errors.join("\n"));
 }
 
+
+/// Each warning for a SNP or MNP the caller leaves out beside unknown bases (D0299): the reference
+/// bases it names, X-Y, and the unknown bases it names them beside, A-B (one base reads as X-X).
+fn snps_left_out_named(rep: &FreeBayesVariantReport) -> Vec<(usize, usize, usize, usize)> {
+    let span = |s: &str| -> Option<(usize, usize)> {
+        let s = s.replace(',', "");
+        match s.split_once('-') {
+            Some((a, b)) => Some((a.parse().ok()?, b.parse().ok()?)),
+            None => s.parse().ok().map(|v| (v, v)),
+        }
+    };
+    rep.warnings
+        .iter()
+        .filter_map(|w| {
+            let (xy, rest) = w.strip_prefix("No SNP or MNP is called at ")?.split_once(": ")?;
+            let ab = rest.split_once("beside the unknown bases at ")?.1.split_once('.')?.0;
+            let ((x, y), (a, b)) = (span(xy)?, span(ab)?);
+            Some((x, y, a, b))
+        })
+        .collect()
+}
+
+#[test]
+fn bg_01m7_a_snp_left_out_beside_an_n_run_is_named_in_a_warning() {
+    // The data seat's round-1 probe (D0299): a 1,210-bp genome is the reference; the sample is the
+    // genome with its bases 601-610 read as a run of 15, 20, 30 or 100 N (a sample run standing for
+    // 10 reference bases) and a true SNP 4-6 known bases after the run or 5-6 before it, 12 seeds
+    // each, on both paths. A reading within less than one mismatch (3) of the caller's own pairs the
+    // SNP's base and the bases between with the run's spare N, so the near-tie rule (D0298) may leave
+    // the SNP out; D0299 says it is then never left out silently. Each report is read against its
+    // truth: the true SNP is called, or lies inside the X-Y of a "No SNP or MNP is called at X-Y"
+    // warning. A warning names the run's reference bases as A-B, says the margin is a heuristic, and
+    // no SNP or MNP is called inside its X-Y (the warning would contradict the calls).
+    const RUN: std::ops::Range<usize> = 600..610;
+    let mut probes: Vec<(String, Vec<u8>, Vec<u8>, Call)> = Vec::new();
+    for run_n in [15usize, 20, 30, 100] {
+        for (after, k) in [(true, 4usize), (true, 5), (true, 6), (false, 5), (false, 6)] {
+            for seed in 0..12u64 {
+                let s = 0x0E_7000_0000 + (run_n as u64) * 10_000 + (k as u64) * 100 + if after { 50 } else { 0 } + seed;
+                let mut rng = SplitMix(s);
+                let g = rng.bases(1_210);
+                let i = if after { RUN.end + k } else { RUN.start - 1 - k };
+                let alt = rng.other(g[i]);
+                let mut sample = g[..RUN.start].to_vec();
+                sample.extend(std::iter::repeat_n(b'N', run_n));
+                sample.extend_from_slice(&g[RUN.end..]);
+                let si = if after { i - RUN.len() + run_n } else { i };
+                sample[si] = alt;
+                let label = format!("seed {s:#x}, {run_n} N for 10, SNP {k} bases {} at {}", if after { "after" } else { "before" }, i + 1);
+                let call = (i + 1, text(&g[i..i + 1]), text(&[alt]), "SNP".to_string());
+                probes.push((label, g, sample, call));
+            }
+        }
+    }
+    let silent = std::sync::Mutex::new(Vec::new());
+    let left_out = std::sync::atomic::AtomicUsize::new(0);
+    let reports = std::sync::atomic::AtomicUsize::new(0);
+    let errors = checked(&probes, &|(label, reference, sample, snp): &(String, Vec<u8>, Vec<u8>, Call)| {
+        let mut e = Vec::new();
+        for (path, rep) in both_paths(reference, sample) {
+            reports.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let calls = report_calls(&rep);
+            let named = snps_left_out_named(&rep);
+            if !calls.contains(snp) {
+                left_out.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if !named.iter().any(|&(x, y, ..)| x <= snp.0 && snp.0 <= y) {
+                    silent.lock().unwrap().push(format!("{label}, {path}: calls {calls:?}; warnings {:?}", rep.warnings));
+                }
+            }
+            for &(x, y, a, b) in &named {
+                if a > RUN.end + 1 || b + 1 < RUN.start + 1 {
+                    e.push(format!("{label}, {path}: a warning names {x}-{y} beside {a}-{b}, apart from the run 601-610"));
+                }
+                for c in calls.iter().filter(|c| c.3 == "SNP" || c.3 == "MNP") {
+                    if c.0 <= y && x <= c.0 + c.1.len() - 1 {
+                        e.push(format!("{label}, {path}: {c:?} is called inside {x}-{y}, which a warning says calls none"));
+                    }
+                }
+            }
+            for w in rep.warnings.iter().filter(|w| w.starts_with("No SNP or MNP is called at ")) {
+                if !w.contains("heuristic") || !w.contains("not a likelihood") {
+                    e.push(format!("{label}, {path}: the warning does not call the margin a heuristic: {w}"));
+                }
+            }
+        }
+        e
+    });
+    let (silent, left_out, reports) = (silent.into_inner().unwrap(), left_out.into_inner(), reports.into_inner());
+    println!("{reports} reports, {left_out} left the true SNP out, {} of them silently", silent.len());
+    assert_eq!(reports, 2 * 4 * 5 * 12, "fixture: every probe on both paths");
+    assert!(errors.is_empty(), "{} reports wrong:\n{}", errors.len(), errors.join("\n"));
+    assert!(left_out > 0, "fixture: the near-tie rule leaves some true SNP out, so the warning is reached");
+    assert!(silent.is_empty(), "{} of {reports} reports leave the true SNP out silently:\n{}", silent.len(), silent.join("\n"));
+}

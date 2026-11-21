@@ -2519,6 +2519,46 @@ fn listed_warnings(sentences: Vec<(&'static str, String)>, rest: impl Fn(&[(&'st
     sentences.into_iter().take(CALL_LISTED_WARNINGS).map(|(_, s)| s).chain(tail).collect()
 }
 
+/// The warnings for the SNPs and MNPs a near tie beside unknown bases leaves out (D0299), each
+/// (first, last, (run first, run last)) in reference bases: the first [`CALL_LISTED_WARNINGS`] one
+/// to a sentence, the rest in one more that names each of their bases too, so every base of a SNP
+/// or MNP left out lies in the bases some warning names. The margin is a heuristic on the caller's
+/// own alignment score (an unknown-base column scores +1), not a likelihood, and each sentence says
+/// so.
+fn snps_left_out_warnings(left_out: &[(usize, usize, (usize, usize))]) -> Vec<String> {
+    let span = |a: usize, b: usize| {
+        if a == b {
+            format_thousands(a)
+        } else {
+            format!("{}-{}", format_thousands(a), format_thousands(b))
+        }
+    };
+    const HEURISTIC: &str = "Less than one mismatch is a heuristic margin of 3 on the caller's alignment score, where a base \
+                             against an unknown base scores +1; it is not a likelihood.";
+    let mut out: Vec<String> = left_out
+        .iter()
+        .take(CALL_LISTED_WARNINGS)
+        .map(|&(a, b, (ra, rb))| {
+            format!(
+                "No SNP or MNP is called at {}: a reading within less than one mismatch reads these bases differently \
+                 beside the unknown bases at {}. {HEURISTIC}",
+                span(a, b),
+                span(ra, rb)
+            )
+        })
+        .collect();
+    let rest: Vec<String> = left_out.iter().skip(CALL_LISTED_WARNINGS).map(|&(a, b, _)| span(a, b)).collect();
+    if !rest.is_empty() {
+        out.push(format!(
+            "No SNP or MNP is called at {} more stretches either, where a reading within less than one mismatch reads the \
+             bases differently beside unknown bases: {}. {HEURISTIC}",
+            format_thousands(rest.len()),
+            rest.join("; ")
+        ));
+    }
+    out
+}
+
 /// `n` and the noun for one or for more: "1 run", "12 runs".
 fn counted(n: usize, one: &str, more: &str) -> String {
     format!("{} {}", format_thousands(n), if n == 1 { one } else { more })
@@ -3116,7 +3156,9 @@ fn indels_left_out_together(qa: &[u8], ra: &[u8], is_del: bool) -> std::collecti
 /// Less than one mismatch's worth of the caller's alignment score (a mismatch scores -3 where a
 /// match scores 2): beside a run of unknown bases, a reading that outscores another that calls
 /// differently (an indel or a SNP) by less than this, or ties with it, is not taken
-/// ([`near_tie_regions`]).
+/// ([`near_tie_regions`]). The margin is a heuristic on the caller's own score, in which a base
+/// against an unknown base scores +1, not a likelihood: it does not weigh how probable either
+/// reading is, and the warnings that name what it leaves out say so (D0299).
 const CALL_NEAR_TIE: i32 = 3;
 
 /// The most bases a run of unknown bases holds for [`near_tie_regions`] to read it: a run of
@@ -3127,11 +3169,16 @@ const CALL_NEAR_TIE_RUN_MAX: usize = 1_000;
 
 /// A near tie beside a run of unknown bases ([`near_tie_regions`]): the reference bases, numbered
 /// from the first the alignment columns hold (1-based), that the calls the two readings differ in
-/// cover, from `lo` to `hi`; and the indels the other reading holds there, as (is_del, len).
+/// cover, from `lo` to `hi`; the indels the other reading holds there, as (is_del, len); the
+/// reference bases of each SNP or MNP one reading holds and the other does not, as (first, last);
+/// and the reference bases the run lies against, as (first, last) (for a run of the sample's
+/// opposite no reference base, the two either side of it).
 struct NearTie {
     lo: usize,
     hi: usize,
     alt: Vec<(bool, usize)>,
+    snps: Vec<(usize, usize)>,
+    run: (usize, usize),
 }
 
 /// What a reading calls or leaves out, compared between two readings: a kind (b'S' a SNP or MNP,
@@ -3394,16 +3441,21 @@ fn near_tie_readings(x: &[u8], y: &[u8], ya: usize, yb: usize, floor: i32) -> Ve
 /// Each run's window is [`CALL_REREAD_COLUMNS`] columns each side of the whole run, between two
 /// columns that pair two bases, read again end to end (a long run's ends are read together: 10 of
 /// 400 N deleted at its start and 10 more bases paired at its end are one reading); a window with no gap and no known bases that differ calls nothing and is
-/// passed over. Every reading of a window crosses the run with some count of the other sequence's
+/// passed over, and so is a window whose own reading has no gap and scores within
+/// [`CALL_NEAR_TIE`] - 1 of the most any reading with a gap could ([`near_tie_out_of_reach`]).
+/// Every reading of a window crosses the run with some count of the other sequence's
 /// bases ([`near_tie_readings`]); each count's best reading that scores within the margin of the
 /// alignment's own is compared with it by what each calls or leaves out ([`reading_events`]), and
-/// where they differ in an indel, the reference bases every differing call of the two covers are
-/// a near tie, whether they differ in an indel or a SNP: a SNP 5 bases from a run of 20 N standing
-/// for 10 ties within the margin with the SNP's base and the 5 between paired with the run's spare
-/// N (each N 1 where the bases' matches scored 2 and the SNP -3), so the sample does not say it
-/// holds the SNP. Two readings that call the same and differ only in where an indel left out lies
-/// are not one: pairing 1 or 2 known bases beside a run with its N instead scores 1 or 2 lower
-/// beside every run, and the indel's warning names the bases between the run's known flanks.
+/// where they differ in anything, an indel or a SNP or MNP or both, the reference bases every
+/// differing call of the two covers are a near tie: a SNP 5 bases from a run of 20 N standing for
+/// 10 ties within the margin with the SNP's base and the 5 between paired with the run's spare N
+/// (each N 1 where the bases' matches scored 2 and the SNP -3), so the sample does not say it holds
+/// the SNP. No SNP or MNP is called there, and each SNP or MNP the two readings differ in is named
+/// in a warning with the run (D0299), so none is left out silently. The margin is a heuristic on the
+/// caller's own score (an unknown-base column scores +1), not a likelihood. Two readings that call
+/// the same and differ only in where an indel left out lies are not one: pairing 1 or 2 known bases
+/// beside a run with its N instead scores 1 or 2 lower beside every run, and the indel's warning
+/// names the bases between the run's known flanks.
 fn near_tie_regions(qa: &[u8], ra: &[u8]) -> Vec<NearTie> {
     let n = qa.len().min(ra.len());
     let paired = |c: usize| qa[c] != b'-' && ra[c] != b'-';
@@ -3450,7 +3502,7 @@ fn near_tie_regions(qa: &[u8], ra: &[u8]) -> Vec<NearTie> {
                 }
                 let (xw, yw) = (&xrow[lo..=hi], &yrow[lo..=hi]);
                 let callable = xw.iter().zip(yw).any(|(&p, &q)| p == b'-' || q == b'-' || (call_known(p) && call_known(q) && p != q));
-                if !callable {
+                if !callable || near_tie_out_of_reach(xw, yw) {
                     continue;
                 }
                 let x: Vec<u8> = xw.iter().copied().filter(|&b| b != b'-').collect();
@@ -3464,7 +3516,8 @@ fn near_tie_regions(qa: &[u8], ra: &[u8]) -> Vec<NearTie> {
                 let (cq, cr) = if sample_run { (yw, xw) } else { (xw, yw) };
                 let own_events = reading_events(cq, cr);
                 let mut region: Option<(usize, usize)> = None;
-                let mut alt = Vec::new();
+                let (mut alt, mut snps) = (Vec::new(), Vec::new());
+                let offset = before[lo];
                 for (_, ax, ay) in near_tie_readings(&x, &y, ya, yb, own - (CALL_NEAR_TIE - 1)) {
                     let (aq, ar) = if sample_run { (&ay, &ax) } else { (&ax, &ay) };
                     let events = reading_events(aq, ar);
@@ -3487,17 +3540,40 @@ fn near_tie_regions(qa: &[u8], ra: &[u8]) -> Vec<NearTie> {
                         region = Some(region.map_or((e.1, e.2), |(l, h)| (l.min(e.1), h.max(e.2))));
                     }
                     alt.extend(only_alt.iter().filter(|e| e.0 .0 != b'S').map(|e| (e.0 .1, e.0 .2)));
+                    snps.extend(only_own.iter().chain(&only_alt).filter(|e| e.0 .0 == b'S').map(|e| (offset + e.1, offset + e.2)));
                 }
                 if let Some((l, h)) = region {
-                    let offset = before[lo];
                     alt.sort_unstable();
                     alt.dedup();
-                    out.push(NearTie { lo: offset + l.max(1), hi: offset + h.max(l.max(1)), alt });
+                    snps.sort_unstable();
+                    snps.dedup();
+                    // the reference bases the run lies against, or the two either side of it
+                    let (a, b) = (before[from] + 1, before[to + 1]);
+                    let run = if b < a { (b, a) } else { (a, b) };
+                    out.push(NearTie { lo: offset + l.max(1), hi: offset + h.max(l.max(1)), alt, snps, run });
                 }
             }
         }
     }
     out
+}
+
+/// Whether no reading of a window but its own can come within [`CALL_NEAR_TIE`] - 1 of it, so the
+/// window holds no near tie and need not be read again. Where the own reading has no gap, the two
+/// sequences are as long as each other and any other end-to-end reading holds at least one deletion
+/// and one insertion: two gaps, at least -7 each under [`near_tie_score`], and one base of `y` left
+/// unpaired. Every base of `y` paired scores at most 2 (1 where either base is unknown, and a base of
+/// `y` that is unknown scores 1 against anything), so such a reading scores at most the sum of those
+/// most over `y`, less 1 and 14; where that is below the own reading's score less the margin, none
+/// is a near tie. Behaviour-neutral: it passes over only windows [`near_tie_readings`] would find
+/// no other reading in.
+fn near_tie_out_of_reach(xw: &[u8], yw: &[u8]) -> bool {
+    if xw.iter().zip(yw).any(|(&p, &q)| p == b'-' || q == b'-') {
+        return false;
+    }
+    let most: i32 = yw.iter().map(|&q| if call_known(q) { 2 } else { 1 }).sum();
+    let other_most = most - 1 - 2 * (CALL_GAP_OPEN + 2);
+    other_most < near_tie_score(xw, yw) - (CALL_NEAR_TIE - 1)
 }
 
 /// Moves every insertion and deletion in the alignment columns as far left as it goes without
@@ -3618,7 +3694,12 @@ fn variant_vcf(ref_name: &str, contig_len: usize, variants: &[FreeBayesVariantRe
 /// in the sample's own, as the sample was given, and then each indel left out beside them, with
 /// the reference bases its placements cover (the parts of one indel the alignment split among
 /// unknown bases named as one, [`LeftOutIndel`]); the first [`CALL_LISTED_WARNINGS`] runs and the first
-/// as many indels, each followed by one sentence counting the rest (BG-01M6TE8J). An empty
+/// as many indels, each followed by one sentence counting the rest (BG-01M6TE8J); then each SNP or
+/// MNP left out where a reading within less than one mismatch of the alignment's own reads the bases
+/// beside a run of unknown bases differently ([`near_tie_regions`]), with the run's reference bases
+/// ("No SNP or MNP is called at X-Y: ..."), the first as many one to a sentence and the rest named
+/// in one more ([`snps_left_out_warnings`]; D0299). That margin is a heuristic on the caller's own
+/// score (an unknown-base column scores +1), not a likelihood. An empty
 /// reference or sample is compared with nothing: no variant is called, and the warnings say which
 /// input is empty.
 pub fn call_freebayes_variants(
@@ -3928,7 +4009,46 @@ pub fn call_freebayes_variants_with_one_shot_limit(
                 a <= pos + len - 1 && pos <= b && in_tie(o.lo, o.hi)
             })
     };
-    variants.retain(|v| !matches!(v.variant_type.as_str(), "SNP" | "MNP") || !named(v.position_bp, v.ref_allele.len()));
+    // Each SNP or MNP the rule leaves out is named in a warning with the run it lies beside, never
+    // left out silently (D0299): the bases where the two readings of a near tie differ in a SNP or
+    // MNP, whether or not they also differ in an indel, and each SNP or MNP not called because it
+    // lies in a near tie or inside a left-out indel's span there, each as (first, last, run).
+    let mut snps_left_out: Vec<(usize, usize, (usize, usize))> = Vec::new();
+    for t in near_ties.iter().filter(|t| !t.snps.is_empty()) {
+        let (lo, hi) = (t.snps.iter().map(|s| s.0).min().unwrap_or(0), t.snps.iter().map(|s| s.1).max().unwrap_or(0));
+        snps_left_out.push((lo + base, hi + base, (t.run.0 + base, t.run.1 + base)));
+    }
+    // the near tie a SNP or MNP over reference bases a-b is not called for
+    let tie_of = |a: usize, b: usize| {
+        let meets = |t: &&NearTie, a: usize, b: usize| t.lo + base <= b && a <= t.hi + base;
+        near_ties.iter().find(|t| meets(t, a, b)).or_else(|| {
+            left_out.iter().find_map(|o| {
+                let (c, d) = if o.is_del { (o.lo, o.hi) } else { (o.lo + 1, o.hi.saturating_sub(1)) };
+                (c <= b && a <= d).then(|| near_ties.iter().find(|t| meets(t, o.lo, o.hi))).flatten()
+            })
+        })
+    };
+    variants.retain(|v| {
+        let keep = !matches!(v.variant_type.as_str(), "SNP" | "MNP") || !named(v.position_bp, v.ref_allele.len());
+        let (a, b) = (v.position_bp, v.position_bp + v.ref_allele.len() - 1);
+        if !keep && !snps_left_out.iter().any(|&(x, y, _)| x <= a && b <= y) {
+            if let Some(t) = tie_of(a, b) {
+                snps_left_out.push((a, b, (t.run.0 + base, t.run.1 + base)));
+            }
+        }
+        keep
+    });
+    snps_left_out.sort_unstable();
+    snps_left_out.dedup();
+    // one warning for bases that overlap beside one run
+    let mut merged: Vec<(usize, usize, (usize, usize))> = Vec::new();
+    for (a, b, run) in snps_left_out {
+        match merged.iter_mut().find(|m| m.2 == run && a <= m.1 && m.0 <= b) {
+            Some(m) => (m.0, m.1) = (m.0.min(a), m.1.max(b)),
+            None => merged.push((a, b, run)),
+        }
+    }
+    let snps_left_out = merged;
     let transitions = variants.iter().filter(|v| v.mutation_class == "Transition").count();
     let transversions = variants.iter().filter(|v| v.mutation_class == "Transversion").count();
 
@@ -4012,6 +4132,7 @@ pub fn call_freebayes_variants_with_one_shot_limit(
             by.join(", ")
         )
     }));
+    warnings.extend(snps_left_out_warnings(&snps_left_out));
     // Each soft-clipped stretch, by the sample bases it holds (numbered as the sample was given) and,
     // where it lies between anchored bases, the reference bases it was aligned against.
     let mut clip_sentences = Vec::new();
