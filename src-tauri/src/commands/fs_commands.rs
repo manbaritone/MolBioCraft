@@ -1,12 +1,13 @@
 // Copyright 2026 MolBioCraft Contributors
 // SPDX-License-Identifier: CC-BY-NC-4.0
 
-use crate::commands::AppBackendState;
+use crate::commands::{AppBackendState, DropGrant, FileIdentity};
 use molbiocraft_core::{
     atomic_write_with_lock_retry, sanitize_workspace_path, BioEngineError,
 };
 use serde::Serialize;
 use std::fs;
+use std::io::Read;
 use tauri::State;
 
 /// Maximum text or binary workspace file size read/written via IPC (64 MiB).
@@ -268,27 +269,43 @@ pub async fn cmd_read_dropped_file_bytes(
 }
 
 /// The WebView's request for the dropped file at `path`. A path that is not a file dropped onto the
-/// window in this launch ([`AppBackendState::is_dropped_file`], compared after resolving symlinks)
-/// is refused with ERR_SANDBOX_VIOLATION before the path guard, the type check or any read of the
-/// file's metadata or bytes; resolving its symlinks is the only file-system call made first. A
-/// dropped one then passes the path guard and [`dropped_file_needs_sniff`] and is read by
-/// [`read_dropped_file`].
+/// window in this launch ([`AppBackendState::drop_grant`], compared after resolving symlinks) is
+/// refused with ERR_SANDBOX_VIOLATION before the path guard, the type check or any read of the
+/// file's metadata or bytes; resolving its symlinks is the only file-system call made first. So is
+/// a dropped path that now resolves to a file nobody dropped, as changed since it was dropped. A
+/// granted one then passes the path guard and [`dropped_file_needs_sniff`] and is read by
+/// [`read_dropped_file`] at the path the grant resolved, and only if the file opened there is the
+/// one dropped.
 fn read_granted_drop(
     state: &AppBackendState,
     path: &str,
 ) -> Result<DroppedFileBytesPayload, String> {
-    if !state.is_dropped_file(std::path::Path::new(path)) {
-        return Err(BioEngineError::SandboxViolation(format!(
-            "'{}' was not dropped onto the window in this launch, so MolBioCraft does not read it",
-            path
-        ))
-        .to_string());
-    }
+    let (open_at, identity) = match state.drop_grant(std::path::Path::new(path)) {
+        DropGrant::Granted { open_at, identity } => (open_at, identity),
+        DropGrant::Changed => return Err(changed_since_drop(std::path::Path::new(path))),
+        DropGrant::NotDropped => {
+            return Err(BioEngineError::SandboxViolation(format!(
+                "'{}' was not dropped onto the window in this launch, so MolBioCraft does not read it",
+                path
+            ))
+            .to_string())
+        }
+    };
     let safe_path = sanitize_workspace_path(path).map_err(|e| e.to_string())?;
     // Extensionless drops are allowed when their content is a workbench record
     // (checked after reading); the browser build imports them the same way.
     let sniff_content = dropped_file_needs_sniff(&safe_path)?;
-    read_dropped_file(safe_path, sniff_content)
+    read_dropped_file(safe_path, &open_at, identity, sniff_content)
+}
+
+/// The refusal of a dropped path whose file is no longer the one dropped (BG01M7P4Q3): replaced by
+/// a hard link, deleted and recreated, or made a symlink to another file since the drop.
+fn changed_since_drop(path: &std::path::Path) -> String {
+    BioEngineError::SandboxViolation(format!(
+        "'{}' changed since it was dropped onto the window, so MolBioCraft does not read it",
+        path.display()
+    ))
+    .to_string()
 }
 
 /// A failed read of the dropped file at `path`, naming it: a missing file is ERR_IO_FAILURE saying it
@@ -309,13 +326,17 @@ fn dropped_read_error(path: &std::path::Path, e: std::io::Error) -> String {
     .to_string()
 }
 
-/// Reads a dropped file that passed [`dropped_file_needs_sniff`]: a regular file of at most 64 MiB,
-/// and, when `sniff_content`, one whose content is a workbench record.
+/// Reads a dropped file that passed [`dropped_file_needs_sniff`], named by `safe_path` and opened at
+/// `open_at`: a regular file of at most 64 MiB, the file opened being `identity`, the one dropped
+/// (compared on the opened handle, so no file swapped in after the check is read), and, when
+/// `sniff_content`, one whose content is a workbench record.
 fn read_dropped_file(
     safe_path: std::path::PathBuf,
+    open_at: &std::path::Path,
+    identity: Option<FileIdentity>,
     sniff_content: bool,
 ) -> Result<DroppedFileBytesPayload, String> {
-    let meta = fs::metadata(&safe_path).map_err(|e| dropped_read_error(&safe_path, e))?;
+    let meta = fs::metadata(open_at).map_err(|e| dropped_read_error(&safe_path, e))?;
     if !meta.is_file() {
         return Err(BioEngineError::InvalidFilename(format!(
             "Dropped item '{}' is not a regular file",
@@ -323,15 +344,29 @@ fn read_dropped_file(
         ))
         .to_string());
     }
-    if meta.len() > MAX_WORKSPACE_FILE_BYTES {
-        return Err(BioEngineError::PayloadTooLarge(format!(
+    let file = fs::File::open(open_at).map_err(|e| dropped_read_error(&safe_path, e))?;
+    let opened = file.metadata().map_err(|e| dropped_read_error(&safe_path, e))?;
+    if identity != Some(FileIdentity::of(&opened)) {
+        return Err(changed_since_drop(&safe_path));
+    }
+    let too_large = |len: u64| {
+        BioEngineError::PayloadTooLarge(format!(
             "Dropped file '{}' ({} bytes) exceeds 64 MiB limit",
             safe_path.display(),
-            meta.len()
+            len
         ))
-        .to_string());
+        .to_string()
+    };
+    if opened.len() > MAX_WORKSPACE_FILE_BYTES {
+        return Err(too_large(opened.len()));
     }
-    let bytes = fs::read(&safe_path).map_err(|e| dropped_read_error(&safe_path, e))?;
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
+    file.take(MAX_WORKSPACE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| dropped_read_error(&safe_path, e))?;
+    if bytes.len() as u64 > MAX_WORKSPACE_FILE_BYTES {
+        return Err(too_large(bytes.len() as u64)); // grew past the limit after the size check
+    }
     if sniff_content && !looks_like_workbench_content(&bytes) {
         return Err(BioEngineError::PermissionDenied(format!(
             "'{}' has no file extension and does not look like a sequence, trace or session file",
@@ -604,7 +639,7 @@ mod tests {
     #[test]
     fn refused_types_are_not_offered_but_a_dropped_one_gets_the_export_hint() {
         use super::{
-            dropped_file_needs_sniff, importable_open_requests, list_folder_import, read_dropped_file,
+            dropped_file_needs_sniff, importable_open_requests, list_folder_import,
             require_workbench_file_type, IMPORTABLE_EXTENSIONS,
         };
         let refused = ["dna", "prot", "rna", "meg", "ma4", "pa4", "oa4"];
@@ -635,7 +670,7 @@ mod tests {
             let path = root.join(format!("construct.{ext}"));
             assert!(require_workbench_file_type(&path).is_err(), ".{ext} is not a workbench type");
             assert_eq!(dropped_file_needs_sniff(&path), Ok(false), ".{ext} is read as it is");
-            let payload = read_dropped_file(path.clone(), false).unwrap();
+            let payload = read_dropped_now(&path, false).unwrap();
             assert_eq!(payload.file_name, format!("construct.{ext}"));
             assert_eq!(decode_base64_bytes(&payload.base64).unwrap(), std::fs::read(&path).unwrap(), ".{ext} bytes");
             assert_eq!(payload.byte_len, std::fs::metadata(&path).unwrap().len() as usize);
@@ -713,7 +748,7 @@ mod tests {
     /// ERR_IO_FAILURE, never the size or a permission code.
     #[test]
     fn oversize_dropped_file_reports_payload_too_large() {
-        use super::{read_dropped_file, MAX_WORKSPACE_FILE_BYTES};
+        use super::MAX_WORKSPACE_FILE_BYTES;
         let dir = std::env::temp_dir().join(format!("mbc-oversize-drop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -721,13 +756,22 @@ mod tests {
         let file = std::fs::File::create(&big).unwrap();
         file.set_len(MAX_WORKSPACE_FILE_BYTES + 1).unwrap();
         drop(file);
-        let err = read_dropped_file(big.clone(), false).unwrap_err();
+        let err = read_dropped_now(&big, false).unwrap_err();
         assert!(err.starts_with("[ERR_PAYLOAD_TOO_LARGE] "), "{err}");
         assert!(err.contains("exceeds 64 MiB"), "{err}");
 
-        let missing = read_dropped_file(dir.join("gone.fasta"), false).unwrap_err();
+        let missing = read_dropped_now(&dir.join("gone.fasta"), false).unwrap_err();
         assert!(missing.starts_with("[ERR_IO_FAILURE] "), "{missing}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// [`read_dropped_file`] of `path` as the file it names now, as a drop of it would record it.
+    fn read_dropped_now(
+        path: &std::path::Path,
+        sniff_content: bool,
+    ) -> Result<super::DroppedFileBytesPayload, String> {
+        let identity = std::fs::metadata(path).ok().map(|meta| super::FileIdentity::of(&meta));
+        super::read_dropped_file(path.to_path_buf(), path, identity, sniff_content)
     }
 
     /// A scratch folder of its own for one drop test.
@@ -905,6 +949,94 @@ mod tests {
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(os_refuses, "the OS let this user read a mode-000 file, so the ERR_PERMISSION_DENIED case was not reached");
+    }
+
+    /// The bytes of a file nobody dropped, so a test can tell whether any of them came back.
+    const UNDROPPED: &str = "LOCUS       UNDROPPED 8 bp\nORIGIN\n        1 ttttgggg\n//\n";
+
+    /// The refusal a granted path swapped for another file after the drop gets: ERR_SANDBOX_VIOLATION
+    /// naming the path and saying it changed since it was dropped, carrying none of `secret`'s bytes.
+    fn assert_changed_since_drop(err: &str, path: &std::path::Path, secret: &str) {
+        assert!(
+            err.starts_with("[ERR_SANDBOX_VIOLATION] ")
+                && err.contains("changed since it was dropped")
+                && err.contains(&format!("'{}'", path.display())),
+            "{}: {err}",
+            path.display()
+        );
+        assert!(
+            !err.contains(secret) && !err.contains(&encode_base64_bytes(secret.as_bytes())),
+            "{}: the swapped-in file's bytes came back: {err}",
+            path.display()
+        );
+    }
+
+    /// BG01M7P4Q3 AC1: a granted path replaced after the drop by a hard link to a file nobody dropped
+    /// is refused as changed since it was dropped, and none of that file's bytes come back; the
+    /// dropped file rewritten in place, still the same file, reads its new bytes. Wrong
+    /// implementations, and the case that catches each: the resolved path checked but the file read
+    /// unchecked (the hard link reads UNDROPPED); a refusal that calls the path never dropped (the
+    /// message check); an identity that includes the content or its time of change, or a reader that
+    /// refuses every dropped file (the rewritten file is refused).
+    #[cfg(unix)]
+    #[test]
+    fn hard_link_swapped_after_drop_is_refused() {
+        let state = crate::commands::AppBackendState::default();
+        let dir = drop_scratch("hard-link");
+        let dropped = dir.join("dropped.gb");
+        let undropped = dir.join("undropped.gb");
+        let rewritten = dir.join("rewritten.gb");
+        std::fs::write(&dropped, GENBANK).unwrap();
+        std::fs::write(&undropped, UNDROPPED).unwrap();
+        std::fs::write(&rewritten, GENBANK).unwrap();
+        drop_onto_window(&state, &[&dropped, &rewritten]);
+        assert!(webview_reads(&state, &dropped).is_ok(), "the dropped file reads before the swap");
+
+        std::fs::remove_file(&dropped).unwrap();
+        std::fs::hard_link(&undropped, &dropped).unwrap();
+        let err = webview_reads(&state, &dropped).unwrap_err();
+        assert_changed_since_drop(&err, &dropped, UNDROPPED);
+
+        std::fs::write(&rewritten, UNDROPPED).unwrap(); // the same file, given new bytes in place
+        let payload = webview_reads(&state, &rewritten).unwrap_or_else(|e| panic!("rewritten in place: {e}"));
+        assert_eq!(decode_base64_bytes(&payload.base64).unwrap(), UNDROPPED.as_bytes());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// BG01M7P4Q3 AC2: a granted file deleted and recreated at the same path with other content, and
+    /// one replaced by a symlink to a file nobody dropped, are refused as changed since they were
+    /// dropped, with none of the new file's bytes. Wrong implementations, and the case that catches
+    /// each: the grant checked by path alone (the recreated file reads its new bytes); a dropped path
+    /// that now resolves elsewhere reported as never dropped (the relinked file's message); an
+    /// identity of the inode number alone where a file system reuses a freed one (the recreated file
+    /// reads on such a file system, so the birth time is compared too).
+    #[cfg(unix)]
+    #[test]
+    fn recreated_or_relinked_after_drop_is_refused() {
+        let state = crate::commands::AppBackendState::default();
+        let dir = drop_scratch("recreated");
+        let recreated = dir.join("recreated.gb");
+        let relinked = dir.join("relinked.gb");
+        let undropped = dir.join("undropped.gb");
+        for f in [&recreated, &relinked] {
+            std::fs::write(f, GENBANK).unwrap();
+        }
+        std::fs::write(&undropped, UNDROPPED).unwrap();
+        drop_onto_window(&state, &[&recreated, &relinked]);
+        for f in [&recreated, &relinked] {
+            assert!(webview_reads(&state, f).is_ok(), "{} reads before the swap", f.display());
+        }
+
+        std::fs::remove_file(&recreated).unwrap();
+        std::fs::write(&recreated, UNDROPPED).unwrap();
+        let err = webview_reads(&state, &recreated).unwrap_err();
+        assert_changed_since_drop(&err, &recreated, UNDROPPED);
+
+        std::fs::remove_file(&relinked).unwrap();
+        std::os::unix::fs::symlink(&undropped, &relinked).unwrap();
+        let err = webview_reads(&state, &relinked).unwrap_err();
+        assert_changed_since_drop(&err, &relinked, UNDROPPED);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// US-01M6P2X0 AC5: Import Folder reads a symlink in the chosen folder only when its target lies

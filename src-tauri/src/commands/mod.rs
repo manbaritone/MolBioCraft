@@ -7,7 +7,7 @@ pub mod tree_tool_commands;
 pub mod window_commands;
 
 use molbiocraft_core::SequenceStats;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -29,11 +29,56 @@ struct AppBackendInner {
 }
 
 /// The files of every native drop onto the window in this launch, each as the window event gave it
-/// and, when it resolved at the drop, by its real path (symlinks followed).
+/// and, when it resolved at the drop, by its real path (symlinks followed), each beside the identity
+/// of the file it named then ([`FileIdentity`]; `None` when it could not be read at the drop). A
+/// later drop of the same path records the file it names then.
 #[derive(Default)]
 struct DropGrants {
-    as_dropped: HashSet<std::path::PathBuf>,
-    resolved: HashSet<std::path::PathBuf>,
+    as_dropped: HashMap<std::path::PathBuf, Option<FileIdentity>>,
+    resolved: HashMap<std::path::PathBuf, Option<FileIdentity>>,
+}
+
+/// Which file a path named, to tell a dropped file from one swapped in at its path since
+/// (BG01M7P4Q3). On Unix it is the device and inode number, plus the birth time where the file
+/// system keeps one, so an inode number freed by a delete and reused by the recreate does not pass
+/// as the dropped file. On Windows it is the creation time alone: std gives the volume serial
+/// number and file index only on nightly (`windows_by_handle`), so a file deleted and recreated by
+/// the same name within NTFS's 15-second tunnelling window, which carries the creation time over,
+/// is not told apart there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    born: Option<std::time::SystemTime>,
+}
+
+impl FileIdentity {
+    /// The identity of the file `meta` describes.
+    pub fn of(meta: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            #[cfg(unix)]
+            device: meta.dev(),
+            #[cfg(unix)]
+            inode: meta.ino(),
+            born: meta.created().ok(),
+        }
+    }
+}
+
+/// What the drop grants say of a path the WebView asks to read ([`AppBackendState::drop_grant`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum DropGrant {
+    /// A file dropped in this launch: read it at `open_at`, and only if the file opened there is
+    /// still `identity` (`None`: no file was there at the drop, so any file there now is another).
+    Granted { open_at: std::path::PathBuf, identity: Option<FileIdentity> },
+    /// A path dropped in this launch that now resolves to a file nobody dropped.
+    Changed,
+    /// A path not dropped in this launch, nor the real path of a dropped file.
+    NotDropped,
 }
 
 impl Default for AppBackendInner {
@@ -187,24 +232,39 @@ impl AppBackendState {
     }
 
     /// Records the files of a native drop onto the window as readable by
-    /// [`fs_commands::cmd_read_dropped_file_bytes`] for the rest of this launch.
+    /// [`fs_commands::cmd_read_dropped_file_bytes`] for the rest of this launch, each with the
+    /// identity of the file it names now ([`FileIdentity`]).
     pub fn grant_dropped_files(&self, paths: &[std::path::PathBuf]) {
-        let resolved: Vec<std::path::PathBuf> =
-            paths.iter().filter_map(|p| std::fs::canonicalize(p).ok()).collect();
+        let granted: Vec<_> = paths
+            .iter()
+            .map(|p| {
+                let real = std::fs::canonicalize(p).ok();
+                let identity = real
+                    .as_ref()
+                    .and_then(|r| std::fs::metadata(r).ok())
+                    .map(|meta| FileIdentity::of(&meta));
+                (p.clone(), real, identity)
+            })
+            .collect();
         let mut grants = self
             .inner
             .dropped_files
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        grants.as_dropped.extend(paths.iter().cloned());
-        grants.resolved.extend(resolved);
+        for (as_dropped, real, identity) in granted {
+            grants.as_dropped.insert(as_dropped, identity);
+            if let Some(real) = real {
+                grants.resolved.insert(real, identity);
+            }
+        }
     }
 
-    /// Whether `path` is a file dropped onto the window in this launch. A path that resolves is
-    /// compared by its real path, so a symlink to a dropped file is one and a symlink from a dropped
-    /// name to another file is not; a path that no longer resolves (a dropped file since deleted) is
-    /// compared as dropped.
-    pub fn is_dropped_file(&self, path: &std::path::Path) -> bool {
+    /// What the drop grants say of `path`. A path that resolves is compared by its real path, so a
+    /// symlink to a dropped file is granted, opened at the real path; a dropped name that now
+    /// resolves to another file is [`DropGrant::Changed`]. A path that no longer resolves (a dropped
+    /// file since deleted) is compared as dropped and opened as it is. A granted path's file is
+    /// still to be compared with the identity recorded at the drop once it is opened.
+    pub fn drop_grant(&self, path: &std::path::Path) -> DropGrant {
         let resolved = std::fs::canonicalize(path);
         let grants = self
             .inner
@@ -212,8 +272,15 @@ impl AppBackendState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match resolved {
-            Ok(real) => grants.resolved.contains(&real),
-            Err(_) => grants.as_dropped.contains(path),
+            Ok(real) => match grants.resolved.get(&real) {
+                Some(&identity) => DropGrant::Granted { open_at: real, identity },
+                None if grants.as_dropped.contains_key(path) => DropGrant::Changed,
+                None => DropGrant::NotDropped,
+            },
+            Err(_) => match grants.as_dropped.get(path) {
+                Some(&identity) => DropGrant::Granted { open_at: path.to_path_buf(), identity },
+                None => DropGrant::NotDropped,
+            },
         }
     }
 
