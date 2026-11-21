@@ -157,7 +157,8 @@ export interface ProteinStructure3DViewerProps {
   contacts?: StructureContactLike[];
   title?: string;
   rmsdAngstrom?: number;
-  tmScore?: number;
+  /** The superposition's TM-scores, one per chain: `by` names the chain the score is normalised by. */
+  tmScores?: { by: string; value: number }[];
   /** Residue pairs the superposition used (engine `alignedResiduePairs`). */
   alignedResiduePairs?: number;
   /** How those residues were paired (engine `pairingMethod`), shown on the pair-count badge. */
@@ -190,9 +191,9 @@ export interface ProteinStructure3DViewerProps {
   offscreenDeferred?: boolean;
 }
 
-/** What the `tmScore` badge is: the engine scores the sequence-paired superposition, not a TM-align search. */
-const TM_APPROXIMATE_NOTE =
-  'Approximate TM-score, scored on the sequence-paired superposition; not TM-align, which searches for the superposition that maximises it';
+/** What a `tmScores` badge is: the engine's Zhang-Skolnick TM-score of the sequence-paired residues by one chain. */
+const tmScoreNote = (by: string): string =>
+  `Zhang-Skolnick TM-score of the sequence-paired residues, normalised by ${by}: the best over superpositions, found by the TM-score search. The overlay and RMSD are the Kabsch fit of all pairs, so the TM-score may come from another superposition.`;
 
 const AA1_TO_AA3: Record<string, string> = {
   A: 'ALA', R: 'ARG', N: 'ASN', D: 'ASP', C: 'CYS',
@@ -481,7 +482,7 @@ export const ProteinStructure3DViewer: React.FC<ProteinStructure3DViewerProps> =
   contacts,
   title = '3D Macromolecular Structure Viewer',
   rmsdAngstrom,
-  tmScore,
+  tmScores,
   alignedResiduePairs,
   pairingMethod,
   structure,
@@ -1533,11 +1534,11 @@ export const ProteinStructure3DViewer: React.FC<ProteinStructure3DViewerProps> =
           {typeof rmsdAngstrom === 'number' && (
             <span className="badge-accent">RMSD {rmsdAngstrom} Å</span>
           )}
-          {typeof tmScore === 'number' && (
-            <span className="badge-accent" title={TM_APPROXIMATE_NOTE} aria-label={`TM-score about ${tmScore}: ${TM_APPROXIMATE_NOTE}`}>
-              TM≈ {tmScore}
+          {tmScores?.map(({ by, value }) => (
+            <span key={by} className="badge-accent" title={tmScoreNote(by)} aria-label={`TM-score ${value.toFixed(3)} by ${by}: ${tmScoreNote(by)}`}>
+              TM-score {value.toFixed(3)} by {by}
             </span>
-          )}
+          ))}
           {typeof alignedResiduePairs === 'number' && (
             <span className="badge-accent" title={pairingMethod} aria-label={pairingMethod ? `${alignedResiduePairs} Cα pairs: ${pairingMethod}` : undefined}>
               {alignedResiduePairs} Cα pairs

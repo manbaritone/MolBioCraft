@@ -203,7 +203,7 @@ describe('structure and pipeline order (US-01M6Q1ZR)', () => {
     // Comparing two structures: the 3D card, with its superposition KPIs, still leads.
     const compared = proteinCards(proteinTab(chainA1d66, { proteinDocuments: [chainA1d66, entry1a4y], selectedDocuments: [chainA1d66, entry1a4y] }));
     expect(compared.structureFirst, 'the superposition card leads').toBe(true);
-    expect([...kpis(compared.structureCard).keys()]).toEqual(expect.arrayContaining(['Cα RMSD', 'TM≈ (approximate TM-score)', 'Cα pairs (sequence alignment)']));
+    expect([...kpis(compared.structureCard).keys()]).toEqual(expect.arrayContaining(['Cα RMSD', expect.stringMatching(/^TM-score by chain /), 'Cα pairs (sequence alignment)']));
     expectTopologyCard(compared.topologyCard, chainA1d66);
 
     // Without coordinates: the predictions lead and the import callout follows.

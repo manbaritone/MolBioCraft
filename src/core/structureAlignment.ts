@@ -12,20 +12,20 @@
  * - `tm` - `align_structures_tm`: TM-align-style and sequence independent. Its TM-scores are
  *   searched for and normalised by each chain, as TM-align reports them.
  * - `sequence` - `align_pdb_kabsch`: residues paired by a global sequence alignment and
- *   superposed by Kabsch. Its score is shown as **TM≈**, approximate: it is scored on that
- *   RMSD-optimal superposition, normalised by the longer chain, and never searched, so it is not
- *   a TM-score TM-align would give. It is kept, rather than replaced by a TM-align-style score of
- *   the same pair, because that score belongs to a different alignment (other residue pairs,
- *   another superposition) and would sit beside an RMSD, identity, pair count and FASTA it does
- *   not describe. The `tm` method gives the true TM-scores.
+ *   superposed by Kabsch. Its TM-scores are Zhang & Skolnick's for those residue pairs, normalised
+ *   by each chain: the engine searches for the superposition that maximises each, as the TM-score
+ *   program scores a given residue correspondence, so they describe the same pairs as the RMSD,
+ *   identity, pair count and FASTA, though not the RMSD-optimal matrix. They are not TM-align's
+ *   TM-scores, which belong to the residue pairs the `tm` method finds.
  *
  * Chains are refused before either op is called, as RCSB's tool refuses them: one without
  * C-alpha coordinates, or with fewer than 10 residues that have one ({@link chainProblem}).
  *
  * Chains are named as RCSB's tool and the workbench name them: an mmCIF chain by its label id
  * (`label_asym_id`, the id a structure document's `Chain` holds), a PDB chain by its chain column
- * (blank read as `A`). The engine selects a chain by its author id first, so each chain is passed
- * to it by author id, which a label id of another chain cannot shadow.
+ * (blank read as `A`). Each chain is passed to the engine by author id (`chainA`, `chainB`) and,
+ * for mmCIF, by label id (`labelChainA`, `labelChainB`); the engine selects by the label id when
+ * it is given, so of two label chains sharing an author id the picked one is aligned.
  */
 
 import { invokeRustBioSync } from '../lib/rustBioEngine';
@@ -46,7 +46,7 @@ export const STRUCTURE_ALIGNMENT_METHODS: { value: StructureAlignmentMethod; lab
   {
     value: 'sequence',
     label: 'By sequence (Kabsch superposition)',
-    hint: 'Pairs residues by a global sequence alignment (BLOSUM62) and superposes the pairs. Its score is approximate (TM≈), not a TM-align TM-score.',
+    hint: 'Pairs residues by a global sequence alignment (BLOSUM62) and superposes the pairs. Its TM-scores, one by each chain, are Zhang and Skolnick\'s for those pairs, not TM-align\'s.',
   },
 ];
 
@@ -157,9 +157,14 @@ export function chainProblem(input: StructureInput, which: 'A' | 'B', chains?: S
 interface KabschReport {
   chainA: string;
   chainB: string;
+  labelChainA: string | null;
+  labelChainB: string | null;
   alignedResiduePairs: number;
   rmsdAngstrom: number;
-  tmScore: number;
+  tmScoreA: number;
+  tmScoreB: number;
+  d0A: number;
+  d0B: number;
   structuralSimilarityVerdict: string;
   pairingMethod: string;
   sequenceIdentity: number;
@@ -172,6 +177,8 @@ interface KabschReport {
 interface TmReport {
   chainA: string;
   chainB: string;
+  labelChainA: string | null;
+  labelChainB: string | null;
   lengthA: number;
   lengthB: number;
   tmScoreA: number;
@@ -198,12 +205,12 @@ export interface AlignedChain {
 }
 
 export interface StructureAlignmentScore {
-  /** The score's name, e.g. `TM-score by 4HHB.A` or `TM≈ (approximate)`. */
+  /** The score's name, e.g. `TM-score by 4HHB.A`. */
   name: string;
   /** What it is normalised by and how it was made, shown beside it. */
   detail: string;
   value: number;
-  /** True for the sequence method's TM≈: scored, not searched, and not a TM-align TM-score. */
+  /** True for a score scored on one superposition rather than searched for; both methods' TM-scores are searched, so false. */
   approximate: boolean;
 }
 
@@ -250,24 +257,30 @@ export function alignStructures(a: StructureInput, b: StructureInput, method: St
   if (problems.length) throw new Error(problems.join(' '));
   const ca = findChain(chainsA, a.chain)!;
   const cb = findChain(chainsB, b.chain)!;
-  const payload = { pdbA: a.text, pdbB: b.text, chainA: ca.authorId, chainB: cb.authorId };
+  // An mmCIF chain is also named by its label id, which the engine selects by first: two label
+  // chains can share an author id. A PDB chain has no label id.
+  const label = (input: StructureInput, chain: StructureChainInfo) => (isMmcif(input.text) ? chain.id : undefined);
+  const payload = { pdbA: a.text, pdbB: b.text, chainA: ca.authorId, chainB: cb.authorId, labelChainA: label(a, ca), labelChainB: label(b, cb) };
 
-  const side = (input: StructureInput, chain: StructureChainInfo, engineChain: string, aligned: string): AlignedChain => {
+  const side = (input: StructureInput, chain: StructureChainInfo, engineChain: string, engineLabel: string | null, aligned: string): AlignedChain => {
     if (engineChain !== chain.authorId) throw new Error(`The engine aligned chain ${engineChain} of ${input.entry}, not chain ${chain.id} (author ${chain.authorId})`);
+    const sent = label(input, chain);
+    if (sent !== undefined && engineLabel !== sent) throw new Error(`The engine aligned label chain ${engineLabel} of ${input.entry}, not label chain ${sent}`);
     return { entry: input.entry, chain: chain.id, authorId: chain.authorId, residues: ungappedLength(aligned) };
   };
 
+  const score = (c: AlignedChain, length: number, d0: number, value: number, suffix = ''): StructureAlignmentScore => ({
+    name: `TM-score by ${recordName(c)}`,
+    detail: `normalised by ${recordName(c)}: ${length} residues, d0 ${d0.toFixed(2)} Å${suffix}`,
+    value,
+    approximate: false,
+  });
+
   if (how === 'tm') {
     const r = invokeRustBioSync<TmReport>('align_structures_tm', payload);
-    const sa = side(a, ca, r.chainA, r.alignedSequenceA);
-    const sb = side(b, cb, r.chainB, r.alignedSequenceB);
+    const sa = side(a, ca, r.chainA, r.labelChainA, r.alignedSequenceA);
+    const sb = side(b, cb, r.chainB, r.labelChainB, r.alignedSequenceB);
     if (r.alignedLength === 0) throw new Error(`${recordName(sa)} and ${recordName(sb)}: the structure alignment pairs no residues.`);
-    const score = (c: AlignedChain, length: number, d0: number, value: number): StructureAlignmentScore => ({
-      name: `TM-score by ${recordName(c)}`,
-      detail: `normalised by ${recordName(c)}: ${length} residues, d0 ${d0.toFixed(2)} Å`,
-      value,
-      approximate: false,
-    });
     return {
       method: how,
       methodDescription: r.method,
@@ -284,8 +297,8 @@ export function alignStructures(a: StructureInput, b: StructureInput, method: St
   }
 
   const r = invokeRustBioSync<KabschReport>('align_pdb_kabsch', payload);
-  const sa = side(a, ca, r.chainA, r.alignedSequenceA);
-  const sb = side(b, cb, r.chainB, r.alignedSequenceB);
+  const sa = side(a, ca, r.chainA, r.labelChainA, r.alignedSequenceA);
+  const sb = side(b, cb, r.chainB, r.labelChainB, r.alignedSequenceB);
   if (r.alignedResiduePairs === 0) throw new Error(`${recordName(sa)} and ${recordName(sb)}: ${r.structuralSimilarityVerdict}.`);
   return {
     method: how,
@@ -295,12 +308,10 @@ export function alignStructures(a: StructureInput, b: StructureInput, method: St
     rmsdAngstrom: r.rmsdAngstrom,
     equivalentResidues: r.alignedResiduePairs,
     sequenceIdentity: r.sequenceIdentity,
-    tmScores: [{
-      name: 'TM≈ (approximate)',
-      detail: `scored on the sequence-paired superposition, not searched for; normalised by the longer chain (${Math.max(sa.residues, sb.residues)} residues); not a TM-align TM-score`,
-      value: r.tmScore,
-      approximate: true,
-    }],
+    tmScores: [sa, sb].map((c, k) => {
+      const seqPaired = '; the best superposition of the sequence-paired residues, not of a TM-align alignment';
+      return score(c, c.residues, k === 0 ? r.d0A : r.d0B, k === 0 ? r.tmScoreA : r.tmScoreB, seqPaired);
+    }),
     alignedSequenceA: r.alignedSequenceA,
     alignedSequenceB: r.alignedSequenceB,
     transformationMatrix: checkMatrix(r.transformationMatrix),

@@ -27,4 +27,10 @@ describe('context help', () => {
     expect(searchHelp('TM-align').map((r) => r.id)).toContain('align-structures');
     expect(searchHelp('Kabsch').map((r) => r.id)).toContain('align-structures');
   });
+
+  it('names the by-sequence TM-scores as Zhang and Skolnick\'s by each chain, not an approximation', () => {
+    const method = OPERATION_HELP['align-structures'].method ?? '';
+    expect(method).toContain("By sequence: residues are paired by a global sequence alignment (BLOSUM62) and the pairs are superposed by the Kabsch method; its TM-scores are Zhang and Skolnick's for those paired residues, one normalised by each chain and searched over superpositions (the matrix and RMSD are the Kabsch fit of all pairs, so a TM-score may come from another superposition), not TM-align's.");
+    expect(method).not.toMatch(/TM≈|approximate/);
+  });
 });

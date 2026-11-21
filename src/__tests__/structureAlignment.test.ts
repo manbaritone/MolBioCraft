@@ -17,7 +17,7 @@ import { caAtomsToPdb } from '../core/structureModels';
 import { parsePdbCaCoordinates, type PdbCaAtom } from '../core/genomicsAndStructureSuite';
 import { parseAlignedFasta } from '../core/alignmentFormats';
 import {
-  alignStructures, chainProblem, MIN_ALIGNABLE_RESIDUES, recordName, structureAlignmentFasta, structureAlignmentFileName,
+  alignStructures, chainProblem, STRUCTURE_ALIGNMENT_METHODS, MIN_ALIGNABLE_RESIDUES, recordName, structureAlignmentFasta, structureAlignmentFileName,
   structureAlignmentMatrixJson, structureAlignmentMethodOf, structureChains, structureEntryId,
   type StructureAlignment, type StructureAlignmentMethod, type StructureInput,
 } from '../core/structureAlignment';
@@ -197,17 +197,16 @@ describe('reports RMSD, TM-score, identity and equivalent residues', () => {
     expect(al.methodDescription).toMatch(/TM-align-style/);
   });
 
-  it("by sequence, labels the engine's score TM≈, approximate, and never a TM-align TM-score", () => {
+  it("by sequence, reports the engine's TM-score of the sequence-paired residues normalised by each chain, never as TM-align's", () => {
     const al = alignStructures(A(), B(), 'sequence');
-    expect(al.tmScores).toHaveLength(1);
-    const [s] = al.tmScores;
-    expect(s.approximate).toBe(true);
-    expect(s.name).toBe('TM≈ (approximate)');
-    expect(s.detail).toMatch(/not a TM-align TM-score/);
-    expect(s.detail).toMatch(/longer chain \(80 residues\)/);
-    // Scored with d0 from the 60 pairs and divided by the longer chain: 60/80 on a perfect fit.
-    close(s.value, 0.75, 1e-3, 'TM≈');
+    expect(al.tmScores.map((s) => [s.name, s.approximate])).toEqual([['TM-score by SYNA.A', false], ['TM-score by SYNB.B', false]]);
+    // The 60 pairs fit perfectly: 60 of A's 80 residues, all 60 of B's.
+    close(al.tmScores[0].value, 0.75, 1e-4, 'normalised by A');
+    close(al.tmScores[1].value, 1, 1e-4, 'normalised by B');
+    expect(al.tmScores[0].detail).toMatch(/^normalised by SYNA\.A: 80 residues, d0 3\.19 Å; .*sequence-paired residues, not of a TM-align alignment$/);
+    expect(al.tmScores[1].detail).toMatch(/^normalised by SYNB\.B: 60 residues, d0 2\.61 Å; /);
     expect(al.methodDescription).toMatch(/BLOSUM62/);
+    expect(STRUCTURE_ALIGNMENT_METHODS.find((m) => m.value === 'sequence')?.hint).toBe("Pairs residues by a global sequence alignment (BLOSUM62) and superposes the pairs. Its TM-scores, one by each chain, are Zhang and Skolnick's for those pairs, not TM-align's.");
   });
 
   it('aligns the chain an mmCIF label id names, not the chain whose author id is that letter', () => {
@@ -225,6 +224,29 @@ describe('reports RMSD, TM-score, identity and equivalent residues', () => {
       expect(al.rmsdAngstrom, method).toBeLessThan(2e-3);
     }
     expect(engine.mock.calls.filter((c) => ALIGN_OPS.includes(c[0])).map((c) => (c[1] as { chainA: string }).chainA)).toEqual(['B', 'B']);
+  });
+
+  it('aligns the picked label chain when author ids repeat', () => {
+    // Label A and label B are both author A; label C is author B, so neither "A" nor "B" as an
+    // author id names label B.
+    const first = trace(50, 0x1234567n);
+    const third = trace(40, 0x7654321n);
+    const text = cif([...cifChain('A', 'A', first), ...cifChain('B', 'A', A80), ...cifChain('C', 'B', third)]);
+    expect(structureChains(text).map((c) => [c.id, c.authorId])).toEqual([['A', 'A'], ['B', 'A'], ['C', 'B']]);
+    for (const method of METHODS) {
+      const al = alignStructures({ text, chain: 'B', entry: 'SYNT' }, { text: PDB_B80, chain: 'B', entry: 'SYNB' }, method);
+      expect(al.a, method).toEqual({ entry: 'SYNT', chain: 'B', authorId: 'A', residues: 80 });
+      expect(al.equivalentResidues, method).toBe(80);
+      expect(al.rmsdAngstrom, method).toBeLessThan(2e-3);
+      // The structure picked on the other side is a PDB file: it has no label chains to name.
+      const swapped = alignStructures({ text: PDB_B80, chain: 'B', entry: 'SYNB' }, { text, chain: 'B', entry: 'SYNT' }, method);
+      expect(swapped.b, method).toEqual({ entry: 'SYNT', chain: 'B', authorId: 'A', residues: 80 });
+      expect(swapped.equivalentResidues, method).toBe(80);
+    }
+    const sent = engine.mock.calls.filter((c) => ALIGN_OPS.includes(c[0])).map((c) => c[1] as Record<string, unknown>);
+    expect(sent.map((p) => [p.chainA, p.labelChainA, p.chainB, p.labelChainB])).toEqual([
+      ['A', 'B', 'B', undefined], ['B', undefined, 'A', 'B'], ['A', 'B', 'B', undefined], ['B', undefined, 'A', 'B'],
+    ]);
   });
 
   it('by sequence, reports no superposition for chains whose sequence alignment pairs no residues, with the engine verdict', () => {
@@ -269,8 +291,10 @@ describe('reports RMSD, TM-score, identity and equivalent residues', () => {
       expect(html, text).toContain(text);
     }
     const seqHtml = renderToStaticMarkup(React.createElement(StructureAlignmentResults, { alignment: alignStructures(A(), B(), 'sequence') }));
-    expect(seqHtml).toContain('TM≈ (approximate)');
-    expect(seqHtml).not.toContain('TM-score by');
+    for (const text of ['TM-score by SYNA.A', '0.750', 'TM-score by SYNB.B', '1.000', 'the best superposition of the sequence-paired residues']) {
+      expect(seqHtml, text).toContain(text);
+    }
+    expect(seqHtml).not.toContain('TM≈');
   });
 
   it('the dialog offers the structure documents, their chains and both methods', () => {
@@ -334,12 +358,12 @@ describe('reports RMSD, TM-score, identity and equivalent residues', () => {
       const ref = reference().sequence_superposition.find((c) => c.chain_1 === n1 && c.chain_2 === n2)!;
       expect(ref, `${n1}/${n2} in sequence_superposition`).toBeDefined();
       const al = alignStructures(rcsb(n1), rcsb(n2), 'sequence');
-      console.log(`${n1}/${n2} sequence: equivalent ${al.equivalentResidues} ref ${ref.equivalent_residues}, identity ${al.sequenceIdentity} ref ${ref.identity}, RMSD ${al.rmsdAngstrom} ref ${ref.rmsd}, TM≈ ${al.tmScores[0].value}`);
+      console.log(`${n1}/${n2} sequence: equivalent ${al.equivalentResidues} ref ${ref.equivalent_residues}, identity ${al.sequenceIdentity} ref ${ref.identity}, RMSD ${al.rmsdAngstrom} ref ${ref.rmsd}, TM ${al.tmScores.map((s) => s.value.toFixed(4)).join('/')}`);
       expect([recordName(al.a), recordName(al.b)]).toEqual([n1, n2]);
       expect(al.equivalentResidues).toBe(ref.equivalent_residues);
       close(al.sequenceIdentity, ref.identity, 5e-5, `${n1}/${n2} identity`);
       close(al.rmsdAngstrom, ref.rmsd, 0.05, `${n1}/${n2} RMSD`);
-      expect(al.tmScores.map((s) => [s.name, s.approximate])).toEqual([['TM≈ (approximate)', true]]);
+      expect(al.tmScores.map((s) => [s.name, s.approximate])).toEqual([[`TM-score by ${n1}`, false], [`TM-score by ${n2}`, false]]);
     }
   });
 });

@@ -363,6 +363,23 @@ function chainRamachandran(text: string, structure: Structure, labelChain: strin
 }
 
 /**
+ * The sequence superposition's two TM-scores (engine `tmScoreA`, `tmScoreB`: Zhang-Skolnick, of
+ * the sequence-paired residues, normalised by each chain), each named by the chain it is
+ * normalised by.
+ */
+function superpositionTmScores(
+  report: { chainA: string; chainB: string },
+  chains: { a: string; b: string } | null,
+): { by: string; value: number }[] {
+  const r = report as typeof report & { tmScoreA?: number; tmScoreB?: number };
+  if (typeof r.tmScoreA !== 'number' || typeof r.tmScoreB !== 'number') return [];
+  return [
+    { by: `chain ${chains?.a ?? r.chainA}`, value: r.tmScoreA },
+    { by: `chain ${chains?.b ?? r.chainB}`, value: r.tmScoreB },
+  ];
+}
+
+/**
  * A chain the superposition engine paired, named as the Ramachandran figure and the selection badge
  * name a chain: by its author id, with its label id beside it where the two differ. The engine
  * names the chain by the one-letter id `caAtomsToPdb` wrote (the first letter of the Cα atoms'
@@ -1438,10 +1455,12 @@ export const ProteinStudio: React.FC<ProteinStudioProps> = ({
                       <span className="kpi-label">Cα RMSD</span>
                       <strong className="kpi-val">{pdbAlignReport.rmsdAngstrom} Å</strong>
                     </div>
-                    <div className="kpi-box" title="Scored on the sequence-paired superposition, not searched for as TM-align does">
-                      <span className="kpi-label">TM≈ (approximate TM-score)</span>
-                      <strong className="kpi-val">{pdbAlignReport.tmScore}</strong>
-                    </div>
+                    {superpositionTmScores(pdbAlignReport, pairedChains).map(({ by, value }) => (
+                      <div key={by} className="kpi-box" title={`Zhang-Skolnick TM-score of the sequence-paired residues normalised by ${by}, searched over superpositions; the overlay and RMSD are the Kabsch fit of all pairs`}>
+                        <span className="kpi-label">TM-score by {by}</span>
+                        <strong className="kpi-val">{value.toFixed(3)}</strong>
+                      </div>
+                    ))}
                     <div className="kpi-box" title={pdbAlignReport.pairingMethod}>
                       <span className="kpi-label">Cα pairs (sequence alignment)</span>
                       <strong className="kpi-val">{pdbAlignReport.alignedResiduePairs}</strong>
@@ -1464,7 +1483,7 @@ export const ProteinStudio: React.FC<ProteinStudioProps> = ({
                     contacts={pdbAlignReport?.intraChainContacts}
                     title={comparing ? `${modelALabel} vs ${modelBLabel}` : modelALabel}
                     rmsdAngstrom={comparing ? pdbAlignReport?.rmsdAngstrom : undefined}
-                    tmScore={comparing ? pdbAlignReport?.tmScore : undefined}
+                    tmScores={comparing && pdbAlignReport ? superpositionTmScores(pdbAlignReport, pairedChains) : undefined}
                     alignedResiduePairs={comparing ? pdbAlignReport?.alignedResiduePairs : undefined}
                     pairingMethod={comparing ? pdbAlignReport?.pairingMethod : undefined}
                     structure={fullAtomModel.structure ?? undefined}
@@ -1482,9 +1501,10 @@ export const ProteinStudio: React.FC<ProteinStudioProps> = ({
                     alignment: {pdbAlignReport.pairingMethod}. {pdbAlignReport.alignedResiduePairs} of their{' '}
                     {pdbAlignReport.alignedSequenceA.replace(/-/g, '').length} vs{' '}
                     {pdbAlignReport.alignedSequenceB.replace(/-/g, '').length} residues are paired,{' '}
-                    {(pdbAlignReport.sequenceIdentity * 100).toFixed(1)}% of the pairs identical. TM≈ is approximate: it
-                    is scored on this sequence-paired superposition, not searched for as TM-align does; Align
-                    Structures… aligns the chains by structure.
+                    {(pdbAlignReport.sequenceIdentity * 100).toFixed(1)}% of the pairs identical. Each TM-score is
+                    Zhang and Skolnick&apos;s for these paired residues, normalised by the chain it names and searched
+                    over superpositions; the overlay and RMSD are the Kabsch fit of all pairs, so a TM-score may come
+                    from another superposition. Align Structures… aligns the chains by structure.
                   </div>
                 )}
 

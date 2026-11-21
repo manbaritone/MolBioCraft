@@ -849,12 +849,12 @@ describe('studio badges', () => {
       for (const w of words) if (w !== 'Sequence Alignment') expect(shown, `${view}: "${w}" is not shown`).not.toContain(w);
     }
 
-    // Badges that carry a value stay: bootstrap replicates on the tree card, Cα pairs and TM≈ on the 3D viewer.
+    // Badges that carry a value stay: bootstrap replicates on the tree card, Cα pairs and the TM-scores on the 3D viewer.
     expect(badgesOf(treeCard(renders.phylogeny)).some((b) => /^\d+ bootstrap replicates$/.test(b)), 'bootstrap badge').toBe(true);
     const stage = renders['genomics (structure)'].slice(renders['genomics (structure)'].indexOf('protein-3d-viewer-stage'));
     const viewer = badgesOf(stage.slice(0, stage.indexOf('<select')));
     expect(viewer.some((b) => /^\d+ Cα pairs$/.test(b)), `Cα pairs badge among ${JSON.stringify(viewer)}`).toBe(true);
-    expect(viewer.some((b) => /^TM≈ [\d.]+$/.test(b)), 'TM≈ badge').toBe(true);
+    expect(viewer.some((b) => /^TM-score [\d.]+ by chain .+$/.test(b)), 'TM-score badge').toBe(true);
     // And the module picker's badge, which names the methods the module offers.
     expect(badgesOf(renders.phylogeny)).toContain('NJ • UPGMA • Bootstrap • Parsimony & likelihood scores');
   });

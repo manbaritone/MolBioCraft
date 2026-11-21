@@ -351,7 +351,7 @@ describe('Rust Multi-Crate Bioinformatics Engine, Resident Sequence Store & 3D P
         primaryAtoms: atoms,
         title: 'eGFP Beta-Barrel 3D Fold',
         rmsdAngstrom: 0.42,
-        tmScore: 0.96,
+        tmScores: [{ by: 'eGFP', value: 0.96 }],
       })
     );
     expect(viewer3dHtml).toContain('protein-3d-viewer-stage');

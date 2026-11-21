@@ -46,12 +46,16 @@
  "align_pdb_kabsch": [
   "chainA",
   "chainB",
+  "labelChainA",
+  "labelChainB",
   "pdbA",
   "pdbB"
  ],
  "align_structures_tm": [
   "chainA",
   "chainB",
+  "labelChainA",
+  "labelChainB",
   "pdbA",
   "pdbB"
  ],

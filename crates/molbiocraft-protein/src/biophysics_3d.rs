@@ -733,10 +733,21 @@ pub struct PdbStructureAlignmentReport {
     pub aligned_residue_pairs: usize,
     /// RMSD over all `aligned_residue_pairs` $C_\alpha$ pairs after the optimal superposition, Å.
     pub rmsd_angstrom: f64,
-    /// $\frac{1}{L}\sum 1/(1 + (d_i/d_0)^2)$ over the aligned pairs on this superposition, with
-    /// $L$ the longer chain's length and $d_0$ from the number of pairs. It is scored on the
-    /// sequence-paired superposition, not searched for the best TM-score.
+    /// `tm_score_a` or `tm_score_b`, whichever is normalised by the longer chain (A when the two
+    /// are as long), to 3 decimals; `structural_similarity_verdict` is read from it.
     pub tm_score: f64,
+    /// The TM-score (Zhang & Skolnick 2004) of the aligned pairs normalised by chain A: the
+    /// maximum over superpositions of B onto A of $\frac{1}{L_A}\sum 1/(1 + (d_i/d_{0A})^2)$, the
+    /// sum over the aligned pairs, with $L_A$ chain A's residues and
+    /// $d_{0A} = 1.24 (L_A - 15)^{1/3} - 1.8$ Å, at least 0.5 Å (as the TM-score program scores
+    /// a given residue correspondence, `-seq`). It is searched for, so it is the score of a
+    /// superposition that may not be `transformation_matrix`, which minimises the RMSD instead.
+    pub tm_score_a: f64,
+    /// The same TM-score normalised by chain B, with $L_B$ and $d_{0B}$.
+    pub tm_score_b: f64,
+    /// $d_{0A}$ and $d_{0B}$, Å (`structure_align::tm_score_d0` of each chain's length).
+    pub d0_a: f64,
+    pub d0_b: f64,
     pub structural_similarity_verdict: String,
     /// The first 48 pairs, in alignment order.
     pub per_residue_deviations: Vec<PerResidueDeviation>,
@@ -755,6 +766,9 @@ pub struct PdbStructureAlignmentReport {
     /// file shows), the chain column for PDB.
     pub chain_a: String,
     pub chain_b: String,
+    /// The mmCIF label id of each chain superposed; `None` for a PDB file, which has none.
+    pub label_chain_a: Option<String>,
+    pub label_chain_b: Option<String>,
     /// How the residues were paired and superposed, in words.
     pub pairing_method: String,
     /// Fraction of the pairs whose two residues have the same one-letter code, to 4 decimals (a
@@ -793,7 +807,7 @@ pub(crate) struct ChainTrace {
     /// Author chain id (mmCIF) or the chain column (PDB).
     pub(crate) id: String,
     /// The mmCIF label chain id, which also names this chain.
-    label_id: Option<String>,
+    pub(crate) label_id: Option<String>,
     pub(crate) residues: Vec<TraceResidue>,
 }
 
@@ -916,6 +930,31 @@ pub(crate) fn select_chain<'a>(input: &'a SuperpositionInput, wanted: Option<&st
     }
 }
 
+/// The chain mmCIF label id `label` names when one is given (not blank), else [`select_chain`]
+/// on `wanted`. Two label chains can share an author id; a label id names one chain only. A label
+/// id that names no protein chain is an error that lists the label ids there are (none for a PDB
+/// file), not a fall back to `wanted`.
+pub(crate) fn pick_chain<'a>(
+    input: &'a SuperpositionInput,
+    wanted: Option<&str>,
+    label: Option<&str>,
+    which: char,
+) -> Result<&'a ChainTrace, String> {
+    let Some(label) = label.map(str::trim).filter(|l| !l.is_empty()) else {
+        return select_chain(input, wanted, which);
+    };
+    if let Some(chain) = input.chains.iter().find(|c| c.label_id.as_deref() == Some(label)) {
+        return Ok(chain);
+    }
+    select_chain(input, None, which)?;
+    let labels: Vec<&str> = input.chains.iter().filter_map(|c| c.label_id.as_deref()).collect();
+    Err(if labels.is_empty() {
+        format!("Structure {which} has no label chain ids (a PDB file names chains by author id only), so no protein chain labelled '{label}'")
+    } else {
+        format!("Structure {which} has no protein chain labelled '{label}' (its protein chains' label ids: {})", labels.join(", "))
+    })
+}
+
 /// Global alignment of two one-letter sequences under BLOSUM62 with a gap of length `k` costing
 /// `-10 - 0.5 (k - 1)`, end gaps included (Biopython `PairwiseAligner`'s convention for
 /// `open_gap_score=-10, extend_gap_score=-0.5`). Rust-Bio scores a gap as `open + k * extend` in
@@ -964,8 +1003,12 @@ fn align_chain_sequences(a: &[u8], b: &[u8]) -> (Vec<(usize, usize)>, String, St
 /// it the residues with a polymer $C_\alpha$ (see `polymer_c_alpha`), a modified residue under its
 /// parent's one-letter code (`MSE` as `M`).
 ///
+/// The TM-scores are scored on those pairs: for each chain, the TM-score normalised by it, the
+/// maximum over superpositions found by the TM-score search (see `tm_score_a`), not the score of
+/// the RMSD-optimal superposition. The verdict reads the one normalised by the longer chain.
+///
 /// Two chains whose alignment pairs no residue give a report with no pairs, B unmoved (the
-/// identity matrix), RMSD, TM-score and identity 0, and a verdict that says so. Errors name what
+/// identity matrix), RMSD, TM-scores and identity 0, and a verdict that says so. Errors name what
 /// is missing: a structure with no $C_\alpha$ atoms or no protein chain, a named chain that is
 /// not in its structure (with the chains that are), or PDB or mmCIF text that cannot be read.
 pub fn align_pdb_chains_kabsch(
@@ -974,10 +1017,24 @@ pub fn align_pdb_chains_kabsch(
     chain_a: Option<&str>,
     chain_b: Option<&str>,
 ) -> Result<PdbStructureAlignmentReport, String> {
+    align_pdb_chains_kabsch_labelled(pdb_text_a, pdb_text_b, chain_a, chain_b, None, None)
+}
+
+/// [`align_pdb_chains_kabsch`] with each chain also nameable by its mmCIF label id: `label_a`
+/// and `label_b`, when given, select the chain (see `pick_chain`) and `chain_a` / `chain_b` are
+/// not read.
+pub fn align_pdb_chains_kabsch_labelled(
+    pdb_text_a: &str,
+    pdb_text_b: &str,
+    chain_a: Option<&str>,
+    chain_b: Option<&str>,
+    label_a: Option<&str>,
+    label_b: Option<&str>,
+) -> Result<PdbStructureAlignmentReport, String> {
     let input_a = read_superposition_input(pdb_text_a, 'A')?;
     let input_b = read_superposition_input(pdb_text_b, 'B')?;
-    let trace_a = select_chain(&input_a, chain_a, 'A')?;
-    let trace_b = select_chain(&input_b, chain_b, 'B')?;
+    let trace_a = pick_chain(&input_a, chain_a, label_a, 'A')?;
+    let trace_b = pick_chain(&input_b, chain_b, label_b, 'B')?;
 
     let seq_a: Vec<u8> = trace_a.residues.iter().map(|r| r.code).collect();
     let seq_b: Vec<u8> = trace_b.residues.iter().map(|r| r.code).collect();
@@ -1013,16 +1070,13 @@ pub fn align_pdb_chains_kabsch(
     };
     let shift = ca - rot * cb;
 
-    let d0 = (1.24 * ((n.max(16) as f64) - 15.0).cbrt() - 1.8).max(0.5);
     let mut sum_sq = 0.0f64;
-    let mut tm_acc = 0.0f64;
     let mut identical = 0usize;
     let mut deviations = Vec::with_capacity(n.min(48));
     for (k, &(i, j)) in pairs.iter().enumerate() {
         let (ra, rb) = (&trace_a.residues[i], &trace_b.residues[j]);
         let dist_sq = (ra.pos - (rot * rb.pos + shift)).norm_squared();
         sum_sq += dist_sq;
-        tm_acc += 1.0 / (1.0 + dist_sq / (d0 * d0));
         identical += usize::from(ra.code == rb.code);
         if deviations.len() < 48 {
             deviations.push(PerResidueDeviation {
@@ -1050,8 +1104,14 @@ pub fn align_pdb_chains_kabsch(
         .collect();
 
     let rmsd = (((sum_sq / nf).sqrt()) * 1000.0).round() / 1000.0;
-    let longer = trace_a.residues.len().max(trace_b.residues.len()) as f64;
-    let tm_score = ((tm_acc / longer) * 1000.0).round() / 1000.0;
+    // The TM-score of these pairs by each chain: the best over superpositions, not this one's.
+    let pos_a: Vec<Vector3<f64>> = trace_a.residues.iter().map(|r| r.pos).collect();
+    let pos_b: Vec<Vector3<f64>> = trace_b.residues.iter().map(|r| r.pos).collect();
+    let (len_a, len_b) = (pos_a.len(), pos_b.len());
+    let tm_score_a = crate::structure_align::tm_score_of_pairs(&pos_a, &pos_b, &pairs, len_a);
+    let tm_score_b = crate::structure_align::tm_score_of_pairs(&pos_a, &pos_b, &pairs, len_b);
+    let by_longer = if len_a >= len_b { tm_score_a } else { tm_score_b };
+    let tm_score = (by_longer * 1000.0).round() / 1000.0;
     let verdict = if n == 0 {
         format!(
             "Not superposed: the sequence alignment of chain {} and chain {} pairs no residues, so structure B is left where it is",
@@ -1084,12 +1144,18 @@ pub fn align_pdb_chains_kabsch(
         aligned_residue_pairs: n,
         rmsd_angstrom: rmsd,
         tm_score,
+        tm_score_a,
+        tm_score_b,
+        d0_a: crate::structure_align::tm_score_d0(len_a),
+        d0_b: crate::structure_align::tm_score_d0(len_b),
         structural_similarity_verdict: verdict,
         per_residue_deviations: deviations,
         rotation_matrix: rot_arr,
         intra_chain_contacts: intra_chain_contacts(&input_a.ca_atoms),
         chain_a: trace_a.id.clone(),
         chain_b: trace_b.id.clone(),
+        label_chain_a: trace_a.label_id.clone(),
+        label_chain_b: trace_b.label_id.clone(),
         pairing_method: SUPERPOSITION_PAIRING_METHOD.into(),
         sequence_identity: ((identical as f64 / nf) * 10000.0).round() / 10000.0,
         alignment_score,
@@ -1160,6 +1226,10 @@ pub fn align_pdb_structures_kabsch(pdb_text_a: &str, pdb_text_b: &str) -> PdbStr
             aligned_residue_pairs: 0,
             rmsd_angstrom: 0.0,
             tm_score: 0.0,
+            tm_score_a: 0.0,
+            tm_score_b: 0.0,
+            d0_a: 0.0,
+            d0_b: 0.0,
             structural_similarity_verdict: reason,
             per_residue_deviations: Vec::new(),
             rotation_matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -1168,6 +1238,8 @@ pub fn align_pdb_structures_kabsch(pdb_text_a: &str, pdb_text_b: &str) -> PdbStr
             intra_chain_contacts: Vec::new(),
             chain_a: String::new(),
             chain_b: String::new(),
+            label_chain_a: None,
+            label_chain_b: None,
             pairing_method: SUPERPOSITION_PAIRING_METHOD.into(),
             sequence_identity: 0.0,
             alignment_score: 0.0,
@@ -1541,6 +1613,266 @@ mod kabsch_tests {
 
     fn superpose(a: &str, b: &str) -> PdbStructureAlignmentReport {
         align_pdb_chains_kabsch(a, b, None, None).expect("superposition")
+    }
+
+    /// Label chains A and B share author id A, and label C is author B, so no author id names
+    /// label B: only its label id does. Both superpositions select it by label id, which wins
+    /// over the author id; without one, the author id selects as before; a label id that names no
+    /// protein chain is an error, not a fall back.
+    #[test]
+    fn picks_the_label_chain_when_author_ids_repeat() {
+        let target = chain_of(SEQ, 7);
+        let (first, third) = (chain_of(b"WKDGAVTRHMQSYFCENPLIWKDGAVTRHM", 11), chain_of(b"GHEDWQRSFYPLKEGAVTRWPDHM", 13));
+        let text = cif(&[("A", "A", &first), ("B", "A", &target), ("C", "B", &third)], "A");
+        let other = pdb(&[("Q", &target)]);
+        for author in [None, Some("A"), Some("B")] {
+            let r = align_pdb_chains_kabsch_labelled(&text, &other, author, None, Some("B"), None).unwrap();
+            assert_eq!((r.chain_a.as_str(), r.label_chain_a.as_deref(), r.label_chain_b.as_deref()), ("A", Some("B"), None), "{author:?}");
+            assert_eq!((r.aligned_residue_pairs, r.rmsd_angstrom), (40, 0.0), "{author:?}");
+            let t = crate::structure_align::align_structures_tm_labelled(&text, &other, author, None, Some("B"), None).unwrap();
+            assert_eq!((t.chain_a.as_str(), t.label_chain_a.as_deref(), t.length_a), ("A", Some("B"), 40), "{author:?}");
+            assert!(t.tm_score_a > 0.999, "{author:?}: {}", t.tm_score_a);
+        }
+        // B's side picked by label id too, the PDB file on A's.
+        let r = align_pdb_chains_kabsch_labelled(&other, &text, None, Some("A"), None, Some("B")).unwrap();
+        assert_eq!((r.chain_b.as_str(), r.label_chain_b.as_deref(), r.aligned_residue_pairs), ("A", Some("B"), 40));
+        // No label id: author A is the first label chain with it, as before.
+        let r = align_pdb_chains_kabsch_labelled(&text, &other, Some("A"), None, Some(" "), None).unwrap();
+        assert_eq!((r.label_chain_a.as_deref(), r.aligned_residue_pairs < 40), (Some("A"), true));
+        let err = align_pdb_chains_kabsch_labelled(&text, &other, Some("A"), None, Some("Z"), None).unwrap_err();
+        assert_eq!(err, "Structure A has no protein chain labelled 'Z' (its protein chains' label ids: A, B, C)");
+        let err = crate::structure_align::align_structures_tm_labelled(&text, &other, None, Some("Q"), None, Some("Q")).unwrap_err();
+        assert!(err.starts_with("Structure B has no label chain ids (a PDB file"), "{err}");
+    }
+
+    /// The $C_\alpha$ atoms of 1UBQ (ubiquitin, 76 residues) and of the first model of 1A5R
+    /// (SUMO-1, 103 residues), as residue name, number and x, y, z, from the two entries' `ATOM`
+    /// records at RCSB (https://files.rcsb.org/download/1UBQ.pdb and .../1A5R.pdb; wwPDB data,
+    /// CC0). The two folds are alike, their sequences are not (SUMO-1 has a 20-residue tail).
+    const UBIQUITIN_1UBQ_CA: &str = "\
+        MET 1 26.266 25.413 2.842\n\
+        GLN 2 26.85 29.021 3.898\n\
+        ILE 3 26.235 30.058 7.497\n\
+        PHE 4 26.772 33.436 9.197\n\
+        VAL 5 28.605 33.965 12.503\n\
+        LYS 6 27.691 37.315 14.143\n\
+        THR 7 30.225 38.643 16.662\n\
+        LEU 8 29.607 41.18 19.467\n\
+        THR 9 31.422 43.94 17.553\n\
+        GLY 10 28.978 43.96 14.678\n\
+        LYS 11 31.191 42.012 12.331\n\
+        THR 12 29.542 39.02 10.653\n\
+        ILE 13 31.72 36.289 9.176\n\
+        THR 14 30.505 33.884 6.512\n\
+        LEU 15 31.677 30.275 6.639\n\
+        GLU 16 31.22 27.341 4.275\n\
+        VAL 17 30.288 24.245 6.193\n\
+        GLU 18 28.468 20.94 5.98\n\
+        PRO 19 25.829 19.825 8.494\n\
+        SER 20 28.054 16.835 9.21\n\
+        ASP 21 30.796 19.083 10.566\n\
+        THR 22 31.398 19.064 14.286\n\
+        ILE 23 31.288 22.201 16.417\n\
+        GLU 24 35.031 21.722 17.069\n\
+        ASN 25 35.59 21.945 13.302\n\
+        VAL 26 33.533 25.097 12.978\n\
+        LYS 27 35.596 26.715 15.736\n\
+        ALA 28 38.794 25.761 13.88\n\
+        LYS 29 37.471 27.391 10.668\n\
+        ILE 30 36.731 30.57 12.645\n\
+        GLN 31 40.269 30.508 14.115\n\
+        ASP 32 41.718 30.022 10.643\n\
+        LYS 33 39.808 32.994 9.233\n\
+        GLU 34 39.676 35.547 12.072\n\
+        GLY 35 42.345 34.269 14.431\n\
+        ILE 36 40.226 33.716 17.509\n\
+        PRO 37 41.461 30.751 19.594\n\
+        PRO 38 38.817 28.02 19.889\n\
+        ASP 39 39.063 28.063 23.695\n\
+        GLN 40 37.738 31.637 23.712\n\
+        GLN 41 34.738 30.875 21.473\n\
+        ARG 42 31.2 30.329 22.78\n\
+        LEU 43 28.762 29.573 19.906\n\
+        ILE 44 25.034 30.17 20.401\n\
+        PHE 45 22.126 29.062 18.183\n\
+        ALA 46 18.443 29.143 19.083\n\
+        GLY 47 19.399 29.894 22.655\n\
+        LYS 48 21.55 26.796 23.133\n\
+        GLN 49 25.349 26.872 23.643\n\
+        LEU 50 26.826 24.521 21.012\n\
+        GLU 51 29.015 21.657 22.288\n\
+        ASP 52 32.262 20.67 20.514\n\
+        GLY 53 31.568 16.962 19.825\n\
+        ARG 54 28.108 17.439 18.276\n\
+        THR 55 27.574 18.192 14.563\n\
+        LEU 56 25.594 21.109 13.072\n\
+        SER 57 22.924 18.583 12.025\n\
+        ASP 58 22.418 17.638 15.693\n\
+        TYR 59 21.079 21.149 16.251\n\
+        ASN 60 19.065 21.352 12.999\n\
+        ILE 61 21.184 24.263 11.69\n\
+        GLN 62 20.081 24.773 8.033\n\
+        LYS 63 21.656 26.847 5.24\n\
+        GLU 64 21.907 30.563 5.881\n\
+        SER 65 21.419 30.253 9.62\n\
+        THR 66 23.212 32.762 11.891\n\
+        LEU 67 25.149 31.609 14.98\n\
+        HIS 68 26.179 34.127 17.65\n\
+        LEU 69 29.801 34.145 18.829\n\
+        VAL 70 30.479 35.369 22.374\n\
+        LEU 71 34.145 35.472 23.481\n\
+        ARG 72 35.161 34.174 26.896\n\
+        LEU 73 38.668 35.502 27.68\n\
+        ARG 74 40.873 33.802 30.253\n\
+        GLY 75 41.845 36.55 32.686\n\
+        GLY 76 40.373 39.813 33.944\n\
+    ";
+    const SUMO1_1A5R_CA: &str = "\
+        GLY -1 47.916 -12.752 8.699\n\
+        SER 0 48.246 -9.371 6.956\n\
+        MET 1 49.154 -5.777 7.888\n\
+        SER 2 45.575 -4.711 7.034\n\
+        ASP 3 42.19 -6.332 6.322\n\
+        GLN 4 43.104 -6.269 2.609\n\
+        GLU 5 45.813 -8.809 1.703\n\
+        ALA 6 47.404 -6.377 -0.777\n\
+        LYS 7 48.363 -2.723 -0.194\n\
+        PRO 8 48.481 0.04 -2.825\n\
+        SER 9 51.958 0.933 -4.154\n\
+        THR 10 51.388 4.539 -3.083\n\
+        GLU 11 50.87 3.559 0.577\n\
+        ASP 12 54.412 2.109 0.655\n\
+        LEU 13 57.069 4.733 -0.177\n\
+        GLY 14 59.569 1.974 -0.964\n\
+        ASP 15 63.227 2.766 -1.694\n\
+        LYS 16 64.05 5.553 -4.167\n\
+        LYS 17 67.25 4.745 -6.071\n\
+        GLU 18 68.973 7.202 -8.423\n\
+        GLY 19 70.693 4.194 -10.034\n\
+        GLU 20 72.868 1.202 -9.071\n\
+        TYR 21 75.471 3.586 -7.605\n\
+        ILE 22 75.758 4.664 -3.936\n\
+        LYS 23 77.64 7.63 -2.499\n\
+        LEU 24 80.508 5.677 -0.995\n\
+        LYS 25 83.438 7.578 0.46\n\
+        VAL 26 86.527 6.009 2.105\n\
+        ILE 27 89.304 7.978 3.832\n\
+        GLY 28 92.753 6.946 5.147\n\
+        GLN 29 94.593 7.978 8.366\n\
+        ASP 30 97.084 9.687 6.021\n\
+        SER 31 94.449 12.446 5.661\n\
+        SER 32 93.266 11.103 2.298\n\
+        GLU 33 89.654 11.791 1.281\n\
+        ILE 34 87.708 9.837 -1.375\n\
+        HIS 35 84.085 10.864 -1.97\n\
+        PHE 36 82.524 9.172 -5.018\n\
+        LYS 37 79.723 6.753 -6.018\n\
+        VAL 38 80.125 3.034 -6.714\n\
+        LYS 39 77.779 0.109 -7.365\n\
+        MET 40 76.578 -2.169 -4.548\n\
+        THR 41 75.296 -5.223 -6.401\n\
+        THR 42 78.099 -7.423 -5.031\n\
+        HIS 43 80.2 -7.362 -1.825\n\
+        LEU 44 82.074 -4.072 -1.226\n\
+        LYS 45 85.149 -5.504 -2.955\n\
+        LYS 46 84.394 -3.597 -6.175\n\
+        LEU 47 84.389 -0.24 -4.334\n\
+        LYS 48 87.512 -0.782 -2.221\n\
+        GLU 49 89.297 -3.094 -4.709\n\
+        SER 50 89.416 -0.348 -7.365\n\
+        TYR 51 90.399 1.992 -4.545\n\
+        CYS 52 93.09 -0.45 -3.299\n\
+        GLN 53 94.814 -1.167 -6.662\n\
+        ARG 54 94.571 2.423 -7.94\n\
+        GLN 55 96.112 3.711 -4.682\n\
+        GLY 56 97.417 0.807 -2.562\n\
+        VAL 57 96.251 -2.787 -1.955\n\
+        PRO 58 95.475 -3.467 1.756\n\
+        MET 59 97.218 -6.834 1.407\n\
+        ASN 60 100.497 -5.206 2.536\n\
+        SER 61 99.776 -1.66 3.84\n\
+        LEU 62 96.135 -0.506 3.748\n\
+        ARG 63 93.425 -1.708 6.13\n\
+        PHE 64 89.658 -1.307 5.691\n\
+        LEU 65 87.267 -0.351 8.474\n\
+        PHE 66 83.629 -0.191 7.342\n\
+        GLU 67 80.72 -0.02 9.845\n\
+        GLY 68 83.366 0.474 12.538\n\
+        GLN 69 85.24 -2.866 12.653\n\
+        ARG 70 87.711 -4.449 10.224\n\
+        ILE 71 85.417 -6.027 7.595\n\
+        ALA 72 85.772 -8.503 4.69\n\
+        ASP 73 84.741 -8.27 1.024\n\
+        ASN 74 82.047 -10.971 0.934\n\
+        HIS 75 79.116 -9.549 2.957\n\
+        THR 76 76.336 -7.731 1.002\n\
+        PRO 77 73.221 -8.104 3.239\n\
+        LYS 78 75.367 -7.38 6.312\n\
+        GLU 79 76.713 -3.784 6.115\n\
+        LEU 80 76.518 -3.431 2.33\n\
+        GLY 81 72.74 -2.84 2.22\n\
+        MET 82 73.308 0.937 1.738\n\
+        GLU 83 72.087 2.563 -1.505\n\
+        GLU 84 73.472 6.136 -1.47\n\
+        GLU 85 75.375 6.477 1.843\n\
+        ASP 86 78.202 3.976 2.459\n\
+        VAL 87 81.37 4.71 4.475\n\
+        ILE 88 84.782 3.046 5.003\n\
+        GLU 89 87.872 4.177 6.905\n\
+        VAL 90 91.27 2.794 5.89\n\
+        TYR 91 94.451 2.67 7.931\n\
+        GLN 92 97.582 2.825 5.757\n\
+        GLU 93 101.151 2.144 6.942\n\
+        GLN 94 103.052 2.664 3.657\n\
+        THR 95 102.504 5.026 0.716\n\
+        GLY 96 104.859 3.296 -1.752\n\
+        GLY 97 107.772 4.858 -3.64\n\
+        HIS 98 109.649 4.568 -6.941\n\
+        SER 99 112.787 3.487 -5.049\n\
+        THR 100 113.704 -0.226 -4.755\n\
+        VAL 101 113.36 -0.097 -0.936\n\
+    ";
+
+    /// A `CA`-only PDB chain `chain` from one of the tables above.
+    fn ca_only_pdb(table: &str, chain: char) -> String {
+        let mut out = String::new();
+        for (k, line) in table.lines().enumerate() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let (x, y, z) = (f[2].parse::<f64>().unwrap(), f[3].parse::<f64>().unwrap(), f[4].parse::<f64>().unwrap());
+            out += &format!(
+                "ATOM  {:>5}  CA  {} {chain}{:>4}    {x:>8.3}{y:>8.3}{z:>8.3}  1.00  0.00           C\n",
+                k + 1,
+                f[0],
+                f[1]
+            );
+        }
+        out + "END\n"
+    }
+
+    /// The superposition's TM-scores are Zhang & Skolnick's (2004), as the TM-score program
+    /// computes them: for the sequence-paired residues fixed, the maximum over superpositions of
+    /// $\frac{1}{L}\sum 1/(1 + (d_i/d_0)^2)$, once with $L$ and $d_0$ of chain A and once of
+    /// chain B. The reference values are TMscore's (zhanggroup.org TMscore.cpp, the C++ version
+    /// whose last update is 2022/02/27, built with clang++ -O2) for both chains renumbered by
+    /// alignment column, so that it paired residues by number exactly as this alignment pairs
+    /// them: 76 residues in common, their RMSD 14.649 Å as here, TM-score 0.4112 normalised by
+    /// 1UBQ (d0 3.08 Å) and 0.3417 by 1A5R (d0 3.72 Å). The pairs misread SUMO-1's tail, so
+    /// the RMSD-optimal superposition of all 76 scores only 0.108 by 1A5R: the search counts.
+    #[test]
+    fn tm_score_is_zhang_skolnick_on_non_identical_chains() {
+        let ubq = ca_only_pdb(UBIQUITIN_1UBQ_CA, 'A');
+        let sumo = ca_only_pdb(SUMO1_1A5R_CA, 'A');
+        let r = superpose(&ubq, &sumo);
+        assert_eq!((r.aligned_residue_pairs, r.rmsd_angstrom), (76, 14.649), "TMscore's pairs");
+        assert!((r.tm_score_a - 0.4112).abs() < 0.0006, "TM-score by 1UBQ {}", r.tm_score_a);
+        assert!((r.tm_score_b - 0.3417).abs() < 0.0006, "TM-score by 1A5R {}", r.tm_score_b);
+        // The headline score is the one normalised by the longer chain, 1A5R, and the verdict reads it.
+        assert_eq!(r.tm_score, (r.tm_score_b * 1000.0).round() / 1000.0);
+        assert_eq!(r.structural_similarity_verdict, "Moderate Local Substructure Similarity");
+        // Swapping the structures swaps the two scores.
+        let swapped = superpose(&sumo, &ubq);
+        assert!((swapped.tm_score_a - r.tm_score_b).abs() < 1e-9 && (swapped.tm_score_b - r.tm_score_a).abs() < 1e-9);
+        assert_eq!(swapped.tm_score, r.tm_score);
     }
 
     /// B lacks A's first three residues and an internal block of five, carries four residues A

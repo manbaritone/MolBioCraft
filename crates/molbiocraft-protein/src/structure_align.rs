@@ -50,7 +50,7 @@
 //! identity and the RMSD are over the final pairs: the pairs TM-align's "Aligned length" counts
 //! (pairs closer than 5 Å are a subset).
 
-use crate::biophysics_3d::{read_superposition_input, select_chain, ChainTrace};
+use crate::biophysics_3d::{pick_chain, read_superposition_input, ChainTrace};
 use nalgebra::{Matrix3, Vector3};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -72,6 +72,9 @@ pub struct TmAlignmentReport {
     /// shows), the chain column for PDB (a blank column reads as `A`).
     pub chain_a: String,
     pub chain_b: String,
+    /// The mmCIF label id of each chain aligned; `None` for a PDB file, which has none.
+    pub label_chain_a: Option<String>,
+    pub label_chain_b: Option<String>,
     /// Residues with a polymer $C_\alpha$ in each chain; each TM-score is normalised by one of
     /// these.
     pub length_a: usize,
@@ -133,10 +136,24 @@ pub fn align_structures_tm(
     chain_a: Option<&str>,
     chain_b: Option<&str>,
 ) -> Result<TmAlignmentReport, String> {
+    align_structures_tm_labelled(text_a, text_b, chain_a, chain_b, None, None)
+}
+
+/// [`align_structures_tm`] with each chain also nameable by its mmCIF label id: `label_a` and
+/// `label_b`, when given, select the chain (by label id alone; two label chains can share an
+/// author id) and `chain_a` / `chain_b` are not read.
+pub fn align_structures_tm_labelled(
+    text_a: &str,
+    text_b: &str,
+    chain_a: Option<&str>,
+    chain_b: Option<&str>,
+    label_a: Option<&str>,
+    label_b: Option<&str>,
+) -> Result<TmAlignmentReport, String> {
     let input_a = read_superposition_input(text_a, 'A')?;
     let input_b = read_superposition_input(text_b, 'B')?;
-    let a = ChainCa::of(select_chain(&input_a, chain_a, 'A')?);
-    let b = ChainCa::of(select_chain(&input_b, chain_b, 'B')?);
+    let a = ChainCa::of(pick_chain(&input_a, chain_a, label_a, 'A')?);
+    let b = ChainCa::of(pick_chain(&input_b, chain_b, label_b, 'B')?);
     for (chain, which) in [(&a, 'A'), (&b, 'B')] {
         if chain.ca.len() < 3 {
             return Err(format!(
@@ -173,6 +190,8 @@ pub fn align_structures_tm(
         method: TM_ALIGNMENT_METHOD.into(),
         chain_a: a.id,
         chain_b: b.id,
+        label_chain_a: a.label,
+        label_chain_b: b.label,
     })
 }
 
@@ -185,6 +204,8 @@ pub fn align_structures_tm(
 struct ChainCa {
     /// Author chain id (mmCIF) or the chain column (PDB; blank reads as `A`).
     id: String,
+    /// mmCIF label chain id; `None` for PDB.
+    label: Option<String>,
     seq: Vec<u8>,
     ca: Vec<V3>,
 }
@@ -192,7 +213,7 @@ struct ChainCa {
 impl ChainCa {
     fn of(trace: &ChainTrace) -> Self {
         let (seq, ca) = trace.residues.iter().map(|r| (r.code, r.pos)).unzip();
-        ChainCa { id: trace.id.clone(), seq, ca }
+        ChainCa { id: trace.id.clone(), label: trace.label_id.clone(), seq, ca }
     }
 }
 
@@ -397,6 +418,16 @@ fn tm_superposition(a: &[V3], b: &[V3], pairs: &[(usize, usize)], scoring: &Scor
         seed_len = (seed_len / 2).max(min_seed);
     }
     best
+}
+
+/// The TM-score of B's residue `j` paired with A's residue `i` for each of `pairs`, normalised by
+/// a chain of `length` residues (Zhang & Skolnick 2004), as the TM-score program scores a given
+/// correspondence: the maximum over superpositions of B onto A of
+/// $\frac{1}{L}\sum 1/(1 + (d_i/d_0)^2)$, every pair counted, with $L$ = `length` and
+/// $d_0$ = [`tm_score_d0`] of it, searched by [`tm_superposition`] from every seed start. 0 for
+/// no pairs.
+pub(crate) fn tm_score_of_pairs(a: &[V3], b: &[V3], pairs: &[(usize, usize)], length: usize) -> f64 {
+    tm_superposition(a, b, pairs, &Scoring::for_length(length), 1).0
 }
 
 /// A 128-bit key for a list of indices: two independent multiply-rotate streams seeded apart,

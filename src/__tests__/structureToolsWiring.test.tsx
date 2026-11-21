@@ -227,6 +227,8 @@ describe('the structure studio (GenomicsNgsAndPredictionStudio, 3D tab)', () => 
     // Model A is chain B (the open document), model B the other structure ticked beside it.
     const html = studio({ activeDoc: docB, proteinDocuments: [docA, docB], selectedDocuments: [docB, docA] });
     const engine = alignPdbStructuresKabsch(caAtomsToPdb(structureAtomsOf(docB)), caAtomsToPdb(structureAtomsOf(docA)));
+    // The engine's per-chain TM-scores (the shared report type predates them).
+    const tm = engine as typeof engine & { tmScoreA: number; tmScoreB: number };
     expect([engine.chainA, engine.chainB, engine.alignedResiduePairs]).toEqual(['B', 'A', 8]);
     expect(engine.pairingMethod).toMatch(/global sequence alignment/);
 
@@ -237,7 +239,10 @@ describe('the structure studio (GenomicsNgsAndPredictionStudio, 3D tab)', () => 
     // beside it where the two differ.
     expect(k.get('Chain pair (A / B)')).toBe('H (label B) / B (label A)');
     expect(ramachandranFigure(html)!.label).toBe(`Ramachandran plot of ${docB.name}, chain H`);
-    expect(k.get('TM≈ (approximate TM-score)')).toBe(String(engine.tmScore));
+    // A TM-score by each chain, named as the chain pair names it.
+    expect(k.get('TM-score by chain H (label B)')).toBe(tm.tmScoreA.toFixed(3));
+    expect(k.get('TM-score by chain B (label A)')).toBe(tm.tmScoreB.toFixed(3));
+    expect([...k.keys()].some((label) => /TM≈|approximate/i.test(label)), 'no approximate TM label').toBe(false);
     expect(k.get('Sequence identity')).toBe(`${(engine.sequenceIdentity * 100).toFixed(1)}%`);
     expect(k.get('Cα RMSD')).toBe(`${engine.rmsdAngstrom} Å`);
     expect([...k.keys()].some((label) => /TM-Score$/.test(label)), 'no unqualified TM-Score label').toBe(false);
@@ -250,12 +255,14 @@ describe('the structure studio (GenomicsNgsAndPredictionStudio, 3D tab)', () => 
     expect(verdict).toContain(`by sequence alignment: ${engine.pairingMethod}`);
     // Counted over the two chains the engine paired (12 and 8 residues), not over every Cα drawn.
     expect(verdict).toContain(`${engine.alignedResiduePairs} of their 12 vs 8 residues are paired`);
-    expect(verdict).toMatch(/TM≈ is approximate/);
+    expect(verdict).toContain('Each TM-score is Zhang and Skolnick\'s for these paired residues, normalised by the chain it names and searched over superpositions; the overlay and RMSD are the Kabsch fit of all pairs, so a TM-score may come from another superposition.');
+    expect(verdict).not.toMatch(/TM≈|approximate/);
 
     // The viewer's own pair badge names the method too.
     const badges = viewerBadges(html);
     expect(badges).toContainEqual({ words: `${engine.alignedResiduePairs} Cα pairs`, title: engine.pairingMethod });
-    expect(badges.map((b) => b.words)).toContain(`TM≈ ${engine.tmScore}`);
+    expect(badges.map((b) => b.words)).toEqual(expect.arrayContaining([`TM-score ${tm.tmScoreA.toFixed(3)} by chain H (label B)`, `TM-score ${tm.tmScoreB.toFixed(3)} by chain B (label A)`]));
+    expect(badges.find((b) => b.words.endsWith('by chain B (label A)'))?.title).toMatch(/^Zhang-Skolnick TM-score of the sequence-paired residues, normalised by chain B \(label A\): .*Kabsch fit of all pairs, so the TM-score may come from another superposition\.$/);
 
     // A document of the whole entry (no chain of its own) draws every chain, and the engine
     // superposes its first protein chain: the chain pair named is the one the engine paired.

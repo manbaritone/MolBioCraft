@@ -103,7 +103,7 @@ use molbiocraft_phylo::{
     infer_ancestral_sequences, layout_newick_phylogenetic_tree, run_mcdonald_kreitman_test,
     run_molecular_clock_and_timetree, run_selection_and_neutrality_tests,
 };
-use molbiocraft_protein::biophysics_3d::align_pdb_chains_kabsch;
+use molbiocraft_protein::biophysics_3d::align_pdb_chains_kabsch_labelled;
 use molbiocraft_protein::genetic_codes::{resolve_genetic_code, unknown_genetic_code_warning};
 use molbiocraft_protein::translation_orf::{OrfSearchReport, TranslationReport};
 use molbiocraft_protein::{
@@ -1011,9 +1011,20 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let pdb_a = str_arg(&payload, "pdbA", "");
             let pdb_b = str_arg(&payload, "pdbB", "");
             // Optional chain ids; absent, null or "" means each structure's first protein chain.
+            // An mmCIF label chain id, when given, selects the chain instead of the author id.
             let chain_a: Option<String> = parse_opt_field(&payload, "chainA")?;
             let chain_b: Option<String> = parse_opt_field(&payload, "chainB")?;
-            align_pdb_chains_kabsch(pdb_a, pdb_b, chain_a.as_deref(), chain_b.as_deref()).and_then(to_val)
+            let label_a: Option<String> = parse_opt_field(&payload, "labelChainA")?;
+            let label_b: Option<String> = parse_opt_field(&payload, "labelChainB")?;
+            align_pdb_chains_kabsch_labelled(
+                pdb_a,
+                pdb_b,
+                chain_a.as_deref(),
+                chain_b.as_deref(),
+                label_a.as_deref(),
+                label_b.as_deref(),
+            )
+            .and_then(to_val)
         }
         "align_structures_tm" => {
             // Sequence-independent (TM-align-style) alignment; the same keys as `align_pdb_kabsch`.
@@ -1021,11 +1032,15 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
             let pdb_b = str_arg(&payload, "pdbB", "");
             let chain_a: Option<String> = parse_opt_field(&payload, "chainA")?;
             let chain_b: Option<String> = parse_opt_field(&payload, "chainB")?;
-            molbiocraft_protein::structure_align::align_structures_tm(
+            let label_a: Option<String> = parse_opt_field(&payload, "labelChainA")?;
+            let label_b: Option<String> = parse_opt_field(&payload, "labelChainB")?;
+            molbiocraft_protein::structure_align::align_structures_tm_labelled(
                 pdb_a,
                 pdb_b,
                 chain_a.as_deref(),
                 chain_b.as_deref(),
+                label_a.as_deref(),
+                label_b.as_deref(),
             )
             .and_then(to_val)
         }
@@ -2433,7 +2448,7 @@ mod tests {
         let payload = json!({ "pdbA": two_chains, "pdbB": other, "chainA": "B", "chainB": "Q" });
         let (via_rpc, keys) = keys_read_by(|| dispatch_bio_rpc("align_structures_tm", payload));
         let via_rpc = via_rpc.unwrap();
-        assert_eq!(keys, ["pdbA", "pdbB", "chainA", "chainB"]);
+        assert_eq!(keys, ["pdbA", "pdbB", "chainA", "chainB", "labelChainA", "labelChainB"]);
         let direct = align_structures_tm(&two_chains, &other, Some("B"), Some("Q")).unwrap();
         assert_eq!(via_rpc, serde_json::to_value(&direct).unwrap(), "the dispatcher changes the report");
 
