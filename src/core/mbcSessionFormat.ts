@@ -103,9 +103,11 @@ export interface MbcWorkspaceUiState {
   documentSplit?: SavedDocumentSplit;
   /**
    * Which restriction sites each document's maps display, by document id (BG-01M7DHM0); absent in
-   * sessions saved before it, and when no document has a choice.
+   * sessions saved before it, and when no document has a choice. As parsed, an entry whose choices
+   * were over the session's limits carries `overLimit`, how many were not kept (BG-01M7DKSG); the App
+   * never writes one.
    */
-  siteVisibility?: Record<string, SiteVisibility>;
+  siteVisibility?: Record<string, SiteVisibility & { overLimit?: SiteChoicesOverLimitCounts }>;
   /**
    * The circular map's rotation by document id, degrees clockwise from twelve o'clock (US-01M7DVNS);
    * absent in sessions saved before it, and when no map is turned. The parser keeps an angle that is
@@ -227,6 +229,62 @@ export function restoredSiteVisibility(
     restored[doc.id] = { revision: current, hiddenEnzymes: hidden, occurrences: current === revision ? choices : {} };
   }
   return restored;
+}
+
+/**
+ * How many of a document's saved site choices the session parser did not keep, being over its
+ * limits (BG-01M7DKSG): per-site display choices past the first 4,096 by key, and hidden enzymes past
+ * the first 2,048 as saved. The parser counts them; the App reads the counts and says so.
+ */
+export interface SiteChoicesOverLimitCounts {
+  occurrences: number;
+  hiddenEnzymes: number;
+}
+
+/** A restored document whose saved site choices were over the session's limits (BG-01M7DKSG). */
+export interface SiteChoicesOverLimit extends SiteChoicesOverLimitCounts {
+  docId: string;
+  docName: string;
+}
+
+/**
+ * The restored documents, in `documents` order, whose saved site choices the parser counted as over
+ * the session's limits (BG-01M7DKSG), from the parser's `workspace.siteVisibility` (`raw`). A count
+ * that is not a non-negative whole number reads as none, and a document with no count is left out.
+ */
+export function siteChoicesOverLimit(raw: unknown, documents: readonly SequenceDocument[]): SiteChoicesOverLimit[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  const entries = raw as Record<string, unknown>;
+  const count = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : 0);
+  const over: SiteChoicesOverLimit[] = [];
+  for (const doc of documents) {
+    if (!Object.prototype.hasOwnProperty.call(entries, doc.id)) continue;
+    const entry = entries[doc.id];
+    const counts = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).overLimit : undefined;
+    if (!counts || typeof counts !== 'object') continue;
+    const { occurrences, hiddenEnzymes } = counts as Record<string, unknown>;
+    const o = count(occurrences);
+    const h = count(hiddenEnzymes);
+    if (o || h) over.push({ docId: doc.id, docName: doc.name, occurrences: o, hiddenEnzymes: h });
+  }
+  return over;
+}
+
+/**
+ * The one status notice for {@link siteChoicesOverLimit}, or null when there is none: each document
+ * by name with how many per-site display choices and hidden enzymes were not restored (D0005).
+ */
+export function siteChoicesOverLimitNotice(over: readonly SiteChoicesOverLimit[]): string | null {
+  if (!over.length) return null;
+  const counted = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+  const groups = over.map((d) => {
+    const parts = [
+      ...(d.occurrences ? [counted(d.occurrences, 'per-site display choice', 'per-site display choices')] : []),
+      ...(d.hiddenEnzymes ? [counted(d.hiddenEnzymes, 'hidden enzyme', 'hidden enzymes')] : []),
+    ];
+    return `${parts.join(' and ')} in ${d.docName}`;
+  });
+  return `Site choices over the session limit were not restored: ${groups.join('; ')}.`;
 }
 
 /** A restored document's hidden-enzyme keys that match no enzyme (US-01M7GRX2): built-in names, sorted, and `custom:` ids, sorted. */

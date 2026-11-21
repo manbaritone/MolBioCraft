@@ -231,9 +231,10 @@ pub struct MbcWorkspaceUiStateRust {
     pub pane_split: Option<serde_json::Value>,
     /// Which restriction sites each document's maps display (BG-01M7DHM0): an object from document
     /// id to `{ revision, hiddenEnzymes, occurrences }`, kept by [`sanitize_site_visibility`] to that
-    /// shape. On restore the app drops a document's site choices made on another sequence than the
-    /// one restored, and reconciles the rest with the document's scan. A session saved before it has
-    /// none, and every site is shown.
+    /// shape, plus an `overLimit` count where a document's choices were over its limits
+    /// (BG-01M7DKSG). On restore the app drops a document's site choices made on another sequence
+    /// than the one restored, says how many were over the limits, and reconciles the rest with the
+    /// document's scan. A session saved before it has none, and every site is shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_visibility: Option<serde_json::Value>,
     /// The circular map's rotation per document id (US-01M7DVNS): degrees clockwise from twelve
@@ -366,7 +367,14 @@ const SITE_VISIBILITY_MAX_NAME_CHARS: usize = 64;
 /// document id to `{ revision: string, hiddenEnzymes: string[], occurrences: { id: { enzyme:
 /// string, shown: bool } } }`, and nothing else. A document entry without a revision string is
 /// dropped, as are an enzyme name or occurrence that is not that shape or is over its length; past
-/// the count limits the rest are dropped. None for a value that is not an object, or keeps no entry.
+/// the document limit the rest are dropped. None for a value that is not an object, or keeps no entry.
+///
+/// Past a document's count limits (BG-01M7DKSG) it keeps the first 4,096 occurrence choices by key
+/// order (the saved order is not recorded, so the most recent cannot be known) and the first 2,048
+/// distinct hidden enzymes as saved, and the entry gains `overLimit: { occurrences, hiddenEnzymes }`,
+/// how many choices of the app's shape were over each limit, so the app can say they were not
+/// restored. A repeated enzyme name is not counted. A non-zero count the entry already carries (the
+/// autosave, gzip and zip routes read the parsed envelope again) is added to, so no route loses it.
 pub fn sanitize_site_visibility(value: &serde_json::Value) -> Option<serde_json::Value> {
     use serde_json::{Map, Value};
     let short = |s: &str, max: usize| !s.is_empty() && s.chars().count() <= max;
@@ -382,41 +390,47 @@ pub fn sanitize_site_visibility(value: &serde_json::Value) -> Option<serde_json:
         let Some(revision) = entry.get("revision").and_then(Value::as_str).filter(|r| short(r, SITE_VISIBILITY_MAX_NAME_CHARS)) else {
             continue;
         };
-        let mut hidden: Vec<String> = entry
-            .get("hiddenEnzymes")
-            .and_then(Value::as_array)
-            .map(|names| {
-                names
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .filter(|n| short(n, SITE_VISIBILITY_MAX_NAME_CHARS))
-                    .take(SITE_VISIBILITY_MAX_ENZYMES)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let carried = |key: &str| {
+            entry.get("overLimit").and_then(|o| o.get(key)).and_then(Value::as_u64).unwrap_or(0)
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        let mut hidden: Vec<String> = Vec::new();
+        let mut enzymes_over = carried("hiddenEnzymes");
+        for name in entry.get("hiddenEnzymes").and_then(Value::as_array).into_iter().flatten() {
+            let Some(name) = name.as_str().filter(|n| short(n, SITE_VISIBILITY_MAX_NAME_CHARS)) else { continue };
+            if !seen.insert(name) {
+                continue;
+            }
+            if hidden.len() < SITE_VISIBILITY_MAX_ENZYMES {
+                hidden.push(name.to_string());
+            } else {
+                enzymes_over = enzymes_over.saturating_add(1);
+            }
+        }
         hidden.sort();
-        hidden.dedup();
         let mut occurrences = Map::new();
+        let mut occurrences_over = carried("occurrences");
         if let Some(occ) = entry.get("occurrences").and_then(Value::as_object) {
             for (id, choice) in occ {
-                if occurrences.len() >= SITE_VISIBILITY_MAX_OCCURRENCES {
-                    break;
-                }
                 if !short(id, SITE_VISIBILITY_MAX_ID_CHARS) {
                     continue;
                 }
                 let enzyme = choice.get("enzyme").and_then(Value::as_str).filter(|n| short(n, SITE_VISIBILITY_MAX_NAME_CHARS));
                 let shown = choice.get("shown").and_then(Value::as_bool);
                 if let (Some(enzyme), Some(shown)) = (enzyme, shown) {
-                    occurrences.insert(id.clone(), serde_json::json!({ "enzyme": enzyme, "shown": shown }));
+                    if occurrences.len() < SITE_VISIBILITY_MAX_OCCURRENCES {
+                        occurrences.insert(id.clone(), serde_json::json!({ "enzyme": enzyme, "shown": shown }));
+                    } else {
+                        occurrences_over = occurrences_over.saturating_add(1);
+                    }
                 }
             }
         }
-        docs.insert(
-            doc_id.clone(),
-            serde_json::json!({ "revision": revision, "hiddenEnzymes": hidden, "occurrences": occurrences }),
-        );
+        let mut kept = serde_json::json!({ "revision": revision, "hiddenEnzymes": hidden, "occurrences": occurrences });
+        if occurrences_over > 0 || enzymes_over > 0 {
+            kept["overLimit"] = serde_json::json!({ "occurrences": occurrences_over, "hiddenEnzymes": enzymes_over });
+        }
+        docs.insert(doc_id.clone(), kept);
     }
     (!docs.is_empty()).then_some(Value::Object(docs))
 }
@@ -1492,6 +1506,58 @@ mod tests {
         assert_eq!(gz_bad.envelope.document_count, 1);
         assert_eq!(gz_bad.envelope.documents[0].sequence, tampered_seq);
     }
+
+    /// BG-01M7DKSG AC1: past its limits a document's saved site choices keep the first 4,096
+    /// occurrence choices by key order and the first 2,048 distinct hidden enzymes as saved, and the
+    /// entry counts what was over each limit, so the app can say it. Only choices of the app's shape
+    /// are counted; an entry within its limits has no count; a count already carried (a
+    /// re-serialised envelope read again) is added to, never lost or doubled.
+    #[test]
+    fn site_visibility_counts_what_is_over_its_limits() {
+        use serde_json::json;
+        // Inserted last key first, so a map that kept insertion order would keep other keys.
+        let mut occ = serde_json::Map::new();
+        for i in (0..(SITE_VISIBILITY_MAX_OCCURRENCES + 4)).rev() {
+            occ.insert(format!("EcoRI@{i:05}+#r"), json!({"enzyme": "EcoRI", "shown": false}));
+        }
+        // Not the app's shape: never counted as over the limit.
+        occ.insert("ZZ@1+#r".into(), json!({"enzyme": "EcoRI"}));
+        occ.insert("ZZ@2+#r".into(), json!("not a choice"));
+        let mut names: Vec<serde_json::Value> = (0..(SITE_VISIBILITY_MAX_ENZYMES + 2)).map(|i| json!(format!("E{i:04}"))).collect();
+        // A repeat and a non-name are not choices over the limit, before or past it.
+        names.insert(1, json!("E0000"));
+        names.push(json!("E0000"));
+        names.push(json!(7));
+        let raw = json!({
+            "d": {"revision": "r", "hiddenEnzymes": names, "occurrences": occ},
+            "within": {"revision": "r", "hiddenEnzymes": ["BamHI"], "occurrences": {"EcoRI@1+#r": {"enzyme": "EcoRI", "shown": false}}}
+        });
+        let kept = sanitize_site_visibility(&raw).unwrap();
+        let d = &kept["d"];
+        let kept_occ = d["occurrences"].as_object().unwrap();
+        assert_eq!(kept_occ.len(), 4096);
+        assert!(kept_occ.contains_key("EcoRI@00000+#r") && kept_occ.contains_key("EcoRI@04095+#r"));
+        assert!(!kept_occ.contains_key("EcoRI@04096+#r") && !kept_occ.contains_key("EcoRI@04099+#r"));
+        let kept_names = d["hiddenEnzymes"].as_array().unwrap();
+        assert_eq!(kept_names.len(), 2048);
+        assert_eq!(kept_names.first(), Some(&json!("E0000")));
+        assert_eq!(kept_names.last(), Some(&json!("E2047")));
+        assert_eq!(d["overLimit"], json!({"occurrences": 4, "hiddenEnzymes": 2}));
+        assert_eq!(kept["within"].get("overLimit"), None, "an entry within its limits carries no count");
+
+        // Read again (the autosave, gzip and zip routes re-serialise the parsed envelope): the count
+        // is carried, not lost to the kept choices now being within the limit, nor doubled.
+        let again = sanitize_site_visibility(&kept).unwrap();
+        assert_eq!(again, kept);
+        // A carried count that is not a count is dropped; one is added to what this read is over.
+        let mut odd = raw.clone();
+        odd["d"]["overLimit"] = json!({"occurrences": 3, "hiddenEnzymes": "x"});
+        assert_eq!(sanitize_site_visibility(&odd).unwrap()["d"]["overLimit"], json!({"occurrences": 7, "hiddenEnzymes": 2}));
+        let mut zero = raw.clone();
+        zero["within"]["overLimit"] = json!({"occurrences": 0, "hiddenEnzymes": -1});
+        assert_eq!(sanitize_site_visibility(&zero).unwrap()["within"].get("overLimit"), None);
+    }
+
     /// BG-01M7DHM0: a saved siteVisibility keeps only the shape the app writes, within its limits.
     #[test]
     fn site_visibility_is_filtered_to_its_shape() {

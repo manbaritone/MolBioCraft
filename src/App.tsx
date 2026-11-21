@@ -418,6 +418,8 @@ import {
   mapRotationForSession,
   restoredMapRotation,
   restoredSiteVisibility,
+  siteChoicesOverLimit,
+  siteChoicesOverLimitNotice,
   serializeMbcFolderZip,
   serializeMbcWorkbench,
   siteVisibilityForSession,
@@ -5511,6 +5513,10 @@ export const App: React.FC = () => {
       )
     );
     if (unmatchedNotice) setStatusBanner(unmatchedNotice, { append: true, keep: true });
+    // Site choices the parser did not keep, being over a document's limits of 4,096 per-site choices
+    // and 2,048 hidden enzymes (BG-01M7DKSG), named by document and counted, so none is lost unsaid.
+    const overLimitNotice = siteChoicesOverLimitNotice(siteChoicesOverLimit(env.workspace.siteVisibility, restoredDocuments));
+    if (overLimitNotice) setStatusBanner(overLimitNotice, { append: true, keep: true });
     if (options.archiveNotice) setStatusBanner(options.archiveNotice, { append: true, keep: true });
     for (const doc of restoredRotation.unreadable) {
       setStatusBanner(unreadableMapRotationNotice(doc), { append: true, keep: true });

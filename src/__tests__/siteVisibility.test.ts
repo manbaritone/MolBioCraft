@@ -1205,3 +1205,177 @@ describe('BG-01M7JP9Y AC1: per-site choices of enzymes the scan did not read, an
   });
 
 });
+
+// ─── BG-01M7DKSG: choices over the session limit, the over-150 kb scan revision, an id that names no site ───
+
+describe('BG-01M7DKSG: site choices past the session limit, past the scan limit and naming no site, on reopen', () => {
+  vi.setConfig({ testTimeout: 240_000 });
+  const ENZ_KEY = 'molbiocraft.enzymeDatabase';
+  /** Every site in the panel, not the single cutters only, so a two-site enzyme's sites are listed. */
+  const DISPLAY = {
+    showOrfs: false, minOrfAa: 50, allowAltStartCodons: false, showPrimers: true, showTranslation: false,
+    showGcGraph: false, showHydropathyGraph: false, showUniqueCuttersOnly: false,
+  };
+  const restoreSentence = (name: string, docs: SequenceDocument[]) =>
+    `Restored workbench "${name}.mbc" — ${docs.length} documents (${docs.reduce((t, d) => t + d.sequence.length, 0).toLocaleString()} bp)`;
+  const toasts = (app: AppHarness) => app.all('.statusbar-toast-text').map((t) => t.textContent ?? '').join(' ');
+  const savedSession = async (app: AppHarness) => {
+    await app.menu('file:save-session');
+    await app.settle();
+    const file = app.downloads().filter((f) => f.filename.endsWith('.mbc')).pop();
+    expect(file, 'Save Session wrote no .mbc').toBeDefined();
+    return parseMbcWorkbench(await file!.text()).envelope;
+  };
+  /** Storage that refuses the enzyme store's key only, so `custom:` hide keys are not checked (US-01M7GRX2 AC3) and no other notice joins the line. */
+  const enzymeKeyRefused = (): LiveStorage => {
+    const inner = memoryStorage();
+    const refuse = (k: string) => {
+      if (k === ENZ_KEY) throw new Error('SecurityError: storage is blocked');
+    };
+    return {
+      ...inner,
+      getItem: (k: string) => (refuse(k), inner.getItem(k)),
+      setItem: (k: string, v: string) => (refuse(k), inner.setItem(k, v)),
+      get length() { return inner.length; },
+    } as LiveStorage;
+  };
+
+  const OVER: SequenceDocument = { ...MAP_DOC, id: 'dksg-over', name: 'pOver' };
+  const WITHIN: SequenceDocument = { ...MAP_DOC, id: 'dksg-within', name: 'pWithin' };
+  /**
+   * 4,100 per-site hide choices (a site of a custom enzyme no longer stored, which the scan cannot
+   * read, so each is kept while the bases are unchanged, BG-01M7JP9Y) and 2,050 hidden enzymes: 4 and
+   * 2 past the session's 4,096 and 2,048.
+   */
+  const overChoice = (): SiteVisibility => {
+    const occurrences: SiteVisibility['occurrences'] = {};
+    for (let i = 0; i < 4_100; i++) occurrences[`custom:gone@${String(i).padStart(5, '0')}+#${MAP_REV}`] = { enzyme: 'custom:gone', shown: false };
+    const hiddenEnzymes = Array.from({ length: 2_050 }, (_, i) => `custom:k${String(i).padStart(4, '0')}`);
+    return { revision: MAP_REV, hiddenEnzymes, occurrences };
+  };
+  const OVER_NOTICE = 'Site choices over the session limit were not restored: 4 per-site display choices and 2 hidden enzymes in pOver.';
+
+  it('BG-01M7DKSG AC2 in the App, reopening a session with choices over the limit says how many were not restored', async () => {
+    const within = setOccurrenceVisibility(emptySiteVisibility(MAP_REV), MAP_ECO1, false);
+    const app = await mountApp({ storage: enzymeKeyRefused() });
+    try {
+      await app.restoreSession({
+        sessionName: 'DKSG over', documents: [OVER, WITHIN], activeDocId: OVER.id, viewerTab: 'sequence-view',
+        workspace: { displaySettings: DISPLAY, siteVisibility: { [OVER.id]: overChoice(), [WITHIN.id]: within } },
+      });
+      await app.settle();
+      // One notice, appended to the restore sentence, naming the one document over the limit.
+      expect(toasts(app)).toBe(`${restoreSentence('DKSG over', [OVER, WITHIN])} · ${OVER_NOTICE}`);
+      // Kept until dismissed: past the 5.2 s a passing notice lasts, it is still shown.
+      await act(async () => {
+        vi.advanceTimersByTime(6_000);
+      });
+      await app.settle();
+      expect(toasts(app)).toContain(OVER_NOTICE);
+      expect(toasts(app).split('over the session limit').length - 1).toBe(1);
+      // What was kept is what is saved again: the first 4,096 by key and the first 2,048 as saved, and
+      // no count, so the session saved now reopens with nothing to say.
+      const saved = (await savedSession(app)).workspace.siteVisibility!;
+      expect(Object.keys(saved[OVER.id].occurrences)).toHaveLength(4_096);
+      expect(Object.keys(saved[OVER.id].occurrences).sort().pop()).toBe(`custom:gone@04095+#${MAP_REV}`);
+      expect(saved[OVER.id].hiddenEnzymes).toHaveLength(2_048);
+      expect(saved[OVER.id].hiddenEnzymes.at(-1)).toBe('custom:k2047');
+      expect(saved[OVER.id]).not.toHaveProperty('overLimit');
+      expect(saved[WITHIN.id]).toEqual(within);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7DKSG AC2 in the App, a session within the limits shows the restore sentence alone', async () => {
+    const choice = overChoice();
+    const occurrences = Object.fromEntries(Object.entries(choice.occurrences).slice(0, 4_096));
+    const app = await mountApp({ storage: enzymeKeyRefused() });
+    try {
+      await app.restoreSession({
+        sessionName: 'DKSG at limit', documents: [OVER], activeDocId: OVER.id, viewerTab: 'sequence-view',
+        workspace: { displaySettings: DISPLAY, siteVisibility: { [OVER.id]: { ...choice, hiddenEnzymes: choice.hiddenEnzymes.slice(0, 2_048), occurrences } } },
+      });
+      await app.settle();
+      expect(toasts(app)).toBe(restoreSentence('DKSG at limit', [OVER]));
+    } finally {
+      app.unmount();
+    }
+  });
+
+  // A 160,000 bp circular molecule: past the 150,000 bp scan limit the scan reads its first 60,000
+  // bases as linear. A/C filler holds no EcoRI motif, so EcoRI's two sites are the planted ones.
+  const LONG: SequenceDocument = {
+    ...MAP_DOC, id: 'dksg-long', name: 'pLong', topology: 'circular',
+    sequence: [filler(1_000, 31), 'GAATTC', filler(2_000, 32), 'GAATTC', filler(160_000 - 3_012, 33)].join(''),
+  };
+  const LONG_SCANNED = sequenceRevision(LONG.sequence.slice(0, 60_000), 'linear');
+
+  it('BG-01M7DKSG AC3 in the App, a hidden site on a 160,000 bp circular document comes back hidden on reopen', async () => {
+    expect(LONG.sequence).toHaveLength(160_000);
+    // The fixture: the whole molecule's revision is not the scanned bases', so a key that ignored
+    // the scan's first bases could not match.
+    expect(sequenceRevision(LONG.sequence, 'circular')).not.toBe(LONG_SCANNED);
+    expect(sequenceRevision(LONG.sequence.slice(0, 60_000), 'circular')).not.toBe(LONG_SCANNED);
+    const ecoBoxes = (app: AppHarness) => app.all('input').filter((i) => /^Show EcoRI at \d+, forward strand$/.test(i.getAttribute('aria-label') ?? ''));
+    let saved: Record<string, SiteVisibility> | undefined;
+    {
+      const app = await mountApp();
+      try {
+        await app.restoreSession({ sessionName: 'DKSG long', documents: [LONG], activeDocId: LONG.id, viewerTab: 'sequence-view', workspace: { displaySettings: DISPLAY } });
+        await app.settle();
+        await app.click(app.one('button[aria-label="Expand the 2 sites of EcoRI"]'));
+        const boxes = ecoBoxes(app);
+        expect(boxes).toHaveLength(2);
+        await app.change(boxes[0], false);
+        saved = (await savedSession(app)).workspace.siteVisibility;
+      } finally {
+        app.unmount();
+      }
+    }
+    // Saved keyed on the scanned bases: the first 60,000, read as linear.
+    expect(saved?.[LONG.id]?.revision).toBe(LONG_SCANNED);
+    const ids = Object.keys(saved?.[LONG.id]?.occurrences ?? {});
+    expect(ids).toEqual([`EcoRI@1001+#${LONG_SCANNED}`]);
+    const app = await mountApp();
+    try {
+      await app.restoreSession({
+        sessionName: 'DKSG long again', documents: [LONG], activeDocId: LONG.id, viewerTab: 'sequence-view',
+        workspace: { displaySettings: DISPLAY, siteVisibility: saved },
+      });
+      await app.settle();
+      await app.click(app.one('button[aria-label="Expand the 2 sites of EcoRI"]'));
+      expect(ecoBoxes(app).map((b) => b.checked)).toEqual([false, true]);
+      expect(app.doc.body.textContent).not.toContain('per-site display');
+      expect((await savedSession(app)).workspace.siteVisibility?.[LONG.id]).toEqual(saved?.[LONG.id]);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it('BG-01M7DKSG AC4 in the App, a restored occurrence id of the current revision that names no site is dropped with a notice that never says the sequence changed', async () => {
+    const DOC: SequenceDocument = { ...MAP_DOC, id: 'dksg-edited', name: 'pEdited' };
+    // A hand-edited id of the app's own shape and the entry's own revision, at a position with no
+    // EcoRI site, beside a real hidden site.
+    const nowhere = siteOccurrenceId({ ...MAP_ECO1, position: 7 }, MAP_REV);
+    expect(MAP_SCAN.sites.some((s) => siteOccurrenceId(s, MAP_REV) === nowhere)).toBe(false);
+    const real = setOccurrenceVisibility(emptySiteVisibility(MAP_REV), MAP_ECO1, false);
+    const choice: SiteVisibility = { ...real, occurrences: { ...real.occurrences, [nowhere]: { enzyme: 'EcoRI', shown: false } } };
+    const app = await mountApp();
+    try {
+      await app.restoreSession({
+        sessionName: 'DKSG nowhere', documents: [DOC], activeDocId: DOC.id, viewerTab: 'sequence-view',
+        workspace: { displaySettings: DISPLAY, siteVisibility: { [DOC.id]: choice } },
+      });
+      await app.settle();
+      const line = toasts(app);
+      expect(line).toContain(restoreSentence('DKSG nowhere', [DOC]));
+      expect(line).toContain(clearedChoicesNotice(1, true));
+      expect(line).toContain('the scan no longer finds that site, though the sequence is unchanged');
+      expect(line).not.toContain('the sequence changed');
+      expect((await savedSession(app)).workspace.siteVisibility?.[DOC.id]).toEqual(real);
+    } finally {
+      app.unmount();
+    }
+  });
+});
