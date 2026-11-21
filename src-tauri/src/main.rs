@@ -35,6 +35,23 @@ fn grant_native_drop(state: &AppBackendState, event: &tauri::WindowEvent) {
     }
 }
 
+/// Takes a second launch that tauri-plugin-single-instance handed to this app on Windows or Linux
+/// (D0213): queues the files its `argv` names, resolved against its `cwd`
+/// ([`commands::forward_second_instance`]), tells the frontend to take them when any are queued, and
+/// unminimizes and focuses the main window. Compiled on every OS so macOS `cargo test` type-checks
+/// it, though only the Windows and Linux builds register it.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn on_second_instance<R: tauri::Runtime>(app: &tauri::AppHandle<R>, argv: Vec<String>, cwd: String) {
+    let state = app.state::<AppBackendState>();
+    if commands::forward_second_instance(&state, argv, &cwd) > 0 {
+        let _ = app.emit("mbc://open-files-pending", ());
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 fn main() {
     let backend_state = AppBackendState::default();
     // Windows / Linux file associations launch the app with the document path.
@@ -47,16 +64,7 @@ fn main() {
     // the plugin lets the launch go ahead as a second app. Registered first: the plugin must detect
     // the second instance before the rest of the setup runs. macOS sends RunEvent::Opened instead.
     #[cfg(any(windows, target_os = "linux"))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-        let state = app.state::<AppBackendState>();
-        if commands::forward_second_instance(&state, argv, &cwd) > 0 {
-            let _ = app.emit("mbc://open-files-pending", ());
-        }
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.unminimize();
-            let _ = window.set_focus();
-        }
-    }));
+    let builder = builder.plugin(tauri_plugin_single_instance::init(on_second_instance));
     let builder = builder
         .manage(backend_state)
         .setup(|_app| {
@@ -136,4 +144,30 @@ fn main() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{commands, AppBackendState};
+
+    /// `forward_second_instance` returns the number of files now queued, counting those an earlier
+    /// launch queued, not whether this launch queued any (BG-01M7V0FN).
+    #[test]
+    fn second_instance_returns_the_number_of_files_now_queued() {
+        let tmp = std::env::temp_dir().join(format!("mbc_second_instance_count_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        for f in ["a.gb", "b.fasta", "c.mbc"] {
+            std::fs::write(tmp.join(f), ">x\nACGT\n").unwrap();
+        }
+        let argv = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        let cwd = tmp.to_string_lossy().into_owned();
+        let state = AppBackendState::default();
+
+        assert_eq!(commands::forward_second_instance(&state, argv(&["molbiocraft-desktop", "a.gb", "b.fasta"]), &cwd), 2);
+        assert_eq!(commands::forward_second_instance(&state, argv(&["molbiocraft-desktop", "c.mbc", "a.gb"]), &cwd), 3, "the files already queued are counted");
+        assert_eq!(commands::forward_second_instance(&state, argv(&["molbiocraft-desktop", "--flag"]), &cwd), 3, "a launch naming no file leaves the count");
+        assert_eq!(state.take_open_files(), vec![tmp.join("a.gb"), tmp.join("b.fasta"), tmp.join("c.mbc")]);
+        assert_eq!(commands::forward_second_instance(&state, argv(&["molbiocraft-desktop", "missing.gb"]), &cwd), 0, "an empty queue counts 0");
+        let _ = std::fs::remove_dir_all(tmp);
+    }
 }

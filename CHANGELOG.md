@@ -28,6 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Removed
 - **The desktop app opens no network port**: the embedded REST server and its `127.0.0.1:18420/api/v1` API were removed, with no replacement automation API (D0174). The app no longer listens on a loopback port, so it needs no inbound network exception; the interface reaches the analysis engine only through Tauri IPC and WebAssembly. Scripts that called the REST API no longer have an endpoint to call.
 
+### Fixed
+- **Linux file dialogs need no desktop portal**: on Linux, File › Open, Import Folder and Save (and every other open or save dialog) show GTK's file chooser through rfd's `gtk3` backend, so they need neither `xdg-desktop-portal` nor `zenity` (D0212). Before, they went through the desktop portal and fell back to `zenity`, so on a desktop with neither installed no dialog appeared and the command acted as if it had been cancelled. (US-01M6P2BS)
+
 ## [1.0.0] - 2026-11-09
 
 ### Added

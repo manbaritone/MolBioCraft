@@ -388,7 +388,8 @@ fn read_dropped_file(
     })
 }
 
-/// Open a native OS file picker (`NSOpenPanel` on macOS, IFileOpenDialog on Windows, XDG Portal / GTK on Linux)
+/// Open a native OS file picker (`NSOpenPanel` on macOS, IFileOpenDialog on Windows, GTK's `GtkFileChooserNative`
+/// (rfd's `gtk3` backend, D0212) on Linux)
 /// tailored to `mode` (`"replace"`, `"merge"`, `"prefs"`, or `"import"`), returning lossless base64 byte buffers.
 #[tauri::command]
 pub async fn cmd_native_open_files_dialog(
@@ -506,7 +507,8 @@ async fn read_picked_files(
     .map_err(|e| format!("[ERR_ASYNC_JOIN] {}", e))?
 }
 
-/// Open a native OS save sheet (`NSSavePanel` on macOS, IFileSaveDialog on Windows, XDG Portal on Linux)
+/// Open a native OS save sheet (`NSSavePanel` on macOS, IFileSaveDialog on Windows, GTK's `GtkFileChooserNative`
+/// (rfd's `gtk3` backend, D0212) on Linux)
 /// and atomically persist the exported sequence, SVG graphic, or `.mbc` workbench session.
 #[tauri::command]
 pub async fn cmd_native_save_file_dialog(

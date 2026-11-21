@@ -62,7 +62,9 @@ const [fs, path, os, url, cp, crypto] = await Promise.all([
 ]);
 const proc = (globalThis as unknown as { process: NodeProcess }).process;
 
-const REPO = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..', '..');
+// MBC_RELEASE_CHECK_REPO points the checks at a copy of the repo instead, so a mutation pass can
+// break the copy's files and watch a check fail without touching the files in the checkout.
+const REPO = proc.env.MBC_RELEASE_CHECK_REPO ?? path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..', '..');
 const repo = (rel: string): string => path.join(REPO, ...rel.split('/'));
 const text = (file: string): string => new TextDecoder().decode(fs.readFileSync(file));
 const sha256 = (file: string): string => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -1258,4 +1260,126 @@ it('US-01M6P2TK AC1: audits both Cargo lockfiles and the npm runtime dependencie
   const check = lines.findIndex((l) => /^\s*run:\s*node scripts\/check_reference_suite\.mjs\s*$/.test(l));
   expect(check, 'nightly.yml runs node scripts/check_reference_suite.mjs').toBeGreaterThan(0);
   expect(lines.slice(Math.max(0, check - 6), check + 1).join('\n'), 'the reference check is a plain step').not.toMatch(/continue-on-error|^\s*if:|\|\|/m);
+});
+
+// BG-01M7V0FN: the release checks whose Verify lines passed on the regressions they describe.
+
+/** The `#` comment lines directly above a TOML table header, and the table's own lines up to the next blank line or header. */
+function tomlTable(toml: string, header: string): { comment: string; body: string } {
+  const lines = toml.split('\n').map((l) => l.replace(/\r$/, ''));
+  const at = lines.findIndex((l) => l.trim() === header);
+  if (at < 0) return { comment: '', body: '' };
+  let top = at;
+  while (top > 0 && lines[top - 1].startsWith('#')) top -= 1;
+  let end = at + 1;
+  while (end < lines.length && lines[end].trim() !== '' && !lines[end].startsWith('[')) end += 1;
+  return { comment: lines.slice(top, at).join('\n'), body: lines.slice(at + 1, end).join('\n') };
+}
+
+it('BG-01M7V0FN: the desktop release profile carries the root profile and its trim-paths comment (US-01M6P2B4 AC1)', () => {
+  const root = tomlTable(text(repo('Cargo.toml')), '[profile.release]');
+  const desktop = tomlTable(text(repo('src-tauri/Cargo.toml')), '[profile.release]');
+  expect(root.comment, 'the root [profile.release] says trim-paths is not stable').toMatch(/`trim-paths` is not stable[\s\S]*--remap-path-prefix/);
+  expect(desktop.comment, 'src-tauri/Cargo.toml [profile.release] keeps the root comment word for word').toContain(root.comment);
+  expect(desktop.body, 'src-tauri/Cargo.toml [profile.release] keys').toBe(root.body);
+});
+
+it('BG-01M7V0FN: no shipped or design text says the Linux file dialogs go through a desktop portal (US-01M6P2BS AC3)', () => {
+  // The doc comments of the two dialog commands name the route Linux uses: rfd's gtk3 backend (D0212).
+  const fsSource = text(repo('src-tauri/src/commands/fs_commands.rs'));
+  for (const fn of ['cmd_native_open_files_dialog', 'cmd_native_save_file_dialog']) {
+    const lines = fsSource.split('\n');
+    const at = lines.findIndex((l) => l.includes(`pub async fn ${fn}(`));
+    expect(at, `fs_commands.rs declares ${fn}`).toBeGreaterThan(0);
+    let top = at;
+    while (top > 0 && /^\s*(\/\/\/|#\[)/.test(lines[top - 1])) top -= 1;
+    const doc = lines.slice(top, at).join('\n');
+    expect(doc, `${fn}'s doc comment names GTK's file chooser on Linux`).toMatch(/GTK[^.]*\(rfd's `gtk3` backend, D0212\) on Linux/);
+    expect(doc, `${fn}'s doc comment names no portal`).not.toMatch(/portal/i);
+  }
+  // Every line that names a portal says, before it in the same clause, that it is not needed (or,
+  // after it, that it was fixed): the old TRD line 133 ("`xdg-portal` +
+  // `tokio`"), PRD line 681 ("Linux dialogs need `xdg-desktop-portal`") and the open TRD question
+  // ("... or document a desktop-portal requirement?") each name one with no negation. The TRD and
+  // PRD are local (sdlc-studio/ is git-ignored), so a clone without them checks the sources only.
+  const files = ['src-tauri/src/commands/fs_commands.rs', 'src-tauri/src/main.rs', 'src-tauri/Cargo.toml', 'sdlc-studio/trd.md', 'sdlc-studio/prd.md'];
+  const claims = files.filter((f) => fs.existsSync(repo(f))).flatMap((f) =>
+    text(repo(f)).split('\n').map((l, i) => ({ at: `${f}:${i + 1}`, l }))
+      .filter(({ l }) => /portal/i.test(l) && !/\b(no|neither|without|not)\b[^.;?]*portal|portal[^.;?]*\bfixed\b/i.test(l)).map(({ at, l }) => `${at} ${l.trim()}`));
+  expect(claims, 'lines that name a portal without saying it is not needed').toEqual([]);
+  if (fs.existsSync(repo('sdlc-studio/trd.md'))) {
+    const question = text(repo('sdlc-studio/trd.md')).split('\n').filter((l) => /^- \[[ x]\] \*\*Q:\*\* Linux: switch `rfd` to a GTK backend/.test(l));
+    expect(question.length, 'the TRD keeps its Linux rfd backend question').toBe(1);
+    expect(question[0], 'the TRD question is closed with its answer').toMatch(/^- \[x\] .*Answered [0-9-]+: switched to rfd's `gtk3` backend/);
+  }
+});
+
+it('BG-01M7V0FN: CHANGELOG [Unreleased] lists the Linux dialog fix under Fixed (US-01M6P2BS)', () => {
+  const changelog = text(repo('CHANGELOG.md')).replace(/\r/g, '');
+  const start = changelog.indexOf('\n## [Unreleased]');
+  expect(start, 'CHANGELOG.md has an [Unreleased] section').toBeGreaterThan(0);
+  const next = changelog.indexOf('\n## [', start + 1);
+  const lines = changelog.slice(start, next < 0 ? undefined : next).split('\n');
+  const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('US-01M6P2BS'));
+  expect(at, 'an [Unreleased] entry for US-01M6P2BS').toBeGreaterThan(0);
+  const heading = lines.slice(0, at).filter((l) => l.startsWith('### ')).pop();
+  expect(heading, 'the entry sits under ### Fixed').toBe('### Fixed');
+  expect(lines[at]).toMatch(/GTK/);
+  expect(lines[at]).toMatch(/Open[\s\S]*Import Folder[\s\S]*Save/);
+  expect(lines[at], 'it says what the dialogs no longer need').toMatch(/xdg-desktop-portal[\s\S]*zenity/);
+});
+
+it('BG-01M7V0FN: a second launch on Windows or Linux queues its files, announces them and brings the window forward (US-01M7QCXX)', () => {
+  const main = text(repo('src-tauri/src/main.rs')).replace(/\r/g, '');
+  // The callback is a function of its own, compiled on every OS, so macOS cargo test type-checks it.
+  const fnAt = main.indexOf('\nfn on_second_instance<R: tauri::Runtime>(app: &tauri::AppHandle<R>, argv: Vec<String>, cwd: String) {\n');
+  expect(fnAt, 'main.rs defines on_second_instance over any tauri::Runtime').toBeGreaterThan(0);
+  const attrs = main.slice(0, fnAt).split('\n').reverse();
+  const above = attrs.slice(0, attrs.findIndex((l) => !/^(#\[|\/\/)/.test(l)));
+  expect(above.filter((l) => l.startsWith('#[cfg(')), 'on_second_instance is compiled on every OS').toEqual([]);
+  const body = main.slice(fnAt, main.indexOf('\n}\n', fnAt) + 2);
+  expect(body, 'it announces the files only when forward_second_instance queued some').toMatch(
+    /\n {4}if commands::forward_second_instance\(&state, argv, &cwd\) > 0 \{\n {8}let _ = app\.emit\("mbc:\/\/open-files-pending", \(\)\);\n {4}\}\n/);
+  expect(body, 'the queue is the managed backend state').toMatch(/let state = app\.state::<AppBackendState>\(\);/);
+  expect(body, 'it unminimizes and focuses the main window').toMatch(
+    /\n {4}if let Some\(window\) = app\.get_webview_window\("main"\) \{\n {8}let _ = window\.unminimize\(\);\n {8}let _ = window\.set_focus\(\);\n {4}\}\n/);
+  // The plugin hands every second launch to it, on Windows and Linux only.
+  expect(main, 'the single-instance plugin calls on_second_instance on Windows and Linux').toMatch(
+    /\n {4}#\[cfg\(any\(windows, target_os = "linux"\)\)\]\n {4}let builder = builder\.plugin\(tauri_plugin_single_instance::init\(on_second_instance\)\);\n/);
+  expect(main.match(/tauri_plugin_single_instance::init/g)?.length, 'one plugin registration').toBe(1);
+});
+
+const CHECKLIST_ITEMS: Record<string, string[]> = {
+  macOS: ['M1 First launch', 'M2 Open dialog', 'M3 Import dialogs', 'M4 Save dialog', 'M5 Export dialog', 'M6 File association open', 'M7 Print', 'M8 Native menu', 'M9 Native Undo / Redo', 'M10 Shift+Cmd+R', 'M11 Quit', 'M12 US-01M6P2B4 AC3'],
+  Windows: ['W1 MSI install', 'W2 Portable EXE', 'W3 Open dialog', 'W4 Import dialogs', 'W5 Save dialog', 'W6 Export dialog', 'W7 File association open', 'W8 US-01M7QCXX AC4 (MSI)', 'W9 Print', 'W10 In-window menu', 'W11a Shift+Ctrl+R on a sequence', 'W11b Shift+Ctrl+R in a text field', 'W12 Undo / Redo', 'W13 Quit'],
+  Linux: ['L1 Install', 'L2 Open dialog', 'L3 Import dialogs', 'L4 Save dialog', 'L5 Export dialog', 'L6 US-01M6P2BS AC4', 'L7 File association open', 'L8 US-01M7QCXX AC4 (.deb)', 'L9 Print', 'L10 In-window menu', 'L11a Shift+Ctrl+R on a sequence', 'L11b Shift+Ctrl+R in a text field', 'L12 Undo / Redo', 'L13 Quit'],
+};
+
+/** The table rows (as trimmed cells, header first, separator dropped) under each `## <OS>` heading of a Markdown file. */
+function osTables(rel: string): Record<string, string[][]> {
+  const out: Record<string, string[][]> = {};
+  let os: string | undefined;
+  for (const l of text(repo(rel)).replace(/\r/g, '').split('\n')) {
+    if (l.startsWith('## ')) os = l.slice(3).trim();
+    else if (os !== undefined && l.startsWith('|') && !/^\|[-| :]+\|$/.test(l)) (out[os] ??= []).push(l.split('|').slice(1, -1).map((c) => c.trim()));
+  }
+  return out;
+}
+
+it('BG-01M7V0FN: the release checklist and its record template hold every item on every OS, with every column (US-01M6P282 AC1, AC2)', () => {
+  const checklist = osTables('docs/RELEASE_CHECKLIST.md');
+  const template = osTables('docs/release-checks/TEMPLATE.md');
+  for (const [os, items] of Object.entries(CHECKLIST_ITEMS)) {
+    const rows = checklist[os] ?? [];
+    expect(rows[0], `the checklist ${os} table header`).toEqual(['Item', 'Check']);
+    expect(rows.slice(1).map((r) => r[0]), `the checklist ${os} items`).toEqual(items);
+    expect(rows.slice(1).filter((r) => r.length !== 2 || r[1] === '').map((r) => r[0]), `checklist ${os} items with no check`).toEqual([]);
+    const record = template[os] ?? [];
+    expect(record[0], `the template ${os} columns`).toEqual(['Item', 'Result', 'Reason', 'Who', 'Date', 'Build']);
+    expect(record.slice(1).map((r) => r[0]), `the template ${os} rows, one per checklist item`).toEqual(items);
+    expect(record.slice(1).filter((r) => r.length !== 6).map((r) => r[0]), `template ${os} rows without six cells`).toEqual([]);
+  }
+  const templateText = text(repo('docs/release-checks/TEMPLATE.md'));
+  expect(templateText, 'the template gives the three results').toMatch(/\*\*pass\*\*, \*\*fail\*\* or \*\*not run\*\*/);
+  expect(templateText, 'a not run names its reason').toMatch(/not run[^\n]*Reason|Reason[^\n]*not run/);
 });
