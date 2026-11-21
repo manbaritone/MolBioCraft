@@ -279,31 +279,45 @@ pub fn xdg_app_support_dir_from(
     resolve_xdg_app_support_dir(config.as_deref(), home.as_deref())
 }
 
+/// The macOS diagnostics, from HOME read through `lookup` once: the app-support
+/// directory by the rule of `macos_app_support_dir_from`, and
+/// `$HOME/Library/Logs/org.molbiocraft.desktop` and
+/// `$HOME/Library/Caches/org.molbiocraft.desktop` from the same value. When HOME
+/// is unset, empty or whitespace-only, the error `macos_app_support_dir_from`
+/// returns, naming HOME, instead of a placeholder home. Compiled on every target
+/// so its test runs everywhere.
+pub fn macos_platform_diagnostics_from(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<PlatformDiagnostics, BioEngineError> {
+    let home = app_support_base(&lookup, "HOME")?;
+    let support = macos_app_support_dir_from(|name| (name == "HOME").then(|| home.clone()))?;
+    let bundle = "org.molbiocraft.desktop";
+    let dir = |base: &str| {
+        PathBuf::from(&home)
+            .join("Library")
+            .join(base)
+            .join(bundle)
+            .display()
+            .to_string()
+    };
+    Ok(PlatformDiagnostics {
+        os: "macos".into(),
+        arch: std::env::consts::ARCH.into(),
+        case_sensitive_fs: false,
+        app_support_dir: support.display().to_string(),
+        logs_dir: dir("Logs"),
+        cache_dir: dir("Caches"),
+    })
+}
+
 pub fn query_platform_diagnostics() -> Result<PlatformDiagnostics, BioEngineError> {
-    let support = resolve_platform_app_support_dir()?;
     #[cfg(target_os = "macos")]
     {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/user".into());
-        let bundle = "org.molbiocraft.desktop";
-        return Ok(PlatformDiagnostics {
-            os: "macos".into(),
-            arch: std::env::consts::ARCH.into(),
-            case_sensitive_fs: false,
-            app_support_dir: support.display().to_string(),
-            logs_dir: PathBuf::from(&home)
-                .join("Library/Logs")
-                .join(bundle)
-                .display()
-                .to_string(),
-            cache_dir: PathBuf::from(&home)
-                .join("Library/Caches")
-                .join(bundle)
-                .display()
-                .to_string(),
-        });
+        return macos_platform_diagnostics_from(|name| std::env::var(name).ok());
     }
     #[cfg(target_os = "windows")]
     {
+        let support = resolve_platform_app_support_dir()?;
         let local =
             std::env::var("LOCALAPPDATA").unwrap_or_else(|_| support.display().to_string());
         return Ok(PlatformDiagnostics {
@@ -325,6 +339,7 @@ pub fn query_platform_diagnostics() -> Result<PlatformDiagnostics, BioEngineErro
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
+        let support = resolve_platform_app_support_dir()?;
         let (logs_dir, cache_dir) = xdg_logs_and_cache_dirs_from(|name| std::env::var(name).ok())?;
         return Ok(PlatformDiagnostics {
             os: std::env::consts::OS.into(),
@@ -968,6 +983,49 @@ mod tests {
                 .to_string(),
             refused
         );
+    }
+
+    /// BG01M6Q2FX: with HOME unset, empty or whitespace-only the macOS diagnostics
+    /// are the app-support error naming HOME, never dirs under a placeholder
+    /// home; a set HOME gives all three dirs under that one value.
+    #[test]
+    fn macos_diagnostics_refuse_a_blank_home() {
+        let only = |value: Option<&'static str>| {
+            move |name: &str| (name == "HOME").then_some(value).flatten().map(String::from)
+        };
+        for value in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                macos_platform_diagnostics_from(only(value))
+                    .map(|d| (d.app_support_dir, d.logs_dir, d.cache_dir))
+                    .map_err(|e| e.to_string()),
+                Err(macos_app_support_dir_from(only(value)).unwrap_err().to_string()),
+                "HOME={value:?}"
+            );
+        }
+        let diag = macos_platform_diagnostics_from(only(Some("/Users/ada"))).unwrap();
+        assert_eq!((diag.os.as_str(), diag.case_sensitive_fs), ("macos", false));
+        assert_eq!(
+            (diag.app_support_dir, diag.logs_dir, diag.cache_dir),
+            (
+                "/Users/ada/Library/Application Support/org.molbiocraft.desktop".to_string(),
+                "/Users/ada/Library/Logs/org.molbiocraft.desktop".to_string(),
+                "/Users/ada/Library/Caches/org.molbiocraft.desktop".to_string(),
+            )
+        );
+    }
+
+    /// Pins that the macOS diagnostics call is `macos_platform_diagnostics_from`
+    /// over the process environment; it only reads the environment, never sets it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_diagnostics_read_home_from_the_environment() {
+        let want = macos_platform_diagnostics_from(|name| std::env::var(name).ok())
+            .map(|d| (d.app_support_dir, d.logs_dir, d.cache_dir))
+            .map_err(|e| e.to_string());
+        let got = query_platform_diagnostics()
+            .map(|d| (d.app_support_dir, d.logs_dir, d.cache_dir))
+            .map_err(|e| e.to_string());
+        assert_eq!(got, want);
     }
 
     #[test]

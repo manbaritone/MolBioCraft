@@ -7,8 +7,9 @@ name: Build and Release
 # - windows-latest: MolBioCraft-<v>-Windows-x64.msi (tauri build --target x86_64-pc-windows-msvc --bundles msi)
 #                   and MolBioCraft-<v>-Windows-x64-Portable.exe, the release molbiocraft-desktop.exe
 # - ubuntu-22.04:   MolBioCraft-<v>-Linux-x86_64.deb (tauri build --target x86_64-unknown-linux-gnu --bundles deb)
-# <v> is the version in src-tauri/tauri.conf.json. Each build job checks the architecture of what it
-# built and that NOTICE and PROVENANCE.md are in it, and uploads each installer as a workflow
+# <v> is the version in src-tauri/tauri.conf.json. Each build job builds the desktop shell with its
+# build-machine paths remapped, checks the architecture of what it built, that its binary names no
+# build-machine path (HOST_PATH_GUARD) and that NOTICE and PROVENANCE.md are in it, and uploads each installer as a workflow
 # artifact named after the file. The checksums job adds SHA256SUMS.txt, NOTICE.txt and PROVENANCE.md.
 #
 # The builds are unsigned: the macOS app is ad-hoc signed (bundle.macOS.signingIdentity "-") and not
@@ -33,6 +34,86 @@ env:
   # The Tauri CLI each build runs through npx, matching the tauri 2.12 crate in src-tauri/Cargo.lock;
   # scripts/build_installers.sh pins the same version.
   TAURI_CLI: '@tauri-apps/cli@2.12.4'
+  # The host-path guard (BG01M6Q2FX), the one scripts/build_installers.sh carries for the macOS job.
+  # `node --input-type=module -e "$HOST_PATH_GUARD" flags` prints the CARGO_ENCODED_RUSTFLAGS the
+  # windows and linux jobs build the desktop shell with: the caller's own flags, then a
+  # --remap-path-prefix for the checkout (to nothing), CARGO_HOME (to /cargo) and RUSTUP_HOME (to
+  # /rustup), as scripts/build_rust_wasm.mjs remaps the engine's. `... check FILE...` fails, naming
+  # the first five hits, when a file's bytes name a path under /Volumes/<x>/, /Users/<x>/,
+  # /home/<x>/, C:\Users\<x>\ or D:\a\<x>\ (either separator) or under any prefix remapped above.
+  HOST_PATH_GUARD: |
+    import fs from 'node:fs';
+    import os from 'node:os';
+    import path from 'node:path';
+
+    const [mode, ...files] = process.argv.slice(1);
+    const die = (m) => { console.error(`host-path guard: ${m}`); process.exit(1); };
+    const real = (p) => { try { return fs.realpathSync.native(p); } catch { return p; } };
+    // A Windows path (a drive letter or any backslash) in its given, forward-slash and backslash forms.
+    const forms = (p) => (/\\|^[A-Za-z]:/.test(p) ? [p, p.replaceAll('\\', '/'), p.replaceAll('/', '\\')] : [p]);
+    // The checkout (the working directory) to nothing, CARGO_HOME (its registry and git checkouts) to
+    // /cargo and RUSTUP_HOME (its toolchains, the sysroot of a rustup rustc) to /rustup, each home
+    // where cargo looks for it (unset: .cargo or .rustup under the user's home; relative: under the
+    // checkout), as given and as its real path, shortest first: rustc applies the last remapping that
+    // matches, and CARGO_HOME can sit inside the checkout (the local .toolchain).
+    const root = process.cwd();
+    const home = (value, dir) => (value ? path.resolve(root, value) : path.join(os.homedir(), dir));
+    const remaps = [
+      [root, ''],
+      [home(process.env.CARGO_HOME, '.cargo'), '/cargo'],
+      [home(process.env.RUSTUP_HOME, '.rustup'), '/rustup'],
+    ]
+      .flatMap(([from, to]) => [...new Set([from, real(from)].flatMap(forms))].map((p) => [p, to]))
+      .sort(([a], [b]) => a.length - b.length);
+    if (mode === 'flags') {
+      // The caller's CARGO_ENCODED_RUSTFLAGS (0x1f-separated) or else RUSTFLAGS, then the remaps.
+      const own = process.env.CARGO_ENCODED_RUSTFLAGS !== undefined
+        ? process.env.CARGO_ENCODED_RUSTFLAGS.split('\x1f')
+        : (process.env.RUSTFLAGS ?? '').split(/\s+/);
+      process.stdout.write([...own.filter(Boolean), ...remaps.map(([from, to]) => `--remap-path-prefix=${from}=${to}`)].join('\x1f'));
+      process.exit(0);
+    }
+    if (mode !== 'check' || files.length === 0) die(`usage: flags | check FILE...; got: ${[mode, ...files].join(' ')}`);
+    // A path under a volume, a user's home or a GitHub runner workspace (/Volumes/x/, /Users/x/,
+    // /home/x/, C:\Users\x\, D:\a\x\, with either separator), or under any prefix remapped above.
+    const HOST = /\/(?:Volumes|Users|home)\/[^\/\\\x00-\x1f]+\/|[A-Za-z]:[\\\/](?:Users|a)[\\\/][^\/\\\x00-\x1f]+[\\\/]/g;
+    const prefixes = [...new Set(remaps.map(([from]) => from).filter((p) => p.length > 1))];
+    const printable = (c) => c >= 0x20 && c < 0x7f;
+    let bad = false;
+    for (const file of files) {
+      let bytes;
+      try {
+        bytes = fs.readFileSync(file);
+      } catch (e) {
+        die(`cannot read ${file}: ${e.message}`);
+      }
+      if (bytes.length === 0) die(`${file} is empty`);
+      const text = bytes.toString('latin1');
+      const at = new Set([...text.matchAll(HOST)].map((m) => m.index));
+      for (const p of prefixes) {
+        for (let i = text.indexOf(p); i !== -1; i = text.indexOf(p, i + 1)) {
+          const next = text.charCodeAt(i + p.length);
+          if (Number.isNaN(next) || next === 0 || next === 0x2f || next === 0x5c) at.add(i);
+        }
+      }
+      if (at.size === 0) {
+        console.log(`${file}: names no build-machine path`);
+        continue;
+      }
+      // The first five hits, each as the printable run around it, the way strings prints it.
+      const runs = new Set();
+      for (const i of [...at].sort((a, b) => a - b)) {
+        let s = i, e = i;
+        while (s > 0 && printable(text.charCodeAt(s - 1))) s--;
+        while (e < text.length && printable(text.charCodeAt(e))) e++;
+        runs.add(text.slice(Math.max(s, i - 40), Math.min(e, i + 160)));
+        if (runs.size === 5) break;
+      }
+      console.error(`host-path guard: ${file} names ${at.size} build-machine path(s); the first:`);
+      for (const r of runs) console.error(`  ${r}`);
+      bad = true;
+    }
+    process.exit(bad ? 1 : 0);
 
 jobs:
   reference-check:
@@ -168,8 +249,9 @@ jobs:
 
       # The script builds the engine, runs tauri build --target universal-apple-darwin --bundles
       # app,dmg, and fails unless lipo -archs lists arm64 and x86_64 for the app's binary, the
-      # ad-hoc signature verifies, and Contents/Resources holds NOTICE and PROVENANCE.md, both in
-      # the built .app and in the .app inside the .dmg. It writes
+      # ad-hoc signature verifies, Contents/Resources holds NOTICE and PROVENANCE.md, and the app's
+      # binary names no build-machine path (it builds with --remap-path-prefix and runs its
+      # host-path guard), both in the built .app and in the .app inside the .dmg. It writes
       # release/MolBioCraft-<v>-macOS-universal.dmg.
       - name: Build and Check the Universal .app and .dmg (scripts/build_installers.sh, Tauri Bundler)
         run: ./scripts/build_installers.sh
@@ -218,10 +300,14 @@ jobs:
       # WiX, which builds the MSI, runs only on Windows; the bundler fetches it. It also leaves the
       # release molbiocraft-desktop.exe, with the frontend embedded, which runs without installing
       # (the portable EXE) wherever the WebView2 runtime is present, as on Windows 10 and 11.
-      - name: Build the x64 MSI With the Tauri Bundler (tauri build --target x86_64-pc-windows-msvc --bundles msi)
+      - name: Build the x64 MSI With the Tauri Bundler (tauri build --target x86_64-pc-windows-msvc --bundles msi, Host Paths Remapped)
         id: build
         shell: bash
-        run: npx --yes --package="$TAURI_CLI" -- tauri build --target x86_64-pc-windows-msvc --bundles msi --ci
+        run: |
+          set -euo pipefail
+          # MSYS_NO_PATHCONV keeps Git Bash from rewriting the guard's source or the flags as paths.
+          flags="$(MSYS_NO_PATHCONV=1 node --input-type=module -e "$HOST_PATH_GUARD" flags)"
+          MSYS_NO_PATHCONV=1 CARGO_ENCODED_RUSTFLAGS="$flags" npx --yes --package="$TAURI_CLI" -- tauri build --target x86_64-pc-windows-msvc --bundles msi --ci
 
       - name: Stage MolBioCraft-<v>-Windows-x64.msi and MolBioCraft-<v>-Windows-x64-Portable.exe in release/
         id: stage
@@ -251,7 +337,7 @@ jobs:
           if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "msiexec /a $msi exited with code $($p.ExitCode)" }
           Get-ChildItem -Recurse -File $dir | ForEach-Object { $_.FullName }
 
-      - name: Check the Portable EXE and the MSI's Installed EXE Are PE32+ x86-64, With NOTICE and PROVENANCE.md Installed
+      - name: Check the Portable EXE and the MSI's Installed EXE Are PE32+ x86-64 and Name No Build-Machine Path, With NOTICE and PROVENANCE.md Installed
         id: self-check
         shell: bash
         run: |
@@ -280,6 +366,7 @@ jobs:
           count="$(printf '%s' "$installed" | grep -c . || true)"
           [ "$count" = 1 ] || fail "the MSI must install one molbiocraft-desktop.exe, and installs $count; it holds: $(find msi-admin -type f | tr '\n' ' ')"
           node "$check" "$installed" || fail "the MSI installs $installed, which is not a PE32+ x86-64 executable"
+          MSYS_NO_PATHCONV=1 node --input-type=module -e "$HOST_PATH_GUARD" check "$portable" "$installed" || fail "the portable EXE or the MSI's installed EXE names a build-machine path (the hits are above)"
           dir="$(dirname "$installed")"
           for f in NOTICE PROVENANCE.md; do
             [ -f "$dir/$f" ] || fail "the MSI installs no $f beside $installed"
@@ -341,13 +428,17 @@ jobs:
           npm ci
           npm run wasm:build
 
-      - name: Build the x86_64 .deb With the Tauri Bundler (tauri build --target x86_64-unknown-linux-gnu --bundles deb)
+      - name: Build the x86_64 .deb With the Tauri Bundler (tauri build --target x86_64-unknown-linux-gnu --bundles deb, Host Paths Remapped)
         id: build
-        run: npx --yes --package="$TAURI_CLI" -- tauri build --target x86_64-unknown-linux-gnu --bundles deb --ci
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags="$(node --input-type=module -e "$HOST_PATH_GUARD" flags)"
+          CARGO_ENCODED_RUSTFLAGS="$flags" npx --yes --package="$TAURI_CLI" -- tauri build --target x86_64-unknown-linux-gnu --bundles deb --ci
 
       # The bundler installs the binary in /usr/bin and bundle.resources in /usr/lib/MolBioCraft;
       # bundle.linux.deb.files adds NOTICE and PROVENANCE.md under /usr/share/doc/molbiocraft.
-      - name: Stage MolBioCraft-<v>-Linux-x86_64.deb in release/ and Check Its ELF x86-64 Binary, NOTICE and PROVENANCE.md
+      - name: Stage MolBioCraft-<v>-Linux-x86_64.deb in release/ and Check Its ELF x86-64 Binary (Naming No Build-Machine Path), NOTICE and PROVENANCE.md
         id: self-check
         shell: bash
         run: |
@@ -382,6 +473,7 @@ jobs:
           console.log(`${f}: ELF 64-bit LSB x86-64`);
           JS
           node "$check" "$root/usr/bin/molbiocraft-desktop" || fail "usr/bin/molbiocraft-desktop in $deb is not an ELF x86-64 executable"
+          node --input-type=module -e "$HOST_PATH_GUARD" check "$root/usr/bin/molbiocraft-desktop" || fail "usr/bin/molbiocraft-desktop in $deb names a build-machine path (the hits are above)"
           for d in usr/lib/MolBioCraft usr/share/doc/molbiocraft; do
             for f in NOTICE PROVENANCE.md; do
               cmp -s "$f" "$root/$d/$f" || fail "/$d/$f in $deb differs from this checkout's $f"

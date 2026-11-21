@@ -33,6 +33,99 @@ TAURI_CLI='@tauri-apps/cli@2.12.4'
 TARGET='universal-apple-darwin'
 APP_VERSION="$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
 
+fail() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+# The host-path guard (BG01M6Q2FX). `host_path_guard flags` prints the CARGO_ENCODED_RUSTFLAGS the
+# desktop shell is built with: the caller's own flags, then a --remap-path-prefix for this checkout
+# (to nothing, so its sources read checkout-relative), CARGO_HOME (the registry and git checkouts,
+# to /cargo) and RUSTUP_HOME (the rustup toolchains, to /rustup), as scripts/build_rust_wasm.mjs
+# remaps the engine's, since src-tauri's Cargo.toml has no stable setting that remaps. `host_path_guard check FILE...` scans each file's
+# bytes, as strings reads them, and fails naming the first five hits when it names a path under
+# /Volumes/<x>/, /Users/<x>/, /home/<x>/, C:\Users\<x>\ or D:\a\<x>\ (either separator) or under
+# any prefix remapped above. The windows and linux jobs of .github/workflows/release.yml carry the
+# same guard as their HOST_PATH_GUARD.
+HOST_PATH_GUARD="$(cat <<'JS'
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const [mode, ...files] = process.argv.slice(1);
+const die = (m) => { console.error(`host-path guard: ${m}`); process.exit(1); };
+const real = (p) => { try { return fs.realpathSync.native(p); } catch { return p; } };
+// A Windows path (a drive letter or any backslash) in its given, forward-slash and backslash forms.
+const forms = (p) => (/\\|^[A-Za-z]:/.test(p) ? [p, p.replaceAll('\\', '/'), p.replaceAll('/', '\\')] : [p]);
+// The checkout (the working directory) to nothing, CARGO_HOME (its registry and git checkouts) to
+// /cargo and RUSTUP_HOME (its toolchains, the sysroot of a rustup rustc) to /rustup, each home
+// where cargo looks for it (unset: .cargo or .rustup under the user's home; relative: under the
+// checkout), as given and as its real path, shortest first: rustc applies the last remapping that
+// matches, and CARGO_HOME can sit inside the checkout (the local .toolchain).
+const root = process.cwd();
+const home = (value, dir) => (value ? path.resolve(root, value) : path.join(os.homedir(), dir));
+const remaps = [
+  [root, ''],
+  [home(process.env.CARGO_HOME, '.cargo'), '/cargo'],
+  [home(process.env.RUSTUP_HOME, '.rustup'), '/rustup'],
+]
+  .flatMap(([from, to]) => [...new Set([from, real(from)].flatMap(forms))].map((p) => [p, to]))
+  .sort(([a], [b]) => a.length - b.length);
+if (mode === 'flags') {
+  // The caller's CARGO_ENCODED_RUSTFLAGS (0x1f-separated) or else RUSTFLAGS, then the remaps.
+  const own = process.env.CARGO_ENCODED_RUSTFLAGS !== undefined
+    ? process.env.CARGO_ENCODED_RUSTFLAGS.split('\x1f')
+    : (process.env.RUSTFLAGS ?? '').split(/\s+/);
+  process.stdout.write([...own.filter(Boolean), ...remaps.map(([from, to]) => `--remap-path-prefix=${from}=${to}`)].join('\x1f'));
+  process.exit(0);
+}
+if (mode !== 'check' || files.length === 0) die(`usage: flags | check FILE...; got: ${[mode, ...files].join(' ')}`);
+// A path under a volume, a user's home or a GitHub runner workspace (/Volumes/x/, /Users/x/,
+// /home/x/, C:\Users\x\, D:\a\x\, with either separator), or under any prefix remapped above.
+const HOST = /\/(?:Volumes|Users|home)\/[^\/\\\x00-\x1f]+\/|[A-Za-z]:[\\\/](?:Users|a)[\\\/][^\/\\\x00-\x1f]+[\\\/]/g;
+const prefixes = [...new Set(remaps.map(([from]) => from).filter((p) => p.length > 1))];
+const printable = (c) => c >= 0x20 && c < 0x7f;
+let bad = false;
+for (const file of files) {
+  let bytes;
+  try {
+    bytes = fs.readFileSync(file);
+  } catch (e) {
+    die(`cannot read ${file}: ${e.message}`);
+  }
+  if (bytes.length === 0) die(`${file} is empty`);
+  const text = bytes.toString('latin1');
+  const at = new Set([...text.matchAll(HOST)].map((m) => m.index));
+  for (const p of prefixes) {
+    for (let i = text.indexOf(p); i !== -1; i = text.indexOf(p, i + 1)) {
+      const next = text.charCodeAt(i + p.length);
+      if (Number.isNaN(next) || next === 0 || next === 0x2f || next === 0x5c) at.add(i);
+    }
+  }
+  if (at.size === 0) {
+    console.log(`${file}: names no build-machine path`);
+    continue;
+  }
+  // The first five hits, each as the printable run around it, the way strings prints it.
+  const runs = new Set();
+  for (const i of [...at].sort((a, b) => a - b)) {
+    let s = i, e = i;
+    while (s > 0 && printable(text.charCodeAt(s - 1))) s--;
+    while (e < text.length && printable(text.charCodeAt(e))) e++;
+    runs.add(text.slice(Math.max(s, i - 40), Math.min(e, i + 160)));
+    if (runs.size === 5) break;
+  }
+  console.error(`host-path guard: ${file} names ${at.size} build-machine path(s); the first:`);
+  for (const r of runs) console.error(`  ${r}`);
+  bad = true;
+}
+process.exit(bad ? 1 : 0);
+JS
+)"
+host_path_guard() {
+  node --input-type=module -e "$HOST_PATH_GUARD" "$@"
+}
+
 echo "==> [1/3] Building the zero-import Rust WebAssembly engine (molbiocraft-wasm)..."
 npm run wasm:build
 
@@ -43,19 +136,17 @@ echo "==> [2/3] Building the universal MolBioCraft.app and .dmg with the Tauri b
 if [ -z "${GITHUB_ACTIONS:-}" ]; then
   export TAURI_BUNDLER_DMG_IGNORE_CI=true
 fi
-npx --yes --package="$TAURI_CLI" -- tauri build --target "$TARGET" --bundles app,dmg --ci
+SHELL_RUSTFLAGS="$(host_path_guard flags)" || fail "the host-path guard cannot work out the --remap-path-prefix flags"
+CARGO_ENCODED_RUSTFLAGS="$SHELL_RUSTFLAGS" npx --yes --package="$TAURI_CLI" -- tauri build --target "$TARGET" --bundles app,dmg --ci
 
 echo "==> [3/3] Checking the .app and the .dmg, and copying the .dmg to release/..."
-fail() {
-  echo "ERROR: $*" >&2
-  exit 1
-}
 BUNDLE_DIR="src-tauri/target/$TARGET/release/bundle"
 DMG="$BUNDLE_DIR/dmg/MolBioCraft_${APP_VERSION}_universal.dmg"
 OUT="release/MolBioCraft-${APP_VERSION}-macOS-universal.dmg"
 
-# check_app APP: the binary macOS launches holds an arm64 and an x86_64 slice, the bundle's ad-hoc
-# signature verifies, and Contents/Resources holds this checkout's NOTICE and PROVENANCE.md.
+# check_app APP: the binary macOS launches holds an arm64 and an x86_64 slice and names no
+# build-machine path (host_path_guard check), the bundle's ad-hoc signature verifies, and
+# Contents/Resources holds this checkout's NOTICE and PROVENANCE.md.
 check_app() {
   local app="$1" plist exe archs f
   plist="$app/Contents/Info.plist"
@@ -65,12 +156,13 @@ check_app() {
   archs="$(/usr/bin/lipo -archs "$app/Contents/MacOS/$exe")" || fail "lipo cannot read $app/Contents/MacOS/$exe"
   [[ " $archs " == *" arm64 "* ]] || fail "$app/Contents/MacOS/$exe has no arm64 slice (lipo -archs: $archs)"
   [[ " $archs " == *" x86_64 "* ]] || fail "$app/Contents/MacOS/$exe has no x86_64 slice (lipo -archs: $archs)"
+  host_path_guard check "$app/Contents/MacOS/$exe" || fail "$app/Contents/MacOS/$exe names a build-machine path (the hits are above)"
   /usr/bin/codesign --verify --deep --strict "$app" || fail "the code signature of $app does not verify"
   for f in NOTICE PROVENANCE.md; do
     [ -f "$app/Contents/Resources/$f" ] || fail "$app/Contents/Resources/$f is missing"
     cmp -s "$f" "$app/Contents/Resources/$f" || fail "$app/Contents/Resources/$f differs from this checkout's $f"
   done
-  echo "$app: $exe is universal ($archs); signature verifies; NOTICE and PROVENANCE.md in Contents/Resources"
+  echo "$app: $exe is universal ($archs) and names no build-machine path; signature verifies; NOTICE and PROVENANCE.md in Contents/Resources"
 }
 
 [ -f "$DMG" ] || fail "the bundler wrote no $DMG"
