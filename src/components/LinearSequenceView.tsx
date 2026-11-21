@@ -837,6 +837,34 @@ function classifyProteinResidueCss(aa: string): string {
 }
 
 /**
+ * The span and bases of a joined feature whose parts run round a circular record's origin
+ * (BG-01M6VZSJ AC6, AC7), or null for any other feature, which reads as start..end. Read in the
+ * order they are held, its parts each lie forwards inside 1..length, its first part starts after
+ * its last part ends, and they step back exactly once, from a part that ends on the record's last
+ * base to one that starts on base 1: join(4980..4990,1..9) as the importer holds it (bounding span
+ * 1..n, D0300) and as + Annotate holds a crossing guide part (start > end). Parts held in any
+ * other order, such as join(1500..1600,1200..1300), are not read as crossing. Its span
+ * is the first part's start..the last part's end (start > end), and its bases are those its parts
+ * cover. A feature with genomic coordinates of its own is not read here.
+ */
+export function originCrossingFeatureSpan(
+  f: SequenceFeature,
+  length: number,
+  circular: boolean
+): { start: number; end: number; bases: number } | null {
+  const parts = f.segments;
+  if (!circular || !parts || parts.length < 2 || f.qualifiers?.genomic_start) return null;
+  if (parts.some((p) => p.start < 1 || p.end > length || p.start > p.end)) return null;
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  const stepsBack = parts.flatMap((p, i) => (i > 0 && p.start < parts[i - 1].start ? [i] : []));
+  if (first.start <= last.end || stepsBack.length !== 1) return null;
+  const at = stepsBack[0];
+  if (parts[at - 1].end !== length || parts[at].start !== 1) return null;
+  return { start: first.start, end: last.end, bases: parts.reduce((n, p) => n + p.end - p.start + 1, 0) };
+}
+
+/**
  * Multi-lane greedy interval packer for the Linear Schematic Overview Track.
  * Ensures feature pills and labels never overlap horizontally or clip past SVG edges.
  */
@@ -2988,21 +3016,26 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
           {(live ? overviewLayout : schematicLayout).placed.map((item) => {
             const f = item.feature;
             const insideLightText = isDarkFillHex(f.color);
-            const gStart = Number(f.qualifiers?.genomic_start) || f.start;
-            const gEnd = Number(f.qualifiers?.genomic_end) || f.end;
-            const gLen = Number(f.qualifiers?.genomic_length) || gEnd - gStart + 1;
+            // A joined feature whose parts run round the origin selects, states and draws its own
+            // bases (BG-01M6VZSJ AC6, AC7), not its bounding span 1..n or start > end read forwards.
+            const wrap = originCrossingFeatureSpan(f, overviewLen, doc.topology === 'circular');
+            const gStart = wrap ? wrap.start : Number(f.qualifiers?.genomic_start) || f.start;
+            const gEnd = wrap ? wrap.end : Number(f.qualifiers?.genomic_end) || f.end;
+            const gLen = wrap ? wrap.bases : Number(f.qualifiers?.genomic_length) || gEnd - gStart + 1;
             const rawType = f.qualifiers?.raw_type || f.type;
+            const selStart = wrap ? wrap.start : f.start;
+            const selEnd = wrap ? wrap.end : f.end;
             return (
               <g
                 key={f.id}
                 data-map-part="feature-box"
                 className="clickable-arc"
                 onClick={() => {
-                  const targetRow = Math.floor((f.start - 1) / basesPerRow);
+                  const targetRow = Math.floor((selStart - 1) / basesPerRow);
                   setPageIndex(Math.floor(targetRow / ROWS_PER_PAGE));
                   onSelectRange({
-                    start: f.start,
-                    end: f.end,
+                    start: selStart,
+                    end: selEnd,
                     label: `${f.name} (${rawType}: ${gStart.toLocaleString()}..${gEnd.toLocaleString()})`,
                   });
                 }}
@@ -3010,20 +3043,30 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                 <title>{`${f.name} [${rawType}] ${gStart.toLocaleString()}..${gEnd.toLocaleString()} (${gLen.toLocaleString()} ${unitLabel})`}</title>
                 {f.segments && f.segments.length > 1 ? (
                   // Joined feature (spliced / frameshifted / trans-spliced): one block per interval.
+                  // Across the origin, each part is drawn over its own bases on the track, the one that
+                  // ends at the record's end held to it, and no connector: the parts meet at the origin.
                   <>
-                    <line
-                      x1={item.x1}
-                      x2={item.x1 + item.boxWidth}
-                      y1={item.y + 8}
-                      y2={item.y + 8}
-                      stroke={f.color}
-                      strokeWidth="1.4"
-                      strokeDasharray="3 2"
-                    />
+                    {!wrap && (
+                      <line
+                        x1={item.x1}
+                        x2={item.x1 + item.boxWidth}
+                        y1={item.y + 8}
+                        y2={item.y + 8}
+                        stroke={f.color}
+                        strokeWidth="1.4"
+                        strokeDasharray="3 2"
+                      />
+                    )}
                     {f.segments.map((seg) => {
                       const span = Math.max(1, gEnd - gStart + 1);
-                      const sx = item.x1 + ((seg.start - gStart) / span) * item.boxWidth;
-                      const sw = Math.max(3, ((seg.end - seg.start + 1) / span) * item.boxWidth);
+                      const wrapLeft = overviewX(seg.start - 1, view, overviewLen);
+                      const wrapRight = overviewX(seg.end, view, overviewLen);
+                      const sw = wrap
+                        ? Math.max(3, wrapRight - wrapLeft)
+                        : Math.max(3, ((seg.end - seg.start + 1) / span) * item.boxWidth);
+                      const sx = wrap
+                        ? seg.end === overviewLen ? wrapRight - sw : wrapLeft
+                        : item.x1 + ((seg.start - gStart) / span) * item.boxWidth;
                       return (
                         <rect
                           key={`${f.id}-seg-${seg.index}`}

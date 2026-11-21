@@ -213,6 +213,31 @@ const PRIMER_DOC = vzsjDoc('vzsjPrimer', vzsjFiller, {
   }],
 });
 
+/** BG-01M6VZSJ AC6/AC7: a guide spacer 4,980..9 across the origin, held as + Annotate holds it: start > end, its two parts. */
+const vzsjPart = (id: string, index: number, start: number, end: number) => ({ index, name: `${id} part ${index}`, start, end, color: '#16a34a' });
+const WRAP_GUIDE: SequenceDocument['features'][number] = {
+  id: 'feat-vzsj-wrap', name: 'VZSJ wrap spacer', type: 'crispr_guide', start: 4980, end: 9, strand: 1, color: '#16a34a',
+  segments: [vzsjPart('VZSJ wrap', 1, 4980, VZSJ_LEN), vzsjPart('VZSJ wrap', 2, 1, 9)],
+};
+/** A joined feature that does not cross the origin: it selects and draws start..end as before. */
+const WRAP_JOINED: SequenceDocument['features'][number] = {
+  id: 'feat-vzsj-joined', name: 'VZSJ joined', type: 'misc_feature', start: 1200, end: 1600, strand: 1, color: '#2563eb',
+  segments: [vzsjPart('VZSJ joined', 1, 1200, 1300), vzsjPart('VZSJ joined', 2, 1500, 1600)],
+};
+/** The same parts held high to low, join(1500..1600,1200..1300): it does not cross the origin either. */
+const WRAP_JOINED_REVERSED: SequenceDocument['features'][number] = {
+  ...WRAP_JOINED, id: 'feat-vzsj-joined-rev', name: 'VZSJ joined reversed', strand: -1,
+  segments: [vzsjPart('VZSJ joined reversed', 1, 1500, 1600), vzsjPart('VZSJ joined reversed', 2, 1200, 1300)],
+};
+const WRAP_DOC = vzsjDoc('vzsjWrap', vzsjFiller, { features: [WRAP_GUIDE, WRAP_JOINED] });
+
+/** The linear schematic's box for the feature named `name`. */
+function featureBox(app: AppHarness, name: string) {
+  const boxes = app.all('g[data-map-part="feature-box"]').filter((g) => squash(g.querySelector('title')?.textContent ?? '').startsWith(`${name} [`));
+  if (boxes.length !== 1) throw new Error(`${boxes.length} schematic boxes for "${name}", not one`);
+  return boxes[0];
+}
+
 const VZSJ_TIMEOUT = 120_000;
 
 async function withLiveApp(run: (app: AppHarness) => Promise<void>): Promise<void> {
@@ -506,6 +531,86 @@ describe('BG-01M6VZSJ a guide or primer across a circular record\'s origin, in t
       });
     }
   }, VZSJ_TIMEOUT * 2);
+
+  it('BG-01M6VZSJ AC6: a reopened origin-crossing feature selects its own bases', async () => {
+    await withLiveApp(async (app) => {
+      // Annotated as + Annotate holds a crossing part (start > end, its two parts), exported through
+      // File > Export GenBank and reopened through the app's GenBank reader: D0300's shape, 1..n.
+      await app.restoreSession({ documents: [WRAP_DOC], activeDocId: WRAP_DOC.id, viewerTab: 'sequence-view' });
+      const gb = await vzsjGenBank(app);
+      const { parseGenBank } = await import('../core/fileParsers');
+      const reopened = { ...parseGenBank(gb, WRAP_DOC.name), id: 'vzsjReopened' };
+      const f = reopened.features.find((x) => x.name === WRAP_GUIDE.name);
+      expect(f, 'the guide reopens').toBeTruthy();
+      expect([f!.start, f!.end], "the importer's bounding span (D0300)").toEqual([1, VZSJ_LEN]);
+      expect(f!.segments?.map((s) => [s.start, s.end]), 'its parts, as written').toEqual(WRAP_GUIDE.segments!.map((s) => [s.start, s.end]));
+      const own = f!.segments!.flatMap((s) => walkSpan(s.start, s.end, VZSJ_LEN));
+      expect(runsOf(own).length, 'its parts run round the origin').toBe(2);
+
+      await app.restoreSession({ documents: [reopened], activeDocId: reopened.id, viewerTab: 'sequence-view' });
+      await app.click(featureBox(app, WRAP_GUIDE.name));
+      await expectSelectionOf(app, own, 'the reopened guide');
+      expect(quickbarSummary(app), 'never the whole plasmid').not.toContain(`(${VZSJ_LEN.toLocaleString()} bp`);
+
+      // A linear record has no origin to cross: the same parts select their bounding span, as before.
+      const linear = { ...reopened, id: 'vzsjReopenedLinear', topology: 'linear' as const };
+      await app.restoreSession({ documents: [linear], activeDocId: linear.id, viewerTab: 'sequence-view' });
+      await app.click(featureBox(app, WRAP_GUIDE.name));
+      expect(quickbarSummary(app), 'a linear record selects 1..n').toContain(`· 1..${VZSJ_LEN.toLocaleString()}(`);
+      expect(quickbarSummary(app), 'and counts its n bases').toContain(`(${VZSJ_LEN.toLocaleString()} bp`);
+      await app.restoreSession({ documents: [reopened], activeDocId: reopened.id, viewerTab: 'sequence-view' });
+
+      // A joined feature that does not cross the origin selects start..end, as before.
+      const j = reopened.features.find((x) => x.name === WRAP_JOINED.name)!;
+      expect(j.segments?.length, 'the joined feature reopens with its parts').toBe(2);
+      await app.click(featureBox(app, WRAP_JOINED.name));
+      expect(quickbarSummary(app), 'start..end').toContain(`${j.start.toLocaleString()}..${j.end.toLocaleString()}`);
+      expect(quickbarSummary(app), 'its bounding count').toContain(`(${walkSpan(j.start, j.end, VZSJ_LEN).length.toLocaleString()} bp`);
+    });
+  }, VZSJ_TIMEOUT);
+
+  it('BG-01M6VZSJ AC7: the schematic draws each part of an origin-crossing feature inside it', async () => {
+    await withLiveApp(async (app) => {
+      // The annotated shape (start > end) and the reopened shape (1..n), each with its two parts.
+      const reopenedGuide = { ...WRAP_GUIDE, id: 'feat-vzsj-reopened', name: 'VZSJ reopened', start: 1, end: VZSJ_LEN };
+      const doc = { ...WRAP_DOC, features: [WRAP_GUIDE, reopenedGuide, WRAP_JOINED, WRAP_JOINED_REVERSED] };
+      await app.restoreSession({ documents: [doc], activeDocId: doc.id, viewerTab: 'sequence-view' });
+      const box = featureBox(app, WRAP_GUIDE.name);
+      let svg = box.parentElement;
+      while (svg && svg.nodeName.toLowerCase() !== 'svg') svg = svg.parentElement;
+      const track = svg!.querySelectorAll('line').find((l) => l.getAttribute('y1') === '23' && l.getAttribute('y2') === '23');
+      expect(track, "the schematic's backbone").toBeTruthy();
+      const x0 = Number(track!.getAttribute('x1'));
+      const x1 = Number(track!.getAttribute('x2'));
+      const xAt = (boundary: number) => x0 + (boundary / VZSJ_LEN) * (x1 - x0);
+      const eps = 1e-6;
+      for (const feat of [WRAP_GUIDE, reopenedGuide, WRAP_JOINED, WRAP_JOINED_REVERSED]) {
+        const g = featureBox(app, feat.name);
+        const rects = g.children.filter((c) => c.nodeName.toLowerCase() === 'rect').map((r) => ({
+          x: Number(r.getAttribute('x')), w: Number(r.getAttribute('width')),
+        }));
+        const parts = feat.segments!;
+        expect(rects.length, `${feat.name}: one rect per part`).toBe(parts.length);
+        parts.forEach((p, i) => {
+          const r = rects[i];
+          expect(r.x, `${feat.name} part ${p.start}..${p.end}: inside the schematic's left end`).toBeGreaterThanOrEqual(x0 - eps);
+          expect(r.x + r.w, `${feat.name} part ${p.start}..${p.end}: inside its right end`).toBeLessThanOrEqual(x1 + eps);
+          expect(r.x, `${feat.name} part ${p.start}..${p.end}: starts no later than its first base`).toBeLessThanOrEqual(xAt(p.start - 1) + eps);
+          expect(r.x + r.w, `${feat.name} part ${p.start}..${p.end}: ends no earlier than its last base`).toBeGreaterThanOrEqual(xAt(p.end) - eps);
+          if (p.start === 1) expect(Math.abs(r.x - x0), `${feat.name}: the 1.. part at the left end`).toBeLessThan(eps);
+        });
+        const own = parts.flatMap((p) => walkSpan(p.start, p.end, VZSJ_LEN));
+        // Its parts run round the origin when, read in order, the record's last base is followed by base 1.
+        const crossing = own.some((p, i) => i > 0 && own[i - 1] === VZSJ_LEN && p === 1);
+        const title = squash(g.querySelector('title')!.textContent);
+        const span = crossing ? [own[0], own[own.length - 1]] : [feat.start, feat.end];
+        const bases = crossing ? own.length : feat.end - feat.start + 1;
+        expect(title, `${feat.name}: the title states its own span and bases`)
+          .toContain(`${span[0].toLocaleString()}..${span[1].toLocaleString()} (${bases.toLocaleString()} bp)`);
+        expect(title, `${feat.name}: never a negative count`).not.toContain('(-');
+      }
+    });
+  }, VZSJ_TIMEOUT);
 });
 
 const VZSJ_COMPLEMENT: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };

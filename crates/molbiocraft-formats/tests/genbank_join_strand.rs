@@ -328,6 +328,23 @@ fn bg_01m6vzsj_ac3_an_origin_crossing_feature_round_trips_as_a_join() {
             // Lossless: written again, the re-imported feature reads exactly as the first export.
             let again = export_genbank_flatfile_dated(&back, "2026-11-21");
             assert!(again.contains(&format!("     crispr_guide    {location}\n")), "{case}: written again as {location}\n{again}");
+
+            // The EMBL writer takes the same rule (D0300): written as a join, read back to the same parts.
+            if !with_parts {
+                let embl = molbiocraft_formats::export_embl_flatfile(&doc);
+                assert!(embl.contains(&format!("FT   crispr_guide    {location}\n")), "{case}: EMBL written as {location}\n{embl}");
+                assert!(!embl.contains(&format!("{}..{}\n", guide.start, guide.end)), "{case}: EMBL never writes start..end\n{embl}");
+                let back = molbiocraft_formats::parse_embl_flatfile(&embl, "fallback");
+                assert_eq!(back.sequence, seq, "{case}: EMBL bases");
+                let got: Vec<_> = back.features.iter().filter(|f| f.feature_type == "crispr_guide").collect();
+                assert_eq!(got.len(), 1, "{case}: EMBL one feature, {embl}");
+                let f = got[0];
+                assert_eq!(f.strand, guide.strand, "{case}: EMBL keeps the strand");
+                assert_eq!((f.start, f.end), (1, len), "{case}: EMBL importer's bounding span (D0300, D0053)");
+                let parts: Vec<_> = f.segments.as_ref().map(|s| s.iter().map(|s| (s.start, s.end)).collect()).unwrap_or_default();
+                assert_eq!(parts, vec![(guide.start, len), (1, guide.end)], "{case}: EMBL parts, the record's end then its start");
+                assert_eq!(covered(f), want_bases, "{case}: EMBL re-imports exactly the bases the guide covers");
+            }
         }
     }
 
