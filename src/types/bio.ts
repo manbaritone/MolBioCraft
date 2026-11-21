@@ -361,8 +361,18 @@ export interface ProteinAnalysisReport {
     helixPercent: number;
     sheetPercent: number;
     coilPercent: number;
+    /** The predicted state of every residue analysed, in chain order (one per residue). */
     statesPerResidue: ('H' | 'E' | 'C')[];
   };
+}
+
+/**
+ * The D0005 field of the PTM and disulfide scan's reply: what the scan left out, one plain
+ * sentence each (past 1,024 cysteines, which ones the disulfide list paired of how many). Read as
+ * none when an engine build leaves it out.
+ */
+export interface PtmScanWarnings {
+  warnings?: string[];
 }
 
 export interface SavedPrimerBindingHit {

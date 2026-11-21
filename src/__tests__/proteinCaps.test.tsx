@@ -37,6 +37,11 @@
  * CDS's exon boundary, is saved with its parts in the order the GenBank reader stores and its
  * writer exports them (reading order on the plus strand, its reverse on the minus strand), so its
  * bases translate to its peptide before and after a GenBank round trip.
+ *
+ * BG-01M6T6JF: the digest table showed its first 24 peptides and the MS2 picker its first 18 with no
+ * word of how many there were, and the PTM card showed nothing of what the scan left out. Past each
+ * cap the list now says 'the first N of M peptides', and the card shows the scan's warnings (the
+ * disulfide list pairs at most the first 1,024 cysteines and says so).
  */
 
 import React from 'react';
@@ -971,4 +976,67 @@ describe('the protein the digest, MS2, PTM and epitope cards analyse', () => {
       stale.mockRestore();
     }
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// BG-01M6T6JF: the digest table and MS2 picker say how many peptides they leave out, and the PTM
+// card shows what the scan left out
+
+/** The display-cap notes the proteomics region shows, by list. */
+const displayCaps = (html: string) =>
+  Object.fromEntries([...html.matchAll(/<(p|span)[^>]*data-mbc-display-cap="([a-z0-9]+)"[^>]*>([\s\S]*?)<\/\1>/g)].map((m) => [m[2], text(m[3])]));
+/** The MS2 picker's peptide options. */
+const ms2Options = (html: string) => [...html.matchAll(/<option[^>]*>#/g)].length;
+/** The sentences of the PTM card's warnings region, or none when it shows none. */
+const ptmWarnings = (html: string) => {
+  const found = regions(html).filter((r) => r.label === 'PTM and disulfide warnings');
+  expect(found.length, 'at most one PTM warnings region').toBeLessThanOrEqual(1);
+  return found[0]?.sentences ?? [];
+};
+
+describe('the digest, MS2 and PTM cards of a large protein', () => {
+  it('labels the digest table and MS2 picker as first N of M and shows the PTM warnings', () => {
+    // 14,000 residues, about a third of them cysteine: more peptides than either list shows (over a
+    // thousand, so the count is written grouped), and more cysteines than the disulfide list pairs
+    // all against all
+    const seq = randomLetters(14_000, 0x76f1, `${AA}CCCCCCCCCC`);
+    const cys = [...seq].flatMap((c, i) => (c === 'C' ? [i + 1] : []));
+    expect(cys.length).toBeGreaterThan(1_024);
+    const html = proteinTab(doc('big', 'Large protein', seq, 'Protein'));
+    const m = rust.simulateProteolyticDigestMsRust(seq, 'Trypsin', 1, 400, 4500, true).peptides.length;
+    expect(m).toBeGreaterThan(1_000);
+    expect(displayCaps(html)).toEqual({
+      ms2: `The picker lists the first 18 of ${grouped(m)} peptides.`,
+      digest: `The table shows the first 24 of ${grouped(m)} peptides.`,
+    });
+    expect(peptideRows(html)).toHaveLength(24);
+    expect(ms2Options(html)).toBe(18);
+    expect(ptmWarnings(html)).toEqual([
+      `Disulfide pairs were predicted among the first 1,024 of ${grouped(cys.length)} cysteines (residues 1–${grouped(cys[1_023])}): pairing every cysteine with every other is bounded at 1,024 cysteines, so the other ${grouped(cys.length - 1_024)} were not paired.`,
+    ]);
+    // the sentence is the engine's own
+    expect(ptmWarnings(html)).toEqual((rust.scanPostTranslationalModificationsRust(seq) as { warnings?: string[] }).warnings);
+
+    // at each cap exactly, the list is whole and says nothing: with 24 peptides only the picker
+    // says it lists fewer, and with 18 neither does
+    const sized = (lo: number, hi: number) => {
+      for (let seed = 1; seed < 2_000; seed++) {
+        const p = randomLetters(220, 0x76f2 + seed, AA);
+        const n = rust.simulateProteolyticDigestMsRust(p, 'Trypsin', 1, 400, 4500, true).peptides.length;
+        if (n >= lo && n <= hi) return { p, n };
+      }
+      throw new Error(`no seed gives ${lo}-${hi} peptides`);
+    };
+    const mid = sized(24, 24);
+    const midHtml = proteinTab(doc('mid', 'Mid protein', mid.p, 'Protein'));
+    expect(displayCaps(midHtml)).toEqual({ ms2: `The picker lists the first 18 of ${mid.n} peptides.` });
+    expect(peptideRows(midHtml)).toHaveLength(mid.n);
+    expect(ms2Options(midHtml)).toBe(18);
+    const few = sized(18, 18);
+    const fewHtml = proteinTab(doc('few', 'Small protein', few.p, 'Protein'));
+    expect(displayCaps(fewHtml)).toEqual({});
+    expect(peptideRows(fewHtml)).toHaveLength(few.n);
+    expect(ms2Options(fewHtml)).toBe(few.n);
+    expect(ptmWarnings(fewHtml)).toEqual([]);
+  }, 60_000);
 });

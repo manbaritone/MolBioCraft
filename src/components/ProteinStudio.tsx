@@ -12,7 +12,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
-import { SequenceDocument, SequenceFeature, type ProteinAnalysisReport, type TranslatedSpan } from '../types/bio';
+import { SequenceDocument, SequenceFeature, type ProteinAnalysisReport, type PtmScanWarnings, type TranslatedSpan } from '../types/bio';
 import { analyzeProteinSequence } from '../core/bioEngine';
 import {
   alignPdbStructuresKabsch,
@@ -59,6 +59,9 @@ export { NO_RESIDUE_TRANSLATED, NO_STANDARD_RESIDUE };
 const MS2_PLOT = plotFrame({ ...CHART_FULL, h: 280, padL: 52 });
 
 const groupDigits = (v: number) => v.toLocaleString('en-US');
+/** The digest peptides the peptide table shows, and the MS2 picker offers; past them each says how many there are. */
+const PEPTIDE_TABLE_LIMIT = 24;
+const MS2_PICKER_LIMIT = 18;
 
 /** A peptide m/z to `digits` places, or 'n/a' when the engine gives none (null: a peptide holding B, Z or X). */
 const mzText = (mz: number | null, digits: number) => (typeof mz === 'number' && Number.isFinite(mz) ? mz.toFixed(digits) : 'n/a');
@@ -503,7 +506,10 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
     [activeMs2Peptide]
   );
 
-  const ptmDisulfideReport = useMemo(() => scanPostTranslationalModificationsRust(analysedSeq), [analysedSeq]);
+  const ptmDisulfideReport = useMemo(
+    () => scanPostTranslationalModificationsRust(analysedSeq) as ReturnType<typeof scanPostTranslationalModificationsRust> & PtmScanWarnings,
+    [analysedSeq]
+  );
 
   useEffect(() => {
     if (!isProteinDoc) {
@@ -972,6 +978,7 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
                   </strong>
                 </div>
               </div>
+              <ResultWarnings warnings={ptmDisulfideReport.warnings} label="PTM and disulfide warnings" />
 
               {digestMsReport.peptides.length > 0 && ms2SpectrumReport && (
                 <div style={{ marginTop: 6 }} data-mbc-figure>
@@ -1003,12 +1010,17 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
                       value={Math.min(selectedMs2PeptideIdx, digestMsReport.peptides.length - 1)}
                       onChange={(e) => setSelectedMs2PeptideIdx(Number(e.target.value))}
                     >
-                      {digestMsReport.peptides.slice(0, 18).map((pep, idx) => (
+                      {digestMsReport.peptides.slice(0, MS2_PICKER_LIMIT).map((pep, idx) => (
                         <option key={pep.peptideIndex} value={idx}>
                           #{pep.peptideIndex} ({pep.startAa}..{pep.endAa} aa) {pep.sequence} — {mzText(pep.mzCharge2, 2)} m/z (RT {pep.hplcRetentionMin.toFixed(1)} min)
                         </option>
                       ))}
                     </select>
+                    {digestMsReport.peptides.length > MS2_PICKER_LIMIT && (
+                      <span className="mbc-summary-note" data-mbc-display-cap="ms2">
+                        The picker lists the first {MS2_PICKER_LIMIT} of {groupDigits(digestMsReport.peptides.length)} peptides.
+                      </span>
+                    )}
                   </label>
 
                   <svg
@@ -1107,6 +1119,11 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
                 </div>
               )}
 
+              {digestMsReport.peptides.length > PEPTIDE_TABLE_LIMIT && (
+                <p className="mbc-summary-note" data-mbc-display-cap="digest">
+                  The table shows the first {PEPTIDE_TABLE_LIMIT} of {groupDigits(digestMsReport.peptides.length)} peptides.
+                </p>
+              )}
               <WorkbenchSmartTable
                 tableId="hybrid-proteomics-peptides"
                 tableLabel="Proteolytic LC-MS Peptides"
@@ -1123,7 +1140,7 @@ function ProteinAnalysisPanel({ doc, onUpdateDocument }: { doc: SequenceDocument
                   </tr>
                 </thead>
                 <tbody>
-                  {digestMsReport.peptides.slice(0, 24).map((pep) => (
+                  {digestMsReport.peptides.slice(0, PEPTIDE_TABLE_LIMIT).map((pep) => (
                     <tr key={pep.peptideIndex}>
                       <td>
                         aa {pep.startAa}..{pep.endAa}

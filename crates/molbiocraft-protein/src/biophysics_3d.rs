@@ -93,6 +93,7 @@ pub struct SecondaryStructureSummary {
     pub helix_percent: f64,
     pub sheet_percent: f64,
     pub coil_percent: f64,
+    /// The predicted state ("H", "E" or "C") of every residue analysed, in chain order.
     pub states_per_residue: Vec<String>,
 }
 
@@ -363,8 +364,8 @@ pub fn analyze_protein_sequence(
         close_region(&mut epitopes, ep_start, len, ep_max);
     }
 
-    // GOR Secondary Structure Prediction
-    let mut states = Vec::with_capacity(len.min(4000));
+    // GOR Secondary Structure Prediction: one state per residue along the whole chain.
+    let mut states = Vec::with_capacity(len);
     let (mut h_cnt, mut e_cnt, mut c_cnt) = (0usize, 0usize, 0usize);
     for idx in 0..len {
         let s = idx.saturating_sub(3);
@@ -393,9 +394,7 @@ pub fn analyze_protein_sequence(
             c_cnt += 1;
             "C"
         };
-        if states.len() < 4000 {
-            states.push(st.to_string());
-        }
+        states.push(st.to_string());
     }
 
     ProteinAnalysisReport {

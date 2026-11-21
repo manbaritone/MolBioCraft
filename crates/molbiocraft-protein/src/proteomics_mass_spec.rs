@@ -402,36 +402,36 @@ pub fn simulate_proteolytic_digest_ms(
                 *flag = true;
             }
 
-            if peptides.len() < 512 {
-                let len_f = pep_slice.len() as f64;
-                // Krokhin length-corrected RP-HPLC retention time (0..60 min gradient)
-                let rt_min = (6.5 + rt_sum * (1.0 - 0.012 * len_f.min(40.0))).clamp(1.2, 65.0);
-                let n_flank = if s0 == 0 { '-' } else { bytes[s0 - 1] as char };
-                let c_flank = if e0 >= n { '-' } else { bytes[e0] as char };
-                let sequence = String::from_utf8_lossy(pep_slice).into_owned();
-                if !whole {
-                    warnings.push(no_composition_warning(&sequence, &unweighable));
-                }
-
-                peptides.push(DigestedPeptideIon {
-                    peptide_index: peptides.len() + 1,
-                    start_aa: s0 + 1,
-                    end_aa: e0,
-                    length_aa: pep_slice.len(),
-                    missed_cleavages: mc,
-                    n_flank,
-                    sequence,
-                    c_flank,
-                    chemical_formula: el.formula_string(),
-                    monoisotopic_neutral_da: round4(mono_da),
-                    average_neutral_da: round4(avg_da),
-                    mz_charge_1: round4(mono_da + MONO_PROTON),
-                    mz_charge_2: round4((mono_da + 2.0 * MONO_PROTON) / 2.0),
-                    mz_charge_3: round4((mono_da + 3.0 * MONO_PROTON) / 3.0),
-                    hplc_retention_min: round2(rt_min),
-                    net_charge_ph2_7: basic_sites,
-                });
+            // Every in-window peptide is listed: the list is linear in the protein (at most four per
+            // cleavage product), so a 34,350-aa titin digests whole (BG-01M6T6JF).
+            let len_f = pep_slice.len() as f64;
+            // Krokhin length-corrected RP-HPLC retention time (0..60 min gradient)
+            let rt_min = (6.5 + rt_sum * (1.0 - 0.012 * len_f.min(40.0))).clamp(1.2, 65.0);
+            let n_flank = if s0 == 0 { '-' } else { bytes[s0 - 1] as char };
+            let c_flank = if e0 >= n { '-' } else { bytes[e0] as char };
+            let sequence = String::from_utf8_lossy(pep_slice).into_owned();
+            if !whole {
+                warnings.push(no_composition_warning(&sequence, &unweighable));
             }
+
+            peptides.push(DigestedPeptideIon {
+                peptide_index: peptides.len() + 1,
+                start_aa: s0 + 1,
+                end_aa: e0,
+                length_aa: pep_slice.len(),
+                missed_cleavages: mc,
+                n_flank,
+                sequence,
+                c_flank,
+                chemical_formula: el.formula_string(),
+                monoisotopic_neutral_da: round4(mono_da),
+                average_neutral_da: round4(avg_da),
+                mz_charge_1: round4(mono_da + MONO_PROTON),
+                mz_charge_2: round4((mono_da + 2.0 * MONO_PROTON) / 2.0),
+                mz_charge_3: round4((mono_da + 3.0 * MONO_PROTON) / 3.0),
+                hplc_retention_min: round2(rt_min),
+                net_charge_ph2_7: basic_sites,
+            });
         }
     }
 
@@ -681,10 +681,35 @@ pub struct ProteinPtmAndTopologyReport {
     pub ptm_sites: Vec<PtmAndTraffickingSite>,
     pub pest_degrons: Vec<PestDegradationSegment>,
     pub disulfide_bonds: Vec<DisulfideBondPrediction>,
+    /// What the scan left out (D0005), one plain sentence each: past [`DISULFIDE_PAIRING_CYS_LIMIT`]
+    /// cysteines, which ones the disulfide list paired of how many. Empty when the scan is whole.
+    pub warnings: Vec<String>,
+}
+
+/// The most cysteines the disulfide list pairs all against all. Pairing scores every cysteine pair,
+/// so its cost grows as the square of the count: 1,024 cysteines (titin has 513) score 523,776
+/// pairs, while the 10,000 of a 200,000-aa protein would score 50 million and exhaust the WASM
+/// engine's memory. Past this the first 1,024 cysteines are paired and the report says so.
+pub const DISULFIDE_PAIRING_CYS_LIMIT: usize = 1_024;
+
+/// `v` with thousands separators: 10013 -> "10,013".
+fn grouped(v: usize) -> String {
+    let digits = v.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Scan a protein sequence (and optional 3D $C_\alpha$ coordinates) for PTM sites,
 /// subcellular localization signals, Rogers PEST degrons, and `petgraph` disulfide connectivity.
+/// Every PTM and targeting site along the chain is listed (the scan is linear in its length); the
+/// disulfide list pairs at most the first [`DISULFIDE_PAIRING_CYS_LIMIT`] cysteines, and past that
+/// says so in `warnings`.
 pub fn scan_post_translational_modifications(
     protein_seq: &str,
     pdb_atoms_opt: Option<&[PdbCaAtom]>,
@@ -784,7 +809,7 @@ pub fn scan_post_translational_modifications(
         if i + 3 <= n && bytes[i] == b'N' && bytes[i + 1] != b'P' && matches!(bytes[i + 2], b'S' | b'T')
         {
             let c4_ok = i + 3 >= n || bytes[i + 3] != b'P';
-            if c4_ok && ptm_sites.len() < 256 {
+            if c4_ok {
                 ptm_sites.push(PtmAndTraffickingSite {
                     category: "Glycosylation".into(),
                     modification_name: "N-Linked Sequon (Asn-Xaa-Ser/Thr)".into(),
@@ -803,7 +828,6 @@ pub fn scan_post_translational_modifications(
             && matches!(bytes[i], b'R' | b'K')
             && matches!(bytes[i + 1], b'R' | b'K')
             && matches!(bytes[i + 3], b'S' | b'T')
-            && ptm_sites.len() < 256
         {
             ptm_sites.push(PtmAndTraffickingSite {
                 category: "Phosphorylation".into(),
@@ -822,7 +846,6 @@ pub fn scan_post_translational_modifications(
             && matches!(bytes[i], b'S' | b'T')
             && bytes[i + 1] == b'P'
             && matches!(bytes[i + 3], b'K' | b'R')
-            && ptm_sites.len() < 256
         {
             ptm_sites.push(PtmAndTraffickingSite {
                 category: "Phosphorylation".into(),
@@ -841,7 +864,6 @@ pub fn scan_post_translational_modifications(
             && matches!(bytes[i], b'S' | b'T')
             && matches!(bytes[i + 2], b'D' | b'E')
             && matches!(bytes[i + 3], b'D' | b'E')
-            && ptm_sites.len() < 256
         {
             ptm_sites.push(PtmAndTraffickingSite {
                 category: "Phosphorylation".into(),
@@ -860,7 +882,6 @@ pub fn scan_post_translational_modifications(
             && matches!(bytes[i], b'V' | b'I' | b'L' | b'M' | b'F')
             && bytes[i + 1] == b'K'
             && matches!(bytes[i + 3], b'E' | b'D')
-            && ptm_sites.len() < 256
         {
             ptm_sites.push(PtmAndTraffickingSite {
                 category: "Ubiquitin / UBL".into(),
@@ -880,7 +901,6 @@ pub fn scan_post_translational_modifications(
             && bytes[i] == b'K'
             && matches!(bytes[i + 1], b'K' | b'R')
             && matches!(bytes[i + 3], b'K' | b'R')
-            && ptm_sites.len() < 256
         {
             has_nls = true;
             last_nls_end = i + 4;
@@ -908,7 +928,19 @@ pub fn scan_post_translational_modifications(
         .enumerate()
         .filter_map(|(idx, &b)| if b == b'C' { Some(idx + 1) } else { None })
         .collect();
-    let disulfide_bonds = predict_disulfide_graph_connectivity(&cys_positions, pdb_atoms_opt);
+    let mut warnings = Vec::new();
+    let paired_cys = &cys_positions[..cys_positions.len().min(DISULFIDE_PAIRING_CYS_LIMIT)];
+    if paired_cys.len() < cys_positions.len() {
+        warnings.push(format!(
+            "Disulfide pairs were predicted among the first {} of {} cysteines (residues 1–{}): pairing every cysteine with every other is bounded at {} cysteines, so the other {} were not paired.",
+            grouped(paired_cys.len()),
+            grouped(cys_positions.len()),
+            grouped(paired_cys[paired_cys.len() - 1]),
+            grouped(DISULFIDE_PAIRING_CYS_LIMIT),
+            grouped(cys_positions.len() - paired_cys.len()),
+        ));
+    }
+    let disulfide_bonds = predict_disulfide_graph_connectivity(paired_cys, pdb_atoms_opt);
 
     let compartment = if has_er_kdel {
         "Endoplasmic Reticulum Lumen (KDEL/HDEL)"
@@ -929,6 +961,7 @@ pub fn scan_post_translational_modifications(
         ptm_sites,
         pest_degrons,
         disulfide_bonds,
+        warnings,
     }
 }
 
@@ -1028,6 +1061,8 @@ fn predict_disulfide_graph_connectivity(
             .or_else(|| atoms.get(res_seq.saturating_sub(1)))
             .map(|a| Vector3::new(a.x, a.y, a.z))
     };
+    // Each cysteine's Cα is looked up once, not once per pair it is in.
+    let coords: Vec<Option<Vector3<f64>>> = cys_positions.iter().map(|&p| lookup_coord(p)).collect();
 
     for i in 0..nodes.len() {
         for j in (i + 1)..nodes.len() {
@@ -1037,7 +1072,7 @@ fn predict_disulfide_graph_connectivity(
             if sep < 3 {
                 continue; // Sterically unfavorable vicinal disulfide unless forced
             }
-            if let (Some(v1), Some(v2)) = (lookup_coord(p1), lookup_coord(p2)) {
+            if let (Some(v1), Some(v2)) = (coords[i], coords[j]) {
                 let dist = (v1 - v2).norm();
                 // Canonical disulfide C_alpha - C_alpha distance is ~4.5 - 7.5 Å
                 if dist <= 8.5 {

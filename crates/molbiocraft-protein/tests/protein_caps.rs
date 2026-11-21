@@ -15,9 +15,19 @@
 //! - The bases a DNA input's analysis translated: the longest forward ORF of at least 30 aa, or,
 //!   with none, the forward frame with the fewest stop codons. The report did not say which, so the
 //!   protein tab could only name the slice it passed in.
+//!
+//! BG-01M6T6JF: the digest, the PTM scan, the disulfide list and the GOR states cover the protein.
+//! - A tryptic digest stopped after 512 peptides (on titin, 34,350 aa, at residue 2,378), the PTM
+//!   scan after 256 sites and GOR after 4,000 residues, and none said so. Each is now computed
+//!   whole, checked here against a hand cleavage, a hand motif count and the GOR rule written out.
+//! - The disulfide list paired every cysteine with every other, which grew as the square of the
+//!   cysteine count and trapped the WASM engine on a 200,000-aa protein. It still pairs all against
+//!   all up to 1,024 cysteines (titin has 513), and past that pairs the first 1,024 and says so in
+//!   the report's `warnings` (D0005).
 
 use molbiocraft_protein::biophysics_3d::{TranslatedSpan, TranslationRule};
 use molbiocraft_protein::{align_pdb_structures_kabsch, analyze_protein_sequence};
+use molbiocraft_protein::{scan_post_translational_modifications, simulate_proteolytic_digest_ms};
 
 /// xorshift64*: the same numbers on every run and platform.
 struct Rng(u64);
@@ -360,4 +370,219 @@ fn translated_span_names_the_bases_analysed() {
     let lone_stop = analyze_protein_sequence("TAA", true, 9);
     assert_eq!((lone_stop.translated_span, lone_stop.length_aa), (None, 0));
     assert_eq!(analyze_protein_sequence(&random_protein(300, 7), false, 9).translated_span, None);
+}
+
+// ---------------------------------------------------------------------------------------------
+// BG-01M6T6JF: the digest, the PTM scan, the disulfide list and GOR cover the protein.
+
+/// Titin's length (UniProt Q8WZ42, 34,350 aa).
+const TITIN_LEN: usize = 34_350;
+
+/// Unimod monoisotopic residue masses (https://www.unimod.org/masses.html).
+fn residue_mono(aa: u8) -> f64 {
+    match aa {
+        b'G' => 57.021464, b'A' => 71.037114, b'S' => 87.032028, b'P' => 97.052764,
+        b'V' => 99.068414, b'T' => 101.047679, b'C' => 103.009185, b'L' | b'I' => 113.084064,
+        b'N' => 114.042927, b'D' => 115.026943, b'Q' => 128.058578, b'K' => 128.094963,
+        b'E' => 129.042593, b'M' => 131.040485, b'H' => 137.058912, b'F' => 147.068414,
+        b'R' => 156.101111, b'Y' => 163.06332, b'W' => 186.079313,
+        _ => panic!("fixture holds only the 20 standard residues"),
+    }
+}
+
+/// Every tryptic peptide of `seq` with at most `max_mc` missed cleavages whose monoisotopic mass
+/// (carbamidomethyl Cys) is in `lo..=hi`, as (start, end, missed cleavages), 1-based inclusive, in
+/// order of first piece then missed cleavages: trypsin cuts after K or R, but not before P.
+fn hand_tryptic_peptides(seq: &[u8], max_mc: usize, lo: f64, hi: f64) -> Vec<(usize, usize, usize)> {
+    let mut cuts = vec![0];
+    cuts.extend((1..seq.len()).filter(|&i| matches!(seq[i - 1], b'K' | b'R') && seq[i] != b'P'));
+    cuts.push(seq.len());
+    let mut out = Vec::new();
+    for first in 0..cuts.len() - 1 {
+        for mc in 0..=max_mc {
+            let Some(&end) = cuts.get(first + 1 + mc) else { break };
+            let piece = &seq[cuts[first]..end];
+            let mass = 18.010565 + piece.iter().map(|&b| residue_mono(b) + if b == b'C' { 57.021464 } else { 0.0 }).sum::<f64>();
+            assert!((mass - lo).abs() > 0.01 && (mass - hi).abs() > 0.01, "a peptide sits on the window's edge");
+            if (lo..=hi).contains(&mass) {
+                out.push((cuts[first] + 1, end, mc));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn digest_lists_every_peptide_of_a_titin_length_protein() {
+    let protein = random_protein(TITIN_LEN, 0x7171_7171);
+    let want = hand_tryptic_peptides(protein.as_bytes(), 1, 400.0, 4500.0);
+    // the fixture reaches the old stop: more than 512 peptides, the 512th far short of the end
+    assert!(want.len() > 512 && want[511].1 < 4_000, "{} peptides", want.len());
+    let report = simulate_proteolytic_digest_ms(&protein, "Trypsin", 1, 400.0, 4500.0, true);
+    let got: Vec<_> = report.peptides.iter().map(|p| (p.start_aa, p.end_aa, p.missed_cleavages)).collect();
+    assert_eq!(got.len(), want.len(), "peptides listed");
+    assert_eq!(got, want);
+    assert_eq!(report.observable_peptide_count, want.len());
+    // the last peptide is the last in-window cleavage product, near the C terminus
+    assert_eq!(got.last(), want.last());
+    assert!(got.last().unwrap().1 > TITIN_LEN - 200);
+    for (i, p) in report.peptides.iter().enumerate() {
+        assert_eq!(p.peptide_index, i + 1);
+        assert_eq!(p.sequence, protein[p.start_aa - 1..p.end_aa]);
+    }
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+/// Every PTM and targeting site `scan_post_translational_modifications` reports, found here by
+/// its motifs written out, as (modification name, modified residue), sorted.
+fn hand_ptm_sites(s: &[u8]) -> Vec<(String, usize)> {
+    let n = s.len();
+    let mut out: Vec<(String, usize)> = Vec::new();
+    let mut add = |name: &str, residue: usize| out.push((name.to_string(), residue));
+    let any = |b: u8, set: &[u8]| set.contains(&b);
+    if n >= 7 && s[0] == b'M' && s[1] == b'G' && !any(s[2], b"EDRKHPFYW") && any(s[5], b"STAGCN") {
+        add("N-Myristoylation (Gly2)", 2);
+    }
+    if n >= 4 {
+        let t = &s[n - 4..];
+        if t[0] == b'C' && any(t[1], b"VILMA") && any(t[2], b"VILMA") {
+            add(if any(t[3], b"LF") { "Geranylgeranylation (CAAX)" } else { "Farnesylation (CAAX)" }, n - 3);
+        }
+        if matches!(t, b"KDEL" | b"HDEL" | b"RDEL") {
+            add("ER Lumen Retention Signal (KDEL/HDEL)", n - 3);
+        }
+    }
+    if n >= 3 && any(s[n - 3], b"SAC") && any(s[n - 2], b"KRH") && any(s[n - 1], b"LM") {
+        add("Peroxisomal Targeting Signal 1 (PTS1)", n - 2);
+    }
+    let mut nls_free_from = 0;
+    for i in 0..n {
+        let w = |k: usize| s.get(i + k).copied().unwrap_or(0);
+        if i + 3 <= n && w(0) == b'N' && w(1) != b'P' && any(w(2), b"ST") && (i + 3 >= n || w(3) != b'P') {
+            add("N-Linked Sequon (Asn-Xaa-Ser/Thr)", i + 1);
+        }
+        if i + 4 > n {
+            continue;
+        }
+        if any(w(0), b"RK") && any(w(1), b"RK") && any(w(3), b"ST") {
+            add("PKA Consensus ([RK]2-X-S/T)", i + 4);
+        }
+        if any(w(0), b"ST") && w(1) == b'P' && any(w(3), b"KR") {
+            add("CDK Consensus (S/T-P-X-K/R)", i + 1);
+        }
+        if any(w(0), b"ST") && any(w(2), b"DE") && any(w(3), b"DE") {
+            add("Casein Kinase II (S/T-X-D/E-D/E)", i + 1);
+        }
+        if any(w(0), b"VILMF") && w(1) == b'K' && any(w(3), b"ED") {
+            add("SUMOylation (Ψ-K-X-E/D)", i + 2);
+        }
+        if i >= nls_free_from && w(0) == b'K' && any(w(1), b"KR") && any(w(3), b"KR") {
+            add("Importin-α Monopartite NLS (K-K/R-X-K/R)", i + 1);
+            nls_free_from = i + 4;
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The PTM scan's sites as (modification name, modified residue), sorted, and its `warnings` as
+/// the reply serialises them (an engine without the field reads as none).
+fn scanned(protein: &str) -> (Vec<(String, usize)>, molbiocraft_protein::ProteinPtmAndTopologyReport, Vec<String>) {
+    let report = scan_post_translational_modifications(protein, None);
+    let mut sites: Vec<_> = report.ptm_sites.iter().map(|p| (p.modification_name.clone(), p.modified_residue_aa)).collect();
+    sites.sort();
+    let json = serde_json::to_value(&report).unwrap();
+    let warnings = json["warnings"].as_array().map(|w| w.iter().map(|s| s.as_str().unwrap().to_string()).collect()).unwrap_or_default();
+    (sites, report, warnings)
+}
+
+fn cysteines(protein: &str) -> Vec<usize> {
+    protein.bytes().enumerate().filter(|&(_, b)| b == b'C').map(|(i, _)| i + 1).collect()
+}
+
+#[test]
+fn ptm_scan_and_disulfide_list_report_every_site_or_the_total() {
+    // A titin-length protein with no cysteine but the 513 placed 66 apart (every pair can bond), and
+    // 300 N-glycosylation sequons (N-G-T-A) placed besides those the random residues hold.
+    let mut residues: Vec<u8> = random_protein(TITIN_LEN, 0x6A1C_0513).bytes().map(|b| if b == b'C' { b'S' } else { b }).collect();
+    for k in 0..300 {
+        residues[k * 114 + 30..k * 114 + 34].copy_from_slice(b"NGTA");
+    }
+    for k in 0..513 {
+        residues[k * 66 + 10] = b'C';
+    }
+    let protein = String::from_utf8(residues).unwrap();
+    let want = hand_ptm_sites(protein.as_bytes());
+    let sequons = want.iter().filter(|(name, _)| name.starts_with("N-Linked")).count();
+    assert!(sequons > 256, "{sequons} sequons");
+    let (sites, report, warnings) = scanned(&protein);
+    assert_eq!(sites.len(), want.len(), "PTM sites listed");
+    assert_eq!(sites, want);
+    // 513 cysteines, every pair at least 3 apart: every one but one is paired, each once
+    let cys = cysteines(&protein);
+    assert_eq!((cys.len(), report.total_cysteines), (513, 513));
+    assert_eq!(report.disulfide_bonds.len(), 256, "disulfide bonds listed");
+    let mut paired: Vec<usize> = report.disulfide_bonds.iter().flat_map(|b| [b.cys1_aa, b.cys2_aa]).collect();
+    paired.sort();
+    paired.dedup();
+    assert_eq!(paired.len(), 512);
+    assert!(paired.iter().all(|p| cys.binary_search(p).is_ok()));
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // A 200,000-aa protein (about 10,000 cysteines) scans: every PTM site is listed, and the
+    // disulfide list pairs the first 1,024 cysteines all against all and says what it left out.
+    let big = random_protein(200_000, 0x0020_0000);
+    let cys = cysteines(&big);
+    assert!(cys.len() > 9_000, "{} cysteines", cys.len());
+    let (sites, report, warnings) = scanned(&big);
+    assert_eq!(sites, hand_ptm_sites(big.as_bytes()));
+    assert_eq!(report.total_cysteines, cys.len());
+    assert_eq!(report.disulfide_bonds.len(), 512);
+    let scored = &cys[..1_024];
+    assert!(report.disulfide_bonds.iter().all(|b| scored.binary_search(&b.cys1_aa).is_ok() && scored.binary_search(&b.cys2_aa).is_ok()));
+    let grouped = |v: usize| {
+        let d = v.to_string();
+        let mut out = String::new();
+        for (i, ch) in d.chars().enumerate() {
+            if i > 0 && (d.len() - i) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(ch);
+        }
+        out
+    };
+    assert_eq!(
+        warnings,
+        vec![format!(
+            "Disulfide pairs were predicted among the first 1,024 of {} cysteines (residues 1–{}): pairing every cysteine with every other is bounded at 1,024 cysteines, so the other {} were not paired.",
+            grouped(cys.len()),
+            grouped(scored[1_023]),
+            grouped(cys.len() - 1_024)
+        )]
+    );
+}
+
+#[test]
+fn gor_states_cover_every_residue() {
+    let protein = random_protein(TITIN_LEN, 0x0609_0609);
+    let s = protein.as_bytes();
+    // the GOR-style rule, residue by residue: the 7-residue window (-3..+3, fewer at the ends)
+    let want: Vec<&str> = (0..s.len())
+        .map(|i| {
+            let (mut h, mut e) = (0.0f64, 0.0f64);
+            for &b in &s[i.saturating_sub(3)..(i + 4).min(s.len())] {
+                if b"EALMQKRH".contains(&b) { h += 1.0; }
+                if b"VIYFWTC".contains(&b) { e += 1.0; }
+                if b"PG".contains(&b) { h -= 1.2; e -= 0.8; }
+            }
+            if h >= 3.5 && h >= e { "H" } else if e >= 3.0 { "E" } else { "C" }
+        })
+        .collect();
+    // the fixture reaches the old stop: residues past 4,000 hold every state
+    for st in ["H", "E", "C"] {
+        assert!(want[4_000..].contains(&st), "no {st} past residue 4,000");
+    }
+    let summary = analyze_protein_sequence(&protein, false, 9).secondary_structure_summary;
+    assert_eq!(summary.states_per_residue.len(), TITIN_LEN);
+    assert_eq!(summary.states_per_residue, want);
 }
