@@ -205,7 +205,7 @@ export interface AlignedChain {
 }
 
 export interface StructureAlignmentScore {
-  /** The score's name, e.g. `TM-score by 4HHB.A`. */
+  /** The score's name, e.g. `TM-score by 4HHB.A` (`TM-score by 4HHB.A (structure B)` when both sides are 4HHB.A). */
   name: string;
   /** What it is normalised by and how it was made, shown beside it. */
   detail: string;
@@ -269,12 +269,12 @@ export function alignStructures(a: StructureInput, b: StructureInput, method: St
     return { entry: input.entry, chain: chain.id, authorId: chain.authorId, residues: ungappedLength(aligned) };
   };
 
-  const score = (c: AlignedChain, length: number, d0: number, value: number, suffix = ''): StructureAlignmentScore => ({
-    name: `TM-score by ${recordName(c)}`,
-    detail: `normalised by ${recordName(c)}: ${length} residues, d0 ${d0.toFixed(2)} Å${suffix}`,
-    value,
-    approximate: false,
-  });
+  // Each score is named by the chain it is normalised by, `ENTRY.CHAIN`; when both sides are the
+  // same chain of the same entry, by its side as well, so the two names always differ.
+  const score = (c: AlignedChain, other: AlignedChain, side: 'A' | 'B', length: number, d0: number, value: number, suffix = ''): StructureAlignmentScore => {
+    const by = recordName(c) === recordName(other) ? `${recordName(c)} (structure ${side})` : recordName(c);
+    return { name: `TM-score by ${by}`, detail: `normalised by ${by}: ${length} residues, d0 ${d0.toFixed(2)} Å${suffix}`, value, approximate: false };
+  };
 
   if (how === 'tm') {
     const r = invokeRustBioSync<TmReport>('align_structures_tm', payload);
@@ -289,7 +289,7 @@ export function alignStructures(a: StructureInput, b: StructureInput, method: St
       rmsdAngstrom: r.rmsdAngstrom,
       equivalentResidues: r.alignedLength,
       sequenceIdentity: r.sequenceIdentity,
-      tmScores: [score(sa, r.lengthA, r.d0A, r.tmScoreA), score(sb, r.lengthB, r.d0B, r.tmScoreB)],
+      tmScores: [score(sa, sb, 'A', r.lengthA, r.d0A, r.tmScoreA), score(sb, sa, 'B', r.lengthB, r.d0B, r.tmScoreB)],
       alignedSequenceA: r.alignedSequenceA,
       alignedSequenceB: r.alignedSequenceB,
       transformationMatrix: checkMatrix(r.transformationMatrix),
@@ -310,7 +310,7 @@ export function alignStructures(a: StructureInput, b: StructureInput, method: St
     sequenceIdentity: r.sequenceIdentity,
     tmScores: [sa, sb].map((c, k) => {
       const seqPaired = '; the best superposition of the sequence-paired residues, not of a TM-align alignment';
-      return score(c, c.residues, k === 0 ? r.d0A : r.d0B, k === 0 ? r.tmScoreA : r.tmScoreB, seqPaired);
+      return score(c, k === 0 ? sb : sa, k === 0 ? 'A' : 'B', c.residues, k === 0 ? r.d0A : r.d0B, k === 0 ? r.tmScoreA : r.tmScoreB, seqPaired);
     }),
     alignedSequenceA: r.alignedSequenceA,
     alignedSequenceB: r.alignedSequenceB,

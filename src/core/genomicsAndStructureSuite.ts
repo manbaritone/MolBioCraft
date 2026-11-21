@@ -605,12 +605,29 @@ export interface PdbStructureAlignmentReport {
   /** The residue pairs superposed: the columns of the two chains' sequence alignment with no gap. */
   alignedResiduePairs: number;
   rmsdAngstrom: number;
-  /** Scored on the sequence-paired superposition, not searched for as TM-align does: approximate. */
+  /**
+   * `tmScoreA` or `tmScoreB`, whichever is normalised by the longer chain (A when the two are as
+   * long), to 3 decimals; `structuralSimilarityVerdict` reads it at 0.5 and 0.3 (D0294).
+   */
   tmScore: number;
+  /**
+   * The Zhang-Skolnick TM-score of the sequence-paired residues normalised by chain A (by chain B):
+   * for those pairs, the best over superpositions found by the TM-score search, every pair counted,
+   * with d0 from that chain's length, as the TM-score program scores a given correspondence. It may
+   * be the score of another superposition than `transformationMatrix`, the Kabsch fit of all pairs.
+   */
+  tmScoreA: number;
+  tmScoreB: number;
+  /** d0 of chain A and of chain B, Å: 1.24 (L - 15)^(1/3) - 1.8, at least 0.5, for that chain's length L. */
+  d0A: number;
+  d0B: number;
   structuralSimilarityVerdict: string;
   /** The chain superposed from each structure: the author chain id for mmCIF, the chain column for PDB. */
   chainA: string;
   chainB: string;
+  /** The mmCIF label id of each chain superposed; null for a PDB file, which has none. */
+  labelChainA: string | null;
+  labelChainB: string | null;
   /** How the residues were paired and superposed, in the engine's words. */
   pairingMethod: string;
   /** Fraction (0 to 1) of the pairs whose two residues have the same one-letter code. */

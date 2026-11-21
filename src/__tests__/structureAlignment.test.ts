@@ -249,6 +249,43 @@ describe('reports RMSD, TM-score, identity and equivalent residues', () => {
     ]);
   });
 
+  it('names each TM-score by its side as well when both sides are the same chain of the same entry', () => {
+    for (const method of METHODS) {
+      const al = alignStructures(A(), A(), method);
+      expect(al.tmScores.map((s) => s.name), method).toEqual(['TM-score by SYNA.A (structure A)', 'TM-score by SYNA.A (structure B)']);
+      expect(al.tmScores.map((s) => s.detail.split(':')[0]), method).toEqual(['normalised by SYNA.A (structure A)', 'normalised by SYNA.A (structure B)']);
+      for (const s of al.tmScores) close(s.value, 1, 1e-4, `${method}: ${s.name}`);
+      // The same chain id in another entry is told apart by its entry alone.
+      const other = alignStructures(A(), { text: PDB_A, chain: 'A', entry: 'SYNC' }, method);
+      expect(other.tmScores.map((s) => s.name), method).toEqual(['TM-score by SYNA.A', 'TM-score by SYNC.A']);
+    }
+  });
+
+  it('refuses an engine report that names another label chain than the one picked', () => {
+    // Label A and label B are both author A: the author id alone cannot tell them apart.
+    const text = cif([...cifChain('A', 'A', trace(50, 0x1234567n)), ...cifChain('B', 'A', A80)]);
+    const real = engine.getMockImplementation()!;
+    for (const method of METHODS) {
+      for (const side of ['A', 'B'] as const) {
+        // The engine's real report, but naming label chain A where label chain B was picked.
+        engine.mockImplementation((op, payload) => {
+          const r = real(op, payload) as Record<string, unknown>;
+          return ALIGN_OPS.includes(op) ? { ...r, [`labelChain${side}`]: 'A' } : r;
+        });
+        const picked = { text, chain: 'B', entry: 'SYNT' };
+        const partner = { text: PDB_B80, chain: 'B', entry: 'SYNB' };
+        const run = () => (side === 'A' ? alignStructures(picked, partner, method) : alignStructures(partner, picked, method));
+        try {
+          expect(run, `${method}, structure ${side}`).toThrow('The engine aligned label chain A of SYNT, not label chain B');
+        } finally {
+          engine.mockImplementation(real);
+        }
+        // The same pick, with the engine's own report, is aligned.
+        expect(run().equivalentResidues, `${method}, structure ${side}`).toBe(80);
+      }
+    }
+  });
+
   it('by sequence, reports no superposition for chains whose sequence alignment pairs no residues, with the engine verdict', () => {
     // Ten Trp against ten Pro: two gaps (-29) score above ten W/P pairs (-40), so nothing pairs.
     const line = (id: string, k: number) => ({ id, pts: A80.pts.slice(k, k + 10), seq: '' });

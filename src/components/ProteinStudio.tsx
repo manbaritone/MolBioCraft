@@ -19,8 +19,10 @@ import {
   targetProteinOf,
   parsePdbCaCoordinates,
   type PdbCaAtom,
+  type PdbStructureAlignmentReport,
   predictCoiledCoilsAndTransmembrane,
 } from '../core/genomicsAndStructureSuite';
+import { structureEntryId } from '../core/structureAlignment';
 import { caAtomsToPdb, hasStructure, structureAtomsOf, structureChainCount, structureTextOf } from '../core/structureModels';
 import { chainOf, parseStructure, type Structure } from '../core/structureView';
 import { backboneTorsions, plottedModelOf, type BackboneTorsionReport, type PlottedModel } from '../core/ramachandran';
@@ -363,19 +365,29 @@ function chainRamachandran(text: string, structure: Structure, labelChain: strin
 }
 
 /**
+ * The entry a superposed model belongs to: the file's own id (mmCIF `_entry.id` or `data_`, a PDB
+ * HEADER's id code), else its document or file name without a trailing `chain X`.
+ */
+const modelEntryName = (text: string, name: string): string =>
+  structureEntryId(text, name.replace(/\s+chain\s+\S+$/i, '') || name);
+
+/**
  * The sequence superposition's two TM-scores (engine `tmScoreA`, `tmScoreB`: Zhang-Skolnick, of
- * the sequence-paired residues, normalised by each chain), each named by the chain it is
- * normalised by.
+ * the sequence-paired residues, normalised by each chain), each named by the structure and the
+ * chain it is normalised by, as Align Structures names a chain (`ENTRY.CHAIN`, here with the chain
+ * as the chain pair names it, e.g. `9XYZ.H (label B)`). Two models with the same chain name are
+ * told apart by their entries; when both are the same chain of the same entry, each is named by its
+ * side as well (`, model A`, `, model B`), so the two names always differ.
  */
 function superpositionTmScores(
-  report: { chainA: string; chainB: string },
-  chains: { a: string; b: string } | null,
+  report: PdbStructureAlignmentReport,
+  sides: { a: string; b: string } | null,
 ): { by: string; value: number }[] {
-  const r = report as typeof report & { tmScoreA?: number; tmScoreB?: number };
-  if (typeof r.tmScoreA !== 'number' || typeof r.tmScoreB !== 'number') return [];
+  if (!sides) return [];
+  const same = sides.a === sides.b;
   return [
-    { by: `chain ${chains?.a ?? r.chainA}`, value: r.tmScoreA },
-    { by: `chain ${chains?.b ?? r.chainB}`, value: r.tmScoreB },
+    { by: same ? `${sides.a}, model A` : sides.a, value: report.tmScoreA },
+    { by: same ? `${sides.b}, model B` : sides.b, value: report.tmScoreB },
   ];
 }
 
@@ -1320,6 +1332,13 @@ export const ProteinStudio: React.FC<ProteinStudioProps> = ({
         b: pairedChainName(pdbAlignReport.chainB, modelBAtoms, modelBStructure),
       }
     : null;
+  const modelBText = compareWith === 'file' ? loadedB?.text ?? '' : structureTextOf(modelBDoc);
+  const tmScores = comparing && pdbAlignReport && pairedChains
+    ? superpositionTmScores(pdbAlignReport, {
+        a: `${modelEntryName(modelAText, modelAName)}.${pairedChains.a}`,
+        b: `${modelEntryName(modelBText, modelBLabel)}.${pairedChains.b}`,
+      })
+    : [];
 
 
   // The coiled-coil and transmembrane predictions for the protein tab. They follow the 3D card when
@@ -1455,8 +1474,8 @@ export const ProteinStudio: React.FC<ProteinStudioProps> = ({
                       <span className="kpi-label">Cα RMSD</span>
                       <strong className="kpi-val">{pdbAlignReport.rmsdAngstrom} Å</strong>
                     </div>
-                    {superpositionTmScores(pdbAlignReport, pairedChains).map(({ by, value }) => (
-                      <div key={by} className="kpi-box" title={`Zhang-Skolnick TM-score of the sequence-paired residues normalised by ${by}, searched over superpositions; the overlay and RMSD are the Kabsch fit of all pairs`}>
+                    {tmScores.map(({ by, value }, side) => (
+                      <div key={`tm-score-${side}`} className="kpi-box" title={`Zhang-Skolnick TM-score of the sequence-paired residues normalised by ${by}, searched over superpositions; the overlay and RMSD are the Kabsch fit of all pairs`}>
                         <span className="kpi-label">TM-score by {by}</span>
                         <strong className="kpi-val">{value.toFixed(3)}</strong>
                       </div>
@@ -1483,7 +1502,7 @@ export const ProteinStudio: React.FC<ProteinStudioProps> = ({
                     contacts={pdbAlignReport?.intraChainContacts}
                     title={comparing ? `${modelALabel} vs ${modelBLabel}` : modelALabel}
                     rmsdAngstrom={comparing ? pdbAlignReport?.rmsdAngstrom : undefined}
-                    tmScores={comparing && pdbAlignReport ? superpositionTmScores(pdbAlignReport, pairedChains) : undefined}
+                    tmScores={comparing && pdbAlignReport ? tmScores : undefined}
                     alignedResiduePairs={comparing ? pdbAlignReport?.alignedResiduePairs : undefined}
                     pairingMethod={comparing ? pdbAlignReport?.pairingMethod : undefined}
                     structure={fullAtomModel.structure ?? undefined}

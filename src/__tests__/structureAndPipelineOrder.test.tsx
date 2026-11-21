@@ -44,7 +44,8 @@ const pipelineModule = await import('../components/WorkflowPipelineStudio');
 const { WorkflowPipelineStudio } = pipelineModule;
 const { BIO_PIPELINE_CATALOG, executeBioPipelineAsync } = await import('../core/bioPipelineEngine');
 const { extractTargetProteinSequence, predictCoiledCoilsAndTransmembrane } = await import('../core/genomicsAndStructureSuite');
-const { structureAtomsOf, hasStructure } = await import('../core/structureModels');
+const { structureAtomsOf, structureTextOf, hasStructure } = await import('../core/structureModels');
+const { structureEntryId } = await import('../core/structureAlignment');
 const { SAMPLE_LIBRARY } = await import('../data/sampleLibrary');
 const { dataPath, haveTestData } = await import('./testData');
 type SequenceDocument = import('../types/bio').SequenceDocument;
@@ -203,7 +204,11 @@ describe('structure and pipeline order (US-01M6Q1ZR)', () => {
     // Comparing two structures: the 3D card, with its superposition KPIs, still leads.
     const compared = proteinCards(proteinTab(chainA1d66, { proteinDocuments: [chainA1d66, entry1a4y], selectedDocuments: [chainA1d66, entry1a4y] }));
     expect(compared.structureFirst, 'the superposition card leads').toBe(true);
-    expect([...kpis(compared.structureCard).keys()]).toEqual(expect.arrayContaining(['Cα RMSD', expect.stringMatching(/^TM-score by chain /), 'Cα pairs (sequence alignment)']));
+    // Each TM-score is named by its structure and chain (BG-01M6PXSR). Neither sample's text carries
+    // an entry id, so each is named by its document name, '1D66 chain A' without its 'chain A'.
+    expect([structureEntryId(structureTextOf(chainA1d66), ''), structureEntryId(structureTextOf(entry1a4y), ''), entry1a4y.name])
+      .toEqual(['', '', 'Protein complex (1A4Y)']);
+    expect([...kpis(compared.structureCard).keys()]).toEqual(expect.arrayContaining(['Cα RMSD', 'TM-score by 1D66.A', 'TM-score by Protein complex (1A4Y).A', 'Cα pairs (sequence alignment)']));
     expectTopologyCard(compared.topologyCard, chainA1d66);
 
     // Without coordinates: the predictions lead and the import callout follows.

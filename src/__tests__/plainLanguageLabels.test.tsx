@@ -854,7 +854,8 @@ describe('studio badges', () => {
     const stage = renders['genomics (structure)'].slice(renders['genomics (structure)'].indexOf('protein-3d-viewer-stage'));
     const viewer = badgesOf(stage.slice(0, stage.indexOf('<select')));
     expect(viewer.some((b) => /^\d+ Cα pairs$/.test(b)), `Cα pairs badge among ${JSON.stringify(viewer)}`).toBe(true);
-    expect(viewer.some((b) => /^TM-score [\d.]+ by chain .+$/.test(b)), 'TM-score badge').toBe(true);
+    // One TM-score by each structure's chain, named ENTRY.CHAIN (BG-01M6PXSR).
+    expect(viewer.filter((b) => /^TM-score \d\.\d{3} by \S.*\.\S+$/.test(b)), `TM-score badges among ${JSON.stringify(viewer)}`).toHaveLength(2);
     // And the module picker's badge, which names the methods the module offers.
     expect(badgesOf(renders.phylogeny)).toContain('NJ • UPGMA • Bootstrap • Parsimony & likelihood scores');
   });

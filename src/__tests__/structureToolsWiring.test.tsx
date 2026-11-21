@@ -12,7 +12,8 @@
  * by the render that shows what the choice opened.
  *
  * The structures are synthetic mmCIF text built here (an ideal backbone placed residue by residue),
- * so these tests need no reference data.
+ * so these tests need no reference data, except BG-01M6PXSR's 1UBQ-on-1A5R check, which reads
+ * test-data/rcsb and skips visibly when it is absent.
  *
  * BG-01M6Q1SJ: every 3D viewer that shows a parsed structure receives it. The one check here that
  * reads source text finds the viewer's hosts (each component under src/components whose markup
@@ -73,6 +74,15 @@ const {
 const { saveWorkbenchToLocalAutosave } = await import('../core/mbcSessionFormat');
 const { resolveMenuNodeFunctionDescription } = await import('../data/menuFunctionDescriptions');
 type SequenceDocument = import('../types/bio').SequenceDocument;
+const { dataPath, haveTestData } = await import('./testData');
+const testFs = await (import(/* @vite-ignore */ 'node:fs' as string) as Promise<{ readFileSync: (p: string, e: string) => string }>);
+const readTestData = (rel: string): string => testFs.readFileSync(dataPath(rel), 'utf8');
+/** Ubiquitin (1UBQ) and SUMO-1 (1A5R, an NMR ensemble), from RCSB: test-data/rcsb. */
+const haveUbqSumo = haveTestData('rcsb/1UBQ.cif', 'rcsb/1A5R.cif');
+const ONE: Record<string, string> = {
+  ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C', GLN: 'Q', GLU: 'E', GLY: 'G', HIS: 'H', ILE: 'I',
+  LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P', SER: 'S', THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V',
+};
 
 afterEach(() => {
   probe.onMenus = null;
@@ -227,8 +237,7 @@ describe('the structure studio (GenomicsNgsAndPredictionStudio, 3D tab)', () => 
     // Model A is chain B (the open document), model B the other structure ticked beside it.
     const html = studio({ activeDoc: docB, proteinDocuments: [docA, docB], selectedDocuments: [docB, docA] });
     const engine = alignPdbStructuresKabsch(caAtomsToPdb(structureAtomsOf(docB)), caAtomsToPdb(structureAtomsOf(docA)));
-    // The engine's per-chain TM-scores (the shared report type predates them).
-    const tm = engine as typeof engine & { tmScoreA: number; tmScoreB: number };
+    const tm = engine;
     expect([engine.chainA, engine.chainB, engine.alignedResiduePairs]).toEqual(['B', 'A', 8]);
     expect(engine.pairingMethod).toMatch(/global sequence alignment/);
 
@@ -239,9 +248,9 @@ describe('the structure studio (GenomicsNgsAndPredictionStudio, 3D tab)', () => 
     // beside it where the two differ.
     expect(k.get('Chain pair (A / B)')).toBe('H (label B) / B (label A)');
     expect(ramachandranFigure(html)!.label).toBe(`Ramachandran plot of ${docB.name}, chain H`);
-    // A TM-score by each chain, named as the chain pair names it.
-    expect(k.get('TM-score by chain H (label B)')).toBe(tm.tmScoreA.toFixed(3));
-    expect(k.get('TM-score by chain B (label A)')).toBe(tm.tmScoreB.toFixed(3));
+    // A TM-score by each chain, named by its entry and then the chain as the chain pair names it.
+    expect(k.get('TM-score by 9XYZ.H (label B)')).toBe(tm.tmScoreA.toFixed(3));
+    expect(k.get('TM-score by 9XYZ.B (label A)')).toBe(tm.tmScoreB.toFixed(3));
     expect([...k.keys()].some((label) => /TM≈|approximate/i.test(label)), 'no approximate TM label').toBe(false);
     expect(k.get('Sequence identity')).toBe(`${(engine.sequenceIdentity * 100).toFixed(1)}%`);
     expect(k.get('Cα RMSD')).toBe(`${engine.rmsdAngstrom} Å`);
@@ -261,8 +270,8 @@ describe('the structure studio (GenomicsNgsAndPredictionStudio, 3D tab)', () => 
     // The viewer's own pair badge names the method too.
     const badges = viewerBadges(html);
     expect(badges).toContainEqual({ words: `${engine.alignedResiduePairs} Cα pairs`, title: engine.pairingMethod });
-    expect(badges.map((b) => b.words)).toEqual(expect.arrayContaining([`TM-score ${tm.tmScoreA.toFixed(3)} by chain H (label B)`, `TM-score ${tm.tmScoreB.toFixed(3)} by chain B (label A)`]));
-    expect(badges.find((b) => b.words.endsWith('by chain B (label A)'))?.title).toMatch(/^Zhang-Skolnick TM-score of the sequence-paired residues, normalised by chain B \(label A\): .*Kabsch fit of all pairs, so the TM-score may come from another superposition\.$/);
+    expect(badges.map((b) => b.words)).toEqual(expect.arrayContaining([`TM-score ${tm.tmScoreA.toFixed(3)} by 9XYZ.H (label B)`, `TM-score ${tm.tmScoreB.toFixed(3)} by 9XYZ.B (label A)`]));
+    expect(badges.find((b) => b.words.endsWith('by 9XYZ.B (label A)'))?.title).toMatch(/^Zhang-Skolnick TM-score of the sequence-paired residues, normalised by 9XYZ\.B \(label A\): .*Kabsch fit of all pairs, so the TM-score may come from another superposition\.$/);
 
     // A document of the whole entry (no chain of its own) draws every chain, and the engine
     // superposes its first protein chain: the chain pair named is the one the engine paired.
@@ -301,6 +310,56 @@ describe('the structure studio (GenomicsNgsAndPredictionStudio, 3D tab)', () => 
     const html = studio({ activeDoc: docB, proteinDocuments: [docA, docB], selectedDocuments: [docB] });
     expect(kpis(html).has('Cα pairs (sequence alignment)')).toBe(false);
     expect(wordsOf(html)).not.toMatch(/Verdict:/);
+  });
+
+  // BG-01M6PXSR: the two TM-scores are named by structure and chain, so two models with the same
+  // chain name never show one label over two values.
+  it('names each TM-score by its structure as well as its chain, and by its side when both are the same chain of one structure', () => {
+    /** The TM-score KPI boxes in order (a Map would fold two that share a label into one). */
+    const tmKpis = (html: string) => Array.from(html.matchAll(/<span class="kpi-label">(TM-score[\s\S]*?)<\/span><strong class="kpi-val">([\s\S]*?)<\/strong>/g))
+      .map((m) => [wordsOf(m[1]), wordsOf(m[2])]);
+    const tmBadges = (html: string) => viewerBadges(html).filter((b) => b.words.startsWith('TM-score '));
+    const expectScores = (html: string, a: SequenceDocument, b: SequenceDocument, byA: string, byB: string) => {
+      const r = alignPdbStructuresKabsch(caAtomsToPdb(structureAtomsOf(a)), caAtomsToPdb(structureAtomsOf(b)));
+      const [va, vb] = [r.tmScoreA.toFixed(3), r.tmScoreB.toFixed(3)];
+      expect(byA).not.toBe(byB);
+      expect(tmKpis(html)).toEqual([[`TM-score by ${byA}`, va], [`TM-score by ${byB}`, vb]]);
+      expect(tmBadges(html).map((t) => t.words)).toEqual([`TM-score ${va} by ${byA}`, `TM-score ${vb} by ${byB}`]);
+      expect(tmBadges(html).map((t) => t.title.split(':')[0])).toEqual([byA, byB].map((by) => `Zhang-Skolnick TM-score of the sequence-paired residues, normalised by ${by}`));
+      return [va, vb];
+    };
+
+    // Two entries whose open chains are both label A, author B: named by entry, then chain. The
+    // second entry's label chain A is the 12-residue chain, so the two scores differ; its document
+    // is named for its chain, and the entry id is read from its file.
+    const other = entryCif(1, [{ ...CHAIN_B, label: 'A', auth: 'B' }, { ...CHAIN_A, label: 'B', auth: 'H' }]).replace('data_9XYZ', 'data_9XYQ');
+    const otherA = chainDoc(other, { ...CHAIN_B, label: 'A' }, 'mmCIF', 'Longer chain A');
+    const twoEntries = studio({ activeDoc: docA, proteinDocuments: [docA, otherA], selectedDocuments: [docA, otherA] });
+    expect(kpis(twoEntries).get('Chain pair (A / B)')).toBe('B (label A) / B (label A)');
+    const [byShort, byLong] = expectScores(twoEntries, docA, otherA, '9XYZ.B (label A)', '9XYQ.B (label A)');
+    expect(byShort).not.toBe(byLong);
+
+    // The same chain of the same structure on both sides: each is named by its side.
+    const copyA: SequenceDocument = { ...docA, id: 'doc-copy-of-A', name: '9XYZ chain A (copy)' };
+    const itself = studio({ activeDoc: docA, proteinDocuments: [docA, copyA], selectedDocuments: [docA, copyA] });
+    expectScores(itself, docA, copyA, '9XYZ.B (label A), model A', '9XYZ.B (label A), model B');
+  });
+
+  it.skipIf(!haveUbqSumo)('names the TM-score of 1UBQ chain A on 1A5R chain A (SUMO-1, model 1) by each entry: 0.411 by 1UBQ.A, 0.342 by 1A5R.A', () => {
+    const doc = (entry: string): SequenceDocument => {
+      const text = readTestData(`rcsb/${entry}.cif`);
+      const seq = parsePdbCaCoordinates(text).filter((a) => a.chainId === 'A').map((a) => ONE[a.resName] ?? 'X').join('');
+      return { ...chainDoc(text, { ...CHAIN_A, seq }, 'mmCIF', `${entry} chain A`), id: `doc-${entry}-A` };
+    };
+    const [ubq, sumo] = [doc('1UBQ'), doc('1A5R')];
+    const html = studio({ activeDoc: ubq, proteinDocuments: [ubq, sumo], selectedDocuments: [ubq, sumo] });
+    expect(kpis(html).get('Chain pair (A / B)')).toBe('A / A');
+    const tmKpis = Array.from(html.matchAll(/<span class="kpi-label">(TM-score[\s\S]*?)<\/span><strong class="kpi-val">([\s\S]*?)<\/strong>/g))
+      .map((m) => [wordsOf(m[1]), wordsOf(m[2])]);
+    // D0294: TMscore.cpp, on the same sequence pairs, gives 0.4112 by ubiquitin and 0.3417 by SUMO-1.
+    expect(tmKpis).toEqual([['TM-score by 1UBQ.A', '0.411'], ['TM-score by 1A5R.A', '0.342']]);
+    expect(viewerBadges(html).filter((b) => b.words.startsWith('TM-score ')).map((b) => b.words))
+      .toEqual(['TM-score 0.411 by 1UBQ.A', 'TM-score 0.342 by 1A5R.A']);
   });
 
   // ─── AC3 ───

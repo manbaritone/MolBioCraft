@@ -157,7 +157,7 @@ export interface ProteinStructure3DViewerProps {
   contacts?: StructureContactLike[];
   title?: string;
   rmsdAngstrom?: number;
-  /** The superposition's TM-scores, one per chain: `by` names the chain the score is normalised by. */
+  /** The superposition's TM-scores, one per chain: `by` names the structure and chain the score is normalised by. */
   tmScores?: { by: string; value: number }[];
   /** Residue pairs the superposition used (engine `alignedResiduePairs`). */
   alignedResiduePairs?: number;
@@ -1534,8 +1534,8 @@ export const ProteinStructure3DViewer: React.FC<ProteinStructure3DViewerProps> =
           {typeof rmsdAngstrom === 'number' && (
             <span className="badge-accent">RMSD {rmsdAngstrom} Å</span>
           )}
-          {tmScores?.map(({ by, value }) => (
-            <span key={by} className="badge-accent" title={tmScoreNote(by)} aria-label={`TM-score ${value.toFixed(3)} by ${by}: ${tmScoreNote(by)}`}>
+          {tmScores?.map(({ by, value }, side) => (
+            <span key={`tm-score-${side}`} className="badge-accent" title={tmScoreNote(by)} aria-label={`TM-score ${value.toFixed(3)} by ${by}: ${tmScoreNote(by)}`}>
               TM-score {value.toFixed(3)} by {by}
             </span>
           ))}
