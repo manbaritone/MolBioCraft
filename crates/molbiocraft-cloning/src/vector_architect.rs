@@ -1281,6 +1281,11 @@ fn escape_svg_xml(raw: &str) -> String {
 }
 
 /// Renders a standalone publication-ready Circular Vector Map SVG for any `CatalogVectorEntry`.
+///
+/// Text is set in Google Sans, the face the app ships (BG-01M6W099). The ring and each text carry
+/// their day colour as a presentation attribute, so a downloaded Map .svg keeps it with no
+/// stylesheet, and an `mbc-vthumb-*` class (`-ring`, `-label`, `-title`, `-meta`, `-source`) that
+/// App.css restyles from a theme token in the night theme when the map is set inline.
 pub fn generate_catalog_circular_svg(entry: &CatalogVectorEntry) -> String {
     let all_parts = get_modular_vector_parts();
     let part_map: HashMap<&str, &ModularVectorPart> =
@@ -1313,7 +1318,7 @@ pub fn generate_catalog_circular_svg(entry: &CatalogVectorEntry) -> String {
         let short_raw: String = first_word.chars().take(12).collect();
         let short_label = escape_svg_xml(&short_raw);
         arcs.push(format!(
-            "<path d=\"M {:.1} {:.1} A {:.0} {:.0} 0 {} 1 {:.1} {:.1}\" fill=\"none\" stroke=\"{}\" stroke-width=\"11\" stroke-linecap=\"round\"/>\n      <text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" dominant-baseline=\"middle\" font-size=\"8.5\" font-family=\"Inter, system-ui, sans-serif\" fill=\"#334155\" font-weight=\"600\">{}</text>",
+            "<path d=\"M {:.1} {:.1} A {:.0} {:.0} 0 {} 1 {:.1} {:.1}\" fill=\"none\" stroke=\"{}\" stroke-width=\"11\" stroke-linecap=\"round\"/>\n      <text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" dominant-baseline=\"middle\" font-size=\"8.5\" font-family=\"'Google Sans', system-ui, sans-serif\" class=\"mbc-vthumb-label\" fill=\"#334155\" font-weight=\"600\">{}</text>",
             x0,
             y0,
             r,
@@ -1335,7 +1340,7 @@ pub fn generate_catalog_circular_svg(entry: &CatalogVectorEntry) -> String {
     };
 
     format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 280 280\" width=\"280\" height=\"280\">\n  <circle cx=\"140\" cy=\"140\" r=\"92\" fill=\"none\" stroke=\"#CBD5E1\" stroke-width=\"3\"/>\n  {}\n  <text x=\"140\" y=\"130\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"700\" font-family=\"Inter, system-ui, sans-serif\" fill=\"#0F172A\">{}</text>\n  <text x=\"140\" y=\"146\" text-anchor=\"middle\" font-size=\"9.5\" font-family=\"Inter, system-ui, sans-serif\" fill=\"#475569\">{} bp • {}</text>\n  <text x=\"140\" y=\"160\" text-anchor=\"middle\" font-size=\"8.5\" font-family=\"Inter, system-ui, sans-serif\" fill=\"#2563EB\">{}</text>\n</svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 280 280\" width=\"280\" height=\"280\">\n  <circle cx=\"140\" cy=\"140\" r=\"92\" class=\"mbc-vthumb-ring\" fill=\"none\" stroke=\"#CBD5E1\" stroke-width=\"3\"/>\n  {}\n  <text x=\"140\" y=\"130\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"700\" font-family=\"'Google Sans', system-ui, sans-serif\" class=\"mbc-vthumb-title\" fill=\"#0F172A\">{}</text>\n  <text x=\"140\" y=\"146\" text-anchor=\"middle\" font-size=\"9.5\" font-family=\"'Google Sans', system-ui, sans-serif\" class=\"mbc-vthumb-meta\" fill=\"#475569\">{} bp • {}</text>\n  <text x=\"140\" y=\"160\" text-anchor=\"middle\" font-size=\"8.5\" font-family=\"'Google Sans', system-ui, sans-serif\" class=\"mbc-vthumb-source\" fill=\"#2563EB\">{}</text>\n</svg>",
         arcs.join("\n"),
         escape_svg_xml(&title_short),
         format_thousands(entry.nominal_size_bp),

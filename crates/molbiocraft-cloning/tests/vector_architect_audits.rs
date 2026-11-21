@@ -17,8 +17,8 @@
 use molbiocraft_cloning::rebase_catalog::find_restriction_cut_sites;
 use molbiocraft_cloning::{
     assemble_modular_custom_vector, audit_twist_custom_vector_onboarding,
-    build_catalog_vector_document, check_cotransformation_compatibility, get_modular_vector_parts,
-    get_vector_catalog, CatalogVectorEntry, ModularAssemblySpec, TwistOnboardingReport,
+    build_catalog_vector_document, check_cotransformation_compatibility, generate_catalog_circular_svg,
+    get_modular_vector_parts, get_vector_catalog, CatalogVectorEntry, ModularAssemblySpec, TwistOnboardingReport,
 };
 use molbiocraft_core::types::{MoleculeType, SequenceDocument, SequenceFeature, Topology};
 
@@ -396,4 +396,83 @@ fn cotransformation_flags_shared_origin_group() {
         "{}",
         overlap.summary
     );
+}
+
+/// One element of a generated SVG: its tag and its `name="value"` attributes, in source order.
+struct SvgMark {
+    tag: String,
+    attrs: Vec<(String, String)>,
+}
+
+impl SvgMark {
+    fn attr(&self, name: &str) -> Option<&str> {
+        self.attrs.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+    }
+}
+
+/// Every `<path>`, `<circle>` and `<text>` start tag of `svg`, with its double-quoted attributes.
+fn svg_marks(svg: &str) -> Vec<SvgMark> {
+    let mut out = Vec::new();
+    let mut rest = svg;
+    while let Some(open) = rest.find('<') {
+        let after = &rest[open + 1..];
+        let close = after.find('>').expect("a start tag the SVG never closes");
+        let inner = after[..close].trim_end_matches('/');
+        rest = &after[close + 1..];
+        let tag: String = inner.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+        if !matches!(tag.as_str(), "path" | "circle" | "text") {
+            continue;
+        }
+        let mut attrs = Vec::new();
+        let mut body = &inner[tag.len()..];
+        while let Some(eq) = body.find("=\"") {
+            let name = body[..eq].trim().to_string();
+            let value_start = &body[eq + 2..];
+            let end = value_start.find('"').expect("an attribute value the tag never closes");
+            attrs.push((name, value_start[..end].to_string()));
+            body = &value_start[end + 1..];
+        }
+        out.push(SvgMark { tag, attrs });
+    }
+    out
+}
+
+/// BG-01M6W099 AC1: the Vectors window's backbone thumbnail names the face the app ships, and
+/// gives the ring and each text a class the dark theme restyles, beside the day colour a
+/// downloaded Map .svg keeps.
+///
+/// Wrong implementations this catches: one text left on Inter (the size line, say), a text or the
+/// ring with no class, a class that does not name its mark (`-title` on the size line), a day fill
+/// dropped for the class (the downloaded .svg would lose its colours), and a part label classed on
+/// only the first part. Every catalog entry is drawn, so an entry of any part count reaches it.
+#[test]
+fn catalog_svg_names_google_sans_and_classes_each_mark() {
+    const FACE: &str = "'Google Sans', system-ui, sans-serif";
+    let catalog = get_vector_catalog();
+    assert!(!catalog.is_empty(), "the vector catalog is empty");
+    let mut most_parts = 0;
+    for entry in &catalog {
+        let svg = generate_catalog_circular_svg(entry);
+        assert!(!svg.contains("Inter"), "{}: the thumbnail still names Inter:\n{svg}", entry.id);
+        let marks = svg_marks(&svg);
+        let rings: Vec<&SvgMark> = marks.iter().filter(|m| m.tag == "circle").collect();
+        assert_eq!(rings.len(), 1, "{}: one backbone ring", entry.id);
+        assert_eq!(rings[0].attr("class"), Some("mbc-vthumb-ring"), "{}: the ring's class", entry.id);
+        assert_eq!(rings[0].attr("stroke"), Some("#CBD5E1"), "{}: the ring keeps its day stroke", entry.id);
+        let arcs = marks.iter().filter(|m| m.tag == "path").count();
+        let texts: Vec<&SvgMark> = marks.iter().filter(|m| m.tag == "text").collect();
+        for t in &texts {
+            assert_eq!(t.attr("font-family"), Some(FACE), "{}: a text's font-family", entry.id);
+        }
+        let classed = |class: &str| -> Vec<Option<&str>> {
+            texts.iter().filter(|t| t.attr("class") == Some(class)).map(|t| t.attr("fill")).collect()
+        };
+        assert_eq!(classed("mbc-vthumb-label"), vec![Some("#334155"); arcs], "{}: one part label per arc, each on its day fill", entry.id);
+        assert_eq!(classed("mbc-vthumb-title"), vec![Some("#0F172A")], "{}: the title", entry.id);
+        assert_eq!(classed("mbc-vthumb-meta"), vec![Some("#475569")], "{}: the size line", entry.id);
+        assert_eq!(classed("mbc-vthumb-source"), vec![Some("#2563EB")], "{}: the source", entry.id);
+        assert_eq!(texts.len(), arcs + 3, "{}: no text without one of the four classes", entry.id);
+        most_parts = most_parts.max(arcs);
+    }
+    assert!(most_parts >= 2, "no catalog entry draws more than one part, so a label classed on the first part only would pass");
 }

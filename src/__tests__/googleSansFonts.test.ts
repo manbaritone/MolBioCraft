@@ -897,3 +897,71 @@ describe('Google Sans and Google Sans Code (US-01M6V6VN)', () => {
     expect(/\bInter\b|IBM Plex/.test(notice), 'NOTICE names no retired face').toBe(false);
   });
 });
+
+// ─── Rust-generated SVG (BG-01M6W099) ───
+
+/** The CSS generic font families (CSS Fonts 4), which name no face. */
+const GENERIC_FAMILIES = new Set([
+  'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif',
+  'ui-monospace', 'ui-rounded', 'math', 'emoji', 'fangsong',
+]);
+/** The faces the app ships (App.css's @font-face rules, pinned above). */
+const SHIPPED_FACES = new Set(['Google Sans', 'Google Sans Code']);
+
+/** Every Rust source under `root`, past each crate's build output. */
+function rustSources(root: string): string[] {
+  const out: string[] = [];
+  const walk = (rel: string) => {
+    for (const e of fs.readdirSync(at(rel), { withFileTypes: true })) {
+      if (e.name === 'target' || e.name.startsWith('.')) continue;
+      const child = `${rel}/${e.name}`;
+      if (e.isDirectory()) walk(child);
+      else if (e.name.endsWith('.rs')) out.push(child);
+    }
+  };
+  walk(root);
+  return out;
+}
+
+/**
+ * Every font-family a Rust source writes, as the text it emits: an SVG attribute
+ * (`font-family=\"...\"` in an escaped string, `font-family="..."` or `font-family='...'` in a raw one)
+ * or a CSS declaration (`font-family: ...;`) in a style it writes.
+ */
+function rustFontFamilies(src: string): { line: number; value: string }[] {
+  const out: { line: number; value: string }[] = [];
+  const re = /font-family\s*=\s*\\?"((?:[^"\\]|\\(?!"))*)\\?"|font-family\s*=\s*'([^']*)'|font-family\s*:\s*([^;"}\\]+)/g;
+  for (const m of src.matchAll(re)) {
+    out.push({ line: src.slice(0, m.index).split('\n').length, value: (m[1] ?? m[2] ?? m[3]).trim() });
+  }
+  return out;
+}
+
+/** The families of a font-family value that are neither a shipped face nor a generic family. */
+const unshippedFamilies = (value: string): string[] =>
+  familiesOf(value).filter((f) => !SHIPPED_FACES.has(f) && !GENERIC_FAMILIES.has(f));
+
+describe('Rust-generated SVG names only the shipped faces (BG-01M6W099)', () => {
+  it('BG-01M6W099 AC2 no Rust-generated SVG names a font face the app does not ship', () => {
+    // Wrong implementations this catches: a Rust SVG text left on Inter (or any face the app does
+    // not bundle), a scan that reads one file or one crate, and a matcher that misses the escaped
+    // `font-family=\"...\"` form the engine's format strings use, so it finds nothing to judge.
+    const crates = fs.readdirSync(at('crates'), { withFileTypes: true })
+      .filter((e) => e.isDirectory() && fs.existsSync(at(`crates/${e.name}/Cargo.toml`)))
+      .map((e) => `crates/${e.name}`);
+    const files = rustSources('crates');
+    expect(crates.length, 'the workspace crates under crates/').toBeGreaterThanOrEqual(7);
+    expect(crates.filter((c) => !files.some((f) => f.startsWith(`${c}/`))), 'crates the scan reads no Rust source of').toEqual([]);
+
+    // The matcher reads each form a Rust source writes, and judges its families.
+    expect(rustFontFamilies('"<text font-family=\\"Inter, system-ui, sans-serif\\">"').map((h) => unshippedFamilies(h.value))).toEqual([['Inter']]);
+    expect(rustFontFamilies(`r#"<text font-family="'Google Sans', sans-serif">"#`).map((h) => unshippedFamilies(h.value))).toEqual([[]]);
+    expect(rustFontFamilies(`"<style>text { font-family: 'Roboto', monospace; }</style>"`).map((h) => unshippedFamilies(h.value))).toEqual([['Roboto']]);
+
+    const hits = files.flatMap((file) => rustFontFamilies(read(file)).map((h) => ({ where: `${file}:${h.line}`, ...h })));
+    expect(hits.filter((h) => h.where.startsWith('crates/molbiocraft-cloning/src/vector_architect.rs:')).length,
+      "the backbone thumbnail's font-family values (vector_architect.rs), which the scan must reach").toBeGreaterThanOrEqual(2);
+    const offenders = hits.filter((h) => unshippedFamilies(h.value).length > 0).map((h) => `${h.where}: ${h.value}`);
+    expect(offenders, 'Rust sources that write a font-family naming a face the app does not ship').toEqual([]);
+  });
+});

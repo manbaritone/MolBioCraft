@@ -16039,3 +16039,28 @@ table,
   color: var(--mbc-text-secondary);
   font-size: var(--font-size-caption);
 }
+
+/* BG-01M6W099: the Vectors window's backbone thumbnail is SVG the Rust engine draws
+   (generate_catalog_circular_svg) with its day colours as presentation attributes, which a
+   downloaded Map .svg keeps. Set inline in the night theme, each mark takes a theme token, which
+   outranks a presentation attribute. Against the night panel (--mbc-bg-panel) the ring reads at
+   4.77:1 and the texts at 6.99:1 to 14.64:1, as vectorThumbnailTheme.test.ts computes. */
+.mbc-dark-mode .mbc-vthumb-ring {
+  stroke: var(--mbc-border-strong);
+}
+
+.mbc-dark-mode .mbc-vthumb-label {
+  fill: var(--mbc-text-secondary);
+}
+
+.mbc-dark-mode .mbc-vthumb-title {
+  fill: var(--mbc-text-main);
+}
+
+.mbc-dark-mode .mbc-vthumb-meta {
+  fill: var(--mbc-text-muted);
+}
+
+.mbc-dark-mode .mbc-vthumb-source {
+  fill: var(--mbc-blue-text);
+}
