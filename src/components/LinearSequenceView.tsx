@@ -2428,14 +2428,18 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
       .join(' ');
   }, [doc, pageStartPos, seqLen, showHydropathyGraph, isProtein]);
 
-  // Resident Rust `rust-bio` FM-Index / BWT backward motif search across full multi-megabase sequences:
-  // the first 100 hits by position on both strands, and the number of hits in the whole sequence.
-  const searchResult = useMemo((): ResidentMotifSearchResult => {
+  // Resident Rust motif search across full multi-megabase sequences: the first 100 hits by position
+  // on both strands, the number of hits in the whole sequence, and the search that produced them
+  // (BG-01M6SKTM): the `rust-bio` FM-Index, or a scan of the record (past 262,144 bp, a protein, or a
+  // motif standing for more words than the index reads).
+  const searchResult = useMemo((): ResidentMotifSearchResult & { searchPath?: 'fm-index' | 'scan' } => {
     const q = searchQuery.replace(/[^A-Za-z]/g, '').toUpperCase();
     if (q.length < 3) return { hits: [], totalHits: 0, warnings: [] };
     return searchResidentMotifFmIndexRust(doc, q, !isProtein, 100);
   }, [doc, searchQuery, isProtein]);
   const searchMatches = searchResult.hits;
+  // The badge names the FM index only when the engine says it answered; any other reply was a scan.
+  const searchPathLabel = searchResult.searchPath === 'fm-index' ? 'FM-Index' : 'scan';
 
   const handleJumpToCoordinate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -3518,7 +3522,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
                 className="btn-secondary-sm linear-search-hits-btn"
                 aria-expanded={toolsFolded && hitsOpen}
                 aria-controls={hitsPanelId}
-                title={`Show the ${searchResult.totalHits.toLocaleString()} FM-Index hits and jump to one`}
+                title={`Show the ${searchResult.totalHits.toLocaleString()} ${searchPathLabel} hits and jump to one`}
                 onClick={() => (hitsOpen ? setOpenPanel(null) : openPanelUnder('hits'))}
               >
                 {searchResult.totalHits.toLocaleString()} {searchResult.totalHits === 1 ? 'hit' : 'hits'} ▾
@@ -3564,7 +3568,7 @@ export const LinearSequenceView: React.FC<LinearSequenceViewProps> = ({
               style={{ maxHeight: 'calc(3 * var(--mbc-control-h-md))', overflowY: 'auto' }}
             >
               <span className="hit-count-badge">
-                {searchResult.totalHits.toLocaleString()} FM-Index hits:
+                {searchResult.totalHits.toLocaleString()} {searchPathLabel} hits:
               </span>
               {searchMatches.map((m, idx) => (
                 <button

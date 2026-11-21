@@ -282,3 +282,319 @@ fn indexed_search_returns_both_strands_and_total() {
     );
     assert_both_strands_and_total("bg-s17c-indexed", &seq);
 }
+
+// ─── BG-01M6SKTM: one IUPAC motif grammar on both paths, and a reply that names the path ───
+//
+// D0265: an IUPAC code in the motif matches each base it stands for, a record letter outside
+// A/C/G/T/U (N, R, ...) matches nothing, and the reply names the search that ran ("fm-index" or
+// "scan"). The wrong implementations these fixtures reach: the FM index reading the motif's N as
+// the record's N (the defect at or below 262,144 bp: GANTC hit a GANTC written in the record and
+// missed GAATC), the scan reading IUPAC letters literally (the defect past it: GANTC found only the
+// letters G, A, N, T, C), a record N or R matching a motif N, the reverse strand dropped, a
+// palindrome such as GANTC counted on both strands, and a reply that names the FM index whatever
+// ran.
+
+/// The bases each IUPAC nucleotide code stands for, as a set of A=1, C=2, G=4, T=8, written out by
+/// hand from the IUPAC-IUB table (Cornish-Bowden 1985). U is T. Any other letter stands for none.
+fn hand_code_bases(c: u8) -> u8 {
+    match c {
+        b'A' => 1,
+        b'C' => 2,
+        b'G' => 4,
+        b'T' | b'U' => 8,
+        b'R' => 1 | 4,
+        b'Y' => 2 | 8,
+        b'S' => 2 | 4,
+        b'W' => 1 | 8,
+        b'K' => 4 | 8,
+        b'M' => 1 | 2,
+        b'B' => 2 | 4 | 8,
+        b'D' => 1 | 4 | 8,
+        b'H' => 1 | 2 | 8,
+        b'V' => 1 | 2 | 4,
+        b'N' => 1 | 2 | 4 | 8,
+        _ => 0,
+    }
+}
+
+/// The base a record letter is: A, C, G, T or U (as T). Every other letter, an N or an R in the
+/// record included, is no base, so it matches nothing.
+fn hand_record_base(c: u8) -> u8 {
+    match c {
+        b'A' => 1,
+        b'C' => 2,
+        b'G' => 4,
+        b'T' | b'U' => 8,
+        _ => 0,
+    }
+}
+
+/// The IUPAC reverse complement of a motif by a hand table: each code becomes the code of its
+/// complementary bases (R <-> Y, K <-> M, B <-> V, D <-> H; S, W and N are their own).
+fn hand_iupac_revcomp(pat: &str) -> String {
+    pat.bytes()
+        .rev()
+        .map(|c| match c {
+            b'A' => 'T',
+            b'T' | b'U' => 'A',
+            b'G' => 'C',
+            b'C' => 'G',
+            b'R' => 'Y',
+            b'Y' => 'R',
+            b'K' => 'M',
+            b'M' => 'K',
+            b'B' => 'V',
+            b'V' => 'B',
+            b'D' => 'H',
+            b'H' => 'D',
+            b'S' => 'S',
+            b'W' => 'W',
+            b'N' => 'N',
+            other => other as char,
+        })
+        .collect()
+}
+
+/// Every IUPAC hit of `pat` in `seq`, overlapping ones included, by a base-by-base scan: a window
+/// matches when each of its record bases is one the motif's code there stands for. 1-based, in
+/// position order, the forward hit first at a shared start; a motif whose reverse complement
+/// stands for the same bases at every place (GANTC) is one hit per site, on the forward strand.
+fn hand_iupac_hits(seq: &str, pat: &str) -> Vec<(u64, u64, i64)> {
+    let fwd: Vec<u8> = pat.bytes().map(hand_code_bases).collect();
+    let rev: Vec<u8> = hand_iupac_revcomp(pat).bytes().map(hand_code_bases).collect();
+    let (s, n) = (seq.as_bytes(), pat.len());
+    let mut out = Vec::new();
+    if n == 0 || n > s.len() {
+        return out;
+    }
+    let fits = |w: &[u8], codes: &[u8]| w.iter().zip(codes).all(|(&b, &c)| hand_record_base(b) & c != 0);
+    for i in 0..=s.len() - n {
+        let w = &s[i..i + n];
+        let (start, end) = ((i + 1) as u64, (i + n) as u64);
+        if fits(w, &fwd) {
+            out.push((start, end, 1));
+        }
+        if rev != fwd && fits(w, &rev) {
+            out.push((start, end, -1));
+        }
+    }
+    out
+}
+
+fn search_path_of(reply: &Value) -> &str {
+    reply["searchPath"]
+        .as_str()
+        .expect("the reply names the search that ran (searchPath)")
+}
+
+/// `seq` written at the head of `length` bases whose tail is an unsequenced gap of N. The gap is no
+/// base, so the longer record holds exactly the hits of the shorter one, read by the scan.
+fn padded_with_gap(seq: &str, length: usize) -> String {
+    let mut out = String::with_capacity(length);
+    out.push_str(seq);
+    out.extend(std::iter::repeat('N').take(length - seq.len()));
+    out
+}
+
+/// The hits of `pat` on resident `doc_id` with a list long enough for all of them.
+fn search_all(doc_id: &str, pat: &str) -> Value {
+    search(doc_id, pat, 1_000_000)
+}
+
+#[test]
+fn an_iupac_motif_matches_its_bases_on_both_paths() {
+    // A seeded 10 kb record with one planted GAATC (a HinfI site), one GACTC (a HinfI site), one
+    // GARTC (R in the record: no base, so not a site) and one GANTC written in the record (N: no
+    // base, the letters the old FM index matched).
+    let mut short = seeded_dna(10_000, 53).into_bytes();
+    let planted = [(1_000usize, "GAATC"), (3_000, "GACTC"), (5_000, "GARTC"), (7_000, "GANTC")];
+    for (at, word) in planted {
+        short[at..at + 5].copy_from_slice(word.as_bytes());
+    }
+    let short = String::from_utf8(short).unwrap();
+    let long = padded_with_gap(&short, 300_000);
+
+    let expected = hand_iupac_hits(&short, "GANTC");
+    assert_eq!(hand_iupac_hits(&long, "GANTC"), expected, "the gap holds no site");
+    let starts: Vec<u64> = expected.iter().map(|h| h.0).collect();
+    assert!(starts.contains(&1_001), "the hand scan finds the planted GAATC");
+    assert!(starts.contains(&3_001), "the hand scan finds the planted GACTC");
+    assert!(!starts.contains(&5_001), "a record R is not a base");
+    assert!(!starts.contains(&7_001), "a record N is not a base");
+    assert!(expected.iter().all(|h| h.2 == 1), "GANTC is its own reverse complement");
+
+    for (id, seq, fm, path) in [
+        ("bg-sktm-iupac-fm", &short, true, "fm-index"),
+        ("bg-sktm-iupac-scan", &long, false, "scan"),
+    ] {
+        let ack = make_resident(id, seq);
+        assert_eq!(ack["hasPrebuiltFmIndex"], fm, "{id}: the path this record pins");
+        let reply = search_all(id, "GANTC");
+        assert_eq!(reply["totalHits"].as_u64(), Some(expected.len() as u64), "{id}: the count");
+        assert_eq!(hits_of(&reply), expected, "{id}: GAATC and GACTC, not GARTC or a record GANTC");
+        assert_eq!(search_path_of(&reply), path, "{id}: the reply names the search that ran");
+        assert_eq!(warnings_of(&reply), Vec::<String>::new(), "{id}");
+    }
+}
+
+#[test]
+fn a_degenerate_site_is_found_on_plain_dna_on_both_paths() {
+    for (id, length, seed, fm, path) in [
+        ("bg-sktm-plain-fm", 10_000usize, 59u32, true, "fm-index"),
+        ("bg-sktm-plain-scan", 300_000, 61, false, "scan"),
+    ] {
+        let seq = seeded_dna(length, seed);
+        let ack = make_resident(id, &seq);
+        assert_eq!(ack["hasPrebuiltFmIndex"], fm, "{id}: the path this record pins");
+
+        // HinfI: GANTC, each site once (it is its own reverse complement).
+        let sites = hand_iupac_hits(&seq, "GANTC");
+        assert!(sites.len() > 10, "{id}: plain DNA holds HinfI sites: {}", sites.len());
+        let reply = search_all(id, "GANTC");
+        assert_eq!(reply["totalHits"].as_u64(), Some(sites.len() as u64), "{id}: HinfI's count");
+        assert_eq!(hits_of(&reply), sites, "{id}: HinfI's sites");
+        assert_eq!(search_path_of(&reply), path, "{id}");
+
+        // A motif of A/C/G/T only matches as it did: CACA on both strands, overlapping hits each
+        // counted, and the EcoRI palindrome once per site.
+        for motif in ["CACA", "GAATTC"] {
+            let expected = hand_hits(&seq, motif);
+            assert_eq!(hand_iupac_hits(&seq, motif), expected, "{motif}: the two hand scans agree");
+            assert!(!expected.is_empty(), "{id}: the fixture holds {motif}");
+            let reply = search_all(id, motif);
+            assert_eq!(search_path_of(&reply), path, "{id} {motif}");
+            assert_eq!(reply["totalHits"].as_u64(), Some(expected.len() as u64), "{id} {motif}");
+            assert_eq!(hits_of(&reply), expected, "{id} {motif}");
+        }
+    }
+}
+
+/// Seeded record letters over `alphabet`, by the same LCG.
+fn seeded_letters(length: usize, seed: u32, alphabet: &[u8]) -> String {
+    let mut x = seed;
+    (0..length)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            alphabet[((x >> 8) as usize) % alphabet.len()] as char
+        })
+        .collect()
+}
+
+#[test]
+fn random_iupac_motifs_give_one_hit_set_on_both_paths() {
+    // Seeded records holding N and R (and, in two of them, U beside T), each searched as a short
+    // record (the FM index) and as the same bases followed by an unsequenced gap past 262,144 bp
+    // (the scan), with seeded IUPAC motifs of 1 to 12 letters. Both replies equal the hand IUPAC
+    // scan, hit for hit. The motifs reach the FM index's word bound (8 or more N-heavy places): the
+    // reply then says the scan ran, and its count is still the hand count, never 0 for want of a
+    // word.
+    let codes = b"ACGTRYSWKMBDHVNACGTACGT";
+    let records: [(&[u8], u32); 6] = [
+        (b"ACGTACGTACGTACGTNR", 71),
+        (b"ACGTACGTACGTNNNNRR", 73),
+        (b"AACCGGTTNRYU", 79),
+        (b"ACGTACGTACGTACGTACGTACGTN", 83),
+        (b"ACGUACGUACGTRN", 89),
+        (b"GGGGCCCCAATTNR", 97),
+    ];
+    let mut scan_reached_on_fm_record = false;
+    let mut fm_answered_degenerate = false;
+    for (k, (alphabet, seed)) in records.iter().enumerate() {
+        let short = seeded_letters(3_000, *seed, alphabet);
+        let long = padded_with_gap(&short, 262_145);
+        let fm_id = format!("bg-sktm-prop-fm-{k}");
+        let scan_id = format!("bg-sktm-prop-scan-{k}");
+        assert_eq!(make_resident(&fm_id, &short)["hasPrebuiltFmIndex"], true);
+        assert_eq!(make_resident(&scan_id, &long)["hasPrebuiltFmIndex"], false);
+        let mut x = seed.wrapping_mul(7);
+        for _ in 0..24 {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let len = 1 + ((x >> 16) as usize) % 12;
+            let motif: String = (0..len)
+                .map(|_| {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    codes[((x >> 8) as usize) % codes.len()] as char
+                })
+                .collect();
+            let expected = hand_iupac_hits(&short, &motif);
+            let fm_reply = search_all(&fm_id, &motif);
+            let scan_reply = search_all(&scan_id, &motif);
+            assert_eq!(hits_of(&fm_reply), expected, "record {k}, motif {motif}: the short record");
+            assert_eq!(hits_of(&scan_reply), expected, "record {k}, motif {motif}: the scan");
+            assert_eq!(fm_reply["totalHits"].as_u64(), Some(expected.len() as u64), "{motif}");
+            assert_eq!(scan_reply["totalHits"].as_u64(), Some(expected.len() as u64), "{motif}");
+            assert_eq!(search_path_of(&scan_reply), "scan", "{motif}: past 262,144 bp");
+            match search_path_of(&fm_reply) {
+                "scan" => scan_reached_on_fm_record = true,
+                "fm-index" => {
+                    if motif.bytes().any(|c| hand_code_bases(c).count_ones() > 1) {
+                        fm_answered_degenerate = true;
+                    }
+                }
+                other => panic!("an unknown search path {other:?}"),
+            }
+            // The first 100, both strands merged before the cut, on both paths.
+            if expected.len() > 100 {
+                assert_eq!(hits_of(&search(&fm_id, &motif, 100)), expected[..100], "{motif}");
+                assert_eq!(hits_of(&search(&scan_id, &motif, 100)), expected[..100], "{motif}");
+            }
+        }
+    }
+    assert!(fm_answered_degenerate, "the FM index answers some degenerate motifs");
+    assert!(scan_reached_on_fm_record, "some motifs pass the FM index's word bound");
+}
+
+#[test]
+fn a_motif_past_the_word_bound_is_scanned_and_named_so() {
+    // Ten N stand for 4^10 words: past the FM index's bound, so the short record is scanned, the
+    // reply says so, and the count is every window of ten bases (each site once: N's reverse
+    // complement is N), not 0.
+    let seq = seeded_dna(5_000, 101);
+    make_resident("bg-sktm-bound", &seq);
+    let reply = search("bg-sktm-bound", "NNNNNNNNNN", 100);
+    assert_eq!(search_path_of(&reply), "scan");
+    assert_eq!(reply["totalHits"].as_u64(), Some(5_000 - 10 + 1));
+    assert_eq!(warnings_of(&reply), vec!["Showing the first 100 of 4,991 hits.".to_string()]);
+    // Four N (256 words) are within the bound: the FM index answers.
+    let reply = search("bg-sktm-bound", "NNNN", 10_000);
+    assert_eq!(search_path_of(&reply), "fm-index");
+    assert_eq!(reply["totalHits"].as_u64(), Some(5_000 - 4 + 1));
+}
+
+#[test]
+fn a_motif_longer_than_64_places_is_scanned_window_by_window() {
+    // 70 places, past the 64 one state word holds: the scan checks each window. The motif is a
+    // stretch of the record with two places made N, and its reverse complement is planted further
+    // on, so the hand scan holds a hit on each strand.
+    let mut seq = seeded_dna(300_000, 103).into_bytes();
+    let mut motif = seq[1_000..1_070].to_vec();
+    motif[10] = b'N';
+    motif[50] = b'N';
+    let motif = String::from_utf8(motif).unwrap();
+    let rc = hand_iupac_revcomp(&seq[1_000..1_070].iter().map(|&b| b as char).collect::<String>());
+    seq[200_000..200_070].copy_from_slice(rc.as_bytes());
+    let seq = String::from_utf8(seq).unwrap();
+    let expected = hand_iupac_hits(&seq, &motif);
+    assert!(expected.iter().any(|h| h.2 == 1) && expected.iter().any(|h| h.2 == -1), "{expected:?}");
+    assert_eq!(make_resident("bg-sktm-long-motif", &seq)["hasPrebuiltFmIndex"], false);
+    let reply = search_all("bg-sktm-long-motif", &motif);
+    assert_eq!(search_path_of(&reply), "scan");
+    assert_eq!(hits_of(&reply), expected);
+}
+
+#[test]
+fn a_letter_that_is_no_iupac_code_matches_nothing_and_says_so() {
+    // X is no IUPAC nucleotide code: the motif stands for no base on either path, and the reply
+    // says why its count is 0 rather than reporting an absence it never searched for.
+    let seq = seeded_dna(10_000, 107);
+    for (id, s) in [("bg-sktm-x-fm", seq.clone()), ("bg-sktm-x-scan", padded_with_gap(&seq, 300_000))] {
+        make_resident(id, &s);
+        let reply = search_all(id, "GAXTC");
+        assert_eq!(reply["totalHits"].as_u64(), Some(0), "{id}");
+        assert_eq!(
+            warnings_of(&reply),
+            vec!["The motif holds X, which is no IUPAC nucleotide code, so it matches no base.".to_string()],
+            "{id}"
+        );
+    }
+}

@@ -193,6 +193,8 @@ function searchPanel(doc: SequenceDocument, query: string) {
   const warnAt = row.findIndex((e) => 'data-mbc-result-warnings' in e.attrs);
   return {
     badge: pillsAt < 0 ? null : textOf(findAll(row[pillsAt], (e) => e.classes.has('hit-count-badge'))[0]).trim(),
+    /** The title of the hit-count button a folded toolbar shows (BG-01M6SKTM). */
+    countTitle: findAll(group, (e) => e.tag === 'button' && e.classes.has('linear-search-hits-btn'))[0]?.attrs.title ?? null,
     pills: pillsAt < 0 ? [] : findAll(row[pillsAt], (e) => e.tag === 'button' && e.classes.has('hit-jump-btn')).map((b) => textOf(b).trim()),
     warnings: warnAt < 0 ? [] : findAll(row[warnAt], (e) => e.tag === 'p').map((p) => textOf(p).trim()),
     warningsLabel: warnAt < 0 ? null : row[warnAt].attrs['aria-label'],
@@ -310,7 +312,8 @@ const BIOPY_FIRST_900 =
 
 describe('BG-01M6S17C: the Sequence View search panel and Translation Statistics', () => {
   it('shows first 100 of N when motif hits are capped', () => {
-    // 300,000 bp: past the 262,144 bp FM index, so the engine scans. CACA is not a palindrome (its
+    // 300,000 bp: past the 262,144 bp FM index, so the engine scans, and the badge says so
+    // (BG-01M6SKTM). CACA is not a palindrome (its
     // reverse complement is TGTG). Wrong implementations this fixture reaches: the base, whose
     // forward strand filled the 100 before the reverse strand was read and whose badge counted the
     // list ("100 FM-Index hits"); a badge that counts the list; a warning written in the view's own
@@ -322,7 +325,7 @@ describe('BG-01M6S17C: the Sequence View search panel and Translation Statistics
     expect(expected.slice(0, 100).some((h) => h.strand === -1), 'the first 100 hold - strand hits').toBe(true);
 
     const capped = searchPanel(doc, 'CACA');
-    expect(capped.badge, 'the badge counts every hit in the sequence').toBe(`${withCommas(expected.length)} FM-Index hits:`);
+    expect(capped.badge, 'the badge counts every hit in the sequence').toBe(`${withCommas(expected.length)} scan hits:`);
     expect(capped.pills, 'a jump to each of the first 100 hits by position, both strands').toEqual(expected.slice(0, 100).map(pillOf));
     expect(capped.warnings, 'the cut list says so').toEqual([`Showing the first 100 of ${withCommas(expected.length)} hits.`]);
     expect(capped.warningsLabel).toBe('Search warnings');
@@ -334,7 +337,7 @@ describe('BG-01M6S17C: the Sequence View search panel and Translation Statistics
     expect(sites.length).toBeGreaterThan(0);
     expect(sites.length).toBeLessThan(100);
     const whole = searchPanel(doc, 'GAATTC');
-    expect(whole.badge).toBe(`${withCommas(sites.length)} FM-Index hits:`);
+    expect(whole.badge).toBe(`${withCommas(sites.length)} scan hits:`);
     expect(whole.pills).toEqual(sites.map(pillOf));
     expect(whole.warnings).toEqual([]);
     expect(whole.regions).toBe(0);
@@ -560,6 +563,75 @@ function importedCds(doc: SequenceDocument) {
   return { f, parts, residues: translateDna(readParts(doc.sequence, f.strand, parts)) };
 }
 const joinName = (parts: Parts) => `join(${parts.map(([a, b]) => `${a}..${b}`).join(',')})`;
+
+// ─── BG-01M6SKTM: the badge names the search that produced the count ───
+
+/** The bases each IUPAC code stands for (A=1, C=2, G=4, T=8), by hand from the IUPAC-IUB table. */
+const CODE_BASES: Record<string, number> = {
+  A: 1, C: 2, G: 4, T: 8, U: 8, R: 5, Y: 10, S: 6, W: 9, K: 12, M: 3, B: 14, D: 13, H: 11, V: 7, N: 15,
+};
+/** The base a record letter is; any other letter (N, R, ...) is no base (D0265). */
+const RECORD_BASE: Record<string, number> = { A: 1, C: 2, G: 4, T: 8, U: 8 };
+/** Every forward-strand IUPAC hit of a motif that is its own reverse complement (GANTC), 1-based. */
+function handPalindromeIupacHits(seq: string, pat: string): Hit[] {
+  const out: Hit[] = [];
+  for (let i = 0; i + pat.length <= seq.length; i++) {
+    let fits = true;
+    for (let j = 0; j < pat.length && fits; j++) fits = ((RECORD_BASE[seq[i + j]] ?? 0) & CODE_BASES[pat[j]]) !== 0;
+    if (fits) out.push({ start: i + 1, end: i + pat.length, strand: 1 });
+  }
+  return out;
+}
+/** Seeded amino-acid letters, by the same LCG. */
+function seededProtein(length: number, seed: number): string {
+  const aa = 'ACDEFGHIKLMNPQRSTVWY';
+  let x = seed >>> 0;
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    x = (Math.imul(x, 1_664_525) + 1_013_904_223) >>> 0;
+    out += aa[(x >>> 8) % aa.length];
+  }
+  return out;
+}
+
+describe('BG-01M6SKTM: the Sequence View names the motif search that ran', () => {
+  it('labels the motif hit count by the search path that produced it', () => {
+    // The wrong implementations these fixtures reach: a badge or title that reads 'FM-Index' for
+    // every count (the defect: a 300 kb record's scan read 'FM-Index hits'), one that reads 'scan'
+    // for every count, and a label from the record's length rather than the engine's reply (a
+    // motif of ten N on a 10 kb record stands for 4^10 words, past the index's bound, so it is
+    // scanned though the record is indexed).
+    const short = seededDna(10_000, 67);
+    const fmDoc = dnaDoc('bg-sktm-view-fm', short, []);
+    const hinf = handPalindromeIupacHits(short, 'GANTC');
+    expect(hinf.length, 'plain DNA holds HinfI sites').toBeGreaterThan(0);
+    expect(hinf.length).toBeLessThan(100);
+    const fm = searchPanel(fmDoc, 'GANTC');
+    expect(fm.badge, 'the FM index answered').toBe(`${withCommas(hinf.length)} FM-Index hits:`);
+    expect(fm.countTitle).toBe(`Show the ${withCommas(hinf.length)} FM-Index hits and jump to one`);
+    expect(fm.pills, 'each HinfI site once').toEqual(hinf.map(pillOf));
+
+    const wide = searchPanel(fmDoc, 'NNNNNNNNNN');
+    expect(wide.badge, 'past the word bound the record is scanned').toBe(`${withCommas(10_000 - 9)} scan hits:`);
+    expect(wide.countTitle).toBe(`Show the ${withCommas(10_000 - 9)} scan hits and jump to one`);
+
+    const long = seededDna(300_000, 17);
+    const scanDoc = dnaDoc('bg-sktm-view-scan', long, []);
+    const caca = handHits(long, 'CACA');
+    const scan = searchPanel(scanDoc, 'CACA');
+    expect(scan.badge, 'past 262,144 bp the record is scanned').toBe(`${withCommas(caca.length)} scan hits:`);
+    expect(scan.countTitle).toBe(`Show the ${withCommas(caca.length)} scan hits and jump to one`);
+
+    const protein = seededProtein(2_000, 71);
+    const motif = protein.slice(500, 503);
+    let count = 0;
+    for (let i = 0; i + 3 <= protein.length; i++) if (protein.slice(i, i + 3) === motif) count++;
+    const protDoc: SequenceDocument = { ...dnaDoc('bg-sktm-view-protein', protein, []), moleculeType: 'Protein' };
+    const prot = searchPanel(protDoc, motif);
+    expect(prot.badge, 'a protein is scanned').toBe(`${withCommas(count)} scan hits:`);
+    expect(prot.countTitle).toBe(`Show the ${withCommas(count)} scan hits and jump to one`);
+  });
+});
 
 describe('BG-01M6SMBS: a join of complemented parts imports as the minus-strand CDS it is', () => {
   it('translates a per-part complement join as Biopython does', () => {

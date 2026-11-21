@@ -21,13 +21,94 @@ use bio::data_structures::interval_tree::IntervalTree;
 use bio::data_structures::suffix_array::suffix_array;
 use molbiocraft_core::{
     clean_alpha_sequence, compute_genome_track_overview, format_thousands, iupac_complement_byte,
-    reverse_complement_iupac, FmIndexSearchHit, GenomeTrackOverview, SequenceFeature,
+    FmIndexSearchHit, GenomeTrackOverview, SequenceFeature,
 };
 use serde::{Deserialize, Serialize};
 
 const MAX_RESIDENT_DOCS: usize = 16;
 const MAX_RESIDENT_BYTES: usize = 128 * 1024 * 1024; // 128 MiB cap
 const FM_INDEX_MAX_LEN: usize = 262_144;
+/// The most concrete A/C/G/T words a degenerate motif may stand for on one strand and still be read
+/// through the FM index (4^6: GANTC is 4, NNNNNN 4,096). A motif past it is scanned, and the reply
+/// says so; no hit is ever dropped at the bound.
+const FM_MAX_WORDS: usize = 4_096;
+
+/// The bases an IUPAC nucleotide code in a motif stands for, as a set of A=1, C=2, G=4, T=8 (U is
+/// T), and none for any other letter (BG-01M6SKTM, D0265).
+const fn motif_code_bases(b: u8) -> u8 {
+    match b {
+        b'A' => 1,
+        b'C' => 2,
+        b'G' => 4,
+        b'T' | b'U' => 8,
+        b'R' => 1 | 4,
+        b'Y' => 2 | 8,
+        b'S' => 2 | 4,
+        b'W' => 1 | 8,
+        b'K' => 4 | 8,
+        b'M' => 1 | 2,
+        b'B' => 2 | 4 | 8,
+        b'D' => 1 | 4 | 8,
+        b'H' => 1 | 2 | 8,
+        b'V' => 1 | 2 | 4,
+        b'N' => 1 | 2 | 4 | 8,
+        _ => 0,
+    }
+}
+
+/// The base a record letter is (the same sets; U is T). Every other letter, an N or an R in the
+/// record included, is no base, so no motif code matches it (D0265).
+const RECORD_BASE: [u8; 256] = {
+    let mut t = [0u8; 256];
+    t[b'A' as usize] = 1;
+    t[b'C' as usize] = 2;
+    t[b'G' as usize] = 4;
+    t[b'T' as usize] = 8;
+    t[b'U' as usize] = 8;
+    t
+};
+
+/// The complementary bases of a set: A <-> T, C <-> G.
+const fn complement_bases(m: u8) -> u8 {
+    ((m & 1) << 3) | ((m & 2) << 1) | ((m & 4) >> 1) | ((m & 8) >> 3)
+}
+
+/// The concrete A/C/G/T words a motif's base sets stand for, or `None` when there are more than
+/// [`FM_MAX_WORDS`]. A motif holding a letter that stands for no base stands for no word.
+fn expand_words(sets: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let mut count: usize = 1;
+    for &m in sets {
+        count = count.saturating_mul(m.count_ones() as usize);
+        if count > FM_MAX_WORDS {
+            return None;
+        }
+    }
+    let mut words: Vec<Vec<u8>> = if count == 0 { Vec::new() } else { vec![Vec::new()] };
+    for &m in sets {
+        let mut next = Vec::with_capacity(words.len() * m.count_ones() as usize);
+        for w in &words {
+            for (bit, base) in [(1u8, b'A'), (2, b'C'), (4, b'G'), (8, b'T')] {
+                if m & bit != 0 {
+                    let mut longer = Vec::with_capacity(sets.len());
+                    longer.extend_from_slice(w);
+                    longer.push(base);
+                    next.push(longer);
+                }
+            }
+        }
+        words = next;
+    }
+    Some(words)
+}
+
+/// Which search produced a motif search's count: the prebuilt FM index, or a scan of the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MotifSearchPath {
+    FmIndex,
+    #[default]
+    Scan,
+}
 
 struct PrebuiltFmComponents {
     sa: Vec<usize>,
@@ -60,8 +141,10 @@ impl PrebuiltFmComponents {
         }
     }
 
-    /// Pushes the first `cap` occurrences of `pat_bytes` by position onto `out` on `strand`, and
-    /// returns how many there are in the whole text: the size of the FM interval.
+    /// Pushes the first `cap` occurrences of the A/C/G/T word `pat_bytes` by position onto `out` on
+    /// `strand`, and returns how many there are in the whole text: the size of the FM interval. The
+    /// index text holds N for every record letter that is no base, and a word never holds N, so
+    /// such a letter is never part of a hit.
     fn search_strand(
         &self,
         pat_bytes: &[u8],
@@ -70,10 +153,7 @@ impl PrebuiltFmComponents {
         out: &mut Vec<FmIndexSearchHit>,
     ) -> usize {
         let fm = FMIndex::new(&self.bwt_vec, &self.less_vec, &self.occ);
-        let norm: Vec<u8> = pat_bytes
-            .iter()
-            .map(|&b| if b == b'U' { b'T' } else { b })
-            .collect();
+        let norm = pat_bytes;
         if let BackwardSearchResult::Complete(interval) = fm.backward_search(norm.iter()) {
             let total = interval.upper - interval.lower;
             let mut occs = interval.occ(&self.sa);
@@ -119,9 +199,69 @@ fn scan_strand(
     total
 }
 
+/// Pushes the first `cap` hits of a motif's base sets in `text` by position onto `out` on `strand`,
+/// and returns how many there are in the whole text: a window is a hit when each record letter in
+/// it is a base its place's set holds ([`RECORD_BASE`]), overlapping hits each counted. Up to 64
+/// places it reads each letter once (shift-and: bit j of the state says the last j + 1 letters fit
+/// the motif's first j + 1 places); a longer motif is checked window by window.
+fn scan_sets_strand(
+    text: &[u8],
+    sets: &[u8],
+    strand: i8,
+    cap: usize,
+    out: &mut Vec<FmIndexSearchHit>,
+) -> usize {
+    let n = sets.len();
+    let mut total = 0;
+    let mut hit_ending_at = |i: usize, total: &mut usize| {
+        if *total < cap {
+            out.push(FmIndexSearchHit {
+                start: i + 2 - n,
+                end: i + 1,
+                strand,
+            });
+        }
+        *total += 1;
+    };
+    if n == 0 || n > text.len() {
+        return 0;
+    }
+    if n <= 64 {
+        let mut fits = [0u64; 256];
+        for (c, row) in fits.iter_mut().enumerate() {
+            let base = RECORD_BASE[c];
+            for (j, &m) in sets.iter().enumerate() {
+                if base & m != 0 {
+                    *row |= 1 << j;
+                }
+            }
+        }
+        let last = 1u64 << (n - 1);
+        let mut state = 0u64;
+        for (i, &c) in text.iter().enumerate() {
+            state = ((state << 1) | 1) & fits[c as usize];
+            if state & last != 0 {
+                hit_ending_at(i, &mut total);
+            }
+        }
+    } else {
+        for at in 0..=text.len() - n {
+            if text[at..at + n]
+                .iter()
+                .zip(sets)
+                .all(|(&c, &m)| RECORD_BASE[c as usize] & m != 0)
+            {
+                hit_ending_at(at + n - 1, &mut total);
+            }
+        }
+    }
+    total
+}
+
 /// The resident motif search's reply (BG-01M6S17C): the first `maxHits` hits in position order,
 /// with both strands merged before the cut, the number of hits in the whole sequence, and one D0005
-/// warning when the list holds fewer hits than that.
+/// warning when the list holds fewer hits than that; and which search produced them, the FM index
+/// or a scan (BG-01M6SKTM), so the view can name it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResidentMotifSearch {
@@ -129,12 +269,19 @@ pub struct ResidentMotifSearch {
     pub total_hits: usize,
     #[serde(default)]
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub search_path: MotifSearchPath,
 }
 
 impl ResidentMotifSearch {
     /// Orders `hits` by position (the forward hit first at a shared start), keeps the first `cap`,
     /// and says so when that leaves out any of the `total_hits`.
-    fn first_of(mut hits: Vec<FmIndexSearchHit>, total_hits: usize, cap: usize) -> Self {
+    fn first_of(
+        mut hits: Vec<FmIndexSearchHit>,
+        total_hits: usize,
+        cap: usize,
+        search_path: MotifSearchPath,
+    ) -> Self {
         hits.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| b.strand.cmp(&a.strand)));
         hits.truncate(cap);
         let warnings = if hits.len() < total_hits {
@@ -150,14 +297,16 @@ impl ResidentMotifSearch {
             hits,
             total_hits,
             warnings,
+            search_path,
         }
     }
 
-    fn none() -> Self {
+    fn none(search_path: MotifSearchPath) -> Self {
         Self {
             hits: Vec::new(),
             total_hits: 0,
             warnings: Vec::new(),
+            search_path,
         }
     }
 }
@@ -597,13 +746,17 @@ pub fn get_resident_track_overview(
     })
 }
 
-/// Searches a resident genome or giant protein in Rust memory: through the pre-built `rust-bio`
-/// FM-Index ($O(m)$ zero-rebuild backward search) for DNA of up to 262,144 bp searched with A, C,
-/// G, T, U or N, and otherwise (longer chromosomes, other IUPAC letters, proteins) by a `memchr`
-/// scan that finds and counts every hit, overlapping ones included. Both strands are collected
-/// before the list is cut to `max_hits` (at least 1), and the reply carries the number of hits in
-/// the whole sequence. A palindrome, whose reverse complement is itself, is one hit per site on the
-/// forward strand.
+/// Searches a resident genome or giant protein in Rust memory. A DNA or RNA record reads the motif
+/// in one grammar on both paths (BG-01M6SKTM, D0265): an IUPAC code matches each base it stands
+/// for, U is T, and a record letter that is no base (N, R, ...) matches nothing. A record of up to
+/// 262,144 bp is read through its pre-built `rust-bio` FM-Index, one backward search per concrete
+/// word the motif stands for (at most 4,096 a strand); a longer record, or a motif standing for more
+/// words, is scanned base set by base set, and the reply's `searchPath` names the search that ran.
+/// A protein is scanned letter for letter by a `memchr` byte search. Both
+/// strands are collected before the list is cut to `max_hits` (at least 1), overlapping hits are
+/// each counted, and the reply carries the number of hits in the whole sequence. A motif whose
+/// reverse complement stands for the same bases (GAATTC, GANTC) is one hit per site on the forward
+/// strand.
 pub fn search_resident_motif_fmindex(
     doc_id: &str,
     raw_pattern: &str,
@@ -611,9 +764,6 @@ pub fn search_resident_motif_fmindex(
     max_hits: usize,
 ) -> Result<ResidentMotifSearch, String> {
     let pat = clean_alpha_sequence(raw_pattern);
-    if pat.is_empty() {
-        return Ok(ResidentMotifSearch::none());
-    }
 
     RESIDENT_STORE.with(|cell| {
         let mut store = cell.borrow_mut();
@@ -626,50 +776,71 @@ pub fn search_resident_motif_fmindex(
             .ok_or_else(|| format!("RESIDENT_MISS:{}", doc_id))?;
         entry.last_access_tick = now_tick;
 
-        if pat.len() > entry.upper_bytes.len() {
-            return Ok(ResidentMotifSearch::none());
+        let record_path = if entry.fm.is_some() {
+            MotifSearchPath::FmIndex
+        } else {
+            MotifSearchPath::Scan
+        };
+        if pat.is_empty() || pat.len() > entry.upper_bytes.len() {
+            return Ok(ResidentMotifSearch::none(record_path));
         }
 
         let cap = max_hits.max(1);
         let mut hits = Vec::new();
-        let canonical_dna = !entry.is_protein
-            && pat
-                .bytes()
-                .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T' | b'U' | b'N'));
 
-        if canonical_dna {
-            if let Some(ref fm) = entry.fm {
-                // The index reads U as T, so the palindrome test does too: GAAUUC is GAATTC.
-                let dna = pat.replace('U', "T");
-                let mut total = fm.search_strand(dna.as_bytes(), 1, cap, &mut hits);
-                if search_both_strands {
-                    let rc = reverse_complement_iupac(&dna, false);
-                    if rc != dna {
-                        total += fm.search_strand(rc.as_bytes(), -1, cap, &mut hits);
+        if entry.is_protein {
+            let total = scan_strand(&entry.upper_bytes, pat.as_bytes(), 1, cap, &mut hits);
+            return Ok(ResidentMotifSearch::first_of(hits, total, cap, MotifSearchPath::Scan));
+        }
+
+        let fwd: Vec<u8> = pat.bytes().map(motif_code_bases).collect();
+        if fwd.contains(&0) {
+            let mut letters: Vec<char> = pat
+                .chars()
+                .filter(|&c| motif_code_bases(c as u8) == 0)
+                .collect();
+            letters.sort_unstable();
+            letters.dedup();
+            let list: Vec<String> = letters.iter().map(|c| c.to_string()).collect();
+            let mut reply = ResidentMotifSearch::none(record_path);
+            reply.warnings.push(format!(
+                "The motif holds {}, which {} no IUPAC nucleotide code, so it matches no base.",
+                list.join(", "),
+                if list.len() == 1 { "is" } else { "are" }
+            ));
+            return Ok(reply);
+        }
+        let rev: Vec<u8> = fwd.iter().rev().map(|&m| complement_bases(m)).collect();
+        let read_rev = search_both_strands && rev != fwd;
+
+        if let Some(ref fm) = entry.fm {
+            if let Some(words) = expand_words(&fwd) {
+                let mut total = 0;
+                for w in &words {
+                    total += fm.search_strand(w, 1, cap, &mut hits);
+                }
+                if read_rev {
+                    for w in expand_words(&rev).unwrap_or_default() {
+                        total += fm.search_strand(&w, -1, cap, &mut hits);
                     }
                 }
-                return Ok(ResidentMotifSearch::first_of(hits, total, cap));
+                return Ok(ResidentMotifSearch::first_of(
+                    hits,
+                    total,
+                    cap,
+                    MotifSearchPath::FmIndex,
+                ));
             }
         }
 
-        // memchr scan over resident upper_bytes (zero JS string serialization)
-        let pat_norm: Vec<u8> = if entry.is_rna {
-            pat.bytes().map(|b| if b == b'T' { b'U' } else { b }).collect()
-        } else if !entry.is_protein {
-            pat.bytes().map(|b| if b == b'U' { b'T' } else { b }).collect()
-        } else {
-            pat.into_bytes()
-        };
-
-        let mut total = scan_strand(&entry.upper_bytes, &pat_norm, 1, cap, &mut hits);
-        if search_both_strands && !entry.is_protein {
-            let pat_str = unsafe { std::str::from_utf8_unchecked(&pat_norm) };
-            let rc = reverse_complement_iupac(pat_str, entry.is_rna);
-            if rc.as_bytes() != pat_norm.as_slice() {
-                total += scan_strand(&entry.upper_bytes, rc.as_bytes(), -1, cap, &mut hits);
-            }
+        // One base-set scan for every motif: in WASM it outruns a `memchr` byte search even on an
+        // A/C/G/T motif (no SIMD there), and it reads T and U in the record as one base.
+        let text = &entry.upper_bytes;
+        let mut total = scan_sets_strand(text, &fwd, 1, cap, &mut hits);
+        if read_rev {
+            total += scan_sets_strand(text, &rev, -1, cap, &mut hits);
         }
-        Ok(ResidentMotifSearch::first_of(hits, total, cap))
+        Ok(ResidentMotifSearch::first_of(hits, total, cap, MotifSearchPath::Scan))
     })
 }
 
