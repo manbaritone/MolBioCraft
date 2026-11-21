@@ -17,8 +17,16 @@ import { parseStructure, residueNumberLabel, type Structure } from '../core/stru
 import { dataPath, haveTestData } from './testData';
 
 const nodeFs: string = 'node:fs';
-const fs = await import(/* @vite-ignore */ nodeFs).catch(() => null) as null | { readFileSync: (p: string, e: string) => string };
+const fs = await import(/* @vite-ignore */ nodeFs).catch(() => null) as null | { readFileSync: (p: string | URL, e: string) => string };
 const read = (rel: string): string => fs!.readFileSync(dataPath(rel), 'utf8');
+/**
+ * PDB 1AON (CC0), chains A-N: the points the engine plots for each chain, committed (so the test
+ * needs no reference data) with how they were made in the fixture's "source" key.
+ */
+const ONE_AON = JSON.parse(fs!.readFileSync(new URL('./ramachandran-1aon-points.json', import.meta.url), 'utf8')) as {
+  source: string;
+  chains: Record<string, [string, number, number, RamachandranRegion | null][]>;
+};
 
 const UBQ_CIF = 'rcsb/1UBQ.cif';
 const A5R_CIF = 'rcsb/1A5R.cif';
@@ -208,6 +216,40 @@ function expectLabelsCoverNoPoint(html: string, where: string): { labels: number
     }
   });
   return { labels: labels.length, points: circles.length };
+}
+
+/**
+ * Count, from a rendered plot's markup alone (as expectLabelsCoverNoPoint reads it), the plotted
+ * points each outlier label covers other than its own, the pairs of leader lines that cross, the
+ * leader lines that run through a label other than their own, and the pairs of labels that overlap.
+ */
+function collisionsOf(html: string) {
+  const svg = svgOf(html);
+  const circles = circlesOf(html);
+  const labels = outlierLabelsOf(svg).map((l) => {
+    const width = l.words.length * 5.6;
+    const x = Number(l.attrs.x);
+    return { text: l.words, box: { x: l.attrs['text-anchor'] === 'end' ? x - width : x, y: Number(l.attrs.y) + 2.5 - 11, width, height: 11 } };
+  });
+  const leaders = linesOf(svg).filter((l) => l.stroke === 'var(--mbc-text-secondary)');
+  let coveredPoints = 0;
+  let leaderCrossings = 0;
+  let leadersThroughLabels = 0;
+  let overlappingLabels = 0;
+  labels.forEach((l, i) => {
+    for (const c of circles) {
+      if (c.residue !== l.text && overlap(l.box, { x: c.cx - c.r, y: c.cy - c.r, width: 2 * c.r, height: 2 * c.r })) coveredPoints += 1;
+    }
+    labels.forEach((m, j) => { if (j > i && overlap(l.box, m.box)) overlappingLabels += 1; });
+  });
+  leaders.forEach((a, i) => {
+    leaders.forEach((b, j) => { if (j > i && crosses(a, b)) leaderCrossings += 1; });
+    for (const l of labels) {
+      const own = Math.abs(a.y2 - (l.box.y + 5.5)) < 1e-6 && (Math.abs(a.x2 - l.box.x) < 1e-6 || Math.abs(a.x2 - l.box.x - l.box.width) < 1e-6);
+      if (!own && entersBox(a, l.box)) leadersThroughLabels += 1;
+    }
+  });
+  return { labels: labels.length, coveredPoints, leaderCrossings, leadersThroughLabels, overlappingLabels };
 }
 
 describe('reading the torsions', () => {
@@ -496,6 +538,30 @@ describe('lists outliers with residue numbers', () => {
     const synthetic = expectLabelsCoverNoPoint(render(reportOf([...helix, ...lone])), 'helix');
     expect(synthetic).toEqual({ labels: 6, points: 87 });
 
+    // A crowded real entry, also without reference data: the engine's points for the 14 GroEL
+    // chains of PDB 1AON (25-37 outliers among 522 points each, made as ONE_AON.source says). Each
+    // chain has a crowd of 9 to 15 outliers within phi -75..-35, psi -115..-65, just below the dense
+    // helix region. A clean layout exists on every chain (the placer finds one), so each must show
+    // no covered point, no crossing leader lines, no leader line through a label and no overlapping
+    // labels, counted from the rendered drawing alone.
+    expect(ONE_AON.source).toContain('PDB entry 1AON');
+    expect(Object.keys(ONE_AON.chains)).toEqual('ABCDEFGHIJKLMN'.split(''));
+    const found: Record<string, ReturnType<typeof collisionsOf>> = {};
+    for (const [chain, points] of Object.entries(ONE_AON.chains)) {
+      const residues = points.map(([label, phi, psi, region], k) => {
+        const [, number, resName] = label.split(' ');
+        const [, seq, ins] = /^(-?\d+)([A-Z]?)$/.exec(number)!;
+        return res({ chain, resName, labelSeqId: k + 1, authSeqId: Number(seq), insCode: ins || null, phi, psi, region });
+      });
+      const html = render(reportOf(residues), '1AON');
+      // The drawing puts the outliers last, so compare the points drawn as a set.
+      expect(circlesOf(html).map((c) => c.residue).sort(), `1AON chain ${chain} plots every point`).toEqual(points.map((p) => p[0]).sort());
+      found[chain] = collisionsOf(html);
+      expect(found[chain].labels, `1AON chain ${chain} labels every outlier`).toBe(points.filter((p) => p[3] === 'outlier').length);
+    }
+    const clean = (labels: number) => ({ labels, coveredPoints: 0, leaderCrossings: 0, leadersThroughLabels: 0, overlappingLabels: 0 });
+    expect(found).toEqual(Object.fromEntries(Object.entries(found).map(([c, f]) => [c, clean(f.labels)])));
+
     // Real entries: 1MBN chain A, whose outliers sit by its crowded helices, and 4HHB chains A-D.
     if (!haveTestData(MBN_CIF, HHB_CIF)) return;
     const mbn = read(MBN_CIF);
@@ -505,6 +571,7 @@ describe('lists outliers with residue numbers', () => {
     const hhb = read(HHB_CIF);
     for (const c of ['A', 'B', 'C', 'D']) expectLabelsCoverNoPoint(render(backboneTorsions(hhb, c), '4HHB', plottedModelOf(parseStructure(hhb))), `4HHB chain ${c}`);
   });
+
 });
 
 describe('exports through the figure export button', () => {

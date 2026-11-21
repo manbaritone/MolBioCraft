@@ -130,18 +130,23 @@ guidelines.
   What MolBioCraft ships from it: the node values of the six Top8000 2-degree
   grids (general, Gly, trans-Pro, cis-Pro, pre-Pro and Ile/Val), in
   crates/molbiocraft-protein/src/rama8000_grids.rs. The changes made: each value
-  is rounded to the nearest 32-bit float (the precision cctbx's NDimTable holds
-  it in), a node a file does not list is written as 0, and the values are
-  written as Rust arrays in node order.
-  scripts/outside-data/derive_ramachandran_maps.py writes that file from the
-  grids and checks it against them node for node. A residue is classified by
-  bilinear interpolation of its class's grid at its phi and psi, as cctbx
-  n_dim_table.py valueAt computes it, compared with MolProbity's cutoffs as
-  coded in cctbx ramalyze.py: favoured at a value of at least 0.02; otherwise
-  allowed at least 0.0005 (general), 0.0020 (cis-Pro) or 0.0010 (the other
-  classes); otherwise outlier. This follows MolProbity's method; it is not
-  MolProbity. Its use does not imply endorsement by the Richardson Lab or Duke
-  University.
+  is rounded to the nearest 32-bit float, a node a file does not list is
+  written as 0, and the values are written as Rust arrays in node order.
+  MolProbity's ramalyze scores a residue through the C++ rama_eval of cctbx,
+  over the same grids held as 64-bit doubles. The 32-bit values give the same
+  region at every node (the derivation script refuses a grid where rounding
+  would move a node across a cutoff), and on each of the 11,014 residues an
+  independent review checked, with interpolated values within 2.8e-8 of the
+  64-bit ones.
+  scripts/outside-data/derive_ramachandran_maps.py writes that file (to its
+  standard output) from the grids and checks it against them node for node.
+  A residue is classified by bilinear interpolation of its class's grid at its
+  phi and psi, as cctbx computes it (rama_eval, and n_dim_table.py valueAt),
+  compared with MolProbity's cutoffs as coded in cctbx ramalyze.py: favoured
+  at a value of at least 0.02; otherwise allowed at least 0.0005 (general),
+  0.0020 (cis-Pro) or 0.0010 (the other classes); otherwise outlier. This
+  follows MolProbity's method; it is not MolProbity. Its use does not imply
+  endorsement by the Richardson Lab or Duke University.
 - AlphaFold DB entry AF-P69905-F1 (haemoglobin subunit alpha, UniProt P69905),
   model version 6 (files AF-P69905-F1-model_v6.cif and
   AF-P69905-F1-model_v6.pdb):
