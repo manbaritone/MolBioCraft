@@ -2532,3 +2532,221 @@ fn a_known_insertion_before_a_too_long_sample_n_run_is_named_as_one_insertion() 
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+// ---------------------------------------------------------------------------------------------
+// BG-01M7V8C1: the data seat's review of BG-01M6W02V. Its rules parted and left out deletions
+// beside an N run; an insertion beside a sample run of more N than the bases it stands for was
+// still merged with the run's spare N and named at the wrong length, or called so, and one beside
+// a too-long reference run gave false calls.
+// ---------------------------------------------------------------------------------------------
+
+/// The score of alignment columns `qa` and `ra` under [`d0268_score`], a gap of n bases -5 - 2n,
+/// an insertion and a deletion side by side two gaps.
+fn d0268_columns_score(qa: &[u8], ra: &[u8]) -> i32 {
+    let (mut score, mut state) = (0i32, 0u8);
+    for (&q, &r) in qa.iter().zip(ra) {
+        let now = if q == b'-' { 1 } else if r == b'-' { 2 } else { 0 };
+        score += if now == 0 { d0268_score(q, r) } else if now == state { -2 } else { -7 };
+        state = now;
+    }
+    score
+}
+
+/// The reference a report's calls make: each call's REF replaced by its ALT. `None` when a call's
+/// REF is not the reference's bases there, or two calls overlap.
+fn applied(reference: &[u8], calls: &[Call]) -> Option<Vec<u8>> {
+    let mut h = reference.to_vec();
+    let mut calls = calls.to_vec();
+    calls.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut below = usize::MAX;
+    for (pos, r, a, _) in calls {
+        let at = pos - 1;
+        if at + r.len() > below || h.get(at..at + r.len())? != r.as_bytes() {
+            return None;
+        }
+        h.splice(at..at + r.len(), a.bytes());
+        below = at;
+    }
+    Some(h)
+}
+
+/// An insertion probe: a [`GAP_GENOME_BP`]-base genome whose [`GAP_TRUE`] bases a run of `run_n`
+/// N stands for, in the sample (`sample_run`) or in the reference; the sample copies the genome's
+/// [`GAP_SAMPLE`] bases, with `len` inserted bases `gap` known bases before or after the run, and
+/// the control SNP.
+struct InsProbe {
+    label: String,
+    reference: Vec<u8>,
+    sample: Vec<u8>,
+    sample_run: bool,
+    after: bool,
+    len: usize,
+    spare: usize,
+    gap: usize,
+    /// The reference bases (1-based) the planted insertion lies between: after `at`, before `at + 1`.
+    at: usize,
+    /// The reference with the control SNP, and with the insertion too.
+    control_only: Vec<u8>,
+    truth: Vec<u8>,
+    /// The true reading's score (the spare N gapped at the run's end nearer the insertion), and the best.
+    true_score: i32,
+    best_score: i32,
+}
+
+/// The data seat's probe (session c04f58c5, w02v), with its seeds.
+fn insertion_probe(sample_run: bool, seed: u64, run_n: usize, after: bool, gap: usize, len: usize) -> InsProbe {
+    let mut rng = SplitMix(0x7A11_0000 + seed * 100_003 + (run_n * 1_000 + gap * 10 + len) as u64 + if after { 50_000 } else { 0 } + if sample_run { 7_000_000 } else { 0 });
+    let g = rng.bases(GAP_GENOME_BP);
+    let ins = rng.bases(len);
+    let p = if after { GAP_TRUE.end + gap } else { GAP_TRUE.start - gap };
+    let control = rng.other(g[GAP_CONTROL_AT]);
+    let spare = run_n - GAP_TRUE.len();
+    // the true reading's columns, and the two sequences
+    let (mut qa, mut ra, mut sample, mut reference) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let spare_gap = |qa: &mut Vec<u8>, ra: &mut Vec<u8>, sample: &mut Vec<u8>, reference: &mut Vec<u8>| {
+        for _ in 0..spare {
+            if sample_run {
+                (qa.push(b'N'), ra.push(b'-'), sample.push(b'N'));
+            } else {
+                (qa.push(b'-'), ra.push(b'N'), reference.push(b'N'));
+            }
+        }
+    };
+    let mut at = 0;
+    for i in 0..GAP_GENOME_BP {
+        if i == p {
+            at = reference.len();
+            for &b in &ins {
+                (qa.push(b), ra.push(b'-'), sample.push(b));
+            }
+        }
+        let in_run = GAP_TRUE.contains(&i);
+        if in_run && !after && i == GAP_TRUE.start {
+            spare_gap(&mut qa, &mut ra, &mut sample, &mut reference);
+        }
+        let r = if in_run && !sample_run { b'N' } else { g[i] };
+        let s = if i == GAP_CONTROL_AT { control } else if in_run && sample_run { b'N' } else { g[i] };
+        reference.push(r);
+        if GAP_SAMPLE.contains(&i) {
+            (qa.push(s), ra.push(r), sample.push(s));
+        }
+        if in_run && after && i == GAP_TRUE.end - 1 {
+            spare_gap(&mut qa, &mut ra, &mut sample, &mut reference);
+        }
+    }
+    let mut control_only = reference.clone();
+    control_only[GAP_CONTROL_AT + if sample_run { 0 } else { spare }] = control;
+    let mut truth = control_only.clone();
+    truth.splice(at..at, ins.iter().copied());
+    let true_score = d0268_columns_score(&qa, &ra);
+    let best_score = bio::alignment::pairwise::Aligner::with_capacity(sample.len(), reference.len(), -5, -2, d0268_score).semiglobal(&sample, &reference).score;
+    let where_run = if sample_run { "sample" } else { "reference" };
+    let label = format!("seed {seed}, {where_run} {run_n} N, {len}-bp insertion {gap} bases {}", if after { "after" } else { "before" });
+    InsProbe { label, reference, sample, sample_run, after, len, spare, gap, at, control_only, truth, true_score, best_score }
+}
+
+/// How a report reads against an insertion probe: `None` when it calls the planted insertion (the
+/// calls make the true sequence), or leaves it out (they make the reference with only the control
+/// SNP) with a warning naming its own length between reference bases that hold it; otherwise what
+/// is wrong, and whether the calls are confident (they make neither sequence). No warning may name
+/// an indel of another length but the run's spare N (and, directly beside the run, the insertion
+/// and the spare N as one). And whether it is left out, named at its own length between reference
+/// bases that reach no further than the bases the run stands for (in a sample run, the reference
+/// bases 600 and 611 on either side of them), where its spare N lie.
+fn read_insertion(p: &InsProbe, rep: &FreeBayesVariantReport) -> (bool, Option<(bool, String)>) {
+    let calls = report_calls(rep);
+    let made = applied(&p.reference, &calls);
+    let merged = p.len + p.spare;
+    let lengths: Vec<usize> = rep.warnings.iter().filter_map(|w| w.strip_prefix("A ")?.split_once("-bp ")?.0.parse().ok()).collect();
+    let other: Vec<usize> = lengths.into_iter().filter(|&l| l != p.len && l != p.spare && !(p.gap == 0 && l == merged)).collect();
+    let covers = |l: usize| rep.warnings.iter().any(|w| named_insertion(w, l).is_some_and(|(a, b)| a <= p.at && b > p.at));
+    let named = covers(p.len) || (p.gap == 0 && covers(merged));
+    let confident = made.as_ref() != Some(&p.truth) && made.as_ref() != Some(&p.control_only);
+    let (last_before, first_after) = (GAP_TRUE.start, GAP_TRUE.end + 1);
+    let within = rep.warnings.iter().any(|w| named_insertion(w, p.len).is_some_and(|(a, b)| a <= p.at && b > p.at && if p.after { a >= last_before } else { b <= first_after }));
+    let left_out = other.is_empty() && made.as_ref() == Some(&p.control_only) && within;
+    let ok = other.is_empty() && (made.as_ref() == Some(&p.truth) || (made.as_ref() == Some(&p.control_only) && named));
+    (left_out, (!ok).then(|| {
+        let what = if confident { "confident" } else if !other.is_empty() { "warned at another length" } else { "not named over a covering span" };
+        (confident, format!("{}: {what}: calls {calls:?}; warnings {:?} [true reading {}, best {}]", p.label, rep.warnings, p.true_score, p.best_score))
+    }))
+}
+
+#[test]
+fn bg_01m7_insertion_beside_an_n_run_keeps_its_own_length() {
+    // The data seat's three families, every seeded draw on both paths: a 5-, 6-, 7- or 9-bp
+    // insertion 0-7 bases before or after a sample run of 13, 15 or 20 N standing for 10 bases
+    // (576 draws), and 5-7 bases from such a run in the reference (288); and the control, a 4- or
+    // 7-bp insertion 0-2 bases from a reference run of 10 N standing for 10 (1,440 draws, clean
+    // before this unit). It is called, or left out with a warning naming its own length between
+    // reference bases that hold it, and no warning names another length. Before BG-01M7V8C1 the
+    // sample family gave 52 reports warning a merged insertion of the wrong length where the true
+    // reading scores no lower than the best, and 6 calling one confidently (a 7-bp insertion as
+    // 12 bp); the reference family 54 confident false MNP, SNP or INS calls.
+    //
+    // D0268: a report is excused only on a draw whose best reading strictly outscores the true one,
+    // both scored by the alignment's own scoring. Measured at BG-01M7V8C1: none wrong, and 1,118 of
+    // the 4,608 reports excused, 466 of them with a call the truth does not hold (most beside the
+    // reference run, where pairing the inserted bases with the bases before the run and reading
+    // fewer gaps outscores the truth by more than 3).
+    let mut probes = Vec::new();
+    for (sample_run, runs, gaps, lens, seeds) in [
+        (true, vec![13usize, 15, 20], (0..=7).collect::<Vec<usize>>(), vec![5usize, 6, 7, 9], 3u64),
+        (false, vec![13, 15, 20], (5..=7).collect(), vec![5, 6, 7, 9], 4),
+        (false, vec![10], (0..=2).collect(), vec![4, 7], 120),
+    ] {
+        for seed in 0..seeds {
+            for &run_n in &runs {
+                for after in [false, true] {
+                    for &gap in &gaps {
+                        for &len in &lens {
+                            probes.push(insertion_probe(sample_run, seed, run_n, after, gap, len));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(probes.len(), 576 + 288 + 1_440, "fixture");
+    // Each report: wrong where the true reading scores no lower; excused (D0268) where the best
+    // reading strictly outscores it; and, on the tie arm, left out at its own length or not.
+    struct Read {
+        error: Option<(bool, String)>,
+        excused: bool,
+        tie_arm: Option<bool>,
+    }
+    let chunk = probes.len().div_ceil(4);
+    let reads: Vec<Read> = std::thread::scope(|s| {
+        let handles: Vec<_> = probes
+            .chunks(chunk)
+            .map(|ps| {
+                s.spawn(move || {
+                    let mut reads = Vec::new();
+                    for p in ps {
+                        for (path, rep) in both_paths(&p.reference, &p.sample) {
+                            let (left_out, error) = read_insertion(p, &rep);
+                            // the tie arm: an insertion 5 bases from a sample run with 5 or more
+                            // spare N, whose reading merged with them scores as the split one
+                            let tie = p.sample_run && p.gap == 5 && p.spare >= 5 && p.true_score == p.best_score;
+                            let error = error.map(|(c, l)| (c, format!("{path}, {l}")));
+                            reads.push(Read { error, excused: p.best_score > p.true_score, tie_arm: tie.then_some(left_out) });
+                        }
+                    }
+                    reads
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(reads.len(), 2 * (576 + 288 + 1_440), "fixture: every draw on both paths");
+    let lines = |excused: bool| -> Vec<&str> { reads.iter().filter(|r| r.excused == excused).filter_map(|r| r.error.as_ref()).map(|e| e.1.as_str()).collect() };
+    let (wrong, excused) = (lines(false), lines(true));
+    let confident = reads.iter().filter(|r| r.error.as_ref().is_some_and(|e| e.0)).count();
+    println!("{} wrong, {} excused (D0268), {confident} of them confident:\n{}", wrong.len(), excused.len(), excused.join("\n"));
+    assert!(wrong.is_empty(), "{} of {} reports wrong where the true reading scores no lower:\n{}", wrong.len(), reads.len(), wrong.join("\n"));
+    // The tie arm: the merged reading and the split one score equal, so the sample does not say which
+    // it holds, and the insertion is left out with the run's spare N, named at its own length.
+    let tie_arm: Vec<bool> = reads.iter().filter_map(|r| r.tie_arm).collect();
+    println!("tie arm: {} reports, {} left out", tie_arm.len(), tie_arm.iter().filter(|&&l| l).count());
+    assert!(!tie_arm.is_empty() && tie_arm.iter().all(|&l| l), "tie arm: {} of {} reports left out at its own length", tie_arm.iter().filter(|&&l| l).count(), tie_arm.len());
+}

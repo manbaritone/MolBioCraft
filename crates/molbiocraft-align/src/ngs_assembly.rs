@@ -2840,8 +2840,208 @@ fn part_deletions_before_unknown_runs(qa: &mut [u8], ra: &mut [u8]) {
     }
 }
 
-/// The deletions the caller leaves out because a deletion it leaves out beside bases it does not
-/// know may be the same deletion (BG-01M6W02V), by first column, with how many more columns each
+/// How many alignment columns on each side of a reference run of unknown bases
+/// [`reread_beside_reference_runs`] reads again.
+const CALL_REREAD_COLUMNS: usize = CALL_REACH_SCAN;
+
+/// Reads the alignment again beside each reference run of two or more unknown bases, where the
+/// alignment scores readings equal that pair different known bases differently: among them, the one
+/// that pairs the fewest known bases with different ones ([`reread_pair`]), where it reads the run
+/// as holding more N than the bases it stands for. Beside a run of 13 N standing for 10 bases, a 7-bp insertion 6 bases before the run
+/// and the run's 3 spare N deleted tie with a reading that pairs the inserted bases with the bases
+/// before the run, and inserts the 4 more bases the sample holds there; that reading's chance
+/// matches were called as an MNP, an insertion of the wrong length and a SNP the sample does not
+/// hold (BG-01M7V8C1). A window of [`CALL_REREAD_COLUMNS`] columns each side of the run (each side
+/// of each end of a longer run), between two columns that pair two bases, is aligned again from end
+/// to end, scored by [`call_score`] with each gap -5 - 2n and, at an equal score, by the fewest such
+/// pairs. The reading replaces the window's columns only where it scores strictly higher so and
+/// deletes some of the run's N. A window with no gap and no known bases that differ holds nothing
+/// to call and is left as it is.
+///
+/// The tie is not broken by the most known bases matched ([`known_score`]): that prefers a reading
+/// that moves sample bases off a run of N onto known bases where some match by chance, and beside
+/// a run of 10 N standing for 10 bases a 7-bp deletion just before the run was then read with a
+/// false SNP among such chance matches. And a reading that deletes none of the run's N is not
+/// taken: beside a run of 3 N standing for 10 bases, a SNP just before the run and the 7 more bases
+/// the sample holds there, left out as one insertion, were read with the fewest such pairs as two
+/// insertions of 1 and 6 bases, or 2 and 5.
+fn reread_beside_reference_runs(qa: &mut Vec<u8>, ra: &mut Vec<u8>) {
+    let n = qa.len().min(ra.len());
+    let paired = |qa: &[u8], ra: &[u8], c: usize| qa[c] != b'-' && ra[c] != b'-';
+    let (Some(first), Some(last)) = (qa[..n].iter().position(|&b| b != b'-'), qa[..n].iter().rposition(|&b| b != b'-')) else {
+        return;
+    };
+    // the reference runs of unknown bases, by their first and last columns
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut c = first;
+    while c <= last {
+        if ra[c] == b'-' || call_known(ra[c]) {
+            c += 1;
+            continue;
+        }
+        let (from, mut to, mut bases) = (c, c, 0usize);
+        while c <= last && (ra[c] == b'-' || !call_known(ra[c])) {
+            if ra[c] != b'-' {
+                (to, bases) = (c, bases + 1);
+            }
+            c += 1;
+        }
+        if bases >= 2 {
+            runs.push((from, to));
+        }
+    }
+    let w = CALL_REREAD_COLUMNS;
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    for &(from, to) in &runs {
+        let spans = if to - from < 2 * w { vec![(from, to)] } else { vec![(from, from), (to, to)] };
+        for (a, b) in spans {
+            // the anchors: the nearest columns pairing two bases outside the window
+            let mut lo = a.saturating_sub(w).max(first);
+            while lo > first && !paired(qa, ra, lo) {
+                lo -= 1;
+            }
+            let mut hi = (b + w).min(last);
+            while hi < last && !paired(qa, ra, hi) {
+                hi += 1;
+            }
+            if paired(qa, ra, lo) && paired(qa, ra, hi) && hi > lo + 1 {
+                windows.push((lo, hi));
+            }
+        }
+    }
+    windows.sort_unstable();
+    windows.dedup();
+    // from the last window to the first, each kept clear of the one after it, whose first column
+    // (a column pairing two bases) no reading moves
+    let mut next_lo = usize::MAX;
+    for &(lo, hi) in windows.iter().rev() {
+        let hi = hi.min(next_lo);
+        if hi <= lo + 1 {
+            continue;
+        }
+        next_lo = lo;
+        let (cols_q, cols_r) = (&qa[lo + 1..hi], &ra[lo + 1..hi]);
+        let callable = cols_q.iter().zip(cols_r).any(|(&q, &r)| q == b'-' || r == b'-' || (call_known(q) && call_known(r) && q != r));
+        if !callable {
+            continue;
+        }
+        let Some((new_q, new_r)) = reread_window(cols_q, cols_r) else { continue };
+        // the run read as holding more N than the bases it stands for
+        if new_q.iter().zip(&new_r).any(|(&q, &r)| q == b'-' && r != b'-' && !call_known(r)) {
+            qa.splice(lo + 1..hi, new_q);
+            ra.splice(lo + 1..hi, new_r);
+        }
+    }
+}
+
+/// The weight of the alignment's own score in [`reread_score`], above any count of pairs of
+/// different known bases a window holds.
+const CALL_REREAD_TIE: i64 = 1 << 20;
+
+/// [`reread_beside_reference_runs`]'s score of a column pairing two bases: the alignment's own
+/// ([`call_score`]), then 1 less where the two are different known bases.
+fn reread_pair(a: u8, b: u8) -> i64 {
+    call_score(a, b) as i64 * CALL_REREAD_TIE - (call_known(a) && call_known(b) && a != b) as i64
+}
+
+/// [`reread_beside_reference_runs`]'s score of alignment columns: [`reread_pair`] for each pair, and
+/// each gap -5 - 2n (an insertion beside a deletion two gaps).
+fn reread_score(qa: &[u8], ra: &[u8]) -> i64 {
+    let (mut score, mut state) = (0i64, 0u8);
+    for (&q, &r) in qa.iter().zip(ra) {
+        let now = if q == b'-' { 2 } else if r == b'-' { 1 } else { 0 };
+        score += match now {
+            0 => reread_pair(q, r),
+            _ if now == state => -2 * CALL_REREAD_TIE,
+            _ => -(CALL_GAP_OPEN as i64 + 2) * CALL_REREAD_TIE,
+        };
+        state = now;
+    }
+    score
+}
+
+/// The window's bases aligned again from end to end at [`reread_score`]'s highest score, as
+/// alignment columns, where that scores strictly higher than the columns `qa` and `ra` do.
+fn reread_window(qa: &[u8], ra: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let x: Vec<u8> = qa.iter().copied().filter(|&b| b != b'-').collect();
+    let y: Vec<u8> = ra.iter().copied().filter(|&b| b != b'-').collect();
+    let (xn, yn) = (x.len(), y.len());
+    let (open, extend) = (-(CALL_GAP_OPEN as i64 + 2) * CALL_REREAD_TIE, -2 * CALL_REREAD_TIE);
+    let neg = i64::MIN / 4;
+    let at = |i: usize, j: usize| i * (yn + 1) + j;
+    // the best score ending at (i, j) in a pair (m), a sample base against a gap (ins) and a
+    // reference base against a gap (del)
+    let size = (xn + 1) * (yn + 1);
+    let (mut m, mut ins, mut del) = (vec![neg; size], vec![neg; size], vec![neg; size]);
+    m[at(0, 0)] = 0;
+    for i in 0..=xn {
+        for j in 0..=yn {
+            if i > 0 && j > 0 {
+                let p = at(i - 1, j - 1);
+                m[at(i, j)] = m[p].max(ins[p]).max(del[p]) + reread_pair(x[i - 1], y[j - 1]);
+            }
+            if i > 0 {
+                let p = at(i - 1, j);
+                ins[at(i, j)] = (m[p].max(del[p]) + open).max(ins[p] + extend);
+            }
+            if j > 0 {
+                let p = at(i, j - 1);
+                del[at(i, j)] = (m[p].max(ins[p]) + open).max(del[p] + extend);
+            }
+        }
+    }
+    let end = at(xn, yn);
+    let best = m[end].max(ins[end]).max(del[end]);
+    if best <= reread_score(qa, ra) {
+        return None;
+    }
+    let (mut i, mut j) = (xn, yn);
+    let mut state = if m[end] == best { 0 } else if ins[end] == best { 1 } else { 2 };
+    let (mut nq, mut nr) = (Vec::with_capacity(qa.len() + 8), Vec::with_capacity(qa.len() + 8));
+    while i > 0 || j > 0 {
+        let here = at(i, j);
+        match state {
+            0 => {
+                let p = at(i - 1, j - 1);
+                let v = m[here] - reread_pair(x[i - 1], y[j - 1]);
+                state = if m[p] == v { 0 } else if ins[p] == v { 1 } else { 2 };
+                (nq.push(x[i - 1]), nr.push(y[j - 1]));
+                (i, j) = (i - 1, j - 1);
+            }
+            1 => {
+                let p = at(i - 1, j);
+                state = if ins[p] + extend == ins[here] { 1 } else if m[p] + open == ins[here] { 0 } else { 2 };
+                (nq.push(x[i - 1]), nr.push(b'-'));
+                i -= 1;
+            }
+            _ => {
+                let p = at(i, j - 1);
+                state = if del[p] + extend == del[here] { 2 } else if m[p] + open == del[here] { 0 } else { 1 };
+                (nq.push(b'-'), nr.push(y[j - 1]));
+                j -= 1;
+            }
+        }
+    }
+    nq.reverse();
+    nr.reverse();
+    Some((nq, nr))
+}
+
+/// Parts an insertion the alignment merged with the spare N of a sample run beside it, as
+/// [`part_deletions_from_unknown_runs`] parts a deletion, with the two rows' parts exchanged: the
+/// reference bases between them are paired with the sample's spare N instead of their own bases in
+/// the sample, and the two insertions become one. Beside a sample run of 15 N standing for 10 bases,
+/// a 5-bp insertion 5 bases before the run ties with its merged reading and was named as a 10-bp
+/// insertion, and a 7-bp insertion 6 bases before it was called as a 12-bp insertion
+/// (BG-01M7V8C1). Where the split reading
+/// scores no lower it is taken; one the alignment scores higher merged stays merged.
+fn part_insertions_from_unknown_runs(qa: &mut [u8], ra: &mut [u8]) {
+    part_deletions_from_unknown_runs(ra, qa);
+}
+
+/// The indels of one kind (deletions when `is_del`, else insertions) the caller leaves out because
+/// an indel of that kind it leaves out beside bases it does not know may be the same indel
+/// (BG-01M6W02V, and BG-01M7V8C1 for insertions), by first column, with how many more columns each
 /// one's warning names to the left and right. A deletion beside unknown bases, moved past the
 /// bases between it and another deletion, joins it, and one gap is opened less: where the alignment
 /// scores that no lower, the sample does not say which reading holds, and the other deletion is left
@@ -2853,14 +3053,25 @@ fn part_deletions_before_unknown_runs(qa: &mut [u8], ra: &mut [u8]) {
 /// The deletion is moved one column at a time while the column it moves past holds a base in both
 /// rows, as [`indel_placements`] moves it, but on past a run of unknown bases: N deleted from a run
 /// lie anywhere in it.
-fn deletions_left_out_together(qa: &[u8], ra: &[u8]) -> std::collections::HashMap<usize, (usize, usize)> {
+///
+/// An insertion is moved the same way, the rows' parts exchanged. Beside a sample run of more N
+/// than the bases it stands for, the run's spare N moved onto an insertion 5 bases before it each
+/// pair a known reference base with N, losing 1, and the gap opened once less gains 5: the two tie,
+/// so the sample does not say whether it holds the insertion or one of both lengths, and both are
+/// left out, each with its own length (BG-01M7V8C1). Its warning names the reference bases it moves
+/// past only, since the other insertion's columns hold none.
+fn indels_left_out_together(qa: &[u8], ra: &[u8], is_del: bool) -> std::collections::HashMap<usize, (usize, usize)> {
     let n = qa.len().min(ra.len());
     let unknown_at = |c: usize| c < n && [qa[c], ra[c]].iter().any(|&b| b != b'-' && !call_known(b));
     let paired = |c: usize| qa[c] != b'-' && ra[c] != b'-';
-    let deletions: Vec<(usize, usize)> = interior_indels(qa, ra).into_iter().filter(|d| d.2).map(|(s, e, _)| (s, e)).collect();
+    let indels: Vec<(usize, usize)> = interior_indels(qa, ra).into_iter().filter(|d| d.2 == is_del).map(|(s, e, _)| (s, e)).collect();
+    // the row that holds the gap, and the row that holds the indel's bases
+    let (qa, ra) = if is_del { (qa, ra) } else { (ra, qa) };
+    // the reference bases an indel of `len` columns covers
+    let bases = |len: usize| if is_del { len } else { 0 };
     let mut out: std::collections::HashMap<usize, (usize, usize)> = std::collections::HashMap::new();
-    for &(start, end) in &deletions {
-        let (left, right) = fitting_reach(qa, ra, start, end, true);
+    for &(start, end) in &indels {
+        let (left, right) = if is_del { fitting_reach(qa, ra, start, end, true) } else { fitting_reach(ra, qa, start, end, false) };
         if !(start.saturating_sub(left + 1)..=end + right).any(unknown_at) {
             continue;
         }
@@ -2884,18 +3095,18 @@ fn deletions_left_out_together(qa: &[u8], ra: &[u8]) -> std::collections::HashMa
         for (met, to_right) in [(met_right, true), (met_left, false)] {
             let Some(j) = met else { continue };
             let next = if to_right { end + j } else { start - j - 1 };
-            let Some(&(os, oe)) = deletions.iter().find(|&&(s, e)| (s..e).contains(&next)) else { continue };
+            let Some(&(os, oe)) = indels.iter().find(|&&(s, e)| (s..e).contains(&next)) else { continue };
             let mine = out.entry(start).or_insert((0, 0));
             if to_right {
-                mine.1 = mine.1.max(j + oe - os);
+                mine.1 = mine.1.max(j + bases(oe - os));
             } else {
-                mine.0 = mine.0.max(j + oe - os);
+                mine.0 = mine.0.max(j + bases(oe - os));
             }
             let theirs = out.entry(os).or_insert((0, 0));
             if to_right {
-                theirs.0 = theirs.0.max(j + end - start);
+                theirs.0 = theirs.0.max(j + bases(end - start));
             } else {
-                theirs.1 = theirs.1.max(j + end - start);
+                theirs.1 = theirs.1.max(j + bases(end - start));
             }
         }
     }
@@ -3109,9 +3320,11 @@ pub fn call_freebayes_variants_with_one_shot_limit(
     } else {
         align_sample_in_segments(&query, reference, &chain)
     };
+    reread_beside_reference_runs(&mut qa, &mut ra);
     part_deletions_from_unknown_runs(&mut qa, &mut ra);
+    part_insertions_from_unknown_runs(&mut qa, &mut ra);
     place_indels_on_known_bases(&mut qa, &mut ra);
-    let together = deletions_left_out_together(&qa, &ra);
+    let together = [indels_left_out_together(&qa, &ra, false), indels_left_out_together(&qa, &ra, true)];
     // the stretches of the sample soft-clipped as unrelated to the reference ([`soft_clipped_columns`])
     let clips = soft_clipped_columns(&qa, &ra, ystart, &chain, query.len());
     let mut clip_at = vec![false; qa.len().min(ra.len())];
@@ -3228,8 +3441,8 @@ pub fn call_freebayes_variants_with_one_shot_limit(
         // know in its bases, its anchor or its next column: where it lies against bases that are
         // not known is not known. It is named, with every reference base those placements cover.
         let beside_unknown = !call_known(anchor) || (start_col.saturating_sub(left + 1)..=col + right).any(unknown_at);
-        // a deletion that may be one with another left out beside unknown bases ([`deletions_left_out_together`])
-        let together_with = if is_del { together.get(&start_col).copied() } else { None };
+        // an indel that may be one with another left out beside unknown bases ([`indels_left_out_together`])
+        let together_with = together[is_del as usize].get(&start_col).copied();
         let beside_unknown = beside_unknown || together_with.is_some();
         let (left, right) = together_with.map_or((left, right), |(l, r)| (left.max(l), right.max(r)));
         // Nor is it called where, moved past bases that then differ, it lies against such bases in
