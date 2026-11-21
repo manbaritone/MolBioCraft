@@ -444,10 +444,22 @@ REPLACEMENTS = {
 # The recorded result of `search` (run 2026-11-08). A citation is the record, plus start, end and
 # strand when the member is a region of it; `replaces` says what a replacement replaced. Steps 1
 # and 2 identified 115 members; BLAST identified coxii-seq-44, -49 and -50, and with the earlier
-# RefSeq versions and CANDIDATES all four transcript variants. pwprot-seq-1's own BLAST search
-# (blastp on nr, RID EZURMS2M014) was still queued at NCBI when this was recorded, after neither
-# its esearch candidates nor UniParc held its sequence, so its replacement stands on those two
-# checks until that search returns.
+# RefSeq versions and CANDIDATES all four transcript variants. pwprot-seq-1 (Kiwifruit (2ACT)) has
+# no BLAST result: the search was abandoned. Its blastp on nr (RID EZURMS2M014) was still WAITING
+# when this was recorded, and on 2026-11-22 NCBI no longer knew that RID (Status=UNKNOWN). The re-run
+# that day, blastp of the 220-residue member on nr (RID G3YXNES0014) and on swissprot (RID
+# G3YXXN3P014), both put by NCBI at an estimated 13,866 s, was still WAITING after 32 minutes of
+# polling once a minute, and was abandoned there because NCBI's queue would not run it within the
+# check's half hour. So no BLAST top hit, identity or coverage is recorded, and no BLAST hit is known
+# to be an exact full-length match. Its replacement by 2ACT_A rests instead on three checks:
+# - its esearch candidates, none an exact match: the 55 that CANDIDATE_QUERY found on 2026-11-22,
+#   the closest 2ACT_A at 219 of 220 over the full length;
+# - UniParc, which holds its sequence as UPI0000110491 (220 residues) but lists only PDB 2ACT for it,
+#   no RefSeq or INSDC record that step 2 could efetch;
+# - RCSB, whose chain A of 2ACT is the member residue for residue (220 of 220, checked 2026-11-22),
+#   residue 25 being the oxidised cysteine CSD (3-sulfinoalanine, its MODRES record), which NCBI's
+#   2ACT_A writes as X.
+# So the member is the sequence of the entry it names, and 2ACT_A is NCBI's record of that chain.
 RESULTS = {
  "doc-aln-coxii-cds": {
   "coxii-seq-1": {
