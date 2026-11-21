@@ -368,28 +368,22 @@ it('every installer the build scripts produce carries NOTICE', { timeout: 120_00
 });
 
 const RAMA_SCRIPT = repo('scripts/outside-data/derive_ramachandran_maps.py');
-const BACKBONE = repo('crates/molbiocraft-protein/src/backbone.rs');
+const GRIDS_RS = repo('crates/molbiocraft-protein/src/rama8000_grids.rs');
+const GRIDS_REL = 'crates/molbiocraft-protein/src/rama8000_grids.rs';
 
-// Writes the six grids into argv[3] so that each 10-degree cell derives the class the committed
-// map in argv[2] gives it: all 25 nodes favoured (0.5), allowed (0.01, above every allowed cutoff
-// and below the favoured one) or absent (0, an outlier).
+// Writes the six grids into argv[3] so that each holds, node for node, the values the committed
+// grids in argv[2] embed: every non-zero node, at the shortest decimal that reads back as its f32.
 const MAKE_GRIDS = `
 import importlib.util, os, sys
-script, maps, out = sys.argv[1:4]
+script, embedded, out = sys.argv[1:4]
 spec = importlib.util.spec_from_file_location('derive_ramachandran_maps', script)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-committed = mod.committed_maps(maps)
-value = {'#': '0.5', '+': '0.01'}
+committed = mod.committed_grids(embedded)
 for const, (name, _, _) in mod.GRIDS.items():
-    rows = committed[const][0]
+    values = committed[const][0]
     lines = ['# Number of dimensions: 2', '#   x1: -180.0 180.0 180 true', '#   x2: -180.0 180.0 180 true']
-    for r in range(36):
-        psis = [p for p in mod.NODES if 170 - 10 * r <= p < 180 - 10 * r]
-        for c in range(36):
-            phis = [p for p in mod.NODES if -180 + 10 * c <= p < -170 + 10 * c]
-            if rows[r][c] in value:
-                lines += [f'{f}.0 {s}.0 {value[rows[r][c]]}' for f in phis for s in psis]
+    lines += [f'{mod.NODES[k // 180]}.0 {mod.NODES[k % 180]}.0 {mod.literal(v)}' for k, v in enumerate(values) if v != 0]
     with open(os.path.join(out, name), 'w') as fh:
         fh.write('\\n'.join(lines) + '\\n')
 `;
@@ -411,14 +405,16 @@ print('MOLBIOCRAFT_REQUIRE_TEST_DATA=' + os.environ.get('MOLBIOCRAFT_REQUIRE_TES
 mod.main()
 `;
 
-/** backbone.rs with one cell of GENERAL_REGIONS (row 0, column 0) changed, and that cell's two classes. */
-function flipOneCell(): { text: string; committed: string; derived: string } {
-  const src = text(BACKBONE);
-  const at = src.indexOf('"', src.indexOf('pub const GENERAL_REGIONS: [&str; 36] = ['));
-  expect(at, 'GENERAL_REGIONS in backbone.rs').toBeGreaterThan(0);
-  const derived = src[at + 1];
-  const committed = derived === '#' ? '.' : '#';
-  return { text: src.slice(0, at + 1) + committed + src.slice(at + 2), committed, derived };
+/** rama8000_grids.rs with one node of GENERAL (phi -179, psi -179) changed, and that node's two values. */
+function changeOneNode(): { text: string; committed: string; file: string } {
+  const src = text(GRIDS_RS);
+  const head = src.indexOf('pub static GENERAL: [f32; 32400] = [\n// phi -179\n');
+  expect(head, 'GENERAL in rama8000_grids.rs').toBeGreaterThan(0);
+  const at = src.indexOf('\n// phi -179\n', head) + '\n// phi -179\n'.length;
+  const file = src.slice(at, src.indexOf(',', at));
+  expect(file, 'the first node value of GENERAL').toMatch(/^\d/);
+  const committed = file === '0.5' ? '0.25' : '0.5';
+  return { text: src.slice(0, at) + committed + src.slice(at + file.length), committed, file };
 }
 
 const CHECK = repo('scripts/check_reference_suite.mjs');
@@ -534,12 +530,12 @@ it('the reference check runs the Ramachandran derivation and fails on drift', { 
   inTemp('mbc-notice-rama-', (dir) => {
     const grids = path.join(dir, 'grids');
     fs.mkdirSync(grids);
-    const made = cp.spawnSync(python(), ['-I', '-c', MAKE_GRIDS, RAMA_SCRIPT, BACKBONE, grids], { encoding: 'utf8' });
+    const made = cp.spawnSync(python(), ['-I', '-c', MAKE_GRIDS, RAMA_SCRIPT, GRIDS_RS, grids], { encoding: 'utf8' });
     expect(made.status, `making the fixture grids failed:\n${made.stderr}`).toBe(0);
     const pinned = path.join(dir, 'pinned_to_fixtures.py');
     fs.writeFileSync(pinned, wrapper(grids));
-    const flip = flipOneCell();
-    const drifted = path.join(dir, 'backbone.rs');
+    const flip = changeOneNode();
+    const drifted = path.join(dir, 'rama8000_grids.rs');
     fs.writeFileSync(drifted, flip.text);
     const silent = path.join(dir, 'silent.py');
     fs.writeFileSync(silent, 'pass\n');
@@ -598,18 +594,24 @@ it('the reference check runs the Ramachandran derivation and fails on drift', { 
     ]);
     expect(clean.ran[0].args.slice(0, 3), 'the main Vitest run').toEqual(['run', '--dir', repo('src/__tests__')]);
     expect(clean.ran[clean.ran.length - 1].args, 'the cargo run').toEqual(['test', '--workspace', '--no-fail-fast', '--', '--include-ignored']);
-    expect(clean.stdout, 'the derivation, run by the default interpreter').toContain(`\n== ${interpreter} -I ${pinned} --fetch ${grids} --check crates/molbiocraft-protein/src/backbone.rs\n`);
-    expect(clean.stdout).toContain('ramachandran totals: 7776 cells checked; 0 differ; 0 doc comment mismatches');
+    expect(clean.stdout, 'the derivation, run by the default interpreter').toContain(`\n== ${interpreter} -I ${pinned} --fetch ${grids} --check ${GRIDS_REL}\n`);
+    expect(clean.stdout).toContain('ramachandran totals: 194400 nodes checked; 0 differ; 0 doc comment mismatches');
 
     // The same command on maps with one cell drifted from the derivation: the step names the cell,
     // every other step still runs and passes, and the check fails for that one reason.
     const drift = check([], { ...workflow, MOLBIOCRAFT_REFERENCE_RAMA_MAPS: drifted });
     expect(drift.status, drift.stdout + drift.stderr).toBe(1);
-    expect(drift.stdout).toContain(`GENERAL_REGIONS row 0 (psi 170..180) column 0 (phi -180..-170): committed '${flip.committed}', derived '${flip.derived}'`);
+    expect(drift.stdout).toContain(`\nGENERAL node (phi -179, psi -179): committed ${flip.committed}, file ${flip.file}\n`);
+    expect(drift.stdout).toContain('\nGENERAL: 1 of 32400 nodes differ (rama8000-general-noGPIVpreP.data, allowed >= 0.0005)\n');
     expect(verdict(drift.stdout)).toBe(
-      `\nreference suite: FAIL\n  - ramachandran derivation (${pinned}): 1 of 7776 cells of ${drifted} differ from the derivation and 0 doc comments mismatch (each is listed above)\n`
+      `\nreference suite: FAIL\n  - ramachandran derivation (${pinned}): 1 of 194400 grid nodes of ${drifted} differ from the pinned files and 0 doc comments mismatch (each is listed above)\n`
     );
     expect(drift.ran.map((x) => x.tool)).toEqual(clean.ran.map((x) => x.tool));
+    // The derivation script itself, on that copy: it lists the node and exits 1, whatever the
+    // check makes of its total line.
+    const direct = cp.spawnSync(python(), ['-I', pinned, '--fetch', grids, '--check', drifted], { encoding: 'utf8' });
+    expect(direct.status, direct.stdout + direct.stderr).toBe(1);
+    expect(direct.stdout).toContain('\ntotal: 1 of 194400 nodes differ; 0 doc comment mismatches\n');
 
     // The local-only tests (BG-01M6QFHR), on a data folder without and with their folders, so both
     // cases run wherever the test does: each skips while its folder is absent and passes while it
@@ -667,8 +669,8 @@ it('the reference check runs the Ramachandran derivation and fails on drift', { 
     const alone = only({});
     expect(verdict(alone.stdout), alone.stdout + alone.stderr).toBe('\nreference suite (only ramachandran): PASS\n');
     expect(alone.status).toBe(0);
-    expect(alone.stdout, 'the derivation, run by the interpreter named').toContain(`\n== ${executable} -I ${pinned} --fetch ${grids} --check crates/molbiocraft-protein/src/backbone.rs\n`);
-    expect(alone.stdout).toContain('ramachandran totals: 7776 cells checked; 0 differ; 0 doc comment mismatches');
+    expect(alone.stdout, 'the derivation, run by the interpreter named').toContain(`\n== ${executable} -I ${pinned} --fetch ${grids} --check ${GRIDS_REL}\n`);
+    expect(alone.stdout).toContain('ramachandran totals: 194400 nodes checked; 0 differ; 0 doc comment mismatches');
     expect(alone.stderr, 'the REQUIRE flag the derivation ran with').toContain('MOLBIOCRAFT_REQUIRE_TEST_DATA=1');
     expect(alone.ran, 'Vitest and cargo did not run').toEqual([]);
     expect(alone.stdout, 'only the Ramachandran step ran').not.toMatch(/^== (src-tauri|vitest|cargo)/m);
@@ -783,7 +785,7 @@ process.exit(cp.spawnSync(process.execPath, args.slice(1), { stdio: 'inherit' })
 const RAMA_SCRIPT_STUB = `
 import fs from 'node:fs';
 fs.appendFileSync(process.env.REFERENCE_STUB_LOG, JSON.stringify({ tool: 'ramachandran', args: process.argv.slice(2), require: process.env.MOLBIOCRAFT_REQUIRE_TEST_DATA, data: process.env.MOLBIOCRAFT_TEST_DATA_DIR }) + '\\n');
-console.log('total: 0 of 7776 cells differ; 0 doc comment mismatches');
+console.log('total: 0 of 194400 nodes differ; 0 doc comment mismatches');
 `;
 
 /** Every Vitest test file under src/__tests__ (Vitest's default include pattern), repo-relative. */
@@ -868,7 +870,7 @@ it('US-01M6P2SS AC6: the reference check runs every Vitest file and every cargo 
     // cargo: every workspace test, the #[ignore]d ones too; the derivation run isolated.
     expect(clean.ran.find((x) => x.tool === 'cargo')?.args, 'the cargo run').toEqual(['test', '--workspace', '--no-fail-fast', '--', '--include-ignored']);
     const py = clean.ran.find((x) => x.tool === 'python')?.args ?? [];
-    expect([py.slice(0, 3), py.slice(4)], 'the derivation run').toEqual([['-I', path.join(dir, 'rama-stub.mjs'), '--fetch'], ['--check', 'crates/molbiocraft-protein/src/backbone.rs']]);
+    expect([py.slice(0, 3), py.slice(4)], 'the derivation run').toEqual([['-I', path.join(dir, 'rama-stub.mjs'), '--fetch'], ['--check', GRIDS_REL]]);
 
     // One test reported skipped, with everything else as above: the check fails and names its file.
     const skipped = 'src/__tests__/rcsbSearch.test.ts';

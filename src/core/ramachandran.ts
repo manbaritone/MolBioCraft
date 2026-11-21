@@ -7,9 +7,9 @@
  *
  * The torsions and each residue's region come from the Rust engine (`backbone_torsions`,
  * molbiocraft-protein `backbone`); this module only selects what is plotted and listed, and how
- * a residue is named. The regions are 10-degree cells resampled from the Top8000 contours at
- * MolProbity's cutoffs: a coarse approximation of the categories MolProbity reports, not
- * MolProbity's classifier, so an outlier here is a residue to check, not a verdict.
+ * a residue is named. The engine classifies each residue by bilinear interpolation of its class's
+ * Top8000 2-degree grid at MolProbity's cutoffs (BG-01M6PXQ7): MolProbity's method, not MolProbity
+ * itself, so an outlier here is a residue to check, not a verdict.
  *
  * The engine reads the first model only, so the figure and its exports name the model they plot
  * whenever the entry holds more than one (an NMR ensemble): "model 1 of 10".
@@ -107,7 +107,7 @@ export function modelPhrase(model: PlottedModel): string {
 
 /** What the figure says about its regions, in the drawing, above the outlier list and in the table. */
 export const REGION_CAVEAT =
-  "Regions are a coarse approximation of MolProbity's Ramachandran categories (10° cells from the Top8000 contours), not MolProbity's own classifier.";
+  "Regions are bilinear interpolations of the Top8000 2° grids at MolProbity's cutoffs: MolProbity's method, not MolProbity itself.";
 
 /** What to do with an outlier, said wherever the regions are explained. */
 export const OUTLIER_ADVICE = 'Check each outlier against MolProbity before reporting it.';
@@ -117,7 +117,7 @@ export const OUTLIER_ADVICE = 'Check each outlier against MolProbity before repo
  * so the heading itself carries the caveat into every format.
  */
 export const REGION_COLUMN =
-  "Region (coarse approximation of MolProbity's categories, not MolProbity's own classifier; check each outlier against MolProbity)";
+  "Region (bilinear interpolation of the Top8000 2° grids at MolProbity's cutoffs: MolProbity's method, not MolProbity itself; check each outlier against MolProbity)";
 
 export interface RamachandranPoint {
   residue: ResidueTorsions;

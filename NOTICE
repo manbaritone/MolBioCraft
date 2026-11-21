@@ -127,18 +127,21 @@ guidelines.
   Snoeyink J, Adams PD, Lovell SC, Richardson JS, Richardson DC (2018).
   MolProbity: More and better reference data for improved all-atom structure
   validation. Protein Science, 27(1), 293-315. https://doi.org/10.1002/pro.3330
-  What MolBioCraft derived from it: MolBioCraft does not ship the grids. It
-  ships six 10-degree Ramachandran region maps derived from them (general, Gly,
-  trans-Pro, cis-Pro, pre-Pro and Ile/Val), in
-  crates/molbiocraft-protein/src/backbone.rs. Each 2-degree grid node is
-  classed with MolProbity's cutoffs, as coded in cctbx ramalyze.py: favoured at
-  a value of at least 0.02; otherwise allowed at least 0.0005 (general), 0.0020
-  (cis-Pro) or 0.0010 (the other classes); otherwise outlier. Each 10-degree
-  cell then takes the median class of its 25 nodes.
-  scripts/outside-data/derive_ramachandran_maps.py regenerates the maps from the
-  grids. The maps are a coarse approximation of MolProbity's Ramachandran
-  categories, not MolProbity's classifier. Their use does not imply endorsement
-  by the Richardson Lab or Duke University.
+  What MolBioCraft ships from it: the node values of the six Top8000 2-degree
+  grids (general, Gly, trans-Pro, cis-Pro, pre-Pro and Ile/Val), in
+  crates/molbiocraft-protein/src/rama8000_grids.rs. The changes made: each value
+  is rounded to the nearest 32-bit float (the precision cctbx's NDimTable holds
+  it in), a node a file does not list is written as 0, and the values are
+  written as Rust arrays in node order.
+  scripts/outside-data/derive_ramachandran_maps.py writes that file from the
+  grids and checks it against them node for node. A residue is classified by
+  bilinear interpolation of its class's grid at its phi and psi, as cctbx
+  n_dim_table.py valueAt computes it, compared with MolProbity's cutoffs as
+  coded in cctbx ramalyze.py: favoured at a value of at least 0.02; otherwise
+  allowed at least 0.0005 (general), 0.0020 (cis-Pro) or 0.0010 (the other
+  classes); otherwise outlier. This follows MolProbity's method; it is not
+  MolProbity. Its use does not imply endorsement by the Richardson Lab or Duke
+  University.
 - AlphaFold DB entry AF-P69905-F1 (haemoglobin subunit alpha, UniProt P69905),
   model version 6 (files AF-P69905-F1-model_v6.cif and
   AF-P69905-F1-model_v6.pdb):

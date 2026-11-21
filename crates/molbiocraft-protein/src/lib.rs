@@ -10,6 +10,7 @@ pub mod disorder_aggregation_epitopes;
 pub use molbiocraft_core::genetic_codes;
 pub mod motifs_domains;
 pub mod proteomics_mass_spec;
+pub mod rama8000_grids;
 pub mod structure_align;
 pub mod translation_orf;
 

@@ -114,12 +114,16 @@ const PLOT_AREA: LabelBox = { x: RAMACHANDRAN_FRAME.x, y: RAMACHANDRAN_FRAME.y, 
 const markOf = (p: { x: number; y: number }): LabelBox => ({ x: p.x - 3.4, y: p.y - 3.4, width: 6.8, height: 6.8 });
 
 /**
- * Check that a set of outlier labels names each outlier once, stays inside the plot, keeps clear
- * of the other labels and of every other outlier's marker, and sits on its point's row unless a
- * leader line joins it to its point.
+ * Check that a set of outlier labels, placed among `others` (the points that are not outliers),
+ * names each outlier once, stays inside the plot, keeps clear of the other labels and of every
+ * other outlier's marker, and sits on its point's row unless a leader line joins it to its point.
  */
-function expectReadableLabels(points: { text: string; x: number; y: number }[], where: string): ReturnType<typeof placeOutlierLabels> {
-  const labels = placeOutlierLabels(points, PLOT_AREA);
+function expectReadableLabels(
+  points: { text: string; x: number; y: number }[],
+  where: string,
+  others: { x: number; y: number }[] = [],
+): ReturnType<typeof placeOutlierLabels> {
+  const labels = placeOutlierLabels(points, PLOT_AREA, others);
   expect(labels.map((l) => l.text), where).toEqual(points.map((p) => p.text));
   labels.forEach((l, i) => {
     const p = points[i];
@@ -149,7 +153,62 @@ const circlesOf = (html: string) => Array.from(html.matchAll(/<circle\b[^>]*\bda
   region: /\bdata-region="([^"]*)"/.exec(m[0])?.[1],
   cx: Number(/\bcx="([^"]*)"/.exec(m[0])?.[1]),
   cy: Number(/\bcy="([^"]*)"/.exec(m[0])?.[1]),
+  r: Number(/\br="([^"]*)"/.exec(m[0])?.[1]),
 }));
+/** The drawn points that are not outliers, as the placer is given them. */
+const othersOf = (circles: ReturnType<typeof circlesOf>) => circles.filter((c) => c.region !== 'outlier').map((c) => ({ x: c.cx, y: c.cy }));
+
+/** Whether two segments cross at a point inside both (an independent check of the drawing). */
+const crosses = (a: { x1: number; y1: number; x2: number; y2: number }, b: { x1: number; y1: number; x2: number; y2: number }): boolean => {
+  const side = (px: number, py: number, qx: number, qy: number, rx: number, ry: number) => Math.sign((qx - px) * (ry - py) - (qy - py) * (rx - px));
+  return side(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1) * side(a.x1, a.y1, a.x2, a.y2, b.x2, b.y2) < 0
+    && side(b.x1, b.y1, b.x2, b.y2, a.x1, a.y1) * side(b.x1, b.y1, b.x2, b.y2, a.x2, a.y2) < 0;
+};
+/** Whether a segment passes through the inside of a box: sampled every 0.05 units along it. */
+const entersBox = (s: { x1: number; y1: number; x2: number; y2: number }, b: LabelBox): boolean => {
+  const n = Math.max(1, Math.ceil(Math.hypot(s.x2 - s.x1, s.y2 - s.y1) / 0.05));
+  for (let k = 1; k < n; k += 1) {
+    const x = s.x1 + ((s.x2 - s.x1) * k) / n;
+    const y = s.y1 + ((s.y2 - s.y1) * k) / n;
+    if (x > b.x + 1e-6 && x < b.x + b.width - 1e-6 && y > b.y + 1e-6 && y < b.y + b.height - 1e-6) return true;
+  }
+  return false;
+};
+
+/**
+ * Check a rendered plot from its markup alone: each outlier label's room (5.6 units a character,
+ * 11 high, its baseline 2.5 above the bottom, as the placer reserves) covers no plotted point but
+ * its own, no two leader lines cross, and no leader line runs through another label. Returns how
+ * many labels and points were checked.
+ */
+function expectLabelsCoverNoPoint(html: string, where: string): { labels: number; points: number } {
+  const svg = svgOf(html);
+  const circles = circlesOf(html);
+  const labels = outlierLabelsOf(svg).map((l) => {
+    const width = l.words.length * 5.6;
+    const x = Number(l.attrs.x);
+    const box = { x: l.attrs['text-anchor'] === 'end' ? x - width : x, y: Number(l.attrs.y) + 2.5 - 11, width, height: 11 };
+    return { text: l.words, box };
+  });
+  const leaders = linesOf(svg).filter((l) => l.stroke === 'var(--mbc-text-secondary)');
+  for (const l of labels) {
+    for (const c of circles) {
+      if (c.residue === l.text) continue;
+      const mark = { x: c.cx - c.r, y: c.cy - c.r, width: 2 * c.r, height: 2 * c.r };
+      expect(overlap(l.box, mark), `${where}: label ${l.text} covers point ${c.residue} (${c.region})`).toBe(false);
+    }
+  }
+  leaders.forEach((a, i) => {
+    leaders.forEach((b, j) => {
+      if (j > i) expect(crosses(a, b), `${where}: leader lines ${i} and ${j} cross`).toBe(false);
+    });
+    for (const l of labels) {
+      const own = Math.abs(a.y2 - (l.box.y + 5.5)) < 1e-6 && (Math.abs(a.x2 - l.box.x) < 1e-6 || Math.abs(a.x2 - l.box.x - l.box.width) < 1e-6);
+      if (!own) expect(entersBox(a, l.box), `${where}: leader line ${i} runs through label ${l.text}`).toBe(false);
+    }
+  });
+  return { labels: labels.length, points: circles.length };
+}
 
 describe('reading the torsions', () => {
   it('throws the engine error for text it cannot read, rather than plotting nothing', () => {
@@ -240,7 +299,7 @@ describe('plots every residue with both torsions', () => {
     expect(wordsOf(/<figcaption\b[\s\S]*?<\/figcaption>/.exec(html)![0])).toContain('Ramachandran plot — chain A, model 1 of 10');
     expect(html).toContain('title="Export &quot;1A5R — Ramachandran plot, chain A, model 1 of 10&quot; as an image');
     expect(/<svg\b[^>]*aria-label="([^"]*)"/.exec(html)![1]).toBe(
-      `Ramachandran plot of 1A5R, chain A, model 1 of 10: ${ramachandranPoints(report).length} residues, 1 outlier`,
+      `Ramachandran plot of 1A5R, chain A, model 1 of 10: ${ramachandranPoints(report).length} residues, 2 outliers`,
     );
 
     // An entry of one model needs no saying.
@@ -310,8 +369,9 @@ describe('lists outliers with residue numbers', () => {
     expect(note).toBeGreaterThan(-1);
     expect(note).toBeLessThan(html.indexOf('data-mbc-outliers'));
     const noteWords = wordsOf(html.slice(note, html.indexOf('data-mbc-outliers')));
-    expect(noteWords).toContain('coarse approximation of MolProbity');
-    expect(noteWords).toContain("not MolProbity's own classifier");
+    expect(noteWords).toContain("bilinear interpolations of the Top8000 2° grids at MolProbity's cutoffs");
+    expect(noteWords).toContain("MolProbity's method, not MolProbity itself");
+    expect(noteWords).not.toMatch(/coarse approximation|10° cells/);
     // The one thing the note asks the reader to do.
     expect(OUTLIER_ADVICE).toBe('Check each outlier against MolProbity before reporting it.');
     expect(noteWords).toContain('Check each outlier against MolProbity before reporting it.');
@@ -369,7 +429,7 @@ describe('lists outliers with residue numbers', () => {
       const c = circles.find((x) => x.residue === text)!;
       return { text, x: c.cx, y: c.cy };
     });
-    const placed = expectReadableLabels(points, 'synthetic');
+    const placed = expectReadableLabels(points, 'synthetic', othersOf(circles));
     labels.forEach((l, i) => {
       expect([Number(l.attrs.x), Number(l.attrs.y), l.attrs['text-anchor']], l.words).toEqual([placed[i].x, placed[i].y, placed[i].anchor]);
     });
@@ -395,7 +455,7 @@ describe('lists outliers with residue numbers', () => {
       return { text: residueLabel(o), x: c.cx, y: c.cy };
     });
     expect(points).toHaveLength(10);
-    const placed = expectReadableLabels(points, 'crowd');
+    const placed = expectReadableLabels(points, 'crowd', othersOf(circles));
     expect(placed.filter((p) => p.leader).length, 'a crowd needs leader lines').toBeGreaterThan(0);
     expect(placed[9].anchor, 'the corner label goes left of its point').toBe('end');
     // What is drawn is that layout.
@@ -414,13 +474,36 @@ describe('lists outliers with residue numbers', () => {
       const labels = outlierLabelsOf(svg);
       expect(labels.map((l) => l.words), `${name} chain ${chain}`).toEqual(outliers.map(residueLabel));
       const points = outliers.map((o) => ({ text: residueLabel(o), x: F.xOf(o.phi, -180, 180), y: F.yOf(o.psi, -180, 180) }));
-      const placed = expectReadableLabels(points, `${name} chain ${chain}`);
+      const others = ramachandranPoints(report).filter((p) => p.region !== 'outlier').map((p) => ({ x: F.xOf(p.phi, -180, 180), y: F.yOf(p.psi, -180, 180) }));
+      const placed = expectReadableLabels(points, `${name} chain ${chain}`, others);
       expect(labels.map((l) => [Number(l.attrs.x), Number(l.attrs.y)])).toEqual(placed.map((p) => [p.x, p.y]));
       return outliers.length;
     };
-    expect(check(read(MBN_CIF), 'A', '1MBN')).toBe(11);
+    expect(check(read(MBN_CIF), 'A', '1MBN')).toBe(5);
     const hhb = read(HHB_CIF);
     expect(['A', 'B', 'C', 'D'].map((c) => check(hhb, c, '4HHB')).reduce((a, b) => a + b)).toBeGreaterThan(0);
+  });
+
+  it('outlier labels cover no other point', () => {
+    // Without reference data: six outliers beside a dense helix of 81 favoured points to their
+    // right, where a label set beside its point on its own row would cover several of them.
+    const helix = Array.from({ length: 81 }, (_, i) => res({
+      resName: 'ALA', labelSeqId: 100 + i, authSeqId: 400 + i, phi: -75 + 4 * (i % 9), psi: -60 + 3 * Math.floor(i / 9),
+    }));
+    const lone = Array.from({ length: 6 }, (_, i) => res({
+      resName: 'SER', labelSeqId: 10 + i, authSeqId: 300 + i, phi: -96 + (i % 2) * 3, psi: -58 + 6 * i, region: 'outlier',
+    }));
+    const synthetic = expectLabelsCoverNoPoint(render(reportOf([...helix, ...lone])), 'helix');
+    expect(synthetic).toEqual({ labels: 6, points: 87 });
+
+    // Real entries: 1MBN chain A, whose outliers sit by its crowded helices, and 4HHB chains A-D.
+    if (!haveTestData(MBN_CIF, HHB_CIF)) return;
+    const mbn = read(MBN_CIF);
+    const checked = expectLabelsCoverNoPoint(render(backboneTorsions(mbn, 'A'), '1MBN', plottedModelOf(parseStructure(mbn))), '1MBN chain A');
+    expect(checked.labels, '1MBN chain A has outliers to label').toBeGreaterThan(0);
+    expect(checked.points).toBe(151);
+    const hhb = read(HHB_CIF);
+    for (const c of ['A', 'B', 'C', 'D']) expectLabelsCoverNoPoint(render(backboneTorsions(hhb, c), '4HHB', plottedModelOf(parseStructure(hhb))), `4HHB chain ${c}`);
   });
 });
 
@@ -448,7 +531,7 @@ describe('exports through the figure export button', () => {
     // so the file says what it shows and what the colours mean.
     const drawing = wordsOf(svgOf(html));
     for (const words of [
-      '1ABC — chain H', 'Favoured', 'Allowed', 'Outlier', 'coarse approximation of MolProbity', "not MolProbity's own classifier",
+      '1ABC — chain H', 'Favoured', 'Allowed', 'Outlier', "bilinear interpolations of the Top8000 2° grids at MolProbity's cutoffs", "MolProbity's method, not MolProbity itself",
       OUTLIER_ADVICE, 'boundaries are not drawn', 'H 102A ASN', 'H 107 VAL',
     ]) {
       expect(drawing, words).toContain(words);
@@ -468,14 +551,14 @@ describe('exports through the figure export button', () => {
     expect(file).toContain('<title>1A5R — Ramachandran plot, chain A, model 1 of 10</title>');
     const texts = textsOf(file);
     expect(texts.filter((t) => 'data-mbc-plot-title' in t.attrs).map((t) => t.words)).toEqual(['1A5R — chain A, model 1 of 10']);
-    expect(outlierLabelsOf(file).map((t) => t.words)).toEqual(['A 78 LYS']);
+    expect(outlierLabelsOf(file).map((t) => t.words)).toEqual(['A 43 HIS', 'A 78 LYS']);
     expect(texts.map((t) => t.words).join(' ')).toContain(`${REGION_CAVEAT} ${OUTLIER_ADVICE}`);
   });
 
   it('carries the region caveat and the plotted model into what the CSV, TSV and TXT writers emit', () => {
     const HEADINGS = ['Model', 'Models in entry', 'Chain', 'Residue', 'Name', 'Phi (deg)', 'Psi (deg)', 'Omega (deg)', 'Class', REGION_COLUMN];
     const expectCaveat = (heading: string, where: string) => {
-      for (const words of ['Region', 'coarse approximation of MolProbity', "not MolProbity's own classifier", 'check each outlier against MolProbity']) {
+      for (const words of ['Region', "bilinear interpolation of the Top8000 2° grids at MolProbity's cutoffs", "MolProbity's method, not MolProbity itself", 'check each outlier against MolProbity']) {
         expect(heading, `${where}: ${words}`).toContain(words);
       }
     };
@@ -512,7 +595,7 @@ describe('exports through the figure export button', () => {
     const ensemble = written(ramachandranTable(backboneTorsions(a5r, 'A'), '1A5R', plottedModelOf(parseStructure(a5r))));
     expect(ensemble.rows).toHaveLength(101);
     expect(ensemble.rows.every((r) => r[0] === '1' && r[1] === '10')).toBe(true);
-    expect(ensemble.rows.filter((r) => r[9] === 'outlier').map((r) => r.slice(2, 5))).toEqual([['A', '78', 'LYS']]);
+    expect(ensemble.rows.filter((r) => r[9] === 'outlier').map((r) => r.slice(2, 5))).toEqual([['A', '43', 'HIS'], ['A', '78', 'LYS']]);
     expect(ensemble.txt.split('\n')[0]).toMatch(/^1A5R — chain A, model 1 of 10: 101 of 103 residues have both phi and psi/);
     expect(ensemble.txt.split('\n')[0]).toContain(OUTLIER_ADVICE);
 

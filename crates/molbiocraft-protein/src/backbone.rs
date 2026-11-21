@@ -29,31 +29,32 @@
 //! ## Regions
 //!
 //! Each residue with both $\phi$ and $\psi$ is placed in a **favoured**, **allowed** or
-//! **outlier** region by [`ramachandran_region`]: a lookup in a 10° x 10° grid for its
-//! [`RamachandranClass`]. The grids (the `*_REGIONS` constants below) are a coarse approximation of
-//! the Ramachandran categories MolProbity reports, not MolProbity's classifier:
+//! **outlier** region by [`ramachandran_region`]: the bilinear interpolation of its
+//! [`RamachandranClass`]'s Top8000 2° grid at ($\phi$, $\psi$), compared with MolProbity's
+//! cutoffs. This follows MolProbity's method (cctbx `NDimTable.valueAt` and `ramalyze.evalScore`)
+//! without being MolProbity, whose own run can still differ (for example in the torsions it reads
+//! from alternate locations):
 //!
 //! - **Source:** the Top8000 Ramachandran contour grids of the Richardson Laboratory, Duke
 //!   University (Williams et al. 2018, *Protein Sci.* 27:293-315,
 //!   doi:10.1002/pro.3330), file `Top8000/Top8000_ramachandran_pct_contour_grids/rama8000-*.data`
 //!   of <https://github.com/rlabduke/reference_data>, licensed CC BY 4.0. Each file gives a value
-//!   at 2° nodes (φ, ψ = -179, -177, ..., 179).
+//!   at 2° nodes (φ, ψ = -179, -177, ..., 179); a node it does not list is 0. The node values are
+//!   embedded, rounded to `f32` as cctbx holds them, in [`crate::rama8000_grids`] (the change made
+//!   to the source; `scripts/outside-data/derive_ramachandran_maps.py --check` compares them node
+//!   for node with the SHA-256-pinned files).
+//! - **Interpolation**, as cctbx `mmtbx/rotamer/n_dim_table.py` `valueAt`: an angle outside
+//!   [-180, 180] is first brought into it by whole turns; on each axis the point lies between its
+//!   nearest node and the next node on its side, weighted by distance, and the axes wrap, so an
+//!   angle beyond ±179 is interpolated between the nodes at 179 and -179.
 //! - **Cutoffs:** MolProbity's (Lovell et al. 2003, *Proteins* 50:437-450,
-//!   doi:10.1002/prot.10286; as coded in cctbx `mmtbx/validation/ramalyze.py`): a node is
-//!   favoured at a value of at least 0.02 (the contour enclosing 98% of the reference residues),
+//!   doi:10.1002/prot.10286; as coded in cctbx `mmtbx/validation/ramalyze.py`): favoured at an
+//!   interpolated value of at least 0.02 (the contour enclosing 98% of the reference residues),
 //!   allowed at least 0.0005 for the general case, 0.0020 for cis-Pro and 0.0010 for every other
 //!   class, and an outlier below that.
-//! - **Resampling (the change made to the source):** a 10° cell takes the median class of the
-//!   25 nodes inside it (favoured when at least 13 nodes are favoured, outlier when at least 13
-//!   are outliers, allowed otherwise).
 //! - **Classes**, as MolProbity assigns them, the first that applies: Gly; Pro, cis when
 //!   $-90° < \omega < 90°$ and trans otherwise; pre-Pro, a residue bonded to a following Pro;
 //!   Ile/Val; and every other residue.
-//!
-//! In each grid, row `r` holds $\psi$ in [170 - 10 r, 180 - 10 r) (row 0 at the top is
-//! $\psi$ = 170..180, row 35 is -180..-170) and column `c` holds $\phi$ in [-180 + 10 c,
-//! -170 + 10 c); `#` is favoured, `+` allowed and `.` outlier. An angle of exactly 180 falls in
-//! the cell of -180. Near a contour the 10° cell can give a different category from MolProbity.
 
 use molbiocraft_formats::pdb_mmcif::{parse_mmcif_structure, Structure, StructureResidue};
 use nalgebra::Vector3;
@@ -64,12 +65,12 @@ use serde::{Deserialize, Serialize};
 pub const PEPTIDE_BOND_MAX_ANGSTROM: f64 = 1.8;
 
 /// The region rule [`ramachandran_region`] applies, in words, as reports state it.
-pub const RAMACHANDRAN_REGION_RULE: &str = "Favoured / allowed / outlier from 10-degree cells \
-     resampled from the Richardson Lab Top8000 Ramachandran contours (Williams et al. 2018, CC BY \
-     4.0) at MolProbity's cutoffs (Lovell et al. 2003): favoured >= 0.02, allowed >= 0.0005 \
-     (general), 0.0020 (cis-Pro) or 0.0010 (other classes); separate maps for Gly, trans-Pro, \
-     cis-Pro, pre-Pro, Ile/Val and all other residues. A coarse approximation, not MolProbity's \
-     own classifier";
+pub const RAMACHANDRAN_REGION_RULE: &str = "Favoured / allowed / outlier by bilinear \
+     interpolation of the Richardson Lab Top8000 2-degree Ramachandran grids (Williams et al. 2018, \
+     CC BY 4.0) at MolProbity's cutoffs (Lovell et al. 2003): favoured >= 0.02, allowed >= 0.0005 \
+     (general), 0.0020 (cis-Pro) or 0.0010 (other classes); separate grids for Gly, trans-Pro, \
+     cis-Pro, pre-Pro, Ile/Val and all other residues. Follows MolProbity's method; not MolProbity \
+     itself";
 
 /// Which Ramachandran map a residue is judged on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,273 +320,61 @@ pub fn ramachandran_class(res_name: &str, next_res_name: Option<&str>, omega: Op
     }
 }
 
-/// The region of (`phi`, `psi`) for a residue of `class`, from that class's 10° grid (see the
-/// module documentation for the source, cutoffs and resampling). Angles are read modulo 360;
-/// `None` when either is not finite.
+/// The region of (`phi`, `psi`) for a residue of `class`: [`ramachandran_value`] at MolProbity's
+/// cutoffs (see the module documentation). `None` when either angle is not finite.
 pub fn ramachandran_region(class: RamachandranClass, phi: f64, psi: f64) -> Option<RamachandranRegion> {
-    if !(phi.is_finite() && psi.is_finite()) {
-        return None;
-    }
-    // Cell k covers [-180 + 10 k, -170 + 10 k), modulo 360.
-    let cell = |angle: f64| (((angle + 180.0) / 10.0).floor() as i64).rem_euclid(36) as usize;
-    let grid = match class {
-        RamachandranClass::General => &GENERAL_REGIONS,
-        RamachandranClass::Glycine => &GLYCINE_REGIONS,
-        RamachandranClass::TransProline => &TRANS_PROLINE_REGIONS,
-        RamachandranClass::CisProline => &CIS_PROLINE_REGIONS,
-        RamachandranClass::PreProline => &PRE_PROLINE_REGIONS,
-        RamachandranClass::IleVal => &ILE_VAL_REGIONS,
+    let value = ramachandran_value(class, phi, psi)?;
+    let allowed = match class {
+        RamachandranClass::General => 0.0005,
+        RamachandranClass::CisProline => 0.0020,
+        _ => 0.0010,
     };
-    Some(match grid[35 - cell(psi)].as_bytes()[cell(phi)] {
-        b'#' => RamachandranRegion::Favoured,
-        b'+' => RamachandranRegion::Allowed,
-        _ => RamachandranRegion::Outlier,
+    Some(if value >= 0.02 {
+        RamachandranRegion::Favoured
+    } else if value >= allowed {
+        RamachandranRegion::Allowed
+    } else {
+        RamachandranRegion::Outlier
     })
 }
 
-// Region grids: rows psi 180 (top) to -180, columns phi -180 to 180, 10 degrees per cell;
-// '#' favoured, '+' allowed, '.' outlier. Resampled from the Top8000 contour grids (Richardson
-// Lab, CC BY 4.0) as the module documentation states.
-
-/// General case: `rama8000-general-noGPIVpreP.data`, allowed cutoff 0.0005.
-pub const GENERAL_REGIONS: [&str; 36] = [
-    "###########++...........+++........+",
-    "############+...........+++........+",
-    "+############+..........+++........+",
-    "+############+...........++........+",
-    "+#############+..........+..........",
-    "++############+.....................",
-    "++##########+++..........+..........",
-    "++#########++............+..........",
-    "+++########+............++..........",
-    ".+++#######............+++..........",
-    ".+++++++###..........+++++..........",
-    ".+++++++##+.........++++++..........",
-    ".++++++++#+..........+##++..........",
-    ".+++##+++++..........+###+..........",
-    ".+++####+++...........+##+..........",
-    ".+++#####++...........+##++.........",
-    "..++######+............+##+.........",
-    "..++#######+...........+##+.........",
-    "..++########+...........+#++........",
-    "..++########+...........++++........",
-    "..+++########+..........+++.........",
-    "..+++#########..........+++.........",
-    "..++++########+.........+++.........",
-    "..++++########+.........+++.........",
-    "..+++++++++++++.........+++.........",
-    "..++++++++++.............+..........",
-    "..++++++++..........................",
-    "...+++++++..........................",
-    "...+++++++............+++...........",
-    "...++++++............++++...........",
-    "...++++++............++++...........",
-    "...+++++++............+++...........",
-    ".+++++++++............+++...........",
-    "++++++++++.............++...........",
-    "+++#+++++++............+++..........",
-    "+##########+............++.........+",
-];
-
-/// Ile/Val not before Pro: `rama8000-ileval-nopreP.data`, allowed cutoff 0.0010.
-pub const ILE_VAL_REGIONS: [&str; 36] = [
-    ".++####+++++........................",
-    "+++########++.......................",
-    "++##########+.......................",
-    "++###########+......................",
-    "++###########++.....................",
-    ".++##########++.....................",
-    "..++########++......................",
-    "..++#######+........................",
-    "...++#####++........................",
-    "...++++++++.........................",
-    "...++++++++.........................",
-    "...++++++++...........+++...........",
-    "...+++++++...........++++...........",
-    "...+++++.............++++...........",
-    "...++++++............++++...........",
-    "...++##+++.............+............",
-    "...++####++.........................",
-    "...++#####++........................",
-    "...++#######+.......................",
-    "...++#######+.......................",
-    "...+++#######+......................",
-    "...+++#######+......................",
-    "...+++########+.........++..........",
-    "...++########++.........+++.........",
-    "....++++++++++..........++..........",
-    "....+++++++.........................",
-    ".....++++...........................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....+++.............................",
-    "...++++++...........................",
-    "..+++++++++.........................",
-];
-
-/// Gly: `rama8000-gly-sym.data` (symmetrised), allowed cutoff 0.0010.
-pub const GLYCINE_REGIONS: [&str; 36] = [
-    "############+..........+############",
-    "#############...........+###########",
-    "#############+..........+###########",
-    "##############...........+##########",
-    "##############+..........+#######+++",
-    "+++###########+..........++#####++++",
-    "+++++########++...........+####+++++",
-    "+++++++###+++.............++##++++++",
-    ".+++++++++++.............+++##+++++.",
-    ".++++++++++..............+++++++....",
-    ".++++++++#+...........+++++++++.....",
-    "+++++++++##..........++###+++++.....",
-    "+++++++++##..........+#####++++.....",
-    "++++++++##++.........+######++++....",
-    "++++######++..........#######+++....",
-    ".+++######++..........+#######+++...",
-    "..++#######+...........########++...",
-    "..++#######+...........+########+...",
-    "...+########+...........+#######++..",
-    "...++########...........+#######++..",
-    "...+++#######+..........++######+++.",
-    "....+++#######..........++######++++",
-    "....++++######+.........++##++++++++",
-    ".....++++#####+..........##+++++++++",
-    ".....+++++###++..........##+++++++++",
-    ".....+++++++++...........+#++++++++.",
-    "....+++++++..............++++++++++.",
-    ".+++++##+++.............+++++++++++.",
-    "++++++##++.............+++###+++++++",
-    "+++++####+...........++########+++++",
-    "++++#####++..........+###########+++",
-    "+++#######+..........+##############",
-    "##########+...........##############",
-    "###########+..........+#############",
-    "###########+...........#############",
-    "############+..........+############",
-];
-
-/// Pre-Pro (not Gly or Pro): `rama8000-prepro-noGP.data`, allowed cutoff 0.0010.
-pub const PRE_PROLINE_REGIONS: [&str; 36] = [
-    "+##########++......................+",
-    "############++..........++.........+",
-    "+############+..........+++........+",
-    "+############++..........+.........+",
-    "+#############+....................+",
-    "++############++...................+",
-    "++############++...................+",
-    "++########++++++....................",
-    "++######+++.........................",
-    "++#####++...........++++++..........",
-    "++#####+...........+++++++..........",
-    "++####++...........+++##++..........",
-    "+++###++............++##++..........",
-    ".++++++..............+++++..........",
-    "...++++...............+++...........",
-    ".....+..............................",
-    "....................................",
-    "....................................",
-    ".......++...........................",
-    "......+++++++.......................",
-    "......++++++++......................",
-    ".......++++###+.....................",
-    ".......+++####+.....................",
-    "........++####++....................",
-    "........+++#+++.....................",
-    "..........+++.......................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "..+.................................",
-    "++++++++++++........................",
-];
-
-/// Trans-Pro: `rama8000-transpro.data`, allowed cutoff 0.0010.
-pub const TRANS_PROLINE_REGIONS: [&str; 36] = [
-    ".......++###+.......................",
-    ".......++####.......................",
-    ".......++####+......................",
-    ".......++#####......................",
-    "........+#####+.....................",
-    "........+#####+.....................",
-    "........++###+......................",
-    "........+++++.......................",
-    "........++++........................",
-    "........++++........................",
-    "........+##+........................",
-    "........+##+........................",
-    "........+##+........................",
-    "........++++........................",
-    "........++++........................",
-    "........+++.........................",
-    ".......++#+.........................",
-    ".......+###+........................",
-    ".......+####+.......................",
-    "........+####.......................",
-    "........++###+......................",
-    ".........+####+.....................",
-    "..........+###+.....................",
-    "...........+##+.....................",
-    "............+++.....................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "........+++.........................",
-    "........++#+........................",
-];
-
-/// Cis-Pro: `rama8000-cispro.data`, allowed cutoff 0.0020.
-pub const CIS_PROLINE_REGIONS: [&str; 36] = [
-    "......+######+......................",
-    "......+######+......................",
-    "......+#######......................",
-    ".......+######......................",
-    ".......+#####+......................",
-    ".......+####+.......................",
-    ".......++##++.......................",
-    "........++++........................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "......+++...........................",
-    "......++++..........................",
-    "......+##+..........................",
-    "......+###+.........................",
-    "......+###+.........................",
-    ".....++####+........................",
-    ".....++####+........................",
-    "......+#####+.......................",
-    "......+#####+.......................",
-    ".......+####+.......................",
-    "........++##+.......................",
-    ".........+++........................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    "....................................",
-    ".........++.........................",
-    "........++++........................",
-    ".......++##+........................",
-    "......++####+.......................",
-];
+/// The bilinear interpolation of `class`'s Top8000 grid at (`phi`, `psi`), computed as cctbx
+/// `NDimTable.valueAt` computes it (in `f64` over the `f32` node values, summing the four nodes in
+/// its order). `None` when either angle is not finite.
+pub fn ramachandran_value(class: RamachandranClass, phi: f64, psi: f64) -> Option<f64> {
+    use crate::rama8000_grids as g;
+    if !(phi.is_finite() && psi.is_finite()) {
+        return None;
+    }
+    let grid: &[f32] = match class {
+        RamachandranClass::General => &g::GENERAL,
+        RamachandranClass::Glycine => &g::GLYCINE,
+        RamachandranClass::TransProline => &g::TRANS_PROLINE,
+        RamachandranClass::CisProline => &g::CIS_PROLINE,
+        RamachandranClass::PreProline => &g::PRE_PROLINE,
+        RamachandranClass::IleVal => &g::ILE_VAL,
+    };
+    let n = g::NODES_PER_AXIS as i64;
+    // One axis: the home node (whereIs: the 2-degree bin holding the angle, the last bin for
+    // 180), the neighbouring node on the angle's side of the home node's centre, and the weight
+    // of that neighbour (on [0, 0.5]). Indices wrap around the 180 nodes.
+    let axis = |angle: f64| {
+        let x = if (-180.0..=180.0).contains(&angle) { angle } else { (angle + 180.0).rem_euclid(360.0) - 180.0 };
+        let home = (((x + 180.0) / 2.0).floor() as i64).min(n - 1);
+        let centre = -180.0 + 2.0 * (home as f64 + 0.5);
+        let neighbour = if x < centre { home - 1 } else { home + 1 };
+        (home.rem_euclid(n) as usize, neighbour.rem_euclid(n) as usize, ((x - centre) / 2.0).abs())
+    };
+    let ((h0, n0, c0), (h1, n1, c1)) = (axis(phi), axis(psi));
+    let mut value = 0.0;
+    for bin in 0..4 {
+        let mut coeff = 1.0;
+        let i = if bin & 1 == 0 { coeff *= 1.0 - c0; h0 } else { coeff *= c0; n0 };
+        let j = if bin & 2 == 0 { coeff *= 1.0 - c1; h1 } else { coeff *= c1; n1 };
+        value += coeff * f64::from(grid[i * g::NODES_PER_AXIS + j]);
+    }
+    Some(value)
+}
 
 #[cfg(test)]
 mod tests {
@@ -733,22 +522,230 @@ mod tests {
         assert_eq!(ramachandran_class("ILE", None, None), K::IleVal);
     }
 
-    /// Every grid is 36 rows of 36 cells, each '#', '+' or '.'.
+    /// Fixture for [`regions_match_interpolated_top8000_grid`], written by an independent Python
+    /// reference (run with `python3 -I`, not committed): cctbx `mmtbx/rotamer/n_dim_table.py`
+    /// `NDimTable` (createFromText, whereIs, bin2index_limit, valueAt) transcribed line for line
+    /// over the six raw `rama8000-*.data` files at the pinned commit (full double precision, not
+    /// this crate's f32 grids), then `ramalyze.evalScore`'s cutoffs, on the phi / psi / class this
+    /// module reads from the RCSB mmCIF files `rcsb/<entry>.cif` of the reference-data folder (1A5R,
+    /// 1CRN, 1MBN, 1UBQ, 4HHB, 6VXX: every protein chain, 3868 residues, 3780 with both angles).
+    ///
+    /// MOVED: the 61 residues whose region D0009's 10° maps got wrong (entry, chain, index in the
+    /// chain, name, class, phi, psi, the region of the 10° map, the interpolated region). EDGES:
+    /// the interpolated value itself, at nodes, between nodes and across the ±180 wrap.
+    type Moved = (&'static str, &'static str, usize, &'static str, K, f64, f64, RamachandranRegion, RamachandranRegion);
+    const MOVED: &[Moved] = &[
+        ("1A5R", "A", 44, "HIS", K::General, -52.23542376892049, 175.95086756275538, Allowed, Outlier),
+        ("1A5R", "A", 45, "LEU", K::General, -79.66135170423769, 10.492241224848986, Allowed, Favoured),
+        ("1MBN", "A", 2, "SER", K::General, -49.56738901914932, 150.06341170788224, Allowed, Favoured),
+        ("1MBN", "A", 14, "ALA", K::General, -39.683852749599424, -35.44186421604856, Outlier, Allowed),
+        ("1MBN", "A", 47, "HIS", K::General, -40.89181771384346, -36.72491805209752, Favoured, Allowed),
+        ("1MBN", "A", 52, "ALA", K::General, -54.03014360223181, -61.548190536995435, Allowed, Favoured),
+        ("1MBN", "A", 66, "THR", K::General, -47.98213926408385, -60.489935220105465, Allowed, Favoured),
+        ("1MBN", "A", 75, "LEU", K::General, -48.906762883030936, -70.64303833523299, Outlier, Allowed),
+        ("1MBN", "A", 80, "HIS", K::General, -91.01135644329975, 57.68317736485111, Allowed, Favoured),
+        ("1MBN", "A", 86, "LYS", K::PreProline, -44.7980427528714, -71.81976910942326, Outlier, Allowed),
+        ("1MBN", "A", 107, "SER", K::General, -40.729418527569216, -38.02328629797981, Favoured, Allowed),
+        ("1MBN", "A", 113, "VAL", K::IleVal, -46.11962325108197, -51.91348702681403, Allowed, Favoured),
+        ("1MBN", "A", 116, "SER", K::General, -29.182431546664443, -52.98295516525157, Outlier, Allowed),
+        ("1MBN", "A", 146, "LYS", K::General, -40.895138578598086, -70.9650917608958, Outlier, Allowed),
+        ("1MBN", "A", 147, "GLU", K::General, -26.995707374780807, -61.92999594311568, Outlier, Allowed),
+        ("4HHB", "A", 2, "SER", K::PreProline, -60.782614384029145, -176.0317433013969, Allowed, Outlier),
+        ("4HHB", "A", 21, "GLY", K::Glycine, -29.928304354276936, -57.51957561764847, Outlier, Allowed),
+        ("4HHB", "A", 81, "ALA", K::General, -61.47631366784261, -61.730970219273566, Allowed, Favoured),
+        ("4HHB", "A", 121, "HIS", K::General, -41.035574826036225, -70.13410230494036, Outlier, Allowed),
+        ("4HHB", "B", 55, "GLY", K::Glycine, -107.10641943462556, 41.399572537105314, Allowed, Favoured),
+        ("4HHB", "B", 73, "GLY", K::Glycine, -42.58171420157992, -33.35699101005206, Favoured, Allowed),
+        ("4HHB", "B", 122, "THR", K::PreProline, -68.5786685081658, 172.50214579673528, Allowed, Favoured),
+        ("4HHB", "C", 12, "ALA", K::General, -50.48514261481387, -61.549191058419545, Allowed, Favoured),
+        ("4HHB", "C", 14, "GLY", K::Glycine, -44.66247596593933, -63.32386035744412, Allowed, Favoured),
+        ("4HHB", "C", 16, "VAL", K::IleVal, -65.42771808582877, -70.33324329892608, Outlier, Allowed),
+        ("4HHB", "C", 38, "THR", K::General, -58.547623455497856, -16.802386145955793, Allowed, Favoured),
+        ("4HHB", "C", 75, "MET", K::PreProline, -74.93570863251227, -39.3572261265745, Allowed, Favoured),
+        ("4HHB", "C", 108, "LEU", K::General, -48.77442804549846, -61.23998565789955, Allowed, Favoured),
+        ("4HHB", "C", 109, "ALA", K::General, -40.19801706673621, -56.758145191719485, Favoured, Allowed),
+        ("4HHB", "D", 32, "VAL", K::IleVal, -74.12836511544724, -60.42132865372679, Allowed, Favoured),
+        ("4HHB", "D", 38, "GLN", K::General, -67.47522758648377, 0.48953208338013393, Allowed, Favoured),
+        ("4HHB", "D", 71, "SER", K::General, -40.747484897593175, -71.68836984334396, Outlier, Allowed),
+        ("4HHB", "D", 88, "SER", K::General, -49.089483504169465, -60.61862269240211, Allowed, Favoured),
+        ("6VXX", "A", 32, "PHE", K::General, 59.97205620338765, 19.865675123623603, Allowed, Favoured),
+        ("6VXX", "A", 50, "ASN", K::General, 53.90552324683894, -124.38624427245566, Allowed, Favoured),
+        ("6VXX", "A", 60, "LYS", K::General, -138.3924218198376, -17.235389675515563, Favoured, Allowed),
+        ("6VXX", "A", 141, "LEU", K::General, -163.3195356883963, 127.81302877778137, Allowed, Favoured),
+        ("6VXX", "A", 155, "LEU", K::General, -124.7310829257411, -41.58777381101526, Allowed, Favoured),
+        ("6VXX", "A", 228, "SER", K::General, -157.67721343788207, -167.0486296089998, Allowed, Favoured),
+        ("6VXX", "A", 322, "ILE", K::IleVal, -89.43007774418257, 85.07555874228018, Allowed, Favoured),
+        ("6VXX", "A", 401, "HIS", K::General, -69.71623170729102, 103.18336899400468, Allowed, Favoured),
+        ("6VXX", "A", 556, "ALA", K::General, -78.1818876540955, 65.08914196739946, Allowed, Favoured),
+        ("6VXX", "A", 865, "ASP", K::General, 58.22388828614899, 15.644424956849285, Allowed, Favoured),
+        ("6VXX", "B", 50, "ASN", K::General, 53.885276496467505, -124.37556923875957, Allowed, Favoured),
+        ("6VXX", "B", 60, "LYS", K::General, -138.37022626260563, -17.35211822217867, Favoured, Allowed),
+        ("6VXX", "B", 141, "LEU", K::General, -163.3586734409801, 127.87948726595329, Allowed, Favoured),
+        ("6VXX", "B", 155, "LEU", K::General, -124.69481079466766, -41.617429951341485, Allowed, Favoured),
+        ("6VXX", "B", 228, "SER", K::General, -157.6660976074106, -167.09857361196646, Allowed, Favoured),
+        ("6VXX", "B", 322, "ILE", K::IleVal, -89.49743086261658, 85.12551619780649, Allowed, Favoured),
+        ("6VXX", "B", 401, "HIS", K::General, -69.64415937836232, 103.13043020311157, Allowed, Favoured),
+        ("6VXX", "B", 556, "ALA", K::General, -78.20373695587246, 65.09672462958673, Allowed, Favoured),
+        ("6VXX", "B", 865, "ASP", K::General, 58.27025053265637, 15.552659449764542, Allowed, Favoured),
+        ("6VXX", "C", 50, "ASN", K::General, 53.882333588917966, -124.34754741112653, Allowed, Favoured),
+        ("6VXX", "C", 60, "LYS", K::General, -138.4122506647927, -17.265535043198483, Favoured, Allowed),
+        ("6VXX", "C", 141, "LEU", K::General, -163.36758675747697, 127.81808976120568, Allowed, Favoured),
+        ("6VXX", "C", 155, "LEU", K::General, -124.70751587502382, -41.57278140085147, Allowed, Favoured),
+        ("6VXX", "C", 228, "SER", K::General, -157.72609336262488, -167.0781408644321, Allowed, Favoured),
+        ("6VXX", "C", 322, "ILE", K::IleVal, -89.42234585500128, 85.06761077238701, Allowed, Favoured),
+        ("6VXX", "C", 401, "HIS", K::General, -69.61383522070543, 103.16948053722018, Allowed, Favoured),
+        ("6VXX", "C", 556, "ALA", K::General, -78.1500988080499, 65.07523694641702, Allowed, Favoured),
+        ("6VXX", "C", 865, "ASP", K::General, 58.220917437749094, 15.637047817423742, Allowed, Favoured),
+    ];
+
+    const CHAINS: &[(&str, &str, &str)] = &[
+        ("1A5R", "A", "-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFAFFOFFFFFFFFFFFFAFFFFAFFFFAFAFFFAFFFAFOFFFFFFAFFF\
+             FFFFFFFFFFFF-"),
+        ("1CRN", "A", "-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAF-"),
+        ("1MBN", "A", "-FFFFFFAFFFFFAAFFFFAAFFFFFOAAFFFFFFFFFFFFFFFFFFAAFFFFFAFFFFFFOAFFFFFFFFFFFFAOFAFFFAFFFAFFF\
+             FFFFFAFFFFAFFFFOAAAAAFFFFAAFFAFFAFFFFFFAFFAFFFFFFFFFFFFAAAFFFO-"),
+        ("1UBQ", "A", "-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF-"),
+        ("4HHB", "A", "-FOAFFFFFFFFFFFOFFFFOAFFAFFFFFFFFFFFFFFFFFAFFFFAFFFAFFFAFFFFFFFFFFFFFFFFFFAAAFFFFFFFFFFFFF\
+             FFFFFFFFFFFFAFFFFFFFFFFFFFAAFFFAFFFFFFFFFFFFFFFFFF-"),
+        ("4HHB", "B", "-FFOAFAFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFFFAAFFFAFFFFFFFFFFAFFFFFFFFFFFAFAFFFFFAFFFAFFFFFA\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFA-"),
+        ("4HHB", "C", "-FAFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFAAFFFFFFFFFFFFFFFFFFFFFAFFAFFFFFFFFFFFA\
+             FFFFFFFFFFFFFFFFAFFAFFAFFFAFAFFFFFFFFFFFFFFFFFFFFF-"),
+        ("4HHB", "D", "-FAFFFFFFFFFFFFFFFAAFAFFFFFFFFAFFFFFFFFFFFFFFFFFFAFFFFFFFFFAFFFFFAFFFFFAOFFAOOFAFFFFFFFFFF\
+             FFAFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF-"),
+        ("6VXX", "A", "-FFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAF--FFFFFFFFFFFFFFFFAAFFFFFFFFFFFFFFFFFFFFFFFFAFFF\
+             FFFAFFFFFFFFFFFF--FFFFFF--FFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF--FFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFF\
+             FFFFFFFFFFFFFFFFFFFAFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFF--FF\
+             FFFF--FFFFF--FFFFFFAFFFF--FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAF--FFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFF--\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF--FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFAFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFF-"),
+        ("6VXX", "B", "-FFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAF--FFFFFFFFFFFFFFFFAAFFFFFFFFFFFFFFFFFFFFFFFFAFFF\
+             FFFAFFFFFFFFFFFF--FFFFFF--FFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF--FFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFF\
+             FFFFFFFFFFFFFFFFFFFAFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFF--FF\
+             FFFF--FFFFF--FFFFFFAFFFF--FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAF--FFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFF--\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF--FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFAFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFF-"),
+        ("6VXX", "C", "-FFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAF--FFFFFFFFFFFFFFFFAAFFFFFFFFFFFFFFFFFFFFFFFFAFFF\
+             FFFAFFFFFFFFFFFF--FFFFFF--FFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF--FFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFF\
+             FFFFFFFFFFFFFFFFFFFAFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFF--FF\
+             FFFF--FFFFF--FFFFFFAFFFF--FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAF--FFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFF--\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF--FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFAFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFF\
+             FFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFFFFFFFFFFFFFFFFAFFFFFFFFFFF-"),
+    ];
+
+    const EDGES: &[(K, f64, f64, f64)] = &[
+        (K::General, -179.0, -179.0, 0.005560270487425575),
+        (K::General, -63.0, -43.0, 1.0),
+        (K::Glycine, 180.0, 180.0, 0.48804346893789297),
+        (K::Glycine, -180.0, -180.0, 0.48804346893789297),
+        (K::General, 180.0, 0.0, 5.557444668102811e-05),
+        (K::General, -180.0, 0.0, 5.557444668102811e-05),
+        (K::General, 0.0, 180.0, 0.0),
+        (K::TransProline, -60.0, 179.5, 0.002887484178168887),
+        (K::CisProline, -75.0, 160.0, 0.9719485495347564),
+        (K::PreProline, -60.0, 150.0, 0.716155307952183),
+        (K::IleVal, -120.0, 130.0, 0.747744549755745),
+        (K::General, -62.0, -60.5, 0.035279294562464265),
+    ];
+
+    /// The reference-data file `rel`, or `None` (after printing the skip line) when it is absent and
+    /// MOLBIOCRAFT_REQUIRE_TEST_DATA is not 1. The folder is MOLBIOCRAFT_TEST_DATA_DIR (relative to
+    /// the repo root), else `<repo>/test-data`.
+    fn reference_file(rel: &str) -> Option<String> {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = match std::env::var_os("MOLBIOCRAFT_TEST_DATA_DIR") {
+            Some(d) if !d.is_empty() => repo.join(d),
+            _ => repo.join("test-data"),
+        };
+        let v = std::env::var_os("MOLBIOCRAFT_REQUIRE_TEST_DATA").unwrap_or_default();
+        let required = match v.to_str() {
+            Some("1") => true,
+            Some("" | "0") => false,
+            _ => panic!("MOLBIOCRAFT_REQUIRE_TEST_DATA must be 1, 0 or unset, not {v:?}"),
+        };
+        let p = dir.join(rel);
+        match std::fs::read_to_string(&p) {
+            Ok(text) => Some(text),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {
+                assert!(!required, "reference data required (MOLBIOCRAFT_REQUIRE_TEST_DATA=1) but absent: {}", p.display());
+                eprintln!("skipped: reference data absent ({})", p.display());
+                None
+            }
+            Err(e) => panic!("{}: unreadable: {e}", p.display()),
+        }
+    }
+
+    /// Regions are the bilinear interpolation of the class's Top8000 2-degree grid at MolProbity's
+    /// cutoffs, as an independent reference computes them on real chains (BG-01M6PXQ7, AC1). The
+    /// 61 residues D0009's 10° maps misplaced are checked without the data folder; with it, every
+    /// residue of the 11 fixture chains is, and each MOVED row is tied to its residue.
     #[test]
-    fn region_grids_are_36_by_36() {
-        for grid in [
-            &GENERAL_REGIONS,
-            &ILE_VAL_REGIONS,
-            &GLYCINE_REGIONS,
-            &PRE_PROLINE_REGIONS,
-            &TRANS_PROLINE_REGIONS,
-            &CIS_PROLINE_REGIONS,
+    fn regions_match_interpolated_top8000_grid() {
+        assert_eq!(MOVED.len(), 61);
+        for &(entry, chain, i, name, class, phi, psi, _, want) in MOVED {
+            assert_eq!(ramachandran_region(class, phi, psi), Some(want), "{entry} {chain} #{i} {name} {class:?} ({phi}, {psi})");
+        }
+        for &(class, phi, psi, want) in EDGES {
+            let got = ramachandran_value(class, phi, psi).expect("finite angles");
+            assert!((got - want).abs() <= 1e-7 * want, "{class:?} ({phi}, {psi}): {got}, reference {want}");
+        }
+        assert_eq!(ramachandran_value(K::General, -63.0 + 360.0, -43.0 - 720.0), ramachandran_value(K::General, -63.0, -43.0));
+        assert_eq!(ramachandran_value(K::General, 0.0, f64::INFINITY), None);
+        // Each class's own allowed cutoff, at grid nodes whose file value lies between two of the
+        // cutoffs: cis-Pro (-133, 3) = 0.00137, trans-Pro (-107, -3) = 0.00125 and general
+        // (-179, -165) = 0.000746 (rama8000-cispro, -transpro and -general-noGPIVpreP.data).
+        for (class, phi, psi, want) in [
+            (K::CisProline, -133.0, 3.0, Outlier),
+            (K::TransProline, -107.0, -3.0, Allowed),
+            (K::General, -179.0, -165.0, Allowed),
         ] {
-            for row in grid.iter() {
-                assert_eq!(row.len(), 36, "{row}");
-                assert!(row.bytes().all(|b| matches!(b, b'#' | b'+' | b'.')), "{row}");
+            assert_eq!(ramachandran_region(class, phi, psi), Some(want), "{class:?} ({phi}, {psi})");
+        }
+        let letter = |r: Option<RamachandranRegion>| match r {
+            Some(Favoured) => 'F',
+            Some(Allowed) => 'A',
+            Some(Outlier) => 'O',
+            None => '-',
+        };
+        assert_eq!(CHAINS.iter().map(|c| c.2.len()).sum::<usize>(), 3868);
+        let mut compared = 0;
+        for entry in ["1A5R", "1CRN", "1MBN", "1UBQ", "4HHB", "6VXX"] {
+            let Some(text) = reference_file(&format!("rcsb/{entry}.cif")) else { continue };
+            let structure = parse_mmcif_structure(&text).expect("mmCIF");
+            for &(_, chain, want) in CHAINS.iter().filter(|c| c.0 == entry) {
+                let report = backbone_torsions_of_structure(&structure, Some(chain)).expect("chain");
+                let got: String = report.residues.iter().map(|r| letter(r.region)).collect();
+                let differ: Vec<String> = got
+                    .chars()
+                    .zip(want.chars())
+                    .enumerate()
+                    .filter(|(_, (g, w))| g != w)
+                    .map(|(i, (g, w))| format!("#{i} {}: {g}, reference {w}", report.residues[i].res_name))
+                    .collect();
+                assert_eq!((got.len(), differ), (want.len(), Vec::<String>::new()), "{entry} chain {chain}");
+                compared += got.len();
+                for &(_, _, i, name, class, phi, psi, _, _) in MOVED.iter().filter(|m| m.0 == entry && m.1 == chain) {
+                    let r = &report.residues[i];
+                    assert_eq!((r.res_name.as_str(), r.ramachandran_class, r.phi, r.psi), (name, class, Some(phi), Some(psi)), "{entry} {chain} #{i}");
+                }
             }
         }
+        eprintln!("compared {compared} residues of the fixture chains with the reference");
     }
 
     /// A chain breaks where C(i-1)-N(i) is 1.8 A or longer, not where the numbering jumps: a gap

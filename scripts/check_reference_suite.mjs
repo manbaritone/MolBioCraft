@@ -22,12 +22,13 @@
  *    0 failed, 0 ignored and 0 filtered out, and as many passed as it said it was running.
  * 3. The Ramachandran derivation check (BG-01M6Q7F7): `python3 -I
  *    scripts/outside-data/derive_ramachandran_maps.py --fetch <temp dir> --check
- *    crates/molbiocraft-protein/src/backbone.rs`, so the six region maps committed in backbone.rs
- *    are still the ones NOTICE section 6 and PROVENANCE.md say were derived from the Top8000 grids.
+ *    crates/molbiocraft-protein/src/rama8000_grids.rs`, so the six Top8000 grids embedded there
+ *    (BG-01M6PXQ7) still hold, node for node, the values NOTICE section 6 and PROVENANCE.md say
+ *    were taken from the pinned rama8000 files.
  *    fetch.sh does not download the grids: the script fetches the six files from its pinned commit
  *    into a temporary folder, deleted afterwards (or the missing ones into the folder named by
  *    MOLBIOCRAFT_REFERENCE_RAMA_GRIDS, which is kept), and checks each against its SHA-256. The script
- *    must exit 0 and print its `total:` line with 0 cells differing out of more than 0, and 0 doc
+ *    must exit 0 and print its `total:` line with 0 nodes differing out of more than 0, and 0 doc
  *    comment mismatches.
  *
  * All three run with `MOLBIOCRAFT_REQUIRE_TEST_DATA=1`, whatever the caller set, so absent data
@@ -96,8 +97,8 @@ const SKIP_LINE = 'skipped: reference data absent';
 const CARGO_ARGS = 'test --workspace --no-fail-fast -- --include-ignored';
 const NAMES_DATA = /MOLBIOCRAFT_TEST_DATA_DIR|MOLBIOCRAFT_REQUIRE_TEST_DATA|test-data/;
 const RAMA_SCRIPT = 'scripts/outside-data/derive_ramachandran_maps.py';
-const RAMA_MAPS = 'crates/molbiocraft-protein/src/backbone.rs';
-const RAMA_TOTAL = /^total: (\d+) of (\d+) cells differ; (\d+) doc comment mismatches\s*$/m;
+const RAMA_MAPS = 'crates/molbiocraft-protein/src/rama8000_grids.rs';
+const RAMA_TOTAL = /^total: (\d+) of (\d+) nodes differ; (\d+) doc comment mismatches\s*$/m;
 
 /**
  * Local-only tests (D0010). Each reads a private folder of the data directory that is never
@@ -460,7 +461,7 @@ const SUITE = ONLY === null ? 'reference suite' : `reference suite (only ${STEPS
  * - MOLBIOCRAFT_REFERENCE_PYTHON: the program that runs the derivation script, in place of
  *   `python3` (a bare name is looked up on PATH).
  * - MOLBIOCRAFT_REFERENCE_RAMA_SCRIPT: the script run in place of the derivation script.
- * - MOLBIOCRAFT_REFERENCE_RAMA_MAPS: the file checked in place of backbone.rs.
+ * - MOLBIOCRAFT_REFERENCE_RAMA_MAPS: the file checked in place of rama8000_grids.rs.
  * - MOLBIOCRAFT_REFERENCE_RAMA_GRIDS: the folder the six grids are read from, the missing ones
  *   fetched into it, and kept (default: a temporary folder, deleted afterwards).
  * A path in any of them but the cargo words, which the shell runs as written in the repo root, is
@@ -482,10 +483,10 @@ const RAMA = {
 
 /**
  * The Ramachandran derivation step (step 3 above): the one reason it fails, or none. The script
- * itself prints each differing cell. In order: a `total:` line with any difference; a script that
+ * itself prints each differing node. In order: a `total:` line with any difference; a script that
  * could not start or exited non-zero, with the script's own error line when it printed one (a
  * failed download, a SHA-256 mismatch, a missing file); an exit 0 without a `total:` line, so the
- * step never passes on a check that did not run; and a `total:` line with no cells checked.
+ * step never passes on a check that did not run; and a `total:` line with no nodes checked.
  */
 async function checkRamachandran() {
   const label = `ramachandran derivation (${RAMA.script})`;
@@ -495,15 +496,15 @@ async function checkRamachandran() {
     console.log(`\n== ${RAMA.python} ${args.join(' ')}`);
     const r = await run(RAMA.python, args);
     const m = RAMA_TOTAL.exec(r.stdout);
-    const [differ, cells, docs] = m ? m.slice(1).map(Number) : [];
-    if (m) console.log(`ramachandran totals: ${cells} cells checked; ${differ} differ; ${docs} doc comment mismatches`);
-    if (m && (differ !== 0 || docs !== 0)) return [`${label}: ${differ} of ${cells} cells of ${RAMA.maps} differ from the derivation and ${docs} doc comments mismatch (each is listed above)`];
+    const [differ, nodes, docs] = m ? m.slice(1).map(Number) : [];
+    if (m) console.log(`ramachandran totals: ${nodes} nodes checked; ${differ} differ; ${docs} doc comment mismatches`);
+    if (m && (differ !== 0 || docs !== 0)) return [`${label}: ${differ} of ${nodes} grid nodes of ${RAMA.maps} differ from the pinned files and ${docs} doc comments mismatch (each is listed above)`];
     if (r.code !== 0) {
       const why = r.stderr.split(/\r?\n/).find((l) => l.startsWith('derive_ramachandran_maps: '));
       return [`${label} ${exitText(r)}${why ? ` (${why})` : ''}`];
     }
     if (!m) return [`${label} printed no 'total:' line, so it checked nothing`];
-    if (!(cells > 0)) return [`${label} checked no cells`];
+    if (!(nodes > 0)) return [`${label} checked no nodes`];
     return [];
   } finally {
     if (RAMA.grids === undefined) fs.rmSync(grids, { recursive: true, force: true });

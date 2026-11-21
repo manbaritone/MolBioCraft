@@ -89,7 +89,7 @@ export interface OutlierLabelPlacement {
   anchor: 'start' | 'end';
   /** The room the text takes, estimated from its length. */
   box: LabelBox;
-  /** A line from the point to its label, when the label had to move off the point's own row. */
+  /** A line from the point to its label, when the label had to move away from its point's side. */
   leader: { x1: number; y1: number; x2: number; y2: number } | null;
 }
 
@@ -103,56 +103,145 @@ const LABEL_HEIGHT = 11;
 const LABEL_GAP = 5;
 /** How many rows above and below its point a label may move to find room. */
 const LABEL_MAX_ROWS = 12;
+/** How far, in steps of LABEL_SHIFT units, a label may move away from its point along its row. */
+const LABEL_MAX_SHIFTS = 10;
+const LABEL_SHIFT = 6;
+/** The radius of a point that is not an outlier. */
+const POINT_RADIUS = 2.4;
+
+/** A line segment in the drawing's units. */
+interface Segment { x1: number; y1: number; x2: number; y2: number }
 
 const overlaps = (a: LabelBox, b: LabelBox): boolean =>
   a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 const inside = (a: LabelBox, area: LabelBox): boolean =>
   a.x >= area.x && a.y >= area.y && a.x + a.width <= area.x + area.width && a.y + a.height <= area.y + area.height;
+const turn = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number =>
+  Math.sign((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
+/** Whether two segments cross at a point inside both (touching or sharing an end does not count). */
+export const segmentsCross = (s: Segment, t: Segment): boolean =>
+  turn(s.x1, s.y1, s.x2, s.y2, t.x1, t.y1) * turn(s.x1, s.y1, s.x2, s.y2, t.x2, t.y2) < 0
+  && turn(t.x1, t.y1, t.x2, t.y2, s.x1, s.y1) * turn(t.x1, t.y1, t.x2, t.y2, s.x2, s.y2) < 0;
+/** Whether a segment passes through the inside of a box (running along its edge does not count). */
+export const segmentEntersBox = (s: Segment, b: LabelBox): boolean => {
+  // Liang-Barsky clipping against the open box.
+  let t0 = 0;
+  let t1 = 1;
+  const dx = s.x2 - s.x1;
+  const dy = s.y2 - s.y1;
+  for (const [p, q] of [[-dx, s.x1 - b.x], [dx, b.x + b.width - s.x1], [-dy, s.y1 - b.y], [dy, b.y + b.height - s.y1]]) {
+    if (p === 0) {
+      if (q <= 0) return false;
+    } else {
+      const r = q / p;
+      if (p < 0) t0 = Math.max(t0, r);
+      else t1 = Math.min(t1, r);
+      if (t0 >= t1) return false;
+    }
+  }
+  return true;
+};
 
 /**
- * Place a label beside each outlier point, inside `area`, so no two labels overlap and no label
- * covers another outlier. Each label goes to the first free spot in order: right of its point,
- * left of it, then a row higher or lower at a time, with a leader line once it leaves its point's
- * row. When no spot is free (a crowd larger than the plot can label), the label takes the spot
- * that overlaps least, so every outlier is still named.
+ * Place a label beside each outlier point, inside `area`, so no two labels overlap, no label covers
+ * another plotted point (every outlier, and each of `others`, the points that are not outliers),
+ * and no leader line crosses another leader line or label. Each label goes to the first free spot
+ * in order of how far it moves: right of its point, left of it, then a row higher or lower or a
+ * step further along its row at a time, with a leader line once it leaves its point's side. When no
+ * spot is free (a crowd larger than the plot can label), the label takes the spot that collides
+ * least, an overlapping label weighing more than a crossing leader line and that more than a
+ * covered point, so every outlier is still named.
  */
-export function placeOutlierLabels(points: readonly { text: string; x: number; y: number }[], area: LabelBox): OutlierLabelPlacement[] {
-  const marks: LabelBox[] = points.map((p) => ({
-    x: p.x - OUTLIER_RADIUS, y: p.y - OUTLIER_RADIUS, width: 2 * OUTLIER_RADIUS, height: 2 * OUTLIER_RADIUS,
-  }));
-  const placed: LabelBox[] = [];
-  return points.map((p, i) => {
-    const width = p.text.length * LABEL_CHAR_WIDTH;
-    let best: { box: LabelBox; anchor: 'start' | 'end'; row: number; cost: number } | null = null;
-    search: for (let step = 0; step <= LABEL_MAX_ROWS; step += 1) {
-      for (const row of step === 0 ? [0] : [-step, step]) {
+export function placeOutlierLabels(
+  points: readonly { text: string; x: number; y: number }[],
+  area: LabelBox,
+  others: readonly { x: number; y: number }[] = [],
+): OutlierLabelPlacement[] {
+  const markOf = (x: number, y: number, r: number): LabelBox => ({ x: x - r, y: y - r, width: 2 * r, height: 2 * r });
+  const marks: LabelBox[] = [
+    ...points.map((p) => markOf(p.x, p.y, OUTLIER_RADIUS)),
+    ...others.map((p) => markOf(p.x, p.y, POINT_RADIUS)),
+  ];
+  // Candidate moves, nearest first: (row, shift) by the distance the label travels.
+  const moves: { row: number; shift: number }[] = [];
+  for (let row = -LABEL_MAX_ROWS; row <= LABEL_MAX_ROWS; row += 1) {
+    for (let shift = 0; shift <= LABEL_MAX_SHIFTS; shift += 1) moves.push({ row, shift });
+  }
+  const travel = (m: { row: number; shift: number }) => Math.hypot(m.row * (LABEL_HEIGHT + 1), m.shift * LABEL_SHIFT);
+  moves.sort((a, b) => travel(a) - travel(b) || Math.abs(a.row) - Math.abs(b.row) || a.row - b.row);
+  type Spot = { box: LabelBox; anchor: 'start' | 'end'; leader: Segment | null; cost: number };
+  // Greedy placement of the labels in one order: each takes the cheapest spot left by those before.
+  const layout = (order: readonly number[]): { spots: Spot[]; cost: number } => {
+    const placed: LabelBox[] = [];
+    const leaders: Segment[] = [];
+    const spots: Spot[] = new Array(points.length);
+    let total = 0;
+    for (const i of order) {
+      const p = points[i];
+      const width = p.text.length * LABEL_CHAR_WIDTH;
+      let best: Spot | null = null;
+      search: for (const { row, shift } of moves) {
         for (const anchor of ['start', 'end'] as const) {
+          const offset = LABEL_GAP + shift * LABEL_SHIFT;
           const box = {
-            x: anchor === 'start' ? p.x + LABEL_GAP : p.x - LABEL_GAP - width,
+            x: anchor === 'start' ? p.x + offset : p.x - offset - width,
             y: p.y - LABEL_HEIGHT / 2 + row * (LABEL_HEIGHT + 1),
             width,
             height: LABEL_HEIGHT,
           };
           if (!inside(box, area)) continue;
-          const cost = 100 * placed.filter((b) => overlaps(b, box)).length
+          const edge = anchor === 'start' ? box.x : box.x + box.width;
+          const leader = row === 0 && shift === 0 ? null : { x1: p.x, y1: p.y, x2: edge, y2: box.y + LABEL_HEIGHT / 2 };
+          // Overlapping labels cost most, then a leader line through a label or across another
+          // leader, then each point the label covers.
+          const cost = 1e6 * placed.filter((b) => overlaps(b, box)).length
+            + 1e3 * leaders.filter((l) => segmentEntersBox(l, box)).length
+            + (leader ? 1e3 * (leaders.filter((l) => segmentsCross(l, leader)).length + placed.filter((b) => segmentEntersBox(leader, b)).length) : 0)
             + marks.filter((m, j) => j !== i && overlaps(m, box)).length;
-          if (!best || cost < best.cost) best = { box, anchor, row, cost };
+          if (!best || cost < best.cost) best = { box, anchor, leader, cost };
           if (cost === 0) break search;
         }
       }
+      // A label too wide to fit beside its point on either side finds no spot inside: pin it to the area's corner.
+      const chosen: Spot = best ?? {
+        box: { x: area.x, y: area.y, width, height: LABEL_HEIGHT },
+        anchor: 'start',
+        leader: { x1: p.x, y1: p.y, x2: area.x, y2: area.y + LABEL_HEIGHT / 2 },
+        cost: 1e6,
+      };
+      placed.push(chosen.box);
+      if (chosen.leader) leaders.push(chosen.leader);
+      spots[i] = chosen;
+      total += chosen.cost;
     }
-    // A label too wide to fit beside its point on either side finds no spot inside: pin it to the area's corner.
-    const chosen = best ?? { box: { x: area.x, y: area.y, width, height: LABEL_HEIGHT }, anchor: 'start' as const, row: 1 };
-    placed.push(chosen.box);
-    const { box, anchor } = chosen;
-    const edge = anchor === 'start' ? box.x : box.x + box.width;
+    return { spots, cost: total };
+  };
+  // The order the labels are placed in decides what each later one can still reach, so try a few
+  // (as given, by height either way, left to right and right to left) and keep the one that
+  // collides least.
+  const index = points.map((_, i) => i);
+  const orders = [
+    index,
+    [...index].sort((a, b) => points[a].y - points[b].y || a - b),
+    [...index].sort((a, b) => points[b].y - points[a].y || a - b),
+    [...index].sort((a, b) => points[a].x - points[b].x || a - b),
+    [...index].sort((a, b) => points[b].x - points[a].x || a - b),
+  ];
+  let best = layout(orders[0]);
+  for (const order of orders.slice(1)) {
+    if (best.cost === 0) break;
+    const next = layout(order);
+    if (next.cost < best.cost) best = next;
+  }
+  return points.map((p, i) => {
+    const { box, anchor, leader } = best.spots[i];
     return {
       text: p.text,
-      x: edge,
+      x: anchor === 'start' ? box.x : box.x + box.width,
       y: box.y + LABEL_HEIGHT - 2.5,
       anchor,
       box,
-      leader: chosen.row === 0 ? null : { x1: p.x, y1: p.y, x2: edge, y2: box.y + LABEL_HEIGHT / 2 },
+      leader,
     };
   });
 }
@@ -181,7 +270,8 @@ export function RamachandranPlot({ report, model, name, onStatus }: Ramachandran
   const labels = useMemo(
     () => placeOutlierLabels(
       points.filter((p) => p.region === 'outlier').map((p) => ({ text: residueLabel(p.residue), x: xOf(p.phi), y: yOf(p.psi) })),
-      { x: F.x, y: F.y, width: F.width, height: F.height }
+      { x: F.x, y: F.y, width: F.width, height: F.height },
+      points.filter((p) => p.region !== 'outlier').map((p) => ({ x: xOf(p.phi), y: yOf(p.psi) }))
     ),
     [points, F]
   );
