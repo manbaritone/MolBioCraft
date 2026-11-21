@@ -40,7 +40,10 @@ env:
   # --remap-path-prefix for the checkout (to nothing), CARGO_HOME (to /cargo) and RUSTUP_HOME (to
   # /rustup), as scripts/build_rust_wasm.mjs remaps the engine's. `... check FILE...` fails, naming
   # the first five hits, when a file's bytes name a path under /Volumes/<x>/, /Users/<x>/,
-  # /home/<x>/, C:\Users\<x>\ or D:\a\<x>\ (either separator) or under any prefix remapped above.
+  # /home/<x>/, C:\Users\<x>\ or D:\a\<x>\ (either separator), a bare volume or home with no further
+  # component (/Volumes/<x>, /Users/<x>, /home/<x>, C:\Users\<x>), the building user's own home
+  # (os.homedir()) or any prefix remapped above (D0301). It must stay byte-identical to the guard in
+  # scripts/build_installers.sh, whose --guard-self-test mode runs it on fixtures.
   HOST_PATH_GUARD: |
     import fs from 'node:fs';
     import os from 'node:os';
@@ -75,9 +78,16 @@ env:
     }
     if (mode !== 'check' || files.length === 0) die(`usage: flags | check FILE...; got: ${[mode, ...files].join(' ')}`);
     // A path under a volume, a user's home or a GitHub runner workspace (/Volumes/x/, /Users/x/,
-    // /home/x/, C:\Users\x\, D:\a\x\, with either separator), or under any prefix remapped above.
-    const HOST = /\/(?:Volumes|Users|home)\/[^\/\\\x00-\x1f]+\/|[A-Za-z]:[\\\/](?:Users|a)[\\\/][^\/\\\x00-\x1f]+[\\\/]/g;
-    const prefixes = [...new Set(remaps.map(([from]) => from).filter((p) => p.length > 1))];
+    // /home/x/, C:\Users\x\, D:\a\x\, with either separator), and a bare volume or home with no
+    // further component (/Volumes/x, /Users/x, /home/x, C:\Users\x, either separator): a run of
+    // user-name characters ([\w.$~-]) after it, ending at the end of the text or at any byte that
+    // cannot continue a user name, so /Users/user\0 and /Users/userorg.molbiocraft.desktop are hits.
+    const HOST = /\/(?:Volumes|Users|home)\/[^\/\\\x00-\x1f]+\/|[A-Za-z]:[\\\/](?:Users|a)[\\\/][^\/\\\x00-\x1f]+[\\\/]|\/(?:Volumes|Users|home)\/[\w.$~-]+|[A-Za-z]:[\\\/]Users[\\\/][\w.$~-]+/g;
+    // Every prefix remapped above, and the building user's own home (os.homedir(), wherever it is),
+    // as given, as its real path and, for a Windows home, with either separator; a hit when no
+    // user-name character follows it.
+    const userHome = os.homedir();
+    const prefixes = [...new Set([...remaps.map(([from]) => from), ...[userHome, real(userHome)].flatMap(forms)].filter((p) => p.length > 1))];
     const printable = (c) => c >= 0x20 && c < 0x7f;
     let bad = false;
     for (const file of files) {
@@ -92,8 +102,7 @@ env:
       const at = new Set([...text.matchAll(HOST)].map((m) => m.index));
       for (const p of prefixes) {
         for (let i = text.indexOf(p); i !== -1; i = text.indexOf(p, i + 1)) {
-          const next = text.charCodeAt(i + p.length);
-          if (Number.isNaN(next) || next === 0 || next === 0x2f || next === 0x5c) at.add(i);
+          if (!/[\w.$~-]/.test(text.charAt(i + p.length))) at.add(i);
         }
       }
       if (at.size === 0) {
