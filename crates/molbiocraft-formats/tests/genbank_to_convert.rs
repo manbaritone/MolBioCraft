@@ -403,3 +403,255 @@ fn refusals_name_what_is_wrong() {
     req.records = vec!["NOPE1".to_string(), "NOPE2.3".to_string()];
     assert_eq!(err(req), "No record in oracle is named NOPE1 or NOPE2.3.");
 }
+
+// ─── BG-01M7V098: the gzip refusal, the LOCUS-name id and the converters' unpinned branches ───
+
+/// A one-record GenBank text: LOCUS `locus`, the `header` lines, the `features` block and a 30 bp
+/// ORIGIN. Generated here; no fixture file.
+fn bg_gbk(locus: &str, header: &str, features: &str) -> String {
+    format!(
+        "LOCUS       {locus:<24}  30 bp    DNA     linear   BCT 19-NOV-2026\n{header}FEATURES             Location/Qualifiers\n{features}ORIGIN\n        1 atggctggca aacgtaccga accgctgtaa\n//\n"
+    )
+}
+
+fn bg_doc(text: &str) -> SequenceDocument {
+    parse_genbank_flatfile(text, "r")
+}
+
+fn bg_gz(members: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for m in members {
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(m).unwrap();
+        out.extend(gz.finish().unwrap());
+    }
+    out
+}
+
+fn bg_qualify(f: &mut molbiocraft_core::SequenceFeature, key: &str, value: &str) {
+    f.qualifiers
+        .get_or_insert_with(Default::default)
+        .insert(key.to_string(), value.to_string());
+}
+
+fn bg_bakta(docs: &[SequenceDocument]) -> serde_json::Value {
+    let t = genbank_to_bakta_json(docs, &GenbankToOptions::default()).unwrap();
+    serde_json::from_str(&t.text).unwrap()
+}
+
+fn bg_bakta_feature<'a>(json: &'a serde_json::Value, start: u64) -> &'a serde_json::Value {
+    json["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["type"] == "CDS" && f["start"] == start)
+        .unwrap_or_else(|| panic!("no CDS at {start} in {json}"))
+}
+
+const BG_CDS: &str = "     CDS             1..9\n                     /locus_tag=\"T1\"\n";
+
+#[test]
+fn bg_01m7v098_a_gzip_whose_text_is_not_utf8_is_refused_as_gzip() {
+    let gz = bg_gz(&[&[0xff, 0xfe, 0x00, 0x4c]]);
+    let err = genbank_to_convert(&request(GenbankToSource::Bytes { bytes: gz }, &ALL)).unwrap_err();
+    assert_eq!(
+        err,
+        "oracle is gzip, but the text it inflates to is not UTF-8, so it cannot be read as GenBank."
+    );
+}
+
+#[test]
+fn bg_01m7v098_the_record_id_is_the_locus_name_with_or_without_a_comment_name() {
+    let warning =
+        "Record Long_name has no VERSION or ACCESSION line, so its LOCUS name is used as its id.";
+    for header in ["COMMENT     MolBioCraft name: Long name\n", ""] {
+        let doc = bg_doc(&bg_gbk("Long_name", header, BG_CDS));
+        if !header.is_empty() {
+            assert_eq!(
+                doc.name, "Long name",
+                "the COMMENT line renames the document"
+            );
+        }
+        let out = genbank_to_functions(&[doc], &GenbankToOptions::default());
+        assert_eq!(
+            out.text, "Long_name\tT1\tHypothetical protein\n",
+            "{header:?}"
+        );
+        assert!(
+            out.warnings.iter().any(|w| w == warning),
+            "{:?}",
+            out.warnings
+        );
+    }
+}
+
+#[test]
+fn bg_01m7v098_an_organism_line_of_a_full_stop_is_no_part_of_the_name() {
+    // Biopython 1.88 (Scanner.py, ORGANISM): a continuation line of '.' is a placeholder, skipped.
+    let header = "SOURCE      x\n  ORGANISM  Unknown organism\n            .\n";
+    let doc = bg_doc(&bg_gbk("R1", header, BG_CDS));
+    let organism = doc
+        .doc_metadata
+        .as_ref()
+        .and_then(|m| m.get("Organism"))
+        .cloned();
+    assert_eq!(organism, Some(serde_json::json!("Unknown organism")));
+}
+
+#[test]
+fn bg_01m7v098_a_strand_0_location_is_written_with_a_question_mark_as_biopython_writes_it() {
+    let features = "     CDS             1..9\n     CDS             join(1..9,13..21)\n";
+    let mut doc = bg_doc(&bg_gbk("R1", "VERSION     R1.1\n", features));
+    for f in &mut doc.features {
+        f.strand = 0;
+    }
+    let out = genbank_to_functions(&[doc.clone()], &GenbankToOptions::default());
+    assert_eq!(
+        out.text,
+        "R1.1\tR1.1.[0:9](?)\tHypothetical protein\nR1.1\tR1.1.join{[0:9](?), [12:21](?)}\tHypothetical protein\n"
+    );
+    // the ptt gene column falls back to the same text
+    let ptt = genbank_to_ptt(&[doc], &GenbankToOptions::default()).text;
+    assert_eq!(
+        ptt.lines().next().unwrap().split('\t').nth(4),
+        Some("[0:9](?)")
+    );
+}
+
+#[test]
+fn bg_01m7v098_ptt_gi_and_cog_read_as_0_54_s_regexes_do() {
+    let features = "     CDS             1..9\n     CDS             10..18\n     CDS             19..27\n     CDS             4..12\n";
+    let mut doc = bg_doc(&bg_gbk("R1", "VERSION     R1.1\n", features));
+    let set = [
+        ("GI:abc", "COG"),
+        ("GI:12x GI:3", "COG0001,x y"),
+        ("GI:7", "COG7\u{1c}z"),
+        ("GI:8", "COG8\u{1f}z"),
+    ];
+    for (f, (gi, product)) in doc.features.iter_mut().zip(set) {
+        bg_qualify(f, "db_xref", gi);
+        bg_qualify(f, "product", product);
+    }
+    let ptt = genbank_to_ptt(&[doc], &GenbankToOptions::default()).text;
+    let cols: Vec<(&str, &str)> = ptt
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            (c[3], c[6])
+        })
+        .collect();
+    // GI with no digit and a bare 'COG' are '-'; '\S' stops at Python's U+001C-U+001F whitespace
+    assert_eq!(
+        cols,
+        [
+            ("-", "-"),
+            ("12", "COG0001,x"),
+            ("7", "COG7"),
+            ("8", "COG8")
+        ]
+    );
+}
+
+#[test]
+fn bg_01m7v098_gff_ids_percent_encode_ampersand_comma_percent_and_controls() {
+    let mut doc = bg_doc(&bg_gbk("R1", "VERSION     R1.1\n", BG_CDS));
+    doc.doc_metadata
+        .get_or_insert_with(Default::default)
+        .insert(
+            "Version".to_string(),
+            serde_json::json!("A&B,C%D\u{7}E;F=G"),
+        );
+    let gff = genbank_to_gff3(&[doc], &GenbankToOptions::default()).text;
+    assert!(gff.contains("ID=A%26B%2CC%25D%07E%3BF%3DG."), "{gff}");
+}
+
+#[test]
+fn bg_01m7v098_phage_finder_writes_the_declared_length_of_a_record_with_no_sequence() {
+    let mut doc = bg_doc(&bg_gbk("R1", "VERSION     R1.1\n", BG_CDS));
+    doc.sequence.clear();
+    doc.doc_metadata
+        .get_or_insert_with(Default::default)
+        .insert("Declared Length".to_string(), serde_json::json!(5000));
+    let pf = genbank_to_phage_finder(&[doc], &GenbankToOptions::default()).text;
+    assert_eq!(pf, "R1.1\t5000\tT1\t1\t9\tHypothetical protein\n");
+}
+
+#[test]
+fn bg_01m7v098_bakta_class_reads_only_the_first_note() {
+    let features = "     CDS             1..9\n     CDS             10..18\n";
+    let mut doc = bg_doc(&bg_gbk("R1", "VERSION     R1.1\n", features));
+    doc.features[0].notes = Some("class: A\nother".to_string());
+    doc.features[1].notes = Some("other\nclass: B".to_string());
+    let json = bg_bakta(&[doc]);
+    assert_eq!(bg_bakta_feature(&json, 1)["class"], "class: A");
+    assert!(bg_bakta_feature(&json, 10).get("class").is_none(), "{json}");
+}
+
+#[test]
+fn bg_01m7v098_bakta_translates_a_codon_of_any_iupac_letter() {
+    let mut doc = bg_doc(&bg_gbk(
+        "R1",
+        "VERSION     R1.1\n",
+        "     CDS             1..18\n",
+    ));
+    // every IUPAC nucleotide code, U included, in some codon: no letter is refused
+    doc.sequence = "ATGRYSWKMBDHVNUTAAACGTACGTACGT".to_string();
+    let json = bg_bakta(&[doc]);
+    assert!(
+        bg_bakta_feature(&json, 1)["aa"]
+            .as_str()
+            .is_some_and(|a| a.len() == 5),
+        "{json}"
+    );
+}
+
+#[test]
+fn bg_01m7v098_bakta_3_prime_reads_the_translation_when_the_frame_cannot_be_translated() {
+    let features = "     CDS             1..9\n                     /translation=\"MK*\"\n     CDS             10..18\n                     /translation=\"MK\"\n";
+    let mut doc = bg_doc(&bg_gbk("R1", "VERSION     R1.1\n", features));
+    // 'X' is no IUPAC code, so Biopython raises and the /translation decides
+    doc.sequence = "ATGXAATAAATGXAATAAACGTACGTACGT".to_string();
+    let json = bg_bakta(&[doc]);
+    assert_eq!(bg_bakta_feature(&json, 1)["truncated"], "3-prime");
+    assert!(bg_bakta_feature(&json, 10)["truncated"].is_null(), "{json}");
+}
+
+#[test]
+fn bg_01m7v098_an_empty_locus_tag_gives_no_locus() {
+    let mut doc = bg_doc(&bg_gbk("R1", "VERSION     R1.1\n", BG_CDS));
+    bg_qualify(&mut doc.features[0], "locus_tag", "");
+    bg_qualify(&mut doc.features[0], "protein_id", "P1");
+    let json = bg_bakta(&[doc]);
+    assert!(bg_bakta_feature(&json, 1)["locus"].is_null(), "{json}");
+}
+
+#[test]
+fn bg_01m7v098_every_member_of_a_multi_member_gzip_is_read() {
+    let a = bg_gbk("A1", "VERSION     A1.1\n", BG_CDS);
+    let b = bg_gbk("B1", "VERSION     B1.1\n", BG_CDS);
+    let gz = bg_gz(&[a.as_bytes(), b.as_bytes()]);
+    let r = genbank_to_convert(&request(
+        GenbankToSource::Bytes { bytes: gz },
+        &[GenbankToOutput::Functions],
+    ))
+    .unwrap();
+    assert_eq!(
+        r.files[0].text,
+        "A1.1\tT1\tHypothetical protein\nB1.1\tT1\tHypothetical protein\n"
+    );
+}
+
+#[test]
+fn bg_01m7v098_no_file_was_written_when_no_kept_record_has_a_line() {
+    let mut req = request(
+        GenbankToSource::Text {
+            text: bg_gbk("R1", "VERSION     R1.1\n", ""),
+        },
+        &[GenbankToOutput::Proteins],
+    );
+    req.separate = true;
+    assert_eq!(
+        genbank_to_convert(&req).unwrap_err(),
+        "No file was written: no record kept from oracle has a line in the chosen outputs."
+    );
+}

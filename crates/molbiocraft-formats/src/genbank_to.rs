@@ -198,12 +198,13 @@ fn parts(f: &SequenceFeature) -> Vec<(usize, usize)> {
 
 /// Biopython's `str(feature.location)` without partial marks (D0227 (8)): `[a:b](+)` with a 0-based
 /// start, or `join{[a:b](-), [c:d](-)}` with a minus-strand join's parts in transcription order,
-/// the reverse of the order the app stores them in.
+/// the reverse of the order the app stores them in. A strand-0 feature (an open record's, never a
+/// parsed CDS's) is `[a:b](?)`, as Biopython 1.88's `SimpleLocation.__str__` writes strand 0.
 fn location_text(f: &SequenceFeature) -> String {
     let strand = match f.strand {
         s if s > 0 => "(+)",
         s if s < 0 => "(-)",
-        _ => "",
+        _ => "(?)",
     };
     let mut p = parts(f);
     if f.strand < 0 {
@@ -856,7 +857,7 @@ fn source_documents(source: &GenbankToSource, base: &str) -> Result<Vec<Sequence
                 .read_to_end(&mut out)
                 .map_err(|e| format!("{base} is gzip but cannot be inflated: {e}"))?;
             std::borrow::Cow::Owned(String::from_utf8(out).map_err(|_| {
-                format!("{base} is not UTF-8 text or gzip, so it cannot be read as GenBank.")
+                format!("{base} is gzip, but the text it inflates to is not UTF-8, so it cannot be read as GenBank.")
             })?)
         }
         GenbankToSource::Bytes { bytes } => {
