@@ -288,20 +288,25 @@ function highCopyGenome(): string {
 }
 
 /**
- * BG-01M6W0ZE: the repeat scan's work bound (D0055), a unit per copy pair visited and one per base
- * compared while extending a pair's arms.
+ * BG-01M6W0ZE: the repeat scan's work bound (D0055), PAIR_WORK units per copy pair visited and one
+ * per base compared while extending a pair's arms.
  */
-const WORK_BOUND = 25_000_000;
+const WORK_BOUND = 400_000_000;
+const PAIR_WORK = 32;
 
-/** The sentence the repeat scan stops with, after comparing `pairs` copy pairs and `bases` bases. */
-const stopSentence = (pairs: number, bases: number, arm: number) =>
-  `The repeat scan stopped at its work bound after comparing ${n(pairs)} copy pairs and ${n(bases)} bases at arms of ${arm} bp; the total is a lower bound and the list holds the longest repeats found before it stopped.`;
+/**
+ * The sentence the repeat scan stops with among the direct repeats, after comparing `pairs` copy
+ * pairs and `bases` bases, arm 1 at base `at` of the `of` scanned.
+ */
+const stopSentence = (pairs: number, bases: number, arm: number, at: number, of: number) =>
+  `The repeat scan stopped at its work bound after comparing ${n(pairs)} copy pairs and ${n(bases)} bases at arms of ${arm} bp, at base ${n(at)} of the ${n(of)} bp scanned: the total is a lower bound and the list holds the longest repeats found before it stopped, so no repeat whose first arm starts past base ${n(at)} was compared.`;
 
-/** The copy pairs and bases a stop sentence names, or a failure when it is not one. */
-function stopWork(sentence: string | undefined): [number, number] {
-  const m = /^The repeat scan stopped at its work bound after comparing ([\d,]+) copy pairs and ([\d,]+) bases at arms of \d+ bp;/.exec(sentence ?? '');
+/** The copy pairs and bases a stop sentence names, and the base and length it names, or a failure when it is not one. */
+function stopWork(sentence: string | undefined): [number, number, number, number] {
+  const m = /^The repeat scan stopped at its work bound after comparing ([\d,]+) copy pairs and ([\d,]+) bases at arms of \d+ bp, at base ([\d,]+) of the ([\d,]+) bp scanned:/.exec(sentence ?? '');
   expect(m, `not a stop sentence: ${sentence}`).not.toBeNull();
-  return [Number(m![1].replace(/,/g, '')), Number(m![2].replace(/,/g, ''))];
+  const [pairs, bases, at, of] = m!.slice(1, 5).map((x) => Number(x.replace(/,/g, '')));
+  return [pairs, bases, at, of];
 }
 
 /**
@@ -464,16 +469,21 @@ describe('genome scan counts', () => {
   it('labels a bounded repeat total as a lower bound', async () => {
     // BG-01M6SQ9T: 250 kb of (GGAAT)n with 10% of its bases substituted, as HSat3 is diverged. Its
     // copy pairs at a 10-bp arm number over a hundred million, so the scan stops at its work bound
-    // (BG-01M6W0ZE: 25,000,000 units, a unit per copy pair visited and per base compared extending
-    // one); the 80 listed are the longest of the pairs compared, not of the whole array
+    // (BG-01M6W0ZE: 400,000,000 units, 32 per copy pair visited and one per base compared extending
+    // one); the 80 listed are the longest of the pairs compared, not of the whole array, and the
+    // sentence names the base arm 1 had reached, past which no repeat was compared
     const hsat3 = doc('h', 'HSat3-like 250 kb', satelliteArray('GGAAT', 250_000, 0.1, 0x5eed_0008));
     const scan = findGenomicRepeats(hsat3.sequence, 10);
-    const [pairs, bases] = stopWork(scan.warnings[0]);
-    expect(pairs + bases, 'the work done is the bound').toBe(WORK_BOUND);
+    const [pairs, bases, at, of] = stopWork(scan.warnings[0]);
+    const work = pairs * PAIR_WORK + bases;
+    expect(work, 'the work done is the bound, or short of it by less than a pair').toBeLessThanOrEqual(WORK_BOUND);
+    expect(work + PAIR_WORK).toBeGreaterThan(WORK_BOUND);
+    expect([of, at < of], 'it stopped part way along the 250,000 bp').toEqual([250_000, true]);
+    expect(scan.repeats.every((r) => r.arm1StartBp <= at), 'every repeat listed starts by the base named').toBe(true);
     // fixture: both kinds of work count, a few bases compared per pair
     expect(pairs).toBeGreaterThan(1_000_000);
     expect(bases).toBeGreaterThan(pairs);
-    const stop = stopSentence(pairs, bases, 10);
+    const stop = stopSentence(pairs, bases, 10, at, 250_000);
     expect([scan.totalRepeats, scan.totalIsLowerBound, scan.minArmBp, scan.repeats.length]).toEqual([pairs, true, 10, 80]);
     expect(scan.warnings).toEqual([stop, NOT_COMPARED]);
     expect(scan.repeats.every((r) => r.repeatType === 'Direct Repeat')).toBe(true);
@@ -521,26 +531,27 @@ describe('genome scan counts', () => {
     // 250 kb of A at a 10-bp arm: the only repeats are the first seed's pairs with each later copy
     // of it, at 11 to 249,990 (the base before every other pair matches), each arm reaching as far
     // as the other's start or the end, so 249,980 pairs whose arms run to 15 billion bases. Counted
-    // as the bound counts them, a unit per pair and one per base compared past the seed, the scan
-    // stops part way: a pair the bound leaves too little for is visited, compared as far as the
-    // bound lets it, and the scan stops there
+    // as the bound counts them, 32 units per pair, visited only while the bound has them to spare,
+    // and one per base compared past the seed, the scan stops part way: a pair the bound leaves too
+    // little for is visited, compared as far as the bound lets it, and the scan stops there. Every
+    // pair compared has arm 1 at base 1, so it stopped at base 1 of the 250,000
     const len = 250_000;
     let pairs = 0;
     let bases = 0;
     for (let j = 11; j <= len - 10; j++) {
-      if (pairs + bases === WORK_BOUND) break;
+      if (WORK_BOUND - pairs * PAIR_WORK - bases < PAIR_WORK) break;
       const span = Math.min(j, len - j) - 10;
+      const room = WORK_BOUND - pairs * PAIR_WORK - bases - PAIR_WORK;
       pairs += 1;
-      const room = WORK_BOUND - pairs - bases;
       bases += Math.min(span, room);
       if (span > room) break;
     }
     expect(pairs, 'fixture: the bound stops the scan').toBeLessThan(249_980);
-    expect(pairs + bases).toBe(WORK_BOUND);
+    expect(pairs * PAIR_WORK + bases).toBe(WORK_BOUND);
     const polyA = doc('a', 'Poly-A 250 kb', 'A'.repeat(len));
-    const stop = stopSentence(pairs, bases, 10);
+    const stop = stopSentence(pairs, bases, 10, 1, len);
     expect(stop).toBe(
-      `The repeat scan stopped at its work bound after comparing ${n(pairs)} copy pairs and ${n(bases)} bases at arms of 10 bp; the total is a lower bound and the list holds the longest repeats found before it stopped.`
+      `The repeat scan stopped at its work bound after comparing ${n(pairs)} copy pairs and ${n(bases)} bases at arms of 10 bp, at base 1 of the 250,000 bp scanned: the total is a lower bound and the list holds the longest repeats found before it stopped, so no repeat whose first arm starts past base 1 was compared.`
     );
     const scan = findGenomicRepeats(polyA.sequence, 10);
     expect([scan.totalRepeats, scan.totalIsLowerBound, scan.minArmBp, scan.repeats.length]).toEqual([pairs, true, 10, 80]);
@@ -552,11 +563,11 @@ describe('genome scan counts', () => {
     expect(tableUnder(html, 'Direct, Inverted & Palindromic Repeats').caption).toBe(
       `Direct, Inverted & Palindromic Repeats (arms ≥ 10 bp, 80 of at least ${n(pairs)}, the longest found before the scan stopped)`
     );
-    // the stop sentence beside the list, naming the copy pairs and bases compared and the total a
-    // lower bound
+    // the stop sentence beside the list, naming the copy pairs and bases compared, how far arm 1 had
+    // reached, and the total a lower bound
     const regions = warningRegions(html).filter((r) => r.label === 'Repeat scan warnings');
     expect(regions.map((r) => r.sentences)).toEqual([[stop, NOT_COMPARED]]);
-    expect(regions[0].sentences[0]).toMatch(/copy pairs and [\d,]+ bases .*the total is a lower bound/);
+    expect(regions[0].sentences[0]).toMatch(/copy pairs and [\d,]+ bases .*at base 1 of the 250,000 bp scanned: the total is a lower bound/);
     expect(words).not.toContain('Repeat list capped');
   }, 60_000);
 
