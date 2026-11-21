@@ -3113,6 +3113,393 @@ fn indels_left_out_together(qa: &[u8], ra: &[u8], is_del: bool) -> std::collecti
     out
 }
 
+/// Less than one mismatch's worth of the caller's alignment score (a mismatch scores -3 where a
+/// match scores 2): beside a run of unknown bases, a reading that outscores another that calls
+/// differently (an indel or a SNP) by less than this, or ties with it, is not taken
+/// ([`near_tie_regions`]).
+const CALL_NEAR_TIE: i32 = 3;
+
+/// The most bases a run of unknown bases holds for [`near_tie_regions`] to read it: a run of
+/// thousands (an assembly gap over the aligned cap) is read by the rules that name its surplus
+/// between its known flanks (BG-01M6VMNF, BG-01M6W0BZ), and its readings that split the surplus
+/// differently are not read as near ties.
+const CALL_NEAR_TIE_RUN_MAX: usize = 1_000;
+
+/// A near tie beside a run of unknown bases ([`near_tie_regions`]): the reference bases, numbered
+/// from the first the alignment columns hold (1-based), that the calls the two readings differ in
+/// cover, from `lo` to `hi`; and the indels the other reading holds there, as (is_del, len).
+struct NearTie {
+    lo: usize,
+    hi: usize,
+    alt: Vec<(bool, usize)>,
+}
+
+/// What a reading calls or leaves out, compared between two readings: a kind (b'S' a SNP or MNP,
+/// b'C' an indel called, b'L' an indel left out beside unknown bases), whether a deletion, its
+/// length, and for a call its first reference base and its bases. An indel left out is known by
+/// its kind and length only: its warning names wherever it may lie.
+type ReadingKey = (u8, bool, usize, usize, Vec<u8>);
+
+/// Each thing alignment columns call or leave out: its key, and the first and last reference bases
+/// it covers at every placement it reaches ([`fitting_reach`]), 1-based within the columns (an
+/// insertion covers the bases either side of it). Indels are first moved as far left as they go
+/// ([`left_align_gaps`]), so one indel placed two ways in a repeat reads the same. An indel is left
+/// out where its reach meets an unknown base, and the steps of a staircase are joined as the call
+/// loop joins them (LeftOutIndel); unlike the call loop, it does not leave out an indel with
+/// another ([`indels_left_out_together`]) or where a placement the known bases score no lower lies
+/// against unknown bases (the joint-placement rule, [`indel_placements`]).
+fn reading_events(qa: &[u8], ra: &[u8]) -> Vec<(ReadingKey, usize, usize)> {
+    let (mut qa, mut ra) = (qa.to_vec(), ra.to_vec());
+    left_align_gaps(&mut qa, &mut ra);
+    let n = qa.len().min(ra.len());
+    let unknown_at = |c: usize| c < n && [qa[c], ra[c]].iter().any(|&b| b != b'-' && !call_known(b));
+    let mut before = vec![0usize; n + 1];
+    for c in 0..n {
+        before[c + 1] = before[c] + (ra[c] != b'-') as usize;
+    }
+    let mut events: Vec<(ReadingKey, usize, usize)> = Vec::new();
+    let (mut c, mut last_end, mut last_reach) = (0, usize::MAX, 0usize);
+    while c < n {
+        let (q, r) = (qa[c], ra[c]);
+        if q != b'-' && r != b'-' {
+            if q == r || unknown_at(c) {
+                c += 1;
+                continue;
+            }
+            let s = c;
+            while c < n && qa[c] != b'-' && ra[c] != b'-' && qa[c] != ra[c] && !unknown_at(c) {
+                c += 1;
+            }
+            events.push(((b'S', false, c - s, before[s] + 1, qa[s..c].to_vec()), before[s] + 1, before[c]));
+            (last_end, last_reach) = (usize::MAX, 0);
+            continue;
+        }
+        let (s, is_del) = (c, q == b'-');
+        while c < n && ((is_del && qa[c] == b'-' && ra[c] != b'-') || (!is_del && ra[c] == b'-' && qa[c] != b'-')) {
+            c += 1;
+        }
+        if c == s {
+            c += 1;
+            continue;
+        }
+        let (left, right) = fitting_reach(&qa, &ra, s, c, is_del);
+        let beside_unknown = (s.saturating_sub(left + 1)..=c + right).any(unknown_at);
+        // every placement it reaches without pairing a known base with a different one
+        let (lo, hi) = if is_del { (before[s] + 1, before[c]) } else { (before[s], before[s] + 1) };
+        let (lo, hi) = (lo.saturating_sub(left), hi + right);
+        let bases = if is_del { ra[s..c].to_vec() } else { qa[s..c].to_vec() };
+        // the next step of a staircase the alignment split one indel left out into, as the call
+        // loop joins them (LeftOutIndel)
+        let meets = last_reach >= s || s - left <= last_end;
+        if let Some(prev) = events.last_mut().filter(|p| beside_unknown && meets && p.0 .0 == b'L' && p.0 .1 == is_del && (last_end..s).all(unknown_at)) {
+            (prev.0 .2, prev.2) = (prev.0 .2 + (c - s), prev.2.max(hi));
+            (last_end, last_reach) = (c, c + right);
+            continue;
+        }
+        (last_end, last_reach) = (c, c + right);
+        let key = if beside_unknown { (b'L', is_del, c - s, 0, Vec::new()) } else { (b'C', is_del, c - s, lo, bases) };
+        events.push((key, lo, hi));
+    }
+    events
+}
+
+/// The score of alignment columns under [`call_score`], each gap -5 - 2n, an insertion beside a
+/// deletion two gaps (the score [`near_tie_dp`] gives).
+fn near_tie_score(xa: &[u8], ya: &[u8]) -> i32 {
+    let (mut score, mut state) = (0i32, 0u8);
+    for (&x, &y) in xa.iter().zip(ya) {
+        let now = if y == b'-' { 1 } else if x == b'-' { 2 } else { 0 };
+        score += match now {
+            0 => call_score(x, y),
+            _ if now == state => -2,
+            _ => -(CALL_GAP_OPEN + 2),
+        };
+        state = now;
+    }
+    score
+}
+
+/// End-to-end alignment scores of `x[..i]` against `y[..j]` under [`near_tie_score`]'s scoring, by
+/// the state of the last column: a pair (0, or nothing aligned), `x` against a gap (1), a gap
+/// against `y` (2).
+struct NearTieDp {
+    yn: usize,
+    s: [Vec<i32>; 3],
+}
+
+const NEAR_TIE_NEG: i32 = i32::MIN / 4;
+
+fn near_tie_dp(x: &[u8], y: &[u8]) -> NearTieDp {
+    let (xn, yn) = (x.len(), y.len());
+    let size = (xn + 1) * (yn + 1);
+    let at = |i: usize, j: usize| i * (yn + 1) + j;
+    let (open, extend) = (-(CALL_GAP_OPEN + 2), -2);
+    let mut s = [vec![NEAR_TIE_NEG; size], vec![NEAR_TIE_NEG; size], vec![NEAR_TIE_NEG; size]];
+    s[0][0] = 0;
+    for i in 0..=xn {
+        for j in 0..=yn {
+            if i > 0 && j > 0 {
+                let p = at(i - 1, j - 1);
+                s[0][at(i, j)] = s[0][p].max(s[1][p]).max(s[2][p]) + call_score(x[i - 1], y[j - 1]);
+            }
+            if i > 0 {
+                let p = at(i - 1, j);
+                s[1][at(i, j)] = (s[0][p].max(s[2][p]) + open).max(s[1][p] + extend);
+            }
+            if j > 0 {
+                let p = at(i, j - 1);
+                s[2][at(i, j)] = (s[0][p].max(s[1][p]) + open).max(s[2][p] + extend);
+            }
+        }
+    }
+    NearTieDp { yn, s }
+}
+
+impl NearTieDp {
+    fn get(&self, state: usize, i: usize, j: usize) -> i32 {
+        self.s[state][i * (self.yn + 1) + j]
+    }
+
+    /// The columns of a highest-scoring alignment of `x[..i]` against `y[..j]` ending in `state`.
+    fn trace(&self, x: &[u8], y: &[u8], mut i: usize, mut j: usize, mut state: usize) -> (Vec<u8>, Vec<u8>) {
+        let (open, extend) = (-(CALL_GAP_OPEN + 2), -2);
+        let (mut xa, mut ya) = (Vec::new(), Vec::new());
+        while i > 0 || j > 0 {
+            let here = self.get(state, i, j);
+            match state {
+                0 => {
+                    let v = here - call_score(x[i - 1], y[j - 1]);
+                    state = (0..3).find(|&s| self.get(s, i - 1, j - 1) == v).unwrap_or(0);
+                    (xa.push(x[i - 1]), ya.push(y[j - 1]));
+                    (i, j) = (i - 1, j - 1);
+                }
+                1 => {
+                    state = if self.get(1, i - 1, j) + extend == here { 1 } else if self.get(0, i - 1, j) + open == here { 0 } else { 2 };
+                    (xa.push(x[i - 1]), ya.push(b'-'));
+                    i -= 1;
+                }
+                _ => {
+                    state = if self.get(2, i, j - 1) + extend == here { 2 } else if self.get(0, i, j - 1) + open == here { 0 } else { 1 };
+                    (xa.push(b'-'), ya.push(y[j - 1]));
+                    j -= 1;
+                }
+            }
+        }
+        xa.reverse();
+        ya.reverse();
+        (xa, ya)
+    }
+}
+
+/// The readings of a window that enter a run of unknown bases `y[ya..yb]` after `i` bases of `x`
+/// and cross it with `p` more, for each `i` and `p`, the entry `i` at most 2 x
+/// [`CALL_REREAD_COLUMNS`] (128) bases past the bases before the run and the exit as many before the
+/// bases after it: every way to read the window within that reach is one of them (a reading that
+/// enters or leaves the run farther along is not read), and two that differ in `p` read a different count of the run's bases deleted (or of `x`'s
+/// inserted there); two that differ in `i` place the indels beside the run differently. Each best
+/// reading that reaches `floor`, by its score, with the window's columns.
+fn near_tie_readings(x: &[u8], y: &[u8], ya: usize, yb: usize, floor: i32) -> Vec<(i32, Vec<u8>, Vec<u8>)> {
+    let (xn, len) = (x.len(), yb - ya);
+    // a reading enters the run after at most `reach` more of x's bases than the bases before it,
+    // and leaves it as many before the bases after it, so a run of 30,000 N is read in bounded work
+    let reach = 2 * CALL_REREAD_COLUMNS;
+    let head = (ya + reach).min(xn);
+    let fwd = near_tie_dp(&x[..head], &y[..ya]);
+    let tail_x = (y.len() - yb + reach).min(xn);
+    let (xr, yr): (Vec<u8>, Vec<u8>) = (x[xn - tail_x..].iter().rev().copied().collect(), y[yb..].iter().rev().copied().collect());
+    let back = near_tie_dp(&xr, &yr);
+    let tail = yr.len();
+    // inside the run each base of x against an unknown base scores 1, and a gap of g columns
+    // -5 - 2g, 5 less where it joins a gap of the same row on its side of the run
+    let gap = |g: usize| if g == 0 { 0 } else { -(CALL_GAP_OPEN + 2 * g as i32) };
+    // for each entry i_in and crossing p reaching the floor: (score, i_in, p, s_in, s_out, gap at
+    // the run's start)
+    let mut found: Vec<(i32, usize, usize, usize, usize, bool)> = Vec::new();
+    for i_in in 0..=head {
+        for p in (xn - tail_x).saturating_sub(i_in)..=(xn - i_in) {
+            let mut best: Option<(i32, usize, usize, usize, usize, bool)> = None;
+            let i_out = i_in + p;
+            let (gap_state, g) = if p <= len { (2usize, len - p) } else { (1usize, p - len) };
+            let base = p.min(len) as i32 + gap(g);
+            for s_in in 0..3 {
+                let f = fwd.get(s_in, i_in, ya);
+                if f <= NEAR_TIE_NEG / 2 {
+                    continue;
+                }
+                for s_out in 0..3 {
+                    let b = back.get(s_out, xn - i_out, tail);
+                    if b <= NEAR_TIE_NEG / 2 {
+                        continue;
+                    }
+                    let (join_in, join_out) = (g > 0 && s_in == gap_state && !(i_in == 0 && ya == 0), g > 0 && s_out == gap_state && !(i_out == xn && tail == 0));
+                    // the gap lies at the run's start or end, or both where nothing of x is paired there
+                    let (bonus, at_start) = if p.min(len) == 0 {
+                        (CALL_GAP_OPEN * (join_in as i32 + join_out as i32), true)
+                    } else if join_in || !join_out {
+                        (CALL_GAP_OPEN * join_in as i32, true)
+                    } else {
+                        (CALL_GAP_OPEN, false)
+                    };
+                    let score = f + base + bonus + b;
+                    if best.is_none_or(|b| score > b.0) {
+                        best = Some((score, i_in, p, s_in, s_out, at_start));
+                    }
+                }
+            }
+            found.extend(best.filter(|b| b.0 >= floor));
+        }
+    }
+    let mut out = Vec::new();
+    for (score, i_in, p, s_in, s_out, at_start) in found {
+        let (mut xa, mut ya_cols) = fwd.trace(&x[..head], &y[..ya], i_in, ya, s_in);
+        let i_out = i_in + p;
+        // the run's crossing: g gap columns at its start or end, the rest pairs
+        let (xs, ys) = (&x[i_in..i_out], &y[ya..yb]);
+        let g = xs.len().abs_diff(ys.len());
+        if p <= len {
+            let (gy, py) = if at_start { (&ys[..g], &ys[g..]) } else { (&ys[ys.len() - g..], &ys[..ys.len() - g]) };
+            let gx = vec![b'-'; g];
+            let parts: [(&[u8], &[u8]); 2] = if at_start { [(&gx, gy), (xs, py)] } else { [(xs, py), (&gx, gy)] };
+            for (a, b) in parts {
+                xa.extend_from_slice(a);
+                ya_cols.extend_from_slice(b);
+            }
+        } else {
+            let (gx, px) = if at_start { (&xs[..g], &xs[g..]) } else { (&xs[xs.len() - g..], &xs[..xs.len() - g]) };
+            let gy = vec![b'-'; g];
+            let parts: [(&[u8], &[u8]); 2] = if at_start { [(gx, &gy), (px, ys)] } else { [(px, ys), (gx, &gy)] };
+            for (a, b) in parts {
+                xa.extend_from_slice(a);
+                ya_cols.extend_from_slice(b);
+            }
+        }
+        let (rx, ry) = back.trace(&xr, &yr, xn - i_out, tail, s_out);
+        xa.extend(rx.iter().rev());
+        ya_cols.extend(ry.iter().rev());
+        out.push((score, xa, ya_cols));
+    }
+    out
+}
+
+/// The near ties beside each run of 2 to [`CALL_NEAR_TIE_RUN_MAX`] unknown bases, in either sequence: where a reading
+/// that calls differently there (an indel or a SNP) from the alignment's own reading scores no more
+/// than [`CALL_NEAR_TIE`] - 1 below it (an exact tie among them), the sample does not say which it holds
+/// (BG-01M7V8FQ). Beside a run of 10 N standing for 10 bases, a 7-bp deletion just after the run
+/// was read as 7 of the run's N deleted, 6 chance matches and a SNP the sample does not hold, 2
+/// higher than the truth; the SNP was called inside the deletion's named span. Beside a run of 13
+/// N standing for 10, a 6-bp deletion 5 bases after it was called as a 9-bp deletion; around a run
+/// of 400 N, a 20-bp and a 30-bp deletion tied with a reading of 9 chance matches, called as two
+/// deletions and a SNP.
+///
+/// Each run's window is [`CALL_REREAD_COLUMNS`] columns each side of the whole run, between two
+/// columns that pair two bases, read again end to end (a long run's ends are read together: 10 of
+/// 400 N deleted at its start and 10 more bases paired at its end are one reading); a window with no gap and no known bases that differ calls nothing and is
+/// passed over. Every reading of a window crosses the run with some count of the other sequence's
+/// bases ([`near_tie_readings`]); each count's best reading that scores within the margin of the
+/// alignment's own is compared with it by what each calls or leaves out ([`reading_events`]), and
+/// where they differ in an indel, the reference bases every differing call of the two covers are
+/// a near tie, whether they differ in an indel or a SNP: a SNP 5 bases from a run of 20 N standing
+/// for 10 ties within the margin with the SNP's base and the 5 between paired with the run's spare
+/// N (each N 1 where the bases' matches scored 2 and the SNP -3), so the sample does not say it
+/// holds the SNP. Two readings that call the same and differ only in where an indel left out lies
+/// are not one: pairing 1 or 2 known bases beside a run with its N instead scores 1 or 2 lower
+/// beside every run, and the indel's warning names the bases between the run's known flanks.
+fn near_tie_regions(qa: &[u8], ra: &[u8]) -> Vec<NearTie> {
+    let n = qa.len().min(ra.len());
+    let paired = |c: usize| qa[c] != b'-' && ra[c] != b'-';
+    let (Some(first), Some(last)) = (qa[..n].iter().position(|&b| b != b'-'), qa[..n].iter().rposition(|&b| b != b'-')) else {
+        return Vec::new();
+    };
+    let mut before = vec![0usize; n + 1];
+    for c in 0..n {
+        before[c + 1] = before[c] + (ra[c] != b'-') as usize;
+    }
+    let w = CALL_REREAD_COLUMNS;
+    let mut out = Vec::new();
+    for sample_run in [false, true] {
+        // the run's row (y) and the other (x)
+        let (xrow, yrow) = if sample_run { (ra, qa) } else { (qa, ra) };
+        let mut c = first;
+        while c <= last {
+            if yrow[c] == b'-' || call_known(yrow[c]) {
+                c += 1;
+                continue;
+            }
+            let (from, mut to, mut bases) = (c, c, 0usize);
+            while c <= last && (yrow[c] == b'-' || !call_known(yrow[c])) {
+                if yrow[c] != b'-' {
+                    (to, bases) = (c, bases + 1);
+                }
+                c += 1;
+            }
+            if !(2..=CALL_NEAR_TIE_RUN_MAX).contains(&bases) {
+                continue;
+            }
+            {
+                let (a, b) = (from, to);
+                let mut lo = a.saturating_sub(w).max(first);
+                while lo > first && !paired(lo) {
+                    lo -= 1;
+                }
+                let mut hi = (b + w).min(last);
+                while hi < last && !paired(hi) {
+                    hi += 1;
+                }
+                if !(paired(lo) && paired(hi) && hi > lo + 1) {
+                    continue;
+                }
+                let (xw, yw) = (&xrow[lo..=hi], &yrow[lo..=hi]);
+                let callable = xw.iter().zip(yw).any(|(&p, &q)| p == b'-' || q == b'-' || (call_known(p) && call_known(q) && p != q));
+                if !callable {
+                    continue;
+                }
+                let x: Vec<u8> = xw.iter().copied().filter(|&b| b != b'-').collect();
+                let y: Vec<u8> = yw.iter().copied().filter(|&b| b != b'-').collect();
+                // the run's bases within the window
+                let run_lo = from.max(lo);
+                let run_hi = to.min(hi);
+                let ya = yrow[lo..run_lo].iter().filter(|&&b| b != b'-').count();
+                let yb = ya + yrow[run_lo..=run_hi].iter().filter(|&&b| b != b'-').count();
+                let own = near_tie_score(xw, yw);
+                let (cq, cr) = if sample_run { (yw, xw) } else { (xw, yw) };
+                let own_events = reading_events(cq, cr);
+                let mut region: Option<(usize, usize)> = None;
+                let mut alt = Vec::new();
+                for (_, ax, ay) in near_tie_readings(&x, &y, ya, yb, own - (CALL_NEAR_TIE - 1)) {
+                    let (aq, ar) = if sample_run { (&ay, &ax) } else { (&ax, &ay) };
+                    let events = reading_events(aq, ar);
+                    // the events of each reading the other does not hold, as many times as it holds them
+                    let unmatched = |mine: &[(ReadingKey, usize, usize)], theirs: &[(ReadingKey, usize, usize)]| {
+                        let mut left: Vec<&ReadingKey> = theirs.iter().map(|e| &e.0).collect();
+                        mine.iter()
+                            .filter(|e| match left.iter().position(|k| **k == e.0) {
+                                Some(i) => {
+                                    left.swap_remove(i);
+                                    false
+                                }
+                                None => true,
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+                    let (only_own, only_alt) = (unmatched(&own_events, &events), unmatched(&events, &own_events));
+                    for e in only_own.iter().chain(&only_alt) {
+                        region = Some(region.map_or((e.1, e.2), |(l, h)| (l.min(e.1), h.max(e.2))));
+                    }
+                    alt.extend(only_alt.iter().filter(|e| e.0 .0 != b'S').map(|e| (e.0 .1, e.0 .2)));
+                }
+                if let Some((l, h)) = region {
+                    let offset = before[lo];
+                    alt.sort_unstable();
+                    alt.dedup();
+                    out.push(NearTie { lo: offset + l.max(1), hi: offset + h.max(l.max(1)), alt });
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Moves every insertion and deletion in the alignment columns as far left as it goes without
 /// changing a base: while the column before a run of gaps matches and its base equals the last base
 /// of the run, the run moves one column left, to VCF's left-normalised placement. A deletion that
@@ -3325,6 +3712,9 @@ pub fn call_freebayes_variants_with_one_shot_limit(
     part_insertions_from_unknown_runs(&mut qa, &mut ra);
     place_indels_on_known_bases(&mut qa, &mut ra);
     let together = [indels_left_out_together(&qa, &ra, false), indels_left_out_together(&qa, &ra, true)];
+    // the near ties beside runs of unknown bases ([`near_tie_regions`]), by reference bases
+    // numbered from the alignment's first
+    let near_ties = near_tie_regions(&qa, &ra);
     // the stretches of the sample soft-clipped as unrelated to the reference ([`soft_clipped_columns`])
     let clips = soft_clipped_columns(&qa, &ra, ystart, &chain, query.len());
     let mut clip_at = vec![false; qa.len().min(ra.len())];
@@ -3336,8 +3726,6 @@ pub fn call_freebayes_variants_with_one_shot_limit(
     let tail_clip = clips.iter().find(|&&(a, b)| last_q_col.is_some_and(|l| (a..b).contains(&l))).map(|&(a, _)| a);
 
     let mut variants = Vec::new();
-    let mut transitions = 0usize;
-    let mut transversions = 0usize;
     let is_transition = |r: u8, q: u8| -> bool {
         matches!((r, q), (b'A', b'G') | (b'G', b'A') | (b'C', b'T') | (b'T', b'C'))
     };
@@ -3346,6 +3734,13 @@ pub fn call_freebayes_variants_with_one_shot_limit(
     let unknown_at = |c: usize| c < n && [qa[c], ra[c]].iter().any(|&b| b != b'-' && !call_known(b));
     // ref_pos = 1-based reference coordinate of the last reference base consumed.
     let mut ref_pos = win_start + ystart;
+    let base = ref_pos;
+    // the near ties an indel of `len` after reference base `at` lies in: a deletion of the bases
+    // after it, an insertion between it and the next
+    let near_tie_at = |at: usize, len: usize, is_del: bool| {
+        let (a, b) = if is_del { (at + 1 - base, at + len - base) } else { (at - base, at + 1 - base) };
+        near_ties.iter().filter(move |t| t.lo <= b && a <= t.hi)
+    };
     let mut started = false;
     // each indel not called because it lies beside unknown bases
     let mut left_out: Vec<LeftOutIndel> = Vec::new();
@@ -3395,10 +3790,8 @@ pub fn call_freebayes_variants_with_one_shot_limit(
             let span = col - start_col;
             let class = if span == 1 {
                 if is_transition(ra[start_col], qa[start_col]) {
-                    transitions += 1;
                     "Transition"
                 } else {
-                    transversions += 1;
                     "Transversion"
                 }
             } else {
@@ -3443,7 +3836,7 @@ pub fn call_freebayes_variants_with_one_shot_limit(
         let beside_unknown = !call_known(anchor) || (start_col.saturating_sub(left + 1)..=col + right).any(unknown_at);
         // an indel that may be one with another left out beside unknown bases ([`indels_left_out_together`])
         let together_with = together[is_del as usize].get(&start_col).copied();
-        let beside_unknown = beside_unknown || together_with.is_some();
+        let beside_unknown = beside_unknown || together_with.is_some() || near_tie_at(ref_pos, col - start_col, is_del).next().is_some();
         let (left, right) = together_with.map_or((left, right), |(l, r)| (left.max(l), right.max(r)));
         // Nor is it called where, moved past bases that then differ, it lies against such bases in
         // a placement the known bases score no lower ([`indel_placements`]): the known bases do not
@@ -3463,7 +3856,12 @@ pub fn call_freebayes_variants_with_one_shot_limit(
         if beside_unknown || joint {
             let (left, right) = if joint { (left.max(joint_left), right.max(joint_right)) } else { (left, right) };
             let len = col - start_col;
-            let (lo, hi) = if is_del { (ref_pos + 1 - left, ref_pos + len + right) } else { (ref_pos - left, ref_pos + right + 1) };
+            let (mut lo, mut hi) = if is_del { (ref_pos + 1 - left, ref_pos + len + right) } else { (ref_pos - left, ref_pos + right + 1) };
+            // in a near tie it is named over the bases both readings' calls cover
+            let mut tied = false;
+            for t in near_tie_at(ref_pos, len, is_del) {
+                (lo, hi, tied) = (lo.min(t.lo + base), hi.max(t.hi + base), true);
+            }
             // whether one of them moves onto the other without pairing a known base with a different one
             let meets = |prev: &LeftOutIndel| prev.reach_col >= start_col || start_col - fitting.0 <= prev.end_col;
             match left_out.last_mut() {
@@ -3476,7 +3874,7 @@ pub fn call_freebayes_variants_with_one_shot_limit(
                     prev.end_col = col;
                     prev.reach_col = col + fitting.1;
                 }
-                _ => left_out.push(LeftOutIndel { is_del, len, lo, hi, moved: left + right > 0, end_col: col, reach_col: col + fitting.1 }),
+                _ => left_out.push(LeftOutIndel { is_del, len, lo, hi, moved: tied || left + right > 0, end_col: col, reach_col: col + fitting.1 }),
             }
         } else {
             let anchor = anchor as char;
@@ -3505,6 +3903,34 @@ pub fn call_freebayes_variants_with_one_shot_limit(
             ref_pos += col - start_col;
         }
     }
+
+    // A near tie's other reading: each indel it holds that no warning there names at its length
+    // is named too, over the bases both readings' calls cover (BG-01M7V8FQ).
+    for t in &near_ties {
+        let (lo, hi) = (t.lo + base, t.hi + base);
+        for &(is_del, len) in &t.alt {
+            if left_out.iter().any(|o| o.is_del == is_del && o.len == len && o.lo <= hi && lo <= o.hi) {
+                continue;
+            }
+            let at = left_out.iter().position(|o| o.lo > lo).unwrap_or(left_out.len());
+            left_out.insert(at, LeftOutIndel { is_del, len, lo, hi, moved: true, end_col: 0, reach_col: 0 });
+        }
+    }
+    // No SNP or MNP is called in a near tie, nor inside the reference bases the warning of an indel
+    // left out there names: the indel may lie there, and the base is read as a mismatch only by a
+    // reading that does not hold it. AC1 seed 89's false reading called a SNP at 615, inside the
+    // 594-617 its warning named (BG-01M7V8FQ).
+    let in_tie = |a: usize, b: usize| near_ties.iter().any(|t| t.lo + base <= b && a <= t.hi + base);
+    let named = |pos: usize, len: usize| {
+        in_tie(pos, pos + len - 1)
+            || left_out.iter().any(|o| {
+                let (a, b) = if o.is_del { (o.lo, o.hi) } else { (o.lo + 1, o.hi.saturating_sub(1)) };
+                a <= pos + len - 1 && pos <= b && in_tie(o.lo, o.hi)
+            })
+    };
+    variants.retain(|v| !matches!(v.variant_type.as_str(), "SNP" | "MNP") || !named(v.position_bp, v.ref_allele.len()));
+    let transitions = variants.iter().filter(|v| v.mutation_class == "Transition").count();
+    let transversions = variants.iter().filter(|v| v.mutation_class == "Transversion").count();
 
     let annotations: Vec<SequenceFeature> = variants
         .iter()

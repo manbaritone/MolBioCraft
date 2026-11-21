@@ -930,6 +930,10 @@ const GAP_SAMPLE: std::ops::Range<usize> = 100..1_300;
 const GAP_CONTROL_AT: usize = 1_150;
 /// How far from the run (in known bases between them) a SNP is always called (AC5).
 const GAP_CALLED_FROM: usize = 5;
+/// The most reports of W02V AC2's family excused under D0268 ([`a_deletion_beside_a_too_long_n_run_keeps_its_own_length`]).
+/// Measured at BG-01M7V8FQ: 2 (13 N, a 9-bp deletion 6 bases after, best 3 above the truth), where
+/// BG-01M6W02V's draws whose best reading won by 1 or 2 were excused too.
+const AC2_EXCUSED_CAP: usize = 2;
 
 /// What a gap probe changes in the sample, `k` or `gap` known bases from the run on one side of it.
 #[derive(Clone, Copy, Debug)]
@@ -1014,7 +1018,8 @@ fn left_out_spans(rep: &FreeBayesVariantReport) -> Vec<(usize, usize)> {
 /// How a report reads against its probe's planted truth: `Ok(true)` when it calls every planted
 /// variant, `Ok(false)` when it leaves one out with a warning naming reference bases that hold it,
 /// and `Err` naming what is wrong: a call the truth does not hold, a variant neither called nor
-/// covered by such a warning, a SNP [`GAP_CALLED_FROM`] or more bases from the run not called, or a
+/// covered by such a warning (a SNP [`GAP_CALLED_FROM`] or more bases from the run included: a near
+/// tie leaves one out inside such a warning's span, BG-01M7V8FQ), or a
 /// warning for an indel left out that names reference bases neither in nor next to the run, though
 /// the run is what the indel may lie against.
 fn read_against_truth(p: &GapProbe, rep: &FreeBayesVariantReport) -> Result<bool, String> {
@@ -1035,7 +1040,7 @@ fn read_against_truth(p: &GapProbe, rep: &FreeBayesVariantReport) -> Result<bool
         }
         all_called = false;
         let covered = match t {
-            Truth::Snp(c, must) => !must && spans.iter().any(|&(a, b)| a <= c.0 && c.0 <= b),
+            Truth::Snp(c, _) => spans.iter().any(|&(a, b)| a <= c.0 && c.0 <= b),
             Truth::Del(_, first, last) => spans.iter().any(|&(a, b)| a <= *first && *last <= b),
         };
         if !covered {
@@ -1083,9 +1088,13 @@ fn no_false_call_beside_an_n_run_longer_than_its_bases() {
     for (seed, after, len) in [(6, false, 7), (67, true, 4)] {
         probes.push(gap_probe(&mut SplitMix(seed), 10, GapEdit::Del { after, gap: 1, len }));
     }
-    let (mut right, mut left_out, mut wrong) = (0, 0, Vec::new());
+    let (mut right, mut left_out, mut wrong, mut snp_left_out) = (0, 0, Vec::new(), Vec::new());
     for p in &probes {
         for (path, rep) in both_paths(&p.reference, &p.sample) {
+            let calls = report_calls(&rep);
+            if p.truth.iter().any(|t| matches!(t, Truth::Snp(c, true) if c.0 != GAP_CONTROL_AT + 1 && !calls.contains(c))) {
+                snp_left_out.push(format!("{}, {path}", p.label));
+            }
             match read_against_truth(p, &rep) {
                 Ok(true) => right += 1,
                 Ok(false) => left_out += 1,
@@ -1093,6 +1102,17 @@ fn no_false_call_beside_an_n_run_longer_than_its_bases() {
             }
         }
     }
+    // BG-01M7V8FQ: a SNP 5 or 6 bases from 20 N standing for 10 ties within less than a mismatch
+    // with its base and those between paired with the run's spare N (each N 1 where the matches
+    // scored 2, the SNP -3: 1 and 2 lower), and the SNP 5 bases before 15 N whose base equals the
+    // reference base 5 on ties exactly (BG-01M6TE8J): each is left out inside the spare N's
+    // deletion warning, which names it. Measured: those 5 probes, 10 reports, and no other.
+    snp_left_out.sort();
+    let expected: Vec<String> = ["15 N, SNP 5 bases before", "20 N, SNP 5 bases after", "20 N, SNP 5 bases before", "20 N, SNP 6 bases after", "20 N, SNP 6 bases before"]
+        .iter()
+        .flat_map(|l| [format!("{l}, one piece"), format!("{l}, segments")])
+        .collect();
+    assert_eq!(snp_left_out, expected, "SNPs 5 or more bases from the run left out (near ties)");
     assert!(
         wrong.is_empty(),
         "{} of {} reports wrong ({right} right, {left_out} left out):\n{}",
@@ -1800,13 +1820,15 @@ fn a_short_deletion_near_a_ten_n_run_gives_no_false_call() {
         let misses: Vec<(usize, usize)> = left_out_spans(rep).into_iter().filter(|&(a, b)| !(a <= first && last <= b)).collect();
         (!misses.is_empty()).then(|| format!("warnings name {misses:?}, not all of {first}-{last}"))
     };
-    // A draw whose best reading outscores its true one under the alignment's own scoring is not a
-    // defect of the caller (D0268): seed 89, a 7-bp deletion just after the run, where 7 of the
-    // run's N deleted, 6 chance matches and a false SNP score 2 more than the truth.
+    // A draw whose best reading outscores its true one under the alignment's own scoring by 3 or
+    // more is not a defect of the caller (D0268). Seed 89 (a 7-bp deletion just after the run, where
+    // 7 of the run's N deleted, 6 chance matches and a false SNP score 2 more than the truth) was
+    // excused so; a reading winning by less than a mismatch is now left out (BG-01M7V8FQ), and the
+    // family holds no excused draw.
     let (wrong, outscored) = wrong_reports_scored(&probes, &every_warning_covers, true);
     println!("outscored (D0268):\n{}", outscored.join("\n"));
     assert!(wrong.is_empty(), "{} of 6,000 reports wrong:\n{}", wrong.len(), wrong.join("\n"));
-    assert!(outscored.len() <= 4, "outscored draws, more than the family has held:\n{}", outscored.join("\n"));
+    assert!(outscored.is_empty(), "outscored draws, where BG-01M7V8FQ measured none:\n{}", outscored.join("\n"));
 }
 
 #[test]
@@ -1814,9 +1836,11 @@ fn a_deletion_beside_a_too_long_n_run_keeps_its_own_length() {
     // The data seat's family F8 at 5-7 bases from the run: a 5-, 6-, 7- or 9-bp deletion 5, 6 or 7
     // bases before or after a run of 13, 15 or 20 N standing for 10 bases, 72 draws. It is called
     // at its VCF placement, or left out with a warning naming its own length over bases that cover
-    // it; no warning names a deletion of any length but its own and the run's spare N. Before
-    // BG-01M6W02V, a 6-bp deletion 5 bases before 15 N was named as one 11-bp deletion: the sample
-    // bases between were paired with the spare N and the two gaps were one.
+    // it; no warning names a deletion of any length but its own and the run's spare N, unless it
+    // names its own too (a near tie names both readings, BG-01M7V8FQ). A 6-bp deletion 5 bases
+    // before 15 N was named as one 11-bp deletion, the sample bases between paired with the spare N
+    // and the two gaps one: BG-01M6W02V's parting left that draw so (the merged reading scores 1
+    // higher, so it was excused), and it is now named at its own 6 bp beside the 11-bp reading.
     let mut probes = Vec::new();
     for run_n in [13, 15, 20] {
         for after in [false, true] {
@@ -1839,7 +1863,8 @@ fn a_deletion_beside_a_too_long_n_run_keeps_its_own_length() {
         if !called && !named {
             errors.push(format!("neither called nor named as {len} bp over {first}-{last}"));
         }
-        if let Some(other) = lengths.iter().find(|&&l| l != len && l != spare) {
+        // a near tie names both readings (BG-01M7V8FQ): another length only beside its own
+        if let Some(other) = lengths.iter().find(|&&l| l != len && l != spare && !named) {
             errors.push(format!("a {other}-bp deletion named (own {len}, spare {spare})"));
         }
         (!errors.is_empty()).then(|| errors.join(", "))
@@ -1847,6 +1872,7 @@ fn a_deletion_beside_a_too_long_n_run_keeps_its_own_length() {
     let (wrong, outscored) = wrong_reports_scored(&probes, &own_length, true);
     println!("outscored (D0268):\n{}", outscored.join("\n"));
     assert!(wrong.is_empty(), "{} of 144 reports wrong:\n{}", wrong.len(), wrong.join("\n"));
+    assert!(outscored.len() <= AC2_EXCUSED_CAP, "{} outscored reports, more than the {AC2_EXCUSED_CAP} the family holds:\n{}", outscored.len(), outscored.join("\n"));
 }
 
 #[test]
@@ -1947,7 +1973,8 @@ fn two_deletions_either_side_of_a_reference_n_run_stay_two_warnings() {
                     let warned = left_out_warnings(&rep);
                     let named = |l: usize, (a, b): (usize, usize)| warned.iter().filter(|w| named_deletion(w, l).is_some_and(|(lo, hi)| lo <= a && hi >= b && hi < a + 2 * n + l)).count();
                     let merged = warned.iter().any(|w| named_deletion(w, first + second).is_some()) || report_calls(&rep).iter().any(|c| c.1.len() == first + second + 1);
-                    let ok = rep.variants.is_empty() && warned.len() == 2 && named(first, dels[0]) == 1 && named(second, dels[1]) == 1;
+                    // a near tie (less than a mismatch, BG-01M7V8FQ) names the other reading's deletions too
+                    let ok = rep.variants.is_empty() && (warned.len() == 2 || best - truth < 3) && named(first, dels[0]) == 1 && named(second, dels[1]) == 1;
                     let line = format!("{label}, {path}: calls {:?}; left out {warned:?} [true reading {truth}, best {best}]", report_calls(&rep));
                     // D0271: D1 (50 N) is held to exact naming; D4 (400 N), added beyond AC1's words,
                     // is held to never merged into one warning. Its one exact-tie draw (seed 4, 20 kb:
@@ -1977,6 +2004,7 @@ fn two_deletions_either_side_of_a_reference_n_run_stay_two_warnings() {
     // their best reading outscoring the truth by +1 (12), +2 (6), +3 (2) or +4 (2). BG-01M7V8FQ
     // records the 22 as the count its fix (readings that win by less than a mismatch left out)
     // must bring down.
+    println!("W0BZ D1 excused: {}\n{}", excused.len(), excused.join("\n"));
     assert!(!excused.is_empty() && excused.len() < d1_reports, "fixture: {} of {d1_reports} D1 reports excused (D0268):\n{}", excused.len(), excused.join("\n"));
 }
 
@@ -2658,9 +2686,10 @@ fn read_insertion(p: &InsProbe, rep: &FreeBayesVariantReport) -> (bool, Option<(
     let made = applied(&p.reference, &calls);
     let merged = p.len + p.spare;
     let lengths: Vec<usize> = rep.warnings.iter().filter_map(|w| w.strip_prefix("A ")?.split_once("-bp ")?.0.parse().ok()).collect();
-    let other: Vec<usize> = lengths.into_iter().filter(|&l| l != p.len && l != p.spare && !(p.gap == 0 && l == merged)).collect();
     let covers = |l: usize| rep.warnings.iter().any(|w| named_insertion(w, l).is_some_and(|(a, b)| a <= p.at && b > p.at));
     let named = covers(p.len) || (p.gap == 0 && covers(merged));
+    // a near tie names both readings (BG-01M7V8FQ): another length only beside its own
+    let other: Vec<usize> = lengths.into_iter().filter(|&l| l != p.len && l != p.spare && !(p.gap == 0 && l == merged) && !named).collect();
     let confident = made.as_ref() != Some(&p.truth) && made.as_ref() != Some(&p.control_only);
     let (last_before, first_after) = (GAP_TRUE.start, GAP_TRUE.end + 1);
     let within = rep.warnings.iter().any(|w| named_insertion(w, p.len).is_some_and(|(a, b)| a <= p.at && b > p.at && if p.after { a >= last_before } else { b <= first_after }));
@@ -2750,3 +2779,205 @@ fn bg_01m7_insertion_beside_an_n_run_keeps_its_own_length() {
     println!("tie arm: {} reports, {} left out", tie_arm.len(), tie_arm.iter().filter(|&&l| l).count());
     assert!(!tie_arm.is_empty() && tie_arm.iter().all(|&l| l), "tie arm: {} of {} reports left out at its own length", tie_arm.iter().filter(|&&l| l).count(), tie_arm.len());
 }
+
+// ---------------------------------------------------------------------------------------------
+// BG-01M7V8FQ: the data seat's review of BG-01M6W02V, and BG-01M6W0BZ's D4 tie (D0271). D0268
+// excused a miscall beside an N run wherever the false reading strictly outscored the truth, but
+// the margins were smaller than one mismatch: AC1 seed 89's false reading (7 of the run's N
+// deleted, chance matches and a SNP) won by 2 and its SNP was called at 615, inside the 594-617 its
+// left-out deletion's warning named; on AC2's draws a deletion merged with the reference run's
+// spare N was called confidently (13 N with a 6-bp deletion 5 bases after, as a 9-bp deletion at
+// 614); and D4 seed 4 (20 bp and 30 bp deleted around 400 N, 20 kb) was an exact tie the caller
+// called as two deletions and a SNP.
+// ---------------------------------------------------------------------------------------------
+
+/// Each indel a report's warnings name as left out, with the reference bases named: (is_del,
+/// first, last) for a deletion, (is_del, after, before) for an insertion.
+fn named_indels(rep: &FreeBayesVariantReport) -> Vec<(bool, usize, usize, usize)> {
+    rep.warnings
+        .iter()
+        .filter_map(|w| {
+            let len: usize = w.strip_prefix("A ")?.split_once("-bp ")?.0.parse().ok()?;
+            named_deletion(w, len).map(|(a, b)| (true, len, a, b)).or_else(|| named_insertion(w, len).map(|(a, b)| (false, len, a, b)))
+        })
+        .collect()
+}
+
+/// The SNPs and MNPs a report calls inside the reference bases a left-out indel's warning names
+/// (an insertion's: the bases strictly between its two).
+fn snps_inside_named_spans(rep: &FreeBayesVariantReport) -> Vec<String> {
+    let named = named_indels(rep);
+    report_calls(rep)
+        .into_iter()
+        .filter(|c| c.3 == "SNP" || c.3 == "MNP")
+        .filter(|c| named.iter().any(|&(is_del, _, a, b)| {
+            let (a, b) = if is_del { (a, b) } else { (a + 1, b.saturating_sub(1)) };
+            a <= c.0 + c.1.len() - 1 && c.0 <= b
+        }))
+        .map(|c| format!("{c:?} inside a left-out indel's named span"))
+        .collect()
+}
+
+/// Runs `check` on every report of `items`, four threads, and returns its errors.
+fn checked<T: Sync>(items: &[T], check: &(dyn Fn(&T) -> Vec<String> + Sync)) -> Vec<String> {
+    let chunk = items.len().div_ceil(4).max(1);
+    std::thread::scope(|s| {
+        let handles: Vec<_> = items.chunks(chunk).map(|part| s.spawn(move || part.iter().flat_map(check).collect::<Vec<_>>())).collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    })
+}
+
+#[test]
+fn bg_01m7_a_near_tie_beside_an_n_run_is_left_out_and_no_snp_sits_inside_it() {
+    // The families the bug names, each draw on both paths. A draw is a near tie where the best
+    // reading under the alignment's own scoring (D0268) outscores the true one by less than one
+    // mismatch (3), ties included. On such a draw the caller calls nothing the truth does not hold,
+    // names the planted indel at its own length over bases that hold it (or calls it where it
+    // lies), and calls no SNP inside any span a left-out indel's warning names.
+    let mut errors: Vec<String> = Vec::new();
+    let mut reached: Vec<(&str, usize)> = Vec::new();
+
+    // AC1 seed 89 (W02V AC1's family, 10 N for 10, a 7-bp deletion 0-2 bases after the run), and
+    // W02V AC2's family (a 5-, 6-, 7- or 9-bp deletion 5-7 bases from 13, 15 or 20 N for 10)
+    let mut gap_probes: Vec<GapProbe> = (0..=2)
+        .map(|gap| {
+            let mut p = gap_probe(&mut SplitMix(89), 10, GapEdit::Del { after: true, gap, len: 7 });
+            p.label = format!("seed 89, {}", p.label);
+            p
+        })
+        .collect();
+    for run_n in [13, 15, 20] {
+        for after in [false, true] {
+            for gap in 5..=7 {
+                for len in [5, 6, 7, 9] {
+                    let seed = 0x0E02_0000 + (run_n * 1_000 + gap * 10 + len) as u64 + if after { 500 } else { 0 };
+                    let mut p = gap_probe(&mut SplitMix(seed), run_n, GapEdit::Del { after, gap, len });
+                    p.label = format!("AC2 seed {seed:#x}, {}", p.label);
+                    gap_probes.push(p);
+                }
+            }
+        }
+    }
+    let near: Vec<&GapProbe> = gap_probes.iter().filter(|p| best_reading_score(p) - true_reading_score(p) < 3).collect();
+    reached.push(("deletion beside a reference run (W02V AC1 seed 89, AC2)", near.len()));
+    // seed 89 is the 7-bp deletion directly after the run: true reading 2352, best 2354
+    assert_eq!((true_reading_score(&gap_probes[0]), best_reading_score(&gap_probes[0])), (2352, 2354), "fixture: seed 89");
+    errors.extend(checked(&near, &|p: &&GapProbe| {
+        let p = *p;
+        let (first, last, len) = planted_deletion(p).unwrap();
+        let truth: Vec<Call> = p.truth.iter().map(|t| match t {
+            Truth::Snp(c, _) | Truth::Del(c, ..) => c.clone(),
+        }).collect();
+        let mut e = Vec::new();
+        for (path, rep) in both_paths(&p.reference, &p.sample) {
+            let calls = report_calls(&rep);
+            let mut wrong: Vec<String> = calls.iter().filter(|c| !truth.contains(c)).map(|c| format!("false {c:?}")).collect();
+            if p.label.starts_with("seed 89") && calls.iter().any(|c| c.0 == 615) {
+                wrong.push("a call at 615".into());
+            }
+            let named = named_indels(&rep).iter().any(|&(d, l, a, b)| d && l == len && a <= first && last <= b);
+            if !named && !calls.contains(&truth[0]) {
+                wrong.push(format!("the {len}-bp deletion of {first}-{last} neither called nor named"));
+            }
+            wrong.extend(snps_inside_named_spans(&rep));
+            if !wrong.is_empty() {
+                e.push(format!("{}, {path}: {}; warnings {:?} [true {}, best {}]", p.label, wrong.join(", "), rep.warnings, true_reading_score(p), best_reading_score(p)));
+            }
+        }
+        e
+    }));
+
+    // W0BZ's D1 (5 and 10 bp around 50 N) near ties and D4 seed 4's exact tie (20 and 30 bp around
+    // 400 N, 20 kb): nothing called, and both deletions named over bases that hold them
+    let mut around = Vec::new();
+    for seed in 0..8u64 {
+        for &(n, first, second) in &[(50usize, 5usize, 10usize), (400, 20, 30)] {
+            if n == 400 && seed != 4 {
+                continue;
+            }
+            for &(len, at) in &[(20_000usize, 10_000usize), (10_000, 5_000)] {
+                if n == 400 && len != 20_000 {
+                    continue;
+                }
+                let g = SplitMix(0x0B_0001 + seed).bases(len);
+                let (reference, sample, dels) = deletions_around_a_run(&g, at..at + n, first, second, 0, len);
+                let w = 100;
+                let truth = 2 * 2 * w as i32 + n as i32 - (5 + 2 * first as i32) - (5 + 2 * second as i32);
+                let (x, y) = (&sample[at - first - w..at - first + n + w], &reference[at - first - w..at + n + second + w]);
+                let best = bio::alignment::pairwise::Aligner::with_capacity(x.len(), y.len(), -5, -2, d0268_score).global(x, y).score;
+                if best - truth < 3 {
+                    let label = format!("seed {seed}, {first} bp and {second} bp around {n} N, {} kb [true {truth}, best {best}]", len / 1_000);
+                    around.push((label, reference, sample, dels, first, second));
+                }
+            }
+        }
+    }
+    reached.push(("two deletions around a reference run (W0BZ D1, D4 seed 4)", around.len()));
+    assert!(around.iter().any(|a| a.0.starts_with("seed 4, 20 bp and 30 bp around 400 N, 20 kb [true 690, best 690]")), "fixture: D4 seed 4 is the exact tie");
+    errors.extend(checked(&around, &|(label, reference, sample, dels, first, second)| {
+        let mut e = Vec::new();
+        for (path, rep) in both_paths(reference, sample) {
+            let named = named_indels(&rep);
+            let holds = |l: usize, (a, b): (usize, usize)| named.iter().any(|&(d, nl, lo, hi)| d && nl == l && lo <= a && b <= hi);
+            if !rep.variants.is_empty() || !holds(*first, dels[0]) || !holds(*second, dels[1]) {
+                e.push(format!("{label}, {path}: calls {:?}; warnings {:?}", report_calls(&rep), rep.warnings));
+            }
+        }
+        e
+    }));
+
+    // Insertions (BG-01M7V8C1's families, one seed each): 5-9 bp 0-7 bases from a sample run of 13,
+    // 15 or 20 N for 10 (the parting), and 5-7 bases from such a reference run (the re-read)
+    let mut ins = Vec::new();
+    for (sample_run, gaps) in [(true, (0..=7).collect::<Vec<usize>>()), (false, (5..=7).collect())] {
+        for run_n in [13, 15, 20] {
+            for after in [false, true] {
+                for &gap in &gaps {
+                    for len in [5, 6, 7, 9] {
+                        let p = insertion_probe(sample_run, 0, run_n, after, gap, len);
+                        if p.best_score - p.true_score < 3 {
+                            ins.push(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    reached.push(("insertion beside a sample run", ins.iter().filter(|p| p.sample_run).count()));
+    reached.push(("insertion beside a reference run", ins.iter().filter(|p| !p.sample_run).count()));
+    // Directly beside a sample run, the insertion and the run's spare N left out as one (D0296) may be
+    // named a base or two along from the planted placement, where pairing those bases with the
+    // run's N instead scores 1 or 2 lower: a near tie in placement only, which is not one (the
+    // warning keeps between the run's known flanks, D0271). Measured: 8 reports, all at gap 0.
+    let placed_along = std::sync::Mutex::new(Vec::new());
+    errors.extend(checked(&ins, &|p: &InsProbe| {
+        let mut e = Vec::new();
+        for (path, rep) in both_paths(&p.reference, &p.sample) {
+            let made = applied(&p.reference, &report_calls(&rep));
+            // directly beside the run, the insertion and the run's spare N may be named as one (D0296)
+            let named = named_indels(&rep).iter().any(|&(d, l, a, b)| !d && (l == p.len || (p.gap == 0 && l == p.len + p.spare)) && a <= p.at && b > p.at);
+            let mut wrong = Vec::new();
+            if made.as_ref() != Some(&p.truth) && !(made.as_ref() == Some(&p.control_only) && named) {
+                wrong.push(format!("calls {:?}", report_calls(&rep)));
+            }
+            let along = named_indels(&rep).iter().any(|&(d, l, a, b)| !d && l == p.len + p.spare && a <= p.at + 2 && b + 2 > p.at);
+            if p.gap == 0 && made.as_ref() == Some(&p.control_only) && !named && along && wrong.len() == 1 && snps_inside_named_spans(&rep).is_empty() {
+                placed_along.lock().unwrap().push(format!("{}, {path}", p.label));
+                continue;
+            }
+            wrong.extend(snps_inside_named_spans(&rep));
+            if !wrong.is_empty() {
+                e.push(format!("{}, {path}: {}; warnings {:?} [true {}, best {}]", p.label, wrong.join(", "), rep.warnings, p.true_score, p.best_score));
+            }
+        }
+        e
+    }));
+    let placed_along = placed_along.into_inner().unwrap();
+    println!("placed a base or two along: {placed_along:?}");
+    assert!(placed_along.len() <= 8, "{} reports named a base or two along, more than measured", placed_along.len());
+
+    println!("near-tie draws reached: {reached:?}");
+    assert!(reached.iter().all(|r| r.1 > 0), "fixture: every family reaches a near tie: {reached:?}");
+    assert!(errors.is_empty(), "{} near-tie reports wrong:\n{}", errors.len(), errors.join("\n"));
+}
+
