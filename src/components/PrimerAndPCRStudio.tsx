@@ -10,7 +10,7 @@ import {
   SequenceDocument,
   SequenceFeature,
 } from '../types/bio';
-import { intervalLength } from '../core/activeInterval';
+import { intervalLength, intervalSegments } from '../core/activeInterval';
 import {
   calculatePrimerMetrics,
   databasePrimerCandidate,
@@ -1314,6 +1314,11 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
    *
    * Each call takes its own serial number, so the two ids it writes are unique however fast the
    * annotation is repeated (BG01M7EXRW AC3) - `stamp` says when, the serial says which.
+   *
+   * A part that runs across the origin of a circular record (`start > end`) is written with its two
+   * segments, `start..length` then `1..end`, from `intervalSegments`: the bases it covers, which the
+   * GenBank and EMBL writers write as a join (BG-01M6VZSJ AC1, D0300). A part that does not cross
+   * keeps its one span and no segments.
    */
   const crisprGuideAnnotation = (g: CrisprScanGuide, stamp: number) => {
     const parts = crisprGuideParts(g, doc.sequence.length);
@@ -1338,23 +1343,39 @@ export const PrimerAndPCRStudio: React.FC<PrimerAndPCRStudioProps> = ({
         cut_position: String(g.cutPosition),
       },
     });
+    const crossingParts = (
+      span: { start: number; end: number },
+      name: string,
+      color: string
+    ): Pick<SequenceFeature, 'segments'> => {
+      const pieces = intervalSegments(span, doc.sequence.length);
+      return pieces.length > 1
+        ? { segments: pieces.map((s, i) => ({ index: i + 1, name: `${name} part ${i + 1}`, start: s.start, end: s.end, color })) }
+        : {};
+    };
+    const spacerName = `${g.name} spacer`;
+    const spacerColor = g.onTargetScore >= 70 ? '#16a34a' : g.onTargetScore >= 50 ? '#d97706' : '#dc2626';
+    const pamName = `${g.name} PAM (${g.pamSeq})`;
+    const pamColor = '#64748b';
     const newFeats: SequenceFeature[] = [
       {
         ...shared('spacer'),
         id: `feat-${g.id}-spacer-${stamp}-${serial}`,
-        name: `${g.name} spacer`,
+        name: spacerName,
         start: parts.spacer.start,
         end: parts.spacer.end,
-        color: g.onTargetScore >= 70 ? '#16a34a' : g.onTargetScore >= 50 ? '#d97706' : '#dc2626',
+        color: spacerColor,
+        ...crossingParts(parts.spacer, spacerName, spacerColor),
         notes: `${g.nuclease} spacer ${g.spacerSeq} (${g.strand === 1 ? 'forward' : 'reverse'} strand) | ${cutWords} | seed counted: ${crisprSeedNoteWords} | Heuristic=${g.onTargetScore}, seed matches=${g.offTargetCount}, ${crisprSeedScopeWords}`,
       },
       {
         ...shared('PAM'),
         id: `feat-${g.id}-pam-${stamp}-${serial}`,
-        name: `${g.name} PAM (${g.pamSeq})`,
+        name: pamName,
         start: parts.pam.start,
         end: parts.pam.end,
-        color: '#64748b',
+        color: pamColor,
+        ...crossingParts(parts.pam, pamName, pamColor),
         notes: `${g.nuclease} ${g.pamSide} PAM ${g.pamSeq} of ${g.name} (${g.strand === 1 ? 'forward' : 'reverse'} strand): read by the nuclease, not part of the spacer ordered | ${cutWords}`,
       },
     ];

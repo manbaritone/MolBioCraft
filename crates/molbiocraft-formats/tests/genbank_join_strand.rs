@@ -242,3 +242,96 @@ fn a_complement_around_a_join_of_complemented_parts_warns_in_notes() {
     let triple_doc = parse_genbank_flatfile(&genbank_record("tripleRange", &seq, "linear", "complement(complement(complement(11..40)))"), "d");
     assert_eq!(cds_shape(&triple_doc), (1, 11, 40, vec![]));
 }
+
+/// BG-01M6VZSJ AC3 (D0300): a feature across the origin of a circular record, held as the app holds
+/// one (`start > end`, the bases `start..len` then `1..end`), is written `join(start..len,1..end)`,
+/// never `start..end`, and read back as one feature whose parts are exactly those bases, on the
+/// strand it was written with. The importer is unchanged: the re-imported start..end is its
+/// recorded bounding span 1..len and the parts carry the bases (D0053). The guide is a
+/// `crispr_guide` at 4,980..12 of a 4,990 bp circle, on each strand, both as the CRISPR tab's
+/// Annotate writes it (two parts) and as a hand-built feature with no parts; every count is derived
+/// from that feature, never written out.
+///
+/// Wrong implementations this kills: `start..end` written as it stands (`crispr_guide 4980..12`);
+/// a writer that gives a minus-strand site its parts in the other order or drops its strand; a join
+/// that re-imports covering any base the guide does not.
+#[test]
+fn bg_01m6vzsj_ac3_an_origin_crossing_feature_round_trips_as_a_join() {
+    use molbiocraft_core::{FeatureSegment, MoleculeType, SequenceFeature, Topology};
+    use molbiocraft_formats::export_genbank_flatfile_dated;
+
+    let len = 4990;
+    let seq = seeded_dna(len, 7);
+    let positions = |start: usize, end: usize| -> Vec<usize> {
+        if start <= end { (start..=end).collect() } else { (start..=len).chain(1..=end).collect() }
+    };
+    let covered = |f: &SequenceFeature| -> Vec<usize> {
+        match f.segments.as_ref().filter(|s| s.len() > 1) {
+            Some(segs) => segs.iter().flat_map(|s| positions(s.start, s.end)).collect(),
+            None => positions(f.start, f.end),
+        }
+    };
+    for strand in [1i8, -1] {
+        for with_parts in [true, false] {
+            let (start, end) = (4980, 12);
+            let part = |index: usize, start: usize, end: usize| FeatureSegment {
+                index,
+                name: format!("G1 spacer part {index}"),
+                start,
+                end,
+                color: "#16a34a".into(),
+            };
+            let guide = SequenceFeature {
+                id: "feat-g1-spacer".into(),
+                name: "G1 spacer".into(),
+                feature_type: "crispr_guide".into(),
+                start,
+                end,
+                strand,
+                color: "#16a34a".into(),
+                notes: None,
+                qualifiers: None,
+                segments: with_parts.then(|| vec![part(1, start, len), part(2, 1, end)]),
+                cleavage_site: None,
+            };
+            let want_bases = positions(guide.start, guide.end);
+            assert_eq!(want_bases.len(), len - guide.start + 1 + guide.end, "the guide's own count of bases");
+            let doc = SequenceDocument {
+                id: "vzsj".into(),
+                name: "pVZSJ".into(),
+                accession: "VZSJ".into(),
+                molecule_type: MoleculeType::DNA,
+                topology: Topology::Circular,
+                sequence: seq.clone(),
+                features: vec![guide.clone()],
+                ..Default::default()
+            };
+            let case = format!("strand {strand}, {}", if with_parts { "two parts" } else { "no parts" });
+
+            let gb = export_genbank_flatfile_dated(&doc, "2026-11-21");
+            let join = format!("join({}..{},1..{})", guide.start, len, guide.end);
+            let location = if strand < 0 { format!("complement({join})") } else { join };
+            assert!(gb.contains(&format!("     crispr_guide    {location}\n")), "{case}: written as {location}\n{gb}");
+            assert!(!gb.contains(&format!("{}..{}\n", guide.start, guide.end)), "{case}: never written start..end\n{gb}");
+
+            let back = parse_genbank_flatfile(&gb, "fallback");
+            assert_eq!(back.sequence, seq, "{case}: the bases");
+            let got: Vec<_> = back.features.iter().filter(|f| f.feature_type == "crispr_guide").collect();
+            assert_eq!(got.len(), 1, "{case}: one feature, {gb}");
+            let f = got[0];
+            assert_eq!(f.strand, guide.strand, "{case}: the strand it was written with");
+            assert_eq!((f.start, f.end), (1, len), "{case}: the importer's bounding span (D0300, D0053)");
+            let parts: Vec<_> = f.segments.as_ref().map(|s| s.iter().map(|s| (s.start, s.end)).collect()).unwrap_or_default();
+            assert_eq!(parts, vec![(guide.start, len), (1, guide.end)], "{case}: the record's end, then its start");
+            assert_eq!(covered(f), want_bases, "{case}: exactly the bases the guide covers");
+            assert_eq!(covered(f).len(), want_bases.len(), "{case}: as many bases as the guide covers");
+            // Lossless: written again, the re-imported feature reads exactly as the first export.
+            let again = export_genbank_flatfile_dated(&back, "2026-11-21");
+            assert!(again.contains(&format!("     crispr_guide    {location}\n")), "{case}: written again as {location}\n{again}");
+        }
+    }
+
+    // A linear record has no origin to run across: its two-part join keeps the span it reads as.
+    let linear = genbank_record("vzsjLinear", &seq, "linear", &format!("join(4980..{len},1..12)"));
+    assert_eq!(cds_shape(&parse_genbank_flatfile(&linear, "l")), (1, 1, len, vec![(1, 4980, len), (2, 1, 12)]));
+}

@@ -262,6 +262,48 @@ fn strand_warning(f: &SequenceFeature, location: &str, mixed_strands: bool) -> S
     )
 }
 
+/// The two parts of a site across the origin of a record `record_len` bases long, as the app holds
+/// one (`start > end`, PRD F03's convention): `start..record_len`, then `1..end`. None for a site
+/// that does not cross the origin or has an edge off the record, which no join can hold. The one rule
+/// both the feature writer ([`feature_as_written`]) and the primer writer ([`primer_feature`]) read
+/// (BG-01M6VZSJ AC3, AC4).
+pub fn origin_crossing_parts(start: usize, end: usize, record_len: usize) -> Option<[(usize, usize); 2]> {
+    let on_record = |i: usize| (1..=record_len).contains(&i);
+    (start > end && on_record(start) && on_record(end)).then_some([(start, record_len), (1, end)])
+}
+
+/// A feature in the shape the flatfile writers write it: one held across the origin with no parts
+/// of its own (`start > end`, as a hand-built feature or a guide annotated before BG-01M6VZSJ holds
+/// one; the CRISPR tab's Annotate now gives a crossing part its two segments itself) gains
+/// its two parts from [`origin_crossing_parts`], so it is written `join(start..len,1..end)` rather
+/// than as `start..end`, which re-imports as another feature (BG-01M6VZSJ AC3). Any other feature
+/// is written as it stands.
+fn feature_as_written(feat: &SequenceFeature, record_len: usize) -> std::borrow::Cow<'_, SequenceFeature> {
+    if feat.segments.as_ref().is_some_and(|s| s.len() > 1) {
+        return std::borrow::Cow::Borrowed(feat);
+    }
+    match origin_crossing_parts(feat.start, feat.end, record_len) {
+        Some(parts) => {
+            let mut f = feat.clone();
+            f.segments = Some(
+                parts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(start, end))| FeatureSegment {
+                        index: i + 1,
+                        name: format!("{} part {}", feat.name, i + 1),
+                        start,
+                        end,
+                        color: feat.color.clone(),
+                    })
+                    .collect(),
+            );
+            std::borrow::Cow::Owned(f)
+        }
+        None => std::borrow::Cow::Borrowed(feat),
+    }
+}
+
 /// Formats a feature's location in INSDC syntax, writing `join(...)` for multi-interval features.
 pub fn format_insdc_location(feat: &SequenceFeature) -> String {
     let body = match feat.segments.as_ref().filter(|s| s.len() > 1) {
@@ -1279,17 +1321,18 @@ fn primer_feature(p: &PrimerRecord, record_len: usize) -> Option<SequenceFeature
         end,
         color: color.clone(),
     };
-    let wraps = p.bind_start > p.bind_end;
+    // A site across the origin takes its parts from the rule a feature across it is written by.
+    let parts = origin_crossing_parts(p.bind_start, p.bind_end, record_len);
     Some(SequenceFeature {
         id: p.id.clone(),
         name: p.name.clone(),
         feature_type: "primer_bind".to_string(),
-        start: if wraps { 1 } else { p.bind_start },
-        end: if wraps { record_len } else { p.bind_end },
+        start: p.bind_start,
+        end: p.bind_end,
         strand: if p.strand < 0 { -1 } else { 1 },
         notes: Some(format!("{PRIMER_NOTE}{}", p.sequence)),
         qualifiers: None,
-        segments: wraps.then(|| vec![segment(1, p.bind_start, record_len), segment(2, 1, p.bind_end)]),
+        segments: parts.map(|parts| parts.iter().enumerate().map(|(i, &(start, end))| segment(i + 1, start, end)).collect()),
         cleavage_site: None,
         color,
     })
@@ -1397,7 +1440,7 @@ fn genbank_flatfile(doc: &SequenceDocument, date: &str) -> String {
     let primers = primer_features(doc, len);
     for feat in doc.features.iter().chain(&primers) {
         let key = &feat.feature_type;
-        out.push_str(&wrap_feature_line(&format!("     {:<15} ", key), QUAL, &format_insdc_location(feat), BreakAt::Comma));
+        out.push_str(&wrap_feature_line(&format!("     {:<15} ", key), QUAL, &format_insdc_location(&feature_as_written(feat, len)), BreakAt::Comma));
         out.push_str(&feature_qualifier_lines(feat, QUAL, key != "source"));
     }
 
@@ -1601,7 +1644,7 @@ pub fn export_embl_flatfile(doc: &SequenceDocument) -> String {
         out.push_str(&wrap_feature_line(
             &format!("FT   {:<15} ", feat.feature_type),
             FT_QUAL,
-            &format_insdc_location(feat),
+            &format_insdc_location(&feature_as_written(feat, len)),
             BreakAt::Comma,
         ));
         out.push_str(&feature_qualifier_lines(feat, FT_QUAL, true));
