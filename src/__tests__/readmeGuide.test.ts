@@ -26,8 +26,8 @@ const slug = (heading: string): string =>
   heading
     .replace(/&amp;/g, '&')
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, '')
-    .replace(/\s/g, '-');
+    .replace(/[^\p{L}\p{N}\s_-]/gu, '')
+    .replace(/ /g, '-');
 
 /** The `## ` headings outside fenced code, in order. */
 const headings = (md: string): string[] => {
@@ -61,6 +61,9 @@ describe('US-01M80N12 the README guides a reader to 1.1.0', () => {
       expect(changelogTitles.has(title as string), `"${title}" is a CHANGELOG [${VERSION}] entry title`).toBe(true);
     }
     expect(body).toContain('(CHANGELOG.md#110---2026-11-22)');
+    // Only the file format is unchanged: a session can reopen on a different studio (round-1 review).
+    expect(body).not.toMatch(/open unchanged/);
+    expect(body).toContain('The `.mbc` session file format did not change');
   });
 
   it('readmeGuide AC2 the Contents line links every section by its GitHub anchor', () => {
@@ -88,7 +91,11 @@ describe('US-01M80N12 the README guides a reader to 1.1.0', () => {
     const build = section(README, 'Under the Hood &amp; Building from Source');
     expect(build).toMatch(/CI builds on Node\.js 22/);
     expect(build).toContain('cargo xwin check --target x86_64-pc-windows-msvc --manifest-path src-tauri/Cargo.toml');
+    expect(build).toContain('rustup target add x86_64-pc-windows-msvc');
     expect(build).toContain('ubuntu:22.04');
+    // tauri build runs `npm run build`, so the container needs its own Linux node_modules (round-1 review).
+    expect(build).toMatch(/run `npm ci`, then `tauri build --target x86_64-unknown-linux-gnu --bundles deb`/);
+    expect(build).not.toContain('a checkout that has a built `dist/`');
     expect(build).toMatch(/\.msi[^.]*only on Windows/);
   });
 });

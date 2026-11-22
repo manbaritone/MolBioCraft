@@ -47,7 +47,7 @@ Released 2026-11-22. The highlights:
 - **Protein & 3D is its own studio** — ProtParam (now with the instability index), hydropathy, GOR, antigenicity, the MS digest and PTMs, coiled-coil and transmembrane prediction, and the 3D viewer with superposition and a Ramachandran plot, all in one studio.
 - **Convert GenBank…** — File › Export Sequences › Convert GenBank… turns a GenBank file (gzipped or not) or the open records into `.fna`, CDS DNA, CDS protein, function tables and more, computed in the app's own engine with no Python needed.
 - **The sequence superposition's TM-score is the TM-score** — superposition and Align Structures by sequence now report a per-chain Zhang-Skolnick TM-score instead of an approximate TM≈.
-- **Ramachandran regions follow the Top8000 grids themselves** — each residue is classified by interpolating MolProbity's Top8000 2° grids, not coarse 10° cells.
+- **Ramachandran regions follow the Top8000 grids themselves** — each residue is classified by bilinear interpolation of its class's Top8000 2-degree grid at MolProbity's cutoffs, instead of from 10-degree cells.
 - **A studio rail that never drops a studio** — the eleven studios, then History and Info, sit in a fixed rail. A studio the open document cannot use stays listed, greyed, with the reason in its tooltip.
 - **Number keys open the studios, and ⌘S saves the session** — `⌘1`–`⌘9` (`Ctrl+1`–`Ctrl+9` on Windows and Linux) open the first nine studios in rail order.
 - **One command list behind the menu bar, the toolbar and ⌘K** — every command has the same name, menu path and shortcut wherever it appears.
@@ -56,7 +56,7 @@ Released 2026-11-22. The highlights:
 - **The desktop app opens no network port** — the embedded REST API on `127.0.0.1:18420` is gone. The interface reaches the engine only through Tauri IPC and WebAssembly, so scripts that called that API have no endpoint any more.
 - **Linux file dialogs need no desktop portal** — open and save dialogs use GTK's own file chooser, so they work without `xdg-desktop-portal` or `zenity`.
 
-Sessions saved by the first release open unchanged in 1.1.0. Every change is listed in the [full 1.1.0 release notes](CHANGELOG.md#110---2026-11-22).
+The `.mbc` session file format did not change, so sessions saved by the first release still open in 1.1.0. Every change is listed in the [full 1.1.0 release notes](CHANGELOG.md#110---2026-11-22).
 
 
 ## What You Can Do
@@ -253,7 +253,7 @@ The Windows `.msi` and portable `.exe` and the Linux `.deb` are built by `.githu
 
 Releases come from CI. Before you push, you can compile-check both builds and package two of them locally:
 
-- **Windows (compile check and the portable `.exe`):** run `brew install llvm lld` and `cargo install --locked cargo-xwin`, and put the `bin` folders of Homebrew's `llvm` and `lld` on `PATH`. Then:
+- **Windows (compile check and the portable `.exe`):** run `rustup target add x86_64-pc-windows-msvc`, `brew install llvm lld` and `cargo install --locked cargo-xwin`, and put the `bin` folders of Homebrew's `llvm` and `lld` on `PATH`. Then:
 
   ```bash
   cargo xwin check --target x86_64-pc-windows-msvc --manifest-path src-tauri/Cargo.toml
@@ -261,7 +261,7 @@ Releases come from CI. Before you push, you can compile-check both builds and pa
   ```
 
   cargo-xwin downloads Microsoft's Windows SDK and C runtime, and using it accepts Microsoft's licence. The `.msi` can be built only on Windows, because the WiX toolset runs only there.
-- **Linux (`.deb`):** in an `ubuntu:22.04` container for `linux/amd64` (Docker, Colima or OrbStack), install the packages the Linux job in `release.yml` installs, then Rust and Node.js 22. Then run `tauri build --target x86_64-unknown-linux-gnu --bundles deb` with the Tauri CLI version that `release.yml` pins (`TAURI_CLI`) on a checkout that has a built `dist/`.
+- **Linux (`.deb`):** in an `ubuntu:22.04` container for `linux/amd64` (Docker, Colima or OrbStack), install the packages the Linux job in `release.yml` installs, then Rust and Node.js 22. Copy a clean checkout into the container rather than mounting your Mac's, whose `node_modules` holds macOS-only build tools. In it, run `npm ci`, then `tauri build --target x86_64-unknown-linux-gnu --bundles deb` with the Tauri CLI version that `release.yml` pins (`TAURI_CLI`). `tauri build` runs `npm run build` itself, and the committed engine (`public/molbiocraft_wasm.wasm`) means no WebAssembly build is needed.
 
 
 ## License (CC BY-NC 4.0)
