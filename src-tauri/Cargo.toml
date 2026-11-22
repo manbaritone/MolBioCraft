@@ -3,7 +3,7 @@
 
 [package]
 name = "molbiocraft-desktop"
-version = "1.0.0"
+version = "1.1.0"
 description = "A cross-platform bioinformatics workbench for sequence analysis in molecular biology and evolutionary biology research. Built for macOS, Windows, and Linux."
 authors = ["Bundit Boonyarit"]
 license = "CC-BY-NC-4.0"

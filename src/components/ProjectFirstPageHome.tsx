@@ -287,7 +287,7 @@ export const ProjectFirstPageHome: React.FC<ProjectFirstPageHomeProps> = ({
               <div className="mbc-home-brand-copy">
                 <div className="mbc-home-title-row">
                   <h1 className="mbc-home-title mbc-logo-wordmark">MolBioCraft</h1>
-                  <span className="mbc-home-version-pill">Version 1.0.0</span>
+                  <span className="mbc-home-version-pill">Version 1.1.0</span>
                 </div>
                 <p className="mbc-home-hero-tagline">
                   Molecular &amp; Evolutionary Biology Workbench

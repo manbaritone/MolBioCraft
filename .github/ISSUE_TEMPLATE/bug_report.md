@@ -9,7 +9,7 @@ assignees: ''
 ---
 
 ## Environment
-- **MolBioCraft Version:** `v1.0.0`
+- **MolBioCraft Version:** `v1.1.0`
 - **Operating System:** [ ] macOS (Apple Silicon `arm64`) / [ ] macOS (Intel `x86_64`) / [ ] Windows 10/11 (`x64`) / [ ] Linux (`x86_64` — distro: `...`)
 - **Install Method:** [ ] macOS Universal `.dmg` / [ ] Windows `.msi` / [ ] Windows Portable `.exe` / [ ] Linux `.deb` / [ ] Source (`npm run dev`)
 

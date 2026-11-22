@@ -1820,7 +1820,7 @@ pub fn dispatch_bio_rpc(op: &str, payload: Value) -> Result<Value, String> {
         }
         "serialize_mbc_workbench_rust" => {
             let snapshot: MbcWorkbenchSnapshotInput = parse_field(&payload, "snapshot")?;
-            let app_version = str_arg(&payload, "appVersion", "1.0.0");
+            let app_version = str_arg(&payload, "appVersion", env!("CARGO_PKG_VERSION"));
             let saved_at = str_arg(&payload, "savedAtIso", "");
             Ok(Value::String(serialize_mbc_workbench_rust(
                 &snapshot,
@@ -2797,5 +2797,22 @@ mod tests {
             .unwrap_err();
         assert!(broken.contains("Gzip decompression failed"), "{broken}");
         assert!(dispatch_bio_rpc("parse_mbc_workbench_bytes_rust", args(("nowIso", json!("x")))).is_err());
+    }
+
+    /// US-01M80F5R AC4: a session saved through the RPC with no appVersion records the crate's own
+    /// version (the workspace version, 1.1.0), and a caller's version is kept as given.
+    #[test]
+    fn serialize_mbc_dispatch_defaults_app_version_to_the_crate_version() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "1.1.0");
+        let snapshot = json!({ "sessionName": "Version", "documents": [], "workspace": {} });
+        let saved = |payload: Value| -> Value {
+            let text = dispatch_bio_rpc("serialize_mbc_workbench_rust", payload).unwrap();
+            serde_json::from_str(text.as_str().unwrap()).unwrap()
+        };
+        let bare = saved(json!({ "snapshot": snapshot, "savedAtIso": "" }));
+        assert_eq!(bare["appVersion"], json!(env!("CARGO_PKG_VERSION")));
+        assert_eq!(bare["schemaVersion"], json!("1.0.0"));
+        let given = saved(json!({ "snapshot": snapshot, "appVersion": "1.0.0", "savedAtIso": "" }));
+        assert_eq!(given["appVersion"], json!("1.0.0"));
     }
 }

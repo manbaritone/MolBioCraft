@@ -4,8 +4,8 @@
 
 | Version | Supported |
 | :--- | :--- |
-| `1.0.x` | :white_check_mark: Active Support |
-| `< 1.0.0` | :x: Upgrade to `v1.0.0+` |
+| `1.1.x` | :white_check_mark: Active Support |
+| `< 1.1.0` | :x: Upgrade to `v1.1.0+` |
 
 ## Security Architecture
 

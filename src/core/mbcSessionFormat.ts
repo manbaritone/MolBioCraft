@@ -397,7 +397,7 @@ export function isMbcFileOrPayload(fileName: string, rawText?: string): boolean 
 
 export function serializeMbcWorkbench(
   snapshot: MbcWorkbenchSnapshot,
-  appVersion = '1.0.0'
+  appVersion = '1.1.0'
 ): string {
   return serializeMbcWorkbenchRust(snapshot, appVersion, new Date().toISOString());
 }
@@ -868,7 +868,7 @@ function noMbcContentReason(name: string, scan: ZipArchiveScan): string {
 export function serializeMbcFolderZip(
   snapshot: MbcWorkbenchSnapshot,
   folderScopeLabel?: string,
-  appVersion = '1.0.0'
+  appVersion = '1.1.0'
 ): Uint8Array {
   const encoder = new TextEncoder();
   const rootFolder = sanitizeZipSegment(

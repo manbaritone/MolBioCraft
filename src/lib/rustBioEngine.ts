@@ -1497,7 +1497,7 @@ export function isMbcFileOrPayloadRust(fileName: string, rawText?: string): bool
 
 export function serializeMbcWorkbenchRust(
   snapshot: unknown,
-  appVersion = '1.0.0',
+  appVersion = '1.1.0',
   savedAtIso = new Date().toISOString()
 ): string {
   return invokeRustBioSync<string>('serialize_mbc_workbench_rust', {

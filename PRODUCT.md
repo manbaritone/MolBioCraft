@@ -63,7 +63,7 @@ The meaningfully different mechanism is a unified full-stack Rust workbench: 7 p
 - Packaging metadata for all 3 platforms (`packaging/`)
 - Universal macOS `.app` and `.dmg` installer builder (`scripts/build_installers.sh`) and native 3-OS release workflow (`.github/workflows/release.yml`)
 - CI/CD pipelines for test, build, and release (`.github/workflows/`)
-- Version 1.0.0 with local universal macOS build output in `release/`
+- Version 1.1.0 with local universal macOS build output in `release/`
 - No fabricated testimonials, benchmarks, or commercial deployment claims
 
 ## Product Principles

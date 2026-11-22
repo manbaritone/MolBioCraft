@@ -11,7 +11,7 @@
       <img src="https://github.com/manbaritone/MolBioCraft/actions/workflows/release.yml/badge.svg" alt="Build and Release" />
     </a>
     <a href="https://github.com/manbaritone/MolBioCraft/releases">
-      <img src="https://img.shields.io/badge/version-1.0.0-0284c7.svg" alt="Version 1.0.0" />
+      <img src="https://img.shields.io/badge/version-1.1.0-0284c7.svg" alt="Version 1.1.0" />
     </a>
     <img src="https://img.shields.io/badge/platform-macOS%20(Universal)%20%7C%20Windows%20(x64)%20%7C%20Linux%20(x86__64)-475569.svg" alt="Platform: macOS | Windows | Linux" />
     <img src="https://img.shields.io/badge/works-100%25%20offline-15803d.svg" alt="Works 100% offline" />
@@ -125,7 +125,7 @@ Open **Preferences** with `⌘,` / `Ctrl+,`. Every setting is saved, applied str
 
 ## Downloads &amp; Installation
 
-Each release on [GitHub Releases](https://github.com/manbaritone/MolBioCraft/releases) offers four downloads, each built by the Tauri bundler on its own operating system (`<version>` is the release number, for example `1.0.0`):
+Each release on [GitHub Releases](https://github.com/manbaritone/MolBioCraft/releases) offers four downloads, each built by the Tauri bundler on its own operating system (`<version>` is the release number, for example `1.1.0`):
 
 | Platform | Download | Architecture | What it is |
 | :--- | :--- | :--- | :--- |
@@ -246,7 +246,7 @@ license = {CC-BY-NC-4.0},
 month = oct,
 title = {{MolBioCraft: A cross-platform bioinformatics workbench for sequence analysis in molecular biology and evolutionary biology research}},
 url = {https://github.com/manbaritone/MolBioCraft},
-version = {1.0.0},
+version = {1.1.0},
 year = {2026}
 }
 ```

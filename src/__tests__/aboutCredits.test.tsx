@@ -90,7 +90,7 @@ describe('About dialog credits', () => {
 
     // Everything the dialog said before is still there, unchanged.
     expect(html).toContain('Developed by <strong>Bundit Boonyarit</strong>');
-    expect(html).toContain('MolBioCraft v1.0.0');
+    expect(html).toContain('MolBioCraft v1.1.0');
     expect(html).toContain('CC BY-NC 4.0 (SPDX: CC-BY-NC-4.0) — Open-Source Research Workbench');
     expect(html).toContain('Copyright © 2026 Bundit Boonyarit. All rights reserved.');
     expect(html).toContain('https://github.com/manbaritone/MolBioCraft/issues');

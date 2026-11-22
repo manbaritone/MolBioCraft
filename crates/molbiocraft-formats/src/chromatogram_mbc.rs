@@ -334,7 +334,7 @@ pub fn serialize_mbc_workbench_rust(
         magic: MBC_FORMAT_MAGIC.to_string(),
         schema_version: MBC_SCHEMA_VERSION.to_string(),
         app_version: if app_version.trim().is_empty() {
-            "1.0.0".to_string()
+            env!("CARGO_PKG_VERSION").to_string()
         } else {
             app_version.to_string()
         },
@@ -2106,5 +2106,54 @@ mod tests {
         raw.as_object_mut().unwrap().remove("savedAt");
         let restored = parse_mbc_workbench_rust(&raw.to_string(), "Fallback", "").unwrap();
         assert_eq!(restored.envelope.saved_at, "");
+    }
+
+    /// US-01M80F5R AC4: a session saved with no app version records the crate's own version (the
+    /// workspace version, 1.1.0), never a literal; the schema stays MBC_SCHEMA_VERSION (1.0.0); and a
+    /// file that names no appVersion still reads as 1.0.0, the version before the field was written.
+    #[test]
+    fn mbc_writer_names_the_crate_version_when_no_app_version_is_given() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "1.1.0");
+        let snap = MbcWorkbenchSnapshotInput {
+            session_name: "Version.mbc".to_string(),
+            documents: Vec::new(),
+            workspace: MbcWorkspaceUiStateRust {
+                project_explorer: None,
+                active_doc_id: String::new(),
+                selected_folder: "Sample Documents".to_string(),
+                nav_history: Vec::new(),
+                nav_index: 0,
+                viewer_tab: "sequence-view".to_string(),
+                map_layout_mode: "split".to_string(),
+                zoom_level: 100.0,
+                text_format: "genbank".to_string(),
+                color_scheme: "standard".to_string(),
+                dark_mode: false,
+                sidebar_open: true,
+                doc_table_collapsed: false,
+                selected_range: None,
+                display_settings: MbcDisplaySettingsRust::default(),
+                pane_split: None,
+                site_visibility: None,
+                map_rotation: None,
+                document_split: None,
+            },
+        };
+        for blank in ["", "   "] {
+            let saved: serde_json::Value =
+                serde_json::from_str(&serialize_mbc_workbench_rust(&snap, blank, "")).unwrap();
+            assert_eq!(saved["appVersion"], serde_json::json!(env!("CARGO_PKG_VERSION")), "app version {blank:?}");
+            assert_eq!(saved["schemaVersion"], serde_json::json!(MBC_SCHEMA_VERSION));
+        }
+        assert_eq!(MBC_SCHEMA_VERSION, "1.0.0");
+        let given: serde_json::Value =
+            serde_json::from_str(&serialize_mbc_workbench_rust(&snap, "1.0.0", "")).unwrap();
+        assert_eq!(given["appVersion"], serde_json::json!("1.0.0"), "a caller's version is kept");
+
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&serialize_mbc_workbench_rust(&snap, "", "")).unwrap();
+        raw.as_object_mut().unwrap().remove("appVersion");
+        let restored = parse_mbc_workbench_rust(&raw.to_string(), "Fallback", "").unwrap();
+        assert_eq!(restored.envelope.app_version, "1.0.0");
     }
 }

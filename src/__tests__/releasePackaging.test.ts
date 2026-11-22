@@ -1314,14 +1314,14 @@ it('BG-01M7V0FN: no shipped or design text says the Linux file dialogs go throug
   }
 });
 
-it('BG-01M7V0FN: CHANGELOG [Unreleased] lists the Linux dialog fix under Fixed (US-01M6P2BS)', () => {
+it('BG-01M7V0FN: CHANGELOG [1.1.0] lists the Linux dialog fix under Fixed (US-01M6P2BS)', () => {
   const changelog = text(repo('CHANGELOG.md')).replace(/\r/g, '');
-  const start = changelog.indexOf('\n## [Unreleased]');
-  expect(start, 'CHANGELOG.md has an [Unreleased] section').toBeGreaterThan(0);
+  const start = changelog.indexOf('\n## [1.1.0]');
+  expect(start, 'CHANGELOG.md has a [1.1.0] section').toBeGreaterThan(0);
   const next = changelog.indexOf('\n## [', start + 1);
   const lines = changelog.slice(start, next < 0 ? undefined : next).split('\n');
   const at = lines.findIndex((l) => l.startsWith('- ') && l.includes('US-01M6P2BS'));
-  expect(at, 'an [Unreleased] entry for US-01M6P2BS').toBeGreaterThan(0);
+  expect(at, 'a [1.1.0] entry for US-01M6P2BS').toBeGreaterThan(0);
   const heading = lines.slice(0, at).filter((l) => l.startsWith('### ')).pop();
   expect(heading, 'the entry sits under ### Fixed').toBe('### Fixed');
   expect(lines[at]).toMatch(/GTK/);

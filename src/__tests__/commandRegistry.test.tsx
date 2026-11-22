@@ -767,9 +767,9 @@ describe('BG-01M7V0W9: the registry keys and the menu paths Sprint 39 left unpin
     });
   });
 
-  it('BG-01M7V0W9 no other [Unreleased] entry says the ⌘-digit keys are unchanged, however it words it', () => {
+  it('BG-01M7V0W9 no other [1.1.0] entry says the ⌘-digit keys are unchanged, however it words it', () => {
     const changelog = SRC('../../CHANGELOG.md');
-    const start = changelog.indexOf('## [Unreleased]');
+    const start = changelog.indexOf('## [1.1.0]');
     const unreleased = changelog.slice(start, changelog.indexOf('\n## [', start + 5));
     const entries = unreleased.split('\n').filter((l) => l.startsWith('- '));
     const remap = entries.filter((l) => l.includes('⌘1') && l.includes('⌥⌘1'));

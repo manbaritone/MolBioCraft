@@ -1468,7 +1468,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
     expect(homeHtml).toContain('width="96" height="96"');
     expect(homeHtml).toContain('mbc-home-logo-halo');
     expect(homeHtml).toContain('mbc-home-version-pill');
-    expect(homeHtml).toContain('Version 1.0.0');
+    expect(homeHtml).toContain('Version 1.1.0');
     expect(homeHtml).toContain(
       'Molecular &amp; Evolutionary Biology Workbench'
     );
@@ -1651,7 +1651,7 @@ describe('macOS Native System Menu Bar Bridge & Viewport-Clamped Dropdown Positi
       expect(markup).not.toContain(
         'Open-source software for personal study, classroom teaching, and scientific research.'
       );
-      expect(markup).toContain('Version 1.0.0');
+      expect(markup).toContain('Version 1.1.0');
       expect(markup).toContain('<progress');
       expect(markup).toContain('role="status"');
 

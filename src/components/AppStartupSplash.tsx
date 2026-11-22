@@ -45,7 +45,7 @@ const STARTUP_STAGES: ReadonlyArray<{ progress: number; label: string }> = [
  * and a semantic `<progress>` bar along the bottom edge.
  */
 export const AppStartupSplash: React.FC<AppStartupSplashProps> = ({
-  version = '1.0.0',
+  version = '1.1.0',
   initialProgress = STARTUP_STAGES[0].progress,
   onComplete,
   onWindowChromeMouseDown,

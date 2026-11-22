@@ -307,8 +307,8 @@ describe('US-01M6Q1CF AC7: Help lists the new keys and explains the change', () 
 });
 
 describe('US-01M6Q1CF AC8: the changelog announces the remap', () => {
-  it('US-01M6Q1CF AC8 a Changed entry in [Unreleased] names every remapped key on both platforms', () => {
-    const unreleased = CHANGELOG.slice(CHANGELOG.indexOf('## [Unreleased]'), CHANGELOG.indexOf('\n## [', CHANGELOG.indexOf('## [Unreleased]') + 5));
+  it('US-01M6Q1CF AC8 a Changed entry in [1.1.0] names every remapped key on both platforms', () => {
+    const unreleased = CHANGELOG.slice(CHANGELOG.indexOf('## [1.1.0]'), CHANGELOG.indexOf('\n## [', CHANGELOG.indexOf('## [1.1.0]') + 5));
     const changed = unreleased.slice(unreleased.indexOf('### Changed'));
     const section = changed.slice(0, changed.indexOf('\n### ', 5) > 0 ? changed.indexOf('\n### ', 5) : undefined);
     const entry = section.split('\n').filter((l) => l.startsWith('- ') && l.includes('⌘1'));
@@ -316,7 +316,7 @@ describe('US-01M6Q1CF AC8: the changelog announces the remap', () => {
     for (const k of ['⌘1', '⌘9', 'Ctrl+1', 'Ctrl+9', '⌥⌘1', '⌥⌘3', 'Ctrl+Alt+1', 'Ctrl+Alt+3', '⌘S', 'Ctrl+S', '⇧⌘E', 'Ctrl+Shift+E', '⌥⌘S', 'Save Session', 'Export GenBank', 'next release']) {
       expect(entry[0], k).toContain(k);
     }
-    // No other [Unreleased] entry may still say the ⌘-digit shortcuts are unchanged: the notes become
+    // No other [1.1.0] entry may still say the ⌘-digit shortcuts are unchanged: the notes become
     // the release body, and the remap above makes that sentence false (round-1 review of US-01M6Q1CF).
     expect(unreleased.split(/(?<=\.)\s+/).filter((s) => /shortcuts are unchanged/i.test(s))).toEqual([]);
   });

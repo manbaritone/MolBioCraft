@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use MolBioCraft in academic research or teaching, please cite it using this metadata."
 title: "MolBioCraft: Molecular & Evolutionary Biology Workbench"
 abstract: "A cross-platform bioinformatics workbench for sequence analysis in molecular biology and evolutionary biology research. Built for macOS, Windows, and Linux."
-version: 1.0.0
-date-released: "2026-11-09"
+version: 1.1.0
+date-released: "2026-11-22"
 url: "https://github.com/manbaritone/MolBioCraft"
 repository-code: "https://github.com/manbaritone/MolBioCraft"
 license: "CC-BY-NC-4.0"

@@ -3466,7 +3466,7 @@ export const AboutMolBioCraftModal: React.FC<AboutMolBioCraftModalProps> = ({
 
         <div className="about-info-stack">
           <div className="about-info-group">
-            <div className="about-version-line">MolBioCraft v1.0.0</div>
+            <div className="about-version-line">MolBioCraft v1.1.0</div>
             <div>Molecular &amp; Evolutionary Biology Workbench</div>
             <div>Cross-Platform Desktop Application (macOS, Windows &amp; Linux)</div>
           </div>
