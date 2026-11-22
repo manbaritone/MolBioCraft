@@ -177,7 +177,7 @@ const RUST_RANK_RANGE_SOURCE = new URL(
  * named: none of them may read as "the range agrees" (LC-006, BG-01M7FAQZ).
  */
 function declaredRankRange(at: URL = RUST_RANK_RANGE_SOURCE): [number, number] {
-  const path = decodeURIComponent(at.pathname);
+  const path = fileURLToPath(at);
   let source: string;
   try {
     source = readFileSync(at, 'utf8');
@@ -1220,7 +1220,8 @@ describe('the declared rank range comes from one unambiguous declaration (BG-01M
   const asSource = (text: string, read: (at: URL, path: string) => void) => {
     const dir = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FAQZ-rank-range-`);
     try {
-      const path = `${dir}/cloning_crispr.rs`;
+      // As the reader names it: fileURLToPath writes the platform's separators (backslashes on Windows).
+      const path = fileURLToPath(pathToFileURL(`${dir}/cloning_crispr.rs`));
       nodeFs.writeFileSync(path, text, 'utf8');
       read(pathToFileURL(path), path);
     } finally {
@@ -1296,7 +1297,7 @@ describe('the declared rank range comes from one unambiguous declaration (BG-01M
     // reads as "no declaration" on a correct tree. So the real file must answer, with the numbers
     // its own declaration line carries, found here by reading lines rather than by this helper's
     // pattern.
-    const path = decodeURIComponent(RUST_RANK_RANGE_SOURCE.pathname);
+    const path = fileURLToPath(RUST_RANK_RANGE_SOURCE);
     const onItsOwnLine = readFileSync(RUST_RANK_RANGE_SOURCE, 'utf8')
       .split('\n')
       .filter((line) => line.startsWith('pub const CRISPR_HEURISTIC_RANK_RANGE'));
@@ -1822,7 +1823,7 @@ describe('every stated count of the rank says what it counts (BG-01M7FC2X)', () 
  * refusal too, never agreement (LC-006).
  */
 function declaredSeedLength(at: URL = RUST_RANK_RANGE_SOURCE): number {
-  const path = decodeURIComponent(at.pathname);
+  const path = fileURLToPath(at);
   let source: string;
   try {
     source = readFileSync(at, 'utf8');
@@ -2003,7 +2004,7 @@ describe('every CRISPR seed sentence states the length the engine reports (BG-01
     const reported = realReport().seedLengthBp;
     if (reported !== declared) {
       throw new Error(
-        `the committed wasm reports a seed length of ${String(reported)}, and ${decodeURIComponent(at.pathname)} declares ` +
+        `the committed wasm reports a seed length of ${String(reported)}, and ${fileURLToPath(at)} declares ` +
           `SEED_LEN = ${declared}; run \`${REBUILD}\` so public/molbiocraft_wasm.wasm carries the source it is built from.`
       );
     }
@@ -2025,7 +2026,8 @@ describe('every CRISPR seed sentence states the length the engine reports (BG-01
     // The refusals, each on a source written here, so no case can touch the real file.
     const dir = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FF3B-seed-len-`);
     const answerFor = (name: string, text: string | null): { got?: number; message: string; path: string } => {
-      const path = `${dir}/${name}`;
+      // As the reader names it: fileURLToPath writes the platform's separators (backslashes on Windows).
+      const path = fileURLToPath(pathToFileURL(`${dir}/${name}`));
       if (text !== null) nodeFs.writeFileSync(path, text, 'utf8');
       try {
         return { got: declaredSeedLength(pathToFileURL(path)), message: '', path };
@@ -2088,7 +2090,8 @@ describe('BG-01M7FVBN AC3: a shadowing SEED_LEN is counted, not read past', () =
   it('BG-01M7FVBN AC3 an indented SEED_LEN beside the top-level one is refused', () => {
     const dir = nodeFs.mkdtempSync(`${tmpdir()}/BG01M7FVBN-seed-len-`);
     const answerFor = (name: string, lines: string[]): { got?: number; message: string; path: string } => {
-      const path = `${dir}/${name}`;
+      // As the reader names it: fileURLToPath writes the platform's separators (backslashes on Windows).
+      const path = fileURLToPath(pathToFileURL(`${dir}/${name}`));
       nodeFs.writeFileSync(path, `${lines.join('\n')}\n`, 'utf8');
       try {
         return { got: declaredSeedLength(pathToFileURL(path)), message: '', path };

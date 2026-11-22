@@ -27,6 +27,11 @@ vi.mock('../components/ProteinStructure3DViewer', async () => {
 // studios and React DOM's server renderer are loaded inside each test, and the App tests run first.
 import { mountApp, type AppHarness } from './appHarness';
 import type { ProteinStudioProps } from '../components/ProteinStudio';
+
+// The App-mounting checks here ran past Vitest's 5 s default on the windows-latest runner, and a test
+// that times out keeps running into the next (BG-01M6T68N): the one timeout failed the eight after it
+// with "Should not already be working". The file sets its timeout as the App-mounting suites beside it do.
+vi.setConfig({ testTimeout: 60_000 });
 const load = async () => ({
   renderToStaticMarkup: (await import('react-dom/server')).renderToStaticMarkup,
   genomics: await import('../core/genomicsAndStructureSuite'),

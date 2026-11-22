@@ -99,6 +99,9 @@ const python = (): string => {
   return PYTHON;
 };
 
+/** `text` with CRLF line ends read as LF (a Windows Python writes CRLF to a pipe). */
+const lf = (text: string): string => text.replace(/\r\n/g, '\n');
+
 /** Runs `body` with a fresh temporary folder, deleted afterwards. */
 function inTemp<T>(prefix: string, body: (dir: string) => T): T {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -559,7 +562,9 @@ it('the reference check runs the Ramachandran derivation and fails on drift', { 
       fs.rmSync(log, { recursive: false, force: true });
       const r = cp.spawnSync(proc.execPath, [CHECK, ...args], { cwd: REPO, env: { ...base, ...env }, encoding: 'utf8' });
       const ran = fs.existsSync(log) ? text(log).split('\n').filter(Boolean).map((l) => JSON.parse(l) as StubRun) : [];
-      return { ...r, ran };
+      // The check passes the derivation's own output through, and Python on Windows ends its lines
+      // with CRLF; read every line as LF so the expectations hold on each OS.
+      return { ...r, stdout: lf(r.stdout), stderr: lf(r.stderr), ran };
     };
     const stubs = {
       MOLBIOCRAFT_REFERENCE_VITEST: vitestStub,
@@ -611,7 +616,7 @@ it('the reference check runs the Ramachandran derivation and fails on drift', { 
     // check makes of its total line.
     const direct = cp.spawnSync(python(), ['-I', pinned, '--fetch', grids, '--check', drifted], { encoding: 'utf8' });
     expect(direct.status, direct.stdout + direct.stderr).toBe(1);
-    expect(direct.stdout).toContain('\ntotal: 1 of 194400 nodes differ; 0 doc comment mismatches\n');
+    expect(lf(direct.stdout)).toContain('\ntotal: 1 of 194400 nodes differ; 0 doc comment mismatches\n');
 
     // The local-only tests (BG-01M6QFHR), on a data folder without and with their folders, so both
     // cases run wherever the test does: each skips while its folder is absent and passes while it

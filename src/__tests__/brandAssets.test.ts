@@ -3,6 +3,7 @@
 
 import nodeFs from 'node:fs';
 import nodeZlib from 'node:zlib';
+import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -22,6 +23,8 @@ import { inlineBrandImages } from '../../scripts/standalone_brand_images.mjs';
 // public/splash/phoenix-details.webp).
 
 const ROOT = new URL('../../', import.meta.url);
+/** public/ as a file-system path; a URL's pathname is `/D:/...` on Windows, which no fs call opens. */
+const PUBLIC_DIR = fileURLToPath(new URL('public/', ROOT));
 const read = (rel: string): string => nodeFs.readFileSync(new URL(rel, ROOT), 'utf8');
 const readBytes = (rel: string): Buffer => nodeFs.readFileSync(new URL(rel, ROOT));
 const publicPath = (src: string): string => `public${src}`;
@@ -310,14 +313,14 @@ describe('US-01M7CC7X brand assets', () => {
       referenced.add(src);
     }
     const bundle = [...referenced].map((src, i) => `const a${i}="${src}";const b${i}='${src}';`).join('\n');
-    const inlined: string = inlineBrandImages(bundle, new URL('public/', ROOT).pathname);
+    const inlined: string = inlineBrandImages(bundle, PUBLIC_DIR);
     expect(inlined).not.toMatch(/["']\/brand\//);
     for (const src of referenced) {
       const b64 = readBytes(publicPath(src)).toString('base64');
       expect(inlined).toContain(`"data:image/png;base64,${b64}"`);
     }
     // A reference to a brand image that does not exist fails the build by name.
-    expect(() => inlineBrandImages('x="/brand/missing.png"', new URL('public/', ROOT).pathname)).toThrow(
+    expect(() => inlineBrandImages('x="/brand/missing.png"', PUBLIC_DIR)).toThrow(
       /missing\.png/
     );
     // The bundler runs it over the app script and takes its favicon from the same derivative.
