@@ -1004,8 +1004,24 @@ mod tests {
         }
         let diag = macos_platform_diagnostics_from(only(Some("/Users/ada"))).unwrap();
         assert_eq!((diag.os.as_str(), diag.case_sensitive_fs), ("macos", false));
+        let under_home = |dir: &str| {
+            PathBuf::from("/Users/ada")
+                .join("Library")
+                .join(dir)
+                .join("org.molbiocraft.desktop")
+                .display()
+                .to_string()
+        };
+        let dirs = (diag.app_support_dir, diag.logs_dir, diag.cache_dir);
         assert_eq!(
-            (diag.app_support_dir, diag.logs_dir, diag.cache_dir),
+            dirs,
+            (under_home("Application Support"), under_home("Logs"), under_home("Caches"))
+        );
+        // The path text a Mac shows. Elsewhere `join` writes the host's separator
+        // (`\` on Windows), and the app reads these dirs only on macOS.
+        #[cfg(unix)]
+        assert_eq!(
+            dirs,
             (
                 "/Users/ada/Library/Application Support/org.molbiocraft.desktop".to_string(),
                 "/Users/ada/Library/Logs/org.molbiocraft.desktop".to_string(),
@@ -1087,6 +1103,9 @@ mod tests {
             root,
             PathBuf::from("/Library/Application Support/org.molbiocraft.desktop")
         );
+        // A path with no drive is not absolute on Windows, where the app never reads
+        // the macOS dir; on the Mac it must be.
+        #[cfg(unix)]
         assert!(root.is_absolute(), "{root:?}");
         assert_eq!(
             windows_app_support_dir_from(only("APPDATA", Some(r"C:\Users\a\AppData\Roaming")))
