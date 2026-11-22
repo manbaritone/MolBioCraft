@@ -174,12 +174,6 @@
   "primerNm",
   "seq"
  ],
- "calculate_primer_thermodynamics_santalucia": [
-  "mgMm",
-  "naMm",
-  "primerNm",
-  "seq"
- ],
  "call_freebayes_variants": [
   "refName",
   "refSeq",
@@ -575,6 +569,13 @@
  ],
  "parse_pdb_ca": [
   "pdbText"
+ ],
+ "parse_remote_database_payload": [
+  "accession",
+  "isProteinHint",
+  "nowIso",
+  "rawText",
+  "targetFolder"
  ],
  "parse_structure": [
   "text"

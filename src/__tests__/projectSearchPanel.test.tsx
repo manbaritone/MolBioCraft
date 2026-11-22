@@ -27,6 +27,7 @@ import { macHost, mountApp, type AppHarness, type MountOptions, type SessionSpec
 import { dispatchLiveEvent, memoryStorage, type LiveElement, type LiveStorage } from './liveDom';
 import { openPrimerDatabase, PRIMER_DATABASE_KEY, type DatabasePrimerInput } from '../core/primerDatabase';
 import type { DatabasePrimer, PrimerRecord } from '../types/bio';
+import wasmRpcRs from '../../crates/molbiocraft-wasm/src/lib.rs?raw';
 
 // The macOS host's Tauri runtime for AC1's native path; off a macOS host the mock reports none.
 vi.mock('../lib/tauriIpc', async (importOriginal) => (await import('./appHarness')).tauriIpcMock(await importOriginal<object>()));
@@ -660,11 +661,16 @@ describe('US-01M7DVE7 AC4: not searched, refusals and an engine that cannot run,
   });
 
   it('US-01M7DVE7 AC4 says the motif engine is not available when the op is unknown or the WASM fails, and lists no document', async () => {
-    const real = await vi.importActual<typeof import('../lib/rustBioEngine')>('../lib/rustBioEngine');
+    // A build without the op answers as invokeRustBioSync throws for an op the dispatcher does not
+    // know. It is thrown here rather than asked of the real engine: `npm run rpc:capture` records every
+    // op a test sends, and rpc_contract.rs then fails on an op the dispatcher has no arm for. The
+    // wording is the dispatcher's own, read from its source.
+    const unknownOp = "Unknown MolBioCraft Rust bioinformatics RPC operation: '{}'";
+    expect(wasmRpcRs, 'the dispatcher words an unknown op this way').toContain(`"${unknownOp}"`);
+    const notBuilt = unknownOp.replace('{}', 'search_iupac_motif');
     const cases: [string, (...args: unknown[]) => unknown, string][] = [
-      // A build without the op: the real engine's own answer to an op it does not know.
-      ['stale engine', (seq, query) => real.invokeRustBioSync('search_iupac_motif_not_built', { seq, query }),
-        "The motif engine is not available: Unknown MolBioCraft Rust bioinformatics RPC operation: 'search_iupac_motif_not_built'"],
+      ['stale engine', () => { throw new Error(`[MolBioCraft Rust Engine :: search_iupac_motif] ${notBuilt}`); },
+        `The motif engine is not available: ${notBuilt}`],
       ['WASM fails to load', () => { throw new WebAssembly.CompileError('WebAssembly.Module(): expected magic word'); },
         'The motif engine is not available: WebAssembly.Module(): expected magic word'],
     ];
