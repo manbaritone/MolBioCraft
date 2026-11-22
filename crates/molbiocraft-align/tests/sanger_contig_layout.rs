@@ -426,12 +426,22 @@ fn a_read_in_one_exact_place_is_placed_though_a_94_percent_copy_also_fits() {
 
 /// LC-012: low-complexity k-mers now vote, sampled, so a read made only of them is aligned rather
 /// than skipped. On the most repetitive input, every read one homopolymer, the assembly ends within
-/// the 60 s deadline of a debug build and says what it left out: 24 poly-A reads of 2,500 bases
-/// (each fits the others at any offset, so each is left out and named) and 8 of poly-G, half given
-/// as poly-C. Every read seeds a layout of its own here, so the work grows with the square of the
-/// read count.
+/// the deadline of a debug build and says what it left out: 24 poly-A reads of 2,500 bases (each
+/// fits the others at any offset, so every read but the one the contig is built from is left out
+/// and named) and 8 of poly-G, half given as poly-C. Every read seeds a layout of its own here, so
+/// the work grows with the square of the read count; a read is cut to 2,500 bases, so not with its
+/// length past that.
+///
+/// The deadline is set from the measured worst case (BG-01M81HJY), and a hang still fails it. In
+/// the debug build on an Apple M-series Mac, the 24 poly-A reads took 13.7 s alone, 17.0 to 17.2 s
+/// with the binary's 18 other tests on 4 threads and 44.8 s on 10; the binary took 113 to 117 s
+/// there on 4 threads. In CI run 45034640840 it took 453 s on ubuntu-latest, where the case missed
+/// the old 60 s deadline, and 401 s on windows-latest, where it did not: 3.9 to 4.0 and 3.4 to 3.5
+/// times as long, which puts the case at 66 to 69 s and 58 to 61 s there. 240 s is about 3.5 times
+/// the slower.
 #[test]
 fn reads_of_one_repeated_base_end_promptly_and_are_named() {
+    const DEADLINE_SECS: u64 = 240;
     for (base, n) in [('A', 24usize), ('G', 8)] {
         let reads: Vec<PoaReadInput> = (0..n)
             .map(|i| {
@@ -440,7 +450,7 @@ fn reads_of_one_repeated_base_end_promptly_and_are_named() {
             })
             .collect();
         let started = Instant::now();
-        let rep = assemble_within(reads, 60);
+        let rep = assemble_within(reads, DEADLINE_SECS);
         eprintln!("{n} x poly-{base}: {:?}, {} placed, {:?}", started.elapsed(), rep.read_count, rep.warnings);
         let named = (0..n).filter(|i| rep.warnings.iter().any(|w| w.contains(&format!("read{i}.ab1")))).count();
         assert_eq!(named + rep.read_count, n, "every read is in the contig or named");
