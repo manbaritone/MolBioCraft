@@ -148,14 +148,6 @@ fn crispr_seed_match_phrase(off_target_count: usize) -> String {
 const GRNA_PASS_MIN_HEURISTIC_RANK: i32 = 60;
 const GRNA_PASS_MAX_OTHER_SEED_COPIES: usize = 0;
 
-/// Whether a guide's other seed copies are within `GRNA_PASS_MAX_OTHER_SEED_COPIES`. The limit is 0
-/// today, so clippy reads `<=` as an `==` in disguise (`absurd_extreme_comparisons`, a correctness
-/// lint CI denies). It stays `<=` so that raising the limit is the one edit it takes.
-#[allow(clippy::absurd_extreme_comparisons)]
-fn within_seed_copy_limit(off_target_count: usize) -> bool {
-    off_target_count <= GRNA_PASS_MAX_OTHER_SEED_COPIES
-}
-
 fn fmt_num(n: usize) -> String {
     let s = n.to_string();
     let bytes = s.as_bytes();
@@ -1325,7 +1317,8 @@ pub fn execute_bio_pipeline_rust(
             None => "ACTION_REQUIRED",
             Some(g)
                 if g.on_target_score >= GRNA_PASS_MIN_HEURISTIC_RANK
-                    && within_seed_copy_limit(g.off_target_count) =>
+                    // An equality, as the rationale's seed half and bg_01m7egf6_ac3 state the rule.
+                    && g.off_target_count == GRNA_PASS_MAX_OTHER_SEED_COPIES =>
             {
                 "PASS"
             }
