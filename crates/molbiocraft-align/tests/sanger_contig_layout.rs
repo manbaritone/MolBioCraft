@@ -968,3 +968,169 @@ fn reads_laid_by_chance_on_a_trinucleotide_repeat_a_base_or_two_off_are_named() 
     }
 }
 
+
+/// NG_009378.1 bases 4,297-4,682, the 386 bases before [`HTT_EXON1`]: with its first 1,014 bases
+/// they make a 1,400 bp amplicon holding the exon-1 CAG repeat at 901-965.
+const HTT_UPSTREAM: &str = concat!(
+    "TGGGCCTGCGCCCGCGCTCGGCGCCCCCTCCACGGCCCCGCCCCGTCCATGGCCCCGTCCTTCATGGGCGAGCCCCTCCATGGCCCTGCCCCTCCGCGCC",
+    "CCACCCCTCCCTCGCCCCACCTCTCACCTTCCTGCCCCGCCCCCAGCCTCCCCACCCCTCACCGGCCAGTCCCCTCCCCTATCCCGCTCCGCCCCTCAGC",
+    "CGCCCCGCCCCTCAGCCGGCCTGCCTAATGTCCCCGTCCCCAGCATCGCCCCGCCCCGCCCCCGTCTCGCCCCGCCCCTCAGGCGGCCTCCCTGCTGTGC",
+    "CCCGCCCCGGCCTCGCCACGCCCCTACCTCACCACGCCCCCCGCATCGCCACGCCCCCCGCATCGCCACGCCTCCCTTACCATGCA",
+);
+
+/// What is wrong with one assembly of reads over `spans` of `template`, if anything: a read in
+/// neither the contig nor its notes; a contig, on either strand, more than `bound` edits from the
+/// amplicon (from a stretch of it when the contig is shorter or names a tandem repeat); or, when
+/// `why` and the contig is off by more than `bound`, a read left out whose sentence does not say
+/// why (no tandem repeat named, only "could not be placed").
+fn off_without_a_note(rep: &PoaContigAssemblyReport, template: &str, spans: &[(usize, usize, bool)], bound: usize, why: bool, case: &str) -> Option<String> {
+    let said = format!("{case}: {} bp ({} reads); {:?}", rep.consensus_length_bp, rep.read_count, rep.warnings);
+    let placed = |i: usize| rep.aligned_reads.iter().any(|row| row.id == format!("read{i}"));
+    let left_out: Vec<usize> = (0..spans.len()).filter(|&i| !placed(i)).collect();
+    if left_out.iter().any(|i| !rep.warnings.iter().any(|w| w.contains(&format!("read{i}.ab1")))) {
+        return Some(format!("a read is neither in the contig nor named: {said}"));
+    }
+    let stretch = rep.consensus_length_bp < template.len() || rep.warnings.iter().any(|w| w.contains("tandem repeat"));
+    let edits = [rep.consensus_sequence.clone(), rc(&rep.consensus_sequence)].iter().map(|c| align(c.as_bytes(), template.as_bytes(), stretch).0).min().unwrap();
+    if edits <= bound {
+        return None;
+    }
+    let explained = |i: &usize| rep.warnings.iter().any(|w| w.contains(&format!("read{i}.ab1")) && w.contains("tandem repeat"));
+    if why && !left_out.is_empty() && left_out.iter().all(explained) {
+        return None;
+    }
+    Some(format!("{edits} edits (bound {bound}): {said}"))
+}
+
+/// BG-01M7ZQAE AC1: HTT's exon-1 CAG repeat (NG_009378.1 5,197-5,261) at 901-965 of a 1,400 bp
+/// amplicon of its own gene, reads over 933-1,400 x4 forward and 1-973 x4 reverse at 1% noise,
+/// read alternately (the mirrored layout of the (CA)100 case): the 41 bases the reads share are
+/// too few to place them, but laid 3 units further onto the reverse reads' start, the forward
+/// reads' 8 flank bases CAACAGCC fall on the flank CAACAGCCGCCACCG..., which continues the CAG
+/// unit, and match it at 90%: seeds 2 and 4 gave a silent 1,391 bp contig of all 8 reads, 10 edits
+/// off. On seeds 1-12 every contig is within the edits its reads leave undecided (at least 2), and
+/// a read it leaves out is named. Wrong implementations, and what catches each: a shift kept
+/// because the best's flank, continuing the unit, is counted as repeat (seeds 2 and 4, silent);
+/// reads left out without being named (every seed that leaves one out).
+#[test]
+fn a_cag_repeat_whose_flank_continues_the_unit_is_never_silently_shifted() {
+    let template = format!("{HTT_UPSTREAM}{}", &HTT_EXON1[..1014]);
+    assert_eq!((template.len(), &template[900..903], &template[960..968]), (1400, "CAG", "CAGCAACA"));
+    let spans = alternate([(933, 1400); 4], [(1, 973); 4]);
+    let cases: Vec<((String, Vec<PoaReadInput>), usize)> = (1u32..=12)
+        .map(|seed| {
+            let (reads, undecided) = noisy_reads(&mut Mulberry(seed), &template, &spans);
+            ((format!("HTT CAG at 901-965, mirrored, seed {seed}"), reads), undecided.max(2))
+        })
+        .collect();
+    let bounds: Vec<usize> = cases.iter().map(|(_, b)| *b).collect();
+    let reports = assemble_all(cases.into_iter().map(|(c, _)| c).collect());
+    let wrong: Vec<String> = reports.iter().zip(bounds).filter_map(|((case, rep), bound)| off_without_a_note(rep, &template, &spans, bound, false, case)).collect();
+    assert!(wrong.is_empty(), "{} of {} cases:\n{}", wrong.len(), reports.len(), wrong.join("\n"));
+}
+
+/// BG-01M7ZQAE AC2: a (GATA)75 ending h = 48-57 bases into reads over 560-1,400, forward reads
+/// over 1-600, at 1% noise, seeds 1-10 for each h: the 41 bases the reads share lie inside the
+/// repeat, so the reverse reads, laid by a forward draft (or the forward reads by a reverse one)
+/// 3 units further on, place at 90% on chance matches past it; 7 of these 100 gave silent 1,388
+/// bp contigs, 3 units short, at a9bea8c (4 at 02cea89). None is silently collapsed, as [`never_silently_collapsed`] judges
+/// a contig with nothing to say: it is the amplicon from all 8 reads within the bound. A contig
+/// with notes names every read it leaves out, any read that fits in more than one place with the
+/// 4-bp unit, and is a stretch of the amplicon within the bound ([`off_without_a_note`]); a read
+/// the 41 bases cannot place may be named as one that could not be placed, which
+/// `never_silently_collapsed`'s one-sentence form does not allow. Wrong implementation, and what
+/// catches it: a shift a unit or more on kept as the placement (h 48-54, silent 1,388 bp).
+#[test]
+fn a_tetranucleotide_repeat_ending_48_to_57_bases_into_the_reverse_reads_is_never_silently_collapsed() {
+    let spans = alternate([(1, 600); 4], [(560, 1400); 4]);
+    let mut cases = Vec::new();
+    for h in 48usize..=57 {
+        for seed in 1u32..=10 {
+            let (mut r, template) = block_amplicon(seed, &"GATA".repeat(75), 560 + h - 300);
+            let (reads, undecided) = noisy_reads(&mut r, &template, &spans);
+            cases.push((format!("(GATA)75 ending {h} bases into the reverse reads, seed {seed}"), reads, template, undecided.max(2)));
+        }
+    }
+    let meta: Vec<(String, usize)> = cases.iter().map(|(_, _, t, b)| (t.clone(), *b)).collect();
+    let reports = assemble_all(cases.into_iter().map(|(c, reads, _, _)| (c, reads)).collect());
+    let wrong: Vec<String> = reports
+        .iter()
+        .zip(&meta)
+        .filter_map(|((case, rep), (template, bound))| {
+            if rep.warnings.is_empty() {
+                // Silent: the whole amplicon from every read, within the bound. Listed first, so every
+                // such case is reported, then judged by never_silently_collapsed itself.
+                let edits = align(rep.consensus_sequence.as_bytes(), template.as_bytes(), false).0;
+                if (rep.consensus_length_bp, rep.read_count) != (1400, spans.len()) || edits > *bound {
+                    return Some(format!("{case}: silent, {} bp ({} reads), {edits} edits (bound {bound})", rep.consensus_length_bp, rep.read_count));
+                }
+                never_silently_collapsed(rep, template, 4, spans.len(), *bound, case);
+                return None;
+            }
+            let unit = fits_twice(rep).into_iter().find(|w| !w.contains("a tandem repeat of a 4-bp unit ("));
+            off_without_a_note(rep, template, &spans, *bound, false, case).or(unit.map(|w| format!("{case}: {w}")))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{} of {} cases:\n{}", wrong.len(), reports.len(), wrong.join("\n"));
+}
+
+/// BG-01M7ZQAE AC3: the (CA)150 layout of
+/// `a_dinucleotide_repeat_ending_48_to_53_bases_into_the_reverse_reads_is_never_silently_collapsed`
+/// at h = 299, seed 48: the reverse reads start a base into the repeat and hold 299 of its bases,
+/// the forward reads end on 42 of them. It gave an 843 bp contig of the 4 reverse reads, 3 edits
+/// off (bound 2), the forward reads named only as reads that "could not be placed". The contig is
+/// within its bound, or its notes say why the forward reads were left out. The two extra bases were
+/// a CA unit two of the reverse reads inserted inside the repeat, each then ending a unit short at
+/// no cost, the graph alignment's tie between that end and the layout's going to the first found.
+/// Wrong implementation, and what catches it: such a tie kept (843 bp, 3 edits, the forward reads
+/// named only as reads that could not be placed).
+#[test]
+fn the_ca150_layout_at_h299_seed_48_is_whole_or_says_why_it_is_not() {
+    let spans = alternate([(1, 600); 4], [(560, 1400); 4]);
+    let (mut r, template) = block_amplicon(48, &"CA".repeat(150), 560 + 299 - 300);
+    let (reads, undecided) = noisy_reads(&mut r, &template, &spans);
+    let rep = assemble_within(reads, 120);
+    let wrong = off_without_a_note(&rep, &template, &spans, undecided.max(2), true, "(CA)150 ending 299 bases into the reverse reads, seed 48");
+    assert!(wrong.is_none(), "{}", wrong.unwrap_or_default());
+}
+
+/// BG-01M7ZQAE AC4: a read whose best overlap starts on m and ends on n flank bases it shares with
+/// the draft, both fewer than the 8 that fix it, is fixed against an overlap departing from it at an
+/// end only when that overlap's departure lies on those flank bases alone, on both the read and the
+/// draft (`departs_on_flank`). Four exact reads over 1 to 1,000 + n end on the n flank bases past a
+/// (CA)50 at 901-1,000; a probe over 901 - m to 1,400 starts on the m before it. One flank base
+/// cannot hold an overlap ending a unit off, which lays a repeat base there too: with m 7 and n 1
+/// (seeds 1-3), or m 1 and n 4 (seed 1), the probe is left out and named with the 2-bp unit, and the
+/// contig is the draft. Two or three flank bases at each end hold it: with m 3 and n 2 (seeds 31,
+/// 47, 49 and 50) and m 2 and n 3 (seeds 35 and 50), on either strand, where an overlap departing
+/// at both ends over those bases matches within 2 errors, the probe is placed and the contig is the
+/// amplicon. Wrong implementations, and what catches each: the read's outside() check dropped (m 7,
+/// n 1: placed), the draft's dropped (m 1, n 4: placed), both dropped (both), and the start's half
+/// of the rule reduced to an equal start (m 3 n 2 and m 2 n 3: left out).
+#[test]
+fn a_read_on_a_few_shared_flank_bases_is_fixed_only_against_departures_over_them() {
+    let named = [(7usize, 1usize, 1u32), (7, 1, 2), (7, 1, 3), (1, 4, 1)];
+    let placed = [(3usize, 2usize, 31u32), (3, 2, 47), (3, 2, 49), (3, 2, 50), (2, 3, 35), (2, 3, 50)];
+    let cases = named.iter().map(|&c| (c, false, false)).chain(placed.iter().flat_map(|&c| [(c, true, false), (c, true, true)]));
+    for ((m, n, seed), fixed, reversed) in cases {
+        let (template, _) = draft_ending_in_a_repeat(seed, "CA", 50, &[], None);
+        let mut reads: Vec<PoaReadInput> = (0..4).map(|i| q40(&format!("fwd{i}"), template[..1000 + n].to_string())).collect();
+        reads.push(q40("probe", template[900 - m..1400].to_string()));
+        if reversed {
+            for read in &mut reads {
+                read.sequence = rc(&read.sequence);
+            }
+        }
+        let rep = assemble_within(reads, 60);
+        let case = format!("{m} flank bases before, {n} after, seed {seed}, reversed {reversed}");
+        let contig = if reversed { rc(&rep.consensus_sequence) } else { rep.consensus_sequence.clone() };
+        if fixed {
+            assert!(rep.warnings.is_empty(), "{case}: {:?}", rep.warnings);
+            assert_eq!((rep.read_count, contig.as_str()), (5, template.as_str()), "{case}");
+        } else {
+            let said = fits_twice(&rep);
+            assert!(said.len() == 1 && said[0].starts_with("Read probe.ab1 ") && said[0].contains("a tandem repeat of a 2-bp unit ("), "{case}: {:?}", rep.warnings);
+            assert_eq!((rep.read_count, contig.as_str()), (4, &template[..1000 + n]), "{case}");
+        }
+    }
+}

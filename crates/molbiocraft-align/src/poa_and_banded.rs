@@ -658,7 +658,9 @@ fn fixed_outside_repeat(draft: &[u8], read: &[u8], ov: &DraftOverlap, p: usize) 
 /// least [`LAYOUT_K`] flank bases the read and the draft share ([`shared_flanks`]), which fix it:
 /// then such an overlap is the best with an indel inside the repeat, or lays those bases off the
 /// draft's (BG-01M6VZNP, BG-01M7X4HQ). Nor is one that departs from the best only over flank bases
-/// at an end the best ends on fewer of them ([`departs_on_flank`]).
+/// at an end the best ends on fewer of them ([`departs_on_flank`]). When no overlap the bands hold
+/// rivals a best whose draft bases lie mostly in a tandem repeat, the overlaps of a band centred on
+/// it are asked too, those a unit or more off judged as a shift within the drift is (BG-01M7ZQAE).
 ///
 /// An overlap whose draft bases lie in a tandem repeat, holding its unit at least twice, is no
 /// rival, on either strand, to a best that holds at least [`POA_MIN_OVERLAP_BP`] bases outside
@@ -705,10 +707,13 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
         anchors.borrow_mut().push((key, a));
         a
     };
-    let rival = |(o, s): (DraftOverlap, i8), (ov, strand): (DraftOverlap, i8)| {
+    // Whether `o` is a rival of the best `ov`; with `unit_off`, `o` lies on the best's strand more
+    // than the drift of one placement off it and is judged as a shift within that drift is, by the
+    // repeat its draft bases lie in and the flanks the best shares (BG-01M7ZQAE).
+    let rival_as = |(o, s): (DraftOverlap, i8), (ov, strand): (DraftOverlap, i8), unit_off: bool| {
         let (lo, hi) = ov.diagonals();
         let (olo, ohi) = o.diagonals();
-        let near = s == strand && ohi >= lo - LAYOUT_SAME_PLACEMENT_BP && olo <= hi + LAYOUT_SAME_PLACEMENT_BP;
+        let near = s == strand && (unit_off || ohi >= lo - LAYOUT_SAME_PLACEMENT_BP && olo <= hi + LAYOUT_SAME_PLACEMENT_BP);
         if (near && (olo, ohi) == (lo, hi)) || o.errors() > ov.errors() + LAYOUT_RIVAL_EXTRA_ERRORS || added(&o, s) == added(&ov, strand) {
             return false;
         }
@@ -745,6 +750,7 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
         };
         !unit.is_some_and(|p| fixed_outside(&ov, strand, p))
     };
+    let rival = |o: (DraftOverlap, i8), b: (DraftOverlap, i8)| rival_as(o, b, false);
     let reach = |o: &DraftOverlap| (o.score, o.read_to + o.draft_to);
     let mut placing: Vec<(DraftOverlap, i8)> = Vec::new();
     let mut best: Option<(DraftOverlap, i8)> = None;
@@ -776,12 +782,31 @@ fn best_placement(index: &KmerIndex, draft: &[u8], fwd: &[u8], rc: &[u8]) -> Pla
         let (olo, ohi) = o.diagonals();
         ohi >= lo - LAYOUT_SAME_PLACEMENT_BP && olo <= hi + LAYOUT_SAME_PLACEMENT_BP
     };
-    let rivals: Vec<(DraftOverlap, i8)> = placing
+    let mut rivals: Vec<(DraftOverlap, i8)> = placing
         .iter()
         .copied()
         .chain(best_band.iter().filter(|o| !o.places() && near(o)).map(|&o| (o, strand)))
         .filter(|&o| rival(o, (ov, strand)))
         .collect();
+    // A best whose draft bases lie mostly in a tandem repeat of a unit of 2 to LAYOUT_BAND / 2
+    // bases (not a homopolymer's) is weighed against every overlap of a band centred on it,
+    // placing or not, those a unit or more off as well as those within the drift: the bands are
+    // centred where the read's k-mers hit, and a best at the edge of its band has no overlap a unit
+    // off beside it to rival it. So both flanks are asked together: a read that places only a whole
+    // number of units off, by chance matches on a flank that continues the unit, fits as well where
+    // its overlap is too short to place, and is named rather than placed. HTT's CAG repeat at
+    // 901-965 (NG_009378.1), its flank CAACAGCCGCCACCG... after it, gave forward reads over 1-973
+    // laid 9 bases onto reverse reads over 933-1,400 at 90% (45 of 50), and a silent 1,391 bp
+    // contig; a (GATA)75 ending 48-54 bases into reverse reads over 560-1,400, silent 1,388 bp
+    // contigs 3 units short (BG-01M7ZQAE).
+    let (from, to) = (ov.draft_from, ov.draft_to);
+    if rivals.is_empty() && !mostly_repeat(draft, from, to, 1) && (2..=LAYOUT_BAND as usize / 2).any(|p| mostly_repeat(draft, from, to, p)) {
+        rivals = dovetail_overlaps(draft, seq_of(strand), (lo + hi) / 2)
+            .into_iter()
+            .filter(|o| rival_as((*o, strand), (ov, strand), !near(o)))
+            .map(|o| (o, strand))
+            .collect();
+    }
     if rivals.is_empty() {
         return Placement::Placed(ov, strand);
     }
@@ -1013,7 +1038,8 @@ impl ContigGraph {
 
     /// The best alignment of the whole of `read` to a path of the graph (free to start and end at
     /// any node), within [`POA_BAND`] of where the layout placed it (its first base at draft
-    /// column `start`): (score, path). Each traceback step lowers the read index or moves to a
+    /// column `start`): (score, path), of the best-scoring ends the one nearest the column the
+    /// layout puts its last base at. Each traceback step lowers the read index or moves to a
     /// predecessor, which comes earlier in the topological order, so it ends within read length +
     /// node count steps, and the loop is bounded by that count.
     fn align(&self, read: &[u8], start: i64) -> Option<(i32, Vec<GraphStep>)> {
@@ -1080,11 +1106,17 @@ impl ContigGraph {
                 back[c] = mv;
             }
         }
+        // Ties go to the end nearest the column the layout puts the read's last base at: a read
+        // ending inside a tandem repeat can drop a copy by an insertion inside it, whose cost the
+        // matches it buys a unit on may repay exactly, and its free end then skips a unit of nodes.
+        // Two of four reverse reads over 560-1,400 ending in a (CA)150 did so, and the consensus
+        // took the inserted unit: an 843 bp contig of 841 bp reads (BG-01M7ZQAE).
+        let off_end = |r: usize| (self.pos[rows[r]] as i64 - (start + m as i64 - 1)).unsigned_abs();
         let (mut r, score) = (0..rows.len())
             .filter_map(|r| cell(r, m).map(|c| (r, h[c])))
             .filter(|&(_, s)| s > UNREACHED)
             .fold(None, |best: Option<(usize, i32)>, x| match best {
-                Some(b) if b.1 >= x.1 => Some(b),
+                Some(b) if b.1 > x.1 || (b.1 == x.1 && off_end(b.0) <= off_end(x.0)) => Some(b),
                 _ => Some(x),
             })?;
         let mut j = m;
