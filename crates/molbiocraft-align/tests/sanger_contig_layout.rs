@@ -1015,9 +1015,10 @@ fn off_without_a_note(rep: &PoaContigAssemblyReport, template: &str, spans: &[(u
 /// BG-01M7ZQAE AC1: HTT's exon-1 CAG repeat (NG_009378.1 5,197-5,261) at 901-965 of a 1,400 bp
 /// amplicon of its own gene, reads over 933-1,400 x4 forward and 1-973 x4 reverse at 1% noise,
 /// read alternately (the mirrored layout of the (CA)100 case): the 41 bases the reads share are
-/// too few to place them, but laid 3 units further onto the reverse reads' start, the forward
-/// reads' 8 flank bases CAACAGCC fall on the flank CAACAGCCGCCACCG..., which continues the CAG
-/// unit, and match it at 90%: seeds 2 and 4 gave a silent 1,391 bp contig of all 8 reads, 10 edits
+/// too few to place them, but laid 3 units (9 bases) further onto the forward reads, the reverse
+/// reads' 8 bases past the repeat, ACAGCCGC (966-973), fall on the forward reads' ACCGCCGC
+/// (975-982), in the flank CAACAGCCGCCACCG... from 964, which continues the CAG unit, and the 50
+/// bases match at 90%: seeds 2 and 4 gave a silent 1,391 bp contig of all 8 reads, 10 edits
 /// off. On seeds 1-12 every contig is within the edits its reads leave undecided (at least 2), and
 /// a read it leaves out is named. Wrong implementations, and what catches each: a shift kept
 /// because the best's flank, continuing the unit, is counted as repeat (seeds 2 and 4, silent);
@@ -1052,18 +1053,32 @@ fn a_cag_repeat_whose_flank_continues_the_unit_is_never_silently_shifted() {
 /// catches it: a shift a unit or more on kept as the placement (h 48-54, silent 1,388 bp).
 #[test]
 fn a_tetranucleotide_repeat_ending_48_to_57_bases_into_the_reverse_reads_is_never_silently_collapsed() {
+    let (wrong, cases) = collapsed_past_a_repeat_ending_in_the_reverse_reads("GATA", 75, 1..=10, false);
+    assert!(wrong.is_empty(), "{} of {cases} cases:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// The AC2 layout and judge for a repeat of `copies` x `unit` ending h = 48-57 bases into reads
+/// over 560-1,400, forward reads over 1-600, at 1% noise, on `seeds` for each h: a silent contig is
+/// the whole amplicon from all 8 reads within the bound ([`never_silently_collapsed`]); a contig
+/// with notes names every read it leaves out, names any read that fits in more than one place with
+/// the repeat's unit (or, when `unitless`, names it as one inside "a repeat", the form for a
+/// placement no unit was found in), and is a stretch of the amplicon within the bound
+/// ([`off_without_a_note`]). Returns what is wrong with each case that is wrong, and how many cases there were.
+fn collapsed_past_a_repeat_ending_in_the_reverse_reads(unit: &str, copies: usize, seeds: std::ops::RangeInclusive<u32>, unitless: bool) -> (Vec<String>, usize) {
     let spans = alternate([(1, 600); 4], [(560, 1400); 4]);
+    let block = unit.repeat(copies);
     let mut cases = Vec::new();
     for h in 48usize..=57 {
-        for seed in 1u32..=10 {
-            let (mut r, template) = block_amplicon(seed, &"GATA".repeat(75), 560 + h - 300);
+        for seed in seeds.clone() {
+            let (mut r, template) = block_amplicon(seed, &block, 560 + h - block.len());
             let (reads, undecided) = noisy_reads(&mut r, &template, &spans);
-            cases.push((format!("(GATA)75 ending {h} bases into the reverse reads, seed {seed}"), reads, template, undecided.max(2)));
+            cases.push((format!("({unit}){copies} ending {h} bases into the reverse reads, seed {seed}"), reads, template, undecided.max(2)));
         }
     }
     let meta: Vec<(String, usize)> = cases.iter().map(|(_, _, t, b)| (t.clone(), *b)).collect();
     let reports = assemble_all(cases.into_iter().map(|(c, reads, _, _)| (c, reads)).collect());
-    let wrong: Vec<String> = reports
+    let named_unit = format!("a tandem repeat of a {}-bp unit (", unit.len());
+    let wrong = reports
         .iter()
         .zip(&meta)
         .filter_map(|((case, rep), (template, bound))| {
@@ -1074,11 +1089,71 @@ fn a_tetranucleotide_repeat_ending_48_to_57_bases_into_the_reverse_reads_is_neve
                 if (rep.consensus_length_bp, rep.read_count) != (1400, spans.len()) || edits > *bound {
                     return Some(format!("{case}: silent, {} bp ({} reads), {edits} edits (bound {bound})", rep.consensus_length_bp, rep.read_count));
                 }
-                never_silently_collapsed(rep, template, 4, spans.len(), *bound, case);
+                never_silently_collapsed(rep, template, unit.len(), spans.len(), *bound, case);
                 return None;
             }
-            let unit = fits_twice(rep).into_iter().find(|w| !w.contains("a tandem repeat of a 4-bp unit ("));
-            off_without_a_note(rep, template, &spans, *bound, false, case).or(unit.map(|w| format!("{case}: {w}")))
+            let other_unit = fits_twice(rep).into_iter().find(|w| !w.contains(&named_unit) && !(unitless && w.contains("only inside a repeat (")));
+            off_without_a_note(rep, template, &spans, *bound, false, case).or(other_unit.map(|w| format!("{case}: {w}")))
+        })
+        .collect();
+    (wrong, reports.len())
+}
+
+/// BG-01M81TNS: the AC2 layout and judge with C9orf72's hexanucleotide unit, (GGGGCC)50, a 300 bp
+/// repeat, seeds 1-5 for each h. The centred band is asked for a repeat of a unit of 2 to 32 bases;
+/// asked only for units of 2 to 4 bases, it let these reads place a unit or more on, by chance
+/// matches past the repeat. A read named as fitting in more than one place may be named inside "a
+/// repeat" with no unit: at h 49 and 50 on seed 5 one forward read is, over contig bases 1-52.
+/// Wrong implementation, and what catches it: the unit range narrowed to
+/// 2-4 bases (silent contigs a unit or more short).
+#[test]
+fn a_c9orf72_hexanucleotide_repeat_ending_48_to_57_bases_into_the_reverse_reads_is_never_silently_collapsed() {
+    let (wrong, cases) = collapsed_past_a_repeat_ending_in_the_reverse_reads("GGGGCC", 50, 1..=5, true);
+    assert!(wrong.is_empty(), "{} of {cases} cases:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// BG-01M81TNS: the same with a 5-bp unit, (AAAGG)60, a 300 bp repeat, seeds 1-5 for each h.
+/// Wrong implementation, and what catches it: the centred band's unit range narrowed to 2-4 bases
+/// (silent contigs a unit or more short).
+#[test]
+fn a_pentanucleotide_repeat_ending_48_to_57_bases_into_the_reverse_reads_is_never_silently_collapsed() {
+    let (wrong, cases) = collapsed_past_a_repeat_ending_in_the_reverse_reads("AAAGG", 60, 1..=5, true);
+    assert!(wrong.is_empty(), "{} of {cases} cases:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// BG-01M81TNS: reads that share 10 or 12 bases past a tandem repeat are placed. A 300 bp repeat of
+/// a unit of 2 to 20 bases ends at 609, 50 bases into reads over 560-1,400; the other reads, over
+/// 1 to 609 + k, hold its last 50 bases and the k flank bases past it (both orders of strand, seeds
+/// 1-2, 64 cases). Those k bases, shared by the read and the draft, fix the best against an overlap
+/// a unit or more off, which the centred band weighs as a shift within the drift is weighed, by the
+/// repeat and the flanks the best shares (BG-01M7ZQAE). Every contig is the whole amplicon from all
+/// 8 reads, with no note, within the bound. Wrong implementation, and what catches it: an overlap a
+/// unit or more off judged by its own period instead (`unit_off` false), which leaves half the
+/// reads out as fitting in more than one place.
+#[test]
+fn reads_sharing_10_or_12_flank_bases_past_a_repeat_of_a_2_to_20_bp_unit_are_placed() {
+    let mut cases = Vec::new();
+    for unit in ["CA", "CAG", "GATA", "AAAGG", "GGGGCC", "AATGGTC", "ACGTTGCAAT", "ACGTACGGTACGTTAGCATG"] {
+        let block = unit.repeat(300 / unit.len());
+        for k in [10usize, 12] {
+            for seed in 1u32..=2 {
+                let (mut r, template) = block_amplicon(seed, &block, 610 - block.len());
+                for (order, spans) in [("forward first", alternate([(1, 609 + k); 4], [(560, 1400); 4])), ("reverse first", alternate([(560, 1400); 4], [(1, 609 + k); 4]))] {
+                    let (reads, undecided) = noisy_reads(&mut r, &template, &spans);
+                    cases.push((format!("({unit})n, {k} flank bases shared, {order}, seed {seed}"), reads, template.clone(), undecided.max(2)));
+                }
+            }
+        }
+    }
+    let meta: Vec<(String, usize)> = cases.iter().map(|(_, _, t, b)| (t.clone(), *b)).collect();
+    let reports = assemble_all(cases.into_iter().map(|(c, reads, _, _)| (c, reads)).collect());
+    let wrong: Vec<String> = reports
+        .iter()
+        .zip(&meta)
+        .filter_map(|((case, rep), (template, bound))| {
+            let edits = align(rep.consensus_sequence.as_bytes(), template.as_bytes(), false).0;
+            let whole = rep.warnings.is_empty() && (rep.consensus_length_bp, rep.read_count) == (1400, 8) && edits <= *bound;
+            (!whole).then(|| format!("{case}: {} bp ({} reads), {edits} edits (bound {bound}); {:?}", rep.consensus_length_bp, rep.read_count, rep.warnings))
         })
         .collect();
     assert!(wrong.is_empty(), "{} of {} cases:\n{}", wrong.len(), reports.len(), wrong.join("\n"));
