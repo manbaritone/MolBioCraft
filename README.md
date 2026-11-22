@@ -26,6 +26,8 @@
 
 </div>
 
+**Contents:** [Overview](#overview) · [What's New in 1.1.0](#whats-new-in-110) · [What You Can Do](#what-you-can-do) · [Scientific Studios](#scientific-studios) · [Bioinformatics Plugins](#bioinformatics-plugins) · [Guided Pipelines](#guided-pipelines) · [Preferences](#preferences-you-control) · [Downloads & Installation](#downloads--installation) · [Keyboard Shortcuts](#keyboard-shortcuts) · [Building from Source](#under-the-hood--building-from-source) · [License](#license-cc-by-nc-40) · [Citation](#citation)
+
 
 ## Overview
 
@@ -36,6 +38,25 @@
 - **Scientifically traceable** — every algorithm cites its source method (SantaLucia Tm, Gotoh alignment, Felsenstein likelihood, Kabsch superposition, Mott trimming…); see [`PROVENANCE.md`](./PROVENANCE.md).
 - **Figures you can publish** — maps, gels, trees, chromatograms, alignments and dotplots export as SVG, PNG or PDF.
 - **Cross-platform** — one app for macOS (Apple Silicon and Intel), Windows 10/11 and Linux.
+
+
+## What's New in 1.1.0
+
+Released 2026-11-22. The highlights:
+
+- **Protein & 3D is its own studio** — ProtParam (now with the instability index), hydropathy, GOR, antigenicity, the MS digest and PTMs, coiled-coil and transmembrane prediction, and the 3D viewer with superposition and a Ramachandran plot, all in one studio.
+- **Convert GenBank…** — File › Export Sequences › Convert GenBank… turns a GenBank file (gzipped or not) or the open records into `.fna`, CDS DNA, CDS protein, function tables and more, computed in the app's own engine with no Python needed.
+- **The sequence superposition's TM-score is the TM-score** — superposition and Align Structures by sequence now report a per-chain Zhang-Skolnick TM-score instead of an approximate TM≈.
+- **Ramachandran regions follow the Top8000 grids themselves** — each residue is classified by interpolating MolProbity's Top8000 2° grids, not coarse 10° cells.
+- **A studio rail that never drops a studio** — the eleven studios, then History and Info, sit in a fixed rail. A studio the open document cannot use stays listed, greyed, with the reason in its tooltip.
+- **Number keys open the studios, and ⌘S saves the session** — `⌘1`–`⌘9` (`Ctrl+1`–`Ctrl+9` on Windows and Linux) open the first nine studios in rail order.
+- **One command list behind the menu bar, the toolbar and ⌘K** — every command has the same name, menu path and shortcut wherever it appears.
+- **The Mac menu bar is the window's menu bar** — the macOS menu bar has the same menus, in the same order, as the in-window menus on Windows and Linux.
+- **Databases open in the main pane** — the Database Explorer replaces the document view instead of opening as a dialog, and Back (`⌘[`) returns to your document.
+- **The desktop app opens no network port** — the embedded REST API on `127.0.0.1:18420` is gone. The interface reaches the engine only through Tauri IPC and WebAssembly, so scripts that called that API have no endpoint any more.
+- **Linux file dialogs need no desktop portal** — open and save dialogs use GTK's own file chooser, so they work without `xdg-desktop-portal` or `zenity`.
+
+Sessions saved by the first release open unchanged in 1.1.0. Every change is listed in the [full 1.1.0 release notes](CHANGELOG.md#110---2026-11-22).
 
 
 ## What You Can Do
@@ -70,7 +91,7 @@ Each studio is a tab in the main window, named here by its one name in the studi
 7. **Alignment** — Pairwise, dotplot and multiple alignment, with distance matrices, length graphs, virtual gels and alignment-image export, for an aligned or unaligned set and for an assembled contig.
 8. **Phylogenetics** — Tree building (opening on Neighbor-Joining, with UPGMA and a maximum-likelihood search), model selection and molecular-evolution statistics, with the tree kept in view.
 9. **Sanger & Contig** — Sanger chromatogram review, trimming and contig assembly, for trace records.
-10. **Protein & 3D** — The Mol* 3D structure viewer, for proteins and structures.
+10. **Protein & 3D** — The protein studio: ProtParam biophysics, Kyte-Doolittle hydropathy, GOR secondary structure, antigenicity, the MS digest and PTMs, coiled-coil and transmembrane prediction, and the Mol* 3D structure viewer with superposition and a Ramachandran plot, for proteins and structures.
 11. **Pipelines & NGS** — The guided multi-step QC pipelines below and, for a DNA record, NGS assembly, genome variants, gene/CpG/repeat prediction and submission prep.
 
 Two document panels sit beside the studios: **History** (provenance only: the history tree and lineage graph of every operation, which you can export) and **Info** (the record's name, dates and other details, and for a DNA sequence its sequence alerts and host strain). The panels History once held have their own hosts: protein tools in Protein & 3D, the Enzymes view in Sequence Map and Cloning & Gel (an Enzyme Set opens Cloning & Gel on it), folding in Sequence Map for an RNA and in Primers & CRISPR for a DNA, the workflow plugin runner in Pipelines & NGS, and the genetic-code tables in the Sequence Map inspector.
@@ -209,7 +230,7 @@ On macOS the commands live in the native menu bar; on Windows, Linux and the web
 
 MolBioCraft's analysis engine is written in Rust (seven crates: core, formats, align, phylo, cloning, protein and a WebAssembly bridge) and runs inside a Tauri v2 desktop shell with a TypeScript/React interface. The interface reaches the engine only through Tauri IPC and WebAssembly; the desktop app listens on no network port. 3D structures are rendered with [Mol*](https://molstar.org). Contributor details live in [`CONTRIBUTING.md`](./CONTRIBUTING.md), [`DESIGN.md`](./DESIGN.md) and [`AGENTS.md`](./AGENTS.md).
 
-**Prerequisites:** Rust (stable, with the `wasm32-unknown-unknown` target), Node.js 20 or later and npm. To build the macOS universal installer also add `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
+**Prerequisites:** Rust (stable, with the `wasm32-unknown-unknown` target), Node.js 20 or later and npm (CI builds on Node.js 22). To build the macOS universal installer also add `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 
 ```bash
 git clone https://github.com/manbaritone/MolBioCraft.git
@@ -228,6 +249,20 @@ npm run build:standalone    # single offline HTML file: dist/molbiocraft-standal
 
 The Windows `.msi` and portable `.exe` and the Linux `.deb` are built by `.github/workflows/release.yml` on its `windows-latest` and `ubuntu-22.04` runners, since the Tauri bundler builds each only on its own operating system. Running that workflow by hand (workflow_dispatch) uploads all four installers as workflow artifacts without publishing a release.
 
+### Checking the Windows and Linux builds on a Mac
+
+Releases come from CI. Before you push, you can compile-check both builds and package two of them locally:
+
+- **Windows (compile check and the portable `.exe`):** run `brew install llvm lld` and `cargo install --locked cargo-xwin`, and put the `bin` folders of Homebrew's `llvm` and `lld` on `PATH`. Then:
+
+  ```bash
+  cargo xwin check --target x86_64-pc-windows-msvc --manifest-path src-tauri/Cargo.toml
+  npm run build && cargo xwin build --release --features custom-protocol --target x86_64-pc-windows-msvc --manifest-path src-tauri/Cargo.toml
+  ```
+
+  cargo-xwin downloads Microsoft's Windows SDK and C runtime, and using it accepts Microsoft's licence. The `.msi` can be built only on Windows, because the WiX toolset runs only there.
+- **Linux (`.deb`):** in an `ubuntu:22.04` container for `linux/amd64` (Docker, Colima or OrbStack), install the packages the Linux job in `release.yml` installs, then Rust and Node.js 22. Then run `tauri build --target x86_64-unknown-linux-gnu --bundles deb` with the Tauri CLI version that `release.yml` pins (`TAURI_CLI`) on a checkout that has a built `dist/`.
+
 
 ## License (CC BY-NC 4.0)
 
@@ -243,7 +278,7 @@ MolBioCraft is distributed under the **Creative Commons Attribution-NonCommercia
 @software{Boonyarit_MolBioCraft,
 author = {{Bundit Boonyarit}},
 license = {CC-BY-NC-4.0},
-month = oct,
+month = nov,
 title = {{MolBioCraft: A cross-platform bioinformatics workbench for sequence analysis in molecular biology and evolutionary biology research}},
 url = {https://github.com/manbaritone/MolBioCraft},
 version = {1.1.0},
