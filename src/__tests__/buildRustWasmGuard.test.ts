@@ -295,7 +295,10 @@ describe('scripts/build_rust_wasm.mjs host-path guard', () => {
     const emitted = runBuildCopy({ engine, args: ['--emit-only'], cargoHome });
     expect(emitted.stderr).toBe('');
     expect(emitted.status).toBe(0);
-    expect(emitted.emitted).toEqual(engine);
+    // Compared as bytes: toEqual walks a Buffer index by index as object keys, and on the 9 MB engine
+    // that ran a 2 GB heap (the macos-latest runner's) out of memory.
+    expect(emitted.emitted?.length, 'the emitted engine is the clean one, byte for byte').toBe(engine.length);
+    expect(emitted.emitted !== null && Buffer.compare(emitted.emitted, engine) === 0, 'the emitted engine is the clean one, byte for byte').toBe(true);
   }, 120_000);
 
   it.each(CI_OS)('refuses an engine holding a host prefix and accepts a clean one under $os path rules', ({ p, root, homedir, homes, bareHomes }) => {
