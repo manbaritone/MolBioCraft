@@ -64,7 +64,7 @@ If you used 1.0.0, re-check results of the kinds below: each could have been wro
 
 #### Protein & 3D
 - The sequence superposition's TM-score was an approximation, not Zhang and Skolnick's TM-score by each chain (BG-01M6PXSR), and Ramachandran regions were coarse 10-degree cells, so a residue could be put in the wrong region (BG-01M6PXQ7).
-- Structures could be misread: an mmCIF atom with a blank and a named alt id was kept twice, unnumbered waters were merged and upper-case tags missed (BG-01M6PETK), a chain whose numbering restarts was merged into fewer residues (BG-01M7QC16, BG-01M7Q1X2), and tRNA's modified guanosines and ribothymidine were not read as their parent nucleotides (BG-01M7V0ZH).
+- Structures could be misread: an mmCIF atom with a blank and a named alt id was kept twice, unnumbered waters were merged and upper-case tags missed (BG-01M6PETK), a chain whose numbering restarts was merged into fewer residues (BG-01M7QC16), and tRNA's modified guanosines and ribothymidine were not read as their parent nucleotides (BG-01M7V0ZH).
 - Digest, MS2, PTM and epitope results could come from a different protein or offset from the one the analysis names (BG-01M6SQ1W), and the digest, PTM scan, disulfide list and GOR states stopped at fixed limits without saying so (BG-01M6T6JF).
 - Coiled-coils analysed the first ORF found, not the longest (BG-01M6VZRS).
 
@@ -72,7 +72,6 @@ If you used 1.0.0, re-check results of the kinds below: each could have been wro
 - On a circular molecule, a reverse-strand site cut before base 1 gave an empty overhang (BG-01M7CDFB) and Dam or Dcm blocking ignored the bases across the origin (BG-01M7CQMJ).
 - A cut after the last base of a linear molecule was numbered 0, and two labels numbered an end cut differently from the site list (BG-01M7CDM1, BG-01M7CQV7).
 - The CpG-sensitivity tags of several enzymes whose site holds no CpG did not follow REBASE (BG-01M7DHG2, BG-01M7DMDN).
-- A custom enzyme with a palindromic site spelled with U was reported twice at each site (BG-01M7GN42).
 
 #### Vectors & Architect
 - Two pUC shuttle vectors, or a shuttle vector and pUC19, read as compatible for co-transformation (BG-01M7Q9E4).
