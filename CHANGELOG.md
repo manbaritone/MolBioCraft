@@ -50,7 +50,6 @@ If you used 1.0.0, re-check results of the kinds below: each could have been wro
 
 #### Alignment
 - Banded semi-global alignment could miss the optimal alignment (BG-01M6QKBP).
-- The dotplot could sample its windows and cap its hits without saying so, so a long dotplot could miss hits silently (BG-01M6Q35A).
 - A saved BLAST alignment could silently show only part of a hit or omit that the query was searched only up to the cap, and annotate-by-BLAST could annotate chance matches (BG-01M6Q5ZR, BG-01M6QHNT).
 - A genome rearrangement's chain could be stretched by up to 25 kb by chance anchors on skewed base composition (BG-01M6T61T).
 
@@ -63,21 +62,20 @@ If you used 1.0.0, re-check results of the kinds below: each could have been wro
 
 #### Protein & 3D
 - The sequence superposition's TM-score was an approximation, not Zhang and Skolnick's TM-score by each chain (BG-01M6PXSR), and Ramachandran regions were coarse 10-degree cells, so a residue could be put in the wrong region (BG-01M6PXQ7).
-- Structures could be misread: an mmCIF atom with a blank and a named alt id was kept twice, unnumbered waters were merged and upper-case tags missed (BG-01M6PETK), a chain whose numbering restarts was merged into fewer residues (BG-01M7QC16), and tRNA's modified guanosines and ribothymidine were not read as their parent nucleotides (BG-01M7V0ZH).
+- Structures could be misread: an mmCIF file written with upper-case tags was not read as mmCIF (BG-01M6PETK), a chain whose numbering restarts was merged into fewer residues (BG-01M7QC16), and tRNA's modified guanosines and ribothymidine were not read as their parent nucleotides (BG-01M7V0ZH).
 - Digest, MS2, PTM and epitope results could come from a different protein or offset from the one the analysis names (BG-01M6SQ1W), and the digest, PTM scan, disulfide list and GOR states stopped at fixed limits without saying so (BG-01M6T6JF).
 - Coiled-coils analysed the first ORF found, not the longest (BG-01M6VZRS).
 
 #### Cloning & Gel
 - On a circular molecule, a reverse-strand site cut before base 1 gave an empty overhang (BG-01M7CDFB) and Dam or Dcm blocking ignored the bases across the origin (BG-01M7CQMJ).
 - A cut after the last base of a linear molecule was numbered 0, and two labels numbered an end cut differently from the site list (BG-01M7CDM1, BG-01M7CQV7).
-- The CpG-sensitivity tags of several enzymes whose site holds no CpG did not follow REBASE (BG-01M7DHG2).
 
 #### Vectors & Architect
 - Two pUC shuttle vectors, or a shuttle vector and pUC19, read as compatible for co-transformation (BG-01M7Q9E4).
 
 #### Primers & CRISPR
-- A primer holding an ambiguity code was given a hairpin, dimer and Tm it cannot have, and primers could be designed from ambiguity codes (BG-01M6TB1R).
-- A guide or primer across a circular record's origin opened an empty, inverted selection and exported as an unreadable location (BG-01M6VZSJ).
+- A primer holding an ambiguity code was given a hairpin and dimer it cannot have, and primers could be designed from ambiguity codes (BG-01M6TB1R).
+- A guide or primer across a circular record's origin was exported as an invalid start-past-end range, such as 4980..12, rather than a join across the origin (BG-01M6VZSJ).
 
 #### Files and sessions
 - A GenBank feature with a complement around parts already complemented was imported on the plus strand with no warning (BG-01M6T954).
