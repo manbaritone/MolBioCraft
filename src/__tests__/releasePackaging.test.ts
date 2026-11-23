@@ -34,6 +34,7 @@ interface NodeFs {
   readFileSync: (p: string) => Uint8Array;
   readdirSync: (p: string) => string[];
   existsSync: (p: string) => boolean;
+  realpathSync: (p: string) => string;
   rmSync: (p: string, o: { recursive: boolean; force: boolean }) => void;
   chmodSync: (p: string, mode: number) => void;
 }
