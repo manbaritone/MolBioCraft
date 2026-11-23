@@ -33,6 +33,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 - **Linux file dialogs need no desktop portal**: on Linux, File › Open, Import Folder and Save (and every other open or save dialog) show GTK's file chooser through rfd's `gtk3` backend, so they need neither `xdg-desktop-portal` nor `zenity` (D0212). Before, they went through the desktop portal and fell back to `zenity`, so on a desktop with neither installed no dialog appeared and the command acted as if it had been cancelled. (US-01M6P2BS)
 
+If you used 1.0.0, re-check results of the kinds below: each could have been wrong there.
+
+#### Sanger & Contig
+- A contig across a tandem repeat could be one or more repeat units too short or too long, with no warning; reads that cannot be placed there are now left out and named (BG-01M7ZQAE).
+- A contig across a dinucleotide repeat could join silently with repeat copies lost when a read lay one unit off; such a read is now left out and named (BG-01M6VZNP), and one whose overlap ends on flank bases it shares with the draft past a long repeat is placed, not left out (BG-01M7X4HQ).
+
+#### Pipelines & NGS
+- The VCF gave a multi-base deletion as one allele per deleted base, not one allele at its anchor (BG-01M6QHGC).
+- SNP calls beside a novel flank could be lost because related bases were soft-clipped as unrelated, and two real deletions beside an N run could be merged; homologous sequence at 20-35% divergence keeps its calls under the new clipping (BG-01M6W0BZ, BG-01M7VJPG).
+- Beside an N run, a deletion or insertion could be called at the wrong length or merged with the run's spare N, a near-tie reading could be called with confidence, and a true SNP could be dropped with no warning (BG-01M6W02V, BG-01M7V8C1, BG-01M7V8FQ).
+- Above the 100 kb cap, a reference N run of the wrong size could give thousands of false variants (BG-01M6VMNF).
+- A sample with a long insertion near either end could be miscalled into hundreds of variants (BG-01M6T6X7).
+- The Predicted CDS total counted every overlapping ORF candidate on six frames as a gene (BG-01M6SK22).
+- A degenerate (IUPAC) motif could find different sites on short and long records (BG-01M6SKTM).
+- The inverted-repeat scan never paired A with U, so an RNA hairpin's stem was missed (BG-01M6SQYJ).
+
+#### Alignment
+- Banded semi-global alignment could miss the optimal alignment (BG-01M6QKBP).
+- The dotplot could sample its windows and cap its hits without saying so, so a long dotplot could miss hits silently (BG-01M6Q35A).
+- A saved BLAST alignment could silently show only part of a hit or omit that the query was searched only up to the cap, and annotate-by-BLAST could annotate chance matches (BG-01M6Q5ZR, BG-01M6QHNT).
+- A genome rearrangement's chain could be stretched by up to 25 kb by chance anchors on skewed base composition (BG-01M6T61T).
+
+#### Phylogenetics
+- A protein distance labelled Poisson correction was the p-distance, and protein distance and diversity reports named a nucleotide model they had not used (BG-01M7MM62, BG-01M7MQP8, BG-01M7MTRS, BG-01M7MW9R, BG-01M7MW0Z).
+- Under parsimony the ancestral reconstruction report called the share of unambiguous sites a "Mean confidence" (BG-01M6S3X1).
+- Exporting the site-rate, ancestral-site and codon-selection tables wrote only the 10,000 rows drawn, with no note of the cut (BG-01M6T6XF).
+- A NEXUS file holding a character matrix and trees opened only its tree, dropped support values held in tree comments, and did not say it held more trees (BG-01M6VZT1).
+- A Newick label with a doubled quote, such as 'O''Brien', or square brackets inside quotes was misread (BG-01M6WFMR).
+
+#### Protein & 3D
+- The sequence superposition's TM-score was an approximation, not Zhang and Skolnick's TM-score by each chain (BG-01M6PXSR), and Ramachandran regions were coarse 10-degree cells, so a residue could be put in the wrong region (BG-01M6PXQ7).
+- Structures could be misread: an mmCIF atom with a blank and a named alt id was kept twice, unnumbered waters were merged and upper-case tags missed (BG-01M6PETK), a chain whose numbering restarts was merged into fewer residues (BG-01M7QC16, BG-01M7Q1X2), and tRNA's modified guanosines and ribothymidine were not read as their parent nucleotides (BG-01M7V0ZH).
+- Digest, MS2, PTM and epitope results could come from a different protein or offset from the one the analysis names (BG-01M6SQ1W), and the digest, PTM scan, disulfide list and GOR states stopped at fixed limits without saying so (BG-01M6T6JF).
+- Coiled-coils analysed the first ORF found, not the longest (BG-01M6VZRS).
+
+#### Cloning & Gel
+- On a circular molecule, a reverse-strand site cut before base 1 gave an empty overhang (BG-01M7CDFB) and Dam or Dcm blocking ignored the bases across the origin (BG-01M7CQMJ).
+- A cut after the last base of a linear molecule was numbered 0, and two labels numbered an end cut differently from the site list (BG-01M7CDM1, BG-01M7CQV7).
+- The CpG-sensitivity tags of several enzymes whose site holds no CpG did not follow REBASE (BG-01M7DHG2, BG-01M7DMDN).
+- A custom enzyme with a palindromic site spelled with U was reported twice at each site (BG-01M7GN42).
+
+#### Vectors & Architect
+- Two pUC shuttle vectors, or a shuttle vector and pUC19, read as compatible for co-transformation (BG-01M7Q9E4).
+
+#### Primers & CRISPR
+- A primer holding an ambiguity code was given a hairpin, dimer and Tm it cannot have, and primers could be designed from ambiguity codes (BG-01M6TB1R).
+- A guide or primer across a circular record's origin opened an empty, inverted selection and exported as an unreadable location (BG-01M6VZSJ).
+
+#### Files and sessions
+- A GenBank feature with a complement around parts already complemented was imported on the plus strand with no warning (BG-01M6T954).
+- EMBL export dropped every primer of the document (BG-01M7Q9BP).
+- A whole ZIP64 archive was refused as cut short (BG-01M7VGHZ).
+- A document with no recorded created or modified date was stamped with the restore time when its session was reopened (BG-01M7N2HE).
+- The document table's Residues filter missed matches across a plasmid's origin, on an RNA's reverse strand and by IUPAC codes (BG-01M7DXRN).
+
+#### Tools
+- The DNA calculator gave a composition-blind dsDNA mass to 0.01 kDa; it now weighs the record's composition as Biopython 1.88 does (BG-01M6SCYG).
+
+### Known issues
+These open defects can still give a wrong or incomplete result in 1.1.0:
+- Sanger & Contig: at a minisatellite of a 33-36 bp unit, a contig can come out about one unit short with no warning (BG-01M8309K).
+- Sanger & Contig: a read with no quality values, or fewer values than base calls, is reported as trimmed to 0 bp and too short to use, though no trim ran (BG-01M6RVAK).
+- Pipelines & NGS: on the one-piece path, true SNPs beside an N run standing for more bases than it holds can be missed (BG-01M7VD82).
+- Pipelines & NGS: a 10-64 bp block substitution is called as indels, with false calls (BG-01M7VDRF).
+- Several studios: a true SNP 0-3 bases before a sample run of 12-100 N standing for 10 can be dropped with no warning, an AMRFinderPlus GFF from a record with duplicate feature ids writes the first CDS twice and drops the second, and an unclassified origin reads as compatible with any named origin group (BG-01M7ZQ57).
+- Alignment: a blastx or tblastn hit in the query-centric BLAST document is placed one nucleotide per amino acid, and a short blastx hit kept whole can be called truncated (BG-01M7VD1M).
+- Phylogenetics: the engine's own tree readers still end a quoted Newick label at its first quote and keep bracketed comments, so the same file can open with different leaf names (BG-01M7VDV1).
+- Primers & CRISPR: the CRISPR workflow macro reports its 25-guide list cap as the candidate total and scans a circular record as linear (BG-01M6VZPZ).
+- Primers & CRISPR: a primer added from the Primer Database for an RNA or modified oligo shows a delta-G of 0 kcal/mol outside the binding dialog (BG-01M7DZX1).
+- Cloning & Gel: the guided pipeline's ligation recipe weighs DNA by its length alone, not its composition (BG-01M7WD22).
+- Cloning & Gel: some CpG methylation rulings contradict REBASE's records, among them HpaI, BstZ17I-HF, NheI and BsmFI (BG-01M7ZQ4A).
+- Protein & 3D: the codon optimiser and History's CDS fold region read a joined CDS across its introns (BG-01M7WD70).
+- Protein & 3D: alternate conformers are chosen atom by atom, so one residue can mix conformers in the 3D and Ramachandran geometry, and upper-case mmCIF may not be recognised as mmCIF (BG-01M7WDE7).
+- Flatfile: exporting a feature the importer flagged as a double complement or mixed strands writes a clean plus-strand location and drops the warning (BG-01M7WHQY).
+
 ## [1.0.0] - 2026-11-09
 
 ### Added

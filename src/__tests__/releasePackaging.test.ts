@@ -1383,3 +1383,122 @@ it('BG-01M7V0FN: the release checklist and its record template hold every item o
   expect(templateText, 'the template gives the three results').toMatch(/\*\*pass\*\*, \*\*fail\*\* or \*\*not run\*\*/);
   expect(templateText, 'a not run names its reason').toMatch(/not run[^\n]*Reason|Reason[^\n]*not run/);
 });
+
+// BG-01M8307C: the 1.1.0 notes, which release_notes.mjs hands the GitHub Release, tell a 1.0.0 user
+// which earlier results to re-check and which wrong results 1.1.0 still gives. The bug files are not
+// in git, so the two id lists live here: each fixed id with the commit in v1.0.0..HEAD that fixes it,
+// checked against the history wherever the clone has the v1.0.0 tag (CI's checkout is shallow).
+const FIXED_IN_1_1_0: Record<string, string> = {
+  'BG-01M7ZQAE': 'b16b065', 'BG-01M6VZNP': '02cea89', 'BG-01M7X4HQ': 'c76351c',
+  'BG-01M6QHGC': 'a48b632', 'BG-01M7VJPG': '47b25b0', 'BG-01M6W0BZ': 'ffc4d16', 'BG-01M6W02V': '850d750',
+  'BG-01M7V8C1': '5c7f55a', 'BG-01M7V8FQ': 'ddbea46', 'BG-01M6VMNF': 'e99e76f', 'BG-01M6T6X7': '69f1885',
+  'BG-01M6SK22': 'c45b756', 'BG-01M6SKTM': '7d15b71', 'BG-01M6SQYJ': '69d9abc',
+  'BG-01M6QKBP': '551a20f', 'BG-01M6Q35A': '5a6d8ab', 'BG-01M6Q5ZR': '9c287f2', 'BG-01M6QHNT': '23d5ac8',
+  'BG-01M6T61T': 'b1db7de',
+  'BG-01M7MM62': '496510d', 'BG-01M7MQP8': 'd08e583', 'BG-01M7MTRS': '99fe2dc', 'BG-01M7MW9R': '9141403',
+  'BG-01M7MW0Z': 'c1786f2', 'BG-01M6S3X1': '1086a7c', 'BG-01M6T6XF': 'deeceb6', 'BG-01M6VZT1': '6b454b2',
+  'BG-01M6WFMR': 'e9f4f72',
+  'BG-01M6PXSR': 'aab3f48', 'BG-01M6PXQ7': 'cfac59d', 'BG-01M6PETK': 'b95c2a0', 'BG-01M7QC16': '9e8e576',
+  'BG-01M7Q1X2': '6908e8c', 'BG-01M7V0ZH': 'f1fdb67', 'BG-01M6SQ1W': 'a462bd1', 'BG-01M6T6JF': '5ff7af3',
+  'BG-01M6VZRS': '9ff83a0',
+  'BG-01M7CDFB': 'fbb3114', 'BG-01M7CDM1': 'b07f82d', 'BG-01M7CQV7': 'c3a4ea0', 'BG-01M7CQMJ': '4d58037',
+  'BG-01M7DHG2': '77728aa', 'BG-01M7DMDN': 'c340826', 'BG-01M7GN42': '3312f86',
+  'BG-01M7Q9E4': '1f15d47', 'BG-01M6TB1R': 'd29ef4a', 'BG-01M6VZSJ': '0c3fa57',
+  'BG-01M6T954': '5569602', 'BG-01M7Q9BP': '899bf80', 'BG-01M7VGHZ': '7af4329', 'BG-01M7N2HE': '8cbb0d0',
+  'BG-01M7DXRN': '6249c93', 'BG-01M6SCYG': '5592adc',
+};
+/** The open High and Medium correctness bugs a 1.1.0 user can meet. */
+const KNOWN_IN_1_1_0 = [
+  'BG-01M8309K', 'BG-01M6RVAK', 'BG-01M7VD82', 'BG-01M7VDRF', 'BG-01M7ZQ57', 'BG-01M7VD1M', 'BG-01M7VDV1',
+  'BG-01M6VZPZ', 'BG-01M7DZX1', 'BG-01M7WD22', 'BG-01M7WD70', 'BG-01M7WDE7', 'BG-01M7WHQY', 'BG-01M7ZQ4A',
+];
+/** A Fixed group is a studio, or one of the two places outside a studio. */
+const FIX_GROUPS = [
+  'Sequence Map', 'Annotations', 'Flatfile', 'Cloning & Gel', 'Vectors & Architect', 'Primers & CRISPR', 'Alignment',
+  'Phylogenetics', 'Sanger & Contig', 'Protein & 3D', 'Pipelines & NGS', 'Files and sessions', 'Tools',
+];
+const BUG_ID = /BG-01M[0-9A-Z]{5}/g;
+
+/** The `### <heading>` part of CHANGELOG [1.1.0] (up to the next `### `), as lines. */
+const notes110Part = (heading: string): string[] => {
+  const changelog = text(repo('CHANGELOG.md')).replace(/\r/g, '');
+  const start = changelog.indexOf('\n## [1.1.0] - 2026-11-22\n');
+  expect(start, 'CHANGELOG.md has a [1.1.0] - 2026-11-22 section').toBeGreaterThan(0);
+  const next = changelog.indexOf('\n## [', start + 1);
+  const lines = changelog.slice(start, next < 0 ? undefined : next).split('\n');
+  const at = lines.filter((l) => l === heading).length;
+  expect(at, `[1.1.0] has one "${heading}" heading`).toBe(1);
+  const from = lines.indexOf(heading);
+  const to = lines.findIndex((l, i) => i > from && l.startsWith('### '));
+  return lines.slice(from + 1, to < 0 ? undefined : to);
+};
+/** The bullet's words once its ids and their brackets are taken out. */
+const wordsBeside = (bullet: string): string => bullet.replace(BUG_ID, '').replace(/[-()\s,;]+/g, ' ').trim();
+const releaseNotes110 = (): SpawnResult => cp.spawnSync('node', [repo('scripts/release_notes.mjs'), '1.1.0'], { encoding: 'utf8' });
+/** git in this checkout, whatever MBC_RELEASE_CHECK_REPO points the files at. */
+const CHECKOUT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..', '..');
+const git = (...args: string[]): SpawnResult => cp.spawnSync('git', args, { cwd: CHECKOUT, encoding: 'utf8' });
+
+it('releasePackaging the 1.1.0 notes name the correctness fixes a 1.0.0 user should re-check', () => {
+  const fixed = notes110Part('### Fixed');
+  const groups: string[] = [];
+  const named: Record<string, string> = {};
+  for (const l of fixed) {
+    if (l.startsWith('#### ')) groups.push(l.slice(5).trim());
+    if (!l.startsWith('- ') || groups.length === 0) continue;
+    const ids = l.match(BUG_ID) ?? [];
+    expect(ids.length, `"${l.slice(0, 70)}" names its bug id`).toBeGreaterThan(0);
+    expect(wordsBeside(l).length, `"${l.slice(0, 70)}" says what an earlier result got wrong`).toBeGreaterThan(40);
+    for (const id of ids) {
+      expect(named[id], `${id} is named once`).toBeUndefined();
+      named[id] = groups[groups.length - 1];
+    }
+  }
+  expect(groups.length, 'the fixes are grouped under #### studio headings').toBeGreaterThanOrEqual(5);
+  expect(groups.filter((g) => !FIX_GROUPS.includes(g)), 'groups that are not a studio').toEqual([]);
+  expect(new Set(groups).size, 'each studio is one group').toBe(groups.length);
+  expect(Object.keys(named).sort(), 'the fixed ids are the ones fixed in v1.0.0..HEAD').toEqual(Object.keys(FIXED_IN_1_1_0).sort());
+  for (const id of ['BG-01M7ZQAE', 'BG-01M6VZNP', 'BG-01M7X4HQ']) expect(named[id], `${id}'s group`).toBe('Sanger & Contig');
+  for (const id of ['BG-01M6QHGC', 'BG-01M7VJPG', 'BG-01M6W0BZ', 'BG-01M6W02V']) expect(named[id], `${id}'s group`).toBe('Pipelines & NGS');
+
+  // Each id's fix is a commit after v1.0.0 whose subject names it. A shallow clone (CI) has no v1.0.0
+  // to measure from, and says so; a full clone without the tag is an error, not a pass.
+  if (git('rev-parse', '-q', '--verify', 'v1.0.0^{commit}').status === 0) {
+    const range = new Set(git('rev-list', 'v1.0.0..HEAD').stdout.split('\n').filter(Boolean));
+    expect(range.size, 'commits in v1.0.0..HEAD').toBeGreaterThan(0);
+    for (const [id, sha] of Object.entries(FIXED_IN_1_1_0)) {
+      const full = git('rev-parse', '-q', '--verify', `${sha}^{commit}`).stdout.trim();
+      expect(range.has(full), `${id}'s fix ${sha} is in v1.0.0..HEAD`).toBe(true);
+      expect(git('log', '-1', '--format=%s', full).stdout, `${sha}'s subject names ${id}`).toMatch(new RegExp(`\\bBG-?${id.slice(3)}\\b`));
+    }
+  } else {
+    expect(git('rev-parse', '--is-shallow-repository').stdout.trim(), 'no v1.0.0 tag: only a shallow clone may skip the history check').toBe('true');
+  }
+
+  const out = releaseNotes110();
+  expect(out.status, out.stderr).toBe(0);
+  for (const id of Object.keys(FIXED_IN_1_1_0)) expect(out.stdout, `the release notes name ${id}`).toContain(id);
+});
+
+it('releasePackaging the 1.1.0 notes list the known issues', () => {
+  const known = notes110Part('### Known issues');
+  const bullets = known.filter((l) => l.startsWith('- '));
+  const named: string[] = [];
+  for (const l of bullets) {
+    const ids = l.match(BUG_ID) ?? [];
+    expect(ids.length, `"${l.slice(0, 70)}" names its bug id`).toBeGreaterThan(0);
+    expect(wordsBeside(l).length, `"${l.slice(0, 70)}" names its symptom`).toBeGreaterThan(40);
+    named.push(...ids);
+  }
+  expect([...named].sort(), 'the known issues are the open High and Medium correctness bugs').toEqual([...KNOWN_IN_1_1_0].sort());
+  expect(KNOWN_IN_1_1_0.filter((id) => id in FIXED_IN_1_1_0), 'ids listed as both fixed and open').toEqual([]);
+  const minisatellite = bullets.find((l) => l.includes('BG-01M8309K')) ?? '';
+  expect(minisatellite, 'the 33-36 bp minisatellite contig').toMatch(/33-36 bp/);
+  expect(minisatellite, 'it comes out a unit short').toMatch(/unit short/);
+  expect(minisatellite, 'with no note').toMatch(/no (warning|note)/);
+
+  const out = releaseNotes110();
+  expect(out.status, out.stderr).toBe(0);
+  expect(out.stdout, 'the release notes carry the heading').toMatch(/^### Known issues$/m);
+  for (const id of KNOWN_IN_1_1_0) expect(out.stdout, `the release notes name ${id}`).toContain(id);
+});
