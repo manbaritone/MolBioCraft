@@ -16,4 +16,18 @@
 # MolBioCraft, or what it waits on" }, with an expiry = "YYYY-MM-DD" where a fix is due. An entry is
 # added only for an advisory a nightly run has reported, never in advance; a bare id string, with
 # no reason, is not accepted here.
-ignore = []
+# Accepted 2026-11-23 (BG01M830XP) from nightly run 45017518527, which reported each of these as an
+# unmaintained advisory with "No safe upgrade is available!". None is a vulnerability: a vulnerability
+# advisory is fixed by an update, never listed here. Each expires on 2027-05-23, when the nightly
+# reports it again and it is re-ruled.
+ignore = [
+    # Both lockfiles.
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 (unmaintained, archived, no fixed release) comes through simba 0.9.1 -> nalgebra 0.33.3 -> molbiocraft-protein and statrs 0.18.0 -> bio 2.3.0; nalgebra 0.35 (simba 0.10) drops paste, but bio, to its latest 4.2.2, caps statrs below 0.19, which keeps nalgebra 0.33 and simba 0.9 in the tree, so it waits on bio", expiry = "2027-05-23" },
+    { id = "RUSTSEC-2025-0057", reason = "fxhash 0.2.1 (unmaintained, no fixed release) comes through bio 2.3.0 -> molbiocraft-core, -align, -formats, -phylo, -protein, -cloning; bio, to its latest 4.2.2, still depends on fxhash ^0.2, so it waits on bio moving to rustc-hash", expiry = "2027-05-23" },
+    { id = "RUSTSEC-2025-0058", reason = "custom_derive 0.1.7 (unmaintained, no fixed release) comes through bio 2.3.0 -> molbiocraft-core, -align, -formats, -phylo, -protein, -cloning; bio, to its latest 4.2.2, still depends on custom_derive ^0.1, so it waits on bio", expiry = "2027-05-23" },
+    # src-tauri/Cargo.lock only, on the Linux target.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 (unmaintained, no fixed release) comes through glib-macros 0.18.5 -> glib 0.18.5 -> atk/gtk 0.18.2 -> muda 0.20.0 -> tauri 2.12.5, the GTK3 stack Tauri uses on Linux; it is a build-time proc macro, and tauri 2.12.5 requires gtk ^0.18, whose glib-macros 0.18 requires proc-macro-error ^1.0, so it waits on Tauri", expiry = "2027-05-23" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant 5.15.1 (unmaintained, merged into zbus 6, no fixed release) comes through zbus 5.19.0 -> tauri-plugin-single-instance 2.5.5 on Linux; the plugin, at its latest 2.5.5, requires zbus ^5.9, so it waits on the plugin moving to zbus 6", expiry = "2027-05-23" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names 4.3.5 (unmaintained, merged into zbus 6, no fixed release) comes through zbus 5.19.0 and zbus_macros 5.19.0 -> tauri-plugin-single-instance 2.5.5 on Linux; the plugin, at its latest 2.5.5, requires zbus ^5.9, so it waits on the plugin moving to zbus 6", expiry = "2027-05-23" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5.15.1 (unmaintained, merged into zbus 6, no fixed release) comes through zvariant 5.15.1 -> zbus 5.19.0 -> tauri-plugin-single-instance 2.5.5 on Linux; the plugin, at its latest 2.5.5, requires zbus ^5.9, so it waits on the plugin moving to zbus 6", expiry = "2027-05-23" },
+]
