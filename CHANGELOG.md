@@ -37,13 +37,12 @@ If you used 1.0.0, re-check results of the kinds below: each could have been wro
 
 #### Sanger & Contig
 - A contig across a tandem repeat could be one or more repeat units too short or too long, with no warning; reads that cannot be placed there are now left out and named (BG-01M7ZQAE).
-- A contig across a dinucleotide repeat could join silently with repeat copies lost when a read lay one unit off; such a read is now left out and named (BG-01M6VZNP), and one whose overlap ends on flank bases it shares with the draft past a long repeat is placed, not left out (BG-01M7X4HQ).
+- A contig across a dinucleotide repeat could join silently with repeat copies lost when a read lay one unit off; such a read is now left out and named (BG-01M6VZNP).
 
 #### Pipelines & NGS
 - The VCF gave a multi-base deletion as one allele per deleted base, not one allele at its anchor (BG-01M6QHGC).
-- SNP calls beside a novel flank could be lost because related bases were soft-clipped as unrelated, and two real deletions beside an N run could be merged; homologous sequence at 20-35% divergence keeps its calls under the new clipping (BG-01M6W0BZ, BG-01M7VJPG).
-- Beside an N run, a deletion or insertion could be called at the wrong length or merged with the run's spare N, a near-tie reading could be called with confidence, and a true SNP could be dropped with no warning (BG-01M6W02V, BG-01M7V8C1, BG-01M7V8FQ).
-- Above the 100 kb cap, a reference N run of the wrong size could give thousands of false variants (BG-01M6VMNF).
+- Unrelated bases at a sample end, or a replaced stretch, were aligned base by base and called as hundreds of false variants, and two real deletions either side of an N run could be named as one; such bases are now soft-clipped with a warning naming them (BG-01M6W0BZ).
+- Beside an N run, a deletion or insertion could be missed, called at the wrong length or merged with the run's spare N, and a near-tie reading could be called with confidence, with a false SNP inside the span it left out (BG-01M6W02V, BG-01M7V8C1, BG-01M7V8FQ).
 - A sample with a long insertion near either end could be miscalled into hundreds of variants (BG-01M6T6X7).
 - The Predicted CDS total counted every overlapping ORF candidate on six frames as a gene (BG-01M6SK22).
 - A degenerate (IUPAC) motif could find different sites on short and long records (BG-01M6SKTM).
@@ -56,7 +55,7 @@ If you used 1.0.0, re-check results of the kinds below: each could have been wro
 - A genome rearrangement's chain could be stretched by up to 25 kb by chance anchors on skewed base composition (BG-01M6T61T).
 
 #### Phylogenetics
-- A protein distance labelled Poisson correction was the p-distance, and protein distance and diversity reports named a nucleotide model they had not used (BG-01M7MM62, BG-01M7MQP8, BG-01M7MTRS, BG-01M7MW9R, BG-01M7MW0Z).
+- A protein distance labelled Poisson correction was the p-distance, and protein distance and diversity reports named a nucleotide model they had not used (BG-01M7MM62, BG-01M7MQP8, BG-01M7MTRS, BG-01M7MW9R).
 - Under parsimony the ancestral reconstruction report called the share of unambiguous sites a "Mean confidence" (BG-01M6S3X1).
 - Exporting the site-rate, ancestral-site and codon-selection tables wrote only the 10,000 rows drawn, with no note of the cut (BG-01M6T6XF).
 - A NEXUS file holding a character matrix and trees opened only its tree, dropped support values held in tree comments, and did not say it held more trees (BG-01M6VZT1).
@@ -71,7 +70,7 @@ If you used 1.0.0, re-check results of the kinds below: each could have been wro
 #### Cloning & Gel
 - On a circular molecule, a reverse-strand site cut before base 1 gave an empty overhang (BG-01M7CDFB) and Dam or Dcm blocking ignored the bases across the origin (BG-01M7CQMJ).
 - A cut after the last base of a linear molecule was numbered 0, and two labels numbered an end cut differently from the site list (BG-01M7CDM1, BG-01M7CQV7).
-- The CpG-sensitivity tags of several enzymes whose site holds no CpG did not follow REBASE (BG-01M7DHG2, BG-01M7DMDN).
+- The CpG-sensitivity tags of several enzymes whose site holds no CpG did not follow REBASE (BG-01M7DHG2).
 
 #### Vectors & Architect
 - Two pUC shuttle vectors, or a shuttle vector and pUC19, read as compatible for co-transformation (BG-01M7Q9E4).
@@ -83,7 +82,7 @@ If you used 1.0.0, re-check results of the kinds below: each could have been wro
 #### Files and sessions
 - A GenBank feature with a complement around parts already complemented was imported on the plus strand with no warning (BG-01M6T954).
 - EMBL export dropped every primer of the document (BG-01M7Q9BP).
-- A whole ZIP64 archive was refused as cut short (BG-01M7VGHZ).
+- A ZIP64 archive could open with entries missing, or be refused as holding no sequence documents when its first entry was ZIP64 (BG-01M7VGHZ).
 - A document with no recorded created or modified date was stamped with the restore time when its session was reopened (BG-01M7N2HE).
 - The document table's Residues filter missed matches across a plasmid's origin, on an RNA's reverse strand and by IUPAC codes (BG-01M7DXRN).
 

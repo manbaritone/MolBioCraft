@@ -1388,21 +1388,23 @@ it('BG-01M7V0FN: the release checklist and its record template hold every item o
 // which earlier results to re-check and which wrong results 1.1.0 still gives. The bug files are not
 // in git, so the two id lists live here: each fixed id with the commit in v1.0.0..HEAD that fixes it,
 // checked against the history wherever the clone has the v1.0.0 tag (CI's checkout is shallow).
+// An id is listed only when its defect could be met in 1.0.0: a fix for a fault that arose after the
+// tag (such as a regression of an earlier 1.1.0 fix) changes no result a 1.0.0 user had.
 const FIXED_IN_1_1_0: Record<string, string> = {
-  'BG-01M7ZQAE': 'b16b065', 'BG-01M6VZNP': '02cea89', 'BG-01M7X4HQ': 'c76351c',
-  'BG-01M6QHGC': 'a48b632', 'BG-01M7VJPG': '47b25b0', 'BG-01M6W0BZ': 'ffc4d16', 'BG-01M6W02V': '850d750',
-  'BG-01M7V8C1': '5c7f55a', 'BG-01M7V8FQ': 'ddbea46', 'BG-01M6VMNF': 'e99e76f', 'BG-01M6T6X7': '69f1885',
+  'BG-01M7ZQAE': 'b16b065', 'BG-01M6VZNP': '02cea89',
+  'BG-01M6QHGC': 'a48b632', 'BG-01M6W0BZ': 'ffc4d16', 'BG-01M6W02V': '850d750',
+  'BG-01M7V8C1': '5c7f55a', 'BG-01M7V8FQ': 'ddbea46', 'BG-01M6T6X7': '69f1885',
   'BG-01M6SK22': 'c45b756', 'BG-01M6SKTM': '7d15b71', 'BG-01M6SQYJ': '69d9abc',
   'BG-01M6QKBP': '551a20f', 'BG-01M6Q35A': '5a6d8ab', 'BG-01M6Q5ZR': '9c287f2', 'BG-01M6QHNT': '23d5ac8',
   'BG-01M6T61T': 'b1db7de',
   'BG-01M7MM62': '496510d', 'BG-01M7MQP8': 'd08e583', 'BG-01M7MTRS': '99fe2dc', 'BG-01M7MW9R': '9141403',
-  'BG-01M7MW0Z': 'c1786f2', 'BG-01M6S3X1': '1086a7c', 'BG-01M6T6XF': 'deeceb6', 'BG-01M6VZT1': '6b454b2',
+  'BG-01M6S3X1': '1086a7c', 'BG-01M6T6XF': 'deeceb6', 'BG-01M6VZT1': '6b454b2',
   'BG-01M6WFMR': 'e9f4f72',
   'BG-01M6PXSR': 'aab3f48', 'BG-01M6PXQ7': 'cfac59d', 'BG-01M6PETK': 'b95c2a0', 'BG-01M7QC16': '9e8e576',
   'BG-01M7V0ZH': 'f1fdb67', 'BG-01M6SQ1W': 'a462bd1', 'BG-01M6T6JF': '5ff7af3',
   'BG-01M6VZRS': '9ff83a0',
   'BG-01M7CDFB': 'fbb3114', 'BG-01M7CDM1': 'b07f82d', 'BG-01M7CQV7': 'c3a4ea0', 'BG-01M7CQMJ': '4d58037',
-  'BG-01M7DHG2': '77728aa', 'BG-01M7DMDN': 'c340826',
+  'BG-01M7DHG2': '77728aa',
   'BG-01M7Q9E4': '1f15d47', 'BG-01M6TB1R': 'd29ef4a', 'BG-01M6VZSJ': '0c3fa57',
   'BG-01M6T954': '5569602', 'BG-01M7Q9BP': '899bf80', 'BG-01M7VGHZ': '7af4329', 'BG-01M7N2HE': '8cbb0d0',
   'BG-01M7DXRN': '6249c93', 'BG-01M6SCYG': '5592adc',
@@ -1418,6 +1420,8 @@ const FIX_GROUPS = [
   'Phylogenetics', 'Sanger & Contig', 'Protein & 3D', 'Pipelines & NGS', 'Files and sessions', 'Tools',
 ];
 const BUG_ID = /BG-01M[0-9A-Z]{5}/g;
+/** A bug id in either form, the files' BG-01M... or the commit subjects' BG01M.... */
+const ANY_BUG_ID = /\bBG-?01M[0-9A-Z]{5}\b/g;
 
 /** The `### <heading>` part of CHANGELOG [1.1.0] (up to the next `### `), as lines. */
 const notes110Part = (heading: string): string[] => {
@@ -1448,11 +1452,12 @@ it('releasePackaging the 1.1.0 notes name the correctness fixes a 1.0.0 user sho
     if (!l.startsWith('- ')) continue;
     if (groups.length === 0) {
       // The entries above the studio groups are the release's features; a fix named there would escape the checks below.
-      expect(l.match(BUG_ID) ?? [], `"${l.slice(0, 70)}" names a bug fix outside the #### studio groups`).toEqual([]);
+      expect(l.match(ANY_BUG_ID) ?? [], `"${l.slice(0, 70)}" names a bug fix outside the #### studio groups`).toEqual([]);
       continue;
     }
     const ids = l.match(BUG_ID) ?? [];
     expect(ids.length, `"${l.slice(0, 70)}" names its bug id`).toBeGreaterThan(0);
+    expect((l.match(ANY_BUG_ID) ?? []).filter((id) => !id.startsWith('BG-')), `"${l.slice(0, 70)}" writes each id as BG-01M...`).toEqual([]);
     expect(wordsBeside(l).length, `"${l.slice(0, 70)}" says what an earlier result got wrong`).toBeGreaterThan(40);
     for (const id of ids) {
       expect(named[id], `${id} is named once`).toBeUndefined();
@@ -1463,22 +1468,33 @@ it('releasePackaging the 1.1.0 notes name the correctness fixes a 1.0.0 user sho
   expect(groups.filter((g) => !FIX_GROUPS.includes(g)), 'groups that are not a studio').toEqual([]);
   expect(new Set(groups).size, 'each studio is one group').toBe(groups.length);
   expect(Object.keys(named).sort(), 'the fixed ids are the ones fixed in v1.0.0..HEAD').toEqual(Object.keys(FIXED_IN_1_1_0).sort());
-  for (const id of ['BG-01M7ZQAE', 'BG-01M6VZNP', 'BG-01M7X4HQ']) expect(named[id], `${id}'s group`).toBe('Sanger & Contig');
-  for (const id of ['BG-01M6QHGC', 'BG-01M7VJPG', 'BG-01M6W0BZ', 'BG-01M6W02V']) expect(named[id], `${id}'s group`).toBe('Pipelines & NGS');
+  for (const id of ['BG-01M7ZQAE', 'BG-01M6VZNP']) expect(named[id], `${id}'s group`).toBe('Sanger & Contig');
+  for (const id of ['BG-01M6QHGC', 'BG-01M6W0BZ', 'BG-01M6W02V']) expect(named[id], `${id}'s group`).toBe('Pipelines & NGS');
 
-  // Each id's fix is a commit after v1.0.0 whose subject names it. A shallow clone (CI) has no v1.0.0
-  // to measure from, and says so; a full clone without the tag is an error, not a pass.
-  if (git('rev-parse', '-q', '--verify', 'v1.0.0^{commit}').status === 0) {
-    const range = new Set(git('rev-list', 'v1.0.0..HEAD').stdout.split('\n').filter(Boolean));
-    expect(range.size, 'commits in v1.0.0..HEAD').toBeGreaterThan(0);
-    for (const [id, sha] of Object.entries(FIXED_IN_1_1_0)) {
-      const full = git('rev-parse', '-q', '--verify', `${sha}^{commit}`).stdout.trim();
-      expect(range.has(full), `${id}'s fix ${sha} is in v1.0.0..HEAD`).toBe(true);
-      expect(git('log', '-1', '--format=%s', full).stdout, `${sha}'s subject names ${id}`).toMatch(new RegExp(`\\bBG-?${id.slice(3)}\\b`));
+  // Each id's fix is a commit after v1.0.0 whose subject names it. Only a tree with no .git of its own
+  // (a source archive, even one unpacked inside another repository) skips this, and says so. Where
+  // this tree has a .git, git must read it: a git that fails, or answers for another repository, is
+  // an error. A shallow clone (CI) has no v1.0.0 to measure from, and says so; a full clone without
+  // the tag is an error, not a pass.
+  if (!fs.existsSync(path.join(CHECKOUT, '.git'))) {
+    console.warn(`releasePackaging: ${CHECKOUT} has no .git, so the 1.1.0 fixes are not checked against v1.0.0..HEAD`);
+  } else {
+    const top = git('rev-parse', '--show-toplevel');
+    expect(top.status, `git cannot read ${CHECKOUT}: ${top.stderr.trim()}`).toBe(0);
+    expect(fs.realpathSync(top.stdout.trim()), 'git answers for this checkout, not another repository').toBe(fs.realpathSync(CHECKOUT));
+    if (git('rev-parse', '-q', '--verify', 'v1.0.0^{commit}').status === 0) {
+      const range = new Set(git('rev-list', 'v1.0.0..HEAD').stdout.split('\n').filter(Boolean));
+      expect(range.size, 'commits in v1.0.0..HEAD').toBeGreaterThan(0);
+      for (const [id, sha] of Object.entries(FIXED_IN_1_1_0)) {
+        const full = git('rev-parse', '-q', '--verify', `${sha}^{commit}`).stdout.trim();
+        expect(range.has(full), `${id}'s fix ${sha} is in v1.0.0..HEAD`).toBe(true);
+        expect(git('log', '-1', '--format=%s', full).stdout, `${sha}'s subject names ${id}`).toMatch(new RegExp(`\\bBG-?${id.slice(3)}\\b`));
+      }
+    } else {
+      expect(git('rev-parse', '--is-shallow-repository').stdout.trim(), 'no v1.0.0 tag: only a shallow clone may skip the history check').toBe('true');
+      console.warn('releasePackaging: a shallow clone has no v1.0.0 tag, so the 1.1.0 fixes are not checked against v1.0.0..HEAD');
     }
-  } else if (git('rev-parse', '--is-inside-work-tree').status === 0) {
-    expect(git('rev-parse', '--is-shallow-repository').stdout.trim(), 'no v1.0.0 tag: only a shallow clone may skip the history check').toBe('true');
-  } // else: not a git checkout (a source archive), so there is no history to measure from.
+  }
 
   const out = releaseNotes110();
   expect(out.status, out.stderr).toBe(0);
