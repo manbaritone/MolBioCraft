@@ -1445,7 +1445,12 @@ it('releasePackaging the 1.1.0 notes name the correctness fixes a 1.0.0 user sho
   const named: Record<string, string> = {};
   for (const l of fixed) {
     if (l.startsWith('#### ')) groups.push(l.slice(5).trim());
-    if (!l.startsWith('- ') || groups.length === 0) continue;
+    if (!l.startsWith('- ')) continue;
+    if (groups.length === 0) {
+      // The entries above the studio groups are the release's features; a fix named there would escape the checks below.
+      expect(l.match(BUG_ID) ?? [], `"${l.slice(0, 70)}" names a bug fix outside the #### studio groups`).toEqual([]);
+      continue;
+    }
     const ids = l.match(BUG_ID) ?? [];
     expect(ids.length, `"${l.slice(0, 70)}" names its bug id`).toBeGreaterThan(0);
     expect(wordsBeside(l).length, `"${l.slice(0, 70)}" says what an earlier result got wrong`).toBeGreaterThan(40);
@@ -1471,9 +1476,9 @@ it('releasePackaging the 1.1.0 notes name the correctness fixes a 1.0.0 user sho
       expect(range.has(full), `${id}'s fix ${sha} is in v1.0.0..HEAD`).toBe(true);
       expect(git('log', '-1', '--format=%s', full).stdout, `${sha}'s subject names ${id}`).toMatch(new RegExp(`\\bBG-?${id.slice(3)}\\b`));
     }
-  } else {
+  } else if (git('rev-parse', '--is-inside-work-tree').status === 0) {
     expect(git('rev-parse', '--is-shallow-repository').stdout.trim(), 'no v1.0.0 tag: only a shallow clone may skip the history check').toBe('true');
-  }
+  } // else: not a git checkout (a source archive), so there is no history to measure from.
 
   const out = releaseNotes110();
   expect(out.status, out.stderr).toBe(0);
