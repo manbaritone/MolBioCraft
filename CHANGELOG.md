@@ -33,59 +33,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 - **Linux file dialogs need no desktop portal**: on Linux, File › Open, Import Folder and Save (and every other open or save dialog) show GTK's file chooser through rfd's `gtk3` backend, so they need neither `xdg-desktop-portal` nor `zenity` (D0212). Before, they went through the desktop portal and fell back to `zenity`, so on a desktop with neither installed no dialog appeared and the command acted as if it had been cancelled. (US-01M6P2BS)
 
-If you used 1.0.0, re-check results of the kinds below: each could have been wrong there.
+If you used 1.0.0, re-check results of the kinds below. Each was shown wrong in 1.0.0 by a test that fails on 1.0.0's code and passes on 1.1.0's.
 
 #### Sanger & Contig
-- A contig across a tandem repeat could be one or more repeat units too short or too long, with no warning; reads that cannot be placed there are now left out and named (BG-01M7ZQAE).
-- A contig across a dinucleotide repeat could join silently with repeat copies lost when a read lay one unit off; such a read is now left out and named (BG-01M6VZNP).
+- A contig across a repeat of a 2-, 3- or 4-base unit, such as a (CA)150, HTT's CAG repeat or a (GATA)75, could come out 9-13 bases short, with every read used and no warning (BG-01M6VZNP, BG-01M7ZQAE).
 
 #### Pipelines & NGS
-- The VCF gave a multi-base deletion as one allele per deleted base, not one allele at its anchor (BG-01M6QHGC).
-- Unrelated bases at a sample end, or a replaced stretch, were aligned base by base and called as hundreds of false variants, and two real deletions either side of an N run could be named as one; such bases are now soft-clipped with a warning naming them (BG-01M6W0BZ).
-- Beside an N run, a deletion or insertion could be missed, called at the wrong length or merged with the run's spare N, and a near-tie reading could be called with confidence, with a false SNP inside the span it left out (BG-01M6W02V, BG-01M7V8C1, BG-01M7V8FQ).
-- A sample with a long insertion near either end could be miscalled into hundreds of variants (BG-01M6T6X7).
-- The Predicted CDS total counted every overlapping ORF candidate on six frames as a gene (BG-01M6SK22).
-- A degenerate (IUPAC) motif could find different sites on short and long records (BG-01M6SKTM).
-- The inverted-repeat scan never paired A with U, so an RNA hairpin's stem was missed (BG-01M6SQYJ).
+- Unrelated bases at a sample's end, or a replaced stretch, were called as hundreds of false variants with no warning, a sample beside a long N run could gain hundreds of false calls, and two deletions either side of a reference N run could be named as one (BG-01M6W0BZ).
+- Beside an N run, a deletion could be missed with a false one called next to it, or named at the wrong length (12 bp for a 7-bp deletion); an insertion could be named at the wrong length (10 bp for a 5-bp insertion); and where two readings scored almost the same, a variant was still called, or a false SNP inside the span a warning left out (BG-01M6W02V, BG-01M7V8C1, BG-01M7V8FQ).
+- A 2,000-bp insertion 500 bp from either end of a 6 kb sample was called as a string of small insertions and SNPs (BG-01M6T6X7).
+- Gene prediction kept every overlapping ORF candidate as a CDS: all 1,053 candidates on 200 kb of random sequence, and both a 97-aa gene and the 70-aa reverse-strand ORF inside it (BG-01M6SK22).
+- A motif search with an IUPAC code, such as HinfI's GANTC, could find none of its sites, as on a 10 kb record that holds 31 (BG-01M6SKTM).
 
 #### Alignment
-- Banded semi-global alignment could miss the optimal alignment (BG-01M6QKBP).
-- A saved BLAST alignment could silently show only part of a hit or omit that the query was searched only up to the cap, and annotate-by-BLAST could annotate chance matches (BG-01M6Q5ZR, BG-01M6QHNT).
-- A genome rearrangement's chain could be stretched by up to 25 kb by chance anchors on skewed base composition (BG-01M6T61T).
-
-#### Phylogenetics
-- A protein distance labelled Poisson correction was the p-distance, and protein distance and diversity reports named a nucleotide model they had not used (BG-01M7MM62, BG-01M7MQP8, BG-01M7MTRS, BG-01M7MW9R).
-- Under parsimony the ancestral reconstruction report called the share of unambiguous sites a "Mean confidence" (BG-01M6S3X1).
-- Exporting the site-rate, ancestral-site and codon-selection tables wrote only the 10,000 rows drawn, with no note of the cut (BG-01M6T6XF).
-- A NEXUS file holding a character matrix and trees opened only its tree, dropped support values held in tree comments, and did not say it held more trees (BG-01M6VZT1).
-- A Newick label with a doubled quote, such as 'O''Brien', or square brackets inside quotes was misread (BG-01M6WFMR).
+- On genomes of skewed base composition, a 5 kb inversion at 40,001-45,000 could be reported as spanning tens of kilobases, such as 23,536-61,440 (BG-01M6T61T).
 
 #### Protein & 3D
-- The sequence superposition's TM-score was an approximation, not Zhang and Skolnick's TM-score by each chain (BG-01M6PXSR), and Ramachandran regions were coarse 10-degree cells, so a residue could be put in the wrong region (BG-01M6PXQ7).
-- Structures could be misread: an mmCIF file written with upper-case tags was not read as mmCIF (BG-01M6PETK), a chain whose numbering restarts was merged into fewer residues (BG-01M7QC16), and tRNA's modified guanosines and ribothymidine were not read as their parent nucleotides (BG-01M7V0ZH).
-- Digest, MS2, PTM and epitope results could come from a different protein or offset from the one the analysis names (BG-01M6SQ1W), and the digest, PTM scan, disulfide list and GOR states stopped at fixed limits without saying so (BG-01M6T6JF).
-- Coiled-coils analysed the first ORF found, not the longest (BG-01M6VZRS).
-
-#### Cloning & Gel
-- On a circular molecule, a reverse-strand site cut before base 1 gave an empty overhang (BG-01M7CDFB) and Dam or Dcm blocking ignored the bases across the origin (BG-01M7CQMJ).
-- A cut after the last base of a linear molecule was numbered 0, and two labels numbered an end cut differently from the site list (BG-01M7CDM1, BG-01M7CQV7).
+- A PDB chain whose numbering restarts, repeating a residue's name and number (ALA 1, GLY 2, ALA 1, GLY 2), was read as two residues, not four (BG-01M7QC16).
+- On a titin-length protein, the MS digest listed 512 of its 5,172 peptides, the PTM scan 256 of its 644 sites, and the GOR states covered 4,000 of its 34,350 residues (BG-01M6T6JF).
 
 #### Vectors & Architect
-- Two pUC shuttle vectors, or a shuttle vector and pUC19, read as compatible for co-transformation (BG-01M7Q9E4).
+- A yeast CEN/ARS shuttle vector with a pUC origin and pUC19 read as compatible for co-transformation (BG-01M7Q9E4).
 
-#### Primers & CRISPR
-- A primer holding an ambiguity code was given a hairpin and dimer it cannot have, and primers could be designed from ambiguity codes (BG-01M6TB1R).
-- A guide or primer across a circular record's origin was exported as an invalid start-past-end range, such as 4980..12, rather than a join across the origin (BG-01M6VZSJ).
-
-#### Files and sessions
-- A GenBank feature with a complement around parts already complemented was imported on the plus strand with no warning (BG-01M6T954).
-- EMBL export dropped every primer of the document (BG-01M7Q9BP).
-- A ZIP64 archive could open with entries missing, or be refused as holding no sequence documents when its first entry was ZIP64 (BG-01M7VGHZ).
-- A document with no recorded created or modified date was stamped with the restore time when its session was reopened (BG-01M7N2HE).
-- The document table's Residues filter missed matches across a plasmid's origin, on an RNA's reverse strand and by IUPAC codes (BG-01M7DXRN).
-
-#### Tools
-- The DNA calculator gave a composition-blind dsDNA mass to 0.01 kDa; it now weighs the record's composition as Biopython 1.88 does (BG-01M6SCYG).
+The other fixes since 1.0.0 are in the commit history: https://github.com/manbaritone/MolBioCraft/compare/v1.0.0...v1.1.0
 
 ### Known issues
 These open defects can still give a wrong or incomplete result in 1.1.0:

@@ -1388,26 +1388,28 @@ it('BG-01M7V0FN: the release checklist and its record template hold every item o
 // which earlier results to re-check and which wrong results 1.1.0 still gives. The bug files are not
 // in git, so the two id lists live here: each fixed id with the commit in v1.0.0..HEAD that fixes it,
 // checked against the history wherever the clone has the v1.0.0 tag (CI's checkout is shallow).
-// An id is listed only when its defect could be met in 1.0.0: a fix for a fault that arose after the
-// tag (such as a regression of an earlier 1.1.0 fix) changes no result a 1.0.0 user had.
+// BG-01M834J7: an id is listed only when a test at HEAD fails on v1.0.0's code (copied into a detached
+// v1.0.0 worktree) and passes at HEAD; the lane notes give each test, its command and both outcomes.
+// Every other fix since 1.0.0 is left to the compare link.
 const FIXED_IN_1_1_0: Record<string, string> = {
   'BG-01M7ZQAE': 'b16b065', 'BG-01M6VZNP': '02cea89',
-  'BG-01M6QHGC': 'a48b632', 'BG-01M6W0BZ': 'ffc4d16', 'BG-01M6W02V': '850d750',
-  'BG-01M7V8C1': '5c7f55a', 'BG-01M7V8FQ': 'ddbea46', 'BG-01M6T6X7': '69f1885',
-  'BG-01M6SK22': 'c45b756', 'BG-01M6SKTM': '7d15b71', 'BG-01M6SQYJ': '69d9abc',
-  'BG-01M6QKBP': '551a20f', 'BG-01M6Q5ZR': '9c287f2', 'BG-01M6QHNT': '23d5ac8',
+  'BG-01M6W0BZ': 'ffc4d16', 'BG-01M6W02V': '850d750', 'BG-01M7V8C1': '5c7f55a', 'BG-01M7V8FQ': 'ddbea46',
+  'BG-01M6T6X7': '69f1885', 'BG-01M6SK22': 'c45b756', 'BG-01M6SKTM': '7d15b71',
   'BG-01M6T61T': 'b1db7de',
-  'BG-01M7MM62': '496510d', 'BG-01M7MQP8': 'd08e583', 'BG-01M7MTRS': '99fe2dc', 'BG-01M7MW9R': '9141403',
-  'BG-01M6S3X1': '1086a7c', 'BG-01M6T6XF': 'deeceb6', 'BG-01M6VZT1': '6b454b2',
-  'BG-01M6WFMR': 'e9f4f72',
-  'BG-01M6PXSR': 'aab3f48', 'BG-01M6PXQ7': 'cfac59d', 'BG-01M6PETK': 'b95c2a0', 'BG-01M7QC16': '9e8e576',
-  'BG-01M7V0ZH': 'f1fdb67', 'BG-01M6SQ1W': 'a462bd1', 'BG-01M6T6JF': '5ff7af3',
-  'BG-01M6VZRS': '9ff83a0',
-  'BG-01M7CDFB': 'fbb3114', 'BG-01M7CDM1': 'b07f82d', 'BG-01M7CQV7': 'c3a4ea0', 'BG-01M7CQMJ': '4d58037',
-  'BG-01M7Q9E4': '1f15d47', 'BG-01M6TB1R': 'd29ef4a', 'BG-01M6VZSJ': '0c3fa57',
-  'BG-01M6T954': '5569602', 'BG-01M7Q9BP': '899bf80', 'BG-01M7VGHZ': '7af4329', 'BG-01M7N2HE': '8cbb0d0',
-  'BG-01M7DXRN': '6249c93', 'BG-01M6SCYG': '5592adc',
+  'BG-01M7QC16': '9e8e576', 'BG-01M6T6JF': '5ff7af3',
+  'BG-01M7Q9E4': '1f15d47',
 };
+/** The studio each proven fix is listed under. */
+const FIXED_GROUP: Record<string, string> = {
+  'BG-01M7ZQAE': 'Sanger & Contig', 'BG-01M6VZNP': 'Sanger & Contig',
+  'BG-01M6W0BZ': 'Pipelines & NGS', 'BG-01M6W02V': 'Pipelines & NGS', 'BG-01M7V8C1': 'Pipelines & NGS', 'BG-01M7V8FQ': 'Pipelines & NGS',
+  'BG-01M6T6X7': 'Pipelines & NGS', 'BG-01M6SK22': 'Pipelines & NGS', 'BG-01M6SKTM': 'Pipelines & NGS',
+  'BG-01M6T61T': 'Alignment',
+  'BG-01M7QC16': 'Protein & 3D', 'BG-01M6T6JF': 'Protein & 3D',
+  'BG-01M7Q9E4': 'Vectors & Architect',
+};
+/** The one line after the proven list, which sends the reader to every other fix. */
+const COMPARE_LINK = 'https://github.com/manbaritone/MolBioCraft/compare/v1.0.0...v1.1.0';
 /** The open High and Medium correctness bugs a 1.1.0 user can meet. */
 const KNOWN_IN_1_1_0 = [
   'BG-01M8309K', 'BG-01M6RVAK', 'BG-01M7VD82', 'BG-01M7VDRF', 'BG-01M7ZQ57', 'BG-01M7VD1M', 'BG-01M7VDV1',
@@ -1448,6 +1450,7 @@ it('releasePackaging the 1.1.0 notes name the correctness fixes a 1.0.0 user sho
   const named: Record<string, string> = {};
   for (const l of fixed) {
     if (l.startsWith('#### ')) groups.push(l.slice(5).trim());
+    if (l.includes(COMPARE_LINK)) break;
     if (!l.startsWith('- ')) continue;
     if (groups.length === 0) {
       // The entries above the studio groups are the release's features; a fix named there would escape the checks below.
@@ -1467,8 +1470,18 @@ it('releasePackaging the 1.1.0 notes name the correctness fixes a 1.0.0 user sho
   expect(groups.filter((g) => !FIX_GROUPS.includes(g)), 'groups that are not a studio').toEqual([]);
   expect(new Set(groups).size, 'each studio is one group').toBe(groups.length);
   expect(Object.keys(named).sort(), 'the fixed ids are the ones fixed in v1.0.0..HEAD').toEqual(Object.keys(FIXED_IN_1_1_0).sort());
-  for (const id of ['BG-01M7ZQAE', 'BG-01M6VZNP']) expect(named[id], `${id}'s group`).toBe('Sanger & Contig');
-  for (const id of ['BG-01M6QHGC', 'BG-01M6W0BZ', 'BG-01M6W02V']) expect(named[id], `${id}'s group`).toBe('Pipelines & NGS');
+  expect(Object.keys(FIXED_GROUP).sort(), 'every proven fix has its group').toEqual(Object.keys(FIXED_IN_1_1_0).sort());
+  for (const [id, group] of Object.entries(FIXED_GROUP)) expect(named[id], `${id}'s group`).toBe(group);
+
+  // After the proven list, one line links the compare view for every other fix, and claims nothing of them.
+  const linkAt = fixed.findIndex((l) => l.includes(COMPARE_LINK));
+  expect(fixed.filter((l) => l.includes(COMPARE_LINK)).length, 'one line links the v1.0.0...v1.1.0 compare view').toBe(1);
+  const lastBullet = fixed.reduce((at, l, i) => (l.startsWith('- ') ? i : at), -1);
+  expect(linkAt, 'the compare link follows the last fix').toBeGreaterThan(lastBullet);
+  const link = fixed[linkAt];
+  expect(link, 'the link line names no bug').not.toMatch(ANY_BUG_ID);
+  expect(link.startsWith('- ') || link.startsWith('#'), 'the link line is not a fix or a group').toBe(false);
+  expect(link.replace(COMPARE_LINK, '').trim(), 'the link line only points to the history').toBe('The other fixes since 1.0.0 are in the commit history:');
 
   // Each id's fix is a commit after v1.0.0 whose subject names it. Only a tree with no .git of its own
   // (a source archive, even one unpacked inside another repository) skips this, and says so. Where
@@ -1498,6 +1511,7 @@ it('releasePackaging the 1.1.0 notes name the correctness fixes a 1.0.0 user sho
   const out = releaseNotes110();
   expect(out.status, out.stderr).toBe(0);
   for (const id of Object.keys(FIXED_IN_1_1_0)) expect(out.stdout, `the release notes name ${id}`).toContain(id);
+  expect(out.stdout, 'the release notes link the compare view').toContain(COMPARE_LINK);
 });
 
 it('releasePackaging the 1.1.0 notes list the known issues', () => {
@@ -1512,6 +1526,11 @@ it('releasePackaging the 1.1.0 notes list the known issues', () => {
   }
   expect([...named].sort(), 'the known issues are the open High and Medium correctness bugs').toEqual([...KNOWN_IN_1_1_0].sort());
   expect(KNOWN_IN_1_1_0.filter((id) => id in FIXED_IN_1_1_0), 'ids listed as both fixed and open').toEqual([]);
+  // No Fixed line may read as contradicting a known issue: none names an open id, and none says upper-case
+  // mmCIF is now read, which BG-01M7WDE7 says 1.1.0 may still not recognise (BG-01M834J7).
+  const fixed = notes110Part('### Fixed');
+  expect(KNOWN_IN_1_1_0.filter((id) => fixed.some((l) => l.includes(id))), 'known issues named under Fixed').toEqual([]);
+  expect(fixed.filter((l) => /upper-case[^.]*mmCIF|mmCIF[^.]*upper-case/i.test(l)), 'a fix for upper-case mmCIF, against BG-01M7WDE7').toEqual([]);
   const minisatellite = bullets.find((l) => l.includes('BG-01M8309K')) ?? '';
   expect(minisatellite, 'the 33-36 bp minisatellite contig').toMatch(/33-36 bp/);
   expect(minisatellite, 'it comes out a unit short').toMatch(/unit short/);
